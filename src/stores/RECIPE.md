@@ -1,8 +1,8 @@
 # How to manage state and contexts
 - Use explicit interfaces to define both state and actions
-- Keep stores focused on a single component's needs
-    - Each store should handle one specific piece of UI functionality
-    - Don't try to manage multiple concerns at once
+- Keep stores focused on a single need
+    - Each store should handle one specific piece of functionality
+    - Don't try to manage multiple concerns at once unless the state is shared between multiple components
     - Do not over-engineer solutions to a specific problem, prefer simplicity and elegance
 - Group actions near the state properties they modify to make their relationships clear
 - Use semantic action names that describe the state change, like `startEditing`or `toggleComplete` over `update` and `set`
