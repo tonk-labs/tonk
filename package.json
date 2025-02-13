@@ -4,6 +4,7 @@
   "main": "index.js",
   "private": true,
   "scripts": {
+    "dev": "webpack serve --mode development --open",
     "build": "webpack",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -13,17 +14,23 @@
   "description": "",
   "devDependencies": {
     "@prisma/client": "^6.3.1",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "css-loader": "^6.11.0",
     "prisma": "^6.3.1",
+    "react-router-dom": "^6.29.0",
+    "style-loader": "^3.3.4",
+    "tailwindcss": "^3.4.17",
     "ts-loader": "^9.5.2",
+    "ts-node": "^10.9.2",
     "typescript": "^5.7.3",
-    "webpack": "^5.97.1",
-    "webpack-cli": "^6.0.1"
+    "webpack": "^5.98.0",
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^5.2.0"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@prisma/client",
-      "@prisma/engines",
-      "prisma"
-    ]
+  "dependencies": {
+    "lucide-react": "^0.475.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   }
 }
