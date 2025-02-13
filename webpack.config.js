@@ -30,7 +30,11 @@ module.exports = {
     publicPath: '/'
   },
   devServer: {
+    static: {
+      directory: path.join(__dirname, 'public'),
+    },
     historyApiFallback: true,
-    hot: true
+    hot: true,
+    port: 3000,
   },
 };
