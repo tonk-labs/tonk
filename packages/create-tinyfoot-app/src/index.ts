@@ -156,8 +156,31 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
     const projectPath = path.resolve(projectName);
     await fs.ensureDir(projectPath);
 
-    // Copy template files
-    // TODO: Implement template copying based on project type
+    // Copy template files from default template
+    // TODO: copy based on project type
+    const templatePath = path.join(
+      // When running from npm exec, we need to use fileURLToPath
+      new URL('../templates/default', import.meta.url).pathname
+    );
+    if (await fs.pathExists(templatePath)) {
+      await fs.copy(templatePath, projectPath, {
+        filter: (src: string) => {
+          // Skip node_modules and .git if they exist in template
+          return !src.includes('node_modules') && !src.includes('.git');
+        }
+      });
+
+      // Update package.json name
+      const packageJsonPath = path.join(projectPath, 'package.json');
+      if (await fs.pathExists(packageJsonPath)) {
+        const packageJson = await fs.readJson(packageJsonPath);
+        packageJson.name = projectName;
+        await fs.writeJson(packageJsonPath, packageJson, { spaces: 2 });
+      }
+    } else {
+      console.error(chalk.red(`Error: Template directory not found at ${templatePath}`));
+      throw new Error('Template directory not found');
+    }
 
     // Create tinyfoot.config.json with project plan
     await fs.writeJSON(
