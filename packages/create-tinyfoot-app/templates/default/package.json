@@ -24,20 +24,13 @@
     "tailwindcss": "^3.4.17",
     "ts-loader": "^9.5.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.7.3",
     "tsx": "^4.7.0",
+    "typescript": "^5.7.3",
     "webpack": "^5.98.0",
     "webpack-cli": "^6.0.1",
-    "webpack-dev-server": "^5.2.0",
+    "webpack-dev-server": "^5.2.0"
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.21.2",
-    "express-ws": "^5.0.2",
-    "lucide-react": "^0.475.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
     "@hocuspocus/extension-database": "^2.13.7",
     "@hocuspocus/extension-redis": "^2.13.6",
     "@hocuspocus/extension-sqlite": "^2.13.7",
@@ -45,9 +38,18 @@
     "@pcd/pod-pcd": "^0.5.0",
     "auth-utils": "file:../sdk/auth",
     "body-parser": "^1.20.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "express-ws": "^5.0.2",
     "jose": "^5.9.3",
+    "lucide-react": "^0.475.0",
     "node-fetch": "^3.3.2",
     "pg": "^8.13.0",
-    "redis": "^4.7.0"
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "redis": "^4.7.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
   }
 }
