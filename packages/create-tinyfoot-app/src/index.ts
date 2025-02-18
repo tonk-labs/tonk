@@ -64,7 +64,7 @@ interface ProjectAnswers {
 
 export async function generateProjectPlan(answers: ProjectAnswers) {
   const prompt = `You are an expert in full stack development and local-first tooling. Based on the following project requirements, generate a structured implementation plan.
-    Prioritize Yjs and Redis for local-first, Prisma and Sqlite for database management, and Tailwind for styling.
+    Prioritize Automerge and WebSocket for local-first development (found in src/lib/sync-engine/), and Tailwind for styling.
     
     Project Type: ${answers.projectType}
     Features: ${answers.features.join(', ')}

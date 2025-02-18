@@ -43,4 +43,11 @@ module.exports = {
     hot: true,
     port: 3000,
   },
+  experiments: { asyncWebAssembly: true },
+  target: 'web',
+  performance: {
+    hints: false,
+    maxEntrypointSize: 512000,
+    maxAssetSize: 512000,
+  },
 };
