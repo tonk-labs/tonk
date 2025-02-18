@@ -3,7 +3,7 @@
     "outDir": "./dist/",
     "sourceMap": true,
     "noImplicitAny": true,
-    "target": "ES5",
+    "target": "ES2015",
     "useDefineForClassFields": true,
     "lib": [
       "ES2020",
