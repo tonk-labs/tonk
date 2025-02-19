@@ -9,7 +9,7 @@ const expressApp = express();
 const wsInstance = expressWs(expressApp);
 const app: Application = wsInstance.app;
 const wss = wsInstance.getWss();
-const PORT = process.env.PORT || 9000;
+const PORT = process.env.PORT || 3030;
 
 app.use(cors());
 app.use(express.json());

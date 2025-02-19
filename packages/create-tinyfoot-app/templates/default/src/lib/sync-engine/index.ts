@@ -18,7 +18,7 @@ export class SyncEngine {
 
     try {
       await this.storage.init();
-      this.connectWebSocket(`ws://localhost:${this.options.port || 9000}/sync`);
+      this.connectWebSocket(`ws://localhost:${this.options.port || 3030}/sync`);
       this.initialised = true;
     } catch (error) {
       console.error('Failed to initialise SyncEngine:', error);
@@ -59,12 +59,13 @@ export class SyncEngine {
   }
 
   private async handleIncomingChanges(docId: string, changes: number[]): Promise<void> {
-    const doc = await this.loadDocument(docId);
+    let doc = await this.loadDocument(docId);
     if (!doc) {
       console.warn(`No document found for id: ${docId}`);
       return;
     }
 
+    doc = Automerge.clone(doc);
     let syncState = this.syncStates.get(docId) || Automerge.initSyncState();
 
     try {
@@ -92,15 +93,15 @@ export class SyncEngine {
   }
 
   private async loadDocument(id: DocumentId): Promise<Automerge.Doc<any> | null> {
-    const loadedDoc = this.documents.get(id);
-    if (loadedDoc) return loadedDoc;
+    let doc = this.documents.get(id);
+    if (doc) return Automerge.clone(doc);
 
     const docBytes = await this.storage.getDocument(id);
     if (!docBytes) return null;
 
-    const doc = Automerge.load(docBytes);
+    doc = Automerge.load(docBytes);
     this.documents.set(id, doc);
-    return doc;
+    return Automerge.clone(doc);
   }
 
   async createDocument(id: DocumentId, initialContent: any = {}): Promise<void> {
@@ -129,15 +130,20 @@ export class SyncEngine {
       throw new Error('SyncEngine not initialised');
     }
 
-    const doc = await this.loadDocument(id);
+    let doc = await this.loadDocument(id);
     if (!doc) throw new Error('Document not found');
 
-    const newDoc = Automerge.change(doc, updater);
-    this.documents.set(id, newDoc);
-    await this.storage.saveDocument(id, Automerge.save(newDoc));
-    await this.sendChanges(id);
+    try {
+      const newDoc = Automerge.change(doc, updater);
+      this.documents.set(id, newDoc);
+      await this.storage.saveDocument(id, Automerge.save(newDoc));
+      await this.sendChanges(id);
 
-    console.log(`Document updated: ${id}`);
+      console.log(`Document updated: ${id}`);
+    } catch (error) {
+      console.error(`Error updating document ${id}:`, error);
+      throw error;
+    }
   }
 
   private async sendChanges(docId: DocumentId): Promise<void> {
@@ -174,7 +180,7 @@ export class SyncEngine {
 /*
 // Start a sync engine with integrated server
 const engine1 = new SyncEngine({
-  port: 9000, // Use your Express server port
+  port: 3030, // Use your Express server port
   onSync: (docId) => console.log(`Document ${docId} synced`),
   onError: (error) => console.error('Sync error:', error)
 });

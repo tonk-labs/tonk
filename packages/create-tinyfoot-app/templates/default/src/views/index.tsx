@@ -14,7 +14,7 @@ export const Home = () => {
     let mounted = true;
 
     const engine = new SyncEngine({
-      port: 9000,
+      port: 3030,
       onSync: async (docId) => {
         if (!mounted) return;
         console.log(`Document ${docId} synced`);

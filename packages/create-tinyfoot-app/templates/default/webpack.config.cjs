@@ -45,7 +45,7 @@ module.exports = {
     port: 3000,
     proxy: [{
       context: ['/sync', '/api'],
-      target: 'http://localhost:9000',
+      target: 'http://localhost:3030',
       ws: true,
       changeOrigin: true
     }],
