@@ -2,6 +2,24 @@
 
 Create local-first personal software with one command.
 
+
+## Structure of a Tinyfoot application 
+
+\`\`\`
+my-app/
+├── src/
+│   ├── components/   # Reusable UI components
+│   ├── hooks/        # Custom React hooks
+│   ├── lib/          # Core utilities and sync engine
+│   ├── services/     # External service integrations
+│   ├── stores/       # State management
+│   ├── views/        # Page components
+│   ├── App.tsx       # Root component
+│   └── index.tsx     # Entry point
+├── public/           # Static assets
+└── package.json      # Project configuration
+\`\`\`
+
 ## Usage
 
 \`\`\`bash
@@ -28,4 +46,5 @@ Run \`npm test\` to execute the test suite.
 
 ## License
 
-MIT
+Simplicity and freedom.
+MIT © Tonk
