@@ -39,8 +39,22 @@ module.exports = {
     static: {
       directory: path.join(__dirname, 'public'),
     },
+    compress: true,
     historyApiFallback: true,
     hot: true,
     port: 3000,
+    proxy: [{
+      context: ['/sync', '/api'],
+      target: 'http://localhost:3030',
+      ws: true,
+      changeOrigin: true
+    }],
+  },
+  experiments: { asyncWebAssembly: true },
+  target: 'web',
+  performance: {
+    hints: false,
+    maxEntrypointSize: 512000,
+    maxAssetSize: 512000,
   },
 };
