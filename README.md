@@ -9,21 +9,21 @@
    ・。゜☆。・゜。・。゜☆。・゜★・。゜☆。・゜。・。゜☆。・゜☆。・゜
 ```
 
-**Tinyfoot** is an AI-driven developer framework for building highly personalized software.
+**Tinyfoot** is an AI-driven developer framework for building highly personal software.
 
 In tandem with **Tinyfoot**, Tonk is building a **maximally interoperable network** designed to address the fragmentation of information caused by the explosion of grassroots, AI-built applications.  
 
-## Project Status
+## Project Status: [Pre-Alpha]
 
-Tinyfoot is in alpha. This is a brand spanking new project being built fully in the open. Please [reach out to the team](https://linktr.ee/tonklabs) if you have questions or need support. 
+Tinyfoot is Pre-Alpha. This is a brand spanking new project being built fully in the open, from scratch. Beware, here be dragons! Please [reach out to the team](https://linktr.ee/tonklabs) or you may create a post in the [Q&A Discussion](https://github.com/tonk-labs/tinyfoot/discussions/categories/q-a) if you have any questions or need support. 
 
-## Features in-flight
+## Features (*In-Flight)
 
-- **Local-First Architecture**: Built on Automerge for conflict-free data synchronization.
+- **Local-First Architecture**: Built on Automerge for conflict-free data synchronization. (*)
 - **Quick Start**: Create new projects instantly with `create-tinyfoot-app`.
-- **Offline Support**: IndexedDB-based storage with automatic sync.
-- **Privacy Focused**: Keeps user data local by default.
-- **React + TypeScript**: Modern development stack with full type safety.
+- **Offline Support**: IndexedDB-based storage with automatic sync. (*)
+- **Privacy Focused**: Keeps user data local by default. (*)
+- **React + TypeScript**: Modern development stack with full type safety. 
 - **Tailwind CSS**: Utility-first styling out of the box.
 
 ---
@@ -44,11 +44,17 @@ npm link
 
 ### Usage
 
-To create a tinyfoot app just run the command:
+**Note:** as of right now there are some extra files we are including for prototyping sync functionality. This won't make a lot of sense. We are working to get Tinyfoot into a minimally usable state.
+
+<br />
+
+To create a tinyfoot app run the command:
 
 ```bash
 npx create-tinyfoot-app my-app
 ```
+
+
 
 For more please refer to the [create-tinyfoot-app README](packages/create-tinyfoot-app/README.md).
 
@@ -75,4 +81,5 @@ There will be an issue template you can use. If you do not use the issue templat
 ## License
 
 Simplicity and freedom.
+
 MIT © Tonk
