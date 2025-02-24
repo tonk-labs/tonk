@@ -9,7 +9,7 @@
    ・。゜☆。・゜。・。゜☆。・゜★・。゜☆。・゜。・。゜☆。・゜☆。・゜
 ```
 
-**Tinyfoot** is an AI-driven developer framework for building highly-personalized software.
+**Tinyfoot** is an AI-driven developer framework for building highly personalized software.
 
 In tandem with **Tinyfoot**, Tonk is building a **maximally interoperable network** designed to address the fragmentation of information caused by the explosion of grassroots, AI-built applications.  
 
