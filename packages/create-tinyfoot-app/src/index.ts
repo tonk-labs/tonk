@@ -5,6 +5,8 @@ import chalk from 'chalk';
 import ora from 'ora';
 import fs from 'fs-extra';
 import path from 'path';
+import open from 'open';
+import { spawn } from 'child_process';
 
 const program = new Command();
 
@@ -111,6 +113,9 @@ export async function generateProjectPlan(answers: ProjectAnswers) {
     const data = await response.json() as OllamaResponse;
     const planJson = JSON.parse(data.response);
 
+    // the users original high-level description of the project
+    planJson.projectDescription = answers.description;
+
     // Validate the response structure
     if (!planJson.components || !planJson.dataModel ||
       !planJson.implementationSteps || !planJson.recommendedLibraries) {
@@ -127,6 +132,7 @@ export async function generateProjectPlan(answers: ProjectAnswers) {
         { name: 'Navigation', description: 'Site navigation' }
       ],
       dataModel: {},
+      projectDescription: answers.description,
       implementationSteps: [
         'Initialize project structure',
         'Set up routing',
@@ -150,10 +156,11 @@ interface ProjectPlan {
 
 export async function createProject(projectName: string, plan: ProjectPlan) {
   const spinner = ora('Creating project structure...').start();
+  let projectPath = '';
 
   try {
     // Create project directory
-    const projectPath = path.resolve(projectName);
+    projectPath = path.resolve(projectName);
     await fs.ensureDir(projectPath);
 
     // Copy template files from default template
@@ -193,14 +200,102 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
     );
 
     spinner.succeed('Project created successfully!');
-
-    console.log('\n' + chalk.green('Next steps:'));
-    console.log(`  cd ${projectName}`);
-    console.log('  npm install');
-    console.log('  npm run dev\n');
-
   } catch (error) {
     spinner.fail('Failed to create project');
+    console.error(error);
+    process.exit(1);
+  }
+
+  // Execute post-creation commands in a separate try-catch
+  try {
+    // Change directory into the project
+    process.chdir(projectPath);
+
+    // Install dependencies
+    spinner.start('Installing dependencies...');
+    const { execSync } = await import('child_process');
+    execSync('npm install', { stdio: 'inherit' });
+    spinner.succeed('Dependencies installed successfully!');
+
+    // Start the development server
+    spinner.start('Starting development server...');
+    const devProcess = spawn('npm', ['run', 'dev'], { 
+      stdio: ['inherit', 'pipe', 'inherit'],
+    });
+
+    // Store the process PID for cleanup
+    const devProcessPid = devProcess.pid;
+
+    // Wait for the dev server to be ready
+    devProcess.stdout?.on('data', async (data) => {
+      const output = data.toString();
+      process.stdout.write(output);  // Show the output in real time
+      
+      if (output.includes('compiled successfully')) {
+        spinner.succeed('Development server is ready!');
+        spinner.start('Opening website...');
+        
+        // Add a small delay before opening the browser
+        setTimeout(async () => {
+          try {
+            await open('http://localhost:3000');
+            spinner.succeed('Website opened in your default browser!');
+            console.log(chalk.yellow('\nPress Ctrl+C to stop the development server and exit.'));
+          } catch (err) {
+            spinner.fail('Failed to open browser');
+            console.error('Error opening browser:', err);
+          }
+        }, 1000);
+      }
+    });
+
+    // Create a clean shutdown function
+    const cleanShutdown = () => {
+      try {
+        console.log(chalk.yellow('\nTerminating development server...'));
+        
+        // Try multiple ways to kill the process to ensure it's terminated
+        if (devProcess && !devProcess.killed) {
+          // First try to kill it gracefully
+          devProcess.kill('SIGTERM');
+          
+          // If we have the PID, also try process group kill for safety
+          if (devProcessPid) {
+            try {
+              // For Unix/Mac systems, kill the process group
+              process.kill(-devProcessPid, 'SIGTERM');
+            } catch (e) {
+              // Ignore errors from this attempt
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error shutting down dev server:', error);
+      }
+      process.exit(0);
+    };
+
+    // Add process termination handlers to properly clean up the child process
+    process.on('SIGINT', cleanShutdown);
+    process.on('SIGTERM', cleanShutdown);
+
+    // Handle process completion
+    devProcess.on('close', (code) => {
+      if (code !== 0) {
+        spinner.fail(`Development server process exited with code ${code}`);
+      }
+    });
+
+    // Handle process errors
+    devProcess.on('error', (error) => {
+      spinner.fail('Failed to start development server');
+      console.error(error);
+      process.exit(1);
+    });
+    
+    // Don't unref the process - we want the parent to wait for the child
+  } catch (error) {
+    spinner.fail('Failed to run post-creation commands, please run them manually in the project folder. (See top-level README.md)');
     console.error(error);
     process.exit(1);
   }
