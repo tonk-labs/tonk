@@ -38,7 +38,7 @@ const projectQuestions = [
       'Database',
       'File Storage',
       'API Integration',
-      'Real-time Updates',
+      'Real-time Updates'
     ]
   },
   {
