@@ -1,6 +1,6 @@
 # How to create components
 Components should be...
-- Pure and have only internal state.
+- Pure and have only internal UI state. All other state is external.
 - Always use inline styling with tailwind
 - Each component should have its own folder, with `index.tsx` as the entry point
 - Export typed definitions of props
@@ -67,7 +67,7 @@ export interface TaskCardProps {
  * A rich task card component that displays task information and allows status updates
  * 
  * @description
- * TaskCard is a self-contained component that manages its own state while still
+ * TaskCard is a self-contained component that manages its own state while still  (ONLY UI STATE, all other state should be external)
  * allowing parent components to track status changes. It includes visual indicators
  * for priority levels and status, with a clean, accessible design.
  * 

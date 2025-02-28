@@ -74,15 +74,12 @@ export async function generateProjectPlan(answers: ProjectAnswers) {
     Pages: ${answers.pages.join(", ")}
     Description: ${answers.description}
 
-    Provide a response in this exact JSON format:
-    {
-      "components": [{ "name": "string", "description": "string" }],
-      "dataModel": { /* relevant data model structure */ },
-      "implementationSteps": ["string"],
-      "recommendedLibraries": [{ "name": "string", "purpose": "string" }]
-    }
+  //   Provide a response in this exact JSON format:
+  //   {
+  //     "technicalDescription": ["string"],
+  //   }
 
-    Keep the response focused and practical. Include only essential components and libraries.`;
+  //   Keep the response focused and practical. Include only essential components and libraries.`;
 
   try {
     const response = await fetch("http://localhost:11434/api/generate", {
@@ -98,24 +95,24 @@ export async function generateProjectPlan(answers: ProjectAnswers) {
       }),
     });
 
-    if (!response.ok) {
-      throw new Error(`Ollama request failed: ${response.statusText}`);
-    }
+  //   if (!response.ok) {
+  //     throw new Error(`Ollama request failed: ${response.statusText}`);
+  //   }
 
-    interface OllamaResponse {
-      response: string;
-      context?: number[];
-      created_at: string;
-      done: boolean;
-      model: string;
-      total_duration?: number;
-    }
+  //   interface OllamaResponse {
+  //     response: string;
+  //     context?: number[];
+  //     created_at: string;
+  //     done: boolean;
+  //     model: string;
+  //     total_duration?: number;
+  //   }
 
     const data = (await response.json()) as OllamaResponse;
     const planJson = JSON.parse(data.response);
 
-    // the users original high-level description of the project
-    planJson.projectDescription = answers.description;
+  //   // the users original high-level description of the project
+  //   planJson.projectDescription = answers.description;
 
     // Validate the response structure
     if (
@@ -148,15 +145,12 @@ export async function generateProjectPlan(answers: ProjectAnswers) {
         { name: "prisma", purpose: "Database ORM" },
       ],
     };
-  }
 }
 
 // Function to create project structure
 interface ProjectPlan {
-  components: Array<{ name: string; description: string }>;
-  dataModel: Record<string, unknown>;
-  implementationSteps: string[];
-  recommendedLibraries: Array<{ name: string; purpose: string }>;
+  implementationLog: string[];
+  projectDescription: string;
 }
 
 export async function createProject(projectName: string, plan: ProjectPlan) {
