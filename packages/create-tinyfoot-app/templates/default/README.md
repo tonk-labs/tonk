@@ -1,5 +1,3 @@
-
-
 # TinyFoot App
 
 Welcome to your new TinyFoot application!

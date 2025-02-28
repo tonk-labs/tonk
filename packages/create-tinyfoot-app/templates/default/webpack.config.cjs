@@ -18,12 +18,23 @@ module.exports = {
       },
       {
         test: /\.css$/,
-        use: ['style-loader', 'css-loader']
+        use: ['style-loader', 'css-loader', 'postcss-loader']
       }
     ]
   },
   resolve: {
-    extensions: ['.tsx', '.ts', '.js', '.jsx'],
+    extensions: ['.tsx', '.ts', '.js', '.jsx', '.mjs'],
+    extensionAlias: {
+      '.js': ['.js', '.ts', '.tsx', '.jsx'],
+      '.mjs': ['.mjs', '.js', '.ts', '.tsx', '.jsx']
+    },
+    fallback: {
+      path: false,
+      fs: false,
+      os: false,
+      crypto: false,
+      url: false
+    }
   },
   output: {
     filename: 'bundle.js',
