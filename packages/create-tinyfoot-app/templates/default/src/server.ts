@@ -1,31 +1,45 @@
-import express from 'express';
-import expressWs from 'express-ws';
-import { Application } from 'express-ws';
-import cors from 'cors';
-import { WebSocket } from 'ws';
+import { WebSocketServer, WebSocket } from "ws";
+import { createServer } from "http";
+import chalk from "chalk";
 
-// Create express app with WebSocket support
-const expressApp = express();
-const wsInstance = expressWs(expressApp);
-const app: Application = wsInstance.app;
-const wss = wsInstance.getWss();
-const PORT = process.env.PORT || 3030;
+// Create a simple HTTP server
+const server = createServer();
+const wss = new WebSocketServer({
+  server,
+  path: "/sync",
+});
 
-app.use(cors());
-app.use(express.json());
+// Store connected clients
+const connections: Set<WebSocket> = new Set();
 
-// WebSocket endpoint for sync engine
-app.ws('/sync', (ws: WebSocket) => {
-  ws.on('message', (msg: string) => {
-    // Broadcast to all clients except sender
-    wss.clients.forEach((client: WebSocket) => {
+// Handle WebSocket connections
+wss.on("connection", (ws: WebSocket) => {
+  console.log(chalk.green(`Client connected`));
+  connections.add(ws);
+
+  // Handle messages from clients
+  ws.on("message", (data: Buffer) => {
+    connections.forEach((client) => {
       if (client !== ws && client.readyState === WebSocket.OPEN) {
-        client.send(msg);
+        client.send(data.toString());
       }
     });
   });
+
+  // Handle client disconnection
+  ws.on("close", () => {
+    console.log(chalk.red(`Client disconnected`));
+    connections.delete(ws);
+  });
+
+  // Handle errors
+  ws.on("error", (error: Error) => {
+    console.error(chalk.red(`WebSocket error:`), error);
+  });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Start the server
+const PORT = process.env.PORT || 3030;
+server.listen(PORT, () => {
+  console.log(chalk.green(`Sync server running on port ${PORT}`));
 });

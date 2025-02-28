@@ -5,6 +5,7 @@
 - If a module you think you need does not exist in `package.json`, do not use arbitrary modules
     - Come up with an alternative strategy to implement the task.
     - If you think it is absolutely not possible, inform the user with a clear explanation that the task is outside the limits of your capabilities.
+
 ## Linting
 - Put `_` ahead of parameters that aren't used in a function (e.x., `_req` in the following)
 ```tsx
