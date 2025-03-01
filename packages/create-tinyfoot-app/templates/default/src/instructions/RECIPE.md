@@ -1,4 +1,4 @@
-# How to use lib files
+# How to use instruction files
 The files in this directory include utils and helpers that would ordinarily be hidden within a Node module. For the sake of introspection by LLMs, they are surfaced here.
 
 Each file has explicit and verbose TypeScript interfaces with comprehensive JSDoc documentation. Be sure to follow the provided structure, best practices, and implementation suggestions precisely. Do not hallucinate capabilities that are not explicitly defined in a given file.
