@@ -46,37 +46,98 @@ Your objectives and rules:
 ## Task JSON Examples
   \`\`\`
   {
-  "schemaType": "hook",
-  "description": "Create a hook to fetch Google Calendar events for the user's primary calendar for the current day.",
+  "schemaType": "modules",
+  "description": "Create a Google Calendar module that fetches and caches daily events",
   "details": {
-    "fields": [
-      "events",
-      "isLoading",
-      "error"
-    ],
-    "initialState": {
-      "events": [],
-      "isLoading": false,
-      "error": null
+    "functionality": {
+      "authentication": "Use existing OAuth token from userStore",
+      "caching": {
+        "strategy": "In-memory cache with TTL",
+        "duration": "5 minutes",
+        "invalidation": "On new event creation/update/delete"
+      },
+      "eventDetails": {
+        "required": [
+          "id",
+          "summary",
+          "description",
+          "location",
+          "start.dateTime",
+          "end.dateTime",
+          "timeZone",
+          "attendees"
+        ]
+      },
+      "timeRange": {
+        "start": "Start of day in user's timezone",
+        "end": "End of day in user's timezone"
+      },
+      "errorHandling": {
+        "types": [
+          "AuthenticationError",
+          "CalendarError",
+          "NetworkError"
+        ],
+        "retryStrategy": {
+          "maxAttempts": 3,
+          "backoffMs": 1000
+        }
+      }
     },
-    "actions": [
-      "setLoading",
-      "setEvents",
-      "setError"
-    ],
-    "notes": "Use a simple structure that other hooks/components can import to read from calendar state."
+    "interfaces": {
+      "CalendarEvent": {
+        "id": "string",
+        "summary": "string",
+        "description": "string | undefined",
+        "location": "string | undefined",
+        "start": {
+          "dateTime": "string",
+          "timeZone": "string"
+        },
+        "end": {
+          "dateTime": "string",
+          "timeZone": "string"
+        },
+        "attendees": "Array<{ email: string, responseStatus: string }> | undefined"
+      },
+      "CalendarCache": {
+        "events": "Map<string, CalendarEvent[]>",
+        "lastUpdated": "Date",
+        "isValid": "boolean"
+      }
+    },
+    "exports": {
+      "functions": [
+        {
+          "name": "getTodayEvents",
+          "description": "Fetches all events for the current day in user's timezone, using cache when available",
+          "parameters": [],
+          "returns": "Promise<CalendarEvent[]>"
+        },
+        {
+          "name": "invalidateCache",
+          "description": "Force invalidates the current cache",
+          "parameters": [],
+          "returns": "void"
+        }
+      ]
+    }
   },
   "relevantFiles": [
     {
       "type": "GREENFIELD",
-      "path": "src/hooks/fetchCalendarData.ts"
-    }
-  ],
-  "extraInstructions": [
+      "path": "src/modules/calendar/index.ts"
+    },
     {
-      "path": "src/hooks/RECIPE.md"
+      "type": "GREENFIELD",
+      "path": "src/modules/calendar/types.ts"
+    },
+    {
+      "type": "GREENFIELD",
+      "path": "src/modules/calendar/cache.ts"
     }
   ],
+  "extraInstructions": "src/modules/RECIPE.md",
   "completed": false
 }
   \`\`\`
@@ -119,21 +180,15 @@ I want to fetch it from google calendar. Just use the primary calendar and find 
 projectSchema:
 
 interface ProjectInstructions {
-  global: { recipe: string };
   components: { recipe: string };
-  hooks: { recipe: string };
-  lib: { recipe: string };
-  services: { recipe: string };
+  modules: { recipe: string };
   stores: { recipe: string };
   views: { recipe: string };
 }
 
 class ThisProject implements ProjectInstructions {
-  global = { recipe: 'RECIPE.md' };
   components = { recipe: 'src/components/RECIPE.md' };
-  hooks = { recipe: 'src/hooks/RECIPE.md' };
-  lib = { recipe: 'src/hooks/RECIPE.md' };
-  services = { recipe: 'src/services/RECIPE.md' };
+  modules = { recipe: 'src/modules/RECIPE.md' };
   stores = { recipe: 'src/stores/RECIPE.md' };
   views = { recipe: 'src/views/RECIPE.md' };
 }

@@ -13,10 +13,11 @@
 - Maintain consistent spacing scale using Tailwind's default spacing units
 
 ## State Management
-- Always destructure state values from hooks at the top of components
 - Use proper React hooks for lifecycle management (useEffect, useMemo, useCallback)
-- Do not over-engineer state management, do not create unnecessary complexity
-- Document state dependencies in useEffect hooks with explicit comments
+- All state that needs to be synchronized across clients should use keepsync stores
+- All state that is relevant to the view and doesn't need to synchronize may simply call on useState
+- All external functionality not related to rendering should be in a module
+- Document all logic with explicit comments
 
 ## Accessibility
 - Include ARIA labels and roles where appropriate
@@ -32,96 +33,305 @@
 ## Examples
 ### Profile View
 ```tsx
-import React from 'react';
-import { Card, CardHeader, CardContent } from '@/components/ui/card';
-import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { useToast } from '@/components/ui/use-toast';
-import { Mail } from 'lucide-react';
+/**
+ * ProfileSettings view component
+ * 
+ * A view for managing user profile settings including personal information,
+ * account preferences, and notification settings.
+ * 
+ * @example
+ * <ProfileSettings userId="user-123" isEditable={true} />
+ */
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { useProfileStore } from '../stores/profileStore';
+import { Avatar } from '../components/Avatar';
+import { TextField } from '../components/TextField';
+import { Button } from '../components/Button';
+import { Toggle } from '../components/Toggle';
+import { Card } from '../components/Card';
+import { Heading } from '../components/Heading';
+import { Divider } from '../components/Divider';
+import { Alert } from '../components/Alert';
+import { profileModule } from '../modules/profile';
+
+interface ProfileSettingsProps {
+  /** Unique identifier for the user */
+  userId: string;
+  /** Whether the profile is editable */
+  isEditable?: boolean;
+  /** Callback triggered when profile is saved */
+  onSaved?: () => void;
+}
 
 /**
- * Displays a user profile card with avatar, basic info, and actions
- * Demonstrates proper semantic HTML, accessibility, and Tailwind usage
+ * ProfileSettings component that manages user profile data
+ * 
+ * Architecture:
+ * - useProfileStore: Manages state stored in database (synchronized across clients)
+ * - profileModule: Handles external API calls to third-party services (e.g., avatar storage, email verification)
+ * - Local state: Manages UI-specific state (form values, loading states, etc.)
  */
-const ProfileView = () => {
-  const { toast } = useToast();
+export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
+  userId,
+  isEditable = true,
+  onSaved
+}) => {
+  // Use store for synchronized state across clients
+  // This data is automatically synced with the database by the store
+  const { profile, updateProfile } = useProfileStore();
+  
+  // Use local state for form data (unsaved changes)
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    bio: '',
+    avatarUrl: ''
+  });
 
-  const handleContact = () => {
-    toast({
-      title: "Contact initiated",
-      description: "Message sent to user's inbox"
-    });
+  // UI-specific state that doesn't need to be synced
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState({
+    email: true,
+    push: false,
+    sms: false
+  });
+
+  // Load profile data on component mount or when userId changes
+  useEffect(() => {
+    // If we already have profile data in the store, use it to initialize form
+    if (profile) {
+      setFormData({
+        name: profile.name,
+        email: profile.email,
+        bio: profile.bio || '',
+        avatarUrl: profile.avatarUrl || ''
+      });
+      
+      setNotifications({
+        email: profile.notificationPreferences?.email || false,
+        push: profile.notificationPreferences?.push || false,
+        sms: profile.notificationPreferences?.sms || false
+      });
+    }
+    
+    // Check if email verification is needed via external service
+    const checkEmailVerification = async () => {
+      try {
+        // Use module to check email verification status with third-party service
+        const isVerified = await profileModule.checkEmailVerification(profile?.email || '');
+        
+        if (!isVerified && profile?.email) {
+          // Example of module handling external service interaction
+          // This doesn't update the database directly - it calls an external API
+          setErrorMessage('Your email is not verified. Please check your inbox.');
+        }
+      } catch (error) {
+        // Module transforms external API errors into application-specific errors
+        if (error instanceof profileModule.errors.EmailServiceError) {
+          console.error('Email service unavailable:', error);
+          // Don't show this error to the user - just log it
+        }
+      }
+    };
+    
+    if (profile?.email) {
+      checkEmailVerification();
+    }
+  }, [profile, userId]);
+
+  // Handle form changes (UI-only updates, not yet saved to database)
+  const handleInputChange = (field: keyof typeof formData, value: string) => {
+    setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
+  // Handle notification toggles (UI-only updates)
+  const handleNotificationToggle = (type: keyof typeof notifications) => {
+    setNotifications((prev) => ({ ...prev, [type]: !prev[type] }));
+  };
+
+  // Save profile changes
+  const handleSave = async () => {
+    setIsSaving(true);
+    setErrorMessage(null);
+    
+    try {
+      // Before saving to database, use module to process avatar with third-party service
+      if (formData.avatarUrl !== profile?.avatarUrl) {
+        try {
+          // The module handles an external image processing API
+          const processedAvatarUrl = await profileModule.processAvatar(formData.avatarUrl);
+          // Update with the processed version
+          formData.avatarUrl = processedAvatarUrl;
+        } catch (error) {
+          // Module transforms external API errors into application-specific errors
+          if (error instanceof profileModule.errors.ImageProcessingError) {
+            console.warn('Using original avatar - processing failed:', error.message);
+            // Continue with original avatar, just log the warning
+          }
+        }
+      }
+      
+      // If email changed, use module to request verification from external email service
+      if (formData.email !== profile?.email) {
+        try {
+          // Module handles interaction with external email verification service
+          await profileModule.requestEmailVerification(formData.email);
+        } catch (error) {
+          if (error instanceof profileModule.errors.EmailServiceError) {
+            setErrorMessage('Unable to verify new email. Please try again later.');
+            setIsSaving(false);
+            return; // Don't proceed with save if email verification fails
+          }
+        }
+      }
+      
+      // Now update the profile in the database via the store
+      // The store handles database synchronization
+      updateProfile({
+        ...formData,
+        notificationPreferences: notifications
+      });
+      
+      if (onSaved) {
+        onSaved();
+      }
+    } catch (error) {
+      // Handle any unexpected errors
+      setErrorMessage('Failed to save profile changes');
+      console.error('Error saving profile:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Memoize whether form has been modified compared to store data
+  const hasChanges = useMemo(() => {
+    if (!profile) return false;
+    
+    return (
+      formData.name !== profile.name ||
+      formData.email !== profile.email ||
+      formData.bio !== profile.bio ||
+      formData.avatarUrl !== profile.avatarUrl ||
+      notifications.email !== profile.notificationPreferences?.email ||
+      notifications.push !== profile.notificationPreferences?.push ||
+      notifications.sms !== profile.notificationPreferences?.sms
+    );
+  }, [formData, notifications, profile]);
+
+  // Rest of the component remains the same...
   return (
-    <main className="min-h-screen bg-gray-50 p-4 md:p-6 lg:p-8">
-      <section aria-label="User Profile" className="max-w-2xl mx-auto">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center space-x-4">
-              <Avatar className="h-12 w-12">
-                <AvatarImage
-                  src="/api/placeholder/100/100"
-                  alt="User profile picture"
-                />
-                <AvatarFallback>JD</AvatarFallback>
-              </Avatar>
-              <div>
-                <h1 className="text-2xl font-semibold text-gray-900">
-                  Jane Doe
-                </h1>
-                <p className="text-sm text-gray-500">
-                  Senior Software Engineer
-                </p>
-              </div>
+    <main className="w-full max-w-4xl mx-auto p-4 md:p-6">
+      <Heading level={1} className="text-2xl font-bold mb-6">Profile Settings</Heading>
+      
+      {errorMessage && (
+        <Alert 
+          type="error" 
+          message={errorMessage} 
+          onClose={() => setErrorMessage(null)}
+          className="mb-4"
+        />
+      )}
+      
+      <section aria-labelledby="personal-info-heading" className="mb-8">
+        <Heading id="personal-info-heading" level={2} className="text-xl font-semibold mb-4">
+          Personal Information
+        </Heading>
+        
+        <Card className="p-4 md:p-6">
+          <div className="flex flex-col md:flex-row items-start md:items-center mb-6">
+            <div className="mb-4 md:mb-0 md:mr-6">
+              <Avatar 
+                src={formData.avatarUrl} 
+                alt={formData.name} 
+                size="lg" 
+                className="border-2 border-primary"
+              />
             </div>
-          </CardHeader>
-
-          <CardContent>
-            <div className="space-y-4">
-              {/* Skills section */}
-              <div className="space-y-2">
-                <h2 className="text-lg font-medium text-gray-900">
-                  Skills
-                </h2>
-                <div className="flex flex-wrap gap-2">
-                  <Badge>React</Badge>
-                  <Badge>TypeScript</Badge>
-                  <Badge>Node.js</Badge>
-                  <Badge>AWS</Badge>
-                </div>
-              </div>
-
-              {/* Bio section */}
-              <article className="prose prose-sm">
-                <h2 className="text-lg font-medium text-gray-900">
-                  About
-                </h2>
-                <p className="text-gray-600">
-                  Full-stack developer with 5 years of experience building scalable web applications.
-                  Passionate about clean code and user experience.
-                </p>
-              </article>
-
-              {/* Actions */}
-              <div className="pt-4">
-                <Button
-                  onClick={handleContact}
-                  className="w-full sm:w-auto"
-                  aria-label="Contact Jane Doe"
-                >
-                  <Mail className="mr-2 h-4 w-4" />
-                  Contact
-                </Button>
-              </div>
+            
+            <div className="flex-1">
+              <TextField
+                id="name-field"
+                label="Full Name"
+                value={formData.name}
+                onChange={(e) => handleInputChange('name', e.target.value)}
+                placeholder="Enter your full name"
+                disabled={!isEditable}
+                required
+                className="mb-4"
+                aria-required="true"
+              />
+              
+              <TextField
+                id="email-field"
+                label="Email Address"
+                value={formData.email}
+                onChange={(e) => handleInputChange('email', e.target.value)}
+                placeholder="Enter your email address"
+                type="email"
+                disabled={!isEditable}
+                required
+                className="mb-4"
+                aria-required="true"
+              />
             </div>
-          </CardContent>
+          </div>
+          
+          <TextField
+            id="bio-field"
+            label="Bio"
+            value={formData.bio}
+            onChange={(e) => handleInputChange('bio', e.target.value)}
+            placeholder="Tell us about yourself"
+            multiline
+            rows={4}
+            disabled={!isEditable}
+            className="mb-2"
+          />
         </Card>
       </section>
+      
+      {/* ... existing notification preferences section remains unchanged ... */}
+      
+      <div className="flex justify-end space-x-4">
+        <Button
+          variant="secondary"
+          onClick={() => {
+            // Reset form to original profile data from the store
+            if (profile) {
+              setFormData({
+                name: profile.name,
+                email: profile.email,
+                bio: profile.bio || '',
+                avatarUrl: profile.avatarUrl || ''
+              });
+              
+              setNotifications({
+                email: profile.notificationPreferences?.email || false,
+                push: profile.notificationPreferences?.push || false,
+                sms: profile.notificationPreferences?.sms || false
+              });
+            }
+          }}
+          disabled={!isEditable || !hasChanges}
+          aria-label="Reset form"
+        >
+          Cancel
+        </Button>
+        
+        <Button
+          variant="primary"
+          onClick={handleSave}
+          isLoading={isSaving}
+          disabled={!isEditable || !hasChanges || isSaving}
+          aria-label="Save profile changes"
+        >
+          Save Changes
+        </Button>
+      </div>
     </main>
   );
 };
-
-export default ProfileView;
 ```

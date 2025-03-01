@@ -76,8 +76,16 @@ export async function generateProjectPlan(answers: ProjectAnswers) {
 
   //   Provide a response in this exact JSON format:
   //   {
-  //     "technicalDescription": ["string"],
+  //     "components": [{ name: string, description: string }],
+  //     "views": [{ name: string, description: string }],
+  //     "state": [{ name: string, schema: object }]
+  //     "modules": [{ name: string, description: string }]
   //   }
+
+  // Components are like the the pure UI pieces for our design system (e.g. button, navbar, dropdown, card)
+  // Views are the main pages of the application, so they describe parts of the application (e.g. landing, login, home, compose)
+  // State describes what should be the stateful pieces of the project (e.g. user profile, post listings, messages)
+  // Modules describe units of functionality that don't sit inside views, components or state (e.g. googleAPI, mathUtils, crypto)
 
   //   Keep the response focused and practical. Include only essential components and libraries.`;
 
@@ -95,18 +103,18 @@ export async function generateProjectPlan(answers: ProjectAnswers) {
       }),
     });
 
-  //   if (!response.ok) {
-  //     throw new Error(`Ollama request failed: ${response.statusText}`);
-  //   }
+    if (!response.ok) {
+      throw new Error(`Ollama request failed: ${response.statusText}`);
+    }
 
-  //   interface OllamaResponse {
-  //     response: string;
-  //     context?: number[];
-  //     created_at: string;
-  //     done: boolean;
-  //     model: string;
-  //     total_duration?: number;
-  //   }
+    interface OllamaResponse {
+      response: string;
+      context?: number[];
+      created_at: string;
+      done: boolean;
+      model: string;
+      total_duration?: number;
+    }
 
     const data = (await response.json()) as OllamaResponse;
     const planJson = JSON.parse(data.response);
@@ -115,36 +123,22 @@ export async function generateProjectPlan(answers: ProjectAnswers) {
   //   planJson.projectDescription = answers.description;
 
     // Validate the response structure
-    if (
-      !planJson.components ||
-      !planJson.dataModel ||
-      !planJson.implementationSteps ||
-      !planJson.recommendedLibraries
-    ) {
-      throw new Error("Invalid response structure from LLM");
-    }
+    return {
+      ...planJson,
+      description: answers.description
+    };
 
-    return planJson;
   } catch (error) {
     console.error("Error generating project plan:", error);
     // Fallback to a basic plan if LLM fails
     return {
-      components: [
-        { name: "Layout", description: "Main layout wrapper" },
-        { name: "Navigation", description: "Site navigation" },
-      ],
-      dataModel: {},
-      projectDescription: answers.description,
-      implementationSteps: [
-        "Initialize project structure",
-        "Set up routing",
-        "Implement authentication",
-      ],
-      recommendedLibraries: [
-        { name: "next-auth", purpose: "Authentication" },
-        { name: "prisma", purpose: "Database ORM" },
-      ],
+      description: answers.description,
+      components: [],
+      views: [{ name: "Home", description: "A basic home page"}],
+      state: [],
+      modules: [],
     };
+  }
 }
 
 // Function to create project structure
