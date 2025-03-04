@@ -1,0 +1,15 @@
+procs:
+  client:
+    cmd: ["npm", "run", "dev:client"]
+    env:
+      FORCE_COLOR: "1"
+  server:
+    cmd: ["npm", "run", "dev:server"]
+    env:
+      FORCE_COLOR: "1"
+  mcp-server:
+    cwd: .
+    shell: tinyfoot start
+  browser-tools:
+    cwd: .
+    shell: npx @agentdeskai/browser-tools-server

@@ -1,5 +1,5 @@
 {
-  "name": "create-tinyfoot-app",
+  "name": "@tonk/create-tinyfoot-app",
   "version": "0.1.0",
   "description": "Create AI-assisted personal software with one command",
   "type": "module",
@@ -50,15 +50,15 @@
     "ai",
     "tinyfoot"
   ],
-  "author": "Your Name",
+  "author": "tonk-labs",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/tinyfoot.git",
+    "url": "https://github.com/tonk-labs/tinyfoot.git",
     "directory": "packages/create-tinyfoot-app"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/tinyfoot/issues"
+    "url": "https://github.com/tonk-labs/tinyfoot/issues"
   },
-  "homepage": "https://github.com/yourusername/tinyfoot#readme"
+  "homepage": "https://github.com/tonk-labs/tinyfoot#readme"
 }
