@@ -5,7 +5,6 @@ import chalk from "chalk";
 import ora from "ora";
 import fs from "fs-extra";
 import path from "path";
-import open from "open";
 import { spawn } from "child_process";
 
 const program = new Command();
@@ -35,13 +34,7 @@ const projectQuestions = [
     type: "checkbox",
     name: "features",
     message: "Select the features you need:",
-    choices: [
-      "Authentication",
-      "Database",
-      "File Storage",
-      "API Integration",
-      "Real-time Updates",
-    ],
+    choices: ["File Storage", "State Backup", "Multiplayer"],
   },
   {
     type: "input",
@@ -119,22 +112,21 @@ export async function generateProjectPlan(answers: ProjectAnswers) {
     const data = (await response.json()) as OllamaResponse;
     const planJson = JSON.parse(data.response);
 
-  //   // the users original high-level description of the project
-  //   planJson.projectDescription = answers.description;
+    //   // the users original high-level description of the project
+    //   planJson.projectDescription = answers.description;
 
     // Validate the response structure
     return {
       ...planJson,
-      description: answers.description
+      description: answers.description,
     };
-
   } catch (error) {
     console.error("Error generating project plan:", error);
     // Fallback to a basic plan if LLM fails
     return {
       description: answers.description,
       components: [],
-      views: [{ name: "Home", description: "A basic home page"}],
+      views: [{ name: "Home", description: "A basic home page" }],
       state: [],
       modules: [],
     };
@@ -160,7 +152,7 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
     // TODO: copy based on project type
     const templatePath = path.join(
       // When running from npm exec, we need to use fileURLToPath
-      new URL("../templates/default", import.meta.url).pathname,
+      new URL("../templates/default", import.meta.url).pathname
     );
     if (await fs.pathExists(templatePath)) {
       await fs.copy(templatePath, projectPath, {
@@ -179,7 +171,7 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
       }
     } else {
       console.error(
-        chalk.red(`Error: Template directory not found at ${templatePath}`),
+        chalk.red(`Error: Template directory not found at ${templatePath}`)
       );
       throw new Error("Template directory not found");
     }
@@ -191,7 +183,7 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
         name: projectName,
         plan,
       },
-      { spaces: 2 },
+      { spaces: 2 }
     );
 
     spinner.succeed("Project created successfully!");
@@ -225,27 +217,6 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
     devProcess.stdout?.on("data", async (data) => {
       const output = data.toString();
       process.stdout.write(output); // Show the output in real time
-
-      if (output.includes("compiled successfully")) {
-        spinner.succeed("Development server is ready!");
-        spinner.start("Opening website...");
-
-        // Add a small delay before opening the browser
-        setTimeout(async () => {
-          try {
-            await open("http://localhost:3000");
-            spinner.succeed("Website opened in your default browser!");
-            console.log(
-              chalk.yellow(
-                "\nPress Ctrl+C to stop the development server and exit.",
-              ),
-            );
-          } catch (err) {
-            spinner.fail("Failed to open browser");
-            console.error("Error opening browser:", err);
-          }
-        }, 1000);
-      }
     });
 
     // Create a clean shutdown function
@@ -295,7 +266,7 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
     // Don't unref the process - we want the parent to wait for the child
   } catch (error) {
     spinner.fail(
-      "Failed to run post-creation commands, please run them manually in the project folder. (See top-level README.md)",
+      "Failed to run post-creation commands, please run them manually in the project folder. (See top-level README.md)"
     );
     console.error(error);
     process.exit(1);

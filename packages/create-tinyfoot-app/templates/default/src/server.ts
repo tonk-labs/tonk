@@ -39,7 +39,7 @@ wss.on("connection", (ws: WebSocket) => {
 });
 
 // Start the server
-const PORT = process.env.PORT || 3030;
+const PORT = process.env.PORT || 4080;
 server.listen(PORT, () => {
   console.log(chalk.green(`Sync server running on port ${PORT}`));
 });
