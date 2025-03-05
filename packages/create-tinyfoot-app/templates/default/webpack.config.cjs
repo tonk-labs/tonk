@@ -1,5 +1,7 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+const CopyPlugin = require('copy-webpack-plugin');
+const { InjectManifest } = require('workbox-webpack-plugin');
 
 module.exports = {
   entry: './src/index.tsx',
@@ -44,6 +46,23 @@ module.exports = {
   plugins: [
     new HtmlWebpackPlugin({
       template: './public/index.html',
+      inject: true
+    }),
+    new CopyPlugin({
+      patterns: [
+        { 
+          from: 'public', 
+          to: '', 
+          globOptions: {
+            ignore: ['**/index.html']
+          }
+        }
+      ],
+    }),
+    new InjectManifest({
+      swSrc: './src/service-worker.ts',
+      swDest: 'service-worker.js',
+      exclude: [/\.map$/, /asset-manifest\.json$/],
     }),
   ],
   devServer: {

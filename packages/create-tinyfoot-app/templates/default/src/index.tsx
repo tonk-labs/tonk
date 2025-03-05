@@ -4,6 +4,10 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { configureSyncEngine } from "@tonk/keepsync";
+import { registerServiceWorker } from "./serviceWorkerRegistration";
+
+// Register service worker for offline capabilities
+registerServiceWorker();
 
 configureSyncEngine({
   url: "ws://localhost:3030/sync",
@@ -20,5 +24,5 @@ root.render(
     <BrowserRouter>
       <App />
     </BrowserRouter>
-  </React.StrictMode>,
+  </React.StrictMode>
 );
