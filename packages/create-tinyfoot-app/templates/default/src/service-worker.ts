@@ -3,6 +3,10 @@
 // This prevents TypeScript errors in service worker context
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
+// Workbox injects manifest here
+// @ts-ignore
+const manifestEntries = self.__WB_MANIFEST;
+
 const CACHE_NAME = "tinyfoot-app-v1";
 const ASSETS_TO_CACHE = [
   "/",
@@ -12,6 +16,8 @@ const ASSETS_TO_CACHE = [
   "/offline.html",
   "/icons/icon-192x192.png",
   "/icons/icon-512x512.png",
+  // Include the injected assets from Workbox
+  ...(manifestEntries || []),
 ];
 
 // Install event
