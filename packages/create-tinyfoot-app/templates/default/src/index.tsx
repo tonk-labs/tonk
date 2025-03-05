@@ -4,6 +4,19 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { configureSyncEngine } from "@tonk/keepsync";
+import {
+  registerServiceWorker,
+  unregisterServiceWorker,
+} from "./serviceWorkerRegistration";
+
+// Service worker logic based on environment
+if (process.env.NODE_ENV === "production") {
+  // Only register service worker in production mode
+  registerServiceWorker();
+} else {
+  // In development, make sure to unregister any existing service workers
+  unregisterServiceWorker();
+}
 
 configureSyncEngine({
   url: "ws://localhost:3030/sync",
@@ -20,5 +33,5 @@ root.render(
     <BrowserRouter>
       <App />
     </BrowserRouter>
-  </React.StrictMode>,
+  </React.StrictMode>
 );
