@@ -59,7 +59,7 @@ npm i -g tinyfoot tinyfoot-mcp-server create-tinyfoot-app
 
 ![Config options](documentation/tinyfoot-mcp-client-config.png)
 
-Use the command `npx @tonk/tinyfoot-mcp-client@0.1.0`
+Use the command `npx @tonk/tinyfoot-mcp-client@0.1.2`
 
 ## Usage
 

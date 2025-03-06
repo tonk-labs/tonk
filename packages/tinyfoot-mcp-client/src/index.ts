@@ -48,7 +48,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: 'New tinyfoot task',
+        name: 'newTask',
         description:
           'Analyzes a user request and provides implementation guidance by finding relevant modules and providing project structure information. Use this whenever a user wants to create a new tinyfoot task.',
         inputSchema: zodToJsonSchema(TinyfootTaskSchema) as ToolInput,
@@ -72,7 +72,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
     }
 
     switch (name) {
-      case 'New tinyfoot task': {
+      case 'newTask': {
         try {
           // Find similar modules by querying the server
           const response = await fetch('http://localhost:4321/find-similar', {
