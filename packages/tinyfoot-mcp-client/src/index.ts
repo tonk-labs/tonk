@@ -9,7 +9,7 @@ import {
 import {z} from 'zod';
 import {zodToJsonSchema} from 'zod-to-json-schema';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
-import {ProjectInstructions} from './projectSchema';
+import {ProjectInstructions} from './projectSchema.js';
 
 // Store allowed directories in normalized form
 // Schema definition for createTask
@@ -34,7 +34,7 @@ type ToolInput = z.infer<typeof ToolInputSchema>;
 const server = new Server(
   {
     name: 'tinyfoot-mcp',
-    version: '0.1.0',
+    version: '0.1.1',
   },
   {
     capabilities: {
@@ -114,16 +114,18 @@ STEP 1: PROJECT STRUCTURE
      projectSchema.views
    }
 
-   STEP 2: REQUIRED ACTIONS
-   1. Summarize the feature request
-   2. Ask user for next steps
-   3. Wait for user confirmation before implementation
+STEP 2: REQUIRED ACTIONS
+  1. Summarize the feature request
+  2. Ask user for next steps
+  3. Wait for user confirmation before writing out the task 
 
    DO NOT PROCEED WITH IMPLEMENTATION UNTIL STEPS 1-2 ARE COMPLETED
 
   CHECKPOINT 1: ✋ Stop and summarize feature
   CHECKPOINT 2: ✋ Stop and get user input
   CHECKPOINT 3: ✋ Stop and confirm approach
+
+STEP 3: Output the task as a json file with all the necessary technical information for an LLM to implement the task correctly.
 
   Context:
 

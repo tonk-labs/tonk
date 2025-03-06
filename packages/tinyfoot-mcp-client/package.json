@@ -1,6 +1,6 @@
 {
   "name": "@tonk/tinyfoot-mcp-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The tinyfoot MCP client",
   "type": "module",
   "files": [
@@ -37,12 +37,12 @@
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.7.5",
+    "@types/node-fetch": "^2.6.4",
     "gts": "^6.0.2",
+    "ts-node": "^10.9.1",
     "tsup": "^8.0.1",
     "typescript": "^5.6.3",
-    "vitest": "^1.0.4",
-    "@types/node-fetch": "^2.6.4",
-    "ts-node": "^10.9.1"
+    "vitest": "^1.0.4"
   },
   "engines": {
     "node": ">=18"
