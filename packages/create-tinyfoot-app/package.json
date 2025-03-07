@@ -1,6 +1,6 @@
 {
   "name": "@tonk/create-tinyfoot-app",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "Create AI-assisted personal software with one command",
   "type": "module",
   "bin": {
@@ -11,12 +11,12 @@
     "templates"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
+    "build": "tsup src/index.ts --format esm --dts --clean",
     "dev": "tsup src/index.ts --format esm --dts --watch",
     "clean": "rimraf dist",
     "lint": "eslint src/**/*.ts",
     "test": "vitest run",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run clean && npm run build"
   },
   "dependencies": {
     "chalk": "^5.3.0",
