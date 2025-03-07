@@ -48,7 +48,7 @@ ollama pull deepseek-r1:8b
 Run in a terminal
 
 ```bash
-npm i -g tinyfoot tinyfoot-mcp-server create-tinyfoot-app
+npm i -g @tonk/tinyfoot @tonk/tinyfoot-mcp-server @tonk/create-tinyfoot-app
 ```
 
 ### Install tinyfoot client into your code editor
