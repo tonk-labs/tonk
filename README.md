@@ -101,9 +101,9 @@ React applications often display the error message on the page and you can just 
 
 In addition to providing access to the logs, some other great features are that you can click on elements to provide context and submit screenshots of the page as well.
 
-### Building
+### Building (unstable)
 
-When you are happy with your mini-app and ready to use it, you should serve it up and save it to your device as a PWA. This will allow the app to continue working even when you're offline or away from the network.
+When you are happy with your mini-app and ready to use it, you should serve it up and save it to your device as a PWA. This should allow the app to continue working even when you're offline or away from the network.
 [Guide to saving PWAs for iOS](https://help.shore.com/en/how-do-i-save-the-pwa-on-my-smartphone)
 
 Just run the command
@@ -113,6 +113,8 @@ npm run serve
 ```
 
 You can ask the LLM to change the name of the app (which is default to Tinyfoot) in the `public/manifest.json`
+
+NOTE: still some issues with this step, we're working on stabilizing it.
 
 ---
 
