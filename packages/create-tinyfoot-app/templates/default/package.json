@@ -12,6 +12,7 @@
     "dev:server": "tsx watch src/server.ts",
     "dev": "mprocs",
     "build": "webpack --mode production",
+    "serve": "npm run build && node serve.cjs",
     "test": "jest",
     "test:watch": "jest --watch"
   },
