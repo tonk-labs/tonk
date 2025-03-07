@@ -5,7 +5,7 @@ import chalk from "chalk";
 import ora from "ora";
 import fs from "fs-extra";
 import path from "path";
-import { spawn } from "child_process";
+import { fileURLToPath } from "url";
 
 const program = new Command();
 
@@ -148,32 +148,96 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
     projectPath = path.resolve(projectName);
     await fs.ensureDir(projectPath);
 
-    // Copy template files from default template
-    // TODO: copy based on project type
-    const templatePath = path.join(
-      // When running from npm exec, we need to use fileURLToPath
-      new URL("../templates/default", import.meta.url).pathname
-    );
-    if (await fs.pathExists(templatePath)) {
+    // Find template path - simplified approach
+    let templatePath;
+
+    try {
+      // For ESM, get the directory name using import.meta.url
+      const moduleUrl = import.meta.url;
+      const moduleDirPath = path.dirname(fileURLToPath(moduleUrl));
+
+      // Try local development path (one directory up from current file)
+      const localPath = path.resolve(moduleDirPath, "../templates/default");
+
+      if (await fs.pathExists(localPath)) {
+        templatePath = localPath;
+      } else {
+        // If local path doesn't exist, try global node_modules
+        const { execSync } = await import("child_process");
+        const globalNodeModules = execSync("npm root -g").toString().trim();
+
+        // Look for the package in global node_modules
+        const globalPath = path.join(
+          globalNodeModules,
+          "@tonk/create-tinyfoot-app/templates/default"
+        );
+
+        if (await fs.pathExists(globalPath)) {
+          templatePath = globalPath;
+        } else {
+          throw new Error(
+            "Could not locate template directory in local or global paths"
+          );
+        }
+      }
+    } catch (error) {
+      console.error("Error resolving template path:", error);
+      throw new Error(
+        "Could not locate template directory. Please ensure the package is installed correctly."
+      );
+    }
+
+    // Ensure templatePath is defined before using it
+    if (!templatePath || !(await fs.pathExists(templatePath))) {
+      throw new Error(`Template path not found: ${templatePath}`);
+    }
+
+    console.log(`Using template from: ${templatePath}`);
+
+    // Copy template files
+    try {
+      console.log(`Copying from: ${templatePath}`);
+      console.log(`Copying to: ${projectPath}`);
+
+      // List template contents before copying
+      const templateContents = await fs.readdir(templatePath);
+      console.log(
+        `Template directory contains: ${templateContents.join(", ")}`
+      );
+
       await fs.copy(templatePath, projectPath, {
         filter: (src: string) => {
-          // Skip node_modules and .git if they exist in template
-          return !src.includes("node_modules") && !src.includes(".git");
+          // Get the relative path from the template directory
+          const relativePath = path.relative(templatePath, src);
+          // Only filter out node_modules and .git within the template
+          const shouldCopy = !relativePath
+            .split(path.sep)
+            .some((part) => part === "node_modules" || part === ".git");
+          if (!shouldCopy) {
+            console.log(`Skipping: ${relativePath}`);
+          }
+          return shouldCopy;
         },
+        overwrite: true,
+        errorOnExist: false,
       });
 
-      // Update package.json name
-      const packageJsonPath = path.join(projectPath, "package.json");
-      if (await fs.pathExists(packageJsonPath)) {
-        const packageJson = await fs.readJson(packageJsonPath);
-        packageJson.name = projectName;
-        await fs.writeJson(packageJsonPath, packageJson, { spaces: 2 });
-      }
-    } else {
-      console.error(
-        chalk.red(`Error: Template directory not found at ${templatePath}`)
+      // Verify project contents after copying
+      const projectContents = await fs.readdir(projectPath);
+      console.log(
+        `Project directory now contains: ${projectContents.join(", ")}`
       );
-      throw new Error("Template directory not found");
+    } catch (copyError: any) {
+      console.error("Error during template copying:", copyError);
+      throw new Error(`Failed to copy template files: ${copyError.message}`);
+    }
+
+    // Update package.json name
+    const packageJsonPath = path.join(projectPath, "package.json");
+    if (await fs.pathExists(packageJsonPath)) {
+      const packageJson = await fs.readJson(packageJsonPath);
+      packageJson.name = projectName;
+      await fs.writeJson(packageJsonPath, packageJson, { spaces: 2 });
     }
 
     // Create tinyfoot.config.json with project plan
@@ -203,65 +267,6 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
     const { execSync } = await import("child_process");
     execSync("npm install", { stdio: "inherit" });
     spinner.succeed("Dependencies installed successfully!");
-
-    // Start the development server
-    spinner.start("Starting development server...");
-    const devProcess = spawn("npm", ["run", "dev"], {
-      stdio: ["inherit", "pipe", "inherit"],
-    });
-
-    // Store the process PID for cleanup
-    const devProcessPid = devProcess.pid;
-
-    // Wait for the dev server to be ready
-    devProcess.stdout?.on("data", async (data) => {
-      const output = data.toString();
-      process.stdout.write(output); // Show the output in real time
-    });
-
-    // Create a clean shutdown function
-    const cleanShutdown = () => {
-      try {
-        console.log(chalk.yellow("\nTerminating development server..."));
-
-        // Try multiple ways to kill the process to ensure it's terminated
-        if (devProcess && !devProcess.killed) {
-          // First try to kill it gracefully
-          devProcess.kill("SIGTERM");
-
-          // If we have the PID, also try process group kill for safety
-          if (devProcessPid) {
-            try {
-              // For Unix/Mac systems, kill the process group
-              process.kill(-devProcessPid, "SIGTERM");
-            } catch (e) {
-              // Ignore errors from this attempt
-            }
-          }
-        }
-      } catch (error) {
-        console.error("Error shutting down dev server:", error);
-      }
-      process.exit(0);
-    };
-
-    // Add process termination handlers to properly clean up the child process
-    process.on("SIGINT", cleanShutdown);
-    process.on("SIGTERM", cleanShutdown);
-
-    // Handle process completion
-    devProcess.on("close", (code) => {
-      if (code !== 0) {
-        spinner.fail(`Development server process exited with code ${code}`);
-      }
-    });
-
-    // Handle process errors
-    devProcess.on("error", (error) => {
-      spinner.fail("Failed to start development server");
-      console.error(error);
-      process.exit(1);
-    });
 
     // Don't unref the process - we want the parent to wait for the child
   } catch (error) {
