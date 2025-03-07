@@ -5,7 +5,6 @@ import chalk from "chalk";
 import ora from "ora";
 import fs from "fs-extra";
 import path from "path";
-import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 const program = new Command();
