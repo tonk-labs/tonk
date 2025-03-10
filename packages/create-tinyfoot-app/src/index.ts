@@ -183,8 +183,12 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
     // Print next steps instructions
     console.log("\n" + chalk.bold("🎉 Your Tinyfoot app is ready! 🎉"));
     console.log("\n" + chalk.bold("Next steps:"));
-    console.log("  • " + chalk.cyan("npm run dev") + " - Start the development server");
-    console.log("  • You may launch claude code or any other AI editor in this directory to begin coding.\n");
+    console.log(
+      "  • " + chalk.cyan("npm run dev") + " - Start the development server"
+    );
+    console.log(
+      "  • You may launch claude code or any other AI editor in this directory to begin coding.\n"
+    );
 
     // Don't unref the process - we want the parent to wait for the child
   } catch (error) {
@@ -209,7 +213,7 @@ program
 
       // Generate project plan
       // const spinner = ora("Generating project plan...").start();
-      const plan = answers
+      const plan = answers;
       // spinner.succeed("Project plan generated!");
 
       // Create project with generated plan

@@ -1,12 +1,9 @@
 {
-  "name": "create-tinyfoot-app",
+  "name": "my-tinyfoot-app",
   "version": "0.1.0",
-  "description": "A simple way to bootstrap your tinyfoot application",
+  "description": "A tinyfoot application",
   "type": "module",
   "main": "index.js",
-  "bin": {
-    "create-tinyfoot-app": "./dist/index.js"
-  },
   "scripts": {
     "dev:client": "webpack serve --mode development",
     "dev:server": "tsx watch src/server.ts",
