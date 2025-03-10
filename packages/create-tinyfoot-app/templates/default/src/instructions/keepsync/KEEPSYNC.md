@@ -5,11 +5,11 @@ A reactive sync engine framework for use with Tinyfoot.
 ## Installation
 
 ```bash
-npm install keepsync
+npm install @tonk/keepsync
 # or
-yarn add keepsync
+yarn add @tonk/keepsync
 # or
-pnpm add keepsync
+pnpm add @tonk/keepsync
 ```
 
 ## Features
@@ -20,6 +20,7 @@ pnpm add keepsync
 - Automatic reconnection and offline support
 - Simple WebSocket-based synchronization
 - Persistent storage for offline-first applications
+- File system synchronization for collaborative file management
 
 ## Basic Usage
 
@@ -28,11 +29,11 @@ pnpm add keepsync
 First, configure the sync engine at your application's entry point:
 
 ```typescript
-import { configureSyncEngine } from 'keepsync';
+import { configureSyncEngine } from '@tonk/keepsync';
 
 // Configure the sync engine at application startup
 configureSyncEngine({
-  port: 3030,
+  url: 'ws://localhost:8040',
   name: 'MySyncEngine',
   onSync: (docId) => console.log(`Document ${docId} synced`),
   onError: (error) => console.error('Sync error:', error),
@@ -44,7 +45,7 @@ configureSyncEngine({
 Create a store that automatically syncs with other clients:
 
 ```typescript
-import { createSyncedStore } from 'keepsync';
+import { createSyncedStore } from '@tonk/keepsync';
 
 // Define your state and actions
 interface CounterState {
@@ -115,6 +116,80 @@ function Counter() {
 }
 ```
 
+### 4. Synced File System
+
+KeepSync also provides a file system API for collaborative file management:
+
+```typescript
+import { 
+  configureSyncedFileSystem, 
+  addFile, 
+  getAllFiles, 
+  getFile, 
+  removeFile 
+} from '@tonk/keepsync';
+
+// Configure the synced file system
+configureSyncedFileSystem({
+  docId: 'my-files',
+  dbName: 'my-app-files',
+  storeName: 'file-blobs'
+});
+
+// Add a file
+const fileInput = document.getElementById('fileInput') as HTMLInputElement;
+fileInput.addEventListener('change', async () => {
+  if (fileInput.files && fileInput.files.length > 0) {
+    const file = fileInput.files[0];
+    const metadata = await addFile(file);
+    console.log('Added file:', metadata);
+  }
+});
+
+// List all files
+async function displayAllFiles() {
+  const files = await getAllFiles();
+  console.log('All files:', files);
+  
+  // Display files in UI
+  const fileList = document.getElementById('fileList');
+  if (fileList) {
+    fileList.innerHTML = '';
+    files.forEach(file => {
+      const item = document.createElement('div');
+      item.textContent = `${file.name} (${file.size} bytes)`;
+      
+      // Add download button
+      const downloadBtn = document.createElement('button');
+      downloadBtn.textContent = 'Download';
+      downloadBtn.onclick = async () => {
+        const blob = await getFile(file.hash);
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = file.name;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+      };
+      
+      // Add delete button
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.onclick = async () => {
+        await removeFile(file.hash);
+        displayAllFiles(); // Refresh the list
+      };
+      
+      item.appendChild(downloadBtn);
+      item.appendChild(deleteBtn);
+      fileList.appendChild(item);
+    });
+  }
+}
+```
+
 ## Setting Up the Sync Server
 
 KeepSync uses a simple WebSocket server for synchronization:
@@ -155,10 +230,31 @@ wss.on('connection', (ws) => {
 });
 
 // Start the server
-const PORT = process.env.PORT || 3030;
+const PORT = process.env.PORT || 8040;
 server.listen(PORT, () => {
   console.log(`Sync server running on port ${PORT}`);
 });
+```
+
+## Cleanup
+
+When your application is shutting down or when components are unmounting, make sure to clean up resources:
+
+```typescript
+import { closeSyncEngine, closeSyncedFileSystem, cleanupSyncedStore } from '@tonk/keepsync';
+
+// Clean up a specific store when a component unmounts
+useEffect(() => {
+  return () => {
+    cleanupSyncedStore(useCounterStore);
+  };
+}, []);
+
+// Clean up everything when the app is shutting down
+function shutdownApp() {
+  closeSyncedFileSystem();
+  closeSyncEngine();
+}
 ```
 
 ## License
