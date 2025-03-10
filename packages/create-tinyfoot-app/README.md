@@ -1,6 +1,6 @@
 # create-tinyfoot-app
 
-Create local-first personal software with one command.
+Bootstraps your tinyfoot app; tinyfoot apps are local-first personal software built to be maximally interoperable.
 
 ## Structure of a Tinyfoot application
 
@@ -17,52 +17,14 @@ my-app/
 └── package.json      # Project configuration
 ```
 
-## Prerequisites
-
-### 1. Install Ollama
-
-First, you'll need to install Ollama on your system:
-
-**macOS or Linux:**
-
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-**Windows:**
-
-- Download the installer from [Ollama.com](https://ollama.com)
-
-### 2. Start Ollama Server
-
-```bash
-ollama serve
-```
-
-### 3. Pull Required Model
-
-```bash
-ollama pull deepseek-r1:8b
-```
-
-### Verify Setup
-
-You can verify everything is working by running:
-
-```bash
-curl http://localhost:11434/api/health
-```
-
 ## Usage
 
 The CLI requires:
 
 - Node.js >= 18
-- Ollama running locally
-- deepseek-r1:8b model installed
 
 ```bash
-npx create-tinyfoot-app my-app
+npx @tonk/create-tinyfoot-app my-app
 ```
 
 ## Development
