@@ -31,19 +31,6 @@ const projectQuestions = [
     ],
   },
   {
-    type: "checkbox",
-    name: "features",
-    message: "Select the features you need:",
-    choices: ["File Storage", "State Backup", "Multiplayer"],
-  },
-  {
-    type: "input",
-    name: "pages",
-    message: "List the main pages you want (comma-separated):",
-    filter: (input: string) =>
-      input.split(",").map((page: string) => page.trim()),
-  },
-  {
     type: "input",
     name: "description",
     message: "Briefly describe your project and its main functionality:",
@@ -51,87 +38,12 @@ const projectQuestions = [
 ];
 
 // Function to generate project plan using LLM
-interface ProjectAnswers {
-  projectType: string;
-  features: string[];
-  pages: string[];
-  description: string;
-}
-
-export async function generateProjectPlan(answers: ProjectAnswers) {
-  const prompt = `You are an expert in full stack development and local-first tooling. Based on the following project requirements, generate a structured implementation plan.
-    Prioritize keepsync and WebSocket for local-first development (info found in src/lib/keepsync/), and Tailwind for styling.
-    
-    Project Type: ${answers.projectType}
-    Features: ${answers.features.join(", ")}
-    Pages: ${answers.pages.join(", ")}
-    Description: ${answers.description}
-
-  //   Provide a response in this exact JSON format:
-  //   {
-  //     "components": [{ name: string, description: string }],
-  //     "views": [{ name: string, description: string }],
-  //     "state": [{ name: string, schema: object }]
-  //     "modules": [{ name: string, description: string }]
-  //   }
-
-  // Components are like the the pure UI pieces for our design system (e.g. button, navbar, dropdown, card)
-  // Views are the main pages of the application, so they describe parts of the application (e.g. landing, login, home, compose)
-  // State describes what should be the stateful pieces of the project (e.g. user profile, post listings, messages)
-  // Modules describe units of functionality that don't sit inside views, components or state (e.g. googleAPI, mathUtils, crypto)
-
-  //   Keep the response focused and practical. Include only essential components and libraries.`;
-
-  try {
-    const response = await fetch("http://localhost:11434/api/generate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "deepseek-r1:8b",
-        prompt,
-        stream: false,
-        format: "json",
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Ollama request failed: ${response.statusText}`);
-    }
-
-    interface OllamaResponse {
-      response: string;
-      context?: number[];
-      created_at: string;
-      done: boolean;
-      model: string;
-      total_duration?: number;
-    }
-
-    const data = (await response.json()) as OllamaResponse;
-    const planJson = JSON.parse(data.response);
-
-    //   // the users original high-level description of the project
-    //   planJson.projectDescription = answers.description;
-
-    // Validate the response structure
-    return {
-      ...planJson,
-      description: answers.description,
-    };
-  } catch (error) {
-    console.error("Error generating project plan:", error);
-    // Fallback to a basic plan if LLM fails
-    return {
-      description: answers.description,
-      components: [],
-      views: [{ name: "Home", description: "A basic home page" }],
-      state: [],
-      modules: [],
-    };
-  }
-}
+// interface ProjectAnswers {
+//   projectType: string;
+//   features: string[];
+//   pages: string[];
+//   description: string;
+// }
 
 // Function to create project structure
 interface ProjectPlan {
@@ -268,6 +180,12 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
     execSync("npm install", { stdio: "inherit" });
     spinner.succeed("Dependencies installed successfully!");
 
+    // Print next steps instructions
+    console.log("\n" + chalk.bold("🎉 Your Tinyfoot app is ready! 🎉"));
+    console.log("\n" + chalk.bold("Next steps:"));
+    console.log("  • " + chalk.cyan("npm run dev") + " - Start the development server");
+    console.log("  • You may launch claude code or any other AI editor in this directory to begin coding.\n");
+
     // Don't unref the process - we want the parent to wait for the child
   } catch (error) {
     spinner.fail(
@@ -290,9 +208,9 @@ program
       const answers = await inquirer.prompt(projectQuestions);
 
       // Generate project plan
-      const spinner = ora("Generating project plan...").start();
-      const plan = await generateProjectPlan(answers);
-      spinner.succeed("Project plan generated!");
+      // const spinner = ora("Generating project plan...").start();
+      const plan = answers
+      // spinner.succeed("Project plan generated!");
 
       // Create project with generated plan
       const finalProjectName = projectDirectory || answers.projectName;

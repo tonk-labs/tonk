@@ -22,7 +22,7 @@ interface TodoStore {
 // Initialize the sync engine
 export function initializeTodoSync() {
   configureSyncEngine({
-    url: "ws://localhost:3030/sync",
+    url: "ws://localhost:4080/sync",
     name: "TodoApplication",
     onSync: (docId) => console.log(`Todo document ${docId} synced`),
     onError: (error) => console.error("Todo sync error:", error),

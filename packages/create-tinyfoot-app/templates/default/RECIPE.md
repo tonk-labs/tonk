@@ -13,3 +13,5 @@ router.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 ```
+
+The tinyfoot.config.json file includes useful information about the project and the project purpose.
