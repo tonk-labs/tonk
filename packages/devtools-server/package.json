@@ -1,0 +1,33 @@
+{
+  "name": "tinyfoot-devtools",
+  "version": "1.0.0",
+  "description": "Node.js server with TypeScript and webpack",
+  "main": "dist/server.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.11.14",
+    "@types/ws": "^8.18.0",
+    "express": "^4.18.2",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.17.24",
+    "nodemon": "^3.0.2",
+    "typescript": "^5.3.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@homebridge/node-pty-prebuilt-multiarch"
+    ]
+  }
+}

@@ -19,7 +19,6 @@ Tinyfoot is in Alpha. This is a brand spanking new project being built fully in 
 
 ## Features
 
-- **MCP-based assistive tooling**: Provides helpful context for programming with language models.
 - **Local-First Architecture**: Built on Automerge for conflict-free data synchronization.
 - **Quick Start**: Create new projects instantly with `create-tinyfoot-app`.
 - **Offline Support**: IndexedDB-based storage with automatic sync.
@@ -29,29 +28,13 @@ Tinyfoot is in Alpha. This is a brand spanking new project being built fully in 
 
 ---
 
-## Setup
-
-### Install ollama (optional if using MCP tool)
-
-Tinyfoot's MCP server expects ollama to be installed with deepseek-r1:8b.
-
-Please go to [https://ollama.com/](https://ollama.com/) to download and install.
-
-Once ollama is installed, open a terminal and enter
-
-```bash
-ollama pull deepseek-r1:8b
-```
-
-### Install command line utilities.
+## Getting Started
 
 Run in a terminal
 
 ```bash
-npm i -g @tonk/tinyfoot-cli @tonk/tinyfoot-mcp-server @tonk/create-tinyfoot-app
+npx @tonk/create-tinyfoot-app my-first-app
 ```
-
-### Install tinyfoot client into your code editor
 
 #### Claude Code
 
@@ -61,25 +44,13 @@ If you are using Claude Code, then there is nothing you need to do. Just run
 claude .
 ```
 
-in the Tinyfoot app directory when you are ready.
+in the Tinyfoot app directory.
 
-#### Cursor
+#### Cursor and Windsurf
 
-> To add an MCP server to Cursor, go to Cursor Settings > Features > MCP and click on the + Add New MCP Server button. This will open a modal with a form to fill out.
-
-![Config options](documentation/tinyfoot-mcp-client-config.png)
-
-Use the command `npx @tonk/tinyfoot-mcp-client@0.1.2`
+We've found these LLM-assisted code editors to require more human intervention than Claude Code. They don't make it easy to receive all the relevant context from the project. That means, it's your responsibility to make sure the editor is correctly pulling in the corresponding llms.txt files when it's trying to implement different parts of the code.
 
 ## Usage
-
-### 1. Create your tinyfoot app starter
-
-To create a tinyfoot app run the command a terminal:
-
-```bash
-npx create-tinyfoot-app my-first-app
-```
 
 This will generate tinyfoot application boilerplate for you.
 
@@ -88,28 +59,6 @@ This will generate tinyfoot application boilerplate for you.
 Tinyfoot is not opinionated about which AI tooling you use.
 
 In the root of the tinyfoot project run `npm run dev`
-
-### 3. Ask the agent to create a new tinyfoot task doing X
-
-For example:
-
-```
-Please create a new tinyfoot task for a landing page with a psychedelic welcome animation.
-```
-
-This will trigger the MCP client to provide relevant context and the LLM will assist you in creating a task JSON. The task JSON is like a bill of work. It helps you to understand with more clarity what the LLM thinks it should actually be doing. You can ask the LLM to continue to update the task JSON until you think it's correct.
-
-Then just ask the LLM to implement the task.
-
-### 4. Repeat step 3 until you have an app.
-
-### Debugging
-
-React applications often display the error message on the page and you can just copy and paste that in to the chat. You can also use the developer tools to find more information. However, there is a helpful tool that plugs your developer tools directly into your editor. We recommend it for convenience:
-
-[Browser Tools MCP](https://github.com/AgentDeskAI/browser-tools-mcp)
-
-In addition to providing access to the logs, some other great features are that you can click on elements to provide context and submit screenshots of the page as well.
 
 ### Building (unstable)
 

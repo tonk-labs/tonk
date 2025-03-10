@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Tinyfoot Devtools",
+  "description": "A helpful extension that allows you to directly speak code in the browser.",
+  "options_ui": {
+    "page": "src/pages/options/index.html"
+  },
+  "action": {
+  },
+  "permissions": [
+    "sidePanel"
+  ],
+  "chrome_url_overrides": {
+    "newtab": "src/pages/newtab/index.html"
+  },
+  "icons": {
+    "128": "icon-128.png"
+  },
+  "content_scripts": [
+  ],
+  "side_panel": {
+    "default_path": "src/pages/panel/index.html" 
+  },
+  "devtools_page": "src/pages/devtools/index.html",
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "contentStyle.css",
+        "icon-128.png",
+        "icon-32.png"
+      ],
+      "matches": []
+    }
+  ]
+}

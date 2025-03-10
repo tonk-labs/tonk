@@ -1,0 +1,175 @@
+.body {
+  background-color: white;
+}
+.container {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  max-width: 100%;
+  height: calc(100vh);
+  max-height: calc(100vh);
+  overflow: hidden;
+  padding: 0;
+  margin: 0;
+  background-color: rgb(64, 64, 64);
+}
+
+.settingsButton {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  cursor: pointer;
+  color: white;
+  transition-property: color;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
+.settingsButton:hover {
+  color: rgb(209, 213, 219);
+}
+
+.chatContainer {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: min(800px, 95vw);
+  margin-left: auto;
+  margin-right: auto;
+  padding: 1.25rem;
+  border-radius: 0.5rem;
+  overflow-y: scroll;
+  font-family: system-ui;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
+
+.messageWrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+.humanMessage {
+  align-self: flex-end;
+  color: white;
+  margin-top: 50px;
+  margin-bottom: 50px;
+  max-width: 80%;
+  background-color: rgb(80, 80, 80);
+  padding: 0.625rem;
+  border-radius: 0.5rem;
+}
+
+.botMessage {
+  align-self: flex-start;
+  color: white;
+  margin-top: 5px;
+  margin-bottom: 5px;
+  font-weight: 500;
+  font-size: 1rem;
+}
+
+.botIconWrapper {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.botIcon {
+  color: white;
+  float: left;
+}
+
+.botContent {
+  margin-left: 1.75rem;
+}
+
+.inputContainer {
+  position: relative;
+  background-color: rgb(80, 80, 80);
+  max-height: 400px;
+  min-height: 80px;
+  height: auto;
+  width: min(800px, 95vw);
+  min-width: auto;
+  border-radius: 20px;
+  display: flex;
+  margin-bottom: 40px;
+}
+
+.placeholder {
+  position: absolute;
+  font-family: system-ui;
+  user-select: none;
+  color: white;
+  padding: 1.25rem;
+}
+
+.inputField {
+  height: auto;
+  min-height: 80px;
+  max-height: 800px;
+  margin: 1.25rem;
+  width: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: system-ui;
+  color: white;
+  user-select: none;
+  outline: none;
+  direction: ltr;
+}
+
+.submitButton {
+  position: absolute;
+  bottom: 18px;
+  right: 18px;
+  background-color: white;
+  color: black;
+  cursor: pointer;
+  font-weight: bold;
+  font-family: sans-serif;
+  text-align: center;
+  padding-top: 0.5rem;
+  padding-left: 0.625rem;
+  padding-right: 0.625rem;
+  padding-bottom: 0.625rem;
+  border-radius: 0.5rem;
+  user-select: none;
+  transition-property: opacity;
+  transition-duration: 300ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.submitButton:hover {
+  text-decoration: underline;
+}
+
+.hidden {
+  opacity: 0;
+}
+
+.visible {
+  opacity: 100;
+}
+
+.disconnectedAlert {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  background-color: rgb(239, 68, 68);
+  color: white;
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+} 
