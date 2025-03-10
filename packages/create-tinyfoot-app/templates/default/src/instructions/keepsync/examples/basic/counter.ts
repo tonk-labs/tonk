@@ -12,7 +12,7 @@ interface CounterStore {
 // This can be done in a separate initialization file
 export function initializeSync() {
   configureSyncEngine({
-    url: "ws://localhost:3030/sync",
+    url: "ws://localhost:4080/sync",
     name: "MyApplication",
     dbName: "test_counter_example_db",
     onSync: (docId) => console.log(`Document ${docId} synced`),

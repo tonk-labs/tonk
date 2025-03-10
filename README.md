@@ -31,9 +31,9 @@ Tinyfoot is in Alpha. This is a brand spanking new project being built fully in 
 
 ## Setup
 
-### Install ollama
+### Install ollama (optional if using MCP tool)
 
-Tinyfoot expects ollama to be installed with deepseek-r1:8b. This isn't a must have requirement, but the tooling may throw some errors along the way and the MCP server will not be able to provide as much context.
+Tinyfoot's MCP server expects ollama to be installed with deepseek-r1:8b.
 
 Please go to [https://ollama.com/](https://ollama.com/) to download and install.
 
@@ -52,6 +52,16 @@ npm i -g @tonk/tinyfoot-cli @tonk/tinyfoot-mcp-server @tonk/create-tinyfoot-app
 ```
 
 ### Install tinyfoot client into your code editor
+
+#### Claude Code
+
+If you are using Claude Code, then there is nothing you need to do. Just run
+
+```
+claude .
+```
+
+in the Tinyfoot app directory when you are ready.
 
 #### Cursor
 

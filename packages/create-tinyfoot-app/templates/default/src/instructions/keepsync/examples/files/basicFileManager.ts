@@ -14,7 +14,7 @@ import { FileMetadata } from "@tonk/keepsync";
 export function initializeFileSync() {
   // Configure the sync engine
   configureSyncEngine({
-    url: "ws://localhost:3030/sync",
+    url: "ws://localhost:4080/sync",
     name: "BasicFileManagerExample",
     dbName: "basic_file_manager_db",
     onSync: (docId) => console.log(`Document ${docId} synced`),

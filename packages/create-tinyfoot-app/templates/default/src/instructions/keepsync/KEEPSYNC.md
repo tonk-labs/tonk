@@ -33,7 +33,7 @@ import { configureSyncEngine } from '@tonk/keepsync';
 
 // Configure the sync engine at application startup
 configureSyncEngine({
-  url: 'ws://localhost:8040',
+  url: 'ws://localhost:4080',
   name: 'MySyncEngine',
   onSync: (docId) => console.log(`Document ${docId} synced`),
   onError: (error) => console.error('Sync error:', error),
@@ -230,7 +230,7 @@ wss.on('connection', (ws) => {
 });
 
 // Start the server
-const PORT = process.env.PORT || 8040;
+const PORT = process.env.PORT || 4080;
 server.listen(PORT, () => {
   console.log(`Sync server running on port ${PORT}`);
 });
