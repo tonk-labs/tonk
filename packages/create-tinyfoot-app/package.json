@@ -1,7 +1,7 @@
 {
   "name": "@tonk/create-tinyfoot-app",
-  "version": "0.1.7",
-  "description": "Create AI-assisted personal software with one command",
+  "version": "0.1.9",
+  "description": "Bootstrap your tinyfoot app",
   "type": "module",
   "bin": {
     "create-tinyfoot-app": "./dist/index.js"
