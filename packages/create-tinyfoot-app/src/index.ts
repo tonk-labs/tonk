@@ -7,6 +7,59 @@ import fs from "fs-extra";
 import path from "path";
 import { fileURLToPath } from "url";
 
+/**
+ * Resolves a package path by checking both local development and global installation paths
+ * @param relativePath Path relative to the package root
+ * @returns Resolved absolute path to the requested file/directory
+ */
+async function resolvePackagePath(relativePath: string): Promise<string> {
+  try {
+    // For ESM, get the directory name using import.meta.url
+    const moduleUrl = import.meta.url;
+    const moduleDirPath = path.dirname(fileURLToPath(moduleUrl));
+
+    // Try local development path first
+    const localPath = path.resolve(moduleDirPath, "..", relativePath);
+
+    if (await fs.pathExists(localPath)) {
+      return localPath;
+    } else {
+      // If local path doesn't exist, try global node_modules
+      const { execSync } = await import("child_process");
+      const globalNodeModules = execSync("npm root -g").toString().trim();
+
+      // Look for the package in global node_modules
+      const globalPath = path.join(
+        globalNodeModules,
+        "@tonk/create-tinyfoot-app",
+        relativePath
+      );
+
+      if (await fs.pathExists(globalPath)) {
+        return globalPath;
+      } else {
+        throw new Error(
+          `Could not locate ${relativePath} in local or global paths`
+        );
+      }
+    }
+  } catch (error) {
+    console.error(`Error resolving path ${relativePath}:`, error);
+    throw error;
+  }
+}
+
+// Get package.json for version information
+let packageJson;
+
+try {
+  const packageJsonPath = await resolvePackagePath("package.json");
+  packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+} catch (error) {
+  console.error("Error resolving package.json:", error);
+  process.exit(1);
+}
+
 const program = new Command();
 
 // Questions to understand project requirements
@@ -64,34 +117,8 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
     let templatePath;
 
     try {
-      // For ESM, get the directory name using import.meta.url
-      const moduleUrl = import.meta.url;
-      const moduleDirPath = path.dirname(fileURLToPath(moduleUrl));
-
-      // Try local development path (one directory up from current file)
-      const localPath = path.resolve(moduleDirPath, "../templates/default");
-
-      if (await fs.pathExists(localPath)) {
-        templatePath = localPath;
-      } else {
-        // If local path doesn't exist, try global node_modules
-        const { execSync } = await import("child_process");
-        const globalNodeModules = execSync("npm root -g").toString().trim();
-
-        // Look for the package in global node_modules
-        const globalPath = path.join(
-          globalNodeModules,
-          "@tonk/create-tinyfoot-app/templates/default"
-        );
-
-        if (await fs.pathExists(globalPath)) {
-          templatePath = globalPath;
-        } else {
-          throw new Error(
-            "Could not locate template directory in local or global paths"
-          );
-        }
-      }
+      // Use the existing resolvePackagePath function to find the template directory
+      templatePath = await resolvePackagePath("templates/default");
     } catch (error) {
       console.error("Error resolving template path:", error);
       throw new Error(
@@ -203,13 +230,15 @@ export async function createProject(projectName: string, plan: ProjectPlan) {
 program
   .name("create-tinyfoot-app")
   .description("Create a new Tinyfoot application")
-  .argument("[project-directory]", "Project directory")
-  .action(async (projectDirectory: string | undefined) => {
+  .version(packageJson.version, "-v, --version", "Output the current version")
+  .option("-n, --name <project-name>", "Project Name")
+  .action(async () => {
     console.log(chalk.bold("\nWelcome to Tinyfoot! 🚀\n"));
 
     try {
       // Get project details
       const answers = await inquirer.prompt(projectQuestions);
+      const options = program.opts();
 
       // Generate project plan
       // const spinner = ora("Generating project plan...").start();
@@ -217,7 +246,8 @@ program
       // spinner.succeed("Project plan generated!");
 
       // Create project with generated plan
-      const finalProjectName = projectDirectory || answers.projectName;
+      const finalProjectName =
+        options.name || answers.projectName || "my-tinyfoot-app";
       await createProject(finalProjectName, plan);
     } catch (error) {
       console.error(chalk.red("Error:"), error);

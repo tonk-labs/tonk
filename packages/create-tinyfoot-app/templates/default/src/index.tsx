@@ -18,8 +18,8 @@ if (process.env.NODE_ENV === "production") {
   unregisterServiceWorker();
 }
 
-configureSyncEngine({
-  url: "ws://localhost:3030/sync",
+await configureSyncEngine({
+  url: "ws://localhost:4080/sync",
   onSync: (docId) => console.log(`Document ${docId} synced`),
   onError: (error) => console.error("Sync error:", error),
 });
