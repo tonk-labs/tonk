@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@automerge/automerge": "^2.2.8",
-    "@tonk/keepsync": "^0.1.2",
+    "@tonk/keepsync": "^0.2.0",
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
