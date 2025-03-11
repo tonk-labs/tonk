@@ -3,14 +3,14 @@
     "outDir": "./dist/",
     "sourceMap": true,
     "noImplicitAny": true,
-    "target": "ES2020",
+    "target": "ESNext",
     "useDefineForClassFields": true,
     "lib": [
-      "ES2020",
+      "ESNext",
       "DOM",
       "DOM.Iterable"
     ],
-    "module": "ES6",
+    "module": "ESNext",
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
