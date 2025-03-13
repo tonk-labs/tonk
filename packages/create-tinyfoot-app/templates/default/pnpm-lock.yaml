@@ -12,8 +12,8 @@ importers:
         specifier: ^2.2.8
         version: 2.2.8
       '@tonk/keepsync':
-        specifier: ^0.1.2
-        version: 0.1.2(@automerge/automerge@2.2.8)(react@19.0.0)(zustand@5.0.3(@types/react@19.0.10)(react@19.0.0))
+        specifier: ^0.3.0
+        version: 0.3.0(@automerge/automerge@2.2.8)(react@19.0.0)(zustand@5.0.3(@types/react@19.0.10)(react@19.0.0))
       body-parser:
         specifier: ^1.20.3
         version: 1.20.3
@@ -50,6 +50,9 @@ importers:
       ws:
         specifier: ^8.18.0
         version: 8.18.1
+      zustand:
+        specifier: ^5.0.3
+        version: 5.0.3(@types/react@19.0.10)(react@19.0.0)
     devDependencies:
       '@agentdeskai/browser-tools-server':
         specifier: ^1.1.0
@@ -1093,8 +1096,8 @@ packages:
   '@surma/rollup-plugin-off-main-thread@2.2.3':
     resolution: {integrity: sha512-lR8q/9W7hZpMWweNiAKU7NQerBnzQQLvi8qnTDU/fxItPhtZVMbPV3lbCwjhIlNBe9Bbr5V+KHshvWmVSG9cxQ==}
 
-  '@tonk/keepsync@0.1.2':
-    resolution: {integrity: sha512-Bih3y4OcR7+ylM5cAqGQUDlBPX8NAWzJn2nJfBen72Pem0XLGBsNY5ytz15sYz5baC24adTK7uIEx8iH/eMttQ==}
+  '@tonk/keepsync@0.3.0':
+    resolution: {integrity: sha512-Cjmjc9VIMKmagTtehaPGJ+udRzCrcS2Zij5I/FGNuJNVdaO05V3YPZt4AnWnZTC8a1MVxdFF0fZuhv2rQEZHhg==}
     peerDependencies:
       '@automerge/automerge': ^2.2.8
       react: ^19.0.0
@@ -5670,7 +5673,7 @@ snapshots:
       magic-string: 0.25.9
       string.prototype.matchall: 4.0.12
 
-  '@tonk/keepsync@0.1.2(@automerge/automerge@2.2.8)(react@19.0.0)(zustand@5.0.3(@types/react@19.0.10)(react@19.0.0))':
+  '@tonk/keepsync@0.3.0(@automerge/automerge@2.2.8)(react@19.0.0)(zustand@5.0.3(@types/react@19.0.10)(react@19.0.0))':
     dependencies:
       '@automerge/automerge': 2.2.8
       chalk: 5.4.1

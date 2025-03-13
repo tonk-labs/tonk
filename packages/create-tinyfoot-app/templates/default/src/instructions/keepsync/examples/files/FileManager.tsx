@@ -140,7 +140,7 @@ export const FileManager: React.FC = () => {
   const loadFiles = async () => {
     try {
       const allFiles = await getAllFiles();
-      setFiles(allFiles);
+      setFiles(allFiles!);
       setLoading(false);
     } catch (err) {
       console.error("Error loading files:", err);

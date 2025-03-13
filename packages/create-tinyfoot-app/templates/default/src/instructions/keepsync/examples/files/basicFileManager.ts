@@ -38,7 +38,7 @@ export const fileOperations = {
    * @param file The file to upload
    * @returns Metadata for the uploaded file
    */
-  uploadFile: async (file: File): Promise<FileMetadata> => {
+  uploadFile: async (file: File): Promise<FileMetadata | null> => {
     console.log(`Uploading file: ${file.name} (${file.size} bytes)`);
     return addFile(file);
   },
@@ -88,10 +88,10 @@ export const fileOperations = {
    * List all files in the synced file system
    * @returns Array of file metadata
    */
-  listFiles: async (): Promise<FileMetadata[]> => {
+  listFiles: async (): Promise<FileMetadata[] | null> => {
     console.log("Listing all files");
     const files = await getAllFiles();
-    console.log(`Found ${files.length} files`);
+    if (files) console.log(`Found ${files.length} files`);
     return files;
   },
 };
