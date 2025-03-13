@@ -8,23 +8,37 @@ const sw = self as unknown as ServiceWorkerGlobalScope;
 const manifestEntries = self.__WB_MANIFEST;
 
 const CACHE_NAME = "tinyfoot-app-v1";
-const ASSETS_TO_CACHE = [
-  "/",
-  "/index.html",
-  "/bundle.js",
-  "/manifest.json",
-  "/offline.html",
-  "/icons/icon-192x192.png",
-  "/icons/icon-512x512.png",
-  // Include the injected assets from Workbox
-  ...(manifestEntries || []),
+
+// Define asset types to cache by extension
+const CACHEABLE_EXTENSIONS = [
+  ".html",
+  ".css",
+  ".js",
+  ".json",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".svg",
+  ".ico",
+  ".woff",
+  ".woff2",
+  ".ttf",
 ];
 
 // Install event
 sw.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE);
+      return cache.addAll([
+        "/",
+        "/index.html",
+        "/offline.html",
+        "/manifest.json",
+        "/favicon.ico",
+        "/bundle.js",
+        "/icons/icon-192x192.png",
+        "/icons/icon-512x512.png",
+      ]);
     })
   );
   sw.skipWaiting();
@@ -44,49 +58,51 @@ sw.addEventListener("activate", (event) => {
   sw.clients.claim();
 });
 
-// Fetch event
 sw.addEventListener("fetch", (event) => {
-  // Only handle GET requests
-  if (event.request.method !== "GET") return;
-
-  // Handle navigation requests
-  if (event.request.mode === "navigate") {
-    event.respondWith(
-      fetch(event.request).catch(() => {
-        return caches.match("/offline.html") as Promise<Response>;
-      })
-    );
-    return;
-  }
-
-  // Cache first for static assets
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
+    (async () => {
+      const cachedResponse = await caches.match(event.request);
+      if (cachedResponse) return cachedResponse;
 
-      return fetch(event.request)
-        .then((response) => {
-          // Cache successful responses
-          if (response.ok) {
-            const clone = response.clone();
+      try {
+        const response = await fetch(event.request);
+
+        // Cache successful responses
+        if (response.ok) {
+          const url = new URL(event.request.url);
+          if (CACHEABLE_EXTENSIONS.some((ext) => url.pathname.endsWith(ext))) {
+            const responseToCache = response.clone();
             caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, clone);
+              cache.put(event.request, responseToCache);
             });
           }
-          return response;
-        })
-        .catch(() => {
-          // Return a fallback for images
-          if (event.request.destination === "image") {
-            return caches.match("/icons/icon-192x192.png") as Promise<Response>;
-          }
-          return new Response("Not available offline", {
-            status: 503,
-            statusText: "Service Unavailable",
-          });
-        });
-    })
+        }
+
+        return response;
+      } catch (err) {
+        const url = new URL(event.request.url);
+
+        const pathname = url.pathname;
+        const filename = pathname
+          .substr(1 + pathname.lastIndexOf("/"))
+          .split(/\#|\?/g)[0];
+
+        // If we're navigating to a page and not requesting a specific asset file,
+        // try to return the index page from cache
+        if (
+          url.origin === location.origin &&
+          !CACHEABLE_EXTENSIONS.some((ext) => filename.endsWith(ext))
+        ) {
+          const cachedIndex = await caches.match("/");
+          if (cachedIndex) return cachedIndex;
+
+          // If index isn't cached, try the offline page
+          const offlinePage = await caches.match("/offline.html");
+          if (offlinePage) return offlinePage;
+        }
+
+        throw err;
+      }
+    })()
   );
 });

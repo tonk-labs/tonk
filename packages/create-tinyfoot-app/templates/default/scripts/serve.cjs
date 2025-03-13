@@ -4,11 +4,11 @@ const port = process.env.PORT || 9999;
 const app = express();
 
 // Serve static files from the dist directory
-app.use(express.static(path.join(__dirname, 'dist')));
+app.use(express.static(path.join(__dirname, '..', 'dist')));
 
 // Send all requests to index.html so that client-side routing works
 app.get('*', function(req, res) {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+  res.sendFile(path.join(__dirname, '..', '/dist', 'index.html'));
 });
 
 app.listen(port);
