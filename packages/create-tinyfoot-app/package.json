@@ -1,6 +1,6 @@
 {
   "name": "@tonk/create-tinyfoot-app",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Bootstrap your tinyfoot app",
   "type": "module",
   "bin": {
