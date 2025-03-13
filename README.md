@@ -91,7 +91,7 @@ _A small contribution is something like a bug-fix or a PR with a diff <50 lines.
 
 #### Become a regular contributor
 
-We are open to regular contributors who will collaborate with us on improving the codebase. If that's you then please [reach out to the team](https://linktr.ee/tonklabs).
+We are open to regular contributors who will collaborate with us on improving the codebase. If that's you then please [reach out to the team](https://tonk.xyz).
 
 #### How to submit feedback
 
