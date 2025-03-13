@@ -18,7 +18,7 @@ if (process.env.NODE_ENV === "production") {
   unregisterServiceWorker();
 }
 
-await configureSyncEngine({
+configureSyncEngine({
   url: "ws://localhost:4080/sync",
   onSync: (docId) => console.log(`Document ${docId} synced`),
   onError: (error) => console.error("Sync error:", error),
@@ -33,5 +33,5 @@ root.render(
     <BrowserRouter>
       <App />
     </BrowserRouter>
-  </React.StrictMode>
+  </React.StrictMode>,
 );
