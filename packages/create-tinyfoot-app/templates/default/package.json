@@ -8,7 +8,7 @@
     "dev:client": "webpack serve --mode development",
     "dev:server": "tsx watch src/server.ts",
     "dev": "mprocs",
-    "build": "webpack --mode production",
+    "build": "webpack --mode production && node scripts/post-build-wasm-cache.cjs",
     "serve": "npm run build && node serve.cjs",
     "test": "jest",
     "test:watch": "jest --watch"
