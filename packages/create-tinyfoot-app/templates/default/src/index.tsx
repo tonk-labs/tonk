@@ -18,8 +18,11 @@ if (process.env.NODE_ENV === "production") {
   unregisterServiceWorker();
 }
 
+const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
+
 configureSyncEngine({
-  url: "ws://localhost:4080/sync",
+  url: wsUrl,
   onSync: (docId) => console.log(`Document ${docId} synced`),
   onError: (error) => console.error("Sync error:", error),
 });
