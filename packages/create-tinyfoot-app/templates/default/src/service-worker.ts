@@ -23,6 +23,11 @@ const CACHEABLE_EXTENSIONS = [
   ".woff",
   ".woff2",
   ".ttf",
+  ".mp3",
+  ".wav",
+  ".ogg",
+  ".m4a",
+  ".wasm",
 ];
 
 // Install event
@@ -39,7 +44,7 @@ sw.addEventListener("install", (event) => {
         "/icons/icon-192x192.png",
         "/icons/icon-512x512.png",
       ]);
-    })
+    }),
   );
   sw.skipWaiting();
 });
@@ -51,9 +56,9 @@ sw.addEventListener("activate", (event) => {
       return Promise.all(
         cacheNames
           .filter((cacheName) => cacheName !== CACHE_NAME)
-          .map((cacheName) => caches.delete(cacheName))
+          .map((cacheName) => caches.delete(cacheName)),
       );
-    })
+    }),
   );
   sw.clients.claim();
 });
@@ -62,7 +67,21 @@ sw.addEventListener("fetch", (event) => {
   event.respondWith(
     (async () => {
       const cachedResponse = await caches.match(event.request);
-      if (cachedResponse) return cachedResponse;
+      if (cachedResponse) {
+        // If this is a wasm file, ensure it has the correct MIME type
+        if (event.request.url.endsWith(".wasm")) {
+          // Create a new response with the correct MIME type
+          return new Response(cachedResponse.body, {
+            headers: {
+              "Content-Type": "application/wasm",
+              ...cachedResponse.headers,
+            },
+            status: cachedResponse.status,
+            statusText: cachedResponse.statusText,
+          });
+        }
+        return cachedResponse;
+      }
 
       try {
         const response = await fetch(event.request);
@@ -84,7 +103,7 @@ sw.addEventListener("fetch", (event) => {
 
         const pathname = url.pathname;
         const filename = pathname
-          .substr(1 + pathname.lastIndexOf("/"))
+          .substring(1 + pathname.lastIndexOf("/"))
           .split(/\#|\?/g)[0];
 
         // If we're navigating to a page and not requesting a specific asset file,
@@ -103,6 +122,6 @@ sw.addEventListener("fetch", (event) => {
 
         throw err;
       }
-    })()
+    })(),
   );
 });
