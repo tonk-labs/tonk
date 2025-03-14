@@ -9,7 +9,7 @@
     "dev:server": "tsx watch src/server.ts",
     "dev": "mprocs",
     "build": "webpack --mode production && node scripts/post-build-wasm-cache.cjs",
-    "serve": "npm run build && concurrently \"node scripts/serve.cjs\" \"tsx src/server.ts\"",
+    "serve": "npm run build && node scripts/serve.cjs",
     "test": "jest",
     "test:watch": "jest --watch"
   },
@@ -22,7 +22,6 @@
     "@types/react-dom": "^19.0.3",
     "@types/ws": "^8.5.14",
     "autoprefixer": "^10.4.20",
-    "concurrently": "^9.1.2",
     "copy-webpack-plugin": "^11.0.0",
     "css-loader": "^6.11.0",
     "html-webpack-plugin": "^5.6.3",
@@ -42,7 +41,7 @@
   },
   "dependencies": {
     "@automerge/automerge": "^2.2.8",
-    "@tonk/keepsync": "^0.3.0",
+    "@tonk/keepsync": "^0.3.1",
     "body-parser": "^1.20.3",
     "chalk": "^5.4.1",
     "cors": "^2.8.5",
