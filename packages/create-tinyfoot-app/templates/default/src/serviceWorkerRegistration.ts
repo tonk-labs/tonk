@@ -10,7 +10,6 @@ export function unregisterServiceWorker() {
     navigator.serviceWorker.ready
       .then((registration) => {
         registration.unregister();
-        console.log("Service worker unregistered");
       })
       .catch((error) => {
         console.error("Error unregistering service worker:", error);
@@ -18,27 +17,23 @@ export function unregisterServiceWorker() {
   }
 }
 
-// Check if service workers are supported in the current browser
 export function registerServiceWorker() {
   // In development mode, actively unregister any service workers
   if (!isProduction) {
     console.log(
-      "Development mode detected - unregistering any service workers"
+      "Development mode detected - unregistering any service workers",
     );
     unregisterServiceWorker();
     return;
   }
 
   if ("serviceWorker" in navigator) {
-    // Use a timeout to ensure the registration doesn't interfere with page load
-    window.addEventListener("load", () => {
+    const registerSW = () => {
       const swUrl = "/service-worker.js";
 
       navigator.serviceWorker
         .register(swUrl)
         .then((registration) => {
-          console.log("Service Worker registered: ", registration);
-
           // Check for updates on page reload
           registration.addEventListener("updatefound", () => {
             const installingWorker = registration.installing;
@@ -48,7 +43,7 @@ export function registerServiceWorker() {
                   if (navigator.serviceWorker.controller) {
                     // New content is available
                     console.log(
-                      "New content is available. Please refresh the page."
+                      "New content is available. Please refresh the page.",
                     );
                   } else {
                     // Content is cached for offline use
@@ -62,8 +57,27 @@ export function registerServiceWorker() {
         .catch((error) => {
           console.error("Error during service worker registration:", error);
         });
-    });
+    };
+
+    if (document.readyState === "complete") {
+      // Document already loaded, registering immediately
+      registerSW();
+    } else {
+      // Setting up load event listener
+      window.addEventListener("load", () => {
+        // Window load event fired
+        registerSW();
+      });
+
+      // Backup: also try after a short delay
+      setTimeout(() => {
+        if (!navigator.serviceWorker.controller) {
+          // No service worker controller found, trying registration again
+          registerSW();
+        }
+      }, 3000);
+    }
   } else {
-    console.log("Service workers are not supported in this browser.");
+    console.warn("Service workers are not supported in this browser.");
   }
 }

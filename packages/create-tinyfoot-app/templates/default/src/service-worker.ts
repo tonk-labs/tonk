@@ -43,6 +43,7 @@ sw.addEventListener("install", (event) => {
         "/bundle.js",
         "/icons/icon-192x192.png",
         "/icons/icon-512x512.png",
+        "/33ccdd41d7bef7110d12.module.wasm",
       ]);
     }),
   );
