@@ -1,4 +1,3 @@
-import {WebSocket} from 'ws';
 import B2 from 'backblaze-b2';
 import fs from 'fs';
 import path from 'path';
@@ -119,7 +118,7 @@ export class StorageMiddleware {
   }
 
   // Handle WebSocket message to capture document data
-  public handleMessage(_ws: WebSocket, message: Buffer): void {
+  public handleMessage(message: Buffer): void {
     try {
       // Try to parse the message to see if it contains document data
       const data = JSON.parse(message.toString());

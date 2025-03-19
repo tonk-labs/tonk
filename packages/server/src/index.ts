@@ -4,12 +4,14 @@ import http from 'http';
 import path from 'path';
 import chalk from 'chalk';
 import fs from 'fs';
+import {StorageMiddleware, StorageMiddlewareOptions} from './storageMiddleware';
 
 export interface ServerOptions {
   port?: number;
   mode: 'development' | 'production';
   distPath: string | undefined; // Path to the built frontend files
   verbose?: boolean;
+  storage?: StorageMiddlewareOptions | undefined;
 }
 
 export class TonkServer {
@@ -18,6 +20,7 @@ export class TonkServer {
   private wss: WebSocketServer;
   private connections: Set<WebSocket> = new Set();
   private options: ServerOptions;
+  private storageMiddleware: StorageMiddleware | null = null;
 
   constructor(options: ServerOptions) {
     this.options = {
@@ -25,6 +28,7 @@ export class TonkServer {
       mode: options.mode,
       distPath: options.distPath,
       verbose: options.verbose ?? true,
+      storage: options.storage,
     };
 
     // Create Express app and HTTP server
@@ -36,6 +40,15 @@ export class TonkServer {
       server: this.server,
       path: '/sync',
     });
+
+    // Initialize storage middleware if configured
+    if (this.options.storage) {
+      this.storageMiddleware = new StorageMiddleware(
+        this.options.storage,
+        this.log.bind(this),
+        this.options.verbose,
+      );
+    }
 
     this.setupWebSocketHandlers();
     this.setupExpressMiddleware();
@@ -54,6 +67,11 @@ export class TonkServer {
             client.send(data.toString());
           }
         });
+
+        // Forward to storage middleware if enabled
+        if (this.storageMiddleware) {
+          this.storageMiddleware.handleMessage(data);
+        }
       });
 
       // Handle client disconnection
@@ -187,7 +205,19 @@ export class TonkServer {
   }
 
   public stop(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
+      // Shut down storage middleware if enabled
+      if (this.storageMiddleware) {
+        try {
+          await this.storageMiddleware.shutdown();
+        } catch (error) {
+          this.log(
+            'red',
+            `Error shutting down storage middleware: ${(error as Error).message}`,
+          );
+        }
+      }
+
       this.connections.forEach(conn => {
         conn.terminate();
       });

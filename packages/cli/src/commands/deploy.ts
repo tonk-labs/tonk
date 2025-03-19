@@ -27,6 +27,7 @@ export const deployCommand = new Command('deploy')
   .option('-k, --key <path>', 'Path to SSH key file')
   .option('-u, --user <name>', 'SSH username', 'ec2-user')
   .option('-t, --token <token>', 'Pinggy.io access token')
+  .option('-b, --backblaze', 'Enable Backblaze B2 storage for document backup')
   .action(async options => {
     const projectRoot = process.cwd();
     const configFilePath = path.join(projectRoot, 'tonk.config.json');
@@ -45,8 +46,9 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
     }
 
     // Load settings from config file
+    let configData;
     try {
-      const configData = JSON.parse(fs.readFileSync(configFilePath, 'utf8'));
+      configData = JSON.parse(fs.readFileSync(configFilePath, 'utf8'));
 
       // Use config values as defaults if not provided in command options
       if (!options.instance && configData.ec2 && configData.ec2.instance) {
@@ -70,6 +72,12 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       if (!options.token && configData.pinggy && configData.pinggy.token) {
         options.token = configData.pinggy.token;
         console.log(chalk.blue(`Using Pinggy token from config`));
+      }
+
+      // Check if Backblaze is already configured
+      if (configData.backblaze && configData.backblaze.enabled) {
+        options.backblaze = true;
+        console.log(chalk.blue(`Backblaze B2 backup enabled from config`));
       }
     } catch (error) {
       console.error(
@@ -99,6 +107,79 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       );
       console.error(chalk.yellow("Please run 'tonk config' again."));
       process.exit(1);
+    }
+
+    // Set up Backblaze if requested and not already configured
+    if (
+      options.backblaze &&
+      (!configData.backblaze || !configData.backblaze.enabled)
+    ) {
+      console.log(
+        chalk.blue('Setting up Backblaze B2 backup for Automerge documents...'),
+      );
+
+      // Ask for Backblaze credentials
+      const useBackblaze = await promptUser(
+        chalk.yellow(
+          'Do you want to enable Backblaze B2 backup for your document data? (yes/no): ',
+        ),
+      );
+
+      if ((useBackblaze as string).toLowerCase().startsWith('y')) {
+        const b2KeyId = await promptUser(
+          chalk.yellow('Enter your Backblaze B2 Application Key ID: '),
+        );
+        const b2Key = await promptUser(
+          chalk.yellow('Enter your Backblaze B2 Application Key: '),
+        );
+        const b2BucketId = await promptUser(
+          chalk.yellow('Enter your Backblaze B2 Bucket ID: '),
+        );
+        const b2BucketName = await promptUser(
+          chalk.yellow('Enter your Backblaze B2 Bucket Name: '),
+        );
+
+        // Update config
+        configData.backblaze = {
+          enabled: true,
+          applicationKeyId: b2KeyId,
+          applicationKey: b2Key,
+          bucketId: b2BucketId,
+          bucketName: b2BucketName,
+          syncInterval: 5 * 60 * 1000, // 5 minutes default
+          maxRetries: 3,
+        };
+
+        // Save updated config
+        fs.writeFileSync(
+          configFilePath,
+          JSON.stringify(configData, null, 2),
+          'utf8',
+        );
+        console.log(chalk.green('Backblaze B2 configuration saved'));
+      } else {
+        options.backblaze = false;
+      }
+    }
+
+    // If backblaze option wasn't explicitly set
+    // ask the user if they want to enable it
+    if (options.backblaze === undefined) {
+      const enableBackblaze = await promptUser(
+        chalk.yellow(
+          'Would you like to enable Backblaze B2 backup for your document data? (yes/no): ',
+        ),
+      );
+
+      options.backblaze = (enableBackblaze as string)
+        .toLowerCase()
+        .startsWith('y');
+
+      if (options.backblaze) {
+        console.log(chalk.green('Backblaze B2 backup will be enabled'));
+      } else {
+        console.log(chalk.blue('Backblaze B2 backup will not be enabled'));
+      }
     }
 
     try {
@@ -148,8 +229,37 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         {cwd: projectRoot, stdio: 'inherit'},
       );
 
+      // If Backblaze is configured, copy the config too
+      if (options.backblaze) {
+        execSync(
+          `scp -i "${options.key}" "${configFilePath}" ${options.user}@${options.instance}:~/tonk-app/tonk.config.json`,
+          {cwd: projectRoot, stdio: 'inherit'},
+        );
+      }
+
       // 5. SSH into EC2 and deploy with Docker
       console.log(chalk.blue('Deploying on EC2...'));
+
+      // Build the Docker run command with environment variables for Backblaze if configured
+      let dockerRunCmd =
+        'docker run -d --name tonk-app-container -p 8080:8080 -e PORT=8080';
+
+      // Add Backblaze environment variables if enabled
+      if (
+        options.backblaze &&
+        configData.backblaze &&
+        configData.backblaze.enabled
+      ) {
+        dockerRunCmd += ` -e BACKBLAZE_ENABLED=true`;
+        dockerRunCmd += ` -e BACKBLAZE_APP_KEY_ID='${configData.backblaze.applicationKeyId}'`;
+        dockerRunCmd += ` -e BACKBLAZE_APP_KEY='${configData.backblaze.applicationKey}'`;
+        dockerRunCmd += ` -e BACKBLAZE_BUCKET_ID='${configData.backblaze.bucketId}'`;
+        dockerRunCmd += ` -e BACKBLAZE_BUCKET_NAME='${configData.backblaze.bucketName}'`;
+        dockerRunCmd += ` -e BACKBLAZE_SYNC_INTERVAL='${configData.backblaze.syncInterval || 300000}'`;
+      }
+
+      dockerRunCmd += ' tonk-app';
+
       const sshCommand = `ssh -i "${options.key}" ${options.user}@${options.instance} '
         mkdir -p tonk-app &&
         tar -xzf ${tarFileName} -C tonk-app --strip-components=1 &&
@@ -157,7 +267,7 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         docker build -t tonk-app . &&
         docker stop tonk-app-container || true &&
         docker rm tonk-app-container || true &&
-        docker run -d --name tonk-app-container -p 8080:8080 -e PORT=8080 tonk-app &&
+        ${dockerRunCmd} &&
         sudo systemctl restart nginx.service
       '`;
 
@@ -172,6 +282,20 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
 Your app is now running at http://${options.instance}
       `),
       );
+
+      // Print Backblaze info if enabled
+      if (
+        options.backblaze &&
+        configData.backblaze &&
+        configData.backblaze.enabled
+      ) {
+        console.log(
+          chalk.green(`
+Backblaze B2 backup is enabled for your Automerge documents.
+Documents will be synced to your B2 bucket: ${configData.backblaze.bucketName}
+          `),
+        );
+      }
 
       // 7. Set up reverse proxy with pinggy.io
       console.log(
