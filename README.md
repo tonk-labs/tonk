@@ -60,7 +60,7 @@ We've found these LLM-assisted code editors to require more human intervention t
 ## Usage
 
 ```
-tonk create app
+tonk create [app name]
 ```
 
 ### 2. Start the dev tools and open it in your favorite AI-friendly code editor
@@ -69,19 +69,37 @@ Tonk is not opinionated about which AI tooling you use.
 
 In the root of the tonk project run `npm run dev`
 
-### Building (unstable)
+### Building
 
 When you are happy with your mini-app and ready to use it, you should serve it up and save it to your device as a PWA. This should allow the app to continue working even when you're offline or away from the network.
 
+#### Building Locally
 ```bash
 npm run serve
 ```
+
+#### AWS Deployment
+```bash
+# Interactive configuration (with existing instance)
+tonk config
+
+# Provision a new EC2 instance
+tonk config --provision [--key-name my-key]
+
+# Configure with existing EC2 instance
+tonk config --instance ec2-xx-xx-xx-xx.compute-1.amazonaws.com --key ~/path/to/key.pem
+```
+
+Options:
+- `-i, --instance <address>` - EC2 instance address
+- `-k, --key <path>` - Path to SSH key file
+- `-u, --user <name>` - SSH username (default: ec2-user)
+- `-p, --provision` - Provision a new EC2 instance
+- `-n, --key-name <name>` - AWS key pair name (for provisioning)
+
 [Guide to saving PWAs for iOS](https://help.shore.com/en/how-do-i-save-the-pwa-on-my-smartphone)
 
-
 You can ask the LLM to change the name of the app (which is default to Tonk) in the `public/manifest.json`
-
-NOTE: still some issues with this step, we're working on stabilizing it.
 
 ---
 
