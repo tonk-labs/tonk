@@ -1,0 +1,38 @@
+{
+  "name": "@tonk/server",
+  "version": "0.1.1",
+  "description": "Server package for Tonk applications",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.25",
+    "@types/ws": "^8.5.14",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.3"
+  },
+  "author": "tonk-labs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tonk-labs/tonk.git",
+    "directory": "packages/server"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

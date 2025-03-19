@@ -1,0 +1,8 @@
+{
+  "name": "my-world",
+  "plan": {
+    "projectName": "my-world",
+    "projectType": "Community Space",
+    "description": "i want a map app where me and my friends can save locations and view each other's spots"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "todo-app",
+  "plan": {
+    "projectName": "todo-app",
+    "projectType": "Productivity System",
+    "description": "",
+    "isMultiplayer": true,
+    "organization": "xyz.tonk.tinyfoot"
+  }
+}

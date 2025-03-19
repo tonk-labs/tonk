@@ -1,22 +1,33 @@
 {
-  "name": "@tonk/tinyfoot-cli",
-  "version": "0.1.4",
-  "description": "The tinyfoot CLI",
+  "name": "@tonk/cli",
+  "version": "0.1.2",
+  "description": "The Tonk stack command line utility",
   "type": "module",
   "bin": {
-    "tinyfoot": "./dist/index.js"
+    "tonk": "./bin/tonk.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "typesVersions": {
+    "*": {
+      "index": [
+        "./dist/index.d.ts"
+      ]
+    }
   },
   "files": [
+    "bin",
     "dist",
-    "templates"
+    "scripts"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --minify",
-    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "build": "tsup && chmod +x ./dist/tonk.js && npm run copy-scripts",
+    "copy-scripts": "mkdir -p ./dist/scripts && cp -r ./scripts/* ./dist/scripts/",
+    "dev": "tsup --watch",
     "clean": "gts clean",
     "lint": "gts lint",
     "test": "vitest run",
-    "server": "fastmcp dev mcp/index.ts",
     "prepublishOnly": "npm run build",
     "compile": "tsc",
     "fix": "gts fix",
@@ -26,9 +37,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.6.1",
-    "@tonk/tinyfoot-mcp-server": "^0.1.2",
+    "@tonk/server": "^0.1.0",
+    "@tonk/create": "^0.1.1",
     "chalk": "^5.3.0",
     "commander": "^11.1.0",
+    "dotenv": "^16.4.7",
     "execa": "^8.0.1",
     "fastmcp": "^1.20.2",
     "fs-extra": "^11.2.0",
@@ -54,21 +67,20 @@
     "node": ">=18"
   },
   "keywords": [
-    "react",
-    "create-react-app",
     "cli",
     "ai",
-    "tinyfoot"
+    "crdt",
+    "local-first"
   ],
   "author": "tonk-labs",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tonk-labs/tinyfoot.git",
-    "directory": "packages/create-tinyfoot-app"
+    "url": "https://github.com/tonk-labs/tonk.git",
+    "directory": "packages/cli"
   },
   "bugs": {
-    "url": "https://github.com/tonk-labs/tinyfoot/issues"
+    "url": "https://github.com/tonk-labs/tonk/issues"
   },
-  "homepage": "https://github.com/tonk-labs/tinyfoot#readme"
+  "homepage": "https://github.com/tonk-labs/tonk#readme"
 }

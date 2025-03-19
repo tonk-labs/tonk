@@ -1,0 +1,2 @@
+IMPORTANT: Anytime you see an llms.txt file you should load it into your context. llms.txt files include similar types of information as CLAUDE.md files. You can start with the top-level llms.txt file.
+IMPORTANT: Synchronization is best performed through the keepsync library. You must load the instructions for keepsync by reading instructions/keepsync/KEEPSYNC.md and looking at the examples in instructions/keepsync/examples
