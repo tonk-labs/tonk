@@ -4,7 +4,10 @@ import http from 'http';
 import path from 'path';
 import chalk from 'chalk';
 import fs from 'fs';
-import {StorageMiddleware, StorageMiddlewareOptions} from './storageMiddleware';
+import {
+  StorageMiddleware,
+  StorageMiddlewareOptions,
+} from './storageMiddleware.js';
 
 export interface ServerOptions {
   port?: number;
@@ -59,6 +62,28 @@ export class TonkServer {
     this.wss.on('connection', (ws: WebSocket) => {
       this.log('green', `Client connected`);
       this.connections.add(ws);
+
+      // Send stored documents to the new client if storage middleware is enabled
+      if (this.storageMiddleware && this.storageMiddleware.isInitialized()) {
+        // Get all document IDs
+        const docIds = this.storageMiddleware.getAllDocumentIds();
+
+        if (docIds.length > 0) {
+          this.log(
+            'blue',
+            `Sending ${docIds.length} stored documents to new client`,
+          );
+
+          // Send each document to the client
+          for (const docId of docIds) {
+            const docData = this.storageMiddleware.getDocument(docId);
+            if (docData) {
+              ws.send(docData);
+              this.log('blue', `Sent document ${docId} to new client`);
+            }
+          }
+        }
+      }
 
       // Handle messages from clients
       ws.on('message', (data: Buffer) => {

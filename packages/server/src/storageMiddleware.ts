@@ -36,6 +36,7 @@ export class StorageMiddleware {
     message: string,
   ) => void;
   private verbose: boolean;
+  private initialized: boolean = false;
 
   constructor(
     options: StorageMiddlewareOptions,
@@ -61,10 +62,11 @@ export class StorageMiddleware {
     this.initBackblazeClient();
   }
 
-  private initBackblazeClient(): void {
+  private async initBackblazeClient(): Promise<void> {
     const backblaze = this.options.backblaze;
 
     if (!backblaze || !backblaze.enabled) {
+      this.initialized = true;
       return;
     }
 
@@ -75,24 +77,29 @@ export class StorageMiddleware {
       });
 
       // Authenticate when initializing
-      this.b2Client
-        .authorize()
-        .then(() => {
-          this.log('green', 'Backblaze B2 client authenticated successfully');
+      try {
+        await this.b2Client.authorize();
+        this.log('green', 'Backblaze B2 client authenticated successfully');
 
-          // Start sync timer
-          this.startSyncTimer();
-        })
-        .catch(error => {
-          this.log(
-            'red',
-            `Failed to authenticate with Backblaze B2: ${error.message}`,
-          );
-          this.b2Client = null;
-        });
+        // Load all documents from Backblaze
+        await this.loadDocumentsFromBackblaze();
+
+        // Start sync timer
+        this.startSyncTimer();
+
+        this.initialized = true;
+      } catch (error) {
+        this.log(
+          'red',
+          `Failed to authenticate with Backblaze B2: ${(error as Error).message}`,
+        );
+        this.b2Client = null;
+        this.initialized = true;
+      }
     } catch (error) {
       this.log('red', `Error initializing Backblaze B2 client: ${error}`);
       this.b2Client = null;
+      this.initialized = true;
     }
   }
 
@@ -283,6 +290,89 @@ export class StorageMiddleware {
   // Force an immediate sync
   public async forceSyncToBackblaze(): Promise<void> {
     return this.syncDocumentsToBackblaze();
+  }
+
+  // Load documents from Backblaze
+  public async loadDocumentsFromBackblaze(): Promise<void> {
+    if (!this.options.backblaze?.enabled || !this.b2Client) {
+      return;
+    }
+
+    try {
+      this.log('blue', 'Loading documents from Backblaze B2...');
+
+      // List files in the documents directory
+      const response = await this.b2Client.listFileNames({
+        bucketId: this.options.backblaze!.bucketId,
+        prefix: 'documents/',
+        maxFileCount: 1000,
+        startFileName: '',
+        delimiter: '',
+      });
+
+      const files = response.data.files;
+
+      if (files.length === 0) {
+        this.log('blue', 'No documents found in Backblaze B2');
+        return;
+      }
+
+      this.log('blue', `Found ${files.length} documents in Backblaze B2`);
+
+      // Download each document
+      for (const file of files) {
+        try {
+          const fileName = file.fileName;
+          const docId = path.basename(fileName, '.json');
+
+          // Download file
+          const downloadResponse = await this.b2Client.downloadFileByName({
+            bucketName: this.options.backblaze!.bucketName,
+            fileName: fileName,
+            responseType: 'arraybuffer',
+          });
+
+          // Store in cache
+          const buffer = Buffer.from(downloadResponse.data);
+          this.documentCache.set(docId, buffer);
+
+          if (this.verbose) {
+            this.log('green', `Loaded document ${docId} from Backblaze B2`);
+          }
+        } catch (error) {
+          this.log(
+            'red',
+            `Error downloading document ${file.fileName}: ${(error as Error).message}`,
+          );
+        }
+      }
+
+      this.log(
+        'green',
+        `Successfully loaded ${this.documentCache.size} documents from Backblaze B2`,
+      );
+    } catch (error) {
+      this.log(
+        'red',
+        `Error loading documents from Backblaze: ${(error as Error).message}`,
+      );
+      throw error;
+    }
+  }
+
+  // Get document from cache
+  public getDocument(docId: string): Buffer | null {
+    return this.documentCache.get(docId) || null;
+  }
+
+  // Get all document IDs
+  public getAllDocumentIds(): string[] {
+    return Array.from(this.documentCache.keys());
+  }
+
+  // Check if initialization is complete
+  public isInitialized(): boolean {
+    return this.initialized;
   }
 
   // Clean up resources on shutdown

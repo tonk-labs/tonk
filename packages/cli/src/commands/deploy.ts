@@ -109,59 +109,6 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       process.exit(1);
     }
 
-    // Set up Backblaze if requested and not already configured
-    if (
-      options.backblaze &&
-      (!configData.backblaze || !configData.backblaze.enabled)
-    ) {
-      console.log(
-        chalk.blue('Setting up Backblaze B2 backup for Automerge documents...'),
-      );
-
-      // Ask for Backblaze credentials
-      const useBackblaze = await promptUser(
-        chalk.yellow(
-          'Do you want to enable Backblaze B2 backup for your document data? (yes/no): ',
-        ),
-      );
-
-      if ((useBackblaze as string).toLowerCase().startsWith('y')) {
-        const b2KeyId = await promptUser(
-          chalk.yellow('Enter your Backblaze B2 Application Key ID: '),
-        );
-        const b2Key = await promptUser(
-          chalk.yellow('Enter your Backblaze B2 Application Key: '),
-        );
-        const b2BucketId = await promptUser(
-          chalk.yellow('Enter your Backblaze B2 Bucket ID: '),
-        );
-        const b2BucketName = await promptUser(
-          chalk.yellow('Enter your Backblaze B2 Bucket Name: '),
-        );
-
-        // Update config
-        configData.backblaze = {
-          enabled: true,
-          applicationKeyId: b2KeyId,
-          applicationKey: b2Key,
-          bucketId: b2BucketId,
-          bucketName: b2BucketName,
-          syncInterval: 5 * 60 * 1000, // 5 minutes default
-          maxRetries: 3,
-        };
-
-        // Save updated config
-        fs.writeFileSync(
-          configFilePath,
-          JSON.stringify(configData, null, 2),
-          'utf8',
-        );
-        console.log(chalk.green('Backblaze B2 configuration saved'));
-      } else {
-        options.backblaze = false;
-      }
-    }
-
     // If backblaze option wasn't explicitly set
     // ask the user if they want to enable it
     if (options.backblaze === undefined) {
@@ -180,6 +127,48 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       } else {
         console.log(chalk.blue('Backblaze B2 backup will not be enabled'));
       }
+    }
+
+    // Set up Backblaze if requested and not already configured
+    if (
+      options.backblaze &&
+      (!configData.backblaze || !configData.backblaze.enabled)
+    ) {
+      console.log(
+        chalk.blue('Setting up Backblaze B2 backup for Automerge documents...'),
+      );
+
+      const b2KeyId = await promptUser(
+        chalk.yellow('Enter your Backblaze B2 Application Key ID: '),
+      );
+      const b2Key = await promptUser(
+        chalk.yellow('Enter your Backblaze B2 Application Key: '),
+      );
+      const b2BucketId = await promptUser(
+        chalk.yellow('Enter your Backblaze B2 Bucket ID: '),
+      );
+      const b2BucketName = await promptUser(
+        chalk.yellow('Enter your Backblaze B2 Bucket Name: '),
+      );
+
+      // Update config
+      configData.backblaze = {
+        enabled: true,
+        applicationKeyId: b2KeyId,
+        applicationKey: b2Key,
+        bucketId: b2BucketId,
+        bucketName: b2BucketName,
+        syncInterval: 5 * 60 * 1000, // 5 minutes default
+        maxRetries: 3,
+      };
+
+      // Save updated config
+      fs.writeFileSync(
+        configFilePath,
+        JSON.stringify(configData, null, 2),
+        'utf8',
+      );
+      console.log(chalk.green('Backblaze B2 configuration saved'));
     }
 
     try {
