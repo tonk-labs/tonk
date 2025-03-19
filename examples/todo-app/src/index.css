@@ -1,0 +1,128 @@
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #242424;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  place-items: center;
+  justify-content: center;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+h1 {
+  font-size: 2.2em;
+  line-height: 1.1;
+}
+
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+  width: 100%;
+}
+
+.todo-list {
+  list-style: none;
+  padding: 0;
+  margin: 2rem 0;
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+  background-color: #1a1a1a;
+  border-radius: 8px;
+  transition: border-color 0.25s;
+}
+
+.todo-item.completed {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.todo-text {
+  flex-grow: 1;
+  text-align: left;
+  margin-left: 1rem;
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: #1a1a1a;
+  cursor: pointer;
+  transition: border-color 0.25s;
+}
+
+button:hover {
+  border-color: #646cff;
+}
+
+button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+}
+
+.delete-btn {
+  background-color: #ff4d4f;
+  color: white;
+  padding: 0.4em 0.8em;
+}
+
+.add-todo {
+  display: flex;
+  margin-bottom: 2rem;
+}
+
+.add-todo input {
+  flex-grow: 1;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  border-radius: 8px;
+  border: 1px solid #1a1a1a;
+  background-color: #1a1a1a;
+  color: white;
+  margin-right: 0.5rem;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color: #213547;
+    background-color: #ffffff;
+  }
+
+  button {
+    background-color: #f9f9f9;
+  }
+
+  .todo-item {
+    background-color: #f1f1f1;
+  }
+
+  .add-todo input {
+    background-color: #f1f1f1;
+    border: 1px solid #e1e1e1;
+    color: #213547;
+  }
+}
