@@ -174,13 +174,13 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         ) {
           options.filesystemPath = (await promptUser(
             chalk.yellow(
-              `Enter path for filesystem storage (default: /tonk-data): `,
+              `Enter path for filesystem storage (default: /.tonk-data): `,
             ),
           )) as string;
 
           // Use default if empty
           if (!options.filesystemPath.trim()) {
-            options.filesystemPath = '/tonk-data';
+            options.filesystemPath = '/.tonk-data';
           }
         }
 
@@ -304,7 +304,7 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       // Update config with all the options
       configData.filesystem = {
         enabled: true,
-        storagePath: options.filesystemPath || '/tonk-data',
+        storagePath: options.filesystemPath || '/.tonk-data',
         syncInterval: options.filesystemSyncInterval || 30 * 1000, // 30 seconds default
         createIfMissing: options.filesystemCreateMissing !== false, // default to true
       };
@@ -425,9 +425,6 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         dockerRunCmd += ` -e FILESYSTEM_STORAGE_PATH='${configData.filesystem.storagePath}'`;
         dockerRunCmd += ` -e FILESYSTEM_SYNC_INTERVAL='${configData.filesystem.syncInterval || 30000}'`;
         dockerRunCmd += ` -e FILESYSTEM_CREATE_MISSING='${configData.filesystem.createIfMissing}'`;
-
-        // Create a volume mount for the filesystem storage
-        dockerRunCmd += ` -v tonk-data:${configData.filesystem.storagePath}`;
       }
 
       // Set primary storage if both are enabled
@@ -445,8 +442,6 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         mkdir -p tonk-app &&
         tar -xzf ${tarFileName} -C tonk-app --strip-components=1 &&
         cd tonk-app &&
-        # Create Docker volume for persistent storage if it doesn't exist
-        docker volume inspect tonk-data >/dev/null 2>&1 || docker volume create tonk-data &&
         docker build -t tonk-app . &&
         docker stop tonk-app-container || true &&
         docker rm tonk-app-container || true &&
@@ -489,7 +484,6 @@ Documents will be synced to your B2 bucket: ${configData.backblaze.bucketName}
           chalk.green(`
 Filesystem storage is enabled for your Automerge documents.
 Documents will be stored at: ${configData.filesystem.storagePath}
-Data is persisted in a Docker volume named 'tonk-data'
           `),
         );
       }

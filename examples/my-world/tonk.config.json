@@ -6,5 +6,11 @@
   },
   "websocket": {
     "url": "ws://ec2-51-21-246-155.eu-north-1.compute.amazonaws.com"
+  },
+  "filesystem": {
+    "enabled": true,
+    "storagePath": "./tonk-data",
+    "syncInterval": 30000,
+    "createIfMissing": true
   }
 }
