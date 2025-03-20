@@ -12,6 +12,7 @@
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
+    "@automerge/automerge": "^2.2.8",
     "backblaze-b2": "^1.7.0",
     "chalk": "^5.4.1",
     "express": "^4.21.2",
