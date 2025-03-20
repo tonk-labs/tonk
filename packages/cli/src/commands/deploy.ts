@@ -28,6 +28,16 @@ export const deployCommand = new Command('deploy')
   .option('-u, --user <name>', 'SSH username', 'ec2-user')
   .option('-t, --token <token>', 'Pinggy.io access token')
   .option('-b, --backblaze', 'Enable Backblaze B2 storage for document backup')
+  .option('-f, --filesystem', 'Enable filesystem storage for document backup')
+  .option(
+    '--filesystem-path <path>',
+    'Path for filesystem storage',
+    '/tonk-data',
+  )
+  .option(
+    '--primary-storage <type>',
+    'Primary storage (backblaze or filesystem)',
+  )
   .action(async options => {
     const projectRoot = process.cwd();
     const configFilePath = path.join(projectRoot, 'tonk.config.json');
@@ -79,6 +89,25 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         options.backblaze = true;
         console.log(chalk.blue(`Backblaze B2 backup enabled from config`));
       }
+
+      // Check if Filesystem storage is already configured
+      if (configData.filesystem && configData.filesystem.enabled) {
+        options.filesystem = true;
+        if (configData.filesystem.storagePath) {
+          options.filesystemPath = configData.filesystem.storagePath;
+        }
+        console.log(chalk.blue(`Filesystem storage enabled from config`));
+      }
+
+      // Check if primary storage is already configured
+      if (configData.primaryStorage) {
+        options.primaryStorage = configData.primaryStorage;
+        console.log(
+          chalk.blue(
+            `Primary storage set to ${options.primaryStorage} from config`,
+          ),
+        );
+      }
     } catch (error) {
       console.error(
         chalk.red(
@@ -129,6 +158,62 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       }
     }
 
+    // If filesystem option wasn't explicitly set
+    // ask the user if they want to enable it
+    if (options.filesystem === undefined) {
+      const enableFilesystem = await promptUser(
+        chalk.yellow(
+          'Would you like to enable filesystem storage for your document data? (yes/no): ',
+        ),
+      );
+
+      options.filesystem = (enableFilesystem as string)
+        .toLowerCase()
+        .startsWith('y');
+
+      if (options.filesystem) {
+        console.log(chalk.green('Filesystem storage will be enabled'));
+
+        // Ask for storage path if not provided
+        if (
+          !options.filesystemPath &&
+          (!configData.filesystem || !configData.filesystem.storagePath)
+        ) {
+          options.filesystemPath = (await promptUser(
+            chalk.yellow(
+              `Enter path for filesystem storage (default: /data/tonk): `,
+            ),
+          )) as string;
+
+          // Use default if empty
+          if (!options.filesystemPath.trim()) {
+            options.filesystemPath = '/data/tonk';
+          }
+        }
+      } else {
+        console.log(chalk.blue('Filesystem storage will not be enabled'));
+      }
+    }
+
+    // If both storage options are enabled, ask for primary storage
+    if (options.backblaze && options.filesystem && !options.primaryStorage) {
+      const primaryStorage = (await promptUser(
+        chalk.yellow(
+          'Which storage should be primary? (backblaze/filesystem): ',
+        ),
+      )) as string;
+
+      if (primaryStorage.toLowerCase().startsWith('f')) {
+        options.primaryStorage = 'filesystem';
+      } else {
+        options.primaryStorage = 'backblaze';
+      }
+
+      console.log(
+        chalk.green(`Primary storage set to ${options.primaryStorage}`),
+      );
+    }
+
     // Set up Backblaze if requested and not already configured
     if (
       options.backblaze &&
@@ -169,6 +254,47 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         'utf8',
       );
       console.log(chalk.green('Backblaze B2 configuration saved'));
+    }
+
+    // Set up Filesystem storage if requested and not already configured
+    if (
+      options.filesystem &&
+      (!configData.filesystem || !configData.filesystem.enabled)
+    ) {
+      console.log(
+        chalk.blue('Setting up Filesystem storage for Automerge documents...'),
+      );
+
+      // Update config
+      configData.filesystem = {
+        enabled: true,
+        storagePath: options.filesystemPath,
+        syncInterval: 30 * 1000, // 30 seconds default
+        createIfMissing: true,
+      };
+
+      // Save updated config
+      fs.writeFileSync(
+        configFilePath,
+        JSON.stringify(configData, null, 2),
+        'utf8',
+      );
+      console.log(chalk.green('Filesystem storage configuration saved'));
+    }
+
+    // Set primary storage if both storage types are enabled
+    if (options.backblaze && options.filesystem) {
+      configData.primaryStorage = options.primaryStorage || 'backblaze';
+
+      // Save updated config
+      fs.writeFileSync(
+        configFilePath,
+        JSON.stringify(configData, null, 2),
+        'utf8',
+      );
+      console.log(
+        chalk.green(`Primary storage set to ${configData.primaryStorage}`),
+      );
     }
 
     try {
@@ -218,8 +344,14 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         {cwd: projectRoot, stdio: 'inherit'},
       );
 
-      // If Backblaze is configured, copy the config too
-      if (options.backblaze) {
+      // Copy the config too if storage is configured
+      if (options.backblaze || options.filesystem) {
+        // Create the directory first
+        execSync(
+          `ssh -i "${options.key}" ${options.user}@${options.instance} "mkdir -p ~/tonk-app"`,
+          {cwd: projectRoot, stdio: 'inherit'},
+        );
+
         execSync(
           `scp -i "${options.key}" "${configFilePath}" ${options.user}@${options.instance}:~/tonk-app/tonk.config.json`,
           {cwd: projectRoot, stdio: 'inherit'},
@@ -229,7 +361,7 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       // 5. SSH into EC2 and deploy with Docker
       console.log(chalk.blue('Deploying on EC2...'));
 
-      // Build the Docker run command with environment variables for Backblaze if configured
+      // Build the Docker run command with environment variables for storage if configured
       let dockerRunCmd =
         'docker run -d --name tonk-app-container -p 8080:8080 -e PORT=8080';
 
@@ -247,12 +379,38 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         dockerRunCmd += ` -e BACKBLAZE_SYNC_INTERVAL='${configData.backblaze.syncInterval || 300000}'`;
       }
 
+      // Add Filesystem environment variables if enabled
+      if (
+        options.filesystem &&
+        configData.filesystem &&
+        configData.filesystem.enabled
+      ) {
+        dockerRunCmd += ` -e FILESYSTEM_ENABLED=true`;
+        dockerRunCmd += ` -e FILESYSTEM_STORAGE_PATH='${configData.filesystem.storagePath}'`;
+        dockerRunCmd += ` -e FILESYSTEM_SYNC_INTERVAL='${configData.filesystem.syncInterval || 30000}'`;
+        dockerRunCmd += ` -e FILESYSTEM_CREATE_MISSING='${configData.filesystem.createIfMissing}'`;
+
+        // Create a volume mount for the filesystem storage
+        dockerRunCmd += ` -v tonk-data:${configData.filesystem.storagePath}`;
+      }
+
+      // Set primary storage if both are enabled
+      if (
+        options.backblaze &&
+        options.filesystem &&
+        configData.primaryStorage
+      ) {
+        dockerRunCmd += ` -e PRIMARY_STORAGE='${configData.primaryStorage}'`;
+      }
+
       dockerRunCmd += ' tonk-app';
 
       const sshCommand = `ssh -i "${options.key}" ${options.user}@${options.instance} '
         mkdir -p tonk-app &&
         tar -xzf ${tarFileName} -C tonk-app --strip-components=1 &&
         cd tonk-app &&
+        # Create Docker volume for persistent storage if it doesn't exist
+        docker volume inspect tonk-data >/dev/null 2>&1 || docker volume create tonk-data &&
         docker build -t tonk-app . &&
         docker stop tonk-app-container || true &&
         docker rm tonk-app-container || true &&
@@ -272,7 +430,7 @@ Your app is now running at http://${options.instance}
       `),
       );
 
-      // Print Backblaze info if enabled
+      // Print storage info if enabled
       if (
         options.backblaze &&
         configData.backblaze &&
@@ -282,6 +440,32 @@ Your app is now running at http://${options.instance}
           chalk.green(`
 Backblaze B2 backup is enabled for your Automerge documents.
 Documents will be synced to your B2 bucket: ${configData.backblaze.bucketName}
+          `),
+        );
+      }
+
+      if (
+        options.filesystem &&
+        configData.filesystem &&
+        configData.filesystem.enabled
+      ) {
+        console.log(
+          chalk.green(`
+Filesystem storage is enabled for your Automerge documents.
+Documents will be stored at: ${configData.filesystem.storagePath}
+Data is persisted in a Docker volume named 'tonk-data'
+          `),
+        );
+      }
+
+      if (
+        options.backblaze &&
+        options.filesystem &&
+        configData.primaryStorage
+      ) {
+        console.log(
+          chalk.green(`
+Primary storage is set to: ${configData.primaryStorage}
           `),
         );
       }
