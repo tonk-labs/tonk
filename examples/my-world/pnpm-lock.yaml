@@ -64,11 +64,11 @@ importers:
         version: 5.0.3(@types/react@19.0.12)(react@19.0.0)
     devDependencies:
       '@tonk/cli':
-        specifier: ^0.1.4
-        version: 0.1.4(@types/eslint@9.6.1)(typescript@5.8.2)
+        specifier: ^0.1.7
+        version: 0.1.7(@types/eslint@9.6.1)(typescript@5.8.2)
       '@tonk/server':
-        specifier: ^0.1.2
-        version: 0.1.2(@types/eslint@9.6.1)(typescript@5.8.2)
+        specifier: ^0.1.3
+        version: 0.1.3(@types/eslint@9.6.1)(typescript@5.8.2)
       '@types/cors':
         specifier: ^2.8.17
         version: 2.8.17
@@ -1071,6 +1071,22 @@ packages:
     resolution: {integrity: sha512-d9zaMRSTIKDLhctzH12MtXvJKSSUhaHcjV+2Z+GK+EEY7XKpP5yR4x+N3TAcHTcu963nIr+TMcCb4DBCYX1z6Q==}
     engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
 
+  '@flystorage/aws-s3@1.0.1':
+    resolution: {integrity: sha512-eDaPBnN3+gVU115KS3RzNAI3VkGwg6JnnK0xU3T+R2kgCjNVWvhlDauZ1LQT2IP4BaxTymd3ae+Rc/BPLCaffA==}
+
+  '@flystorage/dynamic-import@1.0.0':
+    resolution: {integrity: sha512-CIbIUrBdaPFyKnkVBaqzksvzNtsMSXITR/G/6zlil3MBnPFq2LX+X4Mv5p2XOmv/3OulFs/ff2SNb+5dc2Twtg==}
+
+  '@flystorage/file-storage@1.0.1':
+    resolution: {integrity: sha512-ditKPEsBIz2ZJ96870Kq0xydv76vTA3tyoMrKK7T9VI/DS7vYJ0HSrroDzKeO7cbZ4JcoywpQwwKdcG1YlEM+w==}
+
+  '@flystorage/local-fs@1.0.1':
+    resolution: {integrity: sha512-9oS7v13Q8UDuxhsDZno97oX8oOn9cjI0LeHdgZ64rarvRzyzIVg5HQnj2y4QhX9Lsa1ovsY/xaUaa1QovSBT9w==}
+    engines: {node: '>=20.1.0'}
+
+  '@flystorage/stream-mime-type@1.0.0':
+    resolution: {integrity: sha512-f3N/E+wpJLD7grGVKM5G6PVqB1t3wA15oQ5UwuSEk1SOphAE8KOVLIjHjakLmOsJSy/cwvnKD52m5eeB/ATWMA==}
+
   '@gar/promisify@1.1.3':
     resolution: {integrity: sha512-k2Ty1JcVojjJFwrg/ThKi2ujJ7XNLYaFGNB/bWT9wGR+oSMJHMa5w+CUq6p/pVrKeNNgA7pCqEcjSnHVoqJQFw==}
 
@@ -1541,13 +1557,8 @@ packages:
   '@tokenizer/token@0.3.0':
     resolution: {integrity: sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==}
 
-  '@tonk/cli@0.1.4':
-    resolution: {integrity: sha512-oaVsU5+TiT5IHIr3SthHQLvg3QUVOrm6ThSaqnRbTtjE8lB4bw065SuD8qh3gnnk7TgObbNFmEj85gxHIZjrXg==}
-    engines: {node: '>=18'}
-    hasBin: true
-
-  '@tonk/create@0.1.4':
-    resolution: {integrity: sha512-e9AJTYS9GvC92nHRKUl9yF9EqpTg47NXoEJ/A/aeCZmO8umPQJHjQX/4UCY6dO82Th4ZpFq56G+jfzZlRodZPQ==}
+  '@tonk/cli@0.1.7':
+    resolution: {integrity: sha512-0XnRb1ulKHj4OCz43CRp3ZOrT8u9eKwvGW8vpe8a+B66+FolvNImTgkKMbm0x66tQmgD2C3PL+kjIJXUJ4ZynQ==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -1558,8 +1569,8 @@ packages:
       react: ^19.0.0
       zustand: ^5.0.3
 
-  '@tonk/server@0.1.2':
-    resolution: {integrity: sha512-+tOgffwnBJWP+YLFPjY/0M4csv6kR61hKQ6JbfT0LCDjQeD2r5N9oI8bPtzzvxg1YEXkniaxtciFbR/P00SIGw==}
+  '@tonk/server@0.1.3':
+    resolution: {integrity: sha512-CeS1OWOHY5qTvkQ/3RzVb/xF0n2xngOABscl4fUTYfqQH99qKB2iDSK7HRhhxv9fosw2b65nct0QyQTa8iCmOA==}
 
   '@tootallnate/once@1.1.2':
     resolution: {integrity: sha512-RbzJvlNzmRq5c3O09UipeuXno4tA1FE6ikOjxZK0tuxVv3412l64l5t1W5pj4+rJq9vpkm/kwiR07aZXnsKPxw==}
@@ -2928,6 +2939,10 @@ packages:
   file-entry-cache@6.0.1:
     resolution: {integrity: sha512-7Gps/XWymbLk2QLYK4NzpMOrYjMhdIxXuIvy2QBsLE6ljuodKvdkWs/cpyJJ3CVIVpH0Oi1Hvg1ovbMzLdFBBg==}
     engines: {node: ^10.12.0 || >=12.0.0}
+
+  file-type@19.6.0:
+    resolution: {integrity: sha512-VZR5I7k5wkD0HgFnMsq5hOsSc710MJMu5Nc5QYsbe38NN5iPV/XTObYLc/cpttRTf6lX538+5uO1ZQRhYibiZQ==}
+    engines: {node: '>=18'}
 
   file-type@20.4.1:
     resolution: {integrity: sha512-hw9gNZXUfZ02Jo0uafWLaFVPter5/k2rfcrjFJJHX/77xtSDOfJuEFb6oKlFV86FLP1SuyHMW1PSk0U9M5tKkQ==}
@@ -7119,6 +7134,35 @@ snapshots:
 
   '@eslint/js@8.57.1': {}
 
+  '@flystorage/aws-s3@1.0.1':
+    dependencies:
+      '@aws-sdk/client-s3': 3.758.0
+      '@aws-sdk/lib-storage': 3.758.0(@aws-sdk/client-s3@3.758.0)
+      '@aws-sdk/s3-request-presigner': 3.758.0
+      '@flystorage/file-storage': 1.0.1
+      '@flystorage/stream-mime-type': 1.0.0
+      file-type: 19.6.0
+      mime-types: 2.1.35
+    transitivePeerDependencies:
+      - aws-crt
+
+  '@flystorage/dynamic-import@1.0.0': {}
+
+  '@flystorage/file-storage@1.0.1': {}
+
+  '@flystorage/local-fs@1.0.1':
+    dependencies:
+      '@flystorage/dynamic-import': 1.0.0
+      '@flystorage/file-storage': 1.0.1
+      file-type: 19.6.0
+      mime-types: 2.1.35
+
+  '@flystorage/stream-mime-type@1.0.0':
+    dependencies:
+      '@flystorage/dynamic-import': 1.0.0
+      file-type: 19.6.0
+      mime-types: 2.1.35
+
   '@gar/promisify@1.1.3':
     optional: true
 
@@ -7820,11 +7864,9 @@ snapshots:
 
   '@tokenizer/token@0.3.0': {}
 
-  '@tonk/cli@0.1.4(@types/eslint@9.6.1)(typescript@5.8.2)':
+  '@tonk/cli@0.1.7(@types/eslint@9.6.1)(typescript@5.8.2)':
     dependencies:
-      '@modelcontextprotocol/sdk': 1.7.0
-      '@tonk/create': 0.1.4
-      '@tonk/server': 0.1.2(@types/eslint@9.6.1)(typescript@5.8.2)
+      '@tonk/server': 0.1.3(@types/eslint@9.6.1)(typescript@5.8.2)
       chalk: 5.4.1
       commander: 11.1.0
       dotenv: 16.4.7
@@ -7839,26 +7881,12 @@ snapshots:
       zod: 3.24.2
     transitivePeerDependencies:
       - '@types/eslint'
+      - aws-crt
       - bufferutil
       - debug
       - supports-color
       - typescript
       - utf-8-validate
-
-  '@tonk/create@0.1.4':
-    dependencies:
-      chalk: 5.4.1
-      commander: 11.1.0
-      execa: 8.0.1
-      fastmcp: 1.20.5
-      fs-extra: 11.3.0
-      gradient-string: 2.0.2
-      inquirer: 9.3.7
-      open: 10.1.0
-      ora: 7.0.1
-      zod: 3.24.2
-    transitivePeerDependencies:
-      - supports-color
 
   '@tonk/keepsync@0.3.2(@automerge/automerge@2.2.8)(react@19.0.0)(zustand@5.0.3(@types/react@19.0.12)(react@19.0.0))':
     dependencies:
@@ -7877,9 +7905,6 @@ snapshots:
       '@flystorage/aws-s3': 1.0.1
       '@flystorage/file-storage': 1.0.1
       '@flystorage/local-fs': 1.0.1
-  '@tonk/server@0.1.2(@types/eslint@9.6.1)(typescript@5.8.2)':
-    dependencies:
-      '@automerge/automerge': 2.2.8
       backblaze-b2: 1.7.0
       chalk: 5.4.1
       express: 4.21.2
@@ -9567,6 +9592,13 @@ snapshots:
   file-entry-cache@6.0.1:
     dependencies:
       flat-cache: 3.2.0
+
+  file-type@19.6.0:
+    dependencies:
+      get-stream: 9.0.1
+      strtok3: 9.1.1
+      token-types: 6.0.0
+      uint8array-extras: 1.4.0
 
   file-type@20.4.1:
     dependencies:
@@ -11725,7 +11757,7 @@ snapshots:
 
   send@1.1.0:
     dependencies:
-      debug: 4.3.6
+      debug: 4.4.0
       destroy: 1.2.0
       encodeurl: 2.0.0
       escape-html: 1.0.3
