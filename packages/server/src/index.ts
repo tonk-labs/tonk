@@ -166,21 +166,14 @@ export class TonkServer {
     if (!this.storageMiddleware) return;
 
     try {
-      // First check if the document exists
-      const doc = await this.storageMiddleware.getDocument(docId);
-      if (!doc) {
-        this.log('yellow', `Document ${docId} not found for sending to client`);
-        return;
-      }
-
       // Track that this client is subscribed to this document
       const subscriptions = this.connections.get(ws);
       if (subscriptions) {
         subscriptions.add(docId);
       }
 
-      // Generate a proper sync message for this client
-      // Using forClient=true ensures we send a complete sync message
+      // Generate a sync message for this client
+      // This will use in-memory documents when available
       const syncMessage =
         await this.storageMiddleware.generateSyncMessage(docId);
 
