@@ -28,7 +28,7 @@ COPY package.json ./
 # Copy lock file if it exists (supports npm, yarn, pnpm)
 COPY package-lock.json* yarn.lock* pnpm-lock.yaml* ./
 # Install tonk CLI globally in the production stage
-RUN npm install -g @tonk/cli@^0.0.2
+RUN npm install -g @tonk/cli@^0.1.4
 
 # Use appropriate install command based on available lock files
 RUN if [ -f "package-lock.json" ]; then npm ci --production; \

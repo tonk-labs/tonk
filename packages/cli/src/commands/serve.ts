@@ -8,7 +8,6 @@ export const serveCommand = new Command('serve')
   .description('Start a Tonk app in production mode')
   .option('-p, --port <port>', 'Port to run the server on', '8080')
   .option('-d, --dist <path>', 'Path to the dist directory', 'dist')
-  .option('-b, --backblaze', 'Enable Backblaze B2 storage for document backup')
   .action(async options => {
     const projectRoot = process.cwd();
     const port = parseInt(options.port, 10);
@@ -43,34 +42,57 @@ export const serveCommand = new Command('serve')
       process.exit(1);
     }
 
-    // Check for Backblaze configuration
+    // Check for Backblaze and Filesystem configurations
     let backblazeConfig = null;
-    if (options.backblaze || fs.existsSync(configFilePath)) {
+    let filesystemConfig = null;
+    let primaryStorage = null;
+
+    if (fs.existsSync(configFilePath)) {
       try {
-        if (fs.existsSync(configFilePath)) {
-          const configData = JSON.parse(
-            fs.readFileSync(configFilePath, 'utf8'),
+        const configData = JSON.parse(fs.readFileSync(configFilePath, 'utf8'));
+
+        // If backblaze is configured and enabled in the config file
+        if (configData.backblaze && configData.backblaze.enabled) {
+          backblazeConfig = {
+            enabled: true,
+            applicationKeyId: configData.backblaze.applicationKeyId,
+            applicationKey: configData.backblaze.applicationKey,
+            bucketId: configData.backblaze.bucketId,
+            bucketName: configData.backblaze.bucketName,
+            syncInterval: configData.backblaze.syncInterval || 300000, // 5 minutes default
+            maxRetries: configData.backblaze.maxRetries || 3,
+          };
+
+          console.log(chalk.blue('Backblaze B2 backup enabled from config'));
+        }
+
+        // If filesystem storage is configured and enabled in the config file
+        if (configData.filesystem && configData.filesystem.enabled) {
+          filesystemConfig = {
+            enabled: true,
+            storagePath: configData.filesystem.storagePath || '/data/tonk',
+            syncInterval: configData.filesystem.syncInterval || 30000, // 30 seconds default
+            createIfMissing: configData.filesystem.createIfMissing !== false, // default to true
+          };
+
+          console.log(chalk.blue('Filesystem storage enabled from config'));
+        }
+
+        // Check for primary storage configuration
+        if (
+          configData.primaryStorage &&
+          (configData.primaryStorage === 'backblaze' ||
+            configData.primaryStorage === 'filesystem')
+        ) {
+          primaryStorage = configData.primaryStorage;
+          console.log(
+            chalk.blue(`Primary storage set to ${primaryStorage} from config`),
           );
-
-          // If backblaze is configured and enabled in the config file
-          if (configData.backblaze && configData.backblaze.enabled) {
-            backblazeConfig = {
-              enabled: true,
-              applicationKeyId: configData.backblaze.applicationKeyId,
-              applicationKey: configData.backblaze.applicationKey,
-              bucketId: configData.backblaze.bucketId,
-              bucketName: configData.backblaze.bucketName,
-              syncInterval: configData.backblaze.syncInterval || 300000, // 5 minutes default
-              maxRetries: configData.backblaze.maxRetries || 3,
-            };
-
-            console.log(chalk.blue('Backblaze B2 backup enabled from config'));
-          }
         }
       } catch (error) {
         console.warn(
           chalk.yellow(
-            `Warning: Could not parse config file at ${configFilePath}. Backblaze backup will not be enabled.`,
+            `Warning: Could not parse config file at ${configFilePath}. Storage backups will not be enabled.`,
           ),
         );
         console.warn(chalk.yellow(`Error details: ${error}`));
@@ -80,7 +102,7 @@ export const serveCommand = new Command('serve')
     console.log(chalk.blue('Starting Tonk production server...'));
 
     try {
-      // Start the production server with Backblaze config if available
+      // Start the production server with storage configs if available
       const serverConfig: any = {
         port,
         mode: 'production',
@@ -95,6 +117,16 @@ export const serveCommand = new Command('serve')
         };
       }
 
+      // Add Filesystem configuration if available
+      if (filesystemConfig) {
+        serverConfig.filesystemStorage = filesystemConfig;
+      }
+
+      // Set primary storage if both are configured
+      if (primaryStorage && backblazeConfig && filesystemConfig) {
+        serverConfig.primaryStorage = primaryStorage;
+      }
+
       const server = await createServer(serverConfig);
 
       // Log success info
@@ -105,6 +137,23 @@ export const serveCommand = new Command('serve')
           chalk.green(`
 Backblaze B2 backup is enabled for your Automerge documents.
 Documents will be synced to your B2 bucket: ${backblazeConfig.bucketName}
+          `),
+        );
+      }
+
+      if (filesystemConfig) {
+        console.log(
+          chalk.green(`
+Filesystem storage is enabled for your Automerge documents.
+Documents will be stored at: ${filesystemConfig.storagePath}
+          `),
+        );
+      }
+
+      if (primaryStorage && backblazeConfig && filesystemConfig) {
+        console.log(
+          chalk.green(`
+Primary storage is set to: ${primaryStorage}
           `),
         );
       }

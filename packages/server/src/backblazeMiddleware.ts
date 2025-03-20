@@ -1,12 +1,12 @@
 import {
   AutomergeBackblazeStorage,
-  StorageMiddlewareOptions,
+  BackblazeStorageMiddlewareOptions,
 } from './backblazeStorage.js';
 import * as Automerge from '@automerge/automerge';
 import {DocumentId} from './types.js';
 import {logger} from './logger.js';
 
-export class StorageMiddleware {
+export class BackblazeStorageMiddleware {
   private storage: AutomergeBackblazeStorage;
   private documents: Map<DocumentId, Automerge.Doc<any>> = new Map();
   private syncStates: Map<DocumentId, Automerge.SyncState> = new Map();
@@ -14,7 +14,7 @@ export class StorageMiddleware {
   private name: string;
 
   constructor(
-    options: StorageMiddlewareOptions,
+    options: BackblazeStorageMiddlewareOptions,
     name: string = 'StorageMiddleware',
     private verbose: boolean = true,
   ) {

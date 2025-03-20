@@ -4,16 +4,20 @@ import http from 'http';
 import path from 'path';
 import chalk from 'chalk';
 import fs from 'fs';
-import {StorageMiddleware} from './storageMiddleware.js';
-import {StorageMiddlewareOptions} from './backblazeStorage.js';
+import {BackblazeStorageMiddleware} from './backblazeMiddleware.js';
+import {BackblazeStorageMiddlewareOptions} from './backblazeStorage.js';
+import {FileSystemStorageMiddleware} from './filesystemMiddleware.js';
+import {FileSystemStorageOptions} from './filesystemStorage.js';
 
 export interface ServerOptions {
   port?: number;
   mode: 'development' | 'production';
   distPath: string | undefined; // Path to the built frontend files
   verbose?: boolean;
-  storage?: StorageMiddlewareOptions | undefined;
+  storage?: BackblazeStorageMiddlewareOptions | undefined;
+  filesystemStorage?: FileSystemStorageOptions | undefined;
   syncInterval?: number; // Optional interval to trigger storage sync in ms
+  primaryStorage?: 'backblaze' | 'filesystem'; // Which storage to use as primary (default: backblaze if both configured)
 }
 
 export class TonkServer {
@@ -22,8 +26,10 @@ export class TonkServer {
   private wss: WebSocketServer;
   private connections: Map<WebSocket, Set<string>> = new Map(); // Map of connections to subscribed document IDs
   private options: ServerOptions;
-  private storageMiddleware: StorageMiddleware | null = null;
-  private syncTimer: NodeJS.Timeout | null = null;
+  private storageMiddleware: BackblazeStorageMiddleware | null = null;
+  private filesystemMiddleware: FileSystemStorageMiddleware | null = null;
+  private backblazeSyncTimer: NodeJS.Timeout | null = null;
+  private fsSyncTimer: NodeJS.Timeout | null = null;
 
   constructor(options: ServerOptions) {
     this.options = {
@@ -32,7 +38,11 @@ export class TonkServer {
       distPath: options.distPath,
       verbose: options.verbose ?? true,
       storage: options.storage,
+      filesystemStorage: options.filesystemStorage,
       syncInterval: options.syncInterval || 5 * 60 * 1000, // Default: 5 minutes
+      primaryStorage:
+        options.primaryStorage ||
+        (options.storage ? 'backblaze' : 'filesystem'),
     };
 
     // Create Express app and HTTP server
@@ -45,18 +55,27 @@ export class TonkServer {
       path: '/sync',
     });
 
-    // Initialize storage middleware if configured
+    // Initialize Backblaze storage middleware if configured
     if (this.options.storage) {
-      this.storageMiddleware = new StorageMiddleware(
+      this.storageMiddleware = new BackblazeStorageMiddleware(
         this.options.storage,
-        'TonkServer',
+        'TonkServer-Backblaze',
+        this.options.verbose,
+      );
+    }
+
+    // Initialize Filesystem storage middleware if configured
+    if (this.options.filesystemStorage) {
+      this.filesystemMiddleware = new FileSystemStorageMiddleware(
+        this.options.filesystemStorage,
+        'TonkServer-Filesystem',
         this.options.verbose,
       );
     }
 
     this.setupWebSocketHandlers();
     this.setupExpressMiddleware();
-    this.setupStorageSyncTimer();
+    this.setupStorageSyncTimers();
   }
 
   private log(color: 'green' | 'red' | 'blue' | 'yellow', message: string) {
@@ -65,11 +84,21 @@ export class TonkServer {
     }
   }
 
-  private setupStorageSyncTimer(): void {
+  private setupStorageSyncTimers(): void {
+    // Set up Backblaze sync timer if configured
     if (this.options.syncInterval && this.storageMiddleware) {
-      this.syncTimer = setInterval(() => {
+      this.backblazeSyncTimer = setInterval(() => {
         this.storageMiddleware!.forceSyncToBackblaze().catch(error => {
-          this.log('red', `Scheduled storage sync failed: ${error.message}`);
+          this.log('red', `Scheduled Backblaze sync failed: ${error.message}`);
+        });
+      }, this.options.syncInterval);
+    }
+
+    // Set up Filesystem sync timer if configured
+    if (this.options.syncInterval && this.filesystemMiddleware) {
+      this.fsSyncTimer = setInterval(() => {
+        this.filesystemMiddleware!.forceSyncToFileSystem().catch(error => {
+          this.log('red', `Scheduled Filesystem sync failed: ${error.message}`);
         });
       }, this.options.syncInterval);
     }
@@ -81,10 +110,13 @@ export class TonkServer {
       this.log('green', `Client connected`);
       this.connections.set(ws, new Set());
 
-      // Send stored documents to the new client if storage middleware is enabled
-      if (this.storageMiddleware && this.storageMiddleware.isInitialized()) {
+      // Determine which storage middleware to use for initial document loading
+      const primaryMiddleware = this.getPrimaryStorageMiddleware();
+
+      // Send stored documents to the new client if a primary storage middleware is enabled
+      if (primaryMiddleware && primaryMiddleware.isInitialized()) {
         // Get all document IDs
-        const docIds = this.storageMiddleware.getAllDocumentIds();
+        const docIds = primaryMiddleware.getAllDocumentIds();
 
         if (docIds.length > 0) {
           this.log(
@@ -123,9 +155,10 @@ export class TonkServer {
             return;
           }
 
-          // Then process through storage middleware if available
-          if (this.storageMiddleware) {
-            const result = await this.storageMiddleware.handleIncomingChanges(
+          // Process through primary storage middleware first if available
+          const primaryMiddleware = this.getPrimaryStorageMiddleware();
+          if (primaryMiddleware) {
+            const result = await primaryMiddleware.handleIncomingChanges(
               messageData.docId,
               messageData.changes,
             );
@@ -136,6 +169,12 @@ export class TonkServer {
               if (subscriptions) {
                 subscriptions.add(messageData.docId);
               }
+
+              // Also propagate to secondary storage if available
+              await this.propagateToSecondaryStorage(
+                messageData.docId,
+                messageData.changes,
+              );
             }
           }
         } catch (error) {
@@ -159,11 +198,69 @@ export class TonkServer {
     });
   }
 
+  // Get the primary storage middleware based on configuration
+  private getPrimaryStorageMiddleware():
+    | BackblazeStorageMiddleware
+    | FileSystemStorageMiddleware
+    | null {
+    if (this.options.primaryStorage === 'backblaze' && this.storageMiddleware) {
+      return this.storageMiddleware;
+    } else if (
+      this.options.primaryStorage === 'filesystem' &&
+      this.filesystemMiddleware
+    ) {
+      return this.filesystemMiddleware;
+    } else if (this.storageMiddleware) {
+      return this.storageMiddleware;
+    } else if (this.filesystemMiddleware) {
+      return this.filesystemMiddleware;
+    }
+    return null;
+  }
+
+  // Get the secondary storage middleware
+  private getSecondaryStorageMiddleware():
+    | BackblazeStorageMiddleware
+    | FileSystemStorageMiddleware
+    | null {
+    if (
+      this.options.primaryStorage === 'backblaze' &&
+      this.filesystemMiddleware
+    ) {
+      return this.filesystemMiddleware;
+    } else if (
+      this.options.primaryStorage === 'filesystem' &&
+      this.storageMiddleware
+    ) {
+      return this.storageMiddleware;
+    }
+    return null;
+  }
+
+  // Propagate changes to secondary storage if available
+  private async propagateToSecondaryStorage(
+    docId: string,
+    changes: Uint8Array | number[],
+  ): Promise<void> {
+    const secondaryMiddleware = this.getSecondaryStorageMiddleware();
+    if (secondaryMiddleware) {
+      try {
+        await secondaryMiddleware.handleIncomingChanges(docId, changes);
+      } catch (error) {
+        this.log(
+          'red',
+          `Error propagating changes to secondary storage: ${(error as Error).message}`,
+        );
+      }
+    }
+  }
+
   private async sendDocumentToClient(
     ws: WebSocket,
     docId: string,
   ): Promise<void> {
-    if (!this.storageMiddleware) return;
+    const primaryMiddleware = this.getPrimaryStorageMiddleware();
+    if (!primaryMiddleware) return;
 
     try {
       // Track that this client is subscribed to this document
@@ -174,8 +271,7 @@ export class TonkServer {
 
       // Generate a sync message for this client
       // This will use in-memory documents when available
-      const syncMessage =
-        await this.storageMiddleware.generateSyncMessage(docId);
+      const syncMessage = await primaryMiddleware.generateSyncMessage(docId);
 
       if (syncMessage && syncMessage.length > 0) {
         const message = {
@@ -315,20 +411,36 @@ export class TonkServer {
 
   public stop(): Promise<void> {
     return new Promise(async (resolve, reject) => {
-      // Stop the sync timer
-      if (this.syncTimer) {
-        clearInterval(this.syncTimer);
-        this.syncTimer = null;
+      // Stop the sync timers
+      if (this.backblazeSyncTimer) {
+        clearInterval(this.backblazeSyncTimer);
+        this.backblazeSyncTimer = null;
       }
 
-      // Shut down storage middleware if enabled
+      if (this.fsSyncTimer) {
+        clearInterval(this.fsSyncTimer);
+        this.fsSyncTimer = null;
+      }
+
+      // Shut down storage middlewares if enabled
       if (this.storageMiddleware) {
         try {
           await this.storageMiddleware.shutdown();
         } catch (error) {
           this.log(
             'red',
-            `Error shutting down storage middleware: ${(error as Error).message}`,
+            `Error shutting down Backblaze middleware: ${(error as Error).message}`,
+          );
+        }
+      }
+
+      if (this.filesystemMiddleware) {
+        try {
+          await this.filesystemMiddleware.shutdown();
+        } catch (error) {
+          this.log(
+            'red',
+            `Error shutting down Filesystem middleware: ${(error as Error).message}`,
           );
         }
       }
@@ -360,6 +472,93 @@ export class TonkServer {
     if (this.storageMiddleware) {
       return this.storageMiddleware.reloadFromBackblaze();
     }
+  }
+
+  // Force sync all documents to Filesystem
+  public async forceSyncToFileSystem(): Promise<void> {
+    if (this.filesystemMiddleware) {
+      return this.filesystemMiddleware.forceSyncToFileSystem();
+    }
+  }
+
+  // Reload all documents from Filesystem
+  public async reloadFromFileSystem(): Promise<void> {
+    if (this.filesystemMiddleware) {
+      return this.filesystemMiddleware.reloadFromFileSystem();
+    }
+  }
+
+  // Sync document from primary to secondary storage
+  public async syncDocumentBetweenStorages(docId: string): Promise<boolean> {
+    const primary = this.getPrimaryStorageMiddleware();
+    const secondary = this.getSecondaryStorageMiddleware();
+
+    if (!primary || !secondary) {
+      this.log(
+        'yellow',
+        'Cannot sync between storages - both storages need to be configured',
+      );
+      return false;
+    }
+
+    try {
+      // Get document from primary storage
+      const doc = await primary.getDocument(docId);
+      if (!doc) {
+        this.log('yellow', `Document ${docId} not found in primary storage`);
+        return false;
+      }
+
+      // Get sync message from primary
+      const syncMessage = await primary.generateSyncMessage(docId);
+      if (!syncMessage) {
+        this.log('yellow', `No sync message generated for document ${docId}`);
+        return false;
+      }
+
+      // Apply to secondary
+      const result = await secondary.handleIncomingChanges(docId, syncMessage);
+
+      this.log(
+        'green',
+        `Document ${docId} synced between storages (changes: ${result.didChange})`,
+      );
+      return result.didChange;
+    } catch (error) {
+      this.log(
+        'red',
+        `Error syncing document ${docId} between storages: ${(error as Error).message}`,
+      );
+      return false;
+    }
+  }
+
+  // Sync all documents between primary and secondary storage
+  public async syncAllDocumentsBetweenStorages(): Promise<number> {
+    const primary = this.getPrimaryStorageMiddleware();
+    const secondary = this.getSecondaryStorageMiddleware();
+
+    if (!primary || !secondary) {
+      this.log(
+        'yellow',
+        'Cannot sync between storages - both storages need to be configured',
+      );
+      return 0;
+    }
+
+    const docIds = primary.getAllDocumentIds();
+    let syncedCount = 0;
+
+    for (const docId of docIds) {
+      const success = await this.syncDocumentBetweenStorages(docId);
+      if (success) syncedCount++;
+    }
+
+    this.log(
+      'green',
+      `Synced ${syncedCount} of ${docIds.length} documents between storages`,
+    );
+    return syncedCount;
   }
 }
 

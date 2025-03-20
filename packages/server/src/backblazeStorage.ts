@@ -16,7 +16,7 @@ export interface BackblazeStorageOptions {
   tempDir?: string;
 }
 
-export interface StorageMiddlewareOptions {
+export interface BackblazeStorageMiddlewareOptions {
   backblaze?: BackblazeStorageOptions;
 }
 
@@ -26,7 +26,7 @@ interface UploadUrlResponse {
 }
 
 export class AutomergeBackblazeStorage {
-  private options: StorageMiddlewareOptions;
+  private options: BackblazeStorageMiddlewareOptions;
   private b2Client: B2 | null = null;
   private uploadUrlCache: UploadUrlResponse | null = null;
   private syncTimer: NodeJS.Timeout | null = null;
@@ -41,7 +41,7 @@ export class AutomergeBackblazeStorage {
   private modifiedDocIds: Set<string> = new Set();
 
   constructor(
-    options: StorageMiddlewareOptions,
+    options: BackblazeStorageMiddlewareOptions,
     logFunction: (
       color: 'green' | 'red' | 'blue' | 'yellow',
       message: string,

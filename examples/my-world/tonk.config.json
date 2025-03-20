@@ -7,13 +7,10 @@
   "websocket": {
     "url": "ws://ec2-51-21-246-155.eu-north-1.compute.amazonaws.com"
   },
-  "backblaze": {
+  "filesystem": {
     "enabled": true,
-    "applicationKeyId": "0030915a34facdb0000000002",
-    "applicationKey": "K003A9Av5hH9zsSLckUtk6JFAMlYOXc",
-    "bucketId": "30a981a50a43b44f9a5c0d1b",
-    "bucketName": "my-world",
-    "syncInterval": 300000,
-    "maxRetries": 3
+    "storagePath": "./tonk-data",
+    "syncInterval": 30000,
+    "createIfMissing": true
   }
 }
