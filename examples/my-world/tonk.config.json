@@ -9,9 +9,9 @@
   },
   "backblaze": {
     "enabled": true,
-    "applicationKeyId": "0030915a34facdb0000000002",
-    "applicationKey": "K003A9Av5hH9zsSLckUtk6JFAMlYOXc",
-    "bucketId": "30a981a50a43b44f9a5c0d1b",
+    "applicationKeyId": "0030915a34facdb0000000003",
+    "applicationKey": "K003Y+hGJp9dXYN2R3pF/4OWjq3ppDQ",
+    "bucketId": "a02951155ad3b44f9a5c0d1b",
     "bucketName": "my-world",
     "syncInterval": 300000,
     "maxRetries": 3
