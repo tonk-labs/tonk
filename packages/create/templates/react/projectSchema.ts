@@ -7,9 +7,9 @@ interface ProjectInstructions {
 }
 
 class ThisProject implements ProjectInstructions {
-  global = { recipe: 'RECIPE.md' };
-  components = { recipe: 'src/components/RECIPE.md' };
-  modules = { recipe: 'src/modules/RECIPE.md' };
-  stores = { recipe: 'src/stores/RECIPE.md' };
-  views = { recipe: 'src/views/RECIPE.md' };
+  global = { recipe: "llms.txt" };
+  components = { recipe: "src/components/llms.txt" };
+  modules = { recipe: "src/modules/llms.txt" };
+  stores = { recipe: "src/stores/llms.txt" };
+  views = { recipe: "src/views/llms.txt" };
 }
