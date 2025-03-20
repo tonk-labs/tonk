@@ -29,15 +29,6 @@ export const deployCommand = new Command('deploy')
   .option('-t, --token <token>', 'Pinggy.io access token')
   .option('-b, --backblaze', 'Enable Backblaze B2 storage for document backup')
   .option('-f, --filesystem', 'Enable filesystem storage for document backup')
-  .option(
-    '--filesystem-path <path>',
-    'Path for filesystem storage',
-    '/tonk-data',
-  )
-  .option(
-    '--primary-storage <type>',
-    'Primary storage (backblaze or filesystem)',
-  )
   .action(async options => {
     const projectRoot = process.cwd();
     const configFilePath = path.join(projectRoot, 'tonk.config.json');
@@ -174,6 +165,8 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       if (options.filesystem) {
         console.log(chalk.green('Filesystem storage will be enabled'));
 
+        // Ask for all filesystem configuration options
+
         // Ask for storage path if not provided
         if (
           !options.filesystemPath &&
@@ -181,14 +174,57 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         ) {
           options.filesystemPath = (await promptUser(
             chalk.yellow(
-              `Enter path for filesystem storage (default: /data/tonk): `,
+              `Enter path for filesystem storage (default: /tonk-data): `,
             ),
           )) as string;
 
           // Use default if empty
           if (!options.filesystemPath.trim()) {
-            options.filesystemPath = '/data/tonk';
+            options.filesystemPath = '/tonk-data';
           }
+        }
+
+        // Ask for sync interval
+        if (!configData.filesystem || !configData.filesystem.syncInterval) {
+          const syncIntervalInput = await promptUser(
+            chalk.yellow(
+              `Enter sync interval in milliseconds (default: 30000 - 30 seconds): `,
+            ),
+          );
+
+          // Parse the input or use default
+          options.filesystemSyncInterval = (syncIntervalInput as string).trim()
+            ? parseInt(syncIntervalInput as string, 10)
+            : 30000;
+
+          if (
+            isNaN(options.filesystemSyncInterval) ||
+            options.filesystemSyncInterval < 1000
+          ) {
+            console.log(
+              chalk.yellow(
+                'Invalid sync interval. Using default of 30000ms (30 seconds).',
+              ),
+            );
+            options.filesystemSyncInterval = 30000;
+          }
+        }
+
+        // Ask about creating missing directories
+        if (
+          !configData.filesystem ||
+          configData.filesystem.createIfMissing === undefined
+        ) {
+          const createMissingInput = await promptUser(
+            chalk.yellow(
+              `Create missing directories automatically? (yes/no, default: yes): `,
+            ),
+          );
+
+          // Default to true if empty or starts with 'y'
+          const inputStr = (createMissingInput as string).toLowerCase().trim();
+          options.filesystemCreateMissing =
+            !inputStr || inputStr.startsWith('y');
         }
       } else {
         console.log(chalk.blue('Filesystem storage will not be enabled'));
@@ -265,12 +301,12 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         chalk.blue('Setting up Filesystem storage for Automerge documents...'),
       );
 
-      // Update config
+      // Update config with all the options
       configData.filesystem = {
         enabled: true,
-        storagePath: options.filesystemPath,
-        syncInterval: 30 * 1000, // 30 seconds default
-        createIfMissing: true,
+        storagePath: options.filesystemPath || '/tonk-data',
+        syncInterval: options.filesystemSyncInterval || 30 * 1000, // 30 seconds default
+        createIfMissing: options.filesystemCreateMissing !== false, // default to true
       };
 
       // Save updated config
