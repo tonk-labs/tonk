@@ -4,20 +4,26 @@ import http from 'http';
 import path from 'path';
 import chalk from 'chalk';
 import fs from 'fs';
+import {StorageMiddleware} from './storageMiddleware.js';
+import {StorageMiddlewareOptions} from './backblazeStorage.js';
 
 export interface ServerOptions {
   port?: number;
   mode: 'development' | 'production';
   distPath: string | undefined; // Path to the built frontend files
   verbose?: boolean;
+  storage?: StorageMiddlewareOptions | undefined;
+  syncInterval?: number; // Optional interval to trigger storage sync in ms
 }
 
 export class TonkServer {
   private app: express.Application;
   private server: http.Server;
   private wss: WebSocketServer;
-  private connections: Set<WebSocket> = new Set();
+  private connections: Map<WebSocket, Set<string>> = new Map(); // Map of connections to subscribed document IDs
   private options: ServerOptions;
+  private storageMiddleware: StorageMiddleware | null = null;
+  private syncTimer: NodeJS.Timeout | null = null;
 
   constructor(options: ServerOptions) {
     this.options = {
@@ -25,6 +31,8 @@ export class TonkServer {
       mode: options.mode,
       distPath: options.distPath,
       verbose: options.verbose ?? true,
+      storage: options.storage,
+      syncInterval: options.syncInterval || 5 * 60 * 1000, // Default: 5 minutes
     };
 
     // Create Express app and HTTP server
@@ -37,23 +45,105 @@ export class TonkServer {
       path: '/sync',
     });
 
+    // Initialize storage middleware if configured
+    if (this.options.storage) {
+      this.storageMiddleware = new StorageMiddleware(
+        this.options.storage,
+        'TonkServer',
+        this.options.verbose,
+      );
+    }
+
     this.setupWebSocketHandlers();
     this.setupExpressMiddleware();
+    this.setupStorageSyncTimer();
+  }
+
+  private log(color: 'green' | 'red' | 'blue' | 'yellow', message: string) {
+    if (this.options.verbose) {
+      console.log(chalk[color](message));
+    }
+  }
+
+  private setupStorageSyncTimer(): void {
+    if (this.options.syncInterval && this.storageMiddleware) {
+      this.syncTimer = setInterval(() => {
+        this.storageMiddleware!.forceSyncToBackblaze().catch(error => {
+          this.log('red', `Scheduled storage sync failed: ${error.message}`);
+        });
+      }, this.options.syncInterval);
+    }
   }
 
   private setupWebSocketHandlers() {
     // Handle WebSocket connections
     this.wss.on('connection', (ws: WebSocket) => {
       this.log('green', `Client connected`);
-      this.connections.add(ws);
+      this.connections.set(ws, new Set());
+
+      // Send stored documents to the new client if storage middleware is enabled
+      if (this.storageMiddleware && this.storageMiddleware.isInitialized()) {
+        // Get all document IDs
+        const docIds = this.storageMiddleware.getAllDocumentIds();
+
+        if (docIds.length > 0) {
+          this.log(
+            'blue',
+            `Sending ${docIds.length} stored documents to new client`,
+          );
+
+          // Send each document to the client
+          for (const docId of docIds) {
+            this.sendDocumentToClient(ws, docId);
+          }
+        }
+      }
 
       // Handle messages from clients
-      ws.on('message', (data: Buffer) => {
-        this.connections.forEach(client => {
-          if (client !== ws && client.readyState === WebSocket.OPEN) {
-            client.send(data.toString());
+      ws.on('message', async (data: Buffer) => {
+        try {
+          let messageData: any;
+          try {
+            // Try to parse the message
+            messageData = JSON.parse(data.toString());
+          } catch (error) {
+            // Not JSON, treat as binary data
+            messageData = null;
           }
-        });
+
+          // First, forward the raw message immediately to all other clients for real-time sync
+          this.connections.forEach((_, client) => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(data);
+            }
+          });
+
+          // Don't continue with storage if it's not a JSON message or doesn't have docId
+          if (!messageData || !messageData.docId || !messageData.changes) {
+            return;
+          }
+
+          // Then process through storage middleware if available
+          if (this.storageMiddleware) {
+            const result = await this.storageMiddleware.handleIncomingChanges(
+              messageData.docId,
+              messageData.changes,
+            );
+
+            if (result && result.didChange) {
+              // Track that this client is subscribed to this document
+              const subscriptions = this.connections.get(ws);
+              if (subscriptions) {
+                subscriptions.add(messageData.docId);
+              }
+            }
+          }
+        } catch (error) {
+          this.log(
+            'red',
+            `Error processing message: ${(error as Error).message}`,
+          );
+        }
       });
 
       // Handle client disconnection
@@ -67,6 +157,49 @@ export class TonkServer {
         this.log('red', `WebSocket error: ${error.message}`);
       });
     });
+  }
+
+  private async sendDocumentToClient(
+    ws: WebSocket,
+    docId: string,
+  ): Promise<void> {
+    if (!this.storageMiddleware) return;
+
+    try {
+      // Track that this client is subscribed to this document
+      const subscriptions = this.connections.get(ws);
+      if (subscriptions) {
+        subscriptions.add(docId);
+      }
+
+      // Generate a sync message for this client
+      // This will use in-memory documents when available
+      const syncMessage =
+        await this.storageMiddleware.generateSyncMessage(docId);
+
+      if (syncMessage && syncMessage.length > 0) {
+        const message = {
+          docId,
+          changes: Array.from(syncMessage),
+        };
+
+        this.log(
+          'blue',
+          `Sending document ${docId} sync message to client (${syncMessage.length} bytes)`,
+        );
+        ws.send(JSON.stringify(message));
+      } else {
+        this.log(
+          'yellow',
+          `No sync message generated for document ${docId}, document may be empty`,
+        );
+      }
+    } catch (error) {
+      this.log(
+        'red',
+        `Error sending document ${docId}: ${(error as Error).message}`,
+      );
+    }
   }
 
   private setupExpressMiddleware() {
@@ -146,12 +279,6 @@ export class TonkServer {
     }
   }
 
-  private log(color: 'green' | 'red' | 'blue' | 'yellow', message: string) {
-    if (this.options.verbose) {
-      console.log(chalk[color](message));
-    }
-  }
-
   public start(): Promise<void> {
     return new Promise(async resolve => {
       if (this.options.mode === 'production' && this.options.distPath) {
@@ -187,8 +314,26 @@ export class TonkServer {
   }
 
   public stop(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.connections.forEach(conn => {
+    return new Promise(async (resolve, reject) => {
+      // Stop the sync timer
+      if (this.syncTimer) {
+        clearInterval(this.syncTimer);
+        this.syncTimer = null;
+      }
+
+      // Shut down storage middleware if enabled
+      if (this.storageMiddleware) {
+        try {
+          await this.storageMiddleware.shutdown();
+        } catch (error) {
+          this.log(
+            'red',
+            `Error shutting down storage middleware: ${(error as Error).message}`,
+          );
+        }
+      }
+
+      this.connections.forEach((_, conn) => {
         conn.terminate();
       });
       this.connections.clear();
@@ -201,6 +346,20 @@ export class TonkServer {
         }
       });
     });
+  }
+
+  // Force sync all documents to Backblaze
+  public async forceSyncToBackblaze(): Promise<void> {
+    if (this.storageMiddleware) {
+      return this.storageMiddleware.forceSyncToBackblaze();
+    }
+  }
+
+  // Reload all documents from Backblaze
+  public async reloadFromBackblaze(): Promise<void> {
+    if (this.storageMiddleware) {
+      return this.storageMiddleware.reloadFromBackblaze();
+    }
   }
 }
 

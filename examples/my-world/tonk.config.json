@@ -2,9 +2,18 @@
   "ec2": {
     "instance": "ec2-51-21-246-155.eu-north-1.compute.amazonaws.com",
     "user": "ec2-user",
-    "keyPath": "/Users/jackdouglas/tonk/ipn/examples/my-world/test.pem"
+    "keyPath": "/Users/jackdouglas/tonk/tonk/examples/my-world/test.pem"
   },
   "websocket": {
     "url": "ws://ec2-51-21-246-155.eu-north-1.compute.amazonaws.com"
+  },
+  "backblaze": {
+    "enabled": true,
+    "applicationKeyId": "0030915a34facdb0000000002",
+    "applicationKey": "K003A9Av5hH9zsSLckUtk6JFAMlYOXc",
+    "bucketId": "30a981a50a43b44f9a5c0d1b",
+    "bucketName": "my-world",
+    "syncInterval": 300000,
+    "maxRetries": 3
   }
 }
