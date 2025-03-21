@@ -23,12 +23,14 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# Copy tonk config
+COPY tonk.config.json ./
 # Copy package files and install production dependencies
 COPY package.json ./
 # Copy lock file if it exists (supports npm, yarn, pnpm)
 COPY package-lock.json* yarn.lock* pnpm-lock.yaml* ./
 # Install tonk CLI globally in the production stage
-RUN npm install -g @tonk/cli@^0.1.9
+RUN npm install -g @tonk/cli@^0.1.12
 
 # Use appropriate install command based on available lock files
 RUN if [ -f "package-lock.json" ]; then npm ci --production; \
@@ -36,6 +38,9 @@ RUN if [ -f "package-lock.json" ]; then npm ci --production; \
   elif [ -f "pnpm-lock.yaml" ]; then npm install -g pnpm && pnpm install --prod; \
   else npm install --production; \
   fi
+
+# Create fallback data directory
+RUN mkdir -p /tmp/tonk-data && chmod 777 /tmp/tonk-data
 
 # Copy built app from build stage
 COPY --from=build /app/dist ./dist
