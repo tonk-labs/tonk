@@ -4,6 +4,26 @@ import fs from 'fs';
 import {createServer} from '@tonk/server';
 import chalk from 'chalk';
 
+function normalizePath(inputPath: string): string {
+  // If path starts with ~, expand to home directory
+  if (inputPath.startsWith('~/')) {
+    const homedir = process.env.HOME || process.env.USERPROFILE || '/home/node';
+    return path.join(homedir, inputPath.substring(2));
+  }
+
+  // If path is an absolute path not in the user's home directory, redirect it
+  if (
+    inputPath.startsWith('/') &&
+    !inputPath.startsWith('/home/') &&
+    !inputPath.includes('node_modules')
+  ) {
+    const homedir = process.env.HOME || process.env.USERPROFILE || '/home/node';
+    return path.join(homedir, 'tonk-data', inputPath);
+  }
+
+  return inputPath;
+}
+
 export const serveCommand = new Command('serve')
   .description('Start a Tonk app in production mode')
   .option('-p, --port <port>', 'Port to run the server on', '8080')
@@ -68,9 +88,12 @@ export const serveCommand = new Command('serve')
 
         // If filesystem storage is configured and enabled in the config file
         if (configData.filesystem && configData.filesystem.enabled) {
+          let storagePath = configData.filesystem.storagePath || '~/tonk-data';
+          storagePath = normalizePath(storagePath);
+
           filesystemConfig = {
             enabled: true,
-            storagePath: configData.filesystem.storagePath || '~/tonk-data',
+            storagePath,
             syncInterval: configData.filesystem.syncInterval || 30000, // 30 seconds default
             createIfMissing: configData.filesystem.createIfMissing !== false, // default to true
           };

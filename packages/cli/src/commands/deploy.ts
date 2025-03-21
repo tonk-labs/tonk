@@ -180,6 +180,21 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
           if (!options.filesystemPath.trim()) {
             options.filesystemPath = '~/tonk-data';
           }
+
+          // If path starts with / and is not in the user's home directory, modify it
+          if (
+            options.filesystemPath.startsWith('/') &&
+            !options.filesystemPath.startsWith('/home/') &&
+            !options.filesystemPath.startsWith('~/')
+          ) {
+            const originalPath = options.filesystemPath;
+            options.filesystemPath = `~/tonk-data${options.filesystemPath}`;
+            console.log(
+              chalk.yellow(
+                `Storage path changed from ${originalPath} to ${options.filesystemPath} to avoid permission issues`,
+              ),
+            );
+          }
         }
 
         // Ask for sync interval
@@ -413,6 +428,25 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         dockerRunCmd += ` -e BACKBLAZE_SYNC_INTERVAL='${configData.backblaze.syncInterval || 300000}'`;
       }
 
+      function formatDockerPath(storagePath: string): string {
+        // Remove trailing slashes for consistency
+        storagePath = storagePath.replace(/\/+$/, '');
+
+        // If path starts with tilde, we need to resolve it on the EC2 host
+        if (storagePath.startsWith('~/')) {
+          // This will be run on the EC2 instance to resolve the tilde
+          const resolvePathCmd = `echo ${storagePath}`;
+          const resolvedPath = execSync(
+            `ssh -i "${options.key}" ${options.user}@${options.instance} "${resolvePathCmd}"`,
+            {cwd: projectRoot, encoding: 'utf8'},
+          ).trim();
+
+          return resolvedPath;
+        }
+
+        return storagePath;
+      }
+
       // Add Filesystem environment variables if enabled
       if (
         options.filesystem &&
@@ -421,47 +455,31 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       ) {
         let storagePath = configData.filesystem.storagePath || '~/tonk-data';
 
-        // If path starts with / and is not in the user's home directory, modify it to be in the home directory
-        if (
-          storagePath.startsWith('/') &&
-          !storagePath.startsWith('/home/') &&
-          !storagePath.startsWith('~/')
-        ) {
-          const originalPath = storagePath;
-          storagePath = `~/tonk-data${storagePath}`;
-          console.log(
-            chalk.yellow(
-              `Storage path changed from ${originalPath} to ${storagePath} to avoid permission issues`,
-            ),
-          );
-        }
+        // Get the fully resolved path on the EC2 host
+        const resolvedPath = formatDockerPath(storagePath);
 
-        // Create the directory on the host machine before mounting
-        const createDirCmd = `mkdir -p ${storagePath} && chmod 755 ${storagePath}`;
+        // Create the directory on the host machine with proper permissions
+        const createDirCmd = `mkdir -p ${resolvedPath} && chmod 755 ${resolvedPath}`;
         console.log(
-          chalk.blue(`Creating storage directory on host: ${storagePath}`),
+          chalk.blue(`Creating storage directory on host: ${resolvedPath}`),
         );
+
         execSync(
           `ssh -i "${options.key}" ${options.user}@${options.instance} "${createDirCmd}"`,
           {cwd: projectRoot, stdio: 'inherit'},
         );
 
-        // Add volume mount to Docker run command with proper user permissions
-        // Resolve the full path if it contains a tilde
-        const resolvePathCmd = `echo ${storagePath}`;
-        const resolvedPath = execSync(
-          `ssh -i "${options.key}" ${options.user}@${options.instance} "${resolvePathCmd}"`,
-          {cwd: projectRoot, encoding: 'utf8'},
-        ).trim();
-
+        // Add volume mount to Docker run command
         dockerRunCmd += ` -v ${resolvedPath}:${resolvedPath}`;
-        // Add user mapping to ensure container can write to the volume
-        dockerRunCmd += ` -u $(id -u):$(id -g)`;
 
+        // Pass the exact same path to the container
         dockerRunCmd += ` -e FILESYSTEM_ENABLED=true`;
-        dockerRunCmd += ` -e FILESYSTEM_STORAGE_PATH='${storagePath}'`;
+        dockerRunCmd += ` -e FILESYSTEM_STORAGE_PATH='${resolvedPath}'`;
         dockerRunCmd += ` -e FILESYSTEM_SYNC_INTERVAL='${configData.filesystem.syncInterval || 30000}'`;
         dockerRunCmd += ` -e FILESYSTEM_CREATE_MISSING='true'`;
+
+        // Add this to the Docker run command to ensure proper volume permissions
+        dockerRunCmd += ' --mount type=tmpfs,destination=/tmp,tmpfs-mode=1777';
       }
 
       // Set primary storage if both are enabled
