@@ -70,7 +70,7 @@ export const serveCommand = new Command('serve')
         if (configData.filesystem && configData.filesystem.enabled) {
           filesystemConfig = {
             enabled: true,
-            storagePath: configData.filesystem.storagePath || '/data/tonk',
+            storagePath: configData.filesystem.storagePath || '~/tonk-data',
             syncInterval: configData.filesystem.syncInterval || 30000, // 30 seconds default
             createIfMissing: configData.filesystem.createIfMissing !== false, // default to true
           };

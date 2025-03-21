@@ -165,8 +165,6 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       if (options.filesystem) {
         console.log(chalk.green('Filesystem storage will be enabled'));
 
-        // Ask for all filesystem configuration options
-
         // Ask for storage path if not provided
         if (
           !options.filesystemPath &&
@@ -174,13 +172,13 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         ) {
           options.filesystemPath = (await promptUser(
             chalk.yellow(
-              `Enter path for filesystem storage (default: /.tonk-data): `,
+              `Enter path for filesystem storage (default: ~/tonk-data): `,
             ),
           )) as string;
 
           // Use default if empty
           if (!options.filesystemPath.trim()) {
-            options.filesystemPath = '/.tonk-data';
+            options.filesystemPath = '~/tonk-data';
           }
         }
 
@@ -304,7 +302,7 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       // Update config with all the options
       configData.filesystem = {
         enabled: true,
-        storagePath: options.filesystemPath || '/.tonk-data',
+        storagePath: options.filesystemPath || '~/tonk-data',
         syncInterval: options.filesystemSyncInterval || 30 * 1000, // 30 seconds default
         createIfMissing: options.filesystemCreateMissing !== false, // default to true
       };
@@ -421,10 +419,49 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         configData.filesystem &&
         configData.filesystem.enabled
       ) {
+        let storagePath = configData.filesystem.storagePath || '~/tonk-data';
+
+        // If path starts with / and is not in the user's home directory, modify it to be in the home directory
+        if (
+          storagePath.startsWith('/') &&
+          !storagePath.startsWith('/home/') &&
+          !storagePath.startsWith('~/')
+        ) {
+          const originalPath = storagePath;
+          storagePath = `~/tonk-data${storagePath}`;
+          console.log(
+            chalk.yellow(
+              `Storage path changed from ${originalPath} to ${storagePath} to avoid permission issues`,
+            ),
+          );
+        }
+
+        // Create the directory on the host machine before mounting
+        const createDirCmd = `mkdir -p ${storagePath} && chmod 755 ${storagePath} && chown -R $(id -u):$(id -g) ${storagePath}`;
+        console.log(
+          chalk.blue(`Creating storage directory on host: ${storagePath}`),
+        );
+        execSync(
+          `ssh -i "${options.key}" ${options.user}@${options.instance} "${createDirCmd}"`,
+          {cwd: projectRoot, stdio: 'inherit'},
+        );
+
+        // Add volume mount to Docker run command with proper user permissions
+        // Resolve the full path if it contains a tilde
+        const resolvePathCmd = `echo ${storagePath}`;
+        const resolvedPath = execSync(
+          `ssh -i "${options.key}" ${options.user}@${options.instance} "${resolvePathCmd}"`,
+          {cwd: projectRoot, encoding: 'utf8'},
+        ).trim();
+
+        dockerRunCmd += ` -v ${resolvedPath}:${resolvedPath}`;
+        // Add user mapping to ensure container can write to the volume
+        dockerRunCmd += ` -u $(id -u):$(id -g)`;
+
         dockerRunCmd += ` -e FILESYSTEM_ENABLED=true`;
-        dockerRunCmd += ` -e FILESYSTEM_STORAGE_PATH='${configData.filesystem.storagePath}'`;
+        dockerRunCmd += ` -e FILESYSTEM_STORAGE_PATH='${storagePath}'`;
         dockerRunCmd += ` -e FILESYSTEM_SYNC_INTERVAL='${configData.filesystem.syncInterval || 30000}'`;
-        dockerRunCmd += ` -e FILESYSTEM_CREATE_MISSING='${configData.filesystem.createIfMissing}'`;
+        dockerRunCmd += ` -e FILESYSTEM_CREATE_MISSING='true'`;
       }
 
       // Set primary storage if both are enabled

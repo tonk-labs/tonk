@@ -8,12 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@modelcontextprotocol/sdk':
-        specifier: ^1.6.1
-        version: 1.7.0
-      '@tonk/create':
-        specifier: ^0.1.1
-        version: 0.1.3
       '@tonk/server':
         specifier: ^0.1.0
         version: 0.1.1
@@ -576,11 +570,6 @@ packages:
 
   '@tokenizer/token@0.3.0':
     resolution: {integrity: sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==}
-
-  '@tonk/create@0.1.3':
-    resolution: {integrity: sha512-I3ZuhsyXQ5e2D+OrCGIJaG/Sqsm+i5ZZEJRxv8A2Ilabs4xWVcvIqrMph8FFVabI+6HsOqxMM3AspigIUxwWAQ==}
-    engines: {node: '>=18'}
-    hasBin: true
 
   '@tonk/server@0.1.1':
     resolution: {integrity: sha512-6OlqG4fF6w4zHSUL6RpKlC41vJ99nXC+ES/3AYeTCEwo3N271XEl3w8ZETsz/fcccRw5F0DD4zMg4cdTiLdy9A==}
@@ -3101,21 +3090,6 @@ snapshots:
       - supports-color
 
   '@tokenizer/token@0.3.0': {}
-
-  '@tonk/create@0.1.3':
-    dependencies:
-      chalk: 5.4.1
-      commander: 11.1.0
-      execa: 8.0.1
-      fastmcp: 1.20.5
-      fs-extra: 11.3.0
-      gradient-string: 2.0.2
-      inquirer: 9.3.7
-      open: 10.1.0
-      ora: 7.0.1
-      zod: 3.24.2
-    transitivePeerDependencies:
-      - supports-color
 
   '@tonk/server@0.1.1':
     dependencies:
