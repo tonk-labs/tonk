@@ -437,7 +437,7 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
         }
 
         // Create the directory on the host machine before mounting
-        const createDirCmd = `mkdir -p ${storagePath} && chmod 755 ${storagePath} && chown -R $(id -u):$(id -g) ${storagePath}`;
+        const createDirCmd = `mkdir -p ${storagePath} && chmod 755 ${storagePath}`;
         console.log(
           chalk.blue(`Creating storage directory on host: ${storagePath}`),
         );
