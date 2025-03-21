@@ -67,6 +67,28 @@ Options:
 - `-k, --key <path>` - Path to SSH key file
 - `-u, --user <name>` - SSH username (default: ec2-user)
 - `-t, --token <token>` - Pinggy.io access token for public URL
+- `-b, --backblaze` - Enable Backblaze B2 storage for document backup
+- `-f, --filesystem` - Enable filesystem storage for document backup
+
+#### Persistence Features
+
+Tonk supports multiple options for persisting your documents:
+
+1. **Backblaze B2 Storage**: Cloud-based backup for your documents
+   - Secure, scalable cloud storage
+   - Automatic synchronization at configurable intervals
+   - Requires a Backblaze B2 account with bucket and application keys
+
+2. **Filesystem Storage**: Local file-based storage on your server
+   - Store documents directly on the server's filesystem
+   - Configurable storage path and sync intervals
+   - Automatic directory creation
+
+3. **Dual Storage**: Use both Backblaze and filesystem storage
+   - Configure a primary storage option
+   - Automatic fallback to secondary storage
+
+During deployment, you'll be guided through setting up your preferred storage options interactively if not specified via command-line options.
 
 ## Development
 
