@@ -17,7 +17,7 @@ export const helloCommand = new Command('hello')
 
 ・。゜☆。・゜。・。゜☆。・゜★・。゜☆。・゜。・。゜☆。・゜☆。・゜
 
-Welcome to Tonk! 
+Welcome to Tonk, Goblin! 
 
 We're excited to work with you in building your own ☆𝐿𝒾𝓉𝓉𝓁𝑒 𝐼𝓃𝓉𝑒𝓇𝓃𝑒𝓉☆.
 

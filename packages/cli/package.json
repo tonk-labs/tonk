@@ -36,7 +36,7 @@
     "posttest": "npm run lint"
   },
   "dependencies": {
-    "@tonk/server": "^0.1.0",
+    "@tonk/server": "file://../server",
     "chalk": "^5.3.0",
     "commander": "^11.1.0",
     "dotenv": "^16.4.7",
@@ -80,5 +80,10 @@
   "bugs": {
     "url": "https://github.com/tonk-labs/tonk/issues"
   },
-  "homepage": "https://github.com/tonk-labs/tonk#readme"
+  "homepage": "https://github.com/tonk-labs/tonk#readme",
+  "pnpm": {
+    "overrides": {
+      "cli": "link:../../../../Library/pnpm/global/5/node_modules/@tonk/cli"
+    }
+  }
 }

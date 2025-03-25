@@ -95,7 +95,9 @@ export class SyncEngine {
     this.isOnline = isOnline;
 
     logger.info(
-      `SyncEngine connection status changed to: ${isOnline ? 'online' : 'offline'}`,
+      `SyncEngine connection status changed to: ${
+        isOnline ? 'online' : 'offline'
+      }`,
     );
 
     if (!previousState && isOnline) {
