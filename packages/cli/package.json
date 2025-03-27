@@ -33,7 +33,8 @@
     "fix": "gts fix",
     "prepare": "npm run compile",
     "pretest": "npm run compile",
-    "posttest": "npm run lint"
+    "posttest": "npm run lint",
+    "postinstall": "node scripts/electron/install.js"
   },
   "dependencies": {
     "@tonk/server": "^0.1.0",

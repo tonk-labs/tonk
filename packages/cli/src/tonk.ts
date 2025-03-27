@@ -5,6 +5,7 @@ import {serveCommand} from './commands/serve.js';
 import {deployCommand} from './commands/deploy.js';
 import {configCommand} from './commands/config.js';
 import {helloCommand} from './commands/hello.js';
+import {guiCommand} from './commands/gui.js';
 
 const program = new Command();
 
@@ -23,11 +24,12 @@ program.addCommand(serveCommand);
 program.addCommand(deployCommand);
 program.addCommand(configCommand);
 program.addCommand(helloCommand);
+program.addCommand(guiCommand);
 
 // Parse arguments
 program.parse();
 
-// Show help if no arguments provided
+// Launch Electron app if no arguments provided
 if (!process.argv.slice(2).length) {
-  program.outputHelp();
+  guiCommand.parse(process.argv);
 }
