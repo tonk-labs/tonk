@@ -37,7 +37,7 @@
     "postinstall": "node scripts/electron/install.js"
   },
   "dependencies": {
-    "@tonk/server": "^0.1.0",
+    "@tonk/server": "file://../server",
     "chalk": "^5.3.0",
     "commander": "^11.1.0",
     "dotenv": "^16.4.7",
@@ -88,6 +88,7 @@
     "overrides": {
       "ekepsync": "link:../../../../Library/pnpm/global/5/node_modules/@tonk/ekepsync",
       "keepsync": "link:../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync"
+      "cli": "link:../.
     }
   }
 }

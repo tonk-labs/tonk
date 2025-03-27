@@ -8,6 +8,8 @@ import {BackblazeStorageMiddleware} from './backblazeMiddleware.js';
 import {BackblazeStorageMiddlewareOptions} from './backblazeStorage.js';
 import {FileSystemStorageMiddleware} from './filesystemMiddleware.js';
 import {FileSystemStorageOptions} from './filesystemStorage.js';
+import {createProxyMiddleware} from 'http-proxy-middleware';
+import cors from 'cors';
 
 export interface ServerOptions {
   port?: number;
@@ -18,6 +20,12 @@ export interface ServerOptions {
   filesystemStorage?: FileSystemStorageOptions | undefined;
   syncInterval?: number; // Optional interval to trigger storage sync in ms
   primaryStorage?: 'backblaze' | 'filesystem'; // Which storage to use as primary (default: backblaze if both configured)
+  apiProxy?:
+    | {
+        target: string; // The target URL to proxy to (e.g., 'http://localhost:3001')
+        ws?: boolean; // Whether to proxy WebSocket connections
+      }
+    | undefined;
 }
 
 export class TonkServer {
@@ -43,6 +51,7 @@ export class TonkServer {
       primaryStorage:
         options.primaryStorage ||
         (options.storage ? 'backblaze' : 'filesystem'),
+      apiProxy: options.apiProxy,
     };
 
     // Create Express app and HTTP server
@@ -249,7 +258,9 @@ export class TonkServer {
       } catch (error) {
         this.log(
           'red',
-          `Error propagating changes to secondary storage: ${(error as Error).message}`,
+          `Error propagating changes to secondary storage: ${
+            (error as Error).message
+          }`,
         );
       }
     }
@@ -298,7 +309,24 @@ export class TonkServer {
     }
   }
 
-  private setupExpressMiddleware() {
+  private async setupExpressMiddleware() {
+    // If apiProxy is configured, use proxy middleware instead of local router
+    this.log('red', JSON.stringify(this.options.apiProxy));
+    if (this.options.apiProxy) {
+      this.app.use('/api', cors());
+      this.app.use(
+        '/api',
+        createProxyMiddleware({
+          target: this.options.apiProxy?.target,
+          changeOrigin: true,
+        }),
+      );
+    }
+
+    this.app.get('/ping', (_req, res) => {
+      res.send('pong');
+    });
+
     // In production mode, serve static files and handle client-side routing
     if (this.options.mode === 'production' && this.options.distPath) {
       // Handle WASM files with correct MIME type
@@ -307,10 +335,11 @@ export class TonkServer {
         next();
       });
 
+      // Static file serving after specific routes
       this.app.use(express.static(this.options.distPath));
 
-      // Send all requests to index.html for client-side routing
-      this.app.get('*', (_req, res) => {
+      // Client-side routing - only match routes that don't start with /api or /ping
+      this.app.get(/^(?!\/api|\/ping).*$/, (_req, res) => {
         res.sendFile(path.join(this.options.distPath!, 'index.html'));
       });
     }
@@ -382,7 +411,10 @@ export class TonkServer {
       }
 
       this.server.listen(this.options.port, () => {
-        this.log('green', `Server running on port ${this.options.port}`);
+        this.log(
+          'green',
+          `Server running on port ${this.options.port}, update: 5`,
+        );
 
         if (this.options.mode === 'production') {
           this.log(
@@ -429,7 +461,9 @@ export class TonkServer {
         } catch (error) {
           this.log(
             'red',
-            `Error shutting down Backblaze middleware: ${(error as Error).message}`,
+            `Error shutting down Backblaze middleware: ${
+              (error as Error).message
+            }`,
           );
         }
       }
@@ -440,7 +474,9 @@ export class TonkServer {
         } catch (error) {
           this.log(
             'red',
-            `Error shutting down Filesystem middleware: ${(error as Error).message}`,
+            `Error shutting down Filesystem middleware: ${
+              (error as Error).message
+            }`,
           );
         }
       }
@@ -527,7 +563,9 @@ export class TonkServer {
     } catch (error) {
       this.log(
         'red',
-        `Error syncing document ${docId} between storages: ${(error as Error).message}`,
+        `Error syncing document ${docId} between storages: ${
+          (error as Error).message
+        }`,
       );
       return false;
     }
