@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>Tonk GUI</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <div class="container">
+    <header>
+      <h1>Tonk GUI</h1>
+      <p>Manage your Tonk applications with ease</p>
+    </header>
+
+    <nav>
+      <button id="createBtn">Create</button>
+      <button id="devBtn">Dev</button>
+      <button id="serveBtn">Serve</button>
+      <button id="deployBtn">Deploy</button>
+      <button id="configBtn">Config</button>
+    </nav>
+
+    <main>
+      <div class="projects-panel">
+        <h2>Your Projects</h2>
+        <div id="projectsList">
+          <!-- Projects will be listed here -->
+          <p>No projects found. Create a new project to get started.</p>
+        </div>
+      </div>
+
+      <div class="output-panel">
+        <h2>Output</h2>
+        <div id="outputArea">
+          <p>Welcome to Tonk GUI! Select a command to get started.</p>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <p>Tonk v0.1.0 - The modern collaborative app framework</p>
+    </footer>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+
+</html>

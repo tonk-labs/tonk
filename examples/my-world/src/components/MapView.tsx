@@ -1,65 +1,55 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { useLocationStore, useUserStore } from "../stores";
 import { Plus, X, User, MapPin, Menu, ChevronLeft, Info } from "lucide-react";
-import {
-  MapContainer,
-  TileLayer,
-  Marker,
-  Popup,
-  useMapEvents,
-  useMap,
-  ZoomControl,
-} from "react-leaflet";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
 import PlaceSearch from "./PlaceSearch";
 import UserComparison from "./UserComparison";
 
-// Fix Leaflet icon issue in React
-// This is needed because of how webpack bundles assets
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-});
-
-// Component to handle map clicks and location setting
-interface LocationPickerProps {
-  isAddingLocation: boolean;
-  onLocationPick: (lat: number, lng: number) => void;
+// Declare MapKit JS types
+declare global {
+  interface Window {
+    mapkit: any;
+  }
 }
 
-const LocationPicker: React.FC<LocationPickerProps> = ({
-  isAddingLocation,
-  onLocationPick,
-}) => {
-  useMapEvents({
-    click: (e) => {
-      if (isAddingLocation) {
-        onLocationPick(e.latlng.lat, e.latlng.lng);
-      }
-    },
-  });
-
-  return null;
+const getMapKitToken = async (): Promise<string> => {
+  return "eyJraWQiOiJWWU5DUlVNTThHIiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzQyODM4MDI2LCJleHAiOjE3NDM0OTA3OTl9.PLqIZrssCXQPFXZ3OUn22EflQaxQbNcqDvbn2OMQNtF8HuSPfTzpyDL4zgsIlefeUJNuyZsZhGz4Baete43cFQ";
 };
 
-// New component to control map view
-interface MapControllerProps {
-  center: [number, number] | null;
-  zoom: number | null;
+// Component to initialize MapKit JS
+interface MapKitInitializerProps {
+  onMapReady: (map: any) => void;
 }
 
-const MapController: React.FC<MapControllerProps> = ({ center, zoom }) => {
-  const map = useMap();
-
+const MapKitInitializer: React.FC<MapKitInitializerProps> = ({}) => {
   useEffect(() => {
-    if (center) {
-      map.setView(center, zoom || map.getZoom());
-    }
-  }, [center, zoom, map]);
+    const loadMapKit = async () => {
+      try {
+        // Load MapKit JS script if not already loaded
+        if (!window.mapkit) {
+          const script = document.createElement("script");
+          script.src = "https://cdn.apple-mapkit.com/mk/5.x.x/mapkit.js";
+          script.async = true;
+          document.head.appendChild(script);
+
+          await new Promise<void>((resolve) => {
+            script.onload = () => resolve();
+          });
+        }
+
+        // Initialize MapKit with JWT token
+        const token = await getMapKitToken();
+        window.mapkit.init({
+          authorizationCallback: (done: (token: string) => void) => {
+            done(token);
+          },
+        });
+      } catch (error) {
+        console.error("Failed to initialize MapKit JS:", error);
+      }
+    };
+
+    loadMapKit();
+  }, []);
 
   return null;
 };
@@ -81,9 +71,56 @@ const MapView: React.FC = () => {
   const [profileName, setProfileName] = useState(userProfile.name);
   const [commonLocationIds, setCommonLocationIds] = useState<string[]>([]);
   const userNames = useLocationStore((state) => state.userNames);
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const markersRef = useRef<any[]>([]);
+  const [mapIsReady, setMapIsReady] = useState(false);
 
   // Default map center
   const defaultCenter: [number, number] = [51.505, -0.09]; // London
+
+  // Initialize MapKit JS map
+  useEffect(() => {
+    if (window.mapkit && mapRef.current && !mapInstanceRef.current) {
+      // Create a new MapKit JS map instance
+      const map = new window.mapkit.Map(mapRef.current, {
+        showsZoomControl: true,
+        showsCompass: window.mapkit.FeatureVisibility.Adaptive,
+        showsScale: window.mapkit.FeatureVisibility.Adaptive,
+      });
+
+      // Set initial region
+      map.region = new window.mapkit.CoordinateRegion(
+        new window.mapkit.Coordinate(defaultCenter[0], defaultCenter[1]),
+        new window.mapkit.CoordinateSpan(0.1, 0.1),
+      );
+
+      // Add click event listener for adding new locations
+      map.addEventListener("click", (event: any) => {
+        if (isAddingLocation) {
+          const coordinate = event.coordinate;
+          handleLocationPick(coordinate.latitude, coordinate.longitude);
+        }
+      });
+
+      mapInstanceRef.current = map;
+      setMapIsReady(true);
+    }
+  }, [mapRef.current, window.mapkit]);
+
+  // Update map when center or zoom changes
+  useEffect(() => {
+    if (mapIsReady && mapInstanceRef.current && mapCenter) {
+      const map = mapInstanceRef.current;
+      const zoomLevel = mapZoom || 15;
+      const span = 0.01 * Math.pow(2, 15 - zoomLevel);
+
+      map.region = new window.mapkit.CoordinateRegion(
+        new window.mapkit.Coordinate(mapCenter[0], mapCenter[1]),
+        new window.mapkit.CoordinateSpan(span, span),
+      );
+    }
+  }, [mapCenter, mapZoom, mapIsReady]);
 
   // Handle place selection from search
   const handlePlaceSelect = (
@@ -91,6 +128,7 @@ const MapView: React.FC = () => {
     longitude: number,
     name: string,
   ) => {
+    // Update state with the selected location
     setNewLocation({
       ...newLocation,
       name: name,
@@ -101,6 +139,36 @@ const MapView: React.FC = () => {
     // Center the map on the selected location
     setMapCenter([latitude, longitude]);
     setMapZoom(15);
+
+    // Add a simple temporary marker annotation
+    if (mapIsReady && mapInstanceRef.current) {
+      // Remove any existing temporary marker
+      const tempMarker = markersRef.current.find((m) => m.isTemporary);
+      if (tempMarker) {
+        mapInstanceRef.current.removeAnnotation(tempMarker);
+        markersRef.current = markersRef.current.filter((m) => !m.isTemporary);
+      }
+
+      // Create a simple marker annotation
+      const coordinate = new window.mapkit.Coordinate(latitude, longitude);
+      const marker = new window.mapkit.MarkerAnnotation(coordinate, {
+        color: "#34C759", // Green color for new location
+        title: name,
+        glyphText: "+",
+        // No selected property to avoid callout
+      });
+
+      // Mark it as temporary
+      marker.isTemporary = true;
+
+      // Add to map (but don't select it)
+      try {
+        mapInstanceRef.current.addAnnotation(marker);
+        markersRef.current.push(marker);
+      } catch (error) {
+        console.error("Error adding annotation:", error);
+      }
+    }
   };
 
   // Handle manual location pick from map click
@@ -110,7 +178,136 @@ const MapView: React.FC = () => {
       latitude: lat,
       longitude: lng,
     }));
+
+    // Add temporary marker for new location
+    if (mapIsReady && mapInstanceRef.current) {
+      // Remove any existing temporary marker
+      const tempMarker = markersRef.current.find((m) => m.isTemporary);
+      if (tempMarker) {
+        mapInstanceRef.current.removeAnnotation(tempMarker);
+        markersRef.current = markersRef.current.filter((m) => !m.isTemporary);
+      }
+
+      // Add new temporary marker
+      const marker = new window.mapkit.MarkerAnnotation(
+        new window.mapkit.Coordinate(lat, lng),
+        {
+          color: "#34C759", // Green color for new location
+          title: "New Location",
+          glyphText: "+",
+        },
+      );
+      marker.isTemporary = true;
+
+      mapInstanceRef.current.addAnnotation(marker);
+      markersRef.current.push(marker);
+    }
   };
+
+  // Function to update map markers
+  const updateMapMarkers = () => {
+    if (!mapIsReady || !mapInstanceRef.current) return;
+
+    // Remove all existing markers except temporary one
+    const tempMarker = markersRef.current.find((m) => m.isTemporary);
+    mapInstanceRef.current.removeAnnotations(
+      markersRef.current.filter((m) => !m.isTemporary),
+    );
+    markersRef.current = tempMarker ? [tempMarker] : [];
+
+    // Add markers for all locations
+    const markers = Object.values(locations).map((location) => {
+      // Determine marker color based on who added it and if it's common
+      let markerColor = "#1D7AFF"; // Default blue for current user
+      if (userProfile.id !== location.addedBy) {
+        markerColor = "#FF3B30"; // Red for other users
+      }
+      if (commonLocationIds.includes(location.id)) {
+        markerColor = "#FFCC00"; // Gold for common locations
+      }
+
+      const marker = new window.mapkit.MarkerAnnotation(
+        new window.mapkit.Coordinate(location.latitude, location.longitude),
+        {
+          color: markerColor,
+          title: location.name,
+          subtitle: location.description || "",
+          selected: false,
+        },
+      );
+
+      // Add custom data to marker
+      marker.locationId = location.id;
+
+      // Add callout (popup) with more information
+      marker.callout = {
+        calloutElementForAnnotation: (annotation: any) => {
+          const calloutElement = document.createElement("div");
+          calloutElement.className = "mapkit-callout";
+          calloutElement.style.padding = "10px";
+          calloutElement.style.maxWidth = "200px";
+          calloutElement.style.backgroundColor = "white";
+          calloutElement.style.borderRadius = "8px";
+          calloutElement.style.boxShadow = "0 2px 10px rgba(0, 0, 0, 0.1)";
+          calloutElement.style.border = "1px solid rgba(0, 0, 0, 0.1)";
+
+          const location = Object.values(locations).find(
+            (loc) => loc.id === annotation.locationId,
+          );
+          if (!location) return calloutElement;
+
+          calloutElement.innerHTML = `
+                <h3 style="font-weight: 600; margin-bottom: 5px;">${location.name}</h3>
+                ${location.description ? `<p style="font-size: 14px; margin-bottom: 5px;">${location.description}</p>` : ""}
+                <p style="font-size: 12px; color: #666;">
+                  Added by: ${userProfile.id === location.addedBy ? "You" : userNames[location.addedBy] || "Anonymous"}
+                </p>
+                ${
+                  commonLocationIds.includes(location.id)
+                    ? '<p style="font-size: 12px; color: #B8860B; font-weight: 500; margin-top: 5px;">⭐ Common place</p>'
+                    : ""
+                }
+                ${
+                  userProfile.id === location.addedBy
+                    ? `<button id="remove-${location.id}" style="font-size: 12px; color: #FF3B30; margin-top: 5px; border: none; background: none; cursor: pointer; padding: 0;">Remove</button>`
+                    : ""
+                }
+              `;
+
+          // Add event listener for remove button
+          setTimeout(() => {
+            const removeButton = document.getElementById(
+              `remove-${location.id}`,
+            );
+            if (removeButton) {
+              removeButton.addEventListener("click", () => {
+                removeLocation(location.id);
+                mapInstanceRef.current.removeAnnotation(annotation);
+                markersRef.current = markersRef.current.filter(
+                  (m) => m !== annotation,
+                );
+              });
+            }
+          }, 0);
+
+          return calloutElement;
+        },
+      };
+
+      return marker;
+    });
+
+    // Add all markers to the map
+    if (markers.length > 0) {
+      mapInstanceRef.current.addAnnotations(markers);
+      markersRef.current = [...markersRef.current, ...markers];
+    }
+  };
+
+  // Update markers when locations or common locations change
+  useEffect(() => {
+    updateMapMarkers();
+  }, [locations, commonLocationIds, mapIsReady]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -124,6 +321,18 @@ const MapView: React.FC = () => {
       latitude: 0,
       longitude: 0,
     });
+
+    // Remove temporary marker
+    if (mapIsReady && mapInstanceRef.current) {
+      const tempMarker = markersRef.current.find((m) => m.isTemporary);
+      if (tempMarker) {
+        mapInstanceRef.current.removeAnnotation(tempMarker);
+        markersRef.current = markersRef.current.filter((m) => !m.isTemporary);
+      }
+    }
+
+    // Update markers to include the new location
+    updateMapMarkers();
   };
 
   const cancelAddLocation = () => {
@@ -134,6 +343,15 @@ const MapView: React.FC = () => {
       latitude: 0,
       longitude: 0,
     });
+
+    // Remove temporary marker
+    if (mapIsReady && mapInstanceRef.current) {
+      const tempMarker = markersRef.current.find((m) => m.isTemporary);
+      if (tempMarker) {
+        mapInstanceRef.current.removeAnnotation(tempMarker);
+        markersRef.current = markersRef.current.filter((m) => !m.isTemporary);
+      }
+    }
   };
 
   return (
@@ -316,108 +534,19 @@ const MapView: React.FC = () => {
 
         {/* Map Container */}
         <div className="flex-grow h-full relative">
-          <MapContainer
-            center={defaultCenter}
-            zoom={13}
+          <MapKitInitializer
+            onMapReady={(map) => {
+              mapInstanceRef.current = map;
+              setMapIsReady(true);
+            }}
+          />
+
+          {/* MapKit JS container */}
+          <div
+            ref={mapRef}
             style={{ height: "100%", width: "100%" }}
-            zoomControl={false}
-          >
-            <ZoomControl position="topright" />
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
-
-            <MapController center={mapCenter} zoom={mapZoom} />
-
-            {/* Location markers */}
-            {Object.values(locations).map((location) => {
-              // Check if this location is in the common locations list
-              const isCommonLocation = commonLocationIds.includes(location.id);
-
-              // Determine marker color based on who added it and if it's common
-              let markerColor = "blue"; // Default for current user
-              if (userProfile.id !== location.addedBy) {
-                markerColor = "red"; // Default for other users
-              }
-              if (isCommonLocation) {
-                markerColor = "gold"; // For common locations
-              }
-
-              return (
-                <Marker
-                  key={location.id}
-                  position={[location.latitude, location.longitude]}
-                  icon={
-                    new L.Icon({
-                      iconUrl: isCommonLocation
-                        ? "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-gold.png"
-                        : userProfile.id === location.addedBy
-                          ? "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png"
-                          : "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png",
-                      shadowUrl:
-                        "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-                      iconSize: [25, 41],
-                      iconAnchor: [12, 41],
-                      popupAnchor: [1, -34],
-                      shadowSize: [41, 41],
-                    })
-                  }
-                >
-                  <Popup>
-                    <div>
-                      <h3 className="font-semibold">{location.name}</h3>
-                      <p className="text-sm">{location.description}</p>
-                      <p className="text-xs text-gray-600">
-                        Added by:{" "}
-                        {userProfile.id === location.addedBy
-                          ? "You"
-                          : userNames[location.addedBy] || "Anonymous"}
-                      </p>
-                      {isCommonLocation && (
-                        <p className="text-xs text-amber-600 font-medium mt-1">
-                          ⭐ Common place
-                        </p>
-                      )}
-                      {userProfile.id === location.addedBy && (
-                        <button
-                          onClick={() => removeLocation(location.id)}
-                          className="text-xs text-red-500 mt-1"
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </div>
-                  </Popup>
-                </Marker>
-              );
-            })}
-
-            {/* New Location Marker */}
-            {isAddingLocation && newLocation.latitude !== 0 && (
-              <Marker
-                position={[newLocation.latitude, newLocation.longitude]}
-                icon={
-                  new L.Icon({
-                    iconUrl:
-                      "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png",
-                    shadowUrl:
-                      "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-                    iconSize: [25, 41],
-                    iconAnchor: [12, 41],
-                    popupAnchor: [1, -34],
-                    shadowSize: [41, 41],
-                  })
-                }
-              />
-            )}
-
-            {/* Map Event Handler */}
-            <LocationPicker
-              isAddingLocation={isAddingLocation}
-              onLocationPick={handleLocationPick}
-            />
-          </MapContainer>
+            className="map-container"
+          />
 
           {/* FAB for adding locations */}
           {!isAddingLocation && (
