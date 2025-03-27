@@ -3,48 +3,212 @@
 
 <head>
   <meta charset="UTF-8">
-  <title>Tonk GUI</title>
-  <link rel="stylesheet" href="styles.css">
+  <title>Tonk App Launcher</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f5f5f5;
+      color: #333;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+
+    .container {
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      padding: 30px;
+      width: 80%;
+      max-width: 500px;
+      text-align: center;
+    }
+
+    h1 {
+      color: #333;
+      margin-bottom: 20px;
+    }
+
+    button {
+      background-color: #4CAF50;
+      border: none;
+      color: white;
+      padding: 12px 24px;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+      font-size: 16px;
+      margin: 10px 2px;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background-color 0.3s;
+    }
+
+    button:hover {
+      background-color: #45a049;
+    }
+
+    #status {
+      margin-top: 20px;
+      padding: 10px;
+      border-radius: 4px;
+    }
+
+    .loading {
+      color: #2196F3;
+      background-color: #e3f2fd;
+    }
+
+    .error {
+      color: #f44336;
+      background-color: #ffebee;
+    }
+
+    .success {
+      color: #4CAF50;
+      background-color: #e8f5e9;
+    }
+
+    #log {
+      margin-top: 20px;
+      padding: 10px;
+      background-color: #f8f8f8;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      height: 150px;
+      overflow-y: auto;
+      text-align: left;
+      font-family: monospace;
+      font-size: 12px;
+      display: none;
+    }
+  </style>
 </head>
 
 <body>
   <div class="container">
-    <header>
-      <h1>Tonk GUI</h1>
-      <p>Manage your Tonk applications with ease</p>
-    </header>
+    <h1>Tonk App Launcher</h1>
+    <p>Select a Tonk project directory to launch</p>
 
-    <nav>
-      <button id="createBtn">Create</button>
-      <button id="devBtn">Dev</button>
-      <button id="serveBtn">Serve</button>
-      <button id="deployBtn">Deploy</button>
-      <button id="configBtn">Config</button>
-    </nav>
+    <button id="selectProject">Select Project</button>
 
-    <main>
-      <div class="projects-panel">
-        <h2>Your Projects</h2>
-        <div id="projectsList">
-          <!-- Projects will be listed here -->
-          <p>No projects found. Create a new project to get started.</p>
-        </div>
-      </div>
-
-      <div class="output-panel">
-        <h2>Output</h2>
-        <div id="outputArea">
-          <p>Welcome to Tonk GUI! Select a command to get started.</p>
-        </div>
-      </div>
-    </main>
-
-    <footer>
-      <p>Tonk v0.1.0 - The modern collaborative app framework</p>
-    </footer>
+    <div id="status" style="display: none;"></div>
+    <div id="log"></div>
   </div>
 
-  <script src="renderer.js"></script>
+  <script>
+    // Get elements
+    const selectProjectBtn = document.getElementById('selectProject');
+    const statusDiv = document.getElementById('status');
+    const logDiv = document.getElementById('log');
+
+    let selectedProjectPath = null;
+
+    // Handle select project button click
+    selectProjectBtn.addEventListener('click', async () => {
+      try {
+        const result = await window.tonkAPI.selectProject();
+
+        if (result.success) {
+          selectedProjectPath = result.path;
+          statusDiv.textContent = `Selected project: ${result.path}`;
+          statusDiv.className = 'success';
+          statusDiv.style.display = 'block';
+
+          // Launch the app
+          launchApp(selectedProjectPath);
+        } else {
+          statusDiv.textContent = result.message || 'Failed to select project';
+          statusDiv.className = 'error';
+          statusDiv.style.display = 'block';
+        }
+      } catch (error) {
+        statusDiv.textContent = `Error: ${error.message}`;
+        statusDiv.className = 'error';
+        statusDiv.style.display = 'block';
+      }
+    });
+
+    // Function to launch the app
+    async function launchApp(projectPath) {
+      try {
+        statusDiv.textContent = 'Starting Tonk server...';
+        statusDiv.className = 'loading';
+
+        // Show log area
+        logDiv.style.display = 'block';
+        logDiv.textContent = 'Launching Tonk server...\n';
+
+        const result = await window.tonkAPI.launchApp(projectPath);
+
+        if (!result.success) {
+          statusDiv.textContent = result.message || 'Failed to launch app';
+          statusDiv.className = 'error';
+        }
+      } catch (error) {
+        statusDiv.textContent = `Error: ${error.message}`;
+        statusDiv.className = 'error';
+        logDiv.textContent += `Error: ${error.message}\n`;
+      }
+    }
+
+    // Listen for app status updates
+    window.addEventListener('app-status', (event) => {
+      const {status, message, url} = event.detail;
+
+      statusDiv.textContent = message;
+      statusDiv.style.display = 'block';
+
+      if (status === 'loading') {
+        statusDiv.className = 'loading';
+      } else if (status === 'error') {
+        statusDiv.className = 'error';
+      } else if (status === 'ready') {
+        statusDiv.className = 'success';
+        statusDiv.textContent = `Server running at: ${url}`;
+      } else if (status === 'stopped') {
+        statusDiv.className = 'error';
+      }
+    });
+
+    // Listen for server logs
+    window.addEventListener('server-log', (event) => {
+      const logMessage = event.detail;
+      logDiv.textContent += logMessage;
+      logDiv.scrollTop = logDiv.scrollHeight;
+    });
+
+    // Listen for app status updates from main process
+    if (window.tonkAPI) {
+      window.ipcRenderer.on('app-status', (event, data) => {
+        const {status, message, url} = data;
+
+        statusDiv.textContent = message;
+        statusDiv.style.display = 'block';
+
+        if (status === 'loading') {
+          statusDiv.className = 'loading';
+        } else if (status === 'error') {
+          statusDiv.className = 'error';
+        } else if (status === 'ready') {
+          statusDiv.className = 'success';
+          statusDiv.textContent = `Server running at: ${url}`;
+        } else if (status === 'stopped') {
+          statusDiv.className = 'error';
+        }
+      });
+
+      // Listen for server logs
+      window.ipcRenderer.on('server-log', (event, logMessage) => {
+        logDiv.textContent += logMessage;
+        logDiv.scrollTop = logDiv.scrollHeight;
+      });
+    }
+  </script>
 </body>
 
 </html>

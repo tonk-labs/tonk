@@ -1,23 +1,18 @@
-// Preload script runs in the renderer process
-// but has access to Node.js APIs
+// Preload script for the main window
 const { ipcRenderer } = require('electron');
 
-// Expose IPC renderer to the window object
-window.ipcRenderer = ipcRenderer;
-
-// Add any other APIs you want to expose to the renderer process
+// Expose the API to the renderer process
 window.tonkAPI = {
-  executeCommand: (command) => {
-    ipcRenderer.send('tonk-command', command);
-    return new Promise((resolve) => {
-      ipcRenderer.once('command-result', (_, result) => {
-        resolve(result);
-      });
-    });
+  // Select a project directory
+  selectProject: async () => {
+    return await ipcRenderer.invoke('select-project');
+  },
+
+  // Launch a Tonk app
+  launchApp: async (projectPath) => {
+    return await ipcRenderer.invoke('launch-app', projectPath);
   }
 };
 
-// Let the renderer know when the page is ready
-window.addEventListener('DOMContentLoaded', () => {
-  console.log('DOM fully loaded and parsed');
-});
+// Expose ipcRenderer for event listening
+window.ipcRenderer = ipcRenderer;
