@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  ekepsync: link:../../../../Library/pnpm/global/5/node_modules/@tonk/ekepsync
+  keepsync: link:../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync
+
 importers:
 
   .:
@@ -20,6 +24,9 @@ importers:
       dotenv:
         specifier: ^16.4.7
         version: 16.4.7
+      ekepsync:
+        specifier: link:../../../../Library/pnpm/global/5/node_modules/@tonk/ekepsync
+        version: link:../../../../Library/pnpm/global/5/node_modules/@tonk/ekepsync
       execa:
         specifier: ^8.0.1
         version: 8.0.1
@@ -35,6 +42,9 @@ importers:
       inquirer:
         specifier: ^9.2.12
         version: 9.3.7
+      keepsync:
+        specifier: link:../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync
+        version: link:../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync
       listr2:
         specifier: ^8.2.5
         version: 8.2.5
