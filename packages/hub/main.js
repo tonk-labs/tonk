@@ -12,8 +12,8 @@ function createWindow() {
     width: 800,
     height: 600,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      nodeIntegration: false,
+      contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
     },
     icon: path.join(__dirname, 'assets/icon.png')
@@ -40,6 +40,14 @@ function createWindow() {
   });
 }
 
+// Expose the current document ID to the renderer process
+ipcMain.handle('get-current-doc-id', (event) => {
+  if (currentProcess && currentProcess.appWindow) {
+    return currentProcess.appWindow.docId || '';
+  }
+  return '';
+});
+
 // Create window when Electron has finished initialization
 app.whenReady().then(() => {
   // Disable web security to allow loading of local resources
@@ -50,6 +58,16 @@ app.whenReady().then(() => {
 
   // Enable CORS for all origins
   app.commandLine.appendSwitch('disable-features', 'OutOfBlinkCors');
+
+  // Allow loading of WASM files
+  app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
+
+  // Register file protocol handler for WASM files
+  const protocol = require('electron').protocol;
+  protocol.registerFileProtocol('wasm', (request, callback) => {
+    const url = request.url.substr(7); // Remove 'wasm://' prefix
+    callback({ path: url });
+  });
 
   createWindow();
 
@@ -84,7 +102,7 @@ ipcMain.handle('select-project', async () => {
 });
 
 // Handle launching a Tonk app
-ipcMain.handle('launch-app', async (event, projectPath) => {
+ipcMain.handle('launch-app', async (event, projectPath, docId) => {
   // Kill any existing process and close any open app windows
   if (currentProcess) {
     if (currentProcess.appWindow && !currentProcess.appWindow.isDestroyed()) {
@@ -138,7 +156,8 @@ ipcMain.handle('launch-app', async (event, projectPath) => {
       shell: true,
       env: {
         ...process.env,
-        CI: 'true' // Skip interactive prompts
+        CI: 'true', // Skip interactive prompts
+        TONK_DOC_ID: docId || '' // Pass the document ID as an environment variable
       }
     });
 
@@ -188,13 +207,26 @@ ipcMain.handle('launch-app', async (event, projectPath) => {
             nodeIntegration: false,
             contextIsolation: true,
             webSecurity: false, // Allow loading local resources
-            allowRunningInsecureContent: true // Allow loading mixed content
+            allowRunningInsecureContent: true, // Allow loading mixed content
+            preload: path.join(__dirname, 'tonk-preload.js'), // Add preload script to inject docId
+            webviewTag: true, // Enable webview tag
+            // Enable service workers
+            serviceWorkers: true
           },
           icon: path.join(__dirname, 'assets/icon.png')
         });
 
-        // Load the URL in the new window
-        currentProcess.appWindow.loadURL(appUrl);
+        // Store the docId in the window object for the preload script to access
+        currentProcess.appWindow.docId = docId;
+
+        // Load the URL in the new window, adding docId as a query parameter if provided
+        let loadUrl = appUrl;
+        if (docId) {
+          // Add docId as a query parameter
+          const separator = loadUrl.includes('?') ? '&' : '?';
+          loadUrl = `${loadUrl}${separator}docId=${encodeURIComponent(docId)}`;
+        }
+        currentProcess.appWindow.loadURL(loadUrl);
 
         // Open DevTools in development mode for the app window
         if (process.env.NODE_ENV === 'development') {
