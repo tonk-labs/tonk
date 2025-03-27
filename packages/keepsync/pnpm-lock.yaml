@@ -11,6 +11,9 @@ importers:
       '@automerge/automerge':
         specifier: ^2.2.8
         version: 2.2.8
+      '@automerge/automerge-wasm':
+        specifier: 1.0.0-preview.0
+        version: 1.0.0-preview.0
       chalk:
         specifier: ^5.4.1
         version: 5.4.1
@@ -59,6 +62,9 @@ importers:
         version: 5.1.4(webpack@5.98.0)
 
 packages:
+
+  '@automerge/automerge-wasm@1.0.0-preview.0':
+    resolution: {integrity: sha512-RE368OYtMc8UCh3FtbIrw9dRc8i5kYLrvj9nb6USPyhpvttAWJhvfQ6pjGgT1nlm7rUEhqMXrf13PsH/KNKJmQ==}
 
   '@automerge/automerge@2.2.8':
     resolution: {integrity: sha512-kP6Z9lIkNeIGe/jhF8SUQAgUMwVjtXCBL0eZEgQGCoWvPNTPcg8fnQco28XkYBrfkkuqiEUAbdHhJmSp0y79ug==}
@@ -1983,6 +1989,8 @@ packages:
         optional: true
 
 snapshots:
+
+  '@automerge/automerge-wasm@1.0.0-preview.0': {}
 
   '@automerge/automerge@2.2.8':
     dependencies:

@@ -1,18 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
-
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
-contextBridge.exposeInMainWorld(
-  'electronAPI', {
-  selectProject: () => ipcRenderer.invoke('select-project'),
-  launchApp: (projectPath, docId) => ipcRenderer.invoke('launch-app', projectPath, docId),
-  getCurrentDocId: () => ipcRenderer.invoke('get-current-doc-id'),
-  getProjectDocIds: (projectPath) => ipcRenderer.invoke('get-project-doc-ids', projectPath),
-  saveDocId: (projectPath, docId) => ipcRenderer.invoke('save-doc-id', projectPath, docId),
-  onAppStatus: (callback) => ipcRenderer.on('app-status', (_, data) => callback(data)),
-  onServerLog: (callback) => ipcRenderer.on('server-log', (_, data) => callback(data))
-}
-);
+const { contextBridge } = require('electron');
 
 // Wait for the window to load
 window.addEventListener('DOMContentLoaded', () => {
