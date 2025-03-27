@@ -105,8 +105,12 @@
     </div>
 
     <div>
-      <label for="docIdInput">Document ID (optional):</label>
-      <input type="text" id="docIdInput" placeholder="Enter document ID">
+      <label for="docIdInput">Document ID:</label>
+      <div style="display: flex; gap: 10px; margin: 10px 0;">
+        <input type="text" id="docIdInput" placeholder="Enter document ID">
+        <button id="newDocIdBtn">New ID</button>
+      </div>
+      <div id="docIdList" style="margin-top: 10px; max-height: 150px; overflow-y: auto;"></div>
     </div>
 
     <div>
@@ -123,12 +127,15 @@
     const selectProjectBtn = document.getElementById('selectProjectBtn');
     const projectPathDiv = document.getElementById('projectPath');
     const docIdInput = document.getElementById('docIdInput');
+    const newDocIdBtn = document.getElementById('newDocIdBtn');
+    const docIdList = document.getElementById('docIdList');
     const launchBtn = document.getElementById('launchBtn');
     const statusContainer = document.getElementById('statusContainer');
     const logContainer = document.getElementById('logContainer');
 
     // State
     let selectedProjectPath = '';
+    let projectDocIds = [];
 
     // Event listeners
     selectProjectBtn.addEventListener('click', async () => {
@@ -138,6 +145,9 @@
           selectedProjectPath = result.path;
           projectPathDiv.textContent = `Selected: ${selectedProjectPath}`;
           launchBtn.disabled = false;
+
+          // Load document IDs for this project
+          await loadProjectDocIds(selectedProjectPath);
         } else {
           projectPathDiv.textContent = result.message;
         }
@@ -145,6 +155,49 @@
         console.error('Error selecting project:', error);
         projectPathDiv.textContent = `Error selecting project: ${error.message}`;
       }
+    });
+
+    // Function to load and display document IDs for a project
+    async function loadProjectDocIds(projectPath) {
+      try {
+        projectDocIds = await window.electronAPI.getProjectDocIds(projectPath);
+        renderDocIdList();
+      } catch (error) {
+        console.error('Error loading document IDs:', error);
+      }
+    }
+
+    // Function to render the document ID list
+    function renderDocIdList() {
+      docIdList.innerHTML = '';
+
+      if (projectDocIds.length === 0) {
+        docIdList.innerHTML = '<div style="color: #666; font-style: italic;">No saved document IDs</div>';
+        return;
+      }
+
+      projectDocIds.forEach(docId => {
+        const docIdElement = document.createElement('div');
+        docIdElement.className = 'doc-id-item';
+        docIdElement.style.padding = '5px';
+        docIdElement.style.margin = '2px 0';
+        docIdElement.style.backgroundColor = '#f0f0f0';
+        docIdElement.style.borderRadius = '4px';
+        docIdElement.style.cursor = 'pointer';
+        docIdElement.textContent = docId;
+
+        docIdElement.addEventListener('click', () => {
+          docIdInput.value = docId;
+        });
+
+        docIdList.appendChild(docIdElement);
+      });
+    }
+
+    newDocIdBtn.addEventListener('click', () => {
+      // Generate a random document ID
+      const randomId = generateRandomId();
+      docIdInput.value = randomId;
     });
 
     launchBtn.addEventListener('click', async () => {
@@ -156,6 +209,13 @@
       const docId = docIdInput.value.trim();
 
       try {
+        // Save the document ID if it's not empty
+        if (docId) {
+          await window.electronAPI.saveDocId(selectedProjectPath, docId);
+          // Reload the document IDs to update the list
+          await loadProjectDocIds(selectedProjectPath);
+        }
+
         await window.electronAPI.launchApp(selectedProjectPath, docId);
         // The status will be updated via the app-status event
       } catch (error) {
@@ -163,6 +223,16 @@
         updateStatus('error', `Error launching app: ${error.message}`);
       }
     });
+
+    // Function to generate a random document ID
+    function generateRandomId() {
+      const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+      let result = '';
+      for (let i = 0; i < 8; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return result;
+    }
 
     // Listen for status updates from the main process
     window.electronAPI.onAppStatus((data) => {

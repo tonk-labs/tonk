@@ -1,10 +1,36 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
+const fs = require('fs');
 
 // Keep a global reference of the window object to prevent garbage collection
 let mainWindow;
 let currentProcess = null;
+
+// Path to store document IDs
+const appDataPath = path.join(app.getPath('userData'), 'docIds.json');
+
+// Function to load document IDs
+function loadDocIds() {
+  try {
+    if (fs.existsSync(appDataPath)) {
+      const data = fs.readFileSync(appDataPath, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error('Error loading document IDs:', error);
+  }
+  return {};
+}
+
+// Function to save document IDs
+function saveDocIds(docIds) {
+  try {
+    fs.writeFileSync(appDataPath, JSON.stringify(docIds, null, 2), 'utf8');
+  } catch (error) {
+    console.error('Error saving document IDs:', error);
+  }
+}
 
 function createWindow() {
   // Create the browser window
@@ -99,6 +125,31 @@ ipcMain.handle('select-project', async () => {
 
   const projectPath = result.filePaths[0];
   return { success: true, path: projectPath };
+});
+
+// Get document IDs for a project
+ipcMain.handle('get-project-doc-ids', async (event, projectPath) => {
+  const docIds = loadDocIds();
+  return docIds[projectPath] || [];
+});
+
+// Save a document ID for a project
+ipcMain.handle('save-doc-id', async (event, projectPath, docId) => {
+  if (!docId) return false;
+
+  const docIds = loadDocIds();
+
+  if (!docIds[projectPath]) {
+    docIds[projectPath] = [];
+  }
+
+  // Only add if it doesn't already exist
+  if (!docIds[projectPath].includes(docId)) {
+    docIds[projectPath].push(docId);
+    saveDocIds(docIds);
+  }
+
+  return true;
 });
 
 // Handle launching a Tonk app
@@ -218,6 +269,18 @@ ipcMain.handle('launch-app', async (event, projectPath, docId) => {
 
         // Store the docId in the window object for the preload script to access
         currentProcess.appWindow.docId = docId;
+
+        // Save the docId for this project if provided
+        if (docId) {
+          const docIds = loadDocIds();
+          if (!docIds[projectPath]) {
+            docIds[projectPath] = [];
+          }
+          if (!docIds[projectPath].includes(docId)) {
+            docIds[projectPath].push(docId);
+            saveDocIds(docIds);
+          }
+        }
 
         // Load the URL in the new window, adding docId as a query parameter if provided
         let loadUrl = appUrl;

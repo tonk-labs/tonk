@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld(
   selectProject: () => ipcRenderer.invoke('select-project'),
   launchApp: (projectPath, docId) => ipcRenderer.invoke('launch-app', projectPath, docId),
   getCurrentDocId: () => ipcRenderer.invoke('get-current-doc-id'),
+  getProjectDocIds: (projectPath) => ipcRenderer.invoke('get-project-doc-ids', projectPath),
+  saveDocId: (projectPath, docId) => ipcRenderer.invoke('save-doc-id', projectPath, docId),
   onAppStatus: (callback) => ipcRenderer.on('app-status', (_, data) => callback(data)),
   onServerLog: (callback) => ipcRenderer.on('server-log', (_, data) => callback(data))
 }
