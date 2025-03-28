@@ -1,10 +1,11 @@
 {
-  "name": "electron-tonk-app",
+  "name": "tonk-app",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
     "start": "electron .",
+    "dev": "export DEVELOPMENT_MODE=true && electron .",
     "test": "echo \"Error: no test specified\" && exit 1",
     "watch": "nodemon --watch"
   },

@@ -1,0 +1,30 @@
+.container {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-direction: column;
+}
+
+.top {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  padding: 2em;
+  margin: 20px 0 0 0;
+}
+
+.middle {
+  display: flex;
+  width: 100vw;
+  flex-direction: column;
+  align-items: flex-start;
+  margin: 0;
+  padding: 2em;
+}
+
+.bottom {
+  display: flex;
+  flex-direction: column;
+}

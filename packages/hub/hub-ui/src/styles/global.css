@@ -7,6 +7,40 @@
   padding: 0;
 }
 
+/* Add draggable region styles */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 38px; /* Height of the draggable region - matches macOS standard */
+  -webkit-app-region: drag;
+  z-index: 9999;
+}
+
+/* Make sure interactive elements in the draggable region are still clickable */
+.traffic-lights {
+  -webkit-app-region: no-drag;
+}
+
+:root {
+  /* Base theme variables - dark theme by default */
+  --color-background: #131313;
+  --color-background-transparent: rgba(19, 19, 19, 0.1);
+  --color-accent-purple: #CF66FF;
+  --color-accent-green: #35FF3C;
+  --font-family-mono: 'Space Mono', monospace;
+  --color-text: white;
+}
+
+/* Light theme overrides */
+[data-theme="light"] {
+  --color-background: #FFFFFF;
+  --color-background-transparent: rgba(255, 255, 255, 0.1);
+  --color-text: #000000;
+}
+
 html {
   -webkit-text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
@@ -16,7 +50,9 @@ html {
 body {
   line-height: 1.5;
   text-rendering: optimizeSpeed;
-  background-color: #FFF;
+  background-color: var(--color-background);
+  color: var(--color-text);
+  font-family: var(--font-family-mono);
 }
 
 img,

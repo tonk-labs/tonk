@@ -1,0 +1,33 @@
+.button {
+    background-color: rgba(217, 217, 217, 0.1);
+    padding: 8px 16px;
+    cursor: pointer;
+    border-radius: 1px;
+    color: inherit;
+    font-size: inherit;
+    margin: 16px 0;
+}
+
+button:hover {
+    background-color: rgba(217, 217, 217, 0.15);
+}
+
+button:active {
+    background-color: rgba(217, 217, 217, 0);
+}
+
+.blue {
+    border: 1px solid #00C8FF;
+    color: #00C8FF;
+}
+
+.purple {
+    border: 1px solid #CF66FF;
+    color: #CF66FF;
+}
+
+.green {
+    border: 1px solid #35FF3C;
+    color: #35FF3C;
+}
+
