@@ -14,7 +14,7 @@
     "test:watch": "jest --watch"
   },
   "devDependencies": {
-    "@tonk/cli": "^0.1.0",
+    "@tonk/cli": "file:../../../cli",
     "@tonk/server": "^0.1.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
