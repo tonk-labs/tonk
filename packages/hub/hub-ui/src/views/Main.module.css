@@ -1,0 +1,74 @@
+.container {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-direction: column;
+}
+
+.headerText {
+  font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu;
+  margin: 20px;
+  font-size: 5em;
+  font-weight: 500;
+}
+
+.button {
+  padding: 10px;
+}
+
+.inputContainer {
+  margin-bottom: 20px;
+}
+
+.input {
+  padding: 8px;
+  font-size: 16px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  width: 300px;
+}
+
+.recentIds {
+  margin-top: 20px;
+  text-align: left;
+}
+
+.recentIds ul {
+  list-style: none;
+  padding: 0;
+}
+
+.recentIds li {
+  padding: 8px;
+  margin: 4px 0;
+  background: #f0f0f0;
+  border-radius: 4px;
+}
+
+.recentIds li:hover {
+  background: #e0e0e0;
+}
+
+.appConfig {
+  margin-top: 20px;
+  padding: 20px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+}
+
+.launchButton {
+  margin-top: 20px;
+  padding: 10px 20px;
+  background-color: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.launchButton:disabled {
+  background-color: #cccccc;
+  cursor: not-allowed;
+}
