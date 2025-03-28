@@ -1,0 +1,19 @@
+@keyframes bobbing {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+.rainbowChar {
+  display: inline-block;
+  animation: bobbing 1s ease-in-out infinite;
+  animation-delay: calc(var(--char-index) * 0.1s); /* Stagger the animation */
+}
+
+.text {
+  min-width: 280px;
+  word-wrap: break-word;
+}
