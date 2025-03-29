@@ -17,6 +17,7 @@
     "nodemon": "^3.0.3"
   },
   "dependencies": {
-    "@electron/remote": "^2.1.2"
+    "@electron/remote": "^2.1.2",
+    "fs-extra": "^11.3.0"
   }
 }

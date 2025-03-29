@@ -1,0 +1,14 @@
+.launchBarContainer {
+  width: calc(100vw - 240px);
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  position: fixed;
+  bottom: 0;
+  right: 0;
+}
+
+.buttonArea {
+  margin: 0 20px;
+}

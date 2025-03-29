@@ -6,3 +6,7 @@ export const init = async (homePath: string) => {
   // Launch the app with the selected docId
   await window.electronAPI.init(homePath);
 };
+
+export const copyHubTemplate = async () => {
+  await window.electronAPI.copyHubTemplate();
+};

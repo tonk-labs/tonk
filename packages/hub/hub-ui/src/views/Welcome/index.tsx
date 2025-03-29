@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import styles from "./Welcome.module.css";
 import { Text, RainbowMode, Button } from "../../components";
 import { handleSelectDirectory } from "../../ipc/ui";
-import { init } from "../../ipc/init";
+import { init, copyHubTemplate } from "../../ipc/hub";
 import { useConfigStore } from "../../stores/configStore";
 
 const Welcome: React.FC = () => {
@@ -19,7 +19,9 @@ const Welcome: React.FC = () => {
 
   const initialize = () => {
     init(selectedPath).then(() => {
-      navigate("/home");
+      copyHubTemplate().then(() => {
+        navigate("/home");
+      });
     });
   };
 

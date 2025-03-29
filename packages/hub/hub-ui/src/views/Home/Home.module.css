@@ -1,5 +1,14 @@
 .container {
-  padding: 38px 0;
   width: 100vw;
   height: 100vh;
+  display: flex;
+  flex-direction: row;
+}
+
+.sidebar {
+  padding: 38px 0;
+  width: 240px;
+  min-width: 240px;
+  height: 100vh;
+  background-color: #232323;
 }
