@@ -5,7 +5,8 @@ const process = require('node:process');
 const { getConfig } = require('./src/config.js');
 require('@electron/remote/main').initialize();
 require('./src/ipc/app.js');
-require('./src/ipc/init.js');
+require('./src/ipc/hub.js');
+require('./src/ipc/files.js');
 
 let createProtocol = (scheme, normalize = true) => {
   protocol.registerBufferProtocol(scheme,

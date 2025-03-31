@@ -1,4 +1,4 @@
-const { ipcMain } = require('electron');
+const { ipcMain, shell } = require('electron');
 const { getConfig } = require('../config.js');
 const path = require('node:path');
 
@@ -23,3 +23,7 @@ ipcMain.handle('launch-app', async (event, projectPath) => {
     throw error;
   }
 });
+
+ipcMain.handle('open-external-link', async (event, link) => {
+  shell.openExternal(link);
+})

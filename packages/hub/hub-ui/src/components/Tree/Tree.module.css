@@ -1,0 +1,12 @@
+.treeNodeFileSpan {
+  transform: translateX(-16px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.treeSection {
+  font-weight: 700;
+  font-size: 1.2em;
+  color: rgba(255,255,255,0.5);
+}

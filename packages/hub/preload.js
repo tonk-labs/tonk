@@ -4,11 +4,14 @@ const { dialog } = require('@electron/remote');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   launchApp: (projectPath) => ipcRenderer.invoke('launch-app', projectPath),
+  openExternal: (link) => ipcRenderer.invoke('open-external-link', link),
   getConfig: () => ipcRenderer.invoke('get-config'),
   init: (homePath) => ipcRenderer.invoke('init', homePath),
-  readFile: (filePath) => ipcRenderer.invoke('readFile', filePath),
-  writeFile: (filePath, content) => ipcRenderer.invoke('writeFile', filePath, content),
+  copyHubTemplate: () => ipcRenderer.invoke('copy-hub-template'),
+  readFile: (filePath) => ipcRenderer.invoke('read-file', filePath),
+  writeFile: (filePath, content) => ipcRenderer.invoke('write-file', filePath, content),
   ls: (filePath) => ipcRenderer.invoke('ls', filePath),
+  platformSensitiveJoin: (paths) => ipcRenderer.invoke('platform-sensitive-join', paths),
   showOpenDialog: (options) => dialog.showOpenDialog(options)
 });
 

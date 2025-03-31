@@ -1,0 +1,10 @@
+{
+  "name": "hello-world",
+  "plan": {
+    "projectName": "hello-world",
+    "projectType": "Learning & Education",
+    "platform": "react",
+    "description": "This tonk app is a basic app with a hello world message for getting started."
+  },
+  "template": "react"
+}
