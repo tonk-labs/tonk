@@ -14,6 +14,32 @@ interface ProjectState {
 
 const REQUIRED_DIRECTORIES = ["apps", "stores", "integrations", "data"];
 
+// Blacklist of files and patterns to ignore (similar to .gitignore)
+const BLACKLISTED_FILES = [
+  ".DS_Store",
+  "Thumbs.db", // Windows thumbnail cache
+  "*.log", // Log files
+  ".env", // Environment files
+  ".env.local",
+  ".env.*.local",
+  "node_modules", // Dependencies
+  "npm-debug.log*",
+  "yarn-debug.log*",
+  "yarn-error.log*",
+];
+
+// Helper function to check if a file should be ignored
+const shouldIgnoreFile = (filename: string): boolean => {
+  return BLACKLISTED_FILES.some((pattern) => {
+    if (pattern.includes("*")) {
+      // Convert glob pattern to regex
+      const regexPattern = pattern.replace(/\./g, "\\.").replace(/\*/g, ".*");
+      return new RegExp(`^${regexPattern}$`).test(filename);
+    }
+    return filename === pattern;
+  });
+};
+
 const validateProjectStructure = async (
   homePath: string
 ): Promise<string | null> => {
@@ -109,6 +135,11 @@ const processSubContents = async (
   if (!subContents) return;
 
   for (const subItem of subContents) {
+    // Skip blacklisted files
+    if (shouldIgnoreFile(subItem.name)) {
+      continue;
+    }
+
     const subItemPath = await platformSensitiveJoin([parentId, subItem.name]);
     const subItemId = subItemPath!.replace(/\//g, "/");
 
@@ -136,6 +167,10 @@ const processDirectoryContents = async (
   for (const item of contents) {
     const itemPath = await platformSensitiveJoin([dir, item.name]);
     const itemId = itemPath!.replace(/\//g, "/");
+
+    if (shouldIgnoreFile(item.name)) {
+      continue;
+    }
 
     items[itemId] = createTreeItem(
       itemId,

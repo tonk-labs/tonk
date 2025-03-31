@@ -3,6 +3,8 @@ declare global {
   interface Window {
     electronAPI: {
       launchApp: (projectPath: string) => Promise<void>;
+      runShell: (dirPath: string) => Promise<void>;
+      closeShell: () => Promise<void>;
       openExternal: (link: string) => Promise<void>;
       getConfig: () => Promise<Config>;
       init: (homePath: string) => Promise<void>;

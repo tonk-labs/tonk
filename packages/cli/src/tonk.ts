@@ -5,6 +5,7 @@ import {serveCommand} from './commands/serve.js';
 import {deployCommand} from './commands/deploy.js';
 import {configCommand} from './commands/config.js';
 import {helloCommand} from './commands/hello.js';
+import {printMarkdown} from './commands/prettyPrint.js';
 import {guiCommand} from './commands/gui.js';
 
 const program = new Command();
@@ -25,6 +26,7 @@ program.addCommand(deployCommand);
 program.addCommand(configCommand);
 program.addCommand(helloCommand);
 program.addCommand(guiCommand);
+program.addCommand(printMarkdown);
 
 // Parse arguments
 program.parse();

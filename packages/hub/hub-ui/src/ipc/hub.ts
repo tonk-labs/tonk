@@ -10,3 +10,11 @@ export const init = async (homePath: string) => {
 export const copyHubTemplate = async () => {
   await window.electronAPI.copyHubTemplate();
 };
+
+export const runShell = async (dirPath: string) => {
+  await window.electronAPI.runShell(dirPath);
+};
+
+export const closeShell = async () => {
+  await window.electronAPI.closeShell();
+};
