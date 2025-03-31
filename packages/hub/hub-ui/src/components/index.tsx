@@ -7,3 +7,4 @@ export { default as TonkAscii } from "./TonkAscii";
 export { default as TonkAsciiAnimated } from "./TonkAsciiAnimated";
 export { default as ContentArea } from "./ContentArea";
 export { default as LaunchBar } from "./LaunchBar";
+export { default as Terminal } from "./Terminal";

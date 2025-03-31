@@ -12,7 +12,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   writeFile: (filePath, content) => ipcRenderer.invoke('write-file', filePath, content),
   ls: (filePath) => ipcRenderer.invoke('ls', filePath),
   platformSensitiveJoin: (paths) => ipcRenderer.invoke('platform-sensitive-join', paths),
-  showOpenDialog: (options) => dialog.showOpenDialog(options)
+  showOpenDialog: (options) => dialog.showOpenDialog(options),
+  runShell: (dirPath) => ipcRenderer.invoke('run-shell', dirPath),
+  closeShell: () => ipcRenderer.invoke('close-shell')
 });
 
 // All the Node.js APIs are available in the preload process.

@@ -9,13 +9,15 @@ ipcMain.handle('launch-app', async (event, projectPath) => {
     const child = require('child_process');
     // Assuming you're using npm start or similar to launch the app
     let config = getConfig();
-    let storesPath = path.join(config.home, 'stores');
-    child.exec(`cd "${projectPath}" && tonk serve --f ${storesPath}`, (error, stdout, stderr) => {
+    let storesPath = path.join(config.homePath, 'stores');
+    child.exec(`cd "${projectPath}" && tonk serve -f ${storesPath}`, (error, stdout, stderr) => {
       if (error) {
         console.error(`Error launching app: ${error}`);
         return;
       }
     });
+
+    shell.openExternal('http://localhost:8080');
 
     return true;
   } catch (error) {

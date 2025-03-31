@@ -2,6 +2,9 @@ const { ipcMain } = require('electron');
 const { getConfig, writeConfig } = require('../config.js');
 const path = require('node:path');
 const fs = require('fs-extra');
+const { run } = require('../shell.js') 
+
+let wss;
 
 ipcMain.handle('init', async (e, homePath) => {
   const config = getConfig();
@@ -23,5 +26,18 @@ ipcMain.handle('copy-hub-template', async (e) => {
   } catch (error) {
     console.error('Failed to copy template:', error);
     return { success: false, error: error.message };
+  }
+})
+
+ipcMain.handle('run-shell', async (e, dirPath) => {
+  if (!wss) {
+    wss = run(3060, dirPath);
+  }
+})
+
+ipcMain.handle('close-shell', async () =>{
+  if (wss) {
+    wss.close()
+    wss = null;
   }
 })
