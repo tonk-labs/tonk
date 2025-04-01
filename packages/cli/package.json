@@ -41,13 +41,12 @@
     "chalk": "^5.3.0",
     "commander": "^11.1.0",
     "dotenv": "^16.4.7",
-    "ekepsync": "link:../../../../Library/pnpm/global/5/node_modules/@tonk/ekepsync",
     "execa": "^8.0.1",
     "fastmcp": "^1.20.2",
     "fs-extra": "^11.2.0",
     "gradient-string": "^2.0.2",
     "inquirer": "^9.2.12",
-    "keepsync": "link:../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync",
+    "keepsync": "file:../keepsync",
     "listr2": "^8.2.5",
     "marked": "^15.0.7",
     "open": "^10.1.0",
@@ -84,11 +83,5 @@
   "bugs": {
     "url": "https://github.com/tonk-labs/tonk/issues"
   },
-  "homepage": "https://github.com/tonk-labs/tonk#readme",
-  "pnpm": {
-    "overrides": {
-      "keepsync": "link:../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync",
-      "cli": "link:../."
-    }
-  }
+  "homepage": "https://github.com/tonk-labs/tonk#readme"
 }
