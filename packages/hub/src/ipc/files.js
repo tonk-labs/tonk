@@ -23,6 +23,10 @@ ipcMain.handle('read-file', async (e, filePath) => {
   return await readFile(filePath);
 });
 
+ipcMain.handle('read-binary', async (e, filePath) => {
+  return fs.readFileSync(filePath);
+});
+
 const writeFile = async (filePath, content) => {
   return new Promise((onSuccess, onError) => {
     // Ensure the directory exists
@@ -78,6 +82,6 @@ const platformSensitiveJoin = async (paths) => {
   return path.join(...paths);
 }
 
-ipcMain.handle('platform-sensitive-join', async(e, paths) => {
+ipcMain.handle('platform-sensitive-join', async (e, paths) => {
   return platformSensitiveJoin(paths);
 })

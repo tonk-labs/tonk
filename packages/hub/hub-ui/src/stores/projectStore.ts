@@ -1,15 +1,22 @@
 import { create } from "zustand";
-import { ls, platformSensitiveJoin } from "../ipc/files";
+import { ls, platformSensitiveJoin, readBinary } from "../ipc/files";
 import { useConfigStore } from "./configStore";
 import { TreeItems, TreeItem, FileType } from "../components/Tree";
+import * as Automerge from "@automerge/automerge";
+import * as AutomergeWasm from "@automerge/automerge-wasm";
+
+// Initialize Automerge with WASM for Electron environment
+Automerge.use(AutomergeWasm);
 
 interface ProjectState {
   items: TreeItems;
   isLoading: boolean;
   error: string | null;
   selectedItem: TreeItem | null;
+  automergeContent: string | null;
   loadProjects: () => Promise<void>;
   setSelectedItem: (item: TreeItem | null) => void;
+  inspectAutomergeFile: (path: string) => Promise<void>;
 }
 
 const REQUIRED_DIRECTORIES = ["apps", "stores", "integrations", "data"];
@@ -41,7 +48,7 @@ const shouldIgnoreFile = (filename: string): boolean => {
 };
 
 const validateProjectStructure = async (
-  homePath: string
+  homePath: string,
 ): Promise<string | null> => {
   try {
     const contents = await ls(homePath);
@@ -50,11 +57,11 @@ const validateProjectStructure = async (
     }
 
     const existingDirs = new Set(
-      contents.filter((item) => item.isDirectory).map((item) => item.name)
+      contents.filter((item) => item.isDirectory).map((item) => item.name),
     );
 
     const missingDirs = REQUIRED_DIRECTORIES.filter(
-      (dir) => !existingDirs.has(dir)
+      (dir) => !existingDirs.has(dir),
     );
 
     if (missingDirs.length > 0) {
@@ -72,7 +79,7 @@ const createTreeItem = (
   name: string,
   fileType: FileType,
   isFolder = false,
-  children: string[] = []
+  children: string[] = [],
 ): TreeItem => ({
   index,
   isFolder,
@@ -111,7 +118,7 @@ const initializeBaseTreeItems = (): TreeItems => ({
     "root",
     FileType.Section,
     true,
-    REQUIRED_DIRECTORIES
+    REQUIRED_DIRECTORIES,
   ),
   apps: createTreeItem("apps", "apps", FileType.Section, true, []),
   stores: createTreeItem("stores", "stores", FileType.Section, true, []),
@@ -120,7 +127,7 @@ const initializeBaseTreeItems = (): TreeItems => ({
     "integrations",
     FileType.Section,
     true,
-    []
+    [],
   ),
   data: createTreeItem("data", "data", FileType.Section, true, []),
 });
@@ -129,7 +136,7 @@ const processSubContents = async (
   parentPath: string,
   parentId: string,
   items: TreeItems,
-  sectionType: FileType
+  sectionType: FileType,
 ): Promise<void> => {
   const subContents = await ls(parentPath);
   if (!subContents) return;
@@ -148,7 +155,7 @@ const processSubContents = async (
       subItem.name,
       sectionType, // Use the parent section's type for all children
       subItem.isDirectory,
-      []
+      [],
     );
 
     items[parentId].children.push(subItemId);
@@ -159,7 +166,7 @@ const processDirectoryContents = async (
   dirPath: string,
   dir: string,
   items: TreeItems,
-  sectionType: FileType
+  sectionType: FileType,
 ): Promise<void> => {
   const contents = await ls(dirPath);
   if (!contents) return;
@@ -178,7 +185,7 @@ const processDirectoryContents = async (
       sectionType, // Use the section type for all items in this directory
       false,
       // item.isDirectory,
-      []
+      [],
     );
 
     // Add to parent's children
@@ -207,11 +214,13 @@ const loadProjectStructure = async (homePath: string): Promise<TreeItems> => {
   return items;
 };
 
-export const useProjectStore = create<ProjectState>((set) => ({
+export const useProjectStore = create<ProjectState>((set, get) => ({
   items: {},
   isLoading: false,
   error: null,
   selectedItem: null,
+  automergeContent: null,
+
   loadProjects: async () => {
     set({ isLoading: true, error: null });
     try {
@@ -237,5 +246,47 @@ export const useProjectStore = create<ProjectState>((set) => ({
       });
     }
   },
-  setSelectedItem: (item: TreeItem | null) => set({ selectedItem: item }),
+
+  setSelectedItem: async (item: TreeItem | null) => {
+    set({ selectedItem: item });
+
+    if (item && item.index.startsWith("stores/") && !item.isFolder) {
+      await get().inspectAutomergeFile(item.index);
+    } else {
+      set({ automergeContent: null });
+    }
+  },
+
+  inspectAutomergeFile: async (path: string) => {
+    try {
+      const config = useConfigStore.getState().config;
+      if (!config?.homePath) {
+        throw new Error("Home path not configured");
+      }
+
+      // Construct the full path
+      const fullPath = await platformSensitiveJoin([config.homePath, path]);
+      if (!fullPath) {
+        throw new Error("Failed to construct file path");
+      }
+
+      // Use the IPC readFile function instead of fetch
+      const fileContent = await readBinary(fullPath);
+      if (!fileContent) {
+        throw new Error("Failed to read file");
+      }
+
+      // Load the Automerge document
+      const doc = Automerge.load(fileContent);
+
+      const content = JSON.stringify(doc, null, 2);
+      set({ automergeContent: content });
+    } catch (error) {
+      console.error("Failed to inspect Automerge file:", error);
+      set({
+        automergeContent: null,
+        error: `Failed to read Automerge document: ${error instanceof Error ? error.message : "Unknown error"}`,
+      });
+    }
+  },
 }));

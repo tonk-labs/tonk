@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   init: (homePath) => ipcRenderer.invoke('init', homePath),
   copyHubTemplate: () => ipcRenderer.invoke('copy-hub-template'),
   readFile: (filePath) => ipcRenderer.invoke('read-file', filePath),
+  readBinary: (filePath) => ipcRenderer.invoke('read-binary', filePath),
   writeFile: (filePath, content) => ipcRenderer.invoke('write-file', filePath, content),
   ls: (filePath) => ipcRenderer.invoke('ls', filePath),
   platformSensitiveJoin: (paths) => ipcRenderer.invoke('platform-sensitive-join', paths),

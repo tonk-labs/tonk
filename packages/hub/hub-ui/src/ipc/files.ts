@@ -26,6 +26,20 @@ export const readFile = async (filePath: string) => {
   }
 };
 
+export const readBinary = async (filePath: string) => {
+  try {
+    // Launch the app with the selected docId
+    return await window.electronAPI.readBinary(filePath);
+  } catch (error: unknown) {
+    console.error("Error reading binary:", error);
+    if (error instanceof Error) {
+      console.error("Error reading binary: " + error.message);
+    } else {
+      console.error("An unexpected error occurred while reading binary");
+    }
+  }
+};
+
 export const writeFile = async (filePath: string, content: string) => {
   try {
     // Launch the app with the selected docId
