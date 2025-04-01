@@ -4,10 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  keepsync: link:../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync
-  cli: link:../.
-
 importers:
 
   .:
@@ -24,9 +20,6 @@ importers:
       dotenv:
         specifier: ^16.4.7
         version: 16.4.7
-      ekepsync:
-        specifier: link:../../../../Library/pnpm/global/5/node_modules/@tonk/ekepsync
-        version: link:../../../../Library/pnpm/global/5/node_modules/@tonk/ekepsync
       execa:
         specifier: ^8.0.1
         version: 8.0.1
@@ -43,8 +36,8 @@ importers:
         specifier: ^9.2.12
         version: 9.3.7
       keepsync:
-        specifier: link:../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync
-        version: link:../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync
+        specifier: file:../keepsync
+        version: '@tonk/keepsync@file:../keepsync(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))'
       listr2:
         specifier: ^8.2.5
         version: 8.2.5
@@ -90,6 +83,9 @@ importers:
         version: 1.6.1(@types/node@22.13.10)
 
 packages:
+
+  '@automerge/automerge-wasm@1.0.0-preview.0':
+    resolution: {integrity: sha512-RE368OYtMc8UCh3FtbIrw9dRc8i5kYLrvj9nb6USPyhpvttAWJhvfQ6pjGgT1nlm7rUEhqMXrf13PsH/KNKJmQ==}
 
   '@automerge/automerge@2.2.8':
     resolution: {integrity: sha512-kP6Z9lIkNeIGe/jhF8SUQAgUMwVjtXCBL0eZEgQGCoWvPNTPcg8fnQco28XkYBrfkkuqiEUAbdHhJmSp0y79ug==}
@@ -983,6 +979,13 @@ packages:
 
   '@tokenizer/token@0.3.0':
     resolution: {integrity: sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==}
+
+  '@tonk/keepsync@file:../keepsync':
+    resolution: {directory: ../keepsync, type: directory}
+    peerDependencies:
+      '@automerge/automerge': ^2.2.8
+      react: ^19.0.0
+      zustand: ^5.0.3
 
   '@tonk/server@file:../server':
     resolution: {directory: ../server, type: directory}
@@ -2617,6 +2620,10 @@ packages:
   react-is@18.3.1:
     resolution: {integrity: sha512-/LLMVyas0ljjAtoYiPqYiL8VWXzUUdThrmU5+n20DZv+a+ClRoevUzw5JxU+Ieh5/c87ytoTBV9G1FiKfNJdmg==}
 
+  react@19.1.0:
+    resolution: {integrity: sha512-FS+XFBNvn3GTAWq26joslQgWNoFu08F4kl0J4CgdNKADkdSGXQyTCnKteIAJy96Br6YbpEU1LSzV5dYtjMkMDg==}
+    engines: {node: '>=0.10.0'}
+
   read-pkg-up@7.0.1:
     resolution: {integrity: sha512-zK0TB7Xd6JpCLmlLmufqykGE+/TlOePD6qKClNW7hHDKFh/J7/7gCWGR7joEQEW1bKq3a3yUZSObOoWLFQ4ohg==}
     engines: {node: '>=8'}
@@ -3272,7 +3279,27 @@ packages:
   zod@3.24.2:
     resolution: {integrity: sha512-lY7CDW43ECgW9u1TcT3IoXHflywfVqDYze4waEz812jR/bZ8FHDsl7pFQoSZTz5N+2NqRXs8GBwnAwo3ZNxqhQ==}
 
+  zustand@5.0.3:
+    resolution: {integrity: sha512-14fwWQtU3pH4dE0dOpdMiWjddcH+QzKIgk1cl8epwSE7yag43k/AD/m4L6+K7DytAOr9gGBe3/EXj9g7cdostg==}
+    engines: {node: '>=12.20.0'}
+    peerDependencies:
+      '@types/react': '>=18.0.0'
+      immer: '>=9.0.6'
+      react: '>=18.0.0'
+      use-sync-external-store: '>=1.2.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      immer:
+        optional: true
+      react:
+        optional: true
+      use-sync-external-store:
+        optional: true
+
 snapshots:
+
+  '@automerge/automerge-wasm@1.0.0-preview.0': {}
 
   '@automerge/automerge@2.2.8':
     dependencies:
@@ -4451,6 +4478,18 @@ snapshots:
       - supports-color
 
   '@tokenizer/token@0.3.0': {}
+
+  '@tonk/keepsync@file:../keepsync(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))':
+    dependencies:
+      '@automerge/automerge': 2.2.8
+      '@automerge/automerge-wasm': 1.0.0-preview.0
+      chalk: 5.4.1
+      react: 19.1.0
+      ws: 8.18.1
+      zustand: 5.0.3(react@19.1.0)
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@tonk/server@file:../server(typescript@5.8.2)':
     dependencies:
@@ -6251,6 +6290,8 @@ snapshots:
 
   react-is@18.3.1: {}
 
+  react@19.1.0: {}
+
   read-pkg-up@7.0.1:
     dependencies:
       find-up: 4.1.0
@@ -6911,3 +6952,7 @@ snapshots:
       zod: 3.24.2
 
   zod@3.24.2: {}
+
+  zustand@5.0.3(react@19.1.0):
+    optionalDependencies:
+      react: 19.1.0
