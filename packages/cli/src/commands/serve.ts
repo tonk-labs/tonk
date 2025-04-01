@@ -11,10 +11,11 @@ function normalizePath(inputPath: string): string {
     return path.join(homedir, inputPath.substring(2));
   }
 
-  // If path is an absolute path not in the user's home directory, redirect it
+  // If path is an absolute path not in the user's home directory and not already expanded from ~,
+  // redirect it to tonk-data
   if (
     inputPath.startsWith('/') &&
-    !inputPath.startsWith('/home/') &&
+    !inputPath.startsWith(process.env.HOME || process.env.USERPROFILE || '') &&
     !inputPath.includes('node_modules')
   ) {
     const homedir = process.env.HOME || process.env.USERPROFILE || '/home/node';

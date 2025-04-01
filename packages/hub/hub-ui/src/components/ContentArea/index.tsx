@@ -1,6 +1,13 @@
 import React from "react";
 import styles from "./ContentArea.module.css";
-import { Text, TonkAsciiAnimated, Link, LinkType, LaunchBar } from "..";
+import {
+  Text,
+  TonkAsciiAnimated,
+  Link,
+  LinkType,
+  LaunchBar,
+  FileViewer,
+} from "..";
 import { TreeItem, FileType } from "../Tree";
 import { openExternal } from "../../ipc/app";
 import { useProjectStore } from "../../stores/projectStore";
@@ -32,6 +39,9 @@ const getComponentForItem = (selectedItem: TreeItem | null) => {
   switch (selectedItem.data.fileType) {
     case FileType.App: {
       return <AppContent />;
+    }
+    case FileType.Store: {
+      return <FileViewer />;
     }
     default: {
       return renderEmptyState();

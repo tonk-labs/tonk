@@ -9,6 +9,7 @@ declare global {
       getConfig: () => Promise<Config>;
       init: (homePath: string) => Promise<void>;
       copyHubTemplate: () => Promise<void>;
+      readBinary: (filePath: string) => Promise<Uint8Array>;
       readFile: (filePath: string) => Promise<string>;
       writeFile: (filePath: string, content: string) => Promise<void>;
       ls: (dirPath: string) => Promise<FileDescription[]>;

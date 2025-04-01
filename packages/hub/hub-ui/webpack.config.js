@@ -22,11 +22,17 @@ module.exports = env => {
       filename: 'bundle.js',
       publicPath: env.development ? '/' : './',
     },
+    experiments: {
+      asyncWebAssembly: true,
+      syncWebAssembly: true,
+      topLevelAwait: true
+    },
     resolve: {
-      extensions: ['.js', '.jsx', '.ts', '.tsx'],
+      extensions: ['.js', '.jsx', '.ts', '.tsx', '.wasm'],
       alias: {
         react: path.resolve('./node_modules/react'),
-        'react-dom': path.resolve('./node_modules/react-dom')
+        'react-dom': path.resolve('./node_modules/react-dom'),
+        'wbg': false
       },
       fallback: {
         path: false,
@@ -87,6 +93,14 @@ module.exports = env => {
             filename: 'public/images/[name][ext]',
           },
         },
+        {
+          test: /\.wasm$/,
+          type: 'webassembly/async',
+          include: [
+            /node_modules\/@automerge\/automerge/,
+            /node_modules\/@automerge\/automerge-wasm/
+          ]
+        },
       ],
     },
     devtool: 'source-map',
@@ -126,18 +140,12 @@ module.exports = env => {
       fs: 'commonjs fs',
       os: 'commonjs os'
     };
-    
+
     // Ensure proper target
     config.target = 'electron-renderer';
-    
-    // Enhanced WebAssembly configuration for Electron
-    config.experiments = {
-      ...config.experiments,
-      asyncWebAssembly: true,
-      syncWebAssembly: true,
-      topLevelAwait: true
-    };
-
+  } else {
+    // For development, use web target to ensure browser compatibility
+    config.target = 'web';
   }
   return config;
 
