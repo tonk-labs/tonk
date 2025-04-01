@@ -29,4 +29,19 @@ export default defineConfig([
     target: ["es2020", "node18"],
     outDir: "dist",
   },
+  {
+    // CLI build configuration
+    entry: ["src/generate.ts"],
+    format: ["esm"],
+    banner: {
+      js: "#!/usr/bin/env node",
+    },
+    platform: "node",
+    splitting: false,
+    sourcemap: true,
+    treeshake: true,
+    minify: true,
+    target: ["es2020", "node18"],
+    outDir: "dist",
+  },
 ]);
