@@ -4,13 +4,13 @@ import ora from "ora";
 import chalk from "chalk";
 import { ProjectPlan } from "../types";
 
-export async function createReactTemplate(
+export async function createIntegrationTemplate(
   projectPath: string,
   projectName: string,
   templatePath: string,
   plan: ProjectPlan,
 ) {
-  const spinner = ora("Creating React project structure...").start();
+  const spinner = ora("Creating Integration project structure...").start();
 
   try {
     // Copy template files
@@ -58,12 +58,12 @@ export async function createReactTemplate(
       {
         name: projectName,
         plan,
-        template: "react",
+        template: "integration",
       },
       { spaces: 2 },
     );
 
-    spinner.succeed("React project created successfully!");
+    spinner.succeed("Integration project created successfully!");
 
     // Install dependencies
     spinner.start("Installing dependencies...");
@@ -73,8 +73,11 @@ export async function createReactTemplate(
     spinner.succeed("Dependencies installed successfully!");
 
     // Print next steps instructions
-    console.log("\n" + chalk.bold("🎉 Your Tonk react app is ready! 🎉"));
+    console.log("\n" + chalk.bold("🎉 Your Tonk integration is ready! 🎉"));
     console.log("\n" + chalk.bold("Next steps:"));
+    console.log(
+      "  • " + chalk.cyan("npm run build") + " - Build the integration",
+    );
     console.log(
       "  • " + chalk.cyan("npm run dev") + " - Start the development server",
     );
@@ -82,7 +85,7 @@ export async function createReactTemplate(
       "  • You may launch claude code or any other AI editor in this directory to begin coding.\n",
     );
   } catch (error) {
-    spinner.fail("Failed to create React project");
+    spinner.fail("Failed to create Integration project");
     console.error(error);
     throw error;
   }
