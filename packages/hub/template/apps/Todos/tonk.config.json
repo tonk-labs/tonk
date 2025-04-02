@@ -1,0 +1,10 @@
+{
+  "name": "Todos",
+  "plan": {
+    "projectName": "Todos",
+    "projectType": "Productivity System",
+    "platform": "react",
+    "description": "A simple todos app that uses keepsync to store and synchronize my data"
+  },
+  "template": "react"
+}
