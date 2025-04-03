@@ -87,7 +87,7 @@ const createWindow = () => {
   // // Load the app
   // const appPath = path.join(__dirname, 'index.html')
   if (process.env.DEVELOPMENT_MODE == "true") {
-    mainWindow.loadURL("http://localhost:3000")
+    mainWindow.loadURL("http://localhost:3333")
   } else {
     mainWindow.loadFile('index.html');
   }

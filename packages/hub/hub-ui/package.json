@@ -6,7 +6,7 @@
     "start": "webpack serve --mode development --env development",
     "build": "webpack --mode production --env production",
     "build:staging": "webpack --mode production --env staging",
-    "serve": "serve -s dist -l 3000",
+    "serve": "serve -s dist -l 3333",
     "lint": "eslint . --ext .ts,.tsx",
     "compile": "tsc",
     "fix": "eslint . --ext .ts,.tsx --fix"
