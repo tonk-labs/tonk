@@ -19,7 +19,7 @@ interface ProjectState {
   inspectAutomergeFile: (path: string) => Promise<void>;
 }
 
-const REQUIRED_DIRECTORIES = ["apps", "stores", "integrations", "data"];
+const REQUIRED_DIRECTORIES = ["apps", "stores", "integrations"];
 
 // Blacklist of files and patterns to ignore (similar to .gitignore)
 const BLACKLISTED_FILES = [
@@ -102,8 +102,6 @@ const getFileType = (path: string, isDirectory: boolean): FileType => {
       return FileType.Store;
     case "integrations":
       return FileType.Integration;
-    case "data":
-      return FileType.Data;
     case "root":
       return FileType.Section;
     default:
@@ -129,7 +127,6 @@ const initializeBaseTreeItems = (): TreeItems => ({
     true,
     [],
   ),
-  data: createTreeItem("data", "data", FileType.Section, true, []),
 });
 
 const processSubContents = async (
