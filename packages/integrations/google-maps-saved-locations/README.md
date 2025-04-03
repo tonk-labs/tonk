@@ -1,122 +1,79 @@
-# @tonk/integration-template
+# Google Maps Saved Locations Converter
 
-A dual-purpose TypeScript library for data fetching that works in both Node.js and browser environments.
+A tool to convert CSV files containing location data into a structured JSON format with enhanced data from the Google Maps API.
 
 ## Features
 
-- 🌍 Universal - works in Node.js and browsers
-- 🔄 Promise-based API
-- ⚡ Lightweight and tree-shakeable
-- 🔒 TypeScript support out of the box
-- ⏱️ Configurable timeouts
-- 🚦 Automatic error handling
-- 🔌 Customizable base URL and default options
+- Reads location data from CSV files
+- Enriches location data using the Google Maps API
+- Outputs structured JSON data
+- Simple command-line interface
 
 ## Installation
 
 ```bash
-npm install @tonk/integration-template
-# or
-yarn add @tonk/integration-template
-# or
-pnpm add @tonk/integration-template
+npm install -g google-maps-saved-locations
+```
+
+Or use it directly with npx:
+
+```bash
+npx google-maps-saved-locations --input your-locations.csv --output enriched-locations.json
 ```
 
 ## Usage
 
-```typescript
-import { FetchClient } from "@tonk/integration-template";
-
-// Create a client instance
-const client = new FetchClient({
-  baseUrl: "https://api.example.com",
-  timeout: 5000, // 5 seconds
-});
-
-// GET request
-const { data, error } = await client.get<User>("/users/1");
-if (error) {
-  console.error("Error fetching user:", error);
-} else {
-  console.log("User data:", data);
-}
-
-// POST request
-const response = await client.post<User>("/users", {
-  name: "John Doe",
-  email: "john@example.com",
-});
-
-// PUT request
-await client.put<User>("/users/1", {
-  name: "Jane Doe",
-});
-
-// DELETE request
-await client.delete("/users/1");
+```bash
+google-maps-locations --input your-locations.csv --output enriched-locations.json --api-key YOUR_GOOGLE_MAPS_API_KEY
 ```
 
-## API
+### Options
 
-### `FetchClient`
+- `-i, --input <path>`: Path to input CSV file (default: "locations.csv")
+- `-o, --output <path>`: Path to output JSON file (default: "locations-output.json")
+- `-k, --api-key <key>`: Google Maps API key (or set GOOGLE_MAPS_API_KEY env var)
+- `-u, --user-id <id>`: Default user ID for imported locations (default: "7fn52mcm1f5")
+- `-n, --user-name <name>`: Default user name (default: "Jack")
 
-The main class for making HTTP requests.
+## CSV Format
 
-#### Constructor
+The CSV file should have the following columns:
 
-```typescript
-new FetchClient(options?: FetchOptions)
-```
+- `Title`: The name of the location
+- `Note`: Optional description or notes about the location
 
-##### Options
+## Output Format
 
-- `baseUrl?: string` - Base URL for all requests
-- `timeout?: number` - Default timeout in milliseconds
-- ...all other fetch options
+The tool outputs a JSON file with the following structure:
 
-#### Methods
-
-##### `get<T>(path: string, options?: FetchOptions): Promise<FetchResponse<T>>`
-
-Make a GET request.
-
-##### `post<T>(path: string, body?: unknown, options?: FetchOptions): Promise<FetchResponse<T>>`
-
-Make a POST request.
-
-##### `put<T>(path: string, body?: unknown, options?: FetchOptions): Promise<FetchResponse<T>>`
-
-Make a PUT request.
-
-##### `delete<T>(path: string, options?: FetchOptions): Promise<FetchResponse<T>>`
-
-Make a DELETE request.
-
-### Types
-
-#### `FetchOptions`
-
-Extends the standard `RequestInit` interface with additional options:
-
-```typescript
-interface FetchOptions extends RequestInit {
-  baseUrl?: string;
-  timeout?: number;
+```json
+{
+  "locations": {
+    "locationId1": {
+      "addedBy": "userId",
+      "category": "favorite",
+      "createdAt": 1617235200000,
+      "description": "Location description",
+      "id": "locationId1",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "name": "Location Name",
+      "placeId": "googlePlaceId"
+    },
+    // More locations...
+  },
+  "userNames": {
+    "userId": "User Name",
+    // More users...
+  }
 }
 ```
 
-#### `FetchResponse<T>`
+## Environment Variables
 
-The response type for all requests:
+You can set the following environment variables instead of using command-line options:
 
-```typescript
-interface FetchResponse<T> {
-  data: T | null;
-  error: Error | null;
-  status: number;
-  headers: Headers;
-}
-```
+- `GOOGLE_MAPS_API_KEY`: Your Google Maps API key
 
 ## License
 

@@ -7,7 +7,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "rename-this-integration-template": "./dist/bin.js"
+    "google-maps-locations": "./dist/bin.js"
   },
   "exports": {
     ".": {
@@ -20,7 +20,10 @@
     "dist",
     "src"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./src/convert/cli.ts",
+    "./src/bin.ts"
+  ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
@@ -42,10 +45,10 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "@automerge/automerge": "^2.2.8",
     "@googlemaps/google-maps-services-js": "^3.4.1",
     "cli-boxes": "^4.0.1",
     "cli-spinners": "^2.9.2",
+    "commander": "^13.1.0",
     "csv-parse": "^5.6.0",
     "dotenv": "^16.4.7",
     "figlet": "^1.8.0",
@@ -54,7 +57,6 @@
     "ink-form": "^2.0.1",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
-    "nanoid": "^5.1.5",
     "react": "^18.3.1",
     "tsdef": "^0.0.14",
     "zustand": "^5.0.3"

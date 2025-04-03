@@ -1,22 +1,15 @@
 import { Client, PlaceInputType } from "@googlemaps/google-maps-services-js";
-import { nanoid } from "nanoid";
 import { OutputFormat } from "./schema";
 
 export async function transformCsvToLocations(
   records: any[],
   apiKey: string,
-  defaultUserId = "7fn52mcm1f5",
-  defaultUserName = "Jack",
 ): Promise<OutputFormat> {
   // Initialize Google Maps client
   const client = new Client({});
 
   const output: OutputFormat = {
     locations: {},
-    userNames: {
-      [defaultUserId]: defaultUserName,
-      n605c98uyhd: "Default User",
-    },
   };
 
   // Process each location
@@ -61,18 +54,13 @@ export async function transformCsvToLocations(
       }
 
       const place = response.data.result;
-      const locationId = nanoid(10);
 
-      output.locations[locationId] = {
-        addedBy: defaultUserId,
-        category: "favorite", // Default category
-        createdAt: Date.now(),
-        description: record.Note || "",
-        id: locationId,
-        latitude: place.geometry?.location.lat || 0,
-        longitude: place.geometry?.location.lng || 0,
+      const placeId = place.place_id || "";
+      output.locations[placeId] = {
         name: record.Title || place.name || "",
-        placeId: place.place_id || "",
+        description: record.Note || "",
+        placeId: placeId,
+        googlePlaceDetails: place,
       };
     } catch (error) {
       console.error(`Error processing ${record.Title}:`, error);

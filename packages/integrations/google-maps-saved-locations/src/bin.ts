@@ -1,3 +1,1 @@
-import cli from "./cli";
-
-cli();
+import "./convert/cli";
