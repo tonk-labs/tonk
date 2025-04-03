@@ -1,0 +1,6 @@
+[book]
+authors = ["Goblin Oats"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Tonk Docs"
