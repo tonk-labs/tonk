@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Argument, Command } from "commander";
 import inquirer from "inquirer";
 import chalk from "chalk";
 import ora from "ora";
@@ -7,6 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { ProjectPlan, TemplateType } from "./types";
 import { createReactTemplate } from "./templates/react";
+import { createIntegrationTemplate } from "./templates/integration";
 
 /**
  * Resolves a package path by checking both local development and global installation paths
@@ -146,6 +147,15 @@ export async function createProject(
           );
           break;
 
+        case "integration":
+          await createIntegrationTemplate(
+            projectPath,
+            projectName,
+            templatePath,
+            plan,
+          );
+          break;
+
         default:
           await createReactTemplate(
             projectPath,
@@ -168,47 +178,121 @@ export async function createProject(
   spinner.stop();
 }
 
+const createApp = async () => {
+  try {
+    console.log("Scaffolding tonk code...");
+    // Prepare questions, removing projectName question if provided as argument
+    const questions = [...projectQuestions];
+
+    // Get project details
+    const answers = await inquirer.prompt(questions);
+    const options = program.opts();
+
+    // Generate project plan
+    const plan = answers;
+
+    // Create project with generated plan and template
+    const finalProjectName =
+      options.name || answers.projectName || "my-tonk-app";
+    const templateName = answers.platform as TemplateType;
+    await createProject(finalProjectName, plan, templateName);
+
+    console.log("🎉 Tonk code generated successfully!");
+  } catch (error) {
+    console.error(chalk.red("Error:"), error);
+    process.exit(1);
+  }
+};
+
+const createTemplate = async () => {
+  try {
+    console.log("Scaffolding tonk integration...");
+
+    // Questions for integration template
+    const integrationQuestions = [
+      {
+        type: "input",
+        name: "projectName",
+        message: "What is your integration named?",
+        default: "my-tonk-integration",
+      },
+      {
+        type: "input",
+        name: "description",
+        message:
+          "Briefly describe your integration and what data it will handle:",
+      },
+    ];
+
+    // Get integration details
+    const answers = await inquirer.prompt(integrationQuestions);
+    const options = program.opts();
+
+    // Generate project plan
+    const plan = {
+      projectDescription: answers.description,
+      implementationLog: [],
+    };
+
+    // Create project with generated plan and template
+    const finalProjectName =
+      options.name || answers.projectName || "my-tonk-integration";
+    await createProject(finalProjectName, plan, "integration");
+
+    console.log("🎉 Tonk integration generated successfully!");
+  } catch (error) {
+    console.error(chalk.red("Error:"), error);
+    process.exit(1);
+  }
+};
+
+const TEMPLATE_TYPES = ["app", "integration"];
+const TEMPLATE_DESCRIPTION = [
+  "Creates an empty Tonk app",
+  "Creates a new Tonk integration for importing or fetching data",
+];
 program
-  .name("create-app")
-  .description("Create a new Tonk app")
+  .name("create")
+  .description("Scaffold code for your Tonk projects")
   .version(packageJson.version, "-v, --version", "Output the current version")
-  .argument("[project-name]", "Name of the project to create")
-  .action(async (projectNameArg) => {
+  .addArgument(
+    new Argument("type", "What template type to create").choices(
+      TEMPLATE_TYPES,
+    ),
+  )
+  .exitOverride((e) => {
+    if (e.message.includes("invalid for argument 'type'")) {
+      console.log("\n");
+      program.outputHelp();
+      console.log("\n\n");
+      process.exit(8);
+    } else {
+      throw e;
+    }
+  })
+  .action(async (typeArg) => {
     console.log(chalk.bold("\nTonk! 🚀\n"));
 
-    try {
-      // Prepare questions, removing projectName question if provided as argument
-      const questions = [...projectQuestions];
-      if (projectNameArg) {
-        // Remove the projectName question if name was provided as argument
-        const projectNameIndex = questions.findIndex(
-          (q) => q.name === "projectName",
+    switch (typeArg) {
+      case TEMPLATE_TYPES[0]: {
+        await createApp();
+        return;
+      }
+      case TEMPLATE_TYPES[1] || `${TEMPLATE_TYPES[1]}s`: {
+        await createTemplate();
+        return;
+      }
+      default: {
+        console.log(
+          `Hmm, I don't recognize the template type of '${typeArg}'.`,
         );
-        if (projectNameIndex !== -1) {
-          questions.splice(projectNameIndex, 1);
-        }
+        console.log("\n");
+        console.log(`Available types:`);
+        TEMPLATE_TYPES.forEach((ttype, i) =>
+          console.log(` ${ttype}: \t\t${TEMPLATE_DESCRIPTION[i]}`),
+        );
+        console.log("\n\n");
       }
-
-      // Get project details
-      const answers = await inquirer.prompt(questions);
-      const options = program.opts();
-
-      // If project name was provided as argument, add it to answers
-      if (projectNameArg) {
-        answers.projectName = projectNameArg;
-      }
-
-      // Generate project plan
-      const plan = answers;
-
-      // Create project with generated plan and template
-      const finalProjectName =
-        projectNameArg || options.name || answers.projectName || "my-tonk-app";
-      const templateName = answers.platform as TemplateType;
-      await createProject(finalProjectName, plan, templateName);
-    } catch (error) {
-      console.error(chalk.red("Error:"), error);
-      process.exit(1);
     }
   });
 
