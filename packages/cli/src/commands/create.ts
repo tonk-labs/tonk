@@ -4,10 +4,13 @@ import child_process from 'child_process';
 export const createCommand = new Command('create')
   .description('Create a new tonk application or component')
   .argument('[type]', 'Type of template to scaffold')
-  .action(typeArg => {
+  .option('-i, --init', 'initialize in the folder')
+  .action((typeArg, options) => {
     try {
       // Build the command with any passed options
-      let createCommand = `npx @tonk/create ${typeArg || 'app'}`;
+      let createCommand = `npx @tonk/create ${typeArg || 'app'} ${
+        options.init ? '-i' : ''
+      }`;
 
       console.log(createCommand);
 

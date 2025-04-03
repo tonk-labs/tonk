@@ -4,6 +4,8 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import styles from "./Terminal.module.css";
+import { useEventStore } from "../../stores/eventStore";
+import { FileType } from "../Tree";
 
 // Import xterm.js and addons
 import { Terminal as XTerm } from "xterm";
@@ -11,15 +13,31 @@ import { FitAddon } from "xterm-addon-fit";
 import { WebLinksAddon } from "xterm-addon-web-links";
 import "xterm/css/xterm.css";
 
-interface TerminalProps {}
+interface TerminalProps {
+  selectedItem: {
+    data: {
+      fileType: FileType;
+      name: string;
+    };
+  } | null;
+  cmd: string;
+}
 
-const Terminal: React.FC<TerminalProps> = (props: TerminalProps) => {
+//TODO: we should move all this xterm websocket logic into a separate are with hooks and stores
+const Terminal: React.FC<TerminalProps> = ({ selectedItem, cmd }) => {
   const [socket, setSocket] = useState<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [commandLock, setCommandLock] = useState(false);
   const [terminal, setTerminal] = useState<XTerm | null>(null);
   const [fitAddon, setFitAddon] = useState<FitAddon | null>(null);
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const [isTerminalReady, setIsTerminalReady] = useState(false);
+  const { getEventsByType } = useEventStore();
+  const [useInitWithAppName, setUseInitWithAppName] = useState<string | null>(
+    null
+  );
+
+  // Check for init events when selectedItem changes
 
   // Initialize xterm.js
   useEffect(() => {
@@ -85,7 +103,7 @@ const Terminal: React.FC<TerminalProps> = (props: TerminalProps) => {
           if (term?.element && terminalContainerRef.current?.offsetHeight > 0) {
             resolve(true);
           } else {
-            setTimeout(checkReady, 10);
+            setTimeout(checkReady, 100);
           }
         };
         checkReady();
@@ -137,18 +155,58 @@ const Terminal: React.FC<TerminalProps> = (props: TerminalProps) => {
       }
     };
 
-    terminal.onData(dataListener);
+    const disposable = terminal.onData(dataListener);
+
+    // Clean up by disposing the listener when dependencies change or component unmounts
+    return () => {
+      disposable.dispose();
+    };
   }, [terminal, socket, isConnected, isTerminalReady]);
+
+  useEffect(() => {
+    if (cmd !== "" && socket) {
+      switch (cmd) {
+        case "stopAndReset": {
+          socket.send(
+            JSON.stringify({
+              type: "command",
+              command: "\x03",
+            })
+          );
+          socket.send(
+            JSON.stringify({
+              type: "command",
+              command: "clear\r",
+            })
+          );
+          break;
+        }
+        default: {
+          console.error("didn't recognize the sent command");
+        }
+      }
+    }
+  }, [cmd, socket]);
 
   // Set up WebSocket connection
   useEffect(() => {
-    if (!terminal || !fitAddon || !isTerminalReady) return;
+    if (!terminal || !fitAddon || !isTerminalReady || !selectedItem) return;
 
     let retryCount = 0;
     const maxRetries = 3;
     let retryTimeout: NodeJS.Timeout;
     let lastRetryAttempt = 0;
     const retryDebounceWindow = 2000; // 2 seconds window between retries
+
+    // Close any existing connection first
+    if (socket) {
+      console.log(
+        "Closing existing WebSocket connection due to selectedItem change"
+      );
+      socket.close();
+      setSocket(null);
+      setIsConnected(false);
+    }
 
     const scheduleRetry = () => {
       const now = Date.now();
@@ -218,15 +276,46 @@ const Terminal: React.FC<TerminalProps> = (props: TerminalProps) => {
           terminal.writeln("Use the command `tonk guide` if you need help");
           terminal.writeln("");
 
-          // Add a small delay to ensure the shell is ready before sending the command
-          setTimeout(() => {
-            ws.send(
-              JSON.stringify({
-                type: "command",
-                command: "tonk markdown README.md\r",
-              })
-            );
-          }, 500);
+          let isInit = false;
+
+          if (selectedItem?.data.fileType === FileType.App) {
+            const appName = selectedItem.data.name;
+            const events = getEventsByType("init");
+            const found = events.find((e) => e.appName === appName);
+            if (found) {
+              console.log(
+                `App ${appName} was initialized through the ActionBar`
+              );
+              isInit = true;
+            }
+          }
+          if (!commandLock) {
+            setCommandLock(true);
+            if (isInit) {
+              setTimeout(() => {
+                ws.send(
+                  JSON.stringify({
+                    type: "command",
+                    command: "tonk create app --init\r",
+                  })
+                );
+                setTimeout(() => {
+                  terminal.writeln("");
+                  terminal.writeln("Please wait a few seconds...");
+                }, 500);
+              }, 700);
+            } else {
+              // Add a small delay to ensure the shell is ready before sending the command
+              setTimeout(() => {
+                ws.send(
+                  JSON.stringify({
+                    type: "command",
+                    command: "tonk markdown README.md\r",
+                  })
+                );
+              }, 700);
+            }
+          }
         } catch (e) {
           console.error("Error during WebSocket initialization:", e);
           terminal.writeln(
@@ -291,13 +380,22 @@ const Terminal: React.FC<TerminalProps> = (props: TerminalProps) => {
       return ws;
     };
 
+    console.log(
+      "Establishing new WebSocket connection for selectedItem:",
+      selectedItem.data.name
+    );
     const ws = connectWebSocket();
 
     return () => {
+      console.log("Cleaning up WebSocket connection");
       clearTimeout(retryTimeout);
-      ws.close();
+      if (ws) {
+        ws.close();
+        setSocket(null);
+        setIsConnected(false);
+      }
     };
-  }, [terminal, fitAddon, isTerminalReady]);
+  }, [terminal, fitAddon, isTerminalReady, selectedItem]);
 
   // Handle window resize
   useEffect(() => {
@@ -382,6 +480,7 @@ const Terminal: React.FC<TerminalProps> = (props: TerminalProps) => {
   return (
     <div className={styles.container}>
       <div
+        key={1}
         className={styles.terminalContainer}
         ref={terminalContainerRef}
         tabIndex={1}

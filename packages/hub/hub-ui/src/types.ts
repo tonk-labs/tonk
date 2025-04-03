@@ -3,6 +3,7 @@ declare global {
   interface Window {
     electronAPI: {
       launchApp: (projectPath: string) => Promise<void>;
+      createApp: (projectName: string) => Promise<void>;
       runShell: (dirPath: string) => Promise<void>;
       closeShell: () => Promise<void>;
       openExternal: (link: string) => Promise<void>;
@@ -17,6 +18,8 @@ declare global {
       showOpenDialog: (options: {
         properties: string[];
       }) => Promise<{ canceled: boolean; filePaths: string[] }>;
+      startFileWatching: () => Promise<boolean>;
+      stopFileWatching: () => Promise<boolean>;
     };
     require: (module: string) => any;
   }
@@ -31,4 +34,9 @@ export type FileDescription = {
 
 export type Config = {
   homePath: string;
+};
+
+export type FileChangeEvent = {
+  type: "add" | "change" | "unlink" | "addDir" | "unlinkDir";
+  path: string;
 };

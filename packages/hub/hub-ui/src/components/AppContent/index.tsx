@@ -1,17 +1,16 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect } from "react";
 import { useProjectStore } from "../../stores/projectStore";
-import { readFile, platformSensitiveJoin } from "../../ipc/files";
 import { closeShell, runShell } from "../../ipc/hub";
 import { getConfig } from "../../ipc/config";
-import styles from "./AppContent.module.css";
-import Markdown from "react-markdown";
+import { platformSensitiveJoin } from "../../ipc/files";
 import Terminal from "../Terminal";
 
-interface AppContentProps {}
+interface AppContentProps {
+  cmd: string;
+}
 
-const AppContent: React.FC<AppContentProps> = () => {
+const AppContent: React.FC<AppContentProps> = ({ cmd }) => {
   const { selectedItem } = useProjectStore();
-  const [fileContent, setFileContent] = useState("");
 
   useEffect(() => {
     const fn = async () => {
@@ -22,17 +21,16 @@ const AppContent: React.FC<AppContentProps> = () => {
           config!.homePath,
           ...subPath,
         ]);
-        // const content = await readFile(fullPath!);
+
         closeShell().then(() => {
           runShell(fullPath!);
         });
-        // setFileContent(content!);
       }
     };
     fn();
   }, [selectedItem]);
 
-  return <Terminal />;
+  return <Terminal selectedItem={selectedItem} cmd={cmd} />;
 };
 
 export default AppContent;

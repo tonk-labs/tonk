@@ -16,16 +16,19 @@ button:active {
     background-color: rgba(217, 217, 217, 0);
 }
 
+/* blue is internal links, actions that modify stuff inside app, tertiary */
 .blue {
     border: 1px solid #00C8FF;
     color: #00C8FF;
 }
 
+/* purple is external links, cancellations, etc secondary colors */
 .purple {
     border: 1px solid #CF66FF;
     color: #CF66FF;
 }
 
+/* green is primary action, external actions */
 .green {
     border: 1px solid #35FF3C;
     color: #35FF3C;

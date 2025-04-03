@@ -15,6 +15,7 @@
     "@automerge/automerge": "^2.2.8",
     "@automerge/automerge-wasm": "1.0.0-preview.0",
     "@blueprintjs/core": "^5.17.6",
+    "@radix-ui/react-dialog": "^1.1.6",
     "dotenv": "^16.4.5",
     "jose": "^5.10.0",
     "lucide-react": "^0.475.0",

@@ -41,3 +41,18 @@ ipcMain.handle('close-shell', async () =>{
     wss = null;
   }
 })
+
+ipcMain.handle('create-app', async (e, name) => {
+  //this will create a new folder in apps
+  //it will run tonk create app --init
+  const child = require('child_process');
+  // Assuming you're using npm start or similar to launch the app
+  let config = getConfig();
+  let appPath = path.join(config.homePath, 'apps');
+  child.exec(`cd "${appPath}" && mkdir ${name}`, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Error launching app: ${error}`);
+      return;
+    }
+  });
+})
