@@ -1,9 +1,10 @@
-import { Argument, Command } from "commander";
+import { Command } from "commander";
 import inquirer from "inquirer";
 import chalk from "chalk";
 import ora from "ora";
 import fs from "fs-extra";
 import path from "path";
+import process from "process";
 import { fileURLToPath } from "url";
 import { ProjectPlan, TemplateType } from "./types";
 import { createReactTemplate } from "./templates/react";
@@ -34,14 +35,14 @@ async function resolvePackagePath(relativePath: string): Promise<string> {
       const globalPath = path.join(
         globalNodeModules,
         "@tonk/create",
-        relativePath,
+        relativePath
       );
 
       if (await fs.pathExists(globalPath)) {
         return globalPath;
       } else {
         throw new Error(
-          `Could not locate ${relativePath} in local or global paths`,
+          `Could not locate ${relativePath} in local or global paths`
         );
       }
     }
@@ -103,13 +104,14 @@ export async function createProject(
   projectName: string,
   plan: ProjectPlan,
   _templateName: TemplateType,
+  _projectPath: string | null = null
 ) {
   const spinner = ora("Creating project structure...").start();
-  let projectPath = "";
+  let projectPath = _projectPath;
 
   try {
     // Create project directory
-    projectPath = path.resolve(projectName);
+    projectPath = projectPath || path.resolve(projectName);
     await fs.ensureDir(projectPath);
 
     // Find template path
@@ -121,17 +123,17 @@ export async function createProject(
     } catch (error) {
       console.error(
         `Error resolving template path for "${templateName}":`,
-        error,
+        error
       );
       throw new Error(
-        `Could not locate template "${templateName}". Please ensure the package is installed correctly and the template exists.`,
+        `Could not locate template "${templateName}". Please ensure the package is installed correctly and the template exists.`
       );
     }
 
     // Ensure templatePath is defined before using it
     if (!templatePath || !(await fs.pathExists(templatePath))) {
       throw new Error(
-        `Template path not found for "${templateName}": ${templatePath}`,
+        `Template path not found for "${templateName}": ${templatePath}`
       );
     }
 
@@ -143,7 +145,7 @@ export async function createProject(
             projectPath,
             projectName,
             templatePath,
-            plan,
+            plan
           );
           break;
 
@@ -152,7 +154,7 @@ export async function createProject(
             projectPath,
             projectName,
             templatePath,
-            plan,
+            plan
           );
           break;
 
@@ -161,7 +163,7 @@ export async function createProject(
             projectPath,
             projectName,
             templatePath,
-            plan,
+            plan
           );
           break;
       }
@@ -178,11 +180,13 @@ export async function createProject(
   spinner.stop();
 }
 
-const createApp = async () => {
+const createApp = async (init: boolean) => {
   try {
     console.log("Scaffolding tonk code...");
     // Prepare questions, removing projectName question if provided as argument
-    const questions = [...projectQuestions];
+    const questions = init
+      ? [...projectQuestions.slice(1)]
+      : [...projectQuestions];
 
     // Get project details
     const answers = await inquirer.prompt(questions);
@@ -192,10 +196,12 @@ const createApp = async () => {
     const plan = answers;
 
     // Create project with generated plan and template
-    const finalProjectName =
-      options.name || answers.projectName || "my-tonk-app";
+    const finalProjectName = init
+      ? path.basename(process.cwd())
+      : options.name || answers.projectName || "my-tonk-app";
     const templateName = answers.platform as TemplateType;
-    await createProject(finalProjectName, plan, templateName);
+    let projectPath = init ? process.cwd() : null;
+    await createProject(finalProjectName, plan, templateName, projectPath);
 
     console.log("🎉 Tonk code generated successfully!");
   } catch (error) {
@@ -255,11 +261,8 @@ program
   .name("create")
   .description("Scaffold code for your Tonk projects")
   .version(packageJson.version, "-v, --version", "Output the current version")
-  .addArgument(
-    new Argument("type", "What template type to create").choices(
-      TEMPLATE_TYPES,
-    ),
-  )
+  .option("-i, --init", "initialize in the folder")
+  .argument("[type]", "Type of template to scaffold")
   .exitOverride((e) => {
     if (e.message.includes("invalid for argument 'type'")) {
       console.log("\n");
@@ -270,12 +273,12 @@ program
       throw e;
     }
   })
-  .action(async (typeArg) => {
+  .action(async (typeArg, options) => {
     console.log(chalk.bold("\nTonk! 🚀\n"));
 
     switch (typeArg) {
       case TEMPLATE_TYPES[0]: {
-        await createApp();
+        await createApp(options.init);
         return;
       }
       case TEMPLATE_TYPES[1] || `${TEMPLATE_TYPES[1]}s`: {
@@ -284,12 +287,12 @@ program
       }
       default: {
         console.log(
-          `Hmm, I don't recognize the template type of '${typeArg}'.`,
+          `Hmm, I don't recognize the template type of '${typeArg}'.`
         );
         console.log("\n");
         console.log(`Available types:`);
         TEMPLATE_TYPES.forEach((ttype, i) =>
-          console.log(` ${ttype}: \t\t${TEMPLATE_DESCRIPTION[i]}`),
+          console.log(` ${ttype}: \t\t${TEMPLATE_DESCRIPTION[i]}`)
         );
         console.log("\n\n");
       }

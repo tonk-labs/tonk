@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import styles from "./ContentArea.module.css";
 import {
   Text,
@@ -32,13 +32,13 @@ const renderEmptyState = () => {
   ];
 };
 
-const getComponentForItem = (selectedItem: TreeItem | null) => {
+const getComponentForItem = (selectedItem: TreeItem | null, cmd: string) => {
   if (!selectedItem) {
     return renderEmptyState();
   }
   switch (selectedItem.data.fileType) {
     case FileType.App: {
-      return <AppContent />;
+      return <AppContent cmd={cmd} />;
     }
     case FileType.Store: {
       return <FileViewer />;
@@ -51,10 +51,18 @@ const getComponentForItem = (selectedItem: TreeItem | null) => {
 
 const ContentArea: React.FC<ContentAreaProps> = () => {
   const { selectedItem } = useProjectStore();
+  const [cmd, setCmd] = useState("");
+  useEffect(() => {
+    if (cmd !== "") {
+      setTimeout(() => {
+        setCmd("");
+      }, 200);
+    }
+  }, [cmd]);
   return (
     <div className={styles.contentArea}>
-      {getComponentForItem(selectedItem)}
-      <LaunchBar />
+      {getComponentForItem(selectedItem, cmd)}
+      <LaunchBar commandCallback={setCmd} />
     </div>
   );
 };

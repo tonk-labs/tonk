@@ -1,56 +1,42 @@
 import React from "react";
 import { TreeRenderProps, TreeItem } from "react-complex-tree";
-import { File, Folder, Cylinder, Package, FileDigit } from "lucide-react";
+import { Notebook, Cylinder, Package } from "lucide-react";
 import styles from "./Tree.module.css";
 import { TreeItemMetadata, FileType } from "./index";
 
 const cx = (...classNames: Array<string | undefined | false>) =>
   classNames.filter((cn) => !!cn).join(" ");
 
-const renderItem = (
-  item: TreeItem<TreeItemMetadata>,
-  title: React.ReactNode
-) => {
-  switch (item.data.fileType) {
-    case FileType.App: {
+const renderSection = (title: React.ReactNode) => {
+  if (typeof title !== "string") return title;
+
+  switch (title.toLowerCase()) {
+    case "apps": {
       return (
-        <span className={styles.treeNodeFileSpan}>
-          <Folder size={16} />
+        <span className={styles.treeSection}>
+          <Notebook size={16} className={styles.iconStyle} />
           {title}
         </span>
       );
     }
-    case FileType.Store: {
+    case "stores": {
       return (
-        <span className={styles.treeNodeFileSpan}>
-          <Cylinder size={16} />
+        <span className={styles.treeSection}>
+          <Cylinder size={16} className={styles.iconStyle} />
           {title}
         </span>
       );
     }
-    case FileType.Integration: {
+    case "integrations": {
       return (
-        <span className={styles.treeNodeFileSpan}>
-          <Package size={16} />
-          {title}
-        </span>
-      );
-    }
-    case FileType.Data: {
-      return (
-        <span className={styles.treeNodeFileSpan}>
-          <FileDigit size={16} />
+        <span className={styles.treeSection}>
+          <Package size={16} className={styles.iconStyle} />
           {title}
         </span>
       );
     }
     default: {
-      return (
-        <span className={styles.treeNodeFileSpan}>
-          <File size={16} />
-          {title}
-        </span>
-      );
+      return title;
     }
   }
 };
@@ -59,7 +45,7 @@ export const renderers: TreeRenderProps<TreeItemMetadata> = {
   renderItem: ({ item, depth, children, title, context, arrow }) => {
     const InteractiveComponent = context.isRenaming ? "div" : "button";
     const type = context.isRenaming ? undefined : "button";
-    // TODO have only root li component create all the classes
+
     return (
       <li
         {...(context.itemContainerWithChildrenProps as any)}
@@ -102,15 +88,11 @@ export const renderers: TreeRenderProps<TreeItemMetadata> = {
               context.isSearchMatching && "rct-tree-item-button-search-match"
             )}
           >
-            {item.isFolder ? (
-              item.data.fileType === FileType.Section ? (
-                <span className={styles.treeSection}>{title}</span>
-              ) : (
-                title
-              )
-            ) : (
-              renderItem(item, title)
-            )}
+            {item.isFolder
+              ? item.data.fileType === FileType.Section
+                ? renderSection(title)
+                : title
+              : title}
           </InteractiveComponent>
         </div>
         {children}

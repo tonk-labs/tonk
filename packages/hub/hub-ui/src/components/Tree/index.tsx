@@ -1,13 +1,14 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useMemo } from "react";
 import {
   UncontrolledTreeEnvironment,
-  Tree as ComplexTree,
   StaticTreeDataProvider,
+  Tree as ComplexTree,
   TreeItemIndex,
 } from "react-complex-tree";
 import "react-complex-tree/lib/style-modern.css";
 import { renderers } from "./renderers";
 import { useProjectStore } from "../../stores/projectStore";
+import { change } from "@automerge/automerge";
 
 export enum FileType {
   "Section",
@@ -45,23 +46,40 @@ export const Tree: React.FC<TreeProps> = ({
   rootItem = "root",
   treeLabel = "Project Tree",
 }) => {
-  const { items, loadProjects, isLoading, setSelectedItem } = useProjectStore();
+  const {
+    items: _items,
+    loadProjects,
+    isLoading,
+    changedParents,
+    setSelectedItem,
+  } = useProjectStore();
+  const items = useMemo(() => ({ ..._items }), [_items]);
+  const dataProvider = useMemo(
+    () =>
+      new StaticTreeDataProvider(items, (item, newName) => ({
+        ...item,
+        data: {
+          ...item.data,
+          name: newName,
+        },
+      })),
+    [items]
+  );
 
   useEffect(() => {
     loadProjects();
   }, []);
 
-  if (isLoading || Object.keys(items).length === 0) {
+  useEffect(() => {
+    if (dataProvider) {
+      // Force a complete re-render of the tree by emitting changes for the root
+      dataProvider.onDidChangeTreeDataEmitter.emit(changedParents);
+    }
+  }, [changedParents]);
+
+  if (isLoading || Object.keys(items).length === 0 || !dataProvider) {
     return <div>Loading...</div>;
   }
-
-  const dataProvider = new StaticTreeDataProvider(items, (item, newName) => ({
-    ...item,
-    data: {
-      ...item.data,
-      name: newName,
-    },
-  }));
 
   const onItemSelected = (itemKeys: TreeItemIndex[]) => {
     // we don't understand how to multi-select at the moment, so we just take the first
@@ -75,7 +93,11 @@ export const Tree: React.FC<TreeProps> = ({
     <UncontrolledTreeEnvironment
       dataProvider={dataProvider}
       getItemTitle={(item) => item.data.name}
-      viewState={{}}
+      viewState={{
+        ["tree-1"]: {
+          expandedItems: ["apps", "stores", "integrations"],
+        },
+      }}
       onSelectItems={onItemSelected}
       {...renderers}
     >

@@ -7,9 +7,14 @@ import { getConfig } from "../../ipc/config";
 import { platformSensitiveJoin } from "../../ipc/files";
 import { useProjectStore } from "../../stores/projectStore";
 
-interface LaunchBarProps {}
+interface LaunchBarProps {
+  commandCallback: (cmd: string) => void;
+}
 
-const AppLaunchBar = (selectedItem: TreeItem) => {
+const AppLaunchBar = (
+  selectedItem: TreeItem,
+  commandCallback: (cmd: string) => void
+) => {
   const launch = async () => {
     const config = await getConfig();
     const fullPath = await platformSensitiveJoin([
@@ -18,8 +23,18 @@ const AppLaunchBar = (selectedItem: TreeItem) => {
     ]);
     launchApp(fullPath!);
   };
+  const stopAndReset = () => {
+    commandCallback("stopAndReset");
+  };
   return (
     <div className={styles.buttonArea}>
+      <Button
+        variant={"purple"}
+        style={{ marginRight: "20px" }}
+        onClick={stopAndReset}
+      >
+        Stop & Reset
+      </Button>
       <Button variant={"green"} onClick={launch}>
         Launch
       </Button>
@@ -27,13 +42,16 @@ const AppLaunchBar = (selectedItem: TreeItem) => {
   );
 };
 
-const getComponentForItem = (selectedItem: TreeItem | null) => {
+const getComponentForItem = (
+  selectedItem: TreeItem | null,
+  commandCallback: (cmd: string) => void
+) => {
   if (!selectedItem) {
     return null;
   }
   switch (selectedItem.data.fileType) {
     case FileType.App: {
-      return AppLaunchBar(selectedItem);
+      return AppLaunchBar(selectedItem, commandCallback);
     }
     default: {
       return null;
@@ -41,9 +59,9 @@ const getComponentForItem = (selectedItem: TreeItem | null) => {
   }
 };
 
-const LaunchBar: React.FC<LaunchBarProps> = () => {
+const LaunchBar: React.FC<LaunchBarProps> = ({ commandCallback }) => {
   const { selectedItem } = useProjectStore();
-  const componentItem = getComponentForItem(selectedItem);
+  const componentItem = getComponentForItem(selectedItem, commandCallback);
   return componentItem ? (
     <div className={styles.launchBarContainer}>{componentItem}</div>
   ) : null;

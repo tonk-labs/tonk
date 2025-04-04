@@ -7,6 +7,7 @@ require('@electron/remote/main').initialize();
 require('./src/ipc/app.js');
 require('./src/ipc/hub.js');
 require('./src/ipc/files.js');
+require('./src/ipc/watcher.js');
 
 let createProtocol = (scheme, normalize = true) => {
   protocol.registerBufferProtocol(scheme,

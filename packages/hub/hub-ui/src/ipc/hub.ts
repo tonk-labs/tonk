@@ -18,3 +18,7 @@ export const runShell = async (dirPath: string) => {
 export const closeShell = async () => {
   await window.electronAPI.closeShell();
 };
+
+export const createApp = async (name: string) => {
+  await window.electronAPI.createApp(name);
+};

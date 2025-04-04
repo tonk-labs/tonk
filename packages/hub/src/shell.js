@@ -120,7 +120,6 @@ const run = (port, dirPath) => {
               ptyProcess.write(data.command);
             }
             break;
-
           case 'resize':
             // Resize terminal
             if (ptyProcess) {

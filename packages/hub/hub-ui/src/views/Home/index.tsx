@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import styles from "./Home.module.css";
-import { Tree, ContentArea } from "../../components";
+import { Tree, ContentArea, ActionBar } from "../../components";
 import { useConfigStore } from "../../stores/configStore";
 
 const Home: React.FC = () => {
@@ -26,6 +26,7 @@ const Home: React.FC = () => {
     <div className={styles.container}>
       <div className={styles.sidebar}>
         <Tree />
+        <ActionBar />
       </div>
       <ContentArea />
     </div>

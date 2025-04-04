@@ -15,7 +15,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platformSensitiveJoin: (paths) => ipcRenderer.invoke('platform-sensitive-join', paths),
   showOpenDialog: (options) => dialog.showOpenDialog(options),
   runShell: (dirPath) => ipcRenderer.invoke('run-shell', dirPath),
-  closeShell: () => ipcRenderer.invoke('close-shell')
+  closeShell: () => ipcRenderer.invoke('close-shell'),
+  createApp: (name) => ipcRenderer.invoke('create-app', name),
+  startFileWatching: () => ipcRenderer.invoke('start-file-watching'),
+  stopFileWatching: () => ipcRenderer.invoke('stop-file-watching'),
+});
+
+// Add IPC listener for file changes
+ipcRenderer.on('file-change', (event, payload) => {
+  // Dispatch a custom event that the React app can listen to
+  window.dispatchEvent(new CustomEvent('file-change', { detail: payload }));
 });
 
 // All the Node.js APIs are available in the preload process.

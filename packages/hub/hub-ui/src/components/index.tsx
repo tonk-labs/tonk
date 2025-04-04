@@ -9,3 +9,4 @@ export { default as ContentArea } from "./ContentArea";
 export { default as LaunchBar } from "./LaunchBar";
 export { default as Terminal } from "./Terminal";
 export { default as FileViewer } from "./FileViewer";
+export { default as ActionBar } from "./ActionBar";

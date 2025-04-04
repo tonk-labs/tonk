@@ -4,6 +4,8 @@ import { useConfigStore } from "./configStore";
 import { TreeItems, TreeItem, FileType } from "../components/Tree";
 import * as Automerge from "@automerge/automerge";
 import * as AutomergeWasm from "@automerge/automerge-wasm";
+import { FileChangeEvent } from "../types";
+import { StaticTreeDataProvider } from "react-complex-tree";
 
 // Initialize Automerge with WASM for Electron environment
 Automerge.use(AutomergeWasm);
@@ -14,9 +16,13 @@ interface ProjectState {
   error: string | null;
   selectedItem: TreeItem | null;
   automergeContent: string | null;
+  changedParents: string[];
   loadProjects: () => Promise<void>;
   setSelectedItem: (item: TreeItem | null) => void;
   inspectAutomergeFile: (path: string) => Promise<void>;
+  startFileWatching: () => Promise<void>;
+  stopFileWatching: () => Promise<void>;
+  handleFileChange: (event: FileChangeEvent) => Promise<void>;
 }
 
 const REQUIRED_DIRECTORIES = ["apps", "stores", "integrations"];
@@ -48,7 +54,7 @@ const shouldIgnoreFile = (filename: string): boolean => {
 };
 
 const validateProjectStructure = async (
-  homePath: string,
+  homePath: string
 ): Promise<string | null> => {
   try {
     const contents = await ls(homePath);
@@ -57,11 +63,11 @@ const validateProjectStructure = async (
     }
 
     const existingDirs = new Set(
-      contents.filter((item) => item.isDirectory).map((item) => item.name),
+      contents.filter((item) => item.isDirectory).map((item) => item.name)
     );
 
     const missingDirs = REQUIRED_DIRECTORIES.filter(
-      (dir) => !existingDirs.has(dir),
+      (dir) => !existingDirs.has(dir)
     );
 
     if (missingDirs.length > 0) {
@@ -79,7 +85,7 @@ const createTreeItem = (
   name: string,
   fileType: FileType,
   isFolder = false,
-  children: string[] = [],
+  children: string[] = []
 ): TreeItem => ({
   index,
   isFolder,
@@ -116,7 +122,7 @@ const initializeBaseTreeItems = (): TreeItems => ({
     "root",
     FileType.Section,
     true,
-    REQUIRED_DIRECTORIES,
+    REQUIRED_DIRECTORIES
   ),
   apps: createTreeItem("apps", "apps", FileType.Section, true, []),
   stores: createTreeItem("stores", "stores", FileType.Section, true, []),
@@ -125,7 +131,7 @@ const initializeBaseTreeItems = (): TreeItems => ({
     "integrations",
     FileType.Section,
     true,
-    [],
+    []
   ),
 });
 
@@ -133,7 +139,7 @@ const processSubContents = async (
   parentPath: string,
   parentId: string,
   items: TreeItems,
-  sectionType: FileType,
+  sectionType: FileType
 ): Promise<void> => {
   const subContents = await ls(parentPath);
   if (!subContents) return;
@@ -152,7 +158,7 @@ const processSubContents = async (
       subItem.name,
       sectionType, // Use the parent section's type for all children
       subItem.isDirectory,
-      [],
+      []
     );
 
     items[parentId].children.push(subItemId);
@@ -163,7 +169,7 @@ const processDirectoryContents = async (
   dirPath: string,
   dir: string,
   items: TreeItems,
-  sectionType: FileType,
+  sectionType: FileType
 ): Promise<void> => {
   const contents = await ls(dirPath);
   if (!contents) return;
@@ -182,7 +188,7 @@ const processDirectoryContents = async (
       sectionType, // Use the section type for all items in this directory
       false,
       // item.isDirectory,
-      [],
+      []
     );
 
     // Add to parent's children
@@ -211,12 +217,42 @@ const loadProjectStructure = async (homePath: string): Promise<TreeItems> => {
   return items;
 };
 
-export const useProjectStore = create<ProjectState>((set, get) => ({
+const findChangedParents = (
+  oldItems: TreeItems,
+  newItems: TreeItems
+): string[] => {
+  const changedParents = new Set<string>();
+
+  // Helper to get sorted children array for comparison
+  const getChildrenString = (item: TreeItem) =>
+    [...item.children].sort().join(",");
+
+  // Compare each item's children
+  Object.keys(newItems).forEach((itemId) => {
+    const newItem = newItems[itemId];
+    const oldItem = oldItems[itemId];
+
+    // If item exists in both and has different children, add it to changed parents
+    if (oldItem && newItem) {
+      const oldChildrenStr = getChildrenString(oldItem);
+      const newChildrenStr = getChildrenString(newItem);
+
+      if (oldChildrenStr !== newChildrenStr) {
+        changedParents.add(newItem.data.name);
+      }
+    }
+  });
+
+  return Array.from(changedParents);
+};
+
+const useProjectStore = create<ProjectState>((set, get) => ({
   items: {},
   isLoading: false,
   error: null,
   selectedItem: null,
   automergeContent: null,
+  changedParents: [],
 
   loadProjects: async () => {
     set({ isLoading: true, error: null });
@@ -233,7 +269,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }
 
       const items = await loadProjectStructure(config.homePath);
+
       set({ items, isLoading: false });
+
+      // Start file watching after initial load
+      await get().startFileWatching();
     } catch (error) {
       console.error("Failed to load projects:", error);
       set({
@@ -286,4 +326,76 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       });
     }
   },
+
+  startFileWatching: async () => {
+    try {
+      const config = useConfigStore.getState().config;
+      if (!config?.homePath) {
+        throw new Error("Home path not configured");
+      }
+
+      // Start file watching
+      await window.electronAPI.startFileWatching();
+
+      // Add event listener for file changes
+      window.addEventListener("file-change", async (event: Event) => {
+        const customEvent = event as CustomEvent<FileChangeEvent>;
+        console.log(customEvent);
+        await get().handleFileChange(customEvent.detail);
+      });
+    } catch (error) {
+      console.error("Failed to start file watching:", error);
+      set({
+        error: `Failed to start file watching: ${error instanceof Error ? error.message : "Unknown error"}`,
+      });
+    }
+  },
+
+  stopFileWatching: async () => {
+    try {
+      await window.electronAPI.stopFileWatching();
+      window.removeEventListener("file-change", async (event: Event) => {
+        const customEvent = event as CustomEvent<FileChangeEvent>;
+        await get().handleFileChange(customEvent.detail);
+      });
+    } catch (error) {
+      console.error("Failed to stop file watching:", error);
+    }
+  },
+
+  handleFileChange: async (event: FileChangeEvent) => {
+    try {
+      const config = useConfigStore.getState().config;
+      if (!config?.homePath) {
+        throw new Error("Home path not configured");
+      }
+
+      const oldItems = { ...get().items };
+      // Reload the entire project structure when files change
+      const items = await loadProjectStructure(config.homePath);
+
+      // Find parents with changed children
+      const changedParents = findChangedParents(oldItems, items);
+
+      set({
+        items: {
+          ...items,
+        },
+        changedParents,
+      });
+
+      // If the changed file is the currently selected file, reload its content
+      const selectedItem = get().selectedItem;
+      if (selectedItem && event.path.includes(selectedItem.index)) {
+        await get().inspectAutomergeFile(selectedItem.index);
+      }
+    } catch (error) {
+      console.error("Failed to handle file change:", error);
+      set({
+        error: `Failed to handle file change: ${error instanceof Error ? error.message : "Unknown error"}`,
+      });
+    }
+  },
 }));
+
+export { useProjectStore };
