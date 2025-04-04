@@ -49,7 +49,6 @@
   },
   "dependencies": {
     "@googlemaps/google-maps-services-js": "^3.4.1",
-    "adm-zip": "^0.5.10",
     "cli-boxes": "^4.0.1",
     "cli-spinners": "^2.9.2",
     "commander": "^13.1.0",
