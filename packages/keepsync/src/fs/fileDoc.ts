@@ -1,6 +1,6 @@
 import * as Automerge from '@automerge/automerge';
-import {FileManager} from './fileManager';
-import {FileMetadata} from './types';
+import {FileManager} from './fileManager.js';
+import {FileMetadata} from './types.js';
 
 /**
  * Document structure for storing file metadata in Automerge

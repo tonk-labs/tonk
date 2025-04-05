@@ -1,6 +1,10 @@
-import {configureSyncInstance, getSyncInstance, SyncEngine} from '../engine';
-import {SyncEngineOptions} from '../engine/types';
-import {logger} from '../utils/logger';
+import {
+  configureSyncInstance,
+  getSyncInstance,
+  SyncEngine,
+} from '../engine/index.js';
+import {SyncEngineOptions} from '../engine/types.js';
+import {logger} from '../utils/logger.js';
 
 /**
  * Configure the global sync engine with the provided options

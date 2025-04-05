@@ -1,5 +1,5 @@
-import {DocumentId} from '../engine/types';
-import {logger} from '../utils/logger';
+import {DocumentId} from '../engine/types.js';
+import {logger} from '../utils/logger.js';
 
 // Declare global window properties for TypeScript
 declare global {

@@ -45,7 +45,7 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "@tonk/keepsync": "^0.3.2",
+    "@tonk/keepsync": "link:../../../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync",
     "figlet": "^1.8.0",
     "fs-extra": "^11.3.0",
     "ink": "^5.2.0",

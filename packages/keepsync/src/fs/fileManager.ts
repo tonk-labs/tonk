@@ -1,4 +1,4 @@
-import {FileManagerOptions, FileMetadata} from './types';
+import {FileManagerOptions, FileMetadata} from './types.js';
 
 export class FileManager {
   private dbName: string;

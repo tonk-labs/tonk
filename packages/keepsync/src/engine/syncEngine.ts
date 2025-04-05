@@ -1,9 +1,9 @@
-import {DocumentId, SyncEngineOptions} from './types';
-import {WebSocketManager} from './connection';
-import {MessageRouter, MessageProtocol} from './messaging';
-import {DocumentManager} from './document';
-import {Storage} from './storage';
-import {logger} from '../utils/logger';
+import {DocumentId, SyncEngineOptions} from './types.js';
+import {WebSocketManager} from './connection/index.js';
+import {MessageRouter, MessageProtocol} from './messaging/index.js';
+import {DocumentManager} from './document/index.js';
+import {Storage} from './storage.js';
+import {logger} from '../utils/logger.js';
 
 export class SyncEngine {
   private connection: WebSocketManager;

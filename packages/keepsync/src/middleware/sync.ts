@@ -14,25 +14,25 @@ import {StateCreator} from 'zustand';
  * DocumentId type from engine
  * Represents a unique identifier for Automerge documents
  */
-import {DocumentId} from '../engine/types';
+import {DocumentId} from '../engine/types.js';
 
 /**
  * Utility functions for state management:
  * - patchStore: Updates Zustand store with changes from Automerge
  * - removeNonSerializable: Prepares state for serialization by removing functions and non-serializable values
  */
-import {patchStore, removeNonSerializable} from './patching';
+import {patchStore, removeNonSerializable} from './patching.js';
 
 /**
  * Logger utility for consistent logging throughout the application
  */
-import {logger} from '../utils/logger';
+import {logger} from '../utils/logger.js';
 
 /**
  * Function to get the singleton instance of the sync engine
  * The sync engine might not be immediately available on initialization
  */
-import {getSyncInstance} from '../engine';
+import {getSyncInstance} from '../engine/index.js';
 
 /**
  * Configuration options for the sync middleware
@@ -62,7 +62,7 @@ export interface SyncOptions {
 /**
  * Import the document ID resolver
  */
-import {resolveDocId} from '../core/docIdManager';
+import {resolveDocId} from '../core/docIdManager.js';
 
 /**
  * Middleware for syncing Zustand stores with Automerge

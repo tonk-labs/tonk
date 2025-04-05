@@ -1,5 +1,5 @@
-import {ConnectionOptions} from '../types';
-import {logger} from '../../utils/logger';
+import {ConnectionOptions} from '../types.js';
+import {logger} from '../../utils/logger.js';
 
 const WebSocketImpl = (() => {
   if (typeof window !== 'undefined' && window.WebSocket) {

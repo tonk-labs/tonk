@@ -1,5 +1,5 @@
-import {BlobId, DocumentId} from './types';
-import {logger} from '../utils/logger';
+import {BlobId, DocumentId} from './types.js';
+import {logger} from '../utils/logger.js';
 
 export class Storage {
   private db: IDBDatabase | null = null;
@@ -18,10 +18,6 @@ export class Storage {
     }
 
     this.dbInitPromise = new Promise((resolve, reject) => {
-      logger.warn('WHATT THE FUCKK');
-      if (!indexedDB) {
-        throw new Error('WTFFF!!!!');
-      }
       const request = indexedDB.open(this.DB_NAME, 1);
 
       request.onerror = () => {

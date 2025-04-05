@@ -1,1 +1,1 @@
-export * from './websocketManager';
+export * from './websocketManager.js';

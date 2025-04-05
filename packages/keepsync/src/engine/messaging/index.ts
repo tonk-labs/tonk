@@ -1,2 +1,2 @@
-export * from './messageHandler';
-export * from './protocol';
+export * from './messageHandler.js';
+export * from './protocol.js';

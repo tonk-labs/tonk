@@ -2,7 +2,7 @@ import { configureSyncEngine } from "@tonk/keepsync";
 import runWorkers from "./workers";
 
 configureSyncEngine({
-  url: "ws://localhost:4080",
+  url: "ws://localhost:8080/sync",
   name: "integrations-starter-template",
 });
 

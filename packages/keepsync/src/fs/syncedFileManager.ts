@@ -1,7 +1,7 @@
-import {SyncEngine} from '../engine';
-import {AutomergeFileManager} from './fileDoc';
-import {FileMetadata} from './types';
-import {logger} from '../utils/logger';
+import {SyncEngine} from '../engine/index.js';
+import {AutomergeFileManager} from './fileDoc.js';
+import {FileMetadata} from './types.js';
+import {logger} from '../utils/logger.js';
 
 /**
  * A file manager that integrates with the SyncEngine for local-first file storage

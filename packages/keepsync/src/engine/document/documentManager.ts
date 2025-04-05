@@ -1,7 +1,7 @@
 import * as Automerge from '@automerge/automerge';
-import {DocumentId, DocumentData} from '../types';
-import {StorageProvider} from '../types';
-import {logger} from '../../utils/logger';
+import {DocumentId, DocumentData} from '../types.js';
+import {StorageProvider} from '../types.js';
+import {logger} from '../../utils/logger.js';
 
 export class DocumentManager {
   private documents: Map<DocumentId, Automerge.Doc<any>> = new Map();

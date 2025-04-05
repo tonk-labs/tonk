@@ -1,1 +1,1 @@
-export * from './documentManager';
+export * from './documentManager.js';

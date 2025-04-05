@@ -1,4 +1,4 @@
-import {ClientJoinedMessage, SyncMessage} from '../types';
+import {ClientJoinedMessage, SyncMessage} from '../types.js';
 
 export class MessageProtocol {
   /**

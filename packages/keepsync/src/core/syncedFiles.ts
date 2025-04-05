@@ -1,7 +1,7 @@
-import {SyncedFileManager} from '../fs/syncedFileManager';
-import {FileMetadata} from '../fs/types';
-import {logger} from '../utils/logger';
-import {getSyncEngine} from './syncConfig';
+import {SyncedFileManager} from '../fs/syncedFileManager.js';
+import {FileMetadata} from '../fs/types.js';
+import {logger} from '../utils/logger.js';
+import {getSyncEngine} from './syncConfig.js';
 
 // Singleton instance of the synced file manager
 let fileManager: SyncedFileManager | null = null;

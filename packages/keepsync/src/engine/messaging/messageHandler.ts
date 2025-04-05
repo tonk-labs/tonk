@@ -1,5 +1,5 @@
-import {MessageHandler, CustomMessage} from '../types';
-import {logger} from '../../utils/logger';
+import {MessageHandler, CustomMessage} from '../types.js';
+import {logger} from '../../utils/logger.js';
 
 export class MessageRouter {
   private messageHandlers: Map<string, MessageHandler> = new Map();
