@@ -2,9 +2,9 @@
 import React, { useState } from "react";
 import { render, Box, Text } from "ink";
 import { App } from "./app";
-import { AsciiText, TextButton } from "../components";
+import { AsciiText, TextButton } from "./components";
 import { version } from "../../package.json";
-import { inkStore } from "../stores/inkStore";
+import { inkStore } from "./stores/inkStore";
 
 function Welcome() {
   const [enter, hitEnter] = useState(false);

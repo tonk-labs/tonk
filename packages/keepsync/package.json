@@ -1,6 +1,6 @@
 {
   "name": "@tonk/keepsync",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "A reactive sync engine framework for use with Tonk apps",
   "type": "module",
   "main": "./dist/index.js",
@@ -43,10 +43,12 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.11.19",
+    "@types/node-fetch": "^2.6.9",
     "@types/react": "^19.0.10",
     "@types/ws": "^8.5.14",
     "fake-indexeddb": "^6.0.0",
     "gts": "^6.0.2",
+    "node-polyfill-webpack-plugin": "^4.1.0",
     "rimraf": "^5.0.5",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.3",
@@ -57,6 +59,7 @@
   "dependencies": {
     "@automerge/automerge-wasm": "1.0.0-preview.0",
     "chalk": "^5.4.1",
+    "node-fetch": "^3.3.2",
     "ws": "^8.18.1"
   },
   "peerDependencies": {

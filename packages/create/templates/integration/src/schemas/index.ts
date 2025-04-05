@@ -1,14 +1,19 @@
 import { z } from "zod";
 
-const ExampleSchema = z.object({
-  id: z.number(),
-  name: z.string(),
-  email: z.string().email(),
+const TrendingSymbolSchema = z.object({
+  symbol: z.string(),
+});
+
+const TrendingSymbolResponseSchema = z.object({
+  count: z.number(),
+  quotes: z.array(TrendingSymbolSchema),
+  jobTimestamp: z.number(),
+  startInterval: z.number(),
 });
 
 export default [
   {
-    name: "ExampleSchema",
-    schema: ExampleSchema,
+    name: "TrendingSymbolSchema",
+    schema: TrendingSymbolResponseSchema,
   },
 ];

@@ -1,3 +1,6 @@
+// Import polyfills for Node.js environment
+import './polyfills';
+
 // Export the engine
 export * from './engine/index.js';
 

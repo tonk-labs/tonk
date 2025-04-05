@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { useInkStore } from "../../stores/inkStore";
+import { useInkStore } from "../stores/inkStore";
 
 export const Exit = () => {
   const { instance } = useInkStore();
