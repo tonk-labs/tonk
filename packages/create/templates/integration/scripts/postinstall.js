@@ -1,14 +1,14 @@
 import fs from 'fs-extra';
 import path from 'node:path';
-import packageJSON from '../package.json' assert { type: 'json' };
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const packageJSON = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
 async function main() {
   try {
     const rootDir = process.env.INIT_CWD;
-    const targetDir = path.join(rootDir, 'documentation', 'integrations', packageJSON.name); 
+    const targetDir = path.join(rootDir, 'instructions', 'integrations', packageJSON.name); 
 
     // Create target directory if it doesn't exist
     if (!fs.existsSync(targetDir)) {

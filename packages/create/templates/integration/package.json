@@ -1,5 +1,5 @@
 {
-  "name": "rename-this-integration-template",
+  "name": "integration-starter-template",
   "version": "0.1.0",
   "description": "A multi-platform TypeScript library for building integrations",
   "type": "module",
@@ -7,7 +7,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "rename-this-integration-template": "./dist/bin.js"
+    "integration-starter-template": "./dist/bin.js"
   },
   "exports": {
     ".": {
@@ -45,15 +45,12 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "cli-boxes": "^4.0.1",
-    "cli-spinners": "^2.9.2",
     "figlet": "^1.8.0",
     "fs-extra": "^11.3.0",
-    "has-flag": "^5.0.1",
     "ink": "^5.2.0",
     "ink-form": "^2.0.1",
+    "ink-select-input": "^6.0.0",
     "ink-spinner": "^5.0.0",
-    "ink-text-input": "^6.0.0",
     "react": "^18.3.1",
     "tsdef": "^0.0.14",
     "zod": "^3.24.2",

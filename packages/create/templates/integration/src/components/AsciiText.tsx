@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Text } from "ink";
 import figlet from "figlet";
 
@@ -15,9 +15,9 @@ export const AsciiText: React.FC<AsciiTextProps> = ({
   align = "left",
   color,
 }) => {
-  const [asciiArt, setAsciiArt] = React.useState<string>("");
+  const [asciiArt, setAsciiArt] = useState<string>("");
 
-  React.useEffect(() => {
+  useEffect(() => {
     figlet.text(text, { font }, (err: Error | null, result?: string) => {
       if (err) {
         console.error("Something went wrong with figlet", err);
