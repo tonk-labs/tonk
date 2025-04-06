@@ -5,7 +5,6 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  keepsync: link:../../../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync
   '@tonk/keepsync': link:../../../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync
 
 importers:

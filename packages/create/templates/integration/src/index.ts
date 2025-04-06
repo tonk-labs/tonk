@@ -9,3 +9,5 @@ configureSyncEngine({
 export const run = async () => {
   runWorkers();
 };
+
+run();

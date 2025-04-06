@@ -174,6 +174,7 @@ export const sync =
       try {
         // Update our reference to the current document
         currentDoc = newDoc;
+        logger.debug('Heads: ' + Automerge.getHeads(currentDoc));
 
         // Convert the Automerge document to a plain JavaScript object
         // This is necessary because Zustand works with plain objects, not Automerge docs
@@ -264,6 +265,7 @@ export const sync =
           // Replace the onSync callback with our own implementation
           syncEngine!.options.onSync = async docId => {
             // Only handle changes for our specific document
+            logger.info('GOT A SYNC CALLBACK');
             if (docId === resolvedDocId) {
               try {
                 // Get the updated document from the sync engine
@@ -271,6 +273,9 @@ export const sync =
                 if (updatedDoc) {
                   // Update the Zustand store with the changes
                   handleDocChange(updatedDoc);
+                  const keys = Object.keys(updatedDoc);
+                  const entry = keys.length !== 0 ? updatedDoc[keys[0]] : '';
+                  logger.info('First entry is it remote or no???!: ');
                 }
               } catch (error) {
                 // Log any errors that occur during the sync process

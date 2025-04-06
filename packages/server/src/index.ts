@@ -47,7 +47,7 @@ export class TonkServer {
       verbose: options.verbose ?? true,
       storage: options.storage,
       filesystemStorage: options.filesystemStorage,
-      syncInterval: options.syncInterval || 5 * 60 * 1000, // Default: 5 minutes
+      syncInterval: options.syncInterval || 0, // Default: 5 minutes
       primaryStorage:
         options.primaryStorage ||
         (options.storage ? 'backblaze' : 'filesystem'),

@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import {DocumentId} from './types.js';
 import * as os from 'os';
+import {printFirstEntries} from './utils/printOutAutomerge.js';
 
 export interface FileSystemStorageOptions {
   storagePath: string;
@@ -235,6 +236,7 @@ export class AutomergeFileSystemStorage {
 
   public storeDocument(id: DocumentId, doc: Automerge.Doc<any>): void {
     this.documents.set(id, doc);
+    printFirstEntries(doc);
     this.savePending.add(id);
 
     // If no sync interval is set, sync immediately
