@@ -19,6 +19,6 @@ export const useMacroFinanceStore = create<State>(
     }),
     {
       docId: "yahoo-finance-macro",
-    }
-  )
+    },
+  ),
 );

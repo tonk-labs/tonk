@@ -11,12 +11,6 @@ import * as Automerge from '@automerge/automerge';
 import {StateCreator} from 'zustand';
 
 /**
- * DocumentId type from engine
- * Represents a unique identifier for Automerge documents
- */
-import {DocumentId} from '../engine/types.js';
-
-/**
  * Utility functions for state management:
  * - patchStore: Updates Zustand store with changes from Automerge
  * - removeNonSerializable: Prepares state for serialization by removing functions and non-serializable values
@@ -33,6 +27,10 @@ import {logger} from '../utils/logger.js';
  * The sync engine might not be immediately available on initialization
  */
 import {getSyncInstance} from '../engine/index.js';
+import {AutomergeUrl, parseAutomergeUrl} from '@automerge/automerge-repo';
+import bs58check from 'bs58check';
+import {stringToUuidV4} from '../utils/uuid.js';
+import * as Uuid from 'uuid';
 
 /**
  * Configuration options for the sync middleware
@@ -42,7 +40,7 @@ export interface SyncOptions {
    * Unique document ID for syncing this store
    * This ID is used to identify the document in the sync engine and across peers
    */
-  docId: DocumentId;
+  docId: string;
 
   /**
    * Maximum time to wait for sync engine initialization (in milliseconds)
@@ -58,11 +56,6 @@ export interface SyncOptions {
    */
   onInitError?: (error: Error) => void;
 }
-
-/**
- * Import the document ID resolver
- */
-import {resolveDocId} from '../core/docIdManager.js';
 
 /**
  * Middleware for syncing Zustand stores with Automerge
@@ -107,9 +100,11 @@ export const sync =
     // Prevents duplicate initialization and unnecessary updates before initialization
     let isSyncInit = false;
 
-    // Resolve the logical document ID to the actual document ID
-    // This allows for dynamic remapping of document IDs at runtime
-    const resolvedDocId = resolveDocId(options.docId);
+    const resolvedUrl: AutomergeUrl = `automerge:${bs58check.encode(
+      Uuid.parse(stringToUuidV4(options.docId)),
+    )}` as AutomergeUrl;
+
+    const resolvedClientId = parseAutomergeUrl(resolvedUrl).documentId;
 
     // Create the initial state by calling the original config function with our wrapped set function
     const state = config(
@@ -133,19 +128,19 @@ export const sync =
 
           // Step 4: Update the Automerge document with the new state
           syncEngine
-            .updateDocument(resolvedDocId, (doc: any) => {
+            .updateDocument(resolvedClientId, (doc: any) => {
               // Merge the serializable state into the Automerge document
               // This creates a new change in the Automerge document history
               Object.assign(doc, serializableState);
             })
             .catch(err => {
               // Log any errors that occur during the update process
-              logger.warn(`Error updating document ${resolvedDocId}:`, err);
+              logger.warn(`Error updating document ${resolvedClientId}:`, err);
             });
         } catch (error) {
           // Handle errors that might occur during serialization
           logger.warn(
-            `Error preparing update for document ${resolvedDocId}:`,
+            `Error preparing update for document ${resolvedClientId}:`,
             error,
           );
         }
@@ -194,7 +189,7 @@ export const sync =
       } catch (error) {
         // Log any errors that occur during the update process
         logger.error(
-          `Error handling document change for ${resolvedDocId}:`,
+          `Error handling document change for ${resolvedClientId}:`,
           error,
         );
       }
@@ -221,14 +216,14 @@ export const sync =
       // The initialization will be retried by the timeout mechanism
       if (!syncEngine) {
         logger.warn(
-          `Cannot initialize sync for ${resolvedDocId}: sync engine not available`,
+          `Cannot initialize sync for ${resolvedClientId}: sync engine not available`,
         );
         return;
       }
 
       // Start the initialization process
       syncEngine
-        .getDocument(resolvedDocId)
+        .getDocument(resolvedClientId)
         .then(existingDoc => {
           if (existingDoc) {
             // CASE 1: Document already exists in the sync engine
@@ -252,7 +247,7 @@ export const sync =
             // Create the document in the sync engine
             // This returns a promise that resolves when the document is created
             return syncEngine!.createDocument(
-              resolvedDocId,
+              resolvedClientId,
               Automerge.toJS(newDoc),
             );
           }
@@ -266,21 +261,20 @@ export const sync =
           syncEngine!.options.onSync = async docId => {
             // Only handle changes for our specific document
             logger.info('GOT A SYNC CALLBACK');
-            if (docId === resolvedDocId) {
+            if (docId === resolvedClientId) {
               try {
                 // Get the updated document from the sync engine
-                const updatedDoc = await syncEngine!.getDocument(resolvedDocId);
+                const updatedDoc =
+                  await syncEngine!.getDocument(resolvedClientId);
                 if (updatedDoc) {
                   // Update the Zustand store with the changes
                   handleDocChange(updatedDoc);
-                  const keys = Object.keys(updatedDoc);
-                  const entry = keys.length !== 0 ? updatedDoc[keys[0]] : '';
                   logger.info('First entry is it remote or no???!: ');
                 }
               } catch (error) {
                 // Log any errors that occur during the sync process
                 logger.error(
-                  `Error in sync callback for ${resolvedDocId}:`,
+                  `Error in sync callback for ${resolvedClientId}:`,
                   error,
                 );
               }
@@ -298,7 +292,10 @@ export const sync =
         })
         .catch(err => {
           // Handle any errors during initialization
-          logger.error(`Failed to initialize document ${resolvedDocId}:`, err);
+          logger.error(
+            `Failed to initialize document ${resolvedClientId}:`,
+            err,
+          );
 
           // Call the error callback if provided
           if (options.onInitError) {
@@ -379,7 +376,7 @@ export const sync =
 
         // Create and log a timeout error
         const timeoutError = new Error(
-          `Sync initialization timed out after ${MAX_INIT_TIME}ms for document ${resolvedDocId}`,
+          `Sync initialization timed out after ${MAX_INIT_TIME}ms for document ${resolvedClientId}`,
         );
         logger.error(timeoutError.message);
 
@@ -396,7 +393,7 @@ export const sync =
       if (syncEngine && !isSyncInit) {
         // CASE 1: Sync engine is available and we haven't initialized yet
         logger.debug(
-          `Sync engine available, initializing store for ${resolvedDocId}`,
+          `Sync engine available, initializing store for ${resolvedClientId}`,
         );
 
         // Initialize the sync
@@ -416,7 +413,7 @@ export const sync =
           window.__SYNC_ENGINE_REGISTRY__.callbacks.push(() => {
             if (!isSyncInit) {
               logger.debug(
-                `Sync engine became available, initializing store for ${resolvedDocId}`,
+                `Sync engine became available, initializing store for ${resolvedClientId}`,
               );
               initializeSync();
             }

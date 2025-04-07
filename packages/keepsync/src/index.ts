@@ -11,7 +11,7 @@ export * from './middleware/index.js';
 export * from './core/index.js';
 
 // Export the file system functionality
-export * from './fs/index.js';
+// export * from './fs/index.js';
 
 import * as Automerge from '@automerge/automerge';
 import * as AutomergeWasm from '@automerge/automerge-wasm';
@@ -27,12 +27,12 @@ export {
 } from './core/syncConfig.js';
 
 // Re-export file system functions for easier access
-export {
-  configureSyncedFileSystem,
-  getSyncedFileManager,
-  addFile,
-  removeFile,
-  getFile,
-  getAllFiles,
-  closeSyncedFileSystem,
-} from './core/syncedFiles.js';
+// export {
+//   configureSyncedFileSystem,
+//   getSyncedFileManager,
+//   addFile,
+//   removeFile,
+//   getFile,
+//   getAllFiles,
+//   closeSyncedFileSystem,
+// } from './core/syncedFiles.js';

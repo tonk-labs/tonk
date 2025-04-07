@@ -1,18 +1,23 @@
-import {DocumentId, SyncEngineOptions} from './types.js';
+import {SyncEngineOptions} from './types.js';
+import {
+  DocumentId,
+  Repo,
+  DocHandle,
+  DocHandleChangePayload,
+} from '@automerge/automerge-repo';
 import {WebSocketManager} from './connection/index.js';
-import {MessageRouter, MessageProtocol} from './messaging/index.js';
-import {DocumentManager} from './document/index.js';
+
 import {Storage} from './storage.js';
 import {logger} from '../utils/logger.js';
 
 export class SyncEngine {
   private connection: WebSocketManager;
-  private messageRouter: MessageRouter;
-  private documentManager: DocumentManager;
+
   private storage: Storage;
   private initialized = false;
   private isOnline = false;
-  private pendingDocUpdates: Set<DocumentId> = new Set();
+  private repo: Repo | null = null;
+  private documentLocks: Map<DocumentId, Promise<void>> = new Map();
   private clientId: string = crypto.randomUUID
     ? crypto.randomUUID()
     : Math.random().toString(36).substring(2, 15) +
@@ -55,25 +60,16 @@ export class SyncEngine {
   private constructor(public options: SyncEngineOptions = {}) {
     // Initialize components
     this.storage = new Storage(options.dbName);
-    this.documentManager = new DocumentManager(this.storage, options.name);
-    this.messageRouter = new MessageRouter(options.name);
+
     this.connection = new WebSocketManager(
-      {url: options.url || 'ws://localhost:4080/sync'},
-      this.handleMessage.bind(this),
-      this.handleError.bind(this),
+      {
+        url: options.url || 'ws://localhost:4080',
+        clientId: this.clientId,
+      },
       this.handleConnectionStatusChange.bind(this),
     );
 
-    // Register built-in message handlers
-    this.messageRouter.registerMessageHandler(
-      'client_joined',
-      this.handleClientJoined.bind(this),
-    );
-
-    this.messageRouter.registerMessageHandler(
-      'sync',
-      this.handleSyncMessage.bind(this),
-    );
+    // With automerge-repo, we don't need message handlers anymore
   }
 
   async init(): Promise<void> {
@@ -81,12 +77,43 @@ export class SyncEngine {
 
     try {
       await this.storage.init();
-      await this.connection.connect();
+
+      // Get the repo from the WebSocketManager
+      this.repo = this.connection.getRepo();
+
       this.initialized = true;
-      if (this.isOnline) await this.announcePresence();
+      logger.info('SyncEngine initialized successfully');
     } catch (error) {
       logger.error('Failed to initialize SyncEngine:', error);
       this.initialized = true;
+    }
+  }
+
+  /**
+   * Helper method to ensure operations on a document are performed sequentially
+   */
+  private async withDocumentLock<T>(
+    id: DocumentId,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    // Wait for any existing operation to complete
+    const existingLock = this.documentLocks.get(id);
+    if (existingLock) {
+      await existingLock;
+    }
+
+    // Create new lock
+    let resolveLock: () => void;
+    const newLock = new Promise<void>(resolve => {
+      resolveLock = resolve;
+    });
+    this.documentLocks.set(id, newLock);
+
+    try {
+      return await operation();
+    } finally {
+      resolveLock!();
+      this.documentLocks.delete(id);
     }
   }
 
@@ -109,143 +136,21 @@ export class SyncEngine {
 
   private async handleReconnection(): Promise<void> {
     try {
-      // Announce presence to other clients
-      await this.announcePresence();
-
-      // Sync any documents that were updated offline
-      await this.syncPendingUpdates();
+      logger.info(
+        'Reconnected to server, automerge-repo will handle sync automatically',
+      );
+      // With automerge-repo, we don't need to manually sync documents
+      // The repo will automatically handle syncing when the connection is restored
     } catch (error) {
       logger.error('Error during reconnection:', error);
       this.options.onError?.(error as Error);
     }
   }
 
-  private async syncPendingUpdates(): Promise<void> {
-    if (this.pendingDocUpdates.size > 0) {
-      logger.info(
-        `Syncing ${this.pendingDocUpdates.size} documents updated while offline`,
-      );
-
-      const updates = [...this.pendingDocUpdates];
-      this.pendingDocUpdates.clear();
-
-      for (const docId of updates) await this.sendChanges(docId);
-    }
-  }
-
-  private async handleMessage(message: any): Promise<void> {
-    await this.messageRouter.handleMessage(message);
-  }
-
-  private handleError(error: Error): void {
-    logger.error('SyncEngine error:', error);
-    this.options.onError?.(error);
-  }
-
-  private async announcePresence(): Promise<void> {
-    if (this.isOnline)
-      await this.connection.send(
-        MessageProtocol.createClientJoinedMessage(this.clientId),
-      );
-  }
-
-  private async handleClientJoined(message: any): Promise<void> {
-    logger.debugWithContext(
-      this.options.name || 'SyncEngine',
-      `Client joined: ${message.clientId}`,
-    );
-
-    // If this is not our own message, respond with our documents
-    if (message.clientId !== this.clientId) {
-      // Wait a small random time to prevent all clients from responding at once
-      const delay = Math.random() * 500;
-      await new Promise(resolve => setTimeout(resolve, delay));
-
-      // Send our current state for all documents
-      for (const docId of this.documentManager.getAllDocumentIds()) {
-        await this.sendChanges(docId);
-      }
-    }
-  }
-
-  private async handleSyncMessage(message: {
-    docId: string;
-    changes: number[];
-  }): Promise<void> {
-    try {
-      const {docId, changes} = message;
-      const result = await this.documentManager.handleIncomingChanges(
-        docId,
-        changes,
-      );
-
-      // Call legacy onSync callback if provided
-      if (this.options.onSync) {
-        this.options.onSync(docId);
-      }
-
-      // If changes were applied, send any pending changes back to ensure bidirectional sync
-      if (result.didChange) {
-        await this.sendChanges(docId);
-      }
-    } catch (error) {
-      this.handleError(error as Error);
-    }
-  }
-
-  private async sendChanges(docId: DocumentId): Promise<void> {
-    const message = await this.documentManager.generateSyncMessage(docId);
-    if (message) {
-      await this.connection.send(
-        MessageProtocol.createSyncMessage(docId, message),
-      );
-
-      // if offline, track doc for sync later
-      if (!this.isOnline) {
-        this.pendingDocUpdates.add(docId);
-      }
-    }
-  }
-
   // Public API methods
 
-  /**
-   * Register a callback to be called when a document is synced
-   */
-  registerSyncCallback(callback: (docId: string) => void): void {
-    this.messageRouter.registerSyncCallback(callback);
-  }
-
-  /**
-   * Unregister a sync callback
-   */
-  unregisterSyncCallback(callback: (docId: string) => void): void {
-    this.messageRouter.unregisterSyncCallback(callback);
-  }
-
-  /**
-   * Register a handler for a specific message type
-   */
-  registerMessageHandler(
-    type: string,
-    handler: (data: any) => Promise<void>,
-  ): void {
-    this.messageRouter.registerMessageHandler(type, handler);
-  }
-
-  /**
-   * Unregister a message handler
-   */
-  unregisterMessageHandler(type: string): void {
-    this.messageRouter.unregisterMessageHandler(type);
-  }
-
-  /**
-   * Send a custom message through the WebSocket
-   */
-  async sendMessage(message: any): Promise<void> {
-    await this.connection.send(message);
-  }
+  // Message handling and sync callbacks are now handled by automerge-repo
+  // Use subscribeToDocument() instead for document change notifications
 
   /**
    * Create a new document with the given ID and initial content
@@ -254,19 +159,58 @@ export class SyncEngine {
     id: DocumentId,
     initialContent: any = {},
   ): Promise<void> {
-    if (!this.initialized) {
+    if (!this.initialized || !this.repo) {
       throw new Error('SyncEngine not initialized');
     }
 
-    await this.documentManager.createDocument(id, initialContent);
-    await this.sendChanges(id);
+    try {
+      // Create a new document with the repo
+      const docHandleCache = this.repo.handles;
+      const newHandle = new DocHandle<any>(id, {
+        isNew: true,
+        initialValue: initialContent,
+      });
+
+      docHandleCache[id] = newHandle;
+      this.repo.emit('document', {handle: newHandle, isNew: true});
+
+      // If a specific ID was requested, we need to use that instead of the auto-generated one
+      if (id !== newHandle.documentId) {
+        // For now, we'll just log a warning as automerge-repo doesn't support custom IDs directly
+        logger.warn(
+          `Requested document ID ${id} differs from created ID ${newHandle.documentId}`,
+        );
+      }
+
+      logger.debug(`Document created with ID ${newHandle.documentId}`);
+    } catch (error) {
+      logger.error(`Error creating document ${id}:`, error);
+      throw error;
+    }
   }
 
   /**
    * Get a document by ID
    */
   async getDocument(id: DocumentId): Promise<any | null> {
-    return this.documentManager.getDocument(id);
+    if (!this.repo) {
+      throw new Error('Repo not initialized');
+    }
+
+    try {
+      // Try to get the document from the repo
+      const docHandle = this.repo.find(id);
+
+      // Check if the document handle is ready, wait for it if not
+      if (!docHandle.isReady()) {
+        logger.debug(`Waiting for document to be ready: ${id}`);
+      }
+
+      return docHandle.docSync();
+    } catch (error) {
+      logger.error(`Error loading document ${id}:`, error);
+      return null;
+    }
   }
 
   /**
@@ -276,14 +220,37 @@ export class SyncEngine {
     id: DocumentId,
     updater: (doc: any) => void,
   ): Promise<void> {
-    if (!this.initialized) throw new Error('SyncEngine not initialized');
+    if (!this.initialized || !this.repo) {
+      throw new Error('SyncEngine not initialized');
+    }
 
-    await this.documentManager.updateDocument(id, updater);
+    await this.withDocumentLock(id, async () => {
+      try {
+        const docHandle = this.repo!.find(id);
 
-    // if offline, add to pending updates
-    if (!this.isOnline) this.pendingDocUpdates.add(id);
+        // Check if the document handle is ready, wait for it if not
+        if (!docHandle.isReady()) {
+          logger.debug(`Waiting for document to be ready: ${id}`);
+          return;
+        }
 
-    await this.sendChanges(id);
+        // Add this to log the document state before update
+        logger.info(
+          `Before update, document ${id} state:`,
+          docHandle.docSync(),
+        );
+
+        docHandle.change(updater);
+
+        // Add this to log the document state after update
+        logger.info(`After update, document ${id} state:`, docHandle.docSync());
+
+        logger.debug(`Document updated with ID ${id}`);
+      } catch (error) {
+        logger.error(`Error updating document ${id}:`, error);
+        throw error;
+      }
+    });
   }
 
   /**
@@ -308,8 +275,45 @@ export class SyncEngine {
   close(): void {
     this.initialized = false;
     this.connection.close();
-    this.messageRouter.clear();
-    this.documentManager.clear();
+    this.documentLocks.clear();
     SyncEngine.instance = null;
+  }
+
+  /**
+   * Subscribe to changes on a specific document
+   * @param id Document ID to subscribe to
+   * @param callback Function to call when the document changes
+   * @returns Unsubscribe function
+   */
+  subscribeToDocument(
+    id: DocumentId,
+    callback: (doc: any) => void,
+  ): () => void {
+    if (!this.repo) {
+      logger.warn('Cannot subscribe to document: Repo not initialized');
+      return () => {};
+    }
+
+    try {
+      const docHandle = this.repo.find(id);
+
+      const handleChange = (change: DocHandleChangePayload<any>) => {
+        callback(change.doc);
+      };
+
+      docHandle.on('change', handleChange);
+      return () => docHandle.off('change', handleChange);
+    } catch (error) {
+      logger.warn(`Cannot subscribe to non-existent document: ${id}`);
+      return () => {};
+    }
+  }
+
+  /**
+   * Get the repo instance from the WebSocketManager
+   * This allows direct access to the automerge-repo for advanced usage
+   */
+  getRepo() {
+    return this.connection.getRepo();
   }
 }

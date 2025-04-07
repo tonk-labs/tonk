@@ -1,5 +1,5 @@
-import {BlobId, DocumentId} from './types.js';
-import {logger} from '../utils/logger.js';
+import {BlobId} from './types.js';
+import {DocumentId} from '@automerge/automerge-repo';
 
 export class Storage {
   private db: IDBDatabase | null = null;

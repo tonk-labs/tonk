@@ -4,7 +4,7 @@
   "description": "A reactive sync engine framework for use with Tonk apps",
   "type": "module",
   "main": "./dist/node/index.js",
-  "module": "./dist/index.js", 
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -50,6 +50,7 @@
   "author": "Tonk",
   "license": "MIT",
   "devDependencies": {
+    "@types/crypto-js": "^4.2.2",
     "@types/node": "^20.11.19",
     "@types/node-fetch": "^2.6.9",
     "@types/react": "^19.0.10",
@@ -65,9 +66,14 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "@automerge/automerge-repo": "^1.1.0",
+    "@automerge/automerge-repo-network-websocket": "^1.1.0",
     "@automerge/automerge-wasm": "1.0.0-preview.0",
+    "bs58check": "^4.0.0",
     "chalk": "^5.4.1",
+    "crypto-js": "^4.2.0",
     "node-fetch": "^3.3.2",
+    "uuid": "^11.1.0",
     "ws": "^8.18.1"
   },
   "peerDependencies": {

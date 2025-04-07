@@ -9,8 +9,7 @@ export * from './types.js';
 
 // Export individual modules for advanced usage
 export * as connection from './connection/index.js';
-export * as document from './document/index.js';
-export * as messaging from './messaging/index.js';
+// export * as messaging from './messaging/index.js';
 export * as storage from './storage.js';
 
 export const getSyncInstance = () => SyncEngineClass.getInstance();

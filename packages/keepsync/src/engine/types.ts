@@ -1,4 +1,5 @@
-export type DocumentId = string;
+import {DocumentId} from '@automerge/automerge-repo';
+
 export type BlobId = string;
 
 // Enhanced SyncEngine options
@@ -19,6 +20,7 @@ export interface DocumentData {
 export interface ConnectionOptions {
   url: string;
   reconnectDelay?: number;
+  clientId?: string;
 }
 
 // Message-related types

@@ -54,7 +54,7 @@ const shouldIgnoreFile = (filename: string): boolean => {
 };
 
 const validateProjectStructure = async (
-  homePath: string
+  homePath: string,
 ): Promise<string | null> => {
   try {
     const contents = await ls(homePath);
@@ -63,11 +63,11 @@ const validateProjectStructure = async (
     }
 
     const existingDirs = new Set(
-      contents.filter((item) => item.isDirectory).map((item) => item.name)
+      contents.filter((item) => item.isDirectory).map((item) => item.name),
     );
 
     const missingDirs = REQUIRED_DIRECTORIES.filter(
-      (dir) => !existingDirs.has(dir)
+      (dir) => !existingDirs.has(dir),
     );
 
     if (missingDirs.length > 0) {
@@ -85,7 +85,7 @@ const createTreeItem = (
   name: string,
   fileType: FileType,
   isFolder = false,
-  children: string[] = []
+  children: string[] = [],
 ): TreeItem => ({
   index,
   isFolder,
@@ -122,7 +122,7 @@ const initializeBaseTreeItems = (): TreeItems => ({
     "root",
     FileType.Section,
     true,
-    REQUIRED_DIRECTORIES
+    REQUIRED_DIRECTORIES,
   ),
   apps: createTreeItem("apps", "apps", FileType.Section, true, []),
   stores: createTreeItem("stores", "stores", FileType.Section, true, []),
@@ -131,7 +131,7 @@ const initializeBaseTreeItems = (): TreeItems => ({
     "integrations",
     FileType.Section,
     true,
-    []
+    [],
   ),
 });
 
@@ -139,7 +139,7 @@ const processSubContents = async (
   parentPath: string,
   parentId: string,
   items: TreeItems,
-  sectionType: FileType
+  sectionType: FileType,
 ): Promise<void> => {
   const subContents = await ls(parentPath);
   if (!subContents) return;
@@ -158,7 +158,7 @@ const processSubContents = async (
       subItem.name,
       sectionType, // Use the parent section's type for all children
       subItem.isDirectory,
-      []
+      [],
     );
 
     items[parentId].children.push(subItemId);
@@ -169,7 +169,7 @@ const processDirectoryContents = async (
   dirPath: string,
   dir: string,
   items: TreeItems,
-  sectionType: FileType
+  sectionType: FileType,
 ): Promise<void> => {
   const contents = await ls(dirPath);
   if (!contents) return;
@@ -188,7 +188,7 @@ const processDirectoryContents = async (
       sectionType, // Use the section type for all items in this directory
       false,
       // item.isDirectory,
-      []
+      [],
     );
 
     // Add to parent's children
@@ -219,7 +219,7 @@ const loadProjectStructure = async (homePath: string): Promise<TreeItems> => {
 
 const findChangedParents = (
   oldItems: TreeItems,
-  newItems: TreeItems
+  newItems: TreeItems,
 ): string[] => {
   const changedParents = new Set<string>();
 

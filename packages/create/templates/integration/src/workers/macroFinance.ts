@@ -1,7 +1,6 @@
 import { z } from "zod";
 import schemas from "../schemas";
-import { getTrendingSymbols } from "../api/yahoofinance";
-import { useMacroFinanceStore } from "../stores/MacroFinanceStore";
+import { useMacroFinanceStore } from "../stores/macroFinanceStore";
 
 const TrendingSymbolSchema = schemas[0];
 
@@ -35,7 +34,7 @@ export async function fetchTrendingSymbols(): Promise<void> {
     setError(
       error instanceof Error
         ? error.message
-        : "Failed to fetch trending symbols"
+        : "Failed to fetch trending symbols",
     );
   }
 }
