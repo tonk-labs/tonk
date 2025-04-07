@@ -1,0 +1,212 @@
+[2025-04-07T17:41:43.178Z] INFO: We are in a node environment, running browser polyfills.
+[2025-04-07T17:41:43.214Z] WARN: SyncEngine not created yet
+[2025-04-07T17:41:43.214Z] WARN: SyncEngine not created yet
+[2025-04-07T17:41:43.221Z] INFO: SyncEngine initialized successfully
+[2025-04-07T17:41:43.221Z] INFO: SyncEngine created successfully
+[2025-04-07T17:41:43.223Z] DEBUG: WebSocket sending message:  {
+  type: 'join',
+  senderId: '96a9c58f-8848-4aa6-94f3-3e2f809a751f',
+  peerMetadata: { storageId: undefined, isEphemeral: true },
+  supportedProtocolVersions: [ '1' ]
+}
+[2025-04-07T17:41:43.227Z] DEBUG: WebSocket connected
+[2025-04-07T17:41:43.227Z] INFO: Connection status changed to: online
+[2025-04-07T17:41:43.227Z] INFO: SyncEngine connection status changed to: online
+[2025-04-07T17:41:43.227Z] INFO: Reconnected to server, automerge-repo will handle sync automatically
+[2025-04-07T17:41:43.315Z] DEBUG: Sync engine became available, initializing store for 445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:43.325Z] DEBUG: Waiting for document to be ready: 445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:43.335Z] DEBUG: CREATING A DOCUMENT: HEADS [ 'bdbcdead531b1fd6ec1abf4f9d2f9a78005b0b7e989f1f942b8c36ffb86830e1' ]
+[2025-04-07T17:41:43.336Z] DEBUG: CREATING A DOCUMENT: DOC { data: null, error: null }
+[2025-04-07T17:41:43.336Z] DEBUG: CREATING A DOCUMENT: URL automerge:445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:43.336Z] DEBUG: Document created with ID 445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:43.338Z] DEBUG: WebSocket sending message:  {
+  type: 'request',
+  targetId: 'user-87892',
+  documentId: '445cbqRMSf5i66sZQCfyWVtSCgoX',
+  data: Uint8Array(10) [
+    66, 0, 0, 1, 0,
+     0, 0, 2, 1, 2
+  ],
+  senderId: '96a9c58f-8848-4aa6-94f3-3e2f809a751f'
+}
+[2025-04-07T17:41:43.339Z] DEBUG: WebSocket sending message:  {
+  type: 'request',
+  targetId: 'user-87892',
+  documentId: '445cbqRMSf5i66sZQCfyWVtSCgoX',
+  data: Uint8Array(10) [
+    66, 0, 0, 1, 0,
+     0, 0, 2, 1, 2
+  ],
+  senderId: '96a9c58f-8848-4aa6-94f3-3e2f809a751f'
+}
+null
+[2025-04-07T17:41:48.218Z] INFO: Before update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: { data: null, error: null }
+[2025-04-07T17:41:48.222Z] DEBUG: UDPATING A DOCUMENT: HEADS [ 'bdbcdead531b1fd6ec1abf4f9d2f9a78005b0b7e989f1f942b8c36ffb86830e1' ]
+fetching trendSymbols {
+  count: 1,
+  quotes: [ { symbol: 'SUP' } ],
+  jobTimestamp: 0,
+  startInterval: 0
+}
+[2025-04-07T17:41:48.227Z] INFO: Before update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: { data: null, error: null }
+[2025-04-07T17:41:48.239Z] DEBUG: THE HEADS CHANGED!!!
+[2025-04-07T17:41:48.239Z] DEBUG: THE HEADS IN QUESTION [ 'f3493617bda4f4dd3044790cc1d291f5f8fd302709f178f7c1d0f8777b7893c0' ]
+[2025-04-07T17:41:48.240Z] DEBUG: UDPATING A DOCUMENT: HEADS [ 'f3493617bda4f4dd3044790cc1d291f5f8fd302709f178f7c1d0f8777b7893c0' ]
+[2025-04-07T17:41:48.240Z] DEBUG: UPDATING A DOCUMENT: DOC {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:48.241Z] DEBUG: UPDATING A DOCUMENT: URL automerge:445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:48.241Z] INFO: After update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:48.241Z] DEBUG: Document updated with ID 445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:48.241Z] DEBUG: UPDATING A DOCUMENT: DOC {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:48.241Z] DEBUG: UPDATING A DOCUMENT: URL automerge:445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:48.241Z] INFO: After update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:48.241Z] DEBUG: Document updated with ID 445cbqRMSf5i66sZQCfyWVtSCgoX
+{
+  count: 1,
+  quotes: [ { symbol: 'SUP' } ],
+  jobTimestamp: 0,
+  startInterval: 0
+}
+[2025-04-07T17:41:53.218Z] INFO: Before update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:53.226Z] DEBUG: THE HEADS CHANGED!!!
+[2025-04-07T17:41:53.226Z] DEBUG: THE HEADS IN QUESTION [ 'bf4e5e7cea2b139ab13a59ce6453be3c731f9397a05e477b397cb03775f14a35' ]
+[2025-04-07T17:41:53.226Z] DEBUG: UDPATING A DOCUMENT: HEADS [ 'bf4e5e7cea2b139ab13a59ce6453be3c731f9397a05e477b397cb03775f14a35' ]
+fetching trendSymbols {
+  count: 1,
+  quotes: [ { symbol: 'SUP' } ],
+  jobTimestamp: 0,
+  startInterval: 0
+}
+[2025-04-07T17:41:53.227Z] INFO: Before update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:53.233Z] DEBUG: THE HEADS CHANGED!!!
+[2025-04-07T17:41:53.233Z] DEBUG: THE HEADS IN QUESTION [ '78bab0b50881a4eeb4ce20641ea786791b326778fdf31fa79b7f634811d10566' ]
+[2025-04-07T17:41:53.234Z] DEBUG: UDPATING A DOCUMENT: HEADS [ '78bab0b50881a4eeb4ce20641ea786791b326778fdf31fa79b7f634811d10566' ]
+[2025-04-07T17:41:53.234Z] DEBUG: UPDATING A DOCUMENT: DOC {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:53.234Z] DEBUG: UPDATING A DOCUMENT: URL automerge:445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:53.234Z] INFO: After update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:53.235Z] DEBUG: Document updated with ID 445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:53.235Z] DEBUG: UPDATING A DOCUMENT: DOC {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:53.235Z] DEBUG: UPDATING A DOCUMENT: URL automerge:445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:53.235Z] INFO: After update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:53.235Z] DEBUG: Document updated with ID 445cbqRMSf5i66sZQCfyWVtSCgoX
+{
+  count: 1,
+  quotes: [ { symbol: 'SUP' } ],
+  jobTimestamp: 0,
+  startInterval: 0
+}
+[2025-04-07T17:41:58.219Z] INFO: Before update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:58.224Z] DEBUG: THE HEADS CHANGED!!!
+[2025-04-07T17:41:58.224Z] DEBUG: THE HEADS IN QUESTION [ 'cc2430db4b55301a7e8a7d0f4b7916ea9a7034b1879d239a042073a709801b6d' ]
+[2025-04-07T17:41:58.225Z] DEBUG: UDPATING A DOCUMENT: HEADS [ 'cc2430db4b55301a7e8a7d0f4b7916ea9a7034b1879d239a042073a709801b6d' ]
+fetching trendSymbols {
+  count: 1,
+  quotes: [ { symbol: 'SUP' } ],
+  jobTimestamp: 0,
+  startInterval: 0
+}
+[2025-04-07T17:41:58.226Z] INFO: Before update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:58.230Z] DEBUG: THE HEADS CHANGED!!!
+[2025-04-07T17:41:58.230Z] DEBUG: THE HEADS IN QUESTION [ 'b12941c41aae4d116287d053abaa07c12596a04d61b0111fea6349e066202e0d' ]
+[2025-04-07T17:41:58.230Z] DEBUG: UDPATING A DOCUMENT: HEADS [ 'b12941c41aae4d116287d053abaa07c12596a04d61b0111fea6349e066202e0d' ]
+[2025-04-07T17:41:58.230Z] DEBUG: UPDATING A DOCUMENT: DOC {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:58.230Z] DEBUG: UPDATING A DOCUMENT: URL automerge:445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:58.230Z] INFO: After update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:58.230Z] DEBUG: Document updated with ID 445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:58.230Z] DEBUG: UPDATING A DOCUMENT: DOC {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:58.230Z] DEBUG: UPDATING A DOCUMENT: URL automerge:445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:41:58.230Z] INFO: After update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:41:58.230Z] DEBUG: Document updated with ID 445cbqRMSf5i66sZQCfyWVtSCgoX
+{
+  count: 1,
+  quotes: [ { symbol: 'SUP' } ],
+  jobTimestamp: 0,
+  startInterval: 0
+}
+[2025-04-07T17:42:03.220Z] INFO: Before update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:42:03.228Z] DEBUG: THE HEADS CHANGED!!!
+[2025-04-07T17:42:03.228Z] DEBUG: THE HEADS IN QUESTION [ 'e991637fc9fe47912bb359ae6fbad8901df010f6dc05bb637a947a5785bf656a' ]
+[2025-04-07T17:42:03.228Z] DEBUG: UDPATING A DOCUMENT: HEADS [ 'e991637fc9fe47912bb359ae6fbad8901df010f6dc05bb637a947a5785bf656a' ]
+fetching trendSymbols {
+  count: 1,
+  quotes: [ { symbol: 'SUP' } ],
+  jobTimestamp: 0,
+  startInterval: 0
+}
+[2025-04-07T17:42:03.229Z] INFO: Before update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:42:03.234Z] DEBUG: THE HEADS CHANGED!!!
+[2025-04-07T17:42:03.234Z] DEBUG: THE HEADS IN QUESTION [ 'd5b6a8e55370dc96f87912c9b54bd3a67de3aa4271232ee02e2417f6741c68e2' ]
+[2025-04-07T17:42:03.234Z] DEBUG: UDPATING A DOCUMENT: HEADS [ 'd5b6a8e55370dc96f87912c9b54bd3a67de3aa4271232ee02e2417f6741c68e2' ]
+[2025-04-07T17:42:03.235Z] DEBUG: UPDATING A DOCUMENT: DOC {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:42:03.235Z] DEBUG: UPDATING A DOCUMENT: URL automerge:445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:42:03.235Z] INFO: After update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:42:03.235Z] DEBUG: Document updated with ID 445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:42:03.235Z] DEBUG: UPDATING A DOCUMENT: DOC {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:42:03.235Z] DEBUG: UPDATING A DOCUMENT: URL automerge:445cbqRMSf5i66sZQCfyWVtSCgoX
+[2025-04-07T17:42:03.235Z] INFO: After update, document 445cbqRMSf5i66sZQCfyWVtSCgoX state: {
+  data: { count: 1, quotes: [ [Object] ], jobTimestamp: 0, startInterval: 0 },
+  error: null
+}
+[2025-04-07T17:42:03.235Z] DEBUG: Document updated with ID 445cbqRMSf5i66sZQCfyWVtSCgoX

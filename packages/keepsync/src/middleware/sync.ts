@@ -235,20 +235,11 @@ export const sync =
             // Get the current state from Zustand to use as initial document state
             const initialState = get();
 
-            // Create a new Automerge document with the initial state
-            const newDoc = Automerge.change(Automerge.init<T>(), (doc: any) => {
-              // Copy the serializable parts of the state to the new document
-              Object.assign(doc, removeNonSerializable(initialState));
-            });
-
-            // Store the document reference
-            currentDoc = newDoc;
-
             // Create the document in the sync engine
             // This returns a promise that resolves when the document is created
             return syncEngine!.createDocument(
               resolvedClientId,
-              Automerge.toJS(newDoc),
+              removeNonSerializable(initialState),
             );
           }
         })
@@ -264,8 +255,9 @@ export const sync =
             if (docId === resolvedClientId) {
               try {
                 // Get the updated document from the sync engine
-                const updatedDoc =
-                  await syncEngine!.getDocument(resolvedClientId);
+                const updatedDoc = await syncEngine!.getDocument(
+                  resolvedClientId,
+                );
                 if (updatedDoc) {
                   // Update the Zustand store with the changes
                   handleDocChange(updatedDoc);
@@ -396,14 +388,16 @@ export const sync =
           `Sync engine available, initializing store for ${resolvedClientId}`,
         );
 
-        // Initialize the sync
-        initializeSync();
+        setTimeout(() => {
+          // Initialize the sync
+          initializeSync();
 
-        // Clean up any pending timers
-        if (initTimer) {
-          clearTimeout(initTimer);
-          initTimer = null;
-        }
+          // Clean up any pending timers
+          if (initTimer) {
+            clearTimeout(initTimer);
+            initTimer = null;
+          }
+        }, 2000);
       } else if (!syncEngine) {
         // CASE 2: Sync engine is not available yet
 

@@ -1,7 +1,8 @@
-import {SyncEngineOptions} from './types.js';
+import {DocumentData, SyncEngineOptions} from './types.js';
 import {
   DocumentId,
   Repo,
+  Doc,
   DocHandle,
   DocHandleChangePayload,
 } from '@automerge/automerge-repo';
@@ -9,6 +10,7 @@ import {WebSocketManager} from './connection/index.js';
 
 import {Storage} from './storage.js';
 import {logger} from '../utils/logger.js';
+import {throttle} from '../utils/throttle.js';
 
 export class SyncEngine {
   private connection: WebSocketManager;
@@ -89,34 +91,6 @@ export class SyncEngine {
     }
   }
 
-  /**
-   * Helper method to ensure operations on a document are performed sequentially
-   */
-  private async withDocumentLock<T>(
-    id: DocumentId,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    // Wait for any existing operation to complete
-    const existingLock = this.documentLocks.get(id);
-    if (existingLock) {
-      await existingLock;
-    }
-
-    // Create new lock
-    let resolveLock: () => void;
-    const newLock = new Promise<void>(resolve => {
-      resolveLock = resolve;
-    });
-    this.documentLocks.set(id, newLock);
-
-    try {
-      return await operation();
-    } finally {
-      resolveLock!();
-      this.documentLocks.delete(id);
-    }
-  }
-
   private handleConnectionStatusChange(isOnline: boolean): void {
     const previousState = this.isOnline;
     this.isOnline = isOnline;
@@ -164,15 +138,43 @@ export class SyncEngine {
     }
 
     try {
-      // Create a new document with the repo
-      const docHandleCache = this.repo.handles;
-      const newHandle = new DocHandle<any>(id, {
-        isNew: true,
-        initialValue: initialContent,
-      });
+      const newHandle = this.repo.createWithId(id, initialContent);
+      // const newHandle = this.repo.find(id);
 
-      docHandleCache[id] = newHandle;
-      this.repo.emit('document', {handle: newHandle, isNew: true});
+      // Important: Make a meaningful change to the document
+      // This ensures it has heads and won't be seen as "new" during sync
+      // Create a new document with the repo
+      // const docHandleCache = this.repo.handles;
+      // const newHandle = new DocHandle<any>(id, {
+      //   isNew: true,
+      //   initialValue: initialContent,
+      // });
+      // // logger.debug('CREATING A DOCUMENT: HEADS', newHandle.heads());
+      // // logger.debug('CREATING A DOCUMENT: DOC', await newHandle.doc());
+      // // logger.debug('CREATING A DOCUMENT: URL', newHandle.url);
+
+      // docHandleCache[id] = newHandle;
+      // this.repo.emit('document', {handle: newHandle, isNew: true});
+
+      // const storageSubsystem = this.repo.storageSubsystem;
+      // if (storageSubsystem) {
+      //   // Save when the document changes, but no more often than saveDebounceRate.
+      //   const saveFn = ({handle, doc}: any) => {
+      //     void storageSubsystem.saveDoc(handle.documentId, doc);
+      //   };
+      //   newHandle.on(
+      //     'heads-changed',
+      //     throttle(saveFn, this.repo.saveDebounceRate),
+      //   );
+      // }
+
+      // Register the document with the synchronizer. This advertises our interest in the document.
+      // this.repo.
+
+      // newHandle.on('heads-changed', payload => {
+      // logger.debug('THE HEADS CHANGED!!!');
+      // logger.debug('THE HEADS IN QUESTION', payload.handle.heads());
+      // });
 
       // If a specific ID was requested, we need to use that instead of the auto-generated one
       if (id !== newHandle.documentId) {
@@ -196,17 +198,29 @@ export class SyncEngine {
     if (!this.repo) {
       throw new Error('Repo not initialized');
     }
+    if (!this.initialized || !this.repo) {
+      throw new Error('SyncEngine not initialized');
+    }
 
     try {
       // Try to get the document from the repo
-      const docHandle = this.repo.find(id);
-
-      // Check if the document handle is ready, wait for it if not
-      if (!docHandle.isReady()) {
-        logger.debug(`Waiting for document to be ready: ${id}`);
+      // const docHandle = this.repo.find(id);
+      const existingHandle = this.repo.handles[id];
+      if (!existingHandle) {
+        return null;
       }
 
-      return docHandle.docSync();
+      // If the document is unavailable, return null
+      if (existingHandle && existingHandle.isUnavailable()) {
+        return null;
+      }
+
+      // Wait for the document to be ready if it's loading
+      if (!existingHandle.isReady()) {
+        await existingHandle.whenReady();
+      }
+
+      return existingHandle.docSync();
     } catch (error) {
       logger.error(`Error loading document ${id}:`, error);
       return null;
@@ -224,33 +238,33 @@ export class SyncEngine {
       throw new Error('SyncEngine not initialized');
     }
 
-    await this.withDocumentLock(id, async () => {
-      try {
-        const docHandle = this.repo!.find(id);
+    try {
+      const docHandle = this.repo!.find(id);
 
-        // Check if the document handle is ready, wait for it if not
-        if (!docHandle.isReady()) {
-          logger.debug(`Waiting for document to be ready: ${id}`);
-          return;
-        }
-
-        // Add this to log the document state before update
-        logger.info(
-          `Before update, document ${id} state:`,
-          docHandle.docSync(),
-        );
-
-        docHandle.change(updater);
-
-        // Add this to log the document state after update
-        logger.info(`After update, document ${id} state:`, docHandle.docSync());
-
-        logger.debug(`Document updated with ID ${id}`);
-      } catch (error) {
-        logger.error(`Error updating document ${id}:`, error);
-        throw error;
+      // Check if the document handle is ready, wait for it if not
+      if (!docHandle.isReady()) {
+        logger.debug(`Waiting for document to be ready: ${id}`);
+        return;
       }
-    });
+
+      // Add this to log the document state before update
+      logger.info(`Before update, document ${id} state:`, docHandle.docSync());
+
+      docHandle.change(updater);
+
+      this.repo.flush();
+
+      // logger.debug('UDPATING A DOCUMENT: HEADS', docHandle.heads());
+      // logger.debug('UPDATING A DOCUMENT: DOC', await docHandle.doc());
+      // logger.debug('UPDATING A DOCUMENT: URL', docHandle.url);
+      // Add this to log the document state after update
+      logger.info(`After update, document ${id} state:`, docHandle.docSync());
+
+      logger.debug(`Document updated with ID ${id}`);
+    } catch (error) {
+      logger.error(`Error updating document ${id}:`, error);
+      throw error;
+    }
   }
 
   /**

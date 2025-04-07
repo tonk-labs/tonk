@@ -73,6 +73,7 @@ export class TonkRepoServer {
     this.repo = new Repo(config);
 
     this.repo.on('document', async payload => {
+      console.log('check handle', payload.handle);
       console.log('received payload data:', await payload.handle.doc());
       console.log('received heads:', payload.handle.heads());
       console.log('received url:', payload.handle.url);
