@@ -24,6 +24,14 @@ declare global {
             stopFileWatching: () => Promise<boolean>;
 
             getDocumentsPath: () => string;
+            installIntegration: (
+                integrationName: string
+            ) => Promise<{ success: boolean; data?: string; error?: string }>;
+            getInstalledIntegrations: () => Promise<{
+                success: boolean;
+                data?: InstalledIntegration[];
+                error?: string;
+            }>;
         };
         require: (module: string) => any;
     }
@@ -49,8 +57,18 @@ export type Integration = {
     name: string;
     link: string;
     description: string;
+    isInstalled: boolean;
+    version?: string;
 };
 
 export type Registry = {
     packages: Integration[];
+};
+
+export type InstalledIntegration = {
+    name: string;
+    version: string;
+    description: string;
+    dependencies: Record<string, string>;
+    devDependencies: Record<string, string>;
 };

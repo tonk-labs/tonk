@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { PackagePlus } from "lucide-react";
-import React from "react";
+import React, { useState } from "react";
 import { useIntegrations } from "../../hooks/useIntegrations";
 import Button from "../Button";
 import styles from "./ActionBar.module.css";
@@ -20,9 +20,35 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
         isLoading,
         error,
         selectIntegration,
+        installedIntegrations,
     } = useIntegrations();
+    const [isInstalling, setIsInstalling] = useState(false);
 
-     return (
+    const handleInstall = async () => {
+        if (!selectedIntegration) return;
+
+        try {
+            setIsInstalling(true);
+            const result =
+                await window.electronAPI.installIntegration(
+                    selectedIntegration
+                );
+            if (!result.success) {
+                throw new Error(result.error);
+            }
+        } catch (err) {
+            console.error("Failed to install integration:", err);
+        } finally {
+            setIsInstalling(false);
+        }
+    };
+
+    // Filter available integrations to only show uninstalled ones
+    const availableIntegrations = integrations.filter(
+        (integration) => !integration.isInstalled
+    );
+
+    return (
         <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
             <Dialog.Trigger asChild>
                 <Button
@@ -43,47 +69,112 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
                         Add Integration
                     </Dialog.Title>
                     <Dialog.Description className={styles.dialogDescription}>
-                        Integrations are packages that extend the functionality of your app.
+                        Integrations are packages that extend the functionality
+                        of your app.
                     </Dialog.Description>
 
                     {error && <div className={styles.error}>{error}</div>}
 
-                    <div className={styles.integrationList}>
-                        {integrations.map((integration) => (
-                            <Button
-                                key={integration.name}
-                                size="md"
-                                className={`${styles.integrationItem} ${selectedIntegration === integration.name
-                                        ? styles.selected
-                                        : ""}`}
-                                onClick={() => selectIntegration(integration.name)} 
-                                >
-                                <div className={styles.integrationName}>
-                                    {integration.name}
-                                </div>
-                                <div className={styles.integrationDescription}>
-                                    {integration.description}
-                                </div>
-                            </Button>
-                        ))}
+                    <div className={styles.integrationSections}>
+                        {/* Installed Integrations Section */}
+                        <div className={styles.integrationSection}>
+                            <h3 className={styles.sectionTitle}>
+                                Installed Integrations
+                            </h3>
+                            <div className={styles.integrationList}>
+                                {installedIntegrations.map((integration) => (
+                                    <div
+                                        key={integration.name}
+                                        className={styles.installedIntegration}
+                                    >
+                                        <div
+                                            className={styles.integrationHeader}
+                                        >
+                                            <div
+                                                className={
+                                                    styles.integrationName
+                                                }
+                                            >
+                                                {integration.name}
+                                            </div>
+                                            <div
+                                                className={
+                                                    styles.integrationVersion
+                                                }
+                                            >
+                                                v{integration.version}
+                                            </div>
+                                        </div>
+                                        <div
+                                            className={
+                                                styles.integrationDescription
+                                            }
+                                        >
+                                            {integration.description}
+                                        </div>
+                                    </div>
+                                ))}
+                                {installedIntegrations.length === 0 && (
+                                    <div className={styles.emptyState}>
+                                        No integrations installed
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Available Integrations Section */}
+                        <div className={styles.integrationSection}>
+                            <h3 className={styles.sectionTitle}>
+                                Available Integrations
+                            </h3>
+                            <div className={styles.integrationList}>
+                                {availableIntegrations.map((integration) => (
+                                    <Button
+                                        key={integration.name}
+                                        size="md"
+                                        className={`${styles.integrationItem} ${
+                                            selectedIntegration ===
+                                            integration.name
+                                                ? styles.selected
+                                                : ""
+                                        }`}
+                                        onClick={() =>
+                                            selectIntegration(integration.name)
+                                        }
+                                    >
+                                        <div className={styles.integrationName}>
+                                            {integration.name}
+                                        </div>
+                                        <div
+                                            className={
+                                                styles.integrationDescription
+                                            }
+                                        >
+                                            {integration.description}
+                                        </div>
+                                    </Button>
+                                ))}
+                                {availableIntegrations.length === 0 && (
+                                    <div className={styles.emptyState}>
+                                        No new integrations available
+                                    </div>
+                                )}
+                            </div>
+                        </div>
                     </div>
 
                     <div className={styles.dialogButtons}>
                         <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setIsOpen(false)}
-                            disabled={isLoading}
-                        >
-                            Cancel
-                        </Button>
-                        <Button
                             variant="purple"
                             size="sm"
-                            onClick={() => {}}
-                            disabled={isLoading || !selectedIntegration}
+                            onClick={handleInstall}
+                            disabled={
+                                isLoading ||
+                                isInstalling ||
+                                !selectedIntegration
+                            }
                         >
-                            {isLoading ? "Adding..." : "Add Integration"}
+                            {isInstalling ? "Installing..." : "Add Integration"}
                         </Button>
                     </div>
                     <Dialog.Close asChild>
@@ -92,6 +183,7 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
                                 variant="ghost"
                                 size="sm"
                                 shape="square"
+                                disabled={isLoading || isInstalling}
                                 aria-label="Close"
                             >
                                 ×

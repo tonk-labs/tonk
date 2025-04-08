@@ -32,6 +32,7 @@ const Button: React.FC<ButtonProps> = ({
     className,
     tooltip,
     tooltipPosition = "top",
+    disabled = false,
     ...props
 }) => {
     const buttonClasses = [
@@ -40,6 +41,7 @@ const Button: React.FC<ButtonProps> = ({
         styles[toCamelCase("size", size)],
         styles[toCamelCase("shape", shape)],
         tooltip && styles.hasTooltip,
+        disabled && styles.disabled,
         className,
     ]
         .filter(Boolean)

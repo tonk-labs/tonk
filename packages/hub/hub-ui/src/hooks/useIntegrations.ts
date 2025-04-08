@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Integration, Registry } from "../types";
-
-
+import { InstalledIntegration, Integration } from "../types";
 
 interface UseIntegrationsReturn {
     integrations: Integration[];
@@ -9,6 +7,7 @@ interface UseIntegrationsReturn {
     isLoading: boolean;
     error: string | null;
     selectIntegration: (name: string) => void;
+    installedIntegrations: InstalledIntegration[];
 }
 
 export function useIntegrations(): UseIntegrationsReturn {
@@ -18,25 +17,47 @@ export function useIntegrations(): UseIntegrationsReturn {
     >(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [installedIntegrations, setInstalledIntegrations] = useState<
+        InstalledIntegration[]
+    >([]);
 
+    // Fetch both registry and installed integrations
     useEffect(() => {
-        const fetchIntegrations = async () => {
+        const fetchData = async () => {
             try {
                 setIsLoading(true);
                 setError(null);
 
-                const registry = await window.electronAPI.fetchRegistry();
+                // Fetch registry and installed integrations in parallel
+                const [registry, installed] = await Promise.all([
+                    window.electronAPI.fetchRegistry(),
+                    window.electronAPI.getInstalledIntegrations(),
+                ]);
 
                 if (!registry.success) {
                     throw new Error("Failed to fetch registry");
                 }
 
+                if (!installed.success) {
+                    throw new Error("Failed to fetch installed integrations");
+                }
+
+                // Create a map of installed integrations for quick lookup
+                const installedMap = new Map(
+                    installed.data?.map((i) => [i.name, i]) || []
+                );
+
+                // Set installed integrations
+                setInstalledIntegrations(installed.data || []);
+
+                // Merge registry data with installed status
                 setIntegrations(
                     registry.data.packages.map((integration) => ({
                         name: integration.name,
                         link: integration.link,
                         description: integration.description,
-                        isInstalled: false,
+                        isInstalled: installedMap.has(integration.name),
+                        version: installedMap.get(integration.name)?.version,
                     }))
                 );
             } catch (err) {
@@ -51,13 +72,12 @@ export function useIntegrations(): UseIntegrationsReturn {
             }
         };
 
-        fetchIntegrations();
+        fetchData();
     }, []);
 
     const selectIntegration = useCallback((name: string) => {
         setSelectedIntegration(name);
     }, []);
-
 
     return {
         integrations,
@@ -65,5 +85,6 @@ export function useIntegrations(): UseIntegrationsReturn {
         isLoading,
         error,
         selectIntegration,
+        installedIntegrations,
     };
 }
