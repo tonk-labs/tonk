@@ -1,8 +1,8 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { BookOpenText, HomeIcon, NotebookPen, PackagePlus } from "lucide-react";
+import { BookOpenText, HomeIcon, LogOut, NotebookPen, PackagePlus } from "lucide-react";
 import React, { useState } from "react";
 import { openExternal } from "../../ipc/app";
-import { createApp } from "../../ipc/hub";
+import { clearConfig, createApp } from "../../ipc/hub";
 import { useEventStore } from "../../stores/eventStore";
 import { useProjectStore } from "../../stores/projectStore";
 import Button from "../Button";
@@ -40,12 +40,18 @@ const ActionBar: React.FC = () => {
         setSelectedItem(null);
     };
 
+    const handleLogout = async () => {
+        await clearConfig();
+        window.location.reload();
+    };
+
     return (
         <div className={styles.actionBar}>
             <Button
-                variant="ghost"
+
                 size="sm"
                 shape="square"
+                color="ghost"
                 onClick={handleGoHome}
                 tooltip="Home"
                 tooltipPosition="bottom"
@@ -55,9 +61,9 @@ const ActionBar: React.FC = () => {
             <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
                 <Dialog.Trigger asChild>
                     <Button
-                        variant="ghost"
                         size="sm"
                         shape="square"
+                        color="ghost"
                         title="Create App"
                         tooltip="Create App"
                         tooltipPosition="bottom"
@@ -84,14 +90,14 @@ const ActionBar: React.FC = () => {
                         />
                         <div className={styles.dialogButtons}>
                             <Button
-                                variant="ghost"
+                                color="ghost"
                                 size="sm"
                                 onClick={() => setIsOpen(false)}
                             >
                                 Cancel
                             </Button>
                             <Button
-                                variant="purple"
+                                color="green"
                                 size="sm"
                                 onClick={handleCreateApp}
                             >
@@ -99,16 +105,15 @@ const ActionBar: React.FC = () => {
                             </Button>
                         </div>
                         <Dialog.Close asChild>
-                            <div className={styles.closeButton}>
                                 <Button
-                                    variant="ghost"
+                                    color="ghost"
                                     size="sm"
                                     shape="square"
                                     aria-label="Close"
+                                    className={styles.closeButton}
                             >
                                 ×
                                 </Button>
-                            </div>
                         </Dialog.Close>
                     </Dialog.Content>
                 </Dialog.Portal>
@@ -118,7 +123,7 @@ const ActionBar: React.FC = () => {
                 setIsOpen={setIsIntegrationDialogOpen}
             />
             <Button
-                variant="ghost"
+                color="ghost"
                 size="sm"
                 shape="square"
                 title="Documentation"

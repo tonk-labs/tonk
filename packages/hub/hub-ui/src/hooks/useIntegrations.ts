@@ -8,6 +8,7 @@ interface UseIntegrationsReturn {
     error: string | null;
     selectIntegration: (name: string) => void;
     installedIntegrations: InstalledIntegration[];
+    installIntegration: () => Promise<void>;
 }
 
 export function useIntegrations(): UseIntegrationsReturn {
@@ -21,6 +22,23 @@ export function useIntegrations(): UseIntegrationsReturn {
         InstalledIntegration[]
     >([]);
 
+    const fetchRegistry = useCallback(async () => {
+        const registry = await window.electronAPI.fetchRegistry();
+        if (!registry.success) {
+            throw new Error("Failed to fetch registry");
+        }
+        return registry.data.packages;
+    }, []);
+
+    const fetchInstalledIntegrations = useCallback(async () => {
+        const installed = await window.electronAPI.getInstalledIntegrations();
+        if (!installed.success) {
+            throw new Error("Failed to fetch installed integrations");
+        }
+        setInstalledIntegrations(installed.data || []);
+        return installed.data || [];
+    }, []);
+
     // Fetch both registry and installed integrations
     useEffect(() => {
         const fetchData = async () => {
@@ -28,31 +46,20 @@ export function useIntegrations(): UseIntegrationsReturn {
                 setIsLoading(true);
                 setError(null);
 
-                // Fetch registry and installed integrations in parallel
-                const [registry, installed] = await Promise.all([
-                    window.electronAPI.fetchRegistry(),
-                    window.electronAPI.getInstalledIntegrations(),
+                // Execute both fetch callbacks in parallel
+                const [registryPackages, installedData] = await Promise.all([
+                    fetchRegistry(),
+                    fetchInstalledIntegrations(),
                 ]);
-
-                if (!registry.success) {
-                    throw new Error("Failed to fetch registry");
-                }
-
-                if (!installed.success) {
-                    throw new Error("Failed to fetch installed integrations");
-                }
 
                 // Create a map of installed integrations for quick lookup
                 const installedMap = new Map(
-                    installed.data?.map((i) => [i.name, i]) || []
+                    installedData.map((i) => [i.name, i])
                 );
-
-                // Set installed integrations
-                setInstalledIntegrations(installed.data || []);
 
                 // Merge registry data with installed status
                 setIntegrations(
-                    registry.data.packages.map((integration) => ({
+                    registryPackages.map((integration) => ({
                         name: integration.name,
                         link: integration.link,
                         description: integration.description,
@@ -73,12 +80,35 @@ export function useIntegrations(): UseIntegrationsReturn {
         };
 
         fetchData();
-    }, []);
+    }, [fetchRegistry, fetchInstalledIntegrations]);
 
     const selectIntegration = useCallback((name: string) => {
         setSelectedIntegration(name);
     }, []);
 
+    const installIntegration = useCallback(async () => {
+        if (!selectedIntegration) return;
+
+        try {
+            setIsLoading(true);
+            const link = integrations.find(
+                (integration) => integration.name === selectedIntegration
+            )?.link;
+            if (!link) {
+                throw new Error("Integration link not found");
+            }
+            const result =
+                await window.electronAPI.installIntegration(link);
+            if (!result.success) {
+                throw new Error(result.error);
+            }
+            await fetchInstalledIntegrations();
+        } catch (err) {
+            console.error("Failed to install integration:", err);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [selectedIntegration, integrations]);
     return {
         integrations,
         selectedIntegration,
@@ -86,5 +116,6 @@ export function useIntegrations(): UseIntegrationsReturn {
         error,
         selectIntegration,
         installedIntegrations,
+        installIntegration,
     };
 }

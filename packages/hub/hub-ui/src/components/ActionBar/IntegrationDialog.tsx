@@ -21,27 +21,8 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
         error,
         selectIntegration,
         installedIntegrations,
+        installIntegration,
     } = useIntegrations();
-    const [isInstalling, setIsInstalling] = useState(false);
-
-    const handleInstall = async () => {
-        if (!selectedIntegration) return;
-
-        try {
-            setIsInstalling(true);
-            const result =
-                await window.electronAPI.installIntegration(
-                    selectedIntegration
-                );
-            if (!result.success) {
-                throw new Error(result.error);
-            }
-        } catch (err) {
-            console.error("Failed to install integration:", err);
-        } finally {
-            setIsInstalling(false);
-        }
-    };
 
     // Filter available integrations to only show uninstalled ones
     const availableIntegrations = integrations.filter(
@@ -52,7 +33,7 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
         <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
             <Dialog.Trigger asChild>
                 <Button
-                    variant="ghost"
+                    color="ghost"
                     size="sm"
                     shape="square"
                     title="Add Integration"
@@ -132,12 +113,21 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
                                     <Button
                                         key={integration.name}
                                         size="md"
-                                        className={`${styles.integrationItem} ${
-                                            selectedIntegration ===
-                                            integration.name
-                                                ? styles.selected
-                                                : ""
-                                        }`}
+                                        className={`${styles.integrationItem}`}
+                                        disabled={
+                                            installedIntegrations.some(
+                                                (installedIntegration) =>
+                                                    installedIntegration.name ===
+                                                    integration.name
+                                            )
+                                        }
+                                        style={{
+                                            border:
+                                                selectedIntegration ===
+                                                integration.name
+                                                    ? "1px solid #007bb5"
+                                                    : "1px solid transparent",
+                                        }}
                                         onClick={() =>
                                             selectIntegration(integration.name)
                                         }
@@ -165,30 +155,25 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
 
                     <div className={styles.dialogButtons}>
                         <Button
-                            variant="purple"
+                            color="green"
                             size="sm"
-                            onClick={handleInstall}
-                            disabled={
-                                isLoading ||
-                                isInstalling ||
-                                !selectedIntegration
-                            }
+                            onClick={installIntegration}
+                            disabled={isLoading || !selectedIntegration}
                         >
-                            {isInstalling ? "Installing..." : "Add Integration"}
+                            {isLoading ? "Installing..." : "Add Integration"}
                         </Button>
                     </div>
                     <Dialog.Close asChild>
-                        <div className={styles.closeButton}>
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                shape="square"
-                                disabled={isLoading || isInstalling}
-                                aria-label="Close"
-                            >
-                                ×
-                            </Button>
-                        </div>
+                        <Button
+                            color="ghost"
+                            size="sm"
+                            shape="square"
+                            disabled={isLoading}
+                            aria-label="Close"
+                            className={styles.closeButton}
+                        >
+                            ×
+                        </Button>
                     </Dialog.Close>
                 </Dialog.Content>
             </Dialog.Portal>

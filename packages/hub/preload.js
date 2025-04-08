@@ -25,8 +25,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     stopFileWatching: () => ipcRenderer.invoke("stop-file-watching"),
     fetchRegistry: () => ipcRenderer.invoke("fetch-registry"),
     getDocumentsPath: () => app.getPath("documents"),
-    installIntegration: (integrationName) =>
-        ipcRenderer.invoke("install-integration", integrationName),
+    installIntegration: (integrationLink) =>
+        ipcRenderer.invoke("install-integration", integrationLink),
     getInstalledIntegrations: () =>
         ipcRenderer.invoke("get-installed-integrations"),
 });

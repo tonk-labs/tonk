@@ -1,6 +1,7 @@
 .actionBar {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 4px;
     justify-content: center;
     width: 100%;
     padding: 8px 16px;

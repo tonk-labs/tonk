@@ -112,7 +112,7 @@
     background: black;
     color: white;
     padding: 4px 8px;
-    border-radius: 4px;
+    border-radius: 2px;
     font-size: 0.875rem;
     white-space: nowrap;
     opacity: 0;
@@ -152,4 +152,51 @@
     left: 100%;
     top: 50%;
     transform: translateY(-50%) translateX(8px);
+}
+
+.outline.blue {
+    background: transparent;
+    border-color: rgba(0, 123, 181, 0.8);
+    color: rgba(0, 123, 181, 0.8);
+}
+
+.outline.blue:hover {
+    background: rgba(0, 123, 181, 0.1);
+    border-color: rgba(0, 123, 181, 1);
+    color: rgba(0, 123, 181, 1);
+}
+
+.outline.purple {
+    background: transparent;
+    border-color: rgba(180, 19, 255, 0.8);
+    color: rgba(186, 36, 255, 0.8);
+}
+
+.outline.purple:hover {
+    background: rgba(145, 50, 188, 0.05);
+    border-color: rgba(145, 50, 188, 1);
+    color: rgba(145, 50, 188, 1);
+}
+
+.outline.green {
+    background: transparent;
+    border-color: rgba(0, 255, 110, 0.8);
+    color: rgba(0, 255, 110, 0.8);
+}
+
+.outline.green:hover {
+    background: rgba(46, 139, 87, 0.1);
+    border-color: rgb(0, 163, 71);
+    color: rgb(0, 163, 71);
+}
+
+.outline.ghost {
+    background: transparent;
+    border-color: transparent;
+    color: #dedede;
+}
+
+.outline.ghost:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: #ffffff;
 }

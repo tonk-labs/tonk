@@ -5,7 +5,7 @@ const { spawn } = require("child_process");
 const fs = require("fs-extra");
 const which = require("which");
 
-ipcMain.handle("install-integration", async (event, integrationName) => {
+ipcMain.handle("install-integration", async (event, integrationLink) => {
     try {
         const config = getConfig();
         const integrationsPath = path.join(config.homePath, "integrations");
@@ -34,7 +34,7 @@ ipcMain.handle("install-integration", async (event, integrationName) => {
 
         // Create a promise to handle the npm install process
         return new Promise((resolve, reject) => {
-            const npmProcess = spawn(npmPath, ["install"], {
+            const npmProcess = spawn(npmPath, ["install", "-y", integrationLink], {
                 cwd: integrationsPath,
                 stdio: ["ignore", "pipe", "pipe"],
                 env: process.env,
@@ -92,40 +92,31 @@ ipcMain.handle("get-installed-integrations", async () => {
 
         // Ensure integrations directory exists
         if (!fs.existsSync(integrationsPath)) {
-            return { success: true, data: [] };
+            return { success: false, data: [] };
         }
-
-        // Get all directories in the integrations folder
-        const integrationDirs = await fs.readdir(integrationsPath);
         const installedIntegrations = [];
 
+        const packageJsonPath = path.join(
+            integrationsPath,
+            "package.json"
+        );
         // Check each directory for a package.json
-        for (const dir of integrationDirs) {
-            const packageJsonPath = path.join(
-                integrationsPath,
-                dir,
-                "package.json"
-            );
 
-            if (await fs.pathExists(packageJsonPath)) {
-                try {
-                    const packageJson = await fs.readJson(packageJsonPath);
-                    installedIntegrations.push({
-                        name: dir,
-                        version: packageJson.version,
-                        description: packageJson.description,
-                        dependencies: packageJson.dependencies || {},
-                        devDependencies: packageJson.devDependencies || {},
-                    });
-                } catch (err) {
-                    console.warn(`Error reading package.json for ${dir}:`, err);
-                }
-            }
+        if (!await fs.pathExists(packageJsonPath)) {
+            return { success: false, data: [] };
+        }
+        const dependencies = (await fs.readJson(packageJsonPath)).dependencies ?? {};
+        for (const [name, version] of Object.entries(dependencies)) {
+            installedIntegrations.push({
+                name,
+                version,
+            });
         }
 
+        console.log("Installed integrations:", installedIntegrations);
         return { success: true, data: installedIntegrations };
     } catch (error) {
         console.error("Failed to get installed integrations:", error);
-        return { success: false, error: error.message };
+        return { success: false, error: error.message, data: [] };
     }
 });
