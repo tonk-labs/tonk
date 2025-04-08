@@ -7,6 +7,10 @@ export const init = async (homePath: string) => {
   await window.electronAPI.init(homePath);
 };
 
+export const clearConfig = async () => {
+  await window.electronAPI.clearConfig();
+};
+
 export const copyHubTemplate = async () => {
   await window.electronAPI.copyHubTemplate();
 };
