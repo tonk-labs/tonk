@@ -1,14 +1,18 @@
 import React, { useState } from "react";
-import { NotebookPen, PackagePlus, BookOpenText } from "lucide-react";
+import { NotebookPen, PackagePlus, BookOpenText, HomeIcon } from "lucide-react";
 import * as Dialog from "@radix-ui/react-dialog";
 import styles from "./ActionBar.module.css";
 import { openExternal } from "../../ipc/app";
 import { createApp } from "../../ipc/hub";
 import { useEventStore } from "../../stores/eventStore";
+import Button from "../Button";
+import { useProjectStore } from "../../stores/projectStore";
 
 const ActionBar: React.FC = () => {
   const [appName, setAppName] = useState("");
   const [isOpen, setIsOpen] = useState(false);
+
+  const { setSelectedItem } = useProjectStore();
   const addEvent = useEventStore((state) => state.addEvent);
 
   const openDocs = () => {
@@ -28,13 +32,20 @@ const ActionBar: React.FC = () => {
     }
   };
 
+const handleGoHome = () => {
+    setSelectedItem(null);
+  };
+
   return (
     <div className={styles.actionBar}>
+      <Button variant="ghost" size="sm" shape="square" onClick={handleGoHome} tooltip="Home" tooltipPosition="bottom">
+          <HomeIcon className={styles.homeIcon} />
+        </Button>
       <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
         <Dialog.Trigger asChild>
-          <button className={styles.actionButton} title="Create App">
+          <Button variant="ghost" size="sm" shape="square" title="Create App" tooltip="Create App" tooltipPosition="bottom">
             <NotebookPen size={20} />
-          </button>
+          </Button>
         </Dialog.Trigger>
         <Dialog.Portal>
           <Dialog.Overlay className={styles.dialogOverlay} />
@@ -70,16 +81,12 @@ const ActionBar: React.FC = () => {
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
-      <button className={styles.actionButton} title="Add Integration">
+      <Button variant="ghost" size="sm" shape="square" title="Add Integration" tooltip="Add Integration" tooltipPosition="bottom">
         <PackagePlus size={20} />
-      </button>
-      <button
-        className={styles.actionButton}
-        title="Documentation"
-        onClick={openDocs}
-      >
+      </Button>
+      <Button variant="ghost" size="sm" shape="square" title="Documentation" onClick={openDocs} tooltip="Documentation" tooltipPosition="bottom">
         <BookOpenText size={20} />
-      </button>
+      </Button>
     </div>
   );
 };

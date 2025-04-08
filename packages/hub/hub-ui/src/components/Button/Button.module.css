@@ -1,36 +1,133 @@
 .button {
-    background-color: rgba(217, 217, 217, 0.1);
-    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    color: #9ca3af;
     cursor: pointer;
-    border-radius: 1px;
-    color: inherit;
-    font-size: inherit;
-    margin: 16px 0;
+    transition: all 0.2s ease;
+    border-radius: 6px;
 }
 
-button:hover {
-    background-color: rgba(217, 217, 217, 0.15);
+.button:hover {
+    scale: 1.05;
 }
-
-button:active {
-    background-color: rgba(217, 217, 217, 0);
-}
-
 /* blue is internal links, actions that modify stuff inside app, tertiary */
 .blue {
-    border: 1px solid #00C8FF;
-    color: #00C8FF;
+    background: #007bb5;
+    color: lightgray;
 }
 
-/* purple is external links, cancellations, etc secondary colors */
+.blue:hover {
+    background: #007bb5;
+    color: white;
+}
+
 .purple {
-    border: 1px solid #CF66FF;
-    color: #CF66FF;
+    background: #9132bc;
+    color: white;
 }
 
+.purple:hover {
+    background: #ae51d9;
+    color: white;
+}
 /* green is primary action, external actions */
 .green {
-    border: 1px solid #35FF3C;
-    color: #35FF3C;
+    background: #0e7d12;
+    color: white;
 }
 
+.green:hover {
+    background: #119616;
+    color: white;
+}
+
+/* ghost has no border */
+.ghost {
+    border: none;
+    color: #9ca3af;
+}
+.ghost:hover {
+    color: #ffffff;
+}
+
+/* Size variants */
+.sizeSm {
+    padding: 6px;
+    font-size: 0.85rem;
+}
+
+.sizeMd {
+    padding: 8px;
+    font-size: 1rem;
+}
+
+.sizeLg {
+    padding: 12px;
+    font-size: 1.2rem;
+}
+
+/* Shape variants */
+.shapeSquare {
+    aspect-ratio: 1/1;
+}
+
+.shapePill {
+    border-radius: 50px;
+}
+
+/* Tooltip styles */
+.hasTooltip {
+    opacity: 1;
+    position: relative;
+}
+
+.hasTooltip::before {
+    content: attr(data-tooltip);
+    position: absolute;
+    background: black;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.875rem;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transition:
+        opacity 0.2s ease,
+        visibility 0.2s ease;
+    z-index: 1000;
+}
+
+.hasTooltip:hover::before {
+    opacity: 1;
+    background: black;
+    visibility: visible;
+}
+
+/* Tooltip positions */
+.hasTooltip[data-tooltip-position="top"]::before {
+    bottom: 80%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+}
+
+.hasTooltip[data-tooltip-position="bottom"]::before {
+    top: 80%;
+    left: 50%;
+    transform: translateX(-50%) translateY(8px);
+}
+
+.hasTooltip[data-tooltip-position="left"]::before {
+    right: 100%;
+    top: 50%;
+    transform: translateY(-50%) translateX(-8px);
+}
+
+.hasTooltip[data-tooltip-position="right"]::before {
+    left: 100%;
+    top: 50%;
+    transform: translateY(-50%) translateX(8px);
+}
