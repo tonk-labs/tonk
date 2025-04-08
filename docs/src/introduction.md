@@ -19,7 +19,7 @@ In a way that (i) is friendly to copilot-led development and (ii) preserves the 
 
 **under construction*
 
-# Example usecases
+## Example usecases
 
 Suppose you want to:
 
@@ -36,9 +36,9 @@ That is to say, suppose you want to build helpful software for you and the peopl
 - Share applications
 - Permission users
 
-Tonk abstracts those solutions away.
+Tonk abstracts those parts of the stack away.
 
-# How it works
+## How it works
 
 The entry route into Tonk is the **Tonk Hub**. The Tonk Hub is an Electron app that helps you manage your:
 
@@ -48,11 +48,11 @@ The entry route into Tonk is the **Tonk Hub**. The Tonk Hub is an Electron app t
 
 ![hub screenshot](./images/hub-screenshot.png)
 
-# Get started
+## Get started
 
 You can use Tonk to build apps, integrations or both. Get started with the [quickstart guide](./quickstart.md).
 
-# Project status
+## Project status
 
 The team behind Tonk is a small, early-stage startup based in London. We are dedicated to building a new and better internet that transfers power away from internet platforms and towards the people and enterprises that use them. Our bet is that the Tonk toolchain & the interoperable ecosystem of Tonk apps will bootstrap that new internet.
 
@@ -60,7 +60,7 @@ The Tonk toolchain is in alpha. This is a brand new project built fully in the o
 
 As an early stage project we are very open to feedback and keen to help builders - so please reach out to the team and we will endeavour to support your usecase.
 
-# Links
+## Links
 
 - [Github](https://github.com/tonk-labs/tonk)
 - [Tonk website](https://tonk.xyz)

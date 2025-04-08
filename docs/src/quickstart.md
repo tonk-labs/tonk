@@ -107,36 +107,33 @@ Once your integration is up and running, you'll need to connect your Tonk app to
 Please connect to the Tonk google store data prompt prompt prompt
 ```
 
-
-You should now 
+You should now see your Google Maps saved locations in your myWorld app. Hopefully this starts to demonstrate the ease with which Tonk apps can plug into your data.
 
 ### Create your own app
 
-Once you're familiar with the flow of a Tonk app, you should create your own.
-
-Run the following in the Tonk Hub or your own terminal:
+Once you're familiar with the flow of a Tonk app, you should create your own. Run the following in the Tonk Hub or your own terminal:
 
 ```
 $ tonk create app
 ```
-
-Alterantively, use the "create app" button in the Tonk Hub.
-
-> image
-
 This will start a simple CLI flow where you'll be asked a few basic questions about your app. Your answers are used to give your copilot context for streamlined development.
 
-Once complete, you will have a new Tonk app template.
+Alternatively, use the "create app" button in the Tonk Hub.
 
-> image
+![create app](./images/create-app-button.png)
 
-This will have an llms.txt file to provide your copilot of choice with context. The most important context is to use Tonk stores to plug into your existing data and manage state in a local-first way.
 
-> ⚠️ Just because your copilot has context on llms.txt doesn't mean it will always use it. You may need to guide it.
+Once complete, you will have a new Tonk app template. The filepath will be displayed in the Hub terminal:
 
-Try building a todo app that integrates with your saved locations from the above myWorld app. You could create a todo app that lists locations you haven't visited yet for you to tick off.
+![test app tui](./images/test-app-tui.png)
 
-Hopefully this demonstrates the ease with which Tonk apps can use and re-use your existing data in a streamlined way. 
+Now's the time to use your preferred copilot to build the app. The app already includes some basic functionality, but most importantly includes an *llms.txt* file to provide your copilot with context. The most important context is instructions for how the copilot should manage state: by using Tonk stores to plug into your existing data in a local-first way.
+
+> ⚠️ Just because your copilot has context on *llms.txt* doesn't mean it will always use the context - it may need some guidance. 
+
+Try using your copilot to build a simple todo app that integrates with your saved locations from the above myWorld app. You could create a todo app that lists locations you haven't visited yet, for you to tick off.
+
+By unbundling your applications from your data, we hope this further demonstrates the ease with which Tonk apps can re-use your existing information. 
 
 ### Publish your app
 
@@ -152,5 +149,24 @@ Hopefully this demonstrates the ease with which Tonk apps can use and re-use you
 
 ## I want to build a Tonk integration
 
+There's a difference between *creating* a Tonk integration and *configuring* an existing Tonk integration. As shown above, Tonk integrations are currently configured via a CLI that requests credentials and triggers workflows such as OAuth flows. To create a Tonk integration, we need to create such a CLI. The Tonk toolchain includes (an early version of) a framework for developing such integrations. 
 
+Let's suppose you want to create an integration that plugs into Spotify data or Amazon purchase history. We need to develop a CLI that requests credentials and triggers relevant workflows.
 
+Start by running the following in the Tonk Hub's command line:
+
+```
+$ tonk create integration
+```
+
+This will create an npm project in a new directory. Setting up the integration is currently very manual. By way of reference, let's point out the salient features of an existing Tonk integration (the Google integration) so you have some pointers on where to start.
+
+> ?? screenshots of Google integration code??
+
+Once created, you'll need to decide (i) how often the integration should fetch data and (ii) set up the linked Tonk store. Setting up the Tonk store is analogous to setting up a database schema. Here's an example:
+
+> ??
+
+## Next steps
+
+Try building your own application, your own integrations, and share them in the Tonk community chat. If it's promising we'd love to support your project any way we can.
