@@ -43,33 +43,28 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
                         Add Integration
                     </Dialog.Title>
                     <Dialog.Description className={styles.dialogDescription}>
-                        Select an integration to add to your app.
+                        Integrations are packages that extend the functionality of your app.
                     </Dialog.Description>
 
                     {error && <div className={styles.error}>{error}</div>}
 
                     <div className={styles.integrationList}>
                         {integrations.map((integration) => (
-                            <div
+                            <Button
                                 key={integration.name}
-                                className={`${styles.integrationItem} ${
-                                    selectedIntegration === integration.name
+                                size="md"
+                                className={`${styles.integrationItem} ${selectedIntegration === integration.name
                                         ? styles.selected
-                                        : ""
-                                } ${integration.isInstalled ? styles.installed : ""}`}
-                                onClick={() =>
-                                    selectIntegration(integration.name)
-                                }
-                            >
+                                        : ""}`}
+                                onClick={() => selectIntegration(integration.name)} 
+                                >
                                 <div className={styles.integrationName}>
                                     {integration.name}
                                 </div>
-                                {integration.isInstalled && (
-                                    <span className={styles.installedBadge}>
-                                        Installed
-                                    </span>
-                                )}
-                            </div>
+                                <div className={styles.integrationDescription}>
+                                    {integration.description}
+                                </div>
+                            </Button>
                         ))}
                     </div>
 

@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { Registry } from "../types";
+import { Integration, Registry } from "../types";
 
-interface Integration {
-    name: string;
-    isInstalled: boolean;
-}
+
 
 interface UseIntegrationsReturn {
     integrations: Integration[];
@@ -35,8 +32,10 @@ export function useIntegrations(): UseIntegrationsReturn {
                 }
 
                 setIntegrations(
-                    registry.data.packages.map((name) => ({
-                        name,
+                    registry.data.packages.map((integration) => ({
+                        name: integration.name,
+                        link: integration.link,
+                        description: integration.description,
                         isInstalled: false,
                     }))
                 );

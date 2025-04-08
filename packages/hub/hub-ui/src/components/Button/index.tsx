@@ -6,7 +6,7 @@ type ButtonSize = "sm" | "md" | "lg";
 type ButtonShape = "square" | "rounded" | "pill";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-    variant: ButtonVariant;
+    variant?: ButtonVariant;
     size?: ButtonSize;
     shape?: ButtonShape;
     children: React.ReactNode;
@@ -25,7 +25,7 @@ const toCamelCase = (prefix: string, value: string): string => {
 };
 
 const Button: React.FC<ButtonProps> = ({
-    variant,
+    variant = "default",
     size = "lg",
     shape = "default",
     children,

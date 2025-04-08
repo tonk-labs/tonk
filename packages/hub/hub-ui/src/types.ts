@@ -42,6 +42,12 @@ export type FileChangeEvent = {
   path: string;
 };
 
+export type Integration = {
+  name: string;
+  link: string;
+  description: string;
+};
+
 export type Registry = {
-  packages: string[];
+  packages: Integration[];
 };
