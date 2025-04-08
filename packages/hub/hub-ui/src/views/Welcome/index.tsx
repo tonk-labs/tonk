@@ -12,6 +12,9 @@ const Welcome: React.FC = () => {
     const { isInitialized, isLoading, loadConfig } = useConfigStore();
     const navigate = useNavigate();
     const advanceStep = (newStep: number) => {
+        if (step >= 4) {
+            return;
+        }
         if (step > newStep) {
             return;
         }

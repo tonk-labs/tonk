@@ -43,7 +43,7 @@ export const RainbowMode: React.FC<TextProps> = ({ children, ...props }) => {
 };
 
 export const Text: React.FC<TextProps> = ({ children }) => (
-    <p className={styles.text}>{children}</p>
+    <div className={styles.text}>{children}</div>
 );
 
 export default Text;
