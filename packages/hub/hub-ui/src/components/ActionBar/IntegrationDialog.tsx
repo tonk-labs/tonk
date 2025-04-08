@@ -1,6 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { PackagePlus } from "lucide-react";
 import React from "react";
+import { useIntegrations } from "../../hooks/useIntegrations";
 import Button from "../Button";
 import styles from "./ActionBar.module.css";
 
@@ -13,12 +14,15 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
     isOpen,
     setIsOpen,
 }) => {
-    const handleAddIntegration = () => {
-        // TODO: Implement integration addition logic
-        setIsOpen(false);
-    };
+    const {
+        integrations,
+        selectedIntegration,
+        isLoading,
+        error,
+        selectIntegration,
+    } = useIntegrations();
 
-    return (
+     return (
         <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
             <Dialog.Trigger asChild>
                 <Button
@@ -41,21 +45,50 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
                     <Dialog.Description className={styles.dialogDescription}>
                         Select an integration to add to your app.
                     </Dialog.Description>
-                    {/* Add integration selection UI here */}
+
+                    {error && <div className={styles.error}>{error}</div>}
+
+                    <div className={styles.integrationList}>
+                        {integrations.map((integration) => (
+                            <div
+                                key={integration.name}
+                                className={`${styles.integrationItem} ${
+                                    selectedIntegration === integration.name
+                                        ? styles.selected
+                                        : ""
+                                } ${integration.isInstalled ? styles.installed : ""}`}
+                                onClick={() =>
+                                    selectIntegration(integration.name)
+                                }
+                            >
+                                <div className={styles.integrationName}>
+                                    {integration.name}
+                                </div>
+                                {integration.isInstalled && (
+                                    <span className={styles.installedBadge}>
+                                        Installed
+                                    </span>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+
                     <div className={styles.dialogButtons}>
                         <Button
                             variant="ghost"
                             size="sm"
                             onClick={() => setIsOpen(false)}
+                            disabled={isLoading}
                         >
                             Cancel
                         </Button>
                         <Button
                             variant="purple"
                             size="sm"
-                            onClick={handleAddIntegration}
+                            onClick={() => {}}
+                            disabled={isLoading || !selectedIntegration}
                         >
-                            Add Integration
+                            {isLoading ? "Adding..." : "Add Integration"}
                         </Button>
                     </div>
                     <Dialog.Close asChild>
@@ -65,9 +98,9 @@ const IntegrationDialog: React.FC<IntegrationDialogProps> = ({
                                 size="sm"
                                 shape="square"
                                 aria-label="Close"
-                        >
-                            ×
-                        </Button>
+                            >
+                                ×
+                            </Button>
                         </div>
                     </Dialog.Close>
                 </Dialog.Content>

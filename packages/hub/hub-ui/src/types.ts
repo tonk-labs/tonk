@@ -10,6 +10,7 @@ declare global {
       getConfig: () => Promise<Config>;
       init: (homePath: string) => Promise<void>;
       copyHubTemplate: () => Promise<void>;
+      fetchRegistry: () => Promise<{ success: boolean; data: Registry }>;
       readBinary: (filePath: string) => Promise<Uint8Array>;
       readFile: (filePath: string) => Promise<string>;
       writeFile: (filePath: string, content: string) => Promise<void>;
@@ -39,4 +40,8 @@ export type Config = {
 export type FileChangeEvent = {
   type: "add" | "change" | "unlink" | "addDir" | "unlinkDir";
   path: string;
+};
+
+export type Registry = {
+  packages: string[];
 };

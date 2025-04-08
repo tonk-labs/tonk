@@ -11,6 +11,10 @@ export const copyHubTemplate = async () => {
   await window.electronAPI.copyHubTemplate();
 };
 
+export const fetchRegistry = async () => {
+  await window.electronAPI.fetchRegistry();
+};
+
 export const runShell = async (dirPath: string) => {
   await window.electronAPI.runShell(dirPath);
 };
