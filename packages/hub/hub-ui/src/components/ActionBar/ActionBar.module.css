@@ -1,36 +1,10 @@
 .actionBar {
-  display: flex;
-  flex-direction: row;
-  position: absolute;
-  bottom: 0;
-  gap: 8px;
-  padding: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.actionButton {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  background: transparent;
-  border: none;
-  color: #9ca3af;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.actionButton:hover {
-  background: rgba(217, 217, 217, 0.1);
-  color: #ffffff;
-}
-
-.actionButton:focus {
-  background: rgba(217, 217, 217, 0.1);
-  color: #ffffff;
-  outline: 1px solid white;
+  width: 100%;
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .dialogOverlay {

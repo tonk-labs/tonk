@@ -131,7 +131,6 @@ a {
 }
 
 #root {
-  overflow: scroll;
   min-height: 100vh;
   position: fixed;
   top: 0;

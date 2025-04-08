@@ -1,22 +1,9 @@
-import {Command} from 'commander';
 import path from 'path';
 import {spawn, ChildProcess} from 'child_process';
 import chalk from 'chalk';
 import fs from 'fs';
-import {fileURLToPath} from 'url';
 
-// Get the directory name in ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-export const guiCommand = new Command('gui')
-  .description('Launch the Tonk GUI application')
-  .action(() => {
-    console.log(chalk.blue('Launching Tonk GUI...'));
-    launchTonkGUI();
-  });
-
-function launchTonkGUI() {
+export function launchTonkGUI() {
   // Determine the paths - CLI is in src/commands, so we need to go up to the project root
   const projectRoot = path.resolve(__dirname, '../../..');
   const electronAppPath = path.resolve(projectRoot, 'hub');
@@ -29,7 +16,9 @@ function launchTonkGUI() {
         `Electron app not found at ${electronAppPath}. Please check your installation.`,
       ),
     );
-    process.exit(1);
+    throw new Error(
+      `Electron app not found at ${electronAppPath}. Please check your installation.`,
+    );
   }
 
   // Check if the hub UI exists
@@ -39,7 +28,9 @@ function launchTonkGUI() {
         `Hub UI not found at ${hubUIPath}. Please check your installation.`,
       ),
     );
-    process.exit(1);
+    throw new Error(
+      `Hub UI not found at ${hubUIPath}. Please check your installation.`,
+    );
   }
 
   try {
@@ -58,14 +49,14 @@ function launchTonkGUI() {
         console.log(chalk.yellow('\nShutting down Tonk GUI...'));
         electronProcess.kill();
         uiProcess.kill();
-        process.exit(0);
+        throw new Error('Shutting down Tonk GUI...');
       });
     }, 2000); // Wait 2 seconds before starting Electron
   } catch (error) {
     console.error(
       chalk.red(`Error launching Tonk GUI: ${(error as Error).message}`),
     );
-    process.exit(1);
+    throw new Error(`Error launching Tonk GUI: ${(error as Error).message}`);
   }
 }
 
@@ -111,7 +102,7 @@ function startElectronApp(
   const packageJsonPath = path.join(electronAppPath, 'package.json');
   if (!fs.existsSync(packageJsonPath)) {
     console.error(chalk.red(`No package.json found in ${electronAppPath}`));
-    process.exit(1);
+    throw new Error(`No package.json found in ${electronAppPath}`);
   }
 
   // Use npm run dev instead of npx electron .
@@ -150,7 +141,7 @@ function startElectronApp(
     );
     uiProcess.kill(); // Kill the UI server when Electron closes
     console.log(chalk.yellow('UI server terminated.'));
-    process.exit(0); // Exit when Electron closes
+    throw new Error('Shutting down Tonk GUI...');
   });
 
   return electronProcess;
