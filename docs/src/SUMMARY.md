@@ -1,10 +1,7 @@
 # Summary
 
-- [Tonk](./tonk.md)
-- [Getting Started](./getting_started.md)
-- [Tutorials](./tutorials/README.md)
-  - [Hello World Tutorial](./tutorials/hello-world.md)
-  - [My World Tutorial](./tutorials/my-world.md)
+- [Introduction](./introduction.md)
+- [Quickstart guide](./quickstart.md)
 - [The Tonk Stack](./tonk_stack/README.md)
   - [Hub](./tonk_stack/hub.md)
   - [App](./tonk_stack/app.md)
