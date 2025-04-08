@@ -53,8 +53,8 @@ const parseTimeToMs = (timeStr: string): number => {
 /**
  * Worker Manager singleton
  */
-export class WorkerManager {
-  private static instance: WorkerManager;
+export class Worker {
+  private static instance: Worker;
   private integrations: Map<
     string,
     {config: IntegrationConfig; timerId: NodeJS.Timeout}
@@ -67,11 +67,11 @@ export class WorkerManager {
   /**
    * Get singleton instance
    */
-  public static getInstance(): WorkerManager {
-    if (!WorkerManager.instance) {
-      WorkerManager.instance = new WorkerManager();
+  public static getInstance(): Worker {
+    if (!Worker.instance) {
+      Worker.instance = new Worker();
     }
-    return WorkerManager.instance;
+    return Worker.instance;
   }
 
   /**
@@ -83,6 +83,8 @@ export class WorkerManager {
     }
 
     const frequencyMs = parseTimeToMs(config.schedule.frequency);
+
+    this.runIntegration(config.name);
 
     const timerId = setInterval(() => {
       this.runIntegration(config.name);
@@ -113,7 +115,12 @@ export class WorkerManager {
   private runIntegration(name: string): void {
     console.log(`Running integration: ${name} at ${new Date().toISOString()}`);
 
-    const integrationPath = path.join(process.cwd(), 'integrations', name);
+    const integrationPath = path.join(
+      process.cwd(),
+      'integrations',
+      'node_modules',
+      name,
+    );
     const command = `cd ${integrationPath} && node dist/index.js`;
 
     exec(command, (error, stdout, stderr) => {
@@ -151,4 +158,4 @@ export class WorkerManager {
 }
 
 // Export the singleton instance
-export const workerManager = WorkerManager.getInstance();
+export default Worker.getInstance();

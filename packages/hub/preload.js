@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
         ipcRenderer.invoke("install-integration", integrationLink),
     getInstalledIntegrations: () =>
         ipcRenderer.invoke("get-installed-integrations"),
+    runServer: (restart) => ipcRenderer.invoke('run-server', restart), 
 });
 
 // Add IPC listener for file changes

@@ -4,8 +4,10 @@ import { useConfigStore } from "./configStore";
 import { TreeItems, TreeItem, FileType } from "../components/Tree";
 import * as Automerge from "@automerge/automerge";
 import * as AutomergeWasm from "@automerge/automerge-wasm";
+import debounce from "lodash.debounce";
 import { FileChangeEvent } from "../types";
 import { StaticTreeDataProvider } from "react-complex-tree";
+import { runServer } from "../ipc/hub";
 
 // Initialize Automerge with WASM for Electron environment
 Automerge.use(AutomergeWasm);
@@ -368,6 +370,13 @@ const useProjectStore = create<ProjectState>((set, get) => ({
       const config = useConfigStore.getState().config;
       if (!config?.homePath) {
         throw new Error("Home path not configured");
+      }
+
+      if (event.type === "addDir") {
+        if (event.path.includes("integrations")) {
+          // we debounce because a lot of changes can come in very quickly in the beginning
+          debounce(async () => await runServer(true), 1000);
+        }
       }
 
       const oldItems = { ...get().items };
