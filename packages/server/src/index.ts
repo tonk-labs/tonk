@@ -10,6 +10,7 @@ import {FileSystemStorageMiddleware} from './filesystemMiddleware.js';
 import {FileSystemStorageOptions} from './filesystemStorage.js';
 import {createProxyMiddleware} from 'http-proxy-middleware';
 import cors from 'cors';
+import {loadIntegrations} from './workerManager.js';
 
 export interface ServerOptions {
   port?: number;
@@ -606,5 +607,6 @@ export async function createServer(
 ): Promise<TonkServer> {
   const server = new TonkServer(options);
   await server.start();
+  loadIntegrations();
   return server;
 }
