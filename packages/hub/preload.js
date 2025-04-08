@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   createApp: (name) => ipcRenderer.invoke('create-app', name),
   startFileWatching: () => ipcRenderer.invoke('start-file-watching'),
   stopFileWatching: () => ipcRenderer.invoke('stop-file-watching'),
+  runServer: (restart) => ipcRenderer.invoke('run-server', restart), 
 });
 
 // Add IPC listener for file changes

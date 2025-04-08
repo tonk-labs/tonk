@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import styles from "./Home.module.css";
 import { Tree, ContentArea, ActionBar } from "../../components";
 import { useConfigStore } from "../../stores/configStore";
+import { runServer } from "../../ipc/hub";
 
 const Home: React.FC = () => {
   const { isInitialized, isLoading, loadConfig } = useConfigStore();
@@ -10,6 +11,7 @@ const Home: React.FC = () => {
 
   useEffect(() => {
     loadConfig();
+    runServer();
   }, []);
 
   useEffect(() => {

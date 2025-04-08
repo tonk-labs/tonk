@@ -2,7 +2,7 @@
 const { app, BrowserWindow, protocol, ipcMain } = require('electron')
 const path = require('node:path')
 const process = require('node:process');
-const { getConfig } = require('./src/config.js');
+const { getConfig, readConfig } = require('./src/config.js');
 require('@electron/remote/main').initialize();
 require('./src/ipc/app.js');
 require('./src/ipc/hub.js');
@@ -113,7 +113,6 @@ ipcMain.handle('get-config', async () => {
 app.whenReady().then(() => {
   // Register protocol handler for serving local files
   createProtocol("app");
-
 
   createWindow()
 

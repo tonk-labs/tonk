@@ -20,6 +20,7 @@ declare global {
       }) => Promise<{ canceled: boolean; filePaths: string[] }>;
       startFileWatching: () => Promise<boolean>;
       stopFileWatching: () => Promise<boolean>;
+      runServer: (restart: boolean) => Promise<void>;
     };
     require: (module: string) => any;
   }
