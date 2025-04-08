@@ -1,12 +1,12 @@
 import React from "react";
 import styles from "./Button.module.css";
 
-type ButtonVariant = "blue" | "purple" | "green" | "ghost";
+type ButtonVariant = "blue" | "purple" | "green" | "ghost" ;
 type ButtonSize = "sm" | "md" | "lg";
-type ButtonShape = "square" | "rounded" | "pill";
+type ButtonShape = "square" | "rounded" | "pill" | "default";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-    variant: ButtonVariant;
+    variant?: ButtonVariant;
     size?: ButtonSize;
     shape?: ButtonShape;
     children: React.ReactNode;
@@ -25,9 +25,9 @@ const toCamelCase = (prefix: string, value: string): string => {
 };
 
 const Button: React.FC<ButtonProps> = ({
-    variant,
+    variant = "default",
     size = "lg",
-    shape = "rounded",
+    shape = "default",
     children,
     className,
     tooltip,

@@ -3,75 +3,92 @@
     align-items: center;
     justify-content: center;
     background: transparent;
-    border: none;
-    color: #9ca3af;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #ffffff;
     cursor: pointer;
     transition: all 0.2s ease;
-    border-radius: 6px;
+    border-radius: 4px;
+    font-family: "Menlo", "Monaco", "Courier New", monospace;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: normal;
 }
 
-.button:hover {
-    scale: 1.05;
+/* default style - subtle background */
+.default {
+    background: rgba(255, 255, 255, 0.05);
+    color: #ffffff;
 }
+
+.default:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
 /* blue is internal links, actions that modify stuff inside app, tertiary */
 .blue {
-    background: #007bb5;
-    color: lightgray;
+    background: rgba(0, 123, 181, 0.8);
+    color: #ffffff;
 }
 
 .blue:hover {
-    background: #007bb5;
-    color: white;
+    background: rgba(0, 123, 181, 1);
+    border-color: rgba(255, 255, 255, 0.3);
 }
 
 .purple {
-    background: #9132bc;
-    color: white;
+    background: rgba(145, 50, 188, 0.8);
+    color: #ffffff;
 }
 
 .purple:hover {
-    background: #ae51d9;
-    color: white;
+    background: rgba(145, 50, 188, 1);
+    border-color: rgba(255, 255, 255, 0.3);
 }
+
 /* green is primary action, external actions */
 .green {
-    background: #0e7d12;
-    color: white;
+    background: rgba(46, 139, 87, 0.8);
+    color: #ffffff;
 }
 
 .green:hover {
-    background: #119616;
-    color: white;
+    background: rgba(46, 139, 87, 1);
+    border-color: rgba(255, 255, 255, 0.3);
 }
 
-/* ghost has no border */
+/* ghost has invisible background until hover */
 .ghost {
-    border: none;
-    color: #9ca3af;
-}
-.ghost:hover {
+    background: transparent;
+    border-color: transparent;
     color: #ffffff;
+}
+
+.ghost:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.3);
 }
 
 /* Size variants */
 .sizeSm {
-    padding: 6px;
-    font-size: 0.85rem;
+    padding: 0.4em 0.8em;
+    font-size: 0.9em;
 }
 
 .sizeMd {
-    padding: 8px;
-    font-size: 1rem;
+    padding: 0.7em 1em;
+    font-size: 1em;
 }
 
 .sizeLg {
-    padding: 12px;
-    font-size: 1.2rem;
+    padding: 0.7em 2em;
+    font-size: 1em;
 }
 
 /* Shape variants */
 .shapeSquare {
     aspect-ratio: 1/1;
+    padding: 0.7em;
 }
 
 .shapePill {
