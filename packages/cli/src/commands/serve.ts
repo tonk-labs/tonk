@@ -11,10 +11,11 @@ function normalizePath(inputPath: string): string {
     return path.join(homedir, inputPath.substring(2));
   }
 
-  // If path is an absolute path not in the user's home directory, redirect it
+  // If path is an absolute path not in the user's home directory and not already expanded from ~,
+  // redirect it to tonk-data
   if (
     inputPath.startsWith('/') &&
-    !inputPath.startsWith('/home/') &&
+    !inputPath.startsWith(process.env.HOME || process.env.USERPROFILE || '') &&
     !inputPath.includes('node_modules')
   ) {
     const homedir = process.env.HOME || process.env.USERPROFILE || '/home/node';
@@ -28,6 +29,7 @@ export const serveCommand = new Command('serve')
   .description('Start a Tonk app in production mode')
   .option('-p, --port <port>', 'Port to run the server on', '8080')
   .option('-d, --dist <path>', 'Path to the dist directory', 'dist')
+  .option('-f, --filesystem <path>', 'Filesystem path for document storage')
   .action(async options => {
     const projectRoot = process.cwd();
     const port = parseInt(options.port, 10);
@@ -67,6 +69,9 @@ export const serveCommand = new Command('serve')
     let filesystemConfig = null;
     let primaryStorage = null;
 
+    // Check if filesystem path was provided via command line
+    const hasFilesystemFlag = !!options.filesystem;
+
     if (fs.existsSync(configFilePath)) {
       try {
         const configData = JSON.parse(fs.readFileSync(configFilePath, 'utf8'));
@@ -87,7 +92,12 @@ export const serveCommand = new Command('serve')
         }
 
         // If filesystem storage is configured and enabled in the config file
-        if (configData.filesystem && configData.filesystem.enabled) {
+        // and no command line path was provided
+        if (
+          !hasFilesystemFlag &&
+          configData.filesystem &&
+          configData.filesystem.enabled
+        ) {
           let storagePath = configData.filesystem.storagePath || '~/tonk-data';
           storagePath = normalizePath(storagePath);
 
@@ -119,6 +129,32 @@ export const serveCommand = new Command('serve')
           ),
         );
         console.warn(chalk.yellow(`Error details: ${error}`));
+      }
+    }
+
+    // If filesystem path was provided via command line, override config settings
+    if (hasFilesystemFlag) {
+      const storagePath = normalizePath(options.filesystem);
+
+      filesystemConfig = {
+        enabled: true,
+        storagePath,
+        syncInterval: 30000, // 30 seconds default
+        createIfMissing: true, // default to true
+      };
+
+      console.log(
+        chalk.blue(`Filesystem storage enabled with path: ${storagePath}`),
+      );
+
+      // If no primary storage set and we have backblaze, set filesystem as primary
+      if (!primaryStorage && backblazeConfig) {
+        primaryStorage = 'filesystem';
+        console.log(
+          chalk.blue(
+            'Primary storage set to filesystem from command line argument',
+          ),
+        );
       }
     }
 

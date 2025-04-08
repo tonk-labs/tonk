@@ -55,6 +55,7 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "@automerge/automerge-wasm": "1.0.0-preview.0",
     "chalk": "^5.4.1",
     "ws": "^8.18.1"
   },

@@ -1,0 +1,19 @@
+.container {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: row;
+}
+
+.sidebar {
+  padding: 3em 0;
+  width: clamp(15rem, 15vw, 20rem);
+  height: 100vh;
+  background-color: #232323;
+  position: relative;
+}
+
+.homeIcon {
+  width: 1.25rem;
+  height: 1.25rem;
+}

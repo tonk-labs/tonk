@@ -1,25 +1,26 @@
 {
-  "name": "@tonk/electron-app",
-  "version": "0.1.0",
-  "description": "Tonk Hub",
-  "main": "main.js",
+  "name": "tonk-app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "export DEVELOPMENT_MODE=true && electron .",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "watch": "nodemon --watch"
   },
-  "keywords": [
-    "tonk",
-    "gui",
-    "electron"
-  ],
-  "author": "Tonk Labs",
-  "license": "MIT",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
   "devDependencies": {
-    "electron": "^28.0.0",
-    "electron-builder": "^24.6.4"
+    "electron": "^32.0.0",
+    "nodemon": "^3.0.3"
   },
   "dependencies": {
-    "chalk": "^5.3.0"
+    "@electron/remote": "^2.1.2",
+    "chokidar": "^4.0.3",
+    "fs-extra": "^11.3.0",
+    "node-pty": "^1.1.0-beta22",
+    "ws": "^8.18.1"
   }
 }

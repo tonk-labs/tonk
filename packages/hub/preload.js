@@ -1,23 +1,49 @@
-// Preload script runs in the renderer process
-// but has access to Node.js APIs
-const { ipcRenderer } = require('electron');
+// preload.js
+const { contextBridge, ipcRenderer } = require("electron");
+const { dialog } = require("@electron/remote");
 
-// Expose IPC renderer to the window object
-window.ipcRenderer = ipcRenderer;
+contextBridge.exposeInMainWorld("electronAPI", {
+    launchApp: (projectPath) => ipcRenderer.invoke("launch-app", projectPath),
+    openExternal: (link) => ipcRenderer.invoke("open-external-link", link),
+    getConfig: () => ipcRenderer.invoke("get-config"),
+    init: (homePath) => ipcRenderer.invoke("init", homePath),
+    copyHubTemplate: () => ipcRenderer.invoke("copy-hub-template"),
+    readFile: (filePath) => ipcRenderer.invoke("read-file", filePath),
+    readBinary: (filePath) => ipcRenderer.invoke("read-binary", filePath),
+    writeFile: (filePath, content) =>
+        ipcRenderer.invoke("write-file", filePath, content),
+    ls: (filePath) => ipcRenderer.invoke("ls", filePath),
+    platformSensitiveJoin: (paths) =>
+        ipcRenderer.invoke("platform-sensitive-join", paths),
+    showOpenDialog: (options) => dialog.showOpenDialog(options),
+    runShell: (dirPath) => ipcRenderer.invoke("run-shell", dirPath),
+    closeShell: () => ipcRenderer.invoke("close-shell"),
+    createApp: (name) => ipcRenderer.invoke("create-app", name),
+    startFileWatching: () => ipcRenderer.invoke("start-file-watching"),
+    stopFileWatching: () => ipcRenderer.invoke("stop-file-watching"),
+    fetchRegistry: () => ipcRenderer.invoke("fetch-registry"),
+});
 
-// Add any other APIs you want to expose to the renderer process
-window.tonkAPI = {
-  executeCommand: (command) => {
-    ipcRenderer.send('tonk-command', command);
-    return new Promise((resolve) => {
-      ipcRenderer.once('command-result', (_, result) => {
-        resolve(result);
-      });
-    });
-  }
-};
+// Add IPC listener for file changes
+ipcRenderer.on("file-change", (event, payload) => {
+    // Dispatch a custom event that the React app can listen to
+    window.dispatchEvent(new CustomEvent("file-change", { detail: payload }));
+});
 
-// Let the renderer know when the page is ready
-window.addEventListener('DOMContentLoaded', () => {
-  console.log('DOM fully loaded and parsed');
+// All the Node.js APIs are available in the preload process.
+// It has the same sandbox as a Chrome extension.
+window.addEventListener("DOMContentLoaded", () => {
+    const replaceText = (selector, text) => {
+        const element = document.getElementById(selector);
+        if (element) element.innerText = text;
+    };
+
+    for (const dependency of ["chrome", "node", "electron"]) {
+        replaceText(`${dependency}-version`, process.versions[dependency]);
+    }
+
+    // Initialize global objects for WebAssembly compatibility
+    if (!window.wbg) {
+        window.wbg = {};
+    }
 });

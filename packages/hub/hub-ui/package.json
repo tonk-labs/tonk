@@ -1,0 +1,53 @@
+{
+  "name": "hub-ui",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "webpack serve --mode development --env development",
+    "build": "webpack --mode production --env production",
+    "build:staging": "webpack --mode production --env staging",
+    "serve": "serve -s dist -l 3333",
+    "lint": "eslint . --ext .ts,.tsx",
+    "compile": "tsc",
+    "fix": "eslint . --ext .ts,.tsx --fix"
+  },
+  "dependencies": {
+    "@automerge/automerge": "^2.2.8",
+    "@automerge/automerge-wasm": "1.0.0-preview.0",
+    "@blueprintjs/core": "^5.17.6",
+    "@radix-ui/react-dialog": "^1.1.6",
+    "dotenv": "^16.4.5",
+    "jose": "^5.10.0",
+    "lucide-react": "^0.475.0",
+    "react": "^18.3.1",
+    "react-complex-tree": "^2.6.0",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^6.28.0",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0",
+    "xterm-addon-web-links": "^0.9.0",
+    "zustand": "^5.0.1"
+  },
+  "devDependencies": {
+    "@sentry/webpack-plugin": "^2.22.6",
+    "@types/lodash": "^4.17.16",
+    "@types/node": "^20.17.16",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "css-loader": "^7.1.2",
+    "dotenv-webpack": "^8.1.0",
+    "esbuild": "^0.24.0",
+    "esbuild-loader": "^4.2.2",
+    "eslint": "8.x",
+    "gts": "^5.3.1",
+    "html-webpack-plugin": "^5.6.3",
+    "raw-loader": "^4.0.2",
+    "style-loader": "^4.0.0",
+    "typescript": "^5.4.3",
+    "webpack": "^5.96.1",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^5.1.0"
+  },
+  "packageManager": "pnpm@9.12.3+sha512.cce0f9de9c5a7c95bef944169cc5dfe8741abfb145078c0d508b868056848a87c81e626246cb60967cbd7fd29a6c062ef73ff840d96b3c86c40ac92cf4a813ee"
+}

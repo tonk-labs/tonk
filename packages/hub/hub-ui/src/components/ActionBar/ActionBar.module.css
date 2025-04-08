@@ -1,0 +1,140 @@
+.actionBar {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  justify-content: center;
+  width: 100%;
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.dialogOverlay {
+  background: rgba(0, 0, 0, 0.5);
+  position: fixed;
+  inset: 0;
+  animation: overlayShow 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dialogContent {
+  background: #232323;
+  border-radius: 6px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+
+  width: 90vw;
+  max-width: 450px;
+  max-height: 85vh;
+  padding: 24px;
+  animation: contentShow 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dialogTitle {
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.dialogDescription {
+  color: #9ca3af;
+  font-size: 14px;
+  margin-bottom: 20px;
+}
+
+
+.dialogButtons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 1rem;
+}
+
+.cancelButton,
+.createButton {
+  padding: 8px 16px;
+  border-radius: 1px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background-color: rgba(217, 217, 217, 0.1);
+}
+
+.cancelButton {
+  background: transparent;
+  border: 1px solid #CF66FF;
+  color: #CF66FF;
+}
+
+.cancelButton:hover {
+  background: rgba(217, 217, 217, 0.15);
+}
+
+.cancelButton:focus {
+  box-shadow: 0px 0px 2px 1px #CF66FF;
+  outline: none;
+}
+
+.createButton {
+  border: 1px solid #35FF3C;
+  color: #35FF3C;
+  background: rgba(217, 217, 217, 0.1);
+}
+
+.createButton:hover {
+  background: rgba(217, 217, 217, 0.15);
+}
+
+.createButton:focus {
+  outline: none;
+  box-shadow: 0px 0px 2px 1px #35FF3C;
+}
+
+.closeButton {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 24px;
+  height: 24px;
+  border-radius: 1px;
+  background: rgba(217, 217, 217, 0.1);
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.closeButton:hover {
+  background: rgba(217, 217, 217, 0.15);
+  color: #ffffff;
+}
+
+.closeButton:focus {
+  outline: 1px solid white;
+}
+
+@keyframes overlayShow {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes contentShow {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
