@@ -53,7 +53,8 @@ export const Tree: React.FC<TreeProps> = ({
     changedParents,
     setSelectedItem,
   } = useProjectStore();
-  const items = useMemo(() => ({ ..._items }), [_items]);
+  const items = useMemo(() => {
+    return({ ..._items })}, [_items]);
   const dataProvider = useMemo(
     () =>
       new StaticTreeDataProvider(items, (item, newName) => ({
@@ -95,7 +96,7 @@ export const Tree: React.FC<TreeProps> = ({
       getItemTitle={(item) => item.data.name}
       viewState={{
         ["tree-1"]: {
-          expandedItems: ["apps", "stores", "integrations"],
+          expandedItems: [],
         },
       }}
       onSelectItems={onItemSelected}

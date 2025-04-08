@@ -1,12 +1,14 @@
 // preload.js
 const { contextBridge, ipcRenderer } = require("electron");
 const { dialog } = require("@electron/remote");
+const { app } = require("@electron/remote");
 
 contextBridge.exposeInMainWorld("electronAPI", {
     launchApp: (projectPath) => ipcRenderer.invoke("launch-app", projectPath),
     openExternal: (link) => ipcRenderer.invoke("open-external-link", link),
     getConfig: () => ipcRenderer.invoke("get-config"),
     init: (homePath) => ipcRenderer.invoke("init", homePath),
+    clearConfig: () => ipcRenderer.invoke("clear-config"),
     copyHubTemplate: () => ipcRenderer.invoke("copy-hub-template"),
     readFile: (filePath) => ipcRenderer.invoke("read-file", filePath),
     readBinary: (filePath) => ipcRenderer.invoke("read-binary", filePath),
@@ -22,6 +24,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     startFileWatching: () => ipcRenderer.invoke("start-file-watching"),
     stopFileWatching: () => ipcRenderer.invoke("stop-file-watching"),
     fetchRegistry: () => ipcRenderer.invoke("fetch-registry"),
+    getDocumentsPath: () => app.getPath("documents"),
 });
 
 // Add IPC listener for file changes

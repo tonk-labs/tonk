@@ -1,9 +1,9 @@
 import React from "react";
 import styles from "./Button.module.css";
 
-type ButtonVariant = "blue" | "purple" | "green" | "ghost";
+type ButtonVariant = "blue" | "purple" | "green" | "ghost" ;
 type ButtonSize = "sm" | "md" | "lg";
-type ButtonShape = "square" | "rounded" | "pill";
+type ButtonShape = "square" | "rounded" | "pill" | "default";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
     variant?: ButtonVariant;

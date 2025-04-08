@@ -23,35 +23,38 @@ ipcMain.handle("fetch-registry", async () => {
         console.error("Failed to fetch registry:", error);
         return { success: false, error: error.message };
     }
+  })
+ipcMain.handle('clear-config', async (e) => {
+  writeConfig({});
 });
 
-ipcMain.handle("copy-hub-template", async (e) => {
-    const config = getConfig();
-    const templatePath = path.join(__dirname, "../../template");
-    const targetPath = path.join(config.homePath);
+ipcMain.handle('copy-hub-template', async (e) => {
+  const config = getConfig();
+  const templatePath = path.join(__dirname, '../../template');
+  const targetPath = path.join(config.homePath);
+  
+  try {
+    await fs.ensureDir(path.dirname(targetPath));
+    await fs.copy(templatePath, targetPath);
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to copy template:', error);
+    return { success: false, error: error.message };
+  }
+})
 
-    try {
-        await fs.ensureDir(path.dirname(targetPath));
-        await fs.copy(templatePath, targetPath);
-        return { success: true };
-    } catch (error) {
-        console.error("Failed to copy template:", error);
-        return { success: false, error: error.message };
-    }
-});
+ipcMain.handle('run-shell', async (e, dirPath) => {
+  if (!wss) {
+    wss = run(3060, dirPath);
+  }
+})
 
-ipcMain.handle("run-shell", async (e, dirPath) => {
-    if (!wss) {
-        wss = run(3060, dirPath);
-    }
-});
-
-ipcMain.handle("close-shell", async () => {
-    if (wss) {
-        wss.close();
-        wss = null;
-    }
-});
+ipcMain.handle('close-shell', async () =>{
+  if (wss) {
+    wss.close()
+    wss = null;
+  }
+})
 
 ipcMain.handle("create-app", async (e, name) => {
     //this will create a new folder in apps
