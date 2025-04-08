@@ -16,12 +16,13 @@
 
 .dialogContent {
   background: #232323;
-  border-radius: 1px;
+  border-radius: 6px;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
   position: fixed;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
+
   width: 90vw;
   max-width: 450px;
   max-height: 85vh;
@@ -42,26 +43,12 @@
   margin-bottom: 20px;
 }
 
-.input {
-  width: 100%;
-  padding: 8px 12px;
-  border-radius: 1px;
-  background: rgba(217, 217, 217, 0.1);
-  border: 1px solid rgba(217, 217, 217, 0.15);
-  color: #ffffff;
-  font-size: 14px;
-  margin-bottom: 20px;
-}
-
-.input:focus {
-  outline: none;
-  border-color: #35FF3C;
-}
 
 .dialogButtons {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+  margin-top: 1rem;
 }
 
 .cancelButton,

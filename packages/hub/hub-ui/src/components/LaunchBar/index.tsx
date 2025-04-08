@@ -29,13 +29,14 @@ const AppLaunchBar = (
   return (
     <div className={styles.buttonArea}>
       <Button
-        variant={"purple"}
-        style={{ marginRight: "20px" }}
+        variant="purple"
+        size="sm"
+        shape="rounded"
         onClick={stopAndReset}
       >
         Stop & Reset
       </Button>
-      <Button variant={"green"} onClick={launch}>
+      <Button variant="green" size="sm" shape="rounded" onClick={launch}>
         Launch
       </Button>
     </div>

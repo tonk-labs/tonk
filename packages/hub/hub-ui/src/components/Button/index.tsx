@@ -27,7 +27,7 @@ const toCamelCase = (prefix: string, value: string): string => {
 const Button: React.FC<ButtonProps> = ({
     variant,
     size = "lg",
-    shape = "square",
+    shape = "default",
     children,
     className,
     tooltip,
