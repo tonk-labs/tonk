@@ -20,6 +20,7 @@
     "dist",
     "scripts",
     "files",
+    "tonk.config.json",
     "src"
   ],
   "sideEffects": false,
