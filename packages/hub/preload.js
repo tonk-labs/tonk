@@ -25,7 +25,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     runShell: (dirPath) => ipcRenderer.invoke("run-shell", dirPath),
     closeShell: () => ipcRenderer.invoke("close-shell"),
     createApp: (name) => ipcRenderer.invoke("create-app", name),
-    getInstalledIntegrations: () => ipcRenderer.invoke("get-installed-integrations"),
     startFileWatching: () => ipcRenderer.invoke("start-file-watching"),
     stopFileWatching: () => ipcRenderer.invoke("stop-file-watching"),
     fetchRegistry: () => ipcRenderer.invoke("fetch-registry"),

@@ -27,7 +27,7 @@ interface ProjectState {
   handleFileChange: (event: FileChangeEvent) => Promise<void>;
 }
 
-const REQUIRED_DIRECTORIES = ["apps", "stores", "integrations"];
+const REQUIRED_DIRECTORIES = ["apps", "stores"];
 
 // Blacklist of files and patterns to ignore (similar to .gitignore)
 const BLACKLISTED_FILES = [
@@ -108,8 +108,6 @@ const getFileType = (path: string, isDirectory: boolean): FileType => {
       return FileType.App;
     case "stores":
       return FileType.Store;
-    case "integrations":
-      return FileType.Integration;
     case "root":
       return FileType.Section;
     default:
@@ -128,13 +126,6 @@ const initializeBaseTreeItems = (): TreeItems => ({
   ),
   apps: createTreeItem("apps", "apps", FileType.Section, true, []),
   stores: createTreeItem("stores", "stores", FileType.Section, true, []),
-  integrations: createTreeItem(
-    "integrations",
-    "integrations",
-    FileType.Section,
-    true,
-    []
-  ),
 });
 
 const processSubContents = async (
@@ -373,10 +364,7 @@ const useProjectStore = create<ProjectState>((set, get) => ({
       }
 
       if (event.type === "addDir") {
-        if (event.path.includes("integrations")) {
-          // we debounce because a lot of changes can come in very quickly in the beginning
           debounce(async () => await runServer(true), 1000);
-        }
       }
 
       const oldItems = { ...get().items };

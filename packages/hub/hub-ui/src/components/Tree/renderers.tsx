@@ -27,14 +27,7 @@ const renderSection = (title: React.ReactNode) => {
         </span>
       );
     }
-    case "integrations": {
-      return (
-        <span className={styles.treeSection}>
-          <Package size={16} className={styles.iconStyle} />
-          {title}
-        </span>
-      );
-    }
+   
     default: {
       return title;
     }

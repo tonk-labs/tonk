@@ -7,14 +7,11 @@ import { useEventStore } from "../../stores/eventStore";
 import { useProjectStore } from "../../stores/projectStore";
 import Button from "../Button";
 import styles from "./ActionBar.module.css";
-import IntegrationDialog from "./IntegrationDialog";
 import TextInput from "../TextInput";
 
 const ActionBar: React.FC = () => {
     const [appName, setAppName] = useState("");
     const [isOpen, setIsOpen] = useState(false);
-    const [isIntegrationDialogOpen, setIsIntegrationDialogOpen] =
-        useState(false);
 
     const { setSelectedItem } = useProjectStore();
     const addEvent = useEventStore((state) => state.addEvent);
@@ -118,10 +115,6 @@ const ActionBar: React.FC = () => {
                     </Dialog.Content>
                 </Dialog.Portal>
             </Dialog.Root>
-            <IntegrationDialog
-                isOpen={isIntegrationDialogOpen}
-                setIsOpen={setIsIntegrationDialogOpen}
-            />
             <Button
                 color="ghost"
                 size="sm"
