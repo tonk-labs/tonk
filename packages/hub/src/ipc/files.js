@@ -24,7 +24,11 @@ ipcMain.handle('read-file', async (e, filePath) => {
 });
 
 ipcMain.handle('read-binary', async (e, filePath) => {
-  return fs.readFileSync(filePath);
+  try {
+    return fs.readFileSync(filePath);
+  } catch (err) {
+    throw new Error(`Failed to read binary file: ${err}`);
+  }
 });
 
 const writeFile = async (filePath, content) => {

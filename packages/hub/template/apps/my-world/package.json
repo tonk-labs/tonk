@@ -48,7 +48,7 @@
   },
   "dependencies": {
     "@automerge/automerge": "^2.2.8",
-    "@tonk/keepsync": "^0.3.1",
+    "@tonk/keepsync": "0.3.2",
     "body-parser": "^1.20.3",
     "chalk": "^5.4.1",
     "cors": "^2.8.5",
