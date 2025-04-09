@@ -1,6 +1,4 @@
-# Tonk
-
-**Build your own little internet.**
+# Build your own little internet with Tonk
 
 Tonk is a toolchain for independent developers to build and share software that integrates with individual and communal data — without giving up control to third-party platforms.
 
@@ -12,10 +10,6 @@ It helps you:
 - Permission users  
 
 All in a way that’s copilot-friendly, private & interoperable.
-
-<p align="center">
-  <img src="./docs/src/images/components.png" width="70%" />
-</p>
 
 ## Get Started
 
@@ -39,3 +33,7 @@ As an early stage project we are very open to feedback and keen to help builders
 Simplicity and freedom.
 
 MIT © Tonk
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/43586bd7-189e-4f4f-8196-ebe006beb115" />
+</p>
