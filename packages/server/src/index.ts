@@ -10,7 +10,6 @@ import {FileSystemStorageMiddleware} from './filesystemMiddleware.js';
 import {FileSystemStorageOptions} from './filesystemStorage.js';
 import {createProxyMiddleware} from 'http-proxy-middleware';
 import cors from 'cors';
-import {loadIntegrations} from './workerManager.js';
 
 export interface ServerOptions {
   port?: number;

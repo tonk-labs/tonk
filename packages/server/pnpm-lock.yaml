@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  server: link:../../../../Library/pnpm/global/5/node_modules/@tonk/server
-
 importers:
 
   .:
@@ -47,9 +44,6 @@ importers:
       http-proxy-middleware:
         specifier: ^3.0.3
         version: 3.0.3
-      server:
-        specifier: link:../../../../Library/pnpm/global/5/node_modules/@tonk/server
-        version: link:../../../../Library/pnpm/global/5/node_modules/@tonk/server
       ws:
         specifier: ^8.18.0
         version: 8.18.1
