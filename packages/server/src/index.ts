@@ -696,6 +696,5 @@ export async function createServer(
 ): Promise<TonkServer> {
   const server = new TonkServer(options);
   await server.start();
-  loadIntegrations();
   return server;
 }
