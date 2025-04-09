@@ -23,7 +23,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     createApp: (name) => ipcRenderer.invoke("create-app", name),
     startFileWatching: () => ipcRenderer.invoke("start-file-watching"),
     stopFileWatching: () => ipcRenderer.invoke("stop-file-watching"),
+    fetchRegistry: () => ipcRenderer.invoke("fetch-registry"),
     getDocumentsPath: () => app.getPath("documents"),
+    installIntegration: (integrationLink) =>
+        ipcRenderer.invoke("install-integration", integrationLink),
+    getInstalledIntegrations: () =>
+        ipcRenderer.invoke("get-installed-integrations"),
 });
 
 // Add IPC listener for file changes

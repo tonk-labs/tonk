@@ -11,6 +11,7 @@ declare global {
             init: (homePath: string) => Promise<void>;
             clearConfig: () => Promise<void>;
             copyHubTemplate: () => Promise<void>;
+            fetchRegistry: () => Promise<{ success: boolean; data: Registry }>;
             readBinary: (filePath: string) => Promise<Uint8Array>;
             readFile: (filePath: string) => Promise<string>;
             writeFile: (filePath: string, content: string) => Promise<void>;
@@ -21,7 +22,16 @@ declare global {
             }) => Promise<{ canceled: boolean; filePaths: string[] }>;
             startFileWatching: () => Promise<boolean>;
             stopFileWatching: () => Promise<boolean>;
+
             getDocumentsPath: () => string;
+            installIntegration: (
+                integrationLink: string
+            ) => Promise<{ success: boolean; data?: string; error?: string }>;
+            getInstalledIntegrations: () => Promise<{
+                success: boolean;
+                data?: InstalledIntegration[];
+                error?: string;
+            }>;
         };
         require: (module: string) => any;
     }
@@ -41,4 +51,24 @@ export type Config = {
 export type FileChangeEvent = {
     type: "add" | "change" | "unlink" | "addDir" | "unlinkDir";
     path: string;
+};
+
+export type Integration = {
+    name: string;
+    link: string;
+    description: string;
+    isInstalled: boolean;
+    version?: string;
+};
+
+export type Registry = {
+    packages: Integration[];
+};
+
+export type InstalledIntegration = {
+    name: string;
+    version: string;
+    description: string;
+    dependencies: Record<string, string>;
+    devDependencies: Record<string, string>;
 };

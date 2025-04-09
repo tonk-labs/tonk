@@ -1,0 +1,107 @@
+.container {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+}
+
+.label {
+    color: #9ca3af;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.input {
+    display: flex;
+    align-items: center;
+    background: rgba(217, 217, 217, 0.1);
+    border: 1px solid rgba(217, 217, 217, 0.15);
+    color: #ffffff;
+    padding: 8px 12px;
+    border-radius: 2px;
+    font-size: 0.875rem;
+    transition: all 0.2s ease;
+    width: 100%;
+}
+
+.input:hover {
+    border-color: rgba(217, 217, 217, 0.3);
+}
+
+.input:focus {
+    outline: none;
+    border-color: #007bb5;
+    box-shadow: 0 0 0 1px #007bb5;
+}
+
+.input::placeholder {
+    color: #6b7280;
+}
+
+.error {
+    border-color: #ef4444;
+}
+
+.error:focus {
+    border-color: #ef4444;
+    box-shadow: 0 0 0 1px #ef4444;
+}
+
+.errorMessage {
+    color: #ef4444;
+    font-size: 0.75rem;
+}
+
+/* Tooltip styles - matching Button component */
+.hasTooltip {
+    opacity: 1;
+    position: relative;
+}
+
+.hasTooltip::before {
+    content: attr(data-tooltip);
+    position: absolute;
+    background: black;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.875rem;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transition:
+        opacity 0.2s ease,
+        visibility 0.2s ease;
+    z-index: 1000;
+}
+
+.hasTooltip:hover::before {
+    opacity: 1;
+    background: black;
+    visibility: visible;
+}
+
+/* Tooltip positions */
+.hasTooltip[data-tooltip-position="top"]::before {
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+}
+
+.hasTooltip[data-tooltip-position="bottom"]::before {
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(8px);
+}
+
+.hasTooltip[data-tooltip-position="left"]::before {
+    right: 100%;
+    top: 50%;
+    transform: translateY(-50%) translateX(-8px);
+}
+
+.hasTooltip[data-tooltip-position="right"]::before {
+    left: 100%;
+    top: 50%;
+    transform: translateY(-50%) translateX(8px);
+}

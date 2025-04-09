@@ -152,7 +152,7 @@ const Welcome: React.FC = () => {
                 {step >= 4 && (
                     <div className={styles.bottom}>
                         <Button
-                            variant="green"
+                            color="green"
                             size="lg"
                             shape="default"
                             onClick={initialize}

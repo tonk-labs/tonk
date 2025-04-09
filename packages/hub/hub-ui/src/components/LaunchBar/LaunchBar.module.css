@@ -10,5 +10,7 @@
 }
 
 .buttonArea {
+  display: flex;
+  gap: 0.25rem;
   margin: 0 20px;
 }

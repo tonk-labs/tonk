@@ -1,11 +1,13 @@
 import React from "react";
 import styles from "./Button.module.css";
 
-type ButtonVariant = "blue" | "purple" | "green" | "ghost" ;
+type ButtonColor = "blue" | "purple" | "green" | "ghost";
+type ButtonVariant = "outline" | "filled";
 type ButtonSize = "sm" | "md" | "lg";
 type ButtonShape = "square" | "rounded" | "pill" | "default";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+    color?: ButtonColor;
     variant?: ButtonVariant;
     size?: ButtonSize;
     shape?: ButtonShape;
@@ -25,21 +27,25 @@ const toCamelCase = (prefix: string, value: string): string => {
 };
 
 const Button: React.FC<ButtonProps> = ({
-    variant = "default",
+    color = "default",
+    variant = "outline",
     size = "lg",
     shape = "default",
     children,
     className,
     tooltip,
     tooltipPosition = "top",
+    disabled = false,
     ...props
 }) => {
     const buttonClasses = [
         styles.button,
-        styles[variant],
+        variant === "outline" && styles.outline,
+        styles[color],
         styles[toCamelCase("size", size)],
         styles[toCamelCase("shape", shape)],
         tooltip && styles.hasTooltip,
+        disabled && styles.disabled,
         className,
     ]
         .filter(Boolean)
