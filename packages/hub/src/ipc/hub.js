@@ -25,6 +25,9 @@ ipcMain.handle("fetch-registry", async () => {
     }
   })
 ipcMain.handle('clear-config', async (e) => {
+  // delete the directory
+  const config = getConfig();
+  fs.removeSync(config.homePath);
   writeConfig({});
 });
 

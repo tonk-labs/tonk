@@ -1,13 +1,21 @@
 import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ActionBar, ContentArea, Tree } from "../../components";
+import { ActionBar, Button, ContentArea, Tree } from "../../components";
 import { useConfigStore } from "../../stores/configStore";
 import styles from "./Home.module.css";
+import { RefreshCcw } from "lucide-react";
 
 const Home: React.FC = () => {
-    const { isInitialized, isLoading, loadConfig } = useConfigStore();
+    const { isInitialized, isLoading, loadConfig, clearConfig } = useConfigStore();
 
     const navigate = useNavigate();
+
+    const handleLogout = () => {
+        if (confirm("are you sure you want to clear your data? This will delete all your local config and data.")) {
+            clearConfig();
+            navigate("/");
+        }
+    };
 
     useEffect(() => {
         loadConfig();
@@ -28,7 +36,11 @@ const Home: React.FC = () => {
             <div className={styles.sidebar}>
                 <ActionBar />
                 <Tree />
-              
+                <div style = {{height: "100%", display: "flex", alignItems: "flex-end"}} >
+                <Button onClick={handleLogout} color="ghost" size="sm">
+                    Clear data
+                </Button>
+                </div>
             </div>
             <ContentArea />
         </div>
