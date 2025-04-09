@@ -14,6 +14,10 @@ ipcMain.handle('init', async (e, homePath) => {
   })
 });
 
+ipcMain.handle('clear-config', async (e) => {
+  writeConfig({});
+});
+
 ipcMain.handle('copy-hub-template', async (e) => {
   const config = getConfig();
   const templatePath = path.join(__dirname, '../../template');

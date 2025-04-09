@@ -1,46 +1,49 @@
 import React from "react";
 import styles from "./Text.module.css";
 
-interface TextProps {
-  children: string | React.ReactNode;
-  rainbowMode?: boolean;
+interface TextProps extends React.HTMLAttributes<HTMLParagraphElement> {
+    children: string | React.ReactNode;
+    rainbowMode?: boolean;
+    fontSize?: number;
 }
 
 const RAINBOW_COLORS = [
-  "#FF0000", // Red
-  "#FF7F00", // Orange
-  "#FFFF00", // Yellow
-  "#35FF3C", // Green
-  "#00C8FF", // Blue
-  "#5a5aFF", //Indigo
-  "#CF66FF", // Violet
+    "#FF0000", // Red
+    "#FF7F00", // Orange
+    "#FFFF00", // Yellow
+    "#35FF3C", // Green
+    "#00C8FF", // Blue
+    "#5a5aFF", //Indigo
+    "#CF66FF", // Violet
 ];
 
-export const RainbowMode: React.FC<TextProps> = ({ children }) => {
-  if (!children) return "";
+export const RainbowMode: React.FC<TextProps> = ({ children, ...props }) => {
+    if (!children) return "";
 
-  if (typeof children !== "string") return "";
+    if (typeof children !== "string") return "";
 
-  return [
-    children.split("").map((char, index) => (
-      <span
-        key={index}
-        className={styles.rainbowChar}
-        style={
-          {
-            color: RAINBOW_COLORS[index % RAINBOW_COLORS.length],
-            "--char-index": index,
-          } as React.CSSProperties
-        }
-      >
-        {char}
-      </span>
-    )),
-  ];
+    return [
+        children.split("").map((char, index) => (
+            <span
+                key={index}
+                className={styles.rainbowChar}
+                style={
+                    {
+                        ...props,
+                        color: RAINBOW_COLORS[index % RAINBOW_COLORS.length],
+                        "--char-index": index,
+                        fontSize: "36pt",
+                    } as React.CSSProperties
+                }
+            >
+                {char === " " ? "\u00A0" : char}
+            </span>
+        )),
+    ];
 };
 
 export const Text: React.FC<TextProps> = ({ children }) => (
-  <p className={styles.text}>{children}</p>
+    <div className={styles.text}>{children}</div>
 );
 
 export default Text;
