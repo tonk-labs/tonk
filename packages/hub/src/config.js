@@ -7,6 +7,7 @@ let _config = {};
 const readConfig = () => {
   const appPath = app.getPath('userData');
   const configPath = path.join(appPath, 'config.json');
+  console.log("THE CONFIG PATH IS", configPath);
   let configRaw = '{}';
   if (fs.existsSync(configPath)) {
     configRaw = fs.readFileSync(configPath);
