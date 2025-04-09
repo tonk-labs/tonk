@@ -38,29 +38,117 @@ export function launchTonkGUI() {
     );
   }
 
+  let uiProcess: ChildProcess | null = null;
+  let electronProcess: ChildProcess | null = null;
+
+  // Function to cleanly terminate both processes
+  const cleanupProcesses = () => {
+    console.log(chalk.yellow('\nShutting down Tonk GUI...'));
+
+    if (electronProcess) {
+      try {
+        electronProcess.kill('SIGTERM');
+        electronProcess = null;
+      } catch (err) {
+        console.error(
+          chalk.red(
+            `Error terminating Electron process: ${(err as Error).message}`,
+          ),
+        );
+      }
+    }
+
+    if (uiProcess) {
+      try {
+        // First try a graceful termination
+        uiProcess.kill('SIGTERM');
+
+        // Force kill after a short timeout if still running
+        setTimeout(() => {
+          if (uiProcess) {
+            try {
+              // On macOS, we need SIGKILL to ensure termination
+              uiProcess.kill('SIGKILL');
+              uiProcess = null;
+              console.log(chalk.yellow('Force-terminated UI process'));
+            } catch (killErr) {
+              console.error(
+                chalk.red(
+                  `Failed to force-kill UI process: ${
+                    (killErr as Error).message
+                  }`,
+                ),
+              );
+            }
+          }
+        }, 1000);
+      } catch (err) {
+        console.error(
+          chalk.red(`Error terminating UI process: ${(err as Error).message}`),
+        );
+
+        // Try force kill if normal termination failed
+        try {
+          uiProcess.kill('SIGKILL');
+          uiProcess = null;
+        } catch (killErr) {
+          console.error(
+            chalk.red(
+              `Failed to force-kill UI process: ${(killErr as Error).message}`,
+            ),
+          );
+        }
+      }
+    }
+
+    // Also try to kill any process that might be using port 3333
+    try {
+      // For macOS/Linux
+      const killCommand =
+        process.platform === 'win32'
+          ? spawn('cmd', [
+              '/c',
+              'FOR /F "tokens=5" %P IN (\'netstat -ano ^| findstr :3333 ^| findstr LISTENING\') DO taskkill /F /PID %P',
+            ])
+          : spawn('sh', ['-c', 'lsof -ti:3333 | xargs kill -9']);
+
+      killCommand.on('error', err => {
+        console.error(
+          chalk.red(`Failed to kill process on port 3333: ${err.message}`),
+        );
+      });
+    } catch (err) {
+      console.error(
+        chalk.red(
+          `Error killing process on port 3333: ${(err as Error).message}`,
+        ),
+      );
+    }
+
+    console.log(chalk.yellow('Tonk GUI shutdown complete.'));
+  };
+
   try {
     // Start the webpack development server for the hub UI
     console.log(chalk.blue('Starting Hub UI development server...'));
-    const uiProcess = startUIServer(hubUIPath);
+    uiProcess = startUIServer(hubUIPath);
 
     // Give the UI server a moment to start
     setTimeout(() => {
       // Launch the Electron app
       console.log(chalk.blue('Starting Electron app...'));
-      const electronProcess = startElectronApp(electronAppPath, uiProcess);
+      electronProcess = startElectronApp(electronAppPath, cleanupProcesses);
 
       // Handle process termination
-      process.on('SIGINT', () => {
-        console.log(chalk.yellow('\nShutting down Tonk GUI...'));
-        electronProcess.kill();
-        uiProcess.kill();
-        throw new Error('Shutting down Tonk GUI...');
-      });
+      process.on('SIGINT', cleanupProcesses);
+      process.on('SIGTERM', cleanupProcesses);
+      process.on('exit', cleanupProcesses);
     }, 2000); // Wait 2 seconds before starting Electron
   } catch (error) {
     console.error(
       chalk.red(`Error launching Tonk GUI: ${(error as Error).message}`),
     );
+    cleanupProcesses();
     throw new Error(`Error launching Tonk GUI: ${(error as Error).message}`);
   }
 }
@@ -72,6 +160,7 @@ function startUIServer(hubUIPath: string): ChildProcess {
     cwd: hubUIPath,
     stdio: 'pipe',
     shell: true,
+    detached: false, // Ensure process is not detached from parent
   });
 
   uiProcess.stdout.on('data', data => {
@@ -89,7 +178,7 @@ function startUIServer(hubUIPath: string): ChildProcess {
   });
 
   uiProcess.on('close', code => {
-    if (code !== 0) {
+    if (code !== 0 && code !== null) {
       console.log(chalk.yellow(`UI server exited with code ${code}`));
     }
   });
@@ -99,7 +188,7 @@ function startUIServer(hubUIPath: string): ChildProcess {
 
 function startElectronApp(
   electronAppPath: string,
-  uiProcess: ChildProcess,
+  cleanupCallback: () => void,
 ): ChildProcess {
   console.log(chalk.blue(`Starting Electron app in ${electronAppPath}...`));
 
@@ -138,15 +227,14 @@ function startElectronApp(
   });
 
   electronProcess.on('close', code => {
-    if (code !== 0) {
+    if (code !== 0 && code !== null) {
       console.log(chalk.yellow(`Electron app exited with code ${code}`));
     }
     console.log(
       chalk.yellow('Electron app closed, shutting down UI server...'),
     );
-    uiProcess.kill(); // Kill the UI server when Electron closes
-    console.log(chalk.yellow('UI server terminated.'));
-    throw new Error('Shutting down Tonk GUI...');
+    // Call the cleanup function when Electron exits
+    cleanupCallback();
   });
 
   return electronProcess;
