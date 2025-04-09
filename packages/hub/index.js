@@ -2,6 +2,7 @@
 const { app, BrowserWindow, protocol, ipcMain } = require("electron");
 const path = require("node:path");
 const process = require("node:process");
+
 const ngrok = require("ngrok");
 
 const { getConfig, readConfig } = require("./src/config.js");

@@ -15,7 +15,6 @@ export enum FileType {
     "Section",
     "App",
     "Store",
-    "Integration",
     "Data",
 }
 

@@ -42,9 +42,8 @@ Tonk abstracts those parts of the stack away.
 
 The entry route into Tonk is the **Tonk Hub**. The Tonk Hub is an Electron app that helps you manage your:
 
-1. **Integrations.** These are the services that connect to your data, such as Google Calendar, Notion, and more. We currently have one ready-made integration into Google, and are working on more. *You can also build your own.*
-2. **Stores.** These are the services that store your data in an application-friendly way.
-3. **Apps.** These have access to your data stores.
+1. **Stores.** These are the services that store your data in an application-friendly way.
+2. **Apps.** These have access to your data stores.
 
 ![hub screenshot](./images/hub-screenshot.png)
 

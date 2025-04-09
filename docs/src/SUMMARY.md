@@ -7,5 +7,4 @@
   - [App](./tonk_stack/app.md)
   - [Stores](./tonk_stack/stores.md)
   - [KeepSync](./tonk_stack/keepsync.md)
-  - [Integrations](./tonk_stack/integrations.md)
 - [Reference](./reference.md)
