@@ -3,6 +3,7 @@ import {configCommand} from './commands/config.js';
 import {createCommand} from './commands/create.js';
 import {deployCommand} from './commands/deploy.js';
 import {devCommand} from './commands/dev.js';
+import {exposeCommand} from './commands/expose.js';
 import {helloCommand} from './commands/hello.js';
 import {printMarkdown} from './commands/prettyPrint.js';
 import {serveCommand} from './commands/serve.js';
@@ -25,5 +26,6 @@ program.addCommand(deployCommand);
 program.addCommand(configCommand);
 program.addCommand(helloCommand);
 program.addCommand(printMarkdown);
+program.addCommand(exposeCommand);
 
 program.parse();

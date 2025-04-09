@@ -11,8 +11,14 @@
 
 .buttonArea {
   display: flex;
+  flex-direction: column;
   align-items: flex-end;
   justify-content: flex-end;
   gap: 0.25rem;
   margin-right: 8px;
+}
+
+.buttonArea a {
+  color: #00aaff;
+  text-decoration: underline;
 }

@@ -1,14 +1,17 @@
 // Modules to control application life and create native browser window
-const { app, BrowserWindow, protocol, ipcMain } = require('electron')
-const path = require('node:path')
-const process = require('node:process');
-const { getConfig, readConfig } = require('./src/config.js');
-require('@electron/remote/main').initialize();
-require('./src/ipc/app.js');
-require('./src/ipc/hub.js');
-require('./src/ipc/integrations.js');
-require('./src/ipc/files.js');
-require('./src/ipc/watcher.js');
+const { app, BrowserWindow, protocol, ipcMain } = require("electron");
+const path = require("node:path");
+const process = require("node:process");
+const ngrok = require("ngrok");
+
+const { getConfig, readConfig } = require("./src/config.js");
+require("@electron/remote/main").initialize();
+// Import app.js directly to get access to the appWindow variable
+const appModule = require("./src/ipc/app.js");
+require("./src/ipc/hub.js");
+require("./src/ipc/integrations.js");
+require("./src/ipc/files.js");
+require("./src/ipc/watcher.js");
 
 let createProtocol = (scheme, normalize = true) => {
     protocol.registerBufferProtocol(
@@ -58,7 +61,6 @@ protocol.registerSchemesAsPrivileged([
 
 let mainWindow;
 let nodemonProcess;
-let currentAppWindow = null;
 
 const createWindow = () => {
     // Create the browser window.
@@ -125,16 +127,20 @@ app.whenReady().then(() => {
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
-app.on("window-all-closed", () => {
+app.on("window-all-closed", async () => {
     // Kill nodemon process when app is closing
+    if (ngrok.isRunning()) {
+        await ngrok.disconnect();
+        await ngrok.kill();
+    }
+
     if (nodemonProcess) {
         nodemonProcess.kill();
         nodemonProcess = null;
     }
 
-    if (currentAppWindow && !currentAppWindow.isDestroyed()) {
-        currentAppWindow.close();
-        currentAppWindow = null;
+    if (appModule.appWindow && !appModule.appWindow.isDestroyed()) {
+        appModule.appWindow.close();
     }
 
     if (process.platform !== "darwin") app.quit();
