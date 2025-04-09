@@ -16,16 +16,17 @@ export const exposeCommand = new Command('expose')
     const spinner = ora('Starting ngrok tunnel...').start();
 
     try {
+
       const url = await ngrok.connect({
         addr: options.port,
         basicAuth: options.auth,
         region: options.region,
         subdomain: options.subdomain,
       });
-
       spinner.succeed(
         `Tunnel established! Your local server on port ${chalk.cyan(options.port)} is now available at:\n${chalk.green(url)}`,
       );
+
       console.log(chalk.yellow('\nPress Ctrl+C to stop the tunnel'));
 
       // Keep the process running until interrupted
@@ -34,10 +35,16 @@ export const exposeCommand = new Command('expose')
         await ngrok.disconnect();
         await ngrok.kill();
         closeSpinner.succeed('Ngrok tunnel closed');
-        process.exit(0);
+        throw new Error('SIGINT received, closing tunnel');
       });
     } catch (e) {
       const error = e as Error;
+
+      // Don't show error message for our own intentional errors
+      if (error.message === 'SIGINT received, closing tunnel') {
+        process.exit(0);
+      }
+
       spinner.fail(`Failed to establish tunnel: ${error.message}`);
 
       if (error.message.includes('failed to start ngrok')) {
@@ -49,6 +56,6 @@ export const exposeCommand = new Command('expose')
         console.log(chalk.cyan('  npx ngrok authtoken YOUR_AUTH_TOKEN'));
       }
 
-      process.exit(1);
+      throw new Error(`Tunnel failed: ${error.message}`);
     }
   });
