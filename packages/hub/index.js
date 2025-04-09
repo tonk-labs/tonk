@@ -6,6 +6,7 @@ const { getConfig, readConfig } = require('./src/config.js');
 require('@electron/remote/main').initialize();
 require('./src/ipc/app.js');
 require('./src/ipc/hub.js');
+require('./src/ipc/integrations.js');
 require('./src/ipc/files.js');
 require('./src/ipc/watcher.js');
 
