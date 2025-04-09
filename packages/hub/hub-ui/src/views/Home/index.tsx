@@ -11,7 +11,7 @@ const Home: React.FC = () => {
     const navigate = useNavigate();
 
     const handleLogout = () => {
-        if (confirm("are you sure you want to clear your data? This will delete all your local config and data.")) {
+        if (confirm("Are you sure you want to clear your data? This will delete all your projects.")) {
             clearConfig();
             navigate("/");
         }
