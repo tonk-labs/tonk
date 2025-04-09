@@ -1,7 +1,7 @@
 {
   "packages": [
-    "../../tonk/packages/cli/",
-    "../../tonk/packages/server/",
-    "../../tonk/packages/keepsync/"
+    "../../../../cli/",
+    "../../../../server/",
+    "../../../../keepsync/"
   ]
 }
