@@ -69,17 +69,17 @@ export async function createIntegrationTemplate(
     spinner.start("Installing dependencies...");
     const { execSync } = await import("child_process");
     process.chdir(projectPath);
-    execSync("npm install", { stdio: "inherit" });
+    execSync("pnpm install", { stdio: "inherit" });
     spinner.succeed("Dependencies installed successfully!");
 
     // Print next steps instructions
     console.log("\n" + chalk.bold("🎉 Your Tonk integration is ready! 🎉"));
     console.log("\n" + chalk.bold("Next steps:"));
     console.log(
-      "  • " + chalk.cyan("npm run build") + " - Build the integration",
+      "  • " + chalk.cyan("pnpm run build") + " - Build the integration",
     );
     console.log(
-      "  • " + chalk.cyan("npm run dev") + " - Start the development server",
+      "  • " + chalk.cyan("pnpm run dev") + " - Start the development server",
     );
     console.log(
       "  • You may launch claude code or any other AI editor in this directory to begin coding.\n",

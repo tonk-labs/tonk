@@ -69,7 +69,7 @@ export async function createReactTemplate(
     spinner.start("Installing dependencies...");
     const { execSync } = await import("child_process");
     process.chdir(projectPath);
-    execSync("npm install", { stdio: "inherit" });
+    execSync("pnpm install", { stdio: "inherit" });
     spinner.succeed("Dependencies installed successfully!");
 
     // Print next steps instructions

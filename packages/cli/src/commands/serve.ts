@@ -62,7 +62,7 @@ export const serveCommand = new Command('serve')
         );
         console.log(
           chalk.yellow(
-            `Tip: Run 'npm run build' or 'yarn build' before serving.`,
+            `Tip: Run 'pnpm run build' or 'yarn build' before serving.`,
           ),
         );
         process.exit(1);

@@ -4,6 +4,7 @@ import { ActionBar, Button, ContentArea, Tree } from "../../components";
 import { useConfigStore } from "../../stores/configStore";
 import styles from "./Home.module.css";
 import { RefreshCcw } from "lucide-react";
+import { runServer } from "../../ipc/hub";
 
 const Home: React.FC = () => {
     const { isInitialized, isLoading, loadConfig, clearConfig } =
