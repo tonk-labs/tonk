@@ -10,7 +10,6 @@ export const loadIntegrations = (): void => {
     const integrationsPath = path.join(process.cwd(), 'integrations');
     const packageJsonPath = path.join(integrationsPath, 'package.json');
 
-    logger.info('WHAT ARE THE PATHS???', packageJsonPath);
     if (!fs.existsSync(packageJsonPath)) {
       console.warn('No package.json found in integrations directory');
       return;

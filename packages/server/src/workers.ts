@@ -8,6 +8,7 @@
 
 import path from 'path';
 import {exec} from 'child_process';
+import fs from 'fs';
 
 /**
  * Integration configuration
@@ -115,15 +116,51 @@ export class Worker {
   private runIntegration(name: string): void {
     console.log(`Running integration: ${name} at ${new Date().toISOString()}`);
 
-    const integrationPath = path.join(
+    const integrationPath = path.join(process.cwd(), 'integrations');
+
+    // Sanitize the name for file paths, but keep original for require
+    const sanitizedName = name.replace(/\//g, '-');
+
+    // Create a temporary file that requires and executes the integration
+    const tempFilePath = path.join(
       process.cwd(),
       'integrations',
-      'node_modules',
-      name,
+      `.temp-${sanitizedName}-${Date.now()}.js`,
     );
-    const command = `cd ${integrationPath} && node dist/index.js`;
+    const tempFileContent = `
+      (async () => {
+        try {
+          const integration = await import('${name}');
+          if (typeof integration === 'function') {
+            integration();
+          } else if (integration.default && typeof integration.default === 'function') {
+            integration.default();
+          } else {
+            console.error('Integration ${name} does not export a function');
+          }
+        } catch (error) {
+          console.error(error);
+          process.exit(1);
+        }
+      })();
+    `;
+
+    // Write the temp file
+    fs.writeFileSync(tempFilePath, tempFileContent);
+
+    // Execute the temp file
+    const command = `cd ${integrationPath} && node --experimental-modules ${tempFilePath}`;
 
     exec(command, (error, stdout, stderr) => {
+      // Clean up the temp file
+      try {
+        fs.unlinkSync(tempFilePath);
+      } catch (cleanupError: unknown) {
+        console.error(
+          `Error cleaning up temp file: ${(cleanupError as Error).message}`,
+        );
+      }
+
       if (error) {
         console.error(`Error executing integration ${name}: ${error.message}`);
         return;
