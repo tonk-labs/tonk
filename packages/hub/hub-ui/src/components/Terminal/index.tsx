@@ -306,6 +306,13 @@ const Terminal: React.FC<TerminalProps> = ({ selectedItem, cmd }) => {
               }, 700);
             } else {
               // Add a small delay to ensure the shell is ready before sending the command
+              // TODO: only run npm install if if node_modules doesn't exist
+                ws.send(
+                  JSON.stringify({
+                    type: "command",
+                    command: "npm install\r",
+                  })
+                );
               setTimeout(() => {
                 ws.send(
                   JSON.stringify({

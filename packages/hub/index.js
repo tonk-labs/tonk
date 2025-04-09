@@ -1,14 +1,14 @@
 // Modules to control application life and create native browser window
-const { app, BrowserWindow, protocol, ipcMain } = require("electron");
-const path = require("node:path");
-const process = require("node:process");
-const { getConfig } = require("./src/config.js");
-require("@electron/remote/main").initialize();
-require("./src/ipc/app.js");
-require("./src/ipc/hub.js");
-require("./src/ipc/files.js");
-require("./src/ipc/watcher.js");
-require("./src/ipc/integrations.js");
+const { app, BrowserWindow, protocol, ipcMain } = require('electron')
+const path = require('node:path')
+const process = require('node:process');
+const { getConfig, readConfig } = require('./src/config.js');
+require('@electron/remote/main').initialize();
+require('./src/ipc/app.js');
+require('./src/ipc/hub.js');
+require('./src/ipc/integrations.js');
+require('./src/ipc/files.js');
+require('./src/ipc/watcher.js');
 
 let createProtocol = (scheme, normalize = true) => {
     protocol.registerBufferProtocol(

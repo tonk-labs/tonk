@@ -7,66 +7,48 @@ import { getConfig } from "../../ipc/config";
 import { platformSensitiveJoin } from "../../ipc/files";
 import { useProjectStore } from "../../stores/projectStore";
 
-interface LaunchBarProps {
-  commandCallback: (cmd: string) => void;
-}
+const AppLaunchBar = (props: {
+    selectedItem: TreeItem;
+    commandCallback: (cmd: string) => void;
+}) => {
+    const { selectedItem, commandCallback } = props;
+    const launch = async () => {
+        const config = await getConfig();
+        const fullPath = await platformSensitiveJoin([
+            config!.homePath,
+            selectedItem.index,
+        ]);
+        await launchApp(fullPath!);
+    };
 
-const AppLaunchBar = (
-  selectedItem: TreeItem,
-  commandCallback: (cmd: string) => void
-) => {
-  const launch = async () => {
-    const config = await getConfig();
-    const fullPath = await platformSensitiveJoin([
-      config!.homePath,
-      selectedItem.index,
-    ]);
-    launchApp(fullPath!);
-  };
-
-  const stopAndReset = () => {
-    commandCallback("stopAndReset");
-  };
-
-  return (
-    <div className={styles.buttonArea}>
-      <Button
-        size="sm"
-        shape="rounded"
-        onClick={stopAndReset}
-      >
-        Stop & Reset
-      </Button>
-      <Button color="green" size="sm" shape="rounded" onClick={launch}>
-        Launch
-      </Button>
-    </div>
-  );
+    return (
+        <div className={styles.buttonArea}>
+            <Button color="green" size="sm" shape="rounded" onClick={launch}>
+                Launch
+            </Button>
+        </div>
+    );
 };
 
-const getComponentForItem = (
-  selectedItem: TreeItem | null,
-  commandCallback: (cmd: string) => void
-) => {
-  if (!selectedItem) {
-    return null;
-  }
-  switch (selectedItem.data.fileType) {
-    case FileType.App: {
-      return AppLaunchBar(selectedItem, commandCallback);
+const LaunchBar = (props: { commandCallback: (cmd: string) => void }) => {
+    const { selectedItem } = useProjectStore();
+    const { commandCallback } = props;
+    if (!selectedItem) {
+        return null;
     }
-    default: {
-      return null;
+    switch (selectedItem.data.fileType) {
+        case FileType.App: {
+            return (
+                <AppLaunchBar
+                    selectedItem={selectedItem}
+                    commandCallback={commandCallback}
+                />
+            );
+        }
+        default: {
+            return null;
+        }
     }
-  }
-};
-
-const LaunchBar: React.FC<LaunchBarProps> = ({ commandCallback }) => {
-  const { selectedItem } = useProjectStore();
-  const componentItem = getComponentForItem(selectedItem, commandCallback);
-  return componentItem ? (
-    <div className={styles.launchBarContainer}>{componentItem}</div>
-  ) : null;
 };
 
 export default LaunchBar;

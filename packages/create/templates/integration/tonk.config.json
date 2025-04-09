@@ -1,0 +1,6 @@
+ {
+  "name": "starter-integration-template",
+  "schedule": {
+    "frequency": "20m" 
+  } 
+}

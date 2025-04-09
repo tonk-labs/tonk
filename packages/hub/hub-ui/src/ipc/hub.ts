@@ -30,3 +30,7 @@ export const closeShell = async () => {
 export const createApp = async (name: string) => {
   await window.electronAPI.createApp(name);
 };
+
+export const runServer = async (restart: boolean = false) => {
+  await window.electronAPI.runServer(restart);
+};

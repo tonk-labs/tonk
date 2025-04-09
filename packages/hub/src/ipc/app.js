@@ -1,31 +1,48 @@
 const { ipcMain, shell } = require('electron');
 const { getConfig } = require('../config.js');
 const path = require('node:path');
+const http = require('http');
 
 ipcMain.handle('launch-app', async (event, projectPath) => {
   try {
-    // Launch the app with the docId as a query parameter
-    // You'll need to adjust this based on how your app is actually launched
-    const child = require('child_process');
-    // Assuming you're using npm start or similar to launch the app
-    let config = getConfig();
-    let storesPath = path.join(config.homePath, 'stores');
-    child.exec(`cd "${projectPath}" && tonk serve -f ${storesPath}`, (error, stdout, stderr) => {
-      if (error) {
-        console.error(`Error launching app: ${error}`);
-        return;
-      }
+    const distPath = path.join(projectPath, 'dist');
+    // Set the distPath via API call
+    const requestData = JSON.stringify({ distPath });
+    
+    return new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: 'localhost',
+        port: 8080,
+        path: '/api/toggle-dist-path',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(requestData)
+        }
+      }, (res) => {
+        if (res.statusCode === 200) {
+          shell.openExternal('http://localhost:8080');
+          resolve(true);
+        } else {
+          reject(new Error(`Failed to set distPath: Status ${res.statusCode}`));
+        }
+      });
+      
+      req.on('error', (error) => {
+        console.error('Error configuring server:', error);
+        reject(error);
+      });
+      
+      req.write(requestData);
+      req.end();
     });
-
-    shell.openExternal('http://localhost:8080');
-
-    return true;
   } catch (error) {
     console.error('Error launching app:', error);
     throw error;
   }
 });
 
-ipcMain.handle('open-external-link', async (event, link) => {
-  shell.openExternal(link);
-})
+ipcMain.handle("open-external-link", async (event, link) => {
+    await shell.openExternal(link);
+});
+

@@ -1,7 +1,0 @@
-{
-  "packages": [
-    "../../packages/cli",
-    "../../packages/server/",
-    "../../packages/keepsync/"
-  ]
-}

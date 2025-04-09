@@ -11,6 +11,8 @@
 
 .buttonArea {
   display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
   gap: 0.25rem;
-  margin: 0 20px;
+  margin-right: 8px;
 }

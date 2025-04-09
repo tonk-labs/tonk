@@ -5,7 +5,11 @@ const { app } = require("@electron/remote");
 
 contextBridge.exposeInMainWorld("electronAPI", {
     launchApp: (projectPath) => ipcRenderer.invoke("launch-app", projectPath),
+    isAppRunning: () => {
+        return ipcRenderer.invoke("is-app-running");
+    },
     openExternal: (link) => ipcRenderer.invoke("open-external-link", link),
+    stopAndReset: () => ipcRenderer.invoke("stop-and-reset"),
     getConfig: () => ipcRenderer.invoke("get-config"),
     init: (homePath) => ipcRenderer.invoke("init", homePath),
     clearConfig: () => ipcRenderer.invoke("clear-config"),
@@ -21,6 +25,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     runShell: (dirPath) => ipcRenderer.invoke("run-shell", dirPath),
     closeShell: () => ipcRenderer.invoke("close-shell"),
     createApp: (name) => ipcRenderer.invoke("create-app", name),
+    getInstalledIntegrations: () => ipcRenderer.invoke("get-installed-integrations"),
     startFileWatching: () => ipcRenderer.invoke("start-file-watching"),
     stopFileWatching: () => ipcRenderer.invoke("stop-file-watching"),
     fetchRegistry: () => ipcRenderer.invoke("fetch-registry"),
@@ -29,6 +34,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
         ipcRenderer.invoke("install-integration", integrationLink),
     getInstalledIntegrations: () =>
         ipcRenderer.invoke("get-installed-integrations"),
+    runServer: (restart) => ipcRenderer.invoke('run-server', restart), 
 });
 
 // Add IPC listener for file changes

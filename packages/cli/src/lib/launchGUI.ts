@@ -68,7 +68,7 @@ export function launchTonkGUI() {
 function startUIServer(hubUIPath: string): ChildProcess {
   console.log(chalk.blue(`Starting webpack dev server in ${hubUIPath}...`));
 
-  const uiProcess = spawn('npm', ['run', 'start'], {
+  const uiProcess = spawn('pnpm', ['run', 'start'], {
     cwd: hubUIPath,
     stdio: 'pipe',
     shell: true,
@@ -111,7 +111,7 @@ function startElectronApp(
   }
 
   // Use npm run dev instead of npx electron .
-  const electronProcess = spawn('npm', ['run', 'dev'], {
+  const electronProcess = spawn('pnpm', ['run', 'dev'], {
     cwd: electronAppPath,
     stdio: 'pipe',
     shell: true,

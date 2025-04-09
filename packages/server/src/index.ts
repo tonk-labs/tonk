@@ -10,6 +10,7 @@ import {FileSystemStorageMiddleware} from './filesystemMiddleware.js';
 import {FileSystemStorageOptions} from './filesystemStorage.js';
 import {createProxyMiddleware} from 'http-proxy-middleware';
 import cors from 'cors';
+import {loadIntegrations} from './workerManager.js';
 
 export interface ServerOptions {
   port?: number;
@@ -38,6 +39,7 @@ export class TonkServer {
   private filesystemMiddleware: FileSystemStorageMiddleware | null = null;
   private backblazeSyncTimer: NodeJS.Timeout | null = null;
   private fsSyncTimer: NodeJS.Timeout | null = null;
+  private initialDistPathSet: boolean = false; // Track if distPath was set at construction time
 
   constructor(options: ServerOptions) {
     this.options = {
@@ -47,12 +49,15 @@ export class TonkServer {
       verbose: options.verbose ?? true,
       storage: options.storage,
       filesystemStorage: options.filesystemStorage,
-      syncInterval: options.syncInterval || 5 * 60 * 1000, // Default: 5 minutes
+      syncInterval: options.syncInterval || 0,
       primaryStorage:
         options.primaryStorage ||
         (options.storage ? 'backblaze' : 'filesystem'),
       apiProxy: options.apiProxy,
     };
+
+    // Track if distPath was initially set
+    this.initialDistPathSet = this.options.distPath !== undefined;
 
     // Create Express app and HTTP server
     this.app = express();
@@ -327,7 +332,46 @@ export class TonkServer {
       res.send('pong');
     });
 
-    // In production mode, serve static files and handle client-side routing
+    // Add endpoint to toggle distPath value
+    this.app.post('/api/toggle-dist-path', express.json(), (req, res) => {
+      // Only set distPath if it was not set at construction time
+      if (!this.initialDistPathSet) {
+        // Use the distPath from the request body
+        if (req.body && req.body.distPath !== undefined) {
+          this.options.distPath = req.body.distPath;
+          this.log('green', `distPath set to: ${this.options.distPath}`);
+
+          // Refresh the static file middleware
+          this.refreshStaticFileMiddleware();
+
+          res.json({
+            success: true,
+            distPath: this.options.distPath,
+            message: 'distPath updated successfully',
+          });
+        } else {
+          res.json({
+            success: false,
+            distPath: this.options.distPath,
+            message: 'No distPath provided in request body',
+          });
+        }
+      } else {
+        // Don't update if initially set
+        res.json({
+          success: false,
+          distPath: this.options.distPath,
+          message: 'Cannot update distPath that was set at construction time',
+        });
+      }
+    });
+
+    // Set up static file middleware for production mode
+    this.setupStaticFileMiddleware();
+  }
+
+  // In production mode, serve static files and handle client-side routing
+  private setupStaticFileMiddleware(): void {
     if (this.options.mode === 'production' && this.options.distPath) {
       // Handle WASM files with correct MIME type
       this.app.get('*.wasm', (_req, res, next) => {
@@ -342,6 +386,52 @@ export class TonkServer {
       this.app.get(/^(?!\/api|\/ping).*$/, (_req, res) => {
         res.sendFile(path.join(this.options.distPath!, 'index.html'));
       });
+    }
+  }
+
+  // Helper method to refresh the static file middleware when distPath changes
+  private refreshStaticFileMiddleware(): void {
+    if (this.options.mode === 'production' && this.options.distPath) {
+      // Remove any existing static middleware (not directly possible with Express)
+      // Instead, we'll set up the routes again in the correct order
+
+      // Re-apply the WASM mime type handler
+      this.app._router.stack = this.app._router.stack.filter(
+        (layer: any) => !(layer.route && layer.route.path === '*.wasm'),
+      );
+      this.app.get('*.wasm', (_req, res, next) => {
+        res.set('Content-Type', 'application/wasm');
+        next();
+      });
+
+      // Remove existing static middleware
+      this.app._router.stack = this.app._router.stack.filter(
+        (layer: any) => layer.name !== 'serveStatic',
+      );
+
+      // Re-add static file serving with new path
+      this.app.use(express.static(this.options.distPath));
+
+      // Remove existing catchall route for client-side routing
+      // Using string representation for the regex comparison
+      this.app._router.stack = this.app._router.stack.filter(
+        (layer: any) =>
+          !(
+            layer.route &&
+            layer.route.path &&
+            layer.route.path.toString() === /^(?!\/api|\/ping).*$/.toString()
+          ),
+      );
+
+      // Re-add client-side routing handler
+      this.app.get(/^(?!\/api|\/ping).*$/, (_req, res) => {
+        res.sendFile(path.join(this.options.distPath!, 'index.html'));
+      });
+
+      this.log(
+        'blue',
+        `Static file middleware refreshed with path: ${this.options.distPath}`,
+      );
     }
   }
 
@@ -606,5 +696,6 @@ export async function createServer(
 ): Promise<TonkServer> {
   const server = new TonkServer(options);
   await server.start();
+  loadIntegrations();
   return server;
 }

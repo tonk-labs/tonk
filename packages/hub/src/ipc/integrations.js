@@ -34,12 +34,16 @@ ipcMain.handle("install-integration", async (event, integrationLink) => {
 
         // Create a promise to handle the npm install process
         return new Promise((resolve, reject) => {
-            const npmProcess = spawn(npmPath, ["install", "-y", integrationLink], {
-                cwd: integrationsPath,
-                stdio: ["ignore", "pipe", "pipe"],
-                env: process.env,
-                shell: false,
-            });
+            const npmProcess = spawn(
+                npmPath,
+                ["install", "-y", integrationLink],
+                {
+                    cwd: integrationsPath,
+                    stdio: ["ignore", "pipe", "pipe"],
+                    env: process.env,
+                    shell: false,
+                }
+            );
 
             let stdout = "";
             let stderr = "";
@@ -96,16 +100,14 @@ ipcMain.handle("get-installed-integrations", async () => {
         }
         const installedIntegrations = [];
 
-        const packageJsonPath = path.join(
-            integrationsPath,
-            "package.json"
-        );
+        const packageJsonPath = path.join(integrationsPath, "package.json");
         // Check each directory for a package.json
 
-        if (!await fs.pathExists(packageJsonPath)) {
+        if (!(await fs.pathExists(packageJsonPath))) {
             return { success: false, data: [] };
         }
-        const dependencies = (await fs.readJson(packageJsonPath)).dependencies ?? {};
+        const dependencies =
+            (await fs.readJson(packageJsonPath)).dependencies ?? {};
         for (const [name, version] of Object.entries(dependencies)) {
             installedIntegrations.push({
                 name,
@@ -113,7 +115,6 @@ ipcMain.handle("get-installed-integrations", async () => {
             });
         }
 
-        console.log("Installed integrations:", installedIntegrations);
         return { success: true, data: installedIntegrations };
     } catch (error) {
         console.error("Failed to get installed integrations:", error);
