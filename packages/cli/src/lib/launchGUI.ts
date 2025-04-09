@@ -1,9 +1,14 @@
-import path from 'path';
-import {spawn, ChildProcess} from 'child_process';
 import chalk from 'chalk';
+import {ChildProcess, spawn} from 'child_process';
 import fs from 'fs';
+import path from 'path';
+import {fileURLToPath} from 'url';
 
 export function launchTonkGUI() {
+  // Use import.meta.url and fileURLToPath instead of __dirname
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+
   // Determine the paths - CLI is in src/commands, so we need to go up to the project root
   const projectRoot = path.resolve(__dirname, '../../..');
   const electronAppPath = path.resolve(projectRoot, 'hub');
