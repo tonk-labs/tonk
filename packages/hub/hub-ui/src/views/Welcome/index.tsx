@@ -10,6 +10,7 @@ const Welcome: React.FC = () => {
     const [selectedPath, setSelectedPath] = useState("");
     const [step, setStep] = useState(0);
     const { isInitialized, isLoading, loadConfig } = useConfigStore();
+    const [isCopying, setIsCopying] = useState(false);
     const navigate = useNavigate();
     const advanceStep = (newStep: number) => {
         if (step >= 4) {
@@ -52,12 +53,12 @@ const Welcome: React.FC = () => {
         });
     };
 
-    const initialize = () => {
-        init(selectedPath).then(() => {
-            copyHubTemplate().then(() => {
-                navigate("/home");
-            });
-        });
+    const initialize = async () => {
+        setIsCopying(true);
+        await init(selectedPath);
+        await copyHubTemplate();
+        setIsCopying(false);
+        navigate("/home");
     };
 
     useEffect(() => {
@@ -156,8 +157,9 @@ const Welcome: React.FC = () => {
                             size="lg"
                             shape="default"
                             onClick={initialize}
+                            disabled={isCopying}
                         >
-                            Continue
+                            {isCopying ? "Setting up your hub..." : "Continue"}
                         </Button>
                     </div>
                 )}
