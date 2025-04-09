@@ -24,7 +24,6 @@
     "express": "^4.21.2",
     "gts": "^6.0.2",
     "http-proxy-middleware": "^3.0.3",
-    "server": "link:../../../../Library/pnpm/global/5/node_modules/@tonk/server",
     "ws": "^8.18.0",
     "zod": "^3.24.2"
   },
@@ -48,10 +47,5 @@
   },
   "publishConfig": {
     "access": "public"
-  },
-  "pnpm": {
-    "overrides": {
-      "server": "link:../../../../Library/pnpm/global/5/node_modules/@tonk/server"
-    }
   }
 }
