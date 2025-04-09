@@ -23,20 +23,21 @@ const AppLaunchBar = (
     ]);
     launchApp(fullPath!);
   };
+
   const stopAndReset = () => {
     commandCallback("stopAndReset");
   };
+
   return (
     <div className={styles.buttonArea}>
       <Button
-        variant="purple"
         size="sm"
         shape="rounded"
         onClick={stopAndReset}
       >
         Stop & Reset
       </Button>
-      <Button variant="green" size="sm" shape="rounded" onClick={launch}>
+      <Button color="green" size="sm" shape="rounded" onClick={launch}>
         Launch
       </Button>
     </div>
