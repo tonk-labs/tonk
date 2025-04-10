@@ -7,19 +7,22 @@ import {
   Text,
   TonkAsciiAnimated,
 } from "..";
+
+import * as Dialog from "@radix-ui/react-dialog";
 import { openExternal } from "../../ipc/app";
 import { useProjectStore } from "../../stores/projectStore";
+import CreateAppDialog from "../ActionBar/CreateAppDialog";
 import AppContent from "../AppContent";
 import { FileType } from "../Tree";
 import styles from "./Home.module.css";
 
 const EmptyState = () => {
+  const [isOpen, setIsOpen] = useState(false);
   const openGuide = () => {
     openExternal("https://tonk.xyz");
   };
 
   const { items, setSelectedItem } = useProjectStore();
-  console.log(JSON.stringify(items, null, 2));
 
   const handleSelectApp = async (appName: string) => {
     const app = items[appName];
@@ -42,17 +45,28 @@ const EmptyState = () => {
         <>
           <Text>&nbsp;</Text>
           <Text>Your Apps:</Text>
-          <ul className={styles.appsList}>
-            {items.apps.children.map((appName, index) => (
-              <li
-                key={index}
-                className={styles.appItem}
-                onClick={() => handleSelectApp(appName)}
-              >
-                <Text>{appName.slice(5)}</Text>
-              </li>
-            ))}
-          </ul>
+          <div>
+            <ul className={styles.appsList}>
+              {items.apps.children.map((appName, index) => (
+                <li
+                  key={index}
+                  className={styles.appItem}
+                  onClick={() => handleSelectApp(appName)}
+                >
+                  <Text>{appName.slice(5)}</Text>
+                </li>
+              ))}
+  <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
+              <Dialog.Trigger asChild>
+                <div className={styles.appItem} style = {{marginLeft: "-16px", color: "#35ff3c"}}>
+                  <Text style = {{color: "blue"}}>+ Create new app</Text>
+                </div>
+              </Dialog.Trigger>
+              <CreateAppDialog close={() => setIsOpen(false)} />
+            </Dialog.Root>
+            </ul>
+          
+          </div>
         </>
       ) : (
         <>
