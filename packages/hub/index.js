@@ -13,6 +13,7 @@ require("./src/ipc/hub.js");
 require("./src/ipc/integrations.js");
 require("./src/ipc/files.js");
 require("./src/ipc/watcher.js");
+require("./src/ipc/docs.js");
 
 let createProtocol = (scheme, normalize = true) => {
     protocol.registerBufferProtocol(
