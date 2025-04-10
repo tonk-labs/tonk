@@ -143,7 +143,7 @@ const Welcome: React.FC = () => {
                                     />
 
                                     {selectedPath !== ""
-                                        ? `${selectedPath}/.tonk`
+                                        ? `${selectedPath}/tonk`
                                         : ""}
                                 </Button>
                             </div>
