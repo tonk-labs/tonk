@@ -20,7 +20,6 @@
     "@electron/remote": "^2.1.2",
     "chokidar": "^4.0.3",
     "fs-extra": "^11.3.0",
-    "ngrok": "5.0.0-beta.2",
     "node-pty": "^1.1.0-beta22",
     "which": "^5.0.0",
     "ws": "^8.18.1"

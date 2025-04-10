@@ -1,64 +1,122 @@
 const { ipcMain, shell, BrowserWindow } = require("electron");
-const { getConfig } = require("../config.js");
 const path = require("node:path");
 const http = require("http");
-const ngrok = require("ngrok");
+const { spawn } = require("child_process");
 
 // Track the app window globally
 let appWindow = null;
+// Keep a reference to the pinggy process
+let pinggyProcess = null;
 
 // Export appWindow for use in other modules
 module.exports = { appWindow };
+
+// Helper function to start Pinggy and return the URL
+const startPinggy = async () => {
+  return new Promise((resolve, reject) => {
+    // Kill any existing pinggy process
+    if (pinggyProcess) {
+      try {
+        pinggyProcess.kill();
+      } catch (err) {
+        console.log("Error killing existing pinggy process:", err);
+      }
+      pinggyProcess = null;
+    }
+
+    console.log("Connecting to pinggy...");
+
+    // Start the ssh command to connect to pinggy
+    pinggyProcess = spawn("ssh", [
+      "-p",
+      "443",
+      "-R0:localhost:8080",
+      "a.pinggy.io",
+    ]);
+
+    let url = null;
+    const urlRegex = /(https?:\/\/[^\s]+)/;
+
+    // Listen for output to capture the URL
+    pinggyProcess.stdout.on("data", (data) => {
+      const output = data.toString();
+      console.log("Pinggy output:", output);
+
+      // Look for the pinggy tunnel URLs
+      const pinggyUrlRegex = /(https?:\/\/[^.]+\.a\.free\.pinggy\.link)/;
+      const pinggyMatch = output.match(pinggyUrlRegex);
+
+      if (pinggyMatch && !url) {
+        // Prefer HTTPS URL if available
+        if (output.includes("https://")) {
+          const httpsMatch = output.match(
+            /(https:\/\/[^.]+\.a\.free\.pinggy\.link)/,
+          );
+          if (httpsMatch) {
+            url = httpsMatch[1];
+          } else {
+            url = pinggyMatch[1];
+          }
+        } else {
+          url = pinggyMatch[1];
+        }
+        console.log("App launched at:", url);
+        resolve(url);
+      }
+    });
+
+    pinggyProcess.stderr.on("data", (data) => {
+      console.error("Pinggy error:", data.toString());
+    });
+
+    pinggyProcess.on("error", (error) => {
+      console.error("Failed to start pinggy process:", error);
+      reject(error);
+    });
+
+    pinggyProcess.on("close", (code) => {
+      console.log(`Pinggy process exited with code ${code}`);
+      if (!url) {
+        reject(
+          new Error(
+            `Pinggy process exited with code ${code} before providing URL`,
+          ),
+        );
+      }
+    });
+
+    // Set a timeout in case we don't get a URL
+    setTimeout(() => {
+      if (!url) {
+        reject(new Error("Timeout waiting for pinggy URL"));
+      }
+    }, 30000); // 30 second timeout
+  });
+};
 
 ipcMain.handle("launch-app", async (_, projectPath) => {
   try {
     console.log("Launching app...");
 
-    // Check if ngrok is already connected to port 8080
-    let url;
-    try {
-      // Get all active tunnels and find one for port 8080
-      const dummyUrl = await ngrok.connect(0);
-      const api = ngrok.getApi();
-      const tunnels = await api.listTunnels();
+    // Start Pinggy and get the public URL
+    const url = await startPinggy();
 
-      const existingTunnel = tunnels.tunnels?.find(
-        (tunnel) => tunnel.config?.addr === "http://localhost:8080",
-      );
-      await ngrok.disconnect(dummyUrl);
-
-      if (existingTunnel) {
-        url = existingTunnel.public_url;
-        console.log("Using existing ngrok connection:", url);
-      } else {
-        // No active connection for port 8080, create a new one
-        console.log("Connecting to ngrok...");
-        url = await ngrok.connect(8080);
-        console.log("App launched at:", url);
-      }
-    } catch (error) {
-      // Failed to get tunnels or no tunnels exist, create a new one
-      console.log("Connecting to ngrok...");
-      url = await ngrok.connect(8080);
-      console.log("App launched at:", url);
-    }
-
-    // Launch the app with the ngrok URL
+    // Launch the app with the pinggy URL
     await launchApp(projectPath, url);
 
     // Keep the process running until interrupted
     return url;
   } catch (e) {
+    console.error("Error in launch-app:", e);
     throw e;
   }
 });
 
-const launchApp = async (projectPath, ngrokUrl) => {
+const launchApp = async (projectPath, pinggyUrl) => {
   try {
     const distPath = path.join(projectPath, "dist");
     // Set the distPath via API call
     const requestData = JSON.stringify({ distPath });
-
 
     return new Promise((resolve, reject) => {
       const req = http.request(
@@ -97,26 +155,34 @@ const launchApp = async (projectPath, ngrokUrl) => {
               require("@electron/remote/main").enable(appWindow.webContents);
 
               // Set the window title to match the page title
-              appWindow.webContents.on("page-title-updated", (event, title) => {
-                appWindow.setTitle(title);
-              });
+              appWindow.webContents.on(
+                "page-title-updated",
+                (_event, title) => {
+                  appWindow.setTitle(title);
+                },
+              );
 
               // Clean up the window reference when window is closed
               appWindow.on("closed", () => {
                 appWindow = null;
+                // Also kill the pinggy process when window is closed
+                if (pinggyProcess) {
+                  pinggyProcess.kill();
+                  pinggyProcess = null;
+                }
               });
             }
 
             appWindow.loadURL("http://localhost:8080");
 
-            // Display the ngrok URL in the corner of the window
+            // Display the pinggy URL in the corner of the window
             appWindow.webContents.on("did-finish-load", () => {
               appWindow.webContents.executeJavaScript(`
-                // Display ngrok URL
+                // Display pinggy URL
                 (function() {
                     const urlDisplay = document.createElement('div');
                     urlDisplay.textContent = '${
-                      ngrokUrl || "http://localhost:8080"
+                      pinggyUrl || "http://localhost:8080"
                     }';
                     urlDisplay.style.position = 'fixed';
                     urlDisplay.style.bottom = '6px';
@@ -175,13 +241,13 @@ const launchApp = async (projectPath, ngrokUrl) => {
   }
 };
 
-ipcMain.handle("open-external-link", async (event, link) => {
+ipcMain.handle("open-external-link", async (_event, link) => {
   // Open links in the user's default browser
   await shell.openExternal(link);
   return true;
 });
 
-ipcMain.handle("open-url-in-electron", async (event, url) => {
+ipcMain.handle("open-url-in-electron", async (_event, url) => {
   try {
     // Create a new browser window
     const newWindow = new BrowserWindow({
@@ -198,10 +264,10 @@ ipcMain.handle("open-url-in-electron", async (event, url) => {
     // Load the URL
     await newWindow.loadURL(url);
 
-    // Display the ngrok URL in the corner of the window
+    // Display the URL in the corner of the window
     newWindow.webContents.on("did-finish-load", () => {
       newWindow.webContents.executeJavaScript(`
-        // Display ngrok URL
+        // Display URL
         (function() {
             const urlDisplay = document.createElement('div');
             urlDisplay.textContent = '${url || "http://localhost:8080"}';

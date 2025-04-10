@@ -49,7 +49,7 @@ const OpenLink: React.FC = () => {
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             onKeyDown={handleKeyPress}
-            placeholder="***.ngrok-free.app"
+            placeholder="***.pinggy.link"
             disabled={isLoading}
           />
           <button
