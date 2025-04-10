@@ -30,6 +30,8 @@ const startPinggy = async () => {
     pinggyProcess = spawn("ssh", [
       "-p",
       "443",
+      "-o",
+      "StrictHostKeyChecking=no",
       "-R0:localhost:8080",
       "a.pinggy.io",
     ]);
