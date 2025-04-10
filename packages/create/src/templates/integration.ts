@@ -73,7 +73,7 @@ export async function createIntegrationTemplate(
     spinner.succeed("Dependencies installed successfully!");
 
     // Print next steps instructions
-    console.log("\n" + chalk.bold("🎉 Your Tonk integration is ready! 🎉"));
+    console.log("\n" + chalk.bold("🎉 Your Tonk integration is ready for vibe coding! 🎉"));
     console.log("\n" + chalk.bold("Next steps:"));
     console.log(
       "  • " + chalk.cyan("pnpm run build") + " - Build the integration",
@@ -82,7 +82,10 @@ export async function createIntegrationTemplate(
       "  • " + chalk.cyan("pnpm run dev") + " - Start the development server",
     );
     console.log(
-      "  • You may launch claude code or any other AI editor in this directory to begin coding.\n",
+      "  • Launch your favorite vibe coding editor to begin coding.\n",
+    );
+    console.log(
+      "  • Run `npm run build` to build your project for production.\n",
     );
   } catch (error) {
     spinner.fail("Failed to create Integration project");

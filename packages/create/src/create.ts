@@ -8,7 +8,6 @@ import process from "process";
 import { fileURLToPath } from "url";
 import { ProjectPlan, TemplateType } from "./types";
 import { createReactTemplate } from "./templates/react";
-import { createIntegrationTemplate } from "./templates/integration";
 
 /**
  * Resolves a package path by checking both local development and global installation paths
@@ -74,28 +73,9 @@ const projectQuestions = [
     default: "my-tonk-app",
   },
   {
-    type: "list",
-    name: "projectType",
-    message: "What type of project are you building?",
-    choices: [
-      "Productivity System",
-      "Creative Tool",
-      "Professional Services",
-      "Community Space",
-      "Learning & Education",
-      "Other",
-    ],
-  },
-  {
-    type: "list",
-    name: "platform",
-    message: "What platform do you want to use?",
-    choices: ["react"],
-  },
-  {
     type: "input",
     name: "description",
-    message: "Briefly describe your project and its main functionality:",
+    message: "Briefly describe your project:",
   },
 ];
 
@@ -116,7 +96,7 @@ export async function createProject(
 
     // Find template path
     let templatePath;
-    let templateName = _templateName === "default" ? "react" : _templateName;
+    const templateName = "react";
 
     try {
       templatePath = await resolvePackagePath(`templates/${templateName}`);
@@ -138,40 +118,7 @@ export async function createProject(
     }
 
     // Switch on template type and call appropriate template creator
-    try {
-      switch (templateName) {
-        case "react":
-          await createReactTemplate(
-            projectPath,
-            projectName,
-            templatePath,
-            plan
-          );
-          break;
-
-        case "integration":
-          await createIntegrationTemplate(
-            projectPath,
-            projectName,
-            templatePath,
-            plan
-          );
-          break;
-
-        default:
-          await createReactTemplate(
-            projectPath,
-            projectName,
-            templatePath,
-            plan
-          );
-          break;
-      }
-    } catch (error) {
-      spinner.fail(`Failed to create ${templateName} project`);
-      console.error(error);
-      process.exit(1);
-    }
+    await createReactTemplate(projectPath, projectName, templatePath, plan);
   } catch (error) {
     spinner.fail("Failed to setup project");
     console.error(error);
@@ -203,7 +150,7 @@ const createApp = async (init: boolean) => {
     let projectPath = init ? process.cwd() : null;
     await createProject(finalProjectName, plan, templateName, projectPath);
 
-    console.log("🎉 Tonk code generated successfully!");
+    console.log("🎉 Tonk project ready for vibe coding!");
   } catch (error) {
     console.error(chalk.red("Error:"), error);
     process.exit(1);
@@ -212,7 +159,7 @@ const createApp = async (init: boolean) => {
 
 const createTemplate = async () => {
   try {
-    console.log("Scaffolding tonk integration...");
+    console.log(chalk.italic("Scaffolding tonk integration..."));
 
     // Questions for integration template
     const integrationQuestions = [
@@ -244,8 +191,6 @@ const createTemplate = async () => {
     const finalProjectName =
       options.name || answers.projectName || "my-tonk-integration";
     await createProject(finalProjectName, plan, "integration");
-
-    console.log("🎉 Tonk integration generated successfully!");
   } catch (error) {
     console.error(chalk.red("Error:"), error);
     process.exit(1);
@@ -274,7 +219,7 @@ program
     }
   })
   .action(async (typeArg, options) => {
-    console.log(chalk.bold("\nTonk! 🚀\n"));
+    console.log(chalk.bold("\nWelcome to Tonk! 🚀\n"));
 
     switch (typeArg) {
       case TEMPLATE_TYPES[0]: {
