@@ -1,0 +1,6 @@
+{
+  "watch": ["src/**/*"],
+  "ignore": ["*.test.js", "node_modules"],
+  "exec": "npm run serve",
+  "ext": "js,jsx,ts,tsx,css,html"
+} 

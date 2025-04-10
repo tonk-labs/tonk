@@ -1,11 +1,12 @@
 import {Command} from 'commander';
-import {createCommand} from './commands/create.js';
-import {devCommand} from './commands/dev.js';
-import {serveCommand} from './commands/serve.js';
-import {deployCommand} from './commands/deploy.js';
 import {configCommand} from './commands/config.js';
+import {createCommand} from './commands/create.js';
+import {deployCommand} from './commands/deploy.js';
+import {devCommand} from './commands/dev.js';
+import {exposeCommand} from './commands/expose.js';
 import {helloCommand} from './commands/hello.js';
-import {guiCommand} from './commands/gui.js';
+import {printMarkdown} from './commands/prettyPrint.js';
+import {serveCommand} from './commands/serve.js';
 
 const program = new Command();
 
@@ -13,7 +14,7 @@ const program = new Command();
 program
   .name('tonk')
   .description('The tonk cli helps you to manage your tonk stack and apps.')
-  .version('0.1.0')
+  .version('0.1.2')
   .on('--help', () => {
     console.log('\nWork in progress!');
   });
@@ -24,12 +25,7 @@ program.addCommand(serveCommand);
 program.addCommand(deployCommand);
 program.addCommand(configCommand);
 program.addCommand(helloCommand);
-program.addCommand(guiCommand);
+program.addCommand(printMarkdown);
+program.addCommand(exposeCommand);
 
-// Parse arguments
 program.parse();
-
-// Launch Electron app if no arguments provided
-if (!process.argv.slice(2).length) {
-  guiCommand.parse(process.argv);
-}

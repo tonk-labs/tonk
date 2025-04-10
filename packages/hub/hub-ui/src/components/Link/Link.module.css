@@ -1,0 +1,40 @@
+:root {
+  --link-color-external: #CF66FF;
+  --link-color-internal: #00C8FF;
+  --link-color-action: #35FF3C;
+}
+
+.link {
+  text-decoration: none;
+  transition: color 0.2s ease, text-decoration 0.2s ease;
+  cursor: pointer;
+  min-width: 280px;
+  word-wrap: break-word;
+  display: inline-block;
+  text-decoration: underline;
+}
+
+.external {
+  color: var(--link-color-external);
+}
+
+.internal {
+  color: var(--link-color-internal);
+}
+
+.action {
+  color: var(--link-color-action);
+}
+
+.link:hover {
+  filter: brightness(0.8);
+}
+
+.link:active {
+  filter: brightness(0.6);
+}
+
+.link:focus {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}

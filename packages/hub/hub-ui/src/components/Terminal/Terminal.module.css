@@ -1,0 +1,78 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  color: #f0f0f0;
+  font-family: "Courier New", monospace;
+  overflow: hidden;
+  width: 100%;
+  min-width: calc(100vw - 280px); /* Prevent shrinking below reasonable size */
+  height: 100%;
+  background: transparent;
+  padding: 8px;
+  padding-top: 0px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+  min-height: 0; /* Allow flex items to shrink below content size */
+}
+
+.terminalContainer {
+  width: 100%;
+  flex: 1;
+  min-height: 0; /* Allow terminal to shrink if needed */
+  overflow: auto; /* Add scrolling to terminal container */
+  cursor: text;
+  outline: none;
+  background: transparent;
+}
+
+/* Make sure the xterm.js terminal takes up all available space */
+.terminalContainer :global(.xterm) {
+  width: 100% !important;
+  height: 100% !important;
+  background: transparent !important;
+}
+
+.terminalContainer :global(.xterm-viewport) {
+  width: 100% !important;
+  height: 100% !important;
+  overflow-y: auto !important;
+  background: transparent !important;
+}
+
+.terminalContainer :global(.xterm-screen) {
+  width: 100% !important;
+  height: 100% !important;
+  background: transparent !important;
+}
+
+/* Ensure proper sizing of terminal rows */
+.terminalContainer :global(.xterm-rows) {
+  width: 100% !important;
+  background: transparent !important;
+}
+
+.disconnectedAlert {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(255, 0, 0, 0.7);
+  color: white;
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 14px;
+  z-index: 100;
+}
+
+.launchBarContainer {
+  flex-shrink: 0; /* Prevent launch bar from shrinking */
+  min-height: 40px; /* Minimum height to ensure visibility */
+  width: 100%;
+  background: transparent;
+}

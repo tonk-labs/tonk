@@ -69,17 +69,21 @@ export async function createReactTemplate(
     spinner.start("Installing dependencies...");
     const { execSync } = await import("child_process");
     process.chdir(projectPath);
-    execSync("npm install", { stdio: "inherit" });
+    execSync("pnpm install", { stdio: "inherit" });
     spinner.succeed("Dependencies installed successfully!");
 
     // Print next steps instructions
-    console.log("\n" + chalk.bold("🎉 Your Tonk react app is ready! 🎉"));
-    console.log("\n" + chalk.bold("Next steps:"));
+    console.log("\n" + chalk.bold("🎉 Your Tonk react app is ready for vibe coding! 🎉"));
+    console.log("\n" + chalk.bold("Next:"));
+    console.log(
+      "  • Open your favorite vibe coding editor to begin coding.\n",
+    );
     console.log(
       "  • " + chalk.cyan("npm run dev") + " - Start the development server",
     );
+    
     console.log(
-      "  • You may launch claude code or any other AI editor in this directory to begin coding.\n",
+      "  • " + chalk.cyan("npm run build") + " - Build your project for production.\n",
     );
   } catch (error) {
     spinner.fail("Failed to create React project");

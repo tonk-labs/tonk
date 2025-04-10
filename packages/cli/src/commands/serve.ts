@@ -11,10 +11,11 @@ function normalizePath(inputPath: string): string {
     return path.join(homedir, inputPath.substring(2));
   }
 
-  // If path is an absolute path not in the user's home directory, redirect it
+  // If path is an absolute path not in the user's home directory and not already expanded from ~,
+  // redirect it to tonk-data
   if (
     inputPath.startsWith('/') &&
-    !inputPath.startsWith('/home/') &&
+    !inputPath.startsWith(process.env.HOME || process.env.USERPROFILE || '') &&
     !inputPath.includes('node_modules')
   ) {
     const homedir = process.env.HOME || process.env.USERPROFILE || '/home/node';
@@ -27,45 +28,88 @@ function normalizePath(inputPath: string): string {
 export const serveCommand = new Command('serve')
   .description('Start a Tonk app in production mode')
   .option('-p, --port <port>', 'Port to run the server on', '8080')
-  .option('-d, --dist <path>', 'Path to the dist directory', 'dist')
+  .option('-d, --dist <path>', 'Path to the dist directory for single app mode')
+  .option('-u, --userhub', 'Run in userhub mode')
+  .option('-f, --filesystem <path>', 'Filesystem path for document storage')
   .action(async options => {
     const projectRoot = process.cwd();
     const port = parseInt(options.port, 10);
-    const distPath = path.isAbsolute(options.dist)
-      ? options.dist
-      : path.join(projectRoot, options.dist);
     const configFilePath = path.join(projectRoot, 'tonk.config.json');
 
-    // Check if the dist directory exists
-    if (!fs.existsSync(distPath)) {
-      console.error(
-        chalk.red(
-          `Error: Dist directory not found at ${distPath}. Make sure you've built the project first.`,
-        ),
-      );
-      console.log(
-        chalk.yellow(
-          `Tip: Run 'npm run build' or 'yarn build' before serving.`,
-        ),
-      );
-      process.exit(1);
-    }
+    // Determine whether we're using single app mode or hub mode
+    let distPath: string | undefined;
 
-    // Check if dist/index.html exists
-    const indexPath = path.join(distPath, 'index.html');
-    if (!fs.existsSync(indexPath)) {
-      console.error(
-        chalk.red(
-          `Error: index.html not found in ${distPath}. The build output may be incomplete.`,
-        ),
-      );
-      process.exit(1);
+    if (options.userhub) {
+      if (!options.filesystem) {
+        console.error(
+          chalk.red(`Error: cannot run in hub mode without a filesystem path`),
+        );
+        process.exit(1);
+      }
+      // do nothing
+    } else if (options.dist) {
+      // Single app mode: serve a single app from dist
+      distPath = path.isAbsolute(options.dist)
+        ? options.dist
+        : path.join(projectRoot, options.dist);
+
+      // Check if the dist directory exists
+      if (!fs.existsSync(distPath!)) {
+        console.error(
+          chalk.red(
+            `Error: Dist directory not found at ${distPath}. Make sure you've built the project first.`,
+          ),
+        );
+        console.log(
+          chalk.yellow(
+            `Tip: Run 'pnpm run build' or 'yarn build' before serving.`,
+          ),
+        );
+        process.exit(1);
+      }
+
+      // Check if dist/index.html exists
+      const indexPath = path.join(distPath!, 'index.html');
+      if (!fs.existsSync(indexPath)) {
+        console.error(
+          chalk.red(
+            `Error: index.html not found in ${distPath}. The build output may be incomplete.`,
+          ),
+        );
+        process.exit(1);
+      }
+    } else {
+      // Neither hub nor dist specified, default to 'dist' in current directory
+      distPath = path.join(projectRoot, 'dist');
+
+      if (!fs.existsSync(distPath)) {
+        console.error(
+          chalk.red(
+            `Error: No --dist or --hub option provided, and default dist directory not found at ${distPath}.`,
+          ),
+        );
+        process.exit(1);
+      }
+
+      // Check if dist/index.html exists
+      const indexPath = path.join(distPath, 'index.html');
+      if (!fs.existsSync(indexPath)) {
+        console.error(
+          chalk.red(
+            `Error: index.html not found in ${distPath}. The build output may be incomplete.`,
+          ),
+        );
+        process.exit(1);
+      }
     }
 
     // Check for Backblaze and Filesystem configurations
     let backblazeConfig = null;
     let filesystemConfig = null;
     let primaryStorage = null;
+
+    // Check if filesystem path was provided via command line
+    const hasFilesystemFlag = !!options.filesystem;
 
     if (fs.existsSync(configFilePath)) {
       try {
@@ -87,7 +131,12 @@ export const serveCommand = new Command('serve')
         }
 
         // If filesystem storage is configured and enabled in the config file
-        if (configData.filesystem && configData.filesystem.enabled) {
+        // and no command line path was provided
+        if (
+          !hasFilesystemFlag &&
+          configData.filesystem &&
+          configData.filesystem.enabled
+        ) {
           let storagePath = configData.filesystem.storagePath || '~/tonk-data';
           storagePath = normalizePath(storagePath);
 
@@ -122,6 +171,32 @@ export const serveCommand = new Command('serve')
       }
     }
 
+    // If filesystem path was provided via command line, override config settings
+    if (hasFilesystemFlag) {
+      const storagePath = normalizePath(options.filesystem);
+
+      filesystemConfig = {
+        enabled: true,
+        storagePath,
+        syncInterval: 30000, // 30 seconds default
+        createIfMissing: true, // default to true
+      };
+
+      console.log(
+        chalk.blue(`Filesystem storage enabled with path: ${storagePath}`),
+      );
+
+      // If no primary storage set and we have backblaze, set filesystem as primary
+      if (!primaryStorage && backblazeConfig) {
+        primaryStorage = 'filesystem';
+        console.log(
+          chalk.blue(
+            'Primary storage set to filesystem from command line argument',
+          ),
+        );
+      }
+    }
+
     console.log(chalk.blue('Starting Tonk production server...'));
 
     try {
@@ -129,9 +204,12 @@ export const serveCommand = new Command('serve')
       const serverConfig: any = {
         port,
         mode: 'production',
-        distPath,
         verbose: true,
       };
+
+      if (distPath) {
+        serverConfig.distPath = distPath;
+      }
 
       // Add Backblaze configuration if available
       if (backblazeConfig) {
@@ -154,6 +232,10 @@ export const serveCommand = new Command('serve')
 
       // Log success info
       console.log(chalk.green(`Server running at http://localhost:${port}`));
+
+      if (distPath) {
+        console.log(chalk.green(`Serving single app from: ${distPath}`));
+      }
 
       if (backblazeConfig) {
         console.log(
@@ -186,7 +268,18 @@ Primary storage is set to: ${primaryStorage}
       // Handle process termination
       const cleanup = () => {
         console.log(chalk.yellow('\nShutting down server...'));
-        server.stop().catch(console.error);
+        server
+          .stop()
+          .then(() => {
+            console.log(chalk.green('Server shutdown complete.'));
+            // Force exit after brief delay to ensure any pending operations complete
+            setTimeout(() => process.exit(0), 2000);
+          })
+          .catch(err => {
+            console.error(chalk.red('Error during shutdown:'), err);
+            // Force exit even on error
+            process.exit(1);
+          });
       };
 
       process.on('SIGINT', cleanup);

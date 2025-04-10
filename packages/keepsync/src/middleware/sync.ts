@@ -69,6 +69,10 @@ export interface SyncOptions {
  * The sync is established when the sync engine becomes available, which may not be immediate.
  * The middleware handles the initialization timing and retries automatically.
  *
+ * Document IDs can be dynamically managed through the docIdManager module:
+ * - Document IDs can be prefixed globally (e.g., for multi-user isolation)
+ * - Logical document IDs can be mapped to different actual IDs at runtime
+ *
  * @example
  * const useStore = create(
  *   sync(

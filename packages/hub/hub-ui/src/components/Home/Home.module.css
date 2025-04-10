@@ -1,0 +1,14 @@
+.appsList {
+  list-style-type: disc;
+  padding-left: 20px;
+  margin-top: 8px;
+}
+
+.appItem {
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.appItem:hover {
+  text-decoration: underline;
+}

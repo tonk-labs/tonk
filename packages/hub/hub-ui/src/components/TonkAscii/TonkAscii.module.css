@@ -1,0 +1,8 @@
+.container {
+  height: 300px;
+}
+
+.text {
+  white-space: pre;
+  font-family: monospace;
+}

@@ -1,0 +1,15 @@
+---
+description: Best practices for handling asynchronous operations and child processes in Node.js
+globs: packages/**/*.js, src/**/*.js
+---
+
+# Node.js Asynchronous Operations
+
+## Callbacks vs Promises
+- Prefer Promises and `async/await` over traditional callbacks for improved readability and error handling.
+- Utilize `util.promisify` to convert callback-based Node.js APIs to Promise-based ones when native Promise APIs are unavailable.
+
+## Child Processes
+- When executing external commands and needing to wait for completion, use the Promise-based version of `child_process.exec` (via `util.promisify`) or `child_process.execSync` (use `execSync` cautiously as it blocks the event loop).
+- Always handle potential errors from child processes, checking both the error object in `catch` blocks and the `stderr` output.
+- Avoid executing untrusted input directly in shell commands to prevent security vulnerabilities. 

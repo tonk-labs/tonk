@@ -13,7 +13,7 @@ export const devCommand = new Command('dev')
     'Port to run the frontend dev server on',
     '3000',
   )
-  .option('--no-open', 'Disable auto-opening the browser')
+  .option('--open', 'Enable auto-opening the browser')
   .action(async options => {
     const projectRoot = process.cwd();
     const port = parseInt(options.port, 10);
@@ -38,6 +38,9 @@ export const devCommand = new Command('dev')
       mode: 'development',
       verbose: true,
       distPath: undefined,
+      apiProxy: {
+        target: 'http://localhost:6080/api',
+      },
     });
 
     // Start webpack dev server

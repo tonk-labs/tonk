@@ -1,12 +1,13 @@
-import { Command } from "commander";
-import inquirer from "inquirer";
 import chalk from "chalk";
-import ora from "ora";
+import { Command } from "commander";
 import fs from "fs-extra";
+import inquirer from "inquirer";
+import ora from "ora";
 import path from "path";
+import process from "process";
 import { fileURLToPath } from "url";
-import { ProjectPlan, TemplateType } from "./types";
 import { createReactTemplate } from "./templates/react";
+import { ProjectPlan, TemplateType } from "./types";
 
 /**
  * Resolves a package path by checking both local development and global installation paths
@@ -33,14 +34,14 @@ async function resolvePackagePath(relativePath: string): Promise<string> {
       const globalPath = path.join(
         globalNodeModules,
         "@tonk/create",
-        relativePath,
+        relativePath
       );
 
       if (await fs.pathExists(globalPath)) {
         return globalPath;
       } else {
         throw new Error(
-          `Could not locate ${relativePath} in local or global paths`,
+          `Could not locate ${relativePath} in local or global paths`
         );
       }
     }
@@ -72,28 +73,9 @@ const projectQuestions = [
     default: "my-tonk-app",
   },
   {
-    type: "list",
-    name: "projectType",
-    message: "What type of project are you building?",
-    choices: [
-      "Productivity System",
-      "Creative Tool",
-      "Professional Services",
-      "Community Space",
-      "Learning & Education",
-      "Other",
-    ],
-  },
-  {
-    type: "list",
-    name: "platform",
-    message: "What platform do you want to use?",
-    choices: ["react"],
-  },
-  {
     type: "input",
     name: "description",
-    message: "Briefly describe your project and its main functionality:",
+    message: "Briefly describe your project:",
   },
 ];
 
@@ -102,64 +84,41 @@ export async function createProject(
   projectName: string,
   plan: ProjectPlan,
   _templateName: TemplateType,
+  _projectPath: string | null = null
 ) {
   const spinner = ora("Creating project structure...").start();
-  let projectPath = "";
+  let projectPath = _projectPath;
 
   try {
     // Create project directory
-    projectPath = path.resolve(projectName);
+    projectPath = projectPath || path.resolve(projectName);
     await fs.ensureDir(projectPath);
 
     // Find template path
     let templatePath;
-    let templateName = _templateName === "default" ? "react" : _templateName;
+    const templateName = "react";
 
     try {
       templatePath = await resolvePackagePath(`templates/${templateName}`);
     } catch (error) {
       console.error(
         `Error resolving template path for "${templateName}":`,
-        error,
+        error
       );
       throw new Error(
-        `Could not locate template "${templateName}". Please ensure the package is installed correctly and the template exists.`,
+        `Could not locate template "${templateName}". Please ensure the package is installed correctly and the template exists.`
       );
     }
 
     // Ensure templatePath is defined before using it
     if (!templatePath || !(await fs.pathExists(templatePath))) {
       throw new Error(
-        `Template path not found for "${templateName}": ${templatePath}`,
+        `Template path not found for "${templateName}": ${templatePath}`
       );
     }
 
     // Switch on template type and call appropriate template creator
-    try {
-      switch (templateName) {
-        case "react":
-          await createReactTemplate(
-            projectPath,
-            projectName,
-            templatePath,
-            plan,
-          );
-          break;
-
-        default:
-          await createReactTemplate(
-            projectPath,
-            projectName,
-            templatePath,
-            plan,
-          );
-          break;
-      }
-    } catch (error) {
-      spinner.fail(`Failed to create ${templateName} project`);
-      console.error(error);
-      process.exit(1);
-    }
+    await createReactTemplate(projectPath, projectName, templatePath, plan);
   } catch (error) {
     spinner.fail("Failed to setup project");
     console.error(error);
@@ -168,48 +127,45 @@ export async function createProject(
   spinner.stop();
 }
 
+const createApp = async (options: { init: boolean; }) => {
+  try {
+    console.log("Scaffolding tonk code...");
+    // Prepare questions, removing projectName question if provided as argument
+    const questions = options.init
+      ? [...projectQuestions.slice(1)]
+      : projectQuestions;
+
+    // Get project details
+    const answers = await inquirer.prompt(questions);
+
+    // Generate project plan
+    const plan = answers;
+
+    // Create project with generated plan and template
+    const finalProjectName = options.init
+      ? path.basename(process.cwd())
+      : answers.projectName || "my-tonk-app";
+
+    const templateName = answers.platform as TemplateType;
+    let projectPath = options.init ? process.cwd() : null;
+    await createProject(finalProjectName, plan, templateName, projectPath);
+
+    console.log("🎉 Tonk project ready for vibe coding!");
+  } catch (error) {
+    console.error(chalk.red("Error:"), error);
+    process.exit(1);
+  }
+};
+
 program
-  .name("create-app")
-  .description("Create a new Tonk app")
+  .name("create")
+  .description("Scaffold code for your Tonk projects")
   .version(packageJson.version, "-v, --version", "Output the current version")
-  .argument("[project-name]", "Name of the project to create")
-  .action(async (projectNameArg) => {
-    console.log(chalk.bold("\nTonk! 🚀\n"));
-
-    try {
-      // Prepare questions, removing projectName question if provided as argument
-      const questions = [...projectQuestions];
-      if (projectNameArg) {
-        // Remove the projectName question if name was provided as argument
-        const projectNameIndex = questions.findIndex(
-          (q) => q.name === "projectName",
-        );
-        if (projectNameIndex !== -1) {
-          questions.splice(projectNameIndex, 1);
-        }
-      }
-
-      // Get project details
-      const answers = await inquirer.prompt(questions);
-      const options = program.opts();
-
-      // If project name was provided as argument, add it to answers
-      if (projectNameArg) {
-        answers.projectName = projectNameArg;
-      }
-
-      // Generate project plan
-      const plan = answers;
-
-      // Create project with generated plan and template
-      const finalProjectName =
-        projectNameArg || options.name || answers.projectName || "my-tonk-app";
-      const templateName = answers.platform as TemplateType;
-      await createProject(finalProjectName, plan, templateName);
-    } catch (error) {
-      console.error(chalk.red("Error:"), error);
-      process.exit(1);
-    }
+  .option("-i, --init", "initialize in the folder")
+  .action(async (options) => {
+    console.log(chalk.bold("\nWelcome to Tonk! 🚀\n"));
+    await createApp({ init: options.init ?? false });
+    return;
   });
 
 program.parse(process.argv);

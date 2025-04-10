@@ -1,0 +1,26 @@
+---
+description: Documentation guidelines and information about the Tonk toolchain
+globs: docs/src/*.md
+alwaysApply: false
+---
+
+# Tonk Documentation Guidelines
+
+## Core Concepts
+- Tonk apps plug into Tonk stores for local-first data storage
+- Apps are collaborative, interoperable, private, and performant
+- The Tonk Hub manages apps and stores
+- Stores represent Automerge documents for sync engines
+
+## Toolchain Components
+- Tonk CLI (`@tonk/cli`) is used to install and manage Tonk
+- The Tonk Hub is started with `tonk hello`
+- Apps can be created with `tonk create`
+- Apps include built-in AI context via llms.txt files
+
+## Development Flow
+- Launch existing apps from the Hub
+- Modify stores through app interactions
+- Edit app code directly
+- Use copilots (Claude Code, Cursor, Windsurf) for development
+- Create new apps with the CLI or Hub UI 

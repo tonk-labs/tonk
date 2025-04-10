@@ -13,15 +13,21 @@ export class FileSystemStorageMiddleware {
   private documentLocks: Map<DocumentId, Promise<void>> = new Map();
   private name: string;
 
+  private fileWatchInterval: NodeJS.Timeout | null = null;
+
   constructor(
     options: FileSystemStorageOptions,
     name: string = 'FileSystemStorageMiddleware',
     private verbose: boolean = true,
+    private fileWatchIntervalMs: number = 5000, // Check for external changes every 5 seconds by default
   ) {
     this.name = name;
     this.storage = new AutomergeFileSystemStorage(options, (color, message) =>
       this.log(color, message),
     );
+    
+    // Start watching for external file changes
+    this.startFileWatcher();
   }
 
   private log(
@@ -39,7 +45,84 @@ export class FileSystemStorageMiddleware {
     return this.storage.isInitialized();
   }
 
+  // Start watching for external file changes
+  private startFileWatcher(): void {
+    if (this.fileWatchInterval) {
+      clearInterval(this.fileWatchInterval);
+    }
+    
+    this.fileWatchInterval = setInterval(() => {
+      this.checkForExternalChanges();
+    }, this.fileWatchIntervalMs);
+    
+    this.log('blue', `Started file watcher with interval of ${this.fileWatchIntervalMs}ms`);
+  }
+  
+  // Stop watching for external file changes
+  private stopFileWatcher(): void {
+    if (this.fileWatchInterval) {
+      clearInterval(this.fileWatchInterval);
+      this.fileWatchInterval = null;
+      this.log('blue', 'Stopped file watcher');
+    }
+  }
+  
+  // Check all loaded documents for external changes
+  private async checkForExternalChanges(): Promise<void> {
+    try {
+      // Reload documents from filesystem first
+      await this.storage.loadDocumentsFromFileSystem();
+      
+      // Check each document in memory for changes
+      for (const docId of this.documents.keys()) {
+        // Use a non-blocking approach to avoid locking everything during checks
+        this.checkDocumentForExternalChanges(docId).catch(error => {
+          this.log('red', `Error checking for external changes to ${docId}: ${error.message}`);
+        });
+      }
+    } catch (error) {
+      this.log('red', `Error in checkForExternalChanges: ${(error as Error).message}`);
+    }
+  }
+  
+  // Check a specific document for external changes
+  private async checkDocumentForExternalChanges(docId: DocumentId): Promise<void> {
+    // Skip if there's already an operation in progress for this document
+    if (this.documentLocks.has(docId)) return;
+    
+    try {
+      // Use the document lock to ensure thread safety
+      await this.withDocumentLock(docId, async () => {
+        // Get fresh copies of both documents to avoid aliasing issues
+        const doc = this.documents.get(docId);
+        if (!doc) return;
+        
+        // Get a fresh copy from storage
+        const storedDoc = this.storage.getDocument(docId);
+        if (!storedDoc) return;
+        
+        // Compare the stored doc with our in-memory version
+        const docHistory = Automerge.getHistory(doc).length;
+        const storedHistory = Automerge.getHistory(storedDoc).length;
+        
+        if (storedHistory > docHistory) {
+          this.log('blue', `Detected external changes to document: ${docId} (history: ${docHistory} -> ${storedHistory})`);
+          
+          // Create a new merged document to avoid aliasing issues
+          const merged = Automerge.merge(Automerge.clone(doc), Automerge.clone(storedDoc));
+          
+          this.log('green', `Merged external changes to document: ${docId}`);
+          this.documents.set(docId, merged);
+          this.storage.storeDocument(docId, merged);
+        }
+      });
+    } catch (error) {
+      this.log('red', `Error checking document ${docId} for external changes: ${(error as Error).message}`);
+    }
+  }
+
   public async shutdown(): Promise<void> {
+    this.stopFileWatcher();
     await this.storage.shutdown();
   }
 
@@ -74,16 +157,46 @@ export class FileSystemStorageMiddleware {
 
   private async loadDocument(
     id: DocumentId,
+    checkForExternalChanges: boolean = false,
   ): Promise<Automerge.Doc<any> | null> {
     let doc = this.documents.get(id);
-    if (doc) return Automerge.clone(doc);
-
-    const storedDoc = this.storage.getDocument(id);
-    if (!storedDoc) return null;
-
-    doc = storedDoc; // Already an Automerge.Doc from storage.getDocument
-    this.documents.set(id, doc);
-    return Automerge.clone(doc);
+    
+    // If we need to check for external changes, or we don't have the doc in memory
+    if (checkForExternalChanges || !doc) {
+      // Get the latest version from storage
+      const storedDoc = this.storage.getDocument(id);
+      if (!storedDoc) return doc ? Automerge.clone(doc) : null;
+      
+      if (doc) {
+        // If we already have a doc in memory, merge it with the stored version
+        this.log('blue', `Checking for external changes to document: ${id}`);
+        
+        // Get history lengths for comparison
+        const docHistory = Automerge.getHistory(doc).length;
+        const storedHistory = Automerge.getHistory(storedDoc).length;
+        
+        // Only merge if there are actual changes to merge
+        if (storedHistory > docHistory) {
+          // Create clones to avoid aliasing issues
+          const docClone = Automerge.clone(doc);
+          const storedClone = Automerge.clone(storedDoc);
+          
+          // Merge the two documents
+          const merged = Automerge.merge(docClone, storedClone);
+          
+          this.log('green', `Merged external changes to document: ${id} (history: ${docHistory} -> ${storedHistory})`);
+          this.documents.set(id, merged);
+          this.storage.storeDocument(id, merged); // Save the merged result
+          return Automerge.clone(merged);
+        }
+      } else {
+        // First time loading this doc
+        doc = Automerge.clone(storedDoc); // Clone to avoid aliasing issues
+        this.documents.set(id, doc);
+      }
+    }
+    
+    return doc ? Automerge.clone(doc) : null;
   }
 
   public async createDocument(
@@ -103,8 +216,8 @@ export class FileSystemStorageMiddleware {
     });
   }
 
-  public async getDocument(id: DocumentId): Promise<Automerge.Doc<any> | null> {
-    const doc = await this.loadDocument(id);
+  public async getDocument(id: DocumentId, checkForExternalChanges: boolean = true): Promise<Automerge.Doc<any> | null> {
+    const doc = await this.loadDocument(id, checkForExternalChanges);
     if (!doc) return null;
     return doc;
   }
@@ -114,7 +227,8 @@ export class FileSystemStorageMiddleware {
     updater: (doc: any) => void,
   ): Promise<void> {
     return this.withDocumentLock(id, async () => {
-      const doc = await this.loadDocument(id);
+      // Always check for external changes before updating
+      const doc = await this.loadDocument(id, true);
       if (!doc) {
         // Create a new document if it doesn't exist
         return this.createDocument(id, {});
@@ -163,7 +277,8 @@ export class FileSystemStorageMiddleware {
     return this.withDocumentLock(docId, async () => {
       this.log('blue', `Loading document of id ${docId}`);
 
-      let doc = await this.loadDocument(docId);
+      // Always check for external changes when handling incoming changes
+      let doc = await this.loadDocument(docId, true);
       if (!doc) {
         this.log('blue', `Initializing a new document of id ${docId}`);
         doc = Automerge.init();
@@ -251,11 +366,40 @@ export class FileSystemStorageMiddleware {
 
     // Update our in-memory state with the freshly loaded documents
     for (const docId of this.storage.getAllDocumentIds()) {
-      const doc = this.storage.getDocument(docId);
-      if (doc) {
-        this.documents.set(docId, Automerge.clone(doc));
+      // Use a try-catch block for each document to prevent one failure from stopping the entire reload
+      try {
+        const storedDoc = this.storage.getDocument(docId);
+        if (!storedDoc) continue;
+        
+        const inMemoryDoc = this.documents.get(docId);
+        
+        if (inMemoryDoc) {
+          // If we have the document in memory, merge it with the stored version
+          // Get history lengths for comparison
+          const docHistory = Automerge.getHistory(inMemoryDoc).length;
+          const storedHistory = Automerge.getHistory(storedDoc).length;
+          
+          if (storedHistory > docHistory) {
+            this.log('blue', `Merging changes for document: ${docId} during reload (history: ${docHistory} -> ${storedHistory})`);
+            
+            // Create clones to avoid aliasing issues
+            const docClone = Automerge.clone(inMemoryDoc);
+            const storedClone = Automerge.clone(storedDoc);
+            
+            // Merge the two documents
+            const merged = Automerge.merge(docClone, storedClone);
+            this.documents.set(docId, merged);
+          }
+        } else {
+          // If we don't have the document in memory, just use the stored version
+          this.documents.set(docId, Automerge.clone(storedDoc));
+        }
+      } catch (error) {
+        this.log('red', `Error reloading document ${docId}: ${(error as Error).message}`);
       }
     }
+    
+    this.log('green', 'Reloaded documents from filesystem');
   }
 
   // Delete a document
@@ -273,5 +417,50 @@ export class FileSystemStorageMiddleware {
     this.documents.clear();
     this.syncStates.clear();
     this.documentLocks.clear();
+  }
+  
+  // Manually check for external changes to a specific document
+  public async checkForExternalChangesTo(docId: DocumentId): Promise<boolean> {
+    try {
+      // Reload documents from filesystem first
+      await this.storage.loadDocumentsFromFileSystem();
+      
+      let hasChanges = false;
+      
+      // Use the document lock to ensure thread safety
+      await this.withDocumentLock(docId, async () => {
+        // Get fresh copies of both documents to avoid aliasing issues
+        const doc = this.documents.get(docId);
+        if (!doc) return;
+        
+        // Get a fresh copy from storage
+        const storedDoc = this.storage.getDocument(docId);
+        if (!storedDoc) return;
+        
+        // Compare the stored doc with our in-memory version
+        const docHistory = Automerge.getHistory(doc).length;
+        const storedHistory = Automerge.getHistory(storedDoc).length;
+        
+        if (storedHistory > docHistory) {
+          this.log('blue', `Detected external changes to document: ${docId} (history: ${docHistory} -> ${storedHistory})`);
+          
+          // Create a new merged document to avoid aliasing issues
+          const docClone = Automerge.clone(doc);
+          const storedClone = Automerge.clone(storedDoc);
+          const merged = Automerge.merge(docClone, storedClone);
+          
+          this.documents.set(docId, merged);
+          this.storage.storeDocument(docId, merged);
+          
+          this.log('green', `Manually merged external changes to document: ${docId}`);
+          hasChanges = true;
+        }
+      });
+      
+      return hasChanges;
+    } catch (error) {
+      this.log('red', `Error checking for external changes to ${docId}: ${(error as Error).message}`);
+      return false;
+    }
   }
 }

@@ -17,7 +17,13 @@ Start building apps and integrations with [our documentation](https://tonk-labs.
 
 ## Project Status
 
-The team behind Tonk is a small, early-stage startup based in London. We are dedicated to building a new and better internet that transfers power away from internet platforms and towards the people and enterprises that use them. Our bet is that the Tonk toolchain & the interoperable ecosystem of Tonk apps will bootstrap that new internet. The Tonk toolchain is in alpha. This is a brand new project built fully in the open, from scratch. Please ask questions in our community or visit our website for more information.
+- **Local-First Architecture**: Built on Automerge for conflict-free data synchronization.
+- **Quick Start**: Create new projects instantly with `tonk create`.
+- **Offline Support**: IndexedDB-based storage auto syncs when connectivity resumes.
+- **Privacy Focused**: Keeps user data local by default.
+- **React + TypeScript**: Modern development stack with full type safety.
+- **Tailwind CSS**: Utility-first styling out of the box.
+- **Package and Share**: Easily deploy and share your Tonk apps (work in progress).
 
 As an early stage project we are very open to feedback and keen to help builders - so please reach out to the team and we will endeavour to support your usecase.
 
