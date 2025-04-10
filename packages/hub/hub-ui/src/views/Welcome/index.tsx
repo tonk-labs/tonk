@@ -47,10 +47,13 @@ const Welcome: React.FC = () => {
         }
     }, []);
 
-    const handleSelectFolder = () => {
-        handleSelectDirectory((path: string) => {
+    const handleSelectFolder = async () => {
+        try {
+            const path = await handleSelectDirectory();
             setSelectedPath(path);
-        });
+        } catch (error) {
+            console.error("Error selecting folder:", error);
+        }
     };
 
     const initialize = async () => {

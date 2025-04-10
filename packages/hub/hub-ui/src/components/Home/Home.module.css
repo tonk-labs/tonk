@@ -7,8 +7,14 @@
 .appItem {
   cursor: pointer;
   padding: 4px 0;
+  outline: none;
 }
 
 .appItem:hover {
   text-decoration: underline;
+}
+
+.appItem:focus {
+  text-decoration: underline;
+  background-color: rgba(255, 255, 255, 0.1);
 }

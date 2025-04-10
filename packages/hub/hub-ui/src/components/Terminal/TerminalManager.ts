@@ -258,7 +258,7 @@ export class TerminalManager {
         ws.send(
           JSON.stringify({
             type: "command",
-            command: "npm install && tonk markdown README.md\r",
+            command: "pnpm install && tonk markdown README.md\r",
           })
         );
       }

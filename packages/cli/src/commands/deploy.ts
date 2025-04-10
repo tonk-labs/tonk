@@ -349,7 +349,7 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
     try {
       // 1. Build the application
       console.log(chalk.blue('Building application...'));
-      execSync('npm run build', {cwd: projectRoot, stdio: 'inherit'});
+      execSync('pnpm run build', {cwd: projectRoot, stdio: 'inherit'});
 
       // 2. Copy Dockerfile if it doesn't exist
       const dockerfilePath = path.join(projectRoot, 'Dockerfile');
@@ -370,7 +370,7 @@ You can provision a new EC2 instance with 'tonk config --provision' or configure
       console.log(chalk.blue('Packaging application...'));
 
       // Create a tarball
-      const packOutput = execSync('npm pack', {
+      const packOutput = execSync('pnpm pack', {
         cwd: projectRoot,
         encoding: 'utf8',
       }).trim();
