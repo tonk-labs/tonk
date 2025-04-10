@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button, RainbowMode, Text, TypewriterText } from "../../components";
+import { Button, RainbowText, Text, TypewriterText } from "../../components";
 import { copyHubTemplate, init } from "../../ipc/hub";
 import { handleSelectDirectory } from "../../ipc/ui";
 import { useConfigStore } from "../../stores/configStore";
@@ -107,9 +107,9 @@ const Welcome: React.FC = () => {
                             width: "100%",
                         }}
                     >
-                        <RainbowMode style={{ fontSize: 24 }}>
+                        <RainbowText style={{ fontSize: 24 }}>
                             ☆Little Internet☆
-                        </RainbowMode>
+                        </RainbowText>
                     </div>
                 )}
             </div>

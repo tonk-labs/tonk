@@ -1,3 +1,6 @@
+import { getConfig } from "./config";
+import { platformSensitiveJoin } from "./files";
+
 export const launchApp = async (appPath: string) => {
     try {
         // Launch the app with the selected docId
@@ -27,3 +30,16 @@ export const openExternal = async (link: string) => {
         }
     }
 };
+
+export const getApps = async () => {
+const config = await getConfig();
+    const fullPath = await platformSensitiveJoin([
+        config!.homePath,
+        "apps",
+    ]);
+    if (!fullPath) {
+        return [];
+    }
+    const apps = await window.electronAPI.ls(fullPath);
+    return apps.map((app) => app.name);
+}

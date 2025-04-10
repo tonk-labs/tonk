@@ -53,7 +53,7 @@ const ActionBar: React.FC = () => {
                 tooltip="Home"
                 tooltipPosition="bottom"
             >
-                <HomeIcon className={styles.homeIcon} />
+                <HomeIcon size={24} />
             </Button>
             <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
                 <Dialog.Trigger asChild>
@@ -65,7 +65,7 @@ const ActionBar: React.FC = () => {
                         tooltip="Create App"
                         tooltipPosition="bottom"
                     >
-                        <NotebookPen size={20} />
+                        <NotebookPen size={24} />
                     </Button>
                 </Dialog.Trigger>
                 <Dialog.Portal>
@@ -124,7 +124,7 @@ const ActionBar: React.FC = () => {
                 tooltip="Documentation"
                 tooltipPosition="bottom"
             >
-                <BookOpenText size={20} />
+                <BookOpenText size={24} />
             </Button>
         </div>
     );
