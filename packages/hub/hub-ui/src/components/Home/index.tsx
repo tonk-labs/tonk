@@ -4,6 +4,7 @@ import {
   LaunchBar,
   Link,
   LinkType,
+  OpenLink,
   Terminal,
   Text,
   TonkAsciiAnimated,
@@ -37,35 +38,35 @@ const EmptyState = () => {
   };
 
   return (
-    <div style = {{padding: 10, width: "100%"}}>
+    <div style={{ padding: 10, width: "100%" }}>
       <TonkAsciiAnimated key={0} />
       <Text style={{ fontSize: "12pt" }}>Welcome to your Tonk Hub!</Text>
 
       {items.apps && items.apps.children.length > 0 ? (
-        <div style={{ border: "1px solid white", marginTop: "10px", padding: "10px", width: "fit-content" }}>
+        <div className={styles.sectionContainer}>
           <Text>Your Apps:</Text>
-            <ul className={styles.appsList}>
-              {items.apps.children.map((appName, index) => (
-                <li
-                  key={index}
+          <ul className={styles.appsList}>
+            {items.apps.children.map((appName, index) => (
+              <li
+                key={index}
+                className={styles.appItem}
+                onClick={() => handleSelectApp(appName)}
+              >
+                <Text>{appName.slice(5)}</Text>
+              </li>
+            ))}
+            <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
+              <Dialog.Trigger asChild>
+                <div
                   className={styles.appItem}
-                  onClick={() => handleSelectApp(appName)}
+                  style={{ marginLeft: "-16px", color: "#35ff3c" }}
                 >
-                  <Text>{appName.slice(5)}</Text>
-                </li>
-              ))}
-              <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
-                <Dialog.Trigger asChild>
-                  <div
-                    className={styles.appItem}
-                    style={{ marginLeft: "-16px", color: "#35ff3c" }}
-                  >
-                    <Text style={{ color: "blue" }}>+ Create new app</Text>
-                  </div>
-                </Dialog.Trigger>
-                <CreateAppDialog close={() => setIsOpen(false)} />
-              </Dialog.Root>
-            </ul>
+                  <Text style={{ color: "blue" }}>+ Create new app</Text>
+                </div>
+              </Dialog.Trigger>
+              <CreateAppDialog close={() => setIsOpen(false)} />
+            </Dialog.Root>
+          </ul>
         </div>
       ) : (
         <>
@@ -78,6 +79,10 @@ const EmptyState = () => {
           </Text>
         </>
       )}
+
+      <div className={styles.sectionContainer}>
+        <OpenLink />
+      </div>
     </div>
   );
 };
@@ -99,6 +104,5 @@ const Home = () => {
     }
   }
 };
-
 
 export default Home;

@@ -1,0 +1,59 @@
+.container {
+  width: 100%;
+}
+
+.inputList {
+  list-style-type: none;
+  padding-left: 0;
+  margin-top: 8px;
+}
+
+.inputItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.input {
+  background: transparent;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: white;
+  padding: 4px 8px;
+  font-family: inherit;
+  width: 250px;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #3a86ff;
+}
+
+.openButton {
+  background: transparent;
+  color: #35ff3c;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  font-family: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+
+.openButton:hover {
+  filter: brightness(0.8);
+}
+
+.openButton:disabled {
+  color: #666;
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
+.errorItem {
+  color: #ff6b6b;
+  margin-top: 4px;
+  font-size: 0.875rem;
+  list-style-type: none;
+}
