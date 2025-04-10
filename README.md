@@ -2,7 +2,7 @@
 
 Tonk is the copilot-friendly toolchain that gives independent developers freedom to build powerful shared software.
 
-You can use the Tonk tooolchain to:
+You can use the Tonk toolchain to:
 
 - Build applications within a copilot-friendly framework
 - Manage complex state interoperable across people and apps
