@@ -83,7 +83,7 @@ else
 fi
 
 # Install dependencies for each package in order
-PACKAGES=("server" "keepsync" "create" "hub" "hub-ui" "cli")
+PACKAGES=("server" "keepsync" "create" "hub" "cli")
 
 echo -e "\n${GREEN}Installing dependencies for all packages...${NC}"
 
@@ -104,12 +104,6 @@ for package in "${PACKAGES[@]}"; do
             echo -e "${GREEN}Installing and building hub package with npm...${NC}"
             npm install
             
-            if [ -f "package.json" ]; then
-                if grep -q "\"build\":" "package.json"; then
-                    echo "Building $package with npm..."
-                    npm run build
-                fi
-            fi
         else
             # Install dependencies with pnpm for other packages
             pnpm install
@@ -129,42 +123,60 @@ for package in "${PACKAGES[@]}"; do
     fi
 done
 
+# Install and build hub-ui
+if [ -d "packages/hub/hub-ui" ]; then
+    echo -e "${GREEN}Installing and building hub-ui...${NC}"
+    cd "packages/hub/hub-ui"
+    
+    # Use the same pattern as the rest of the script - check OS and use appropriate commands
+    if [ "$OSTYPE" == "msys" ] || [ "$OSTYPE" == "win32" ] || [ "$OSTYPE" == "cygwin" ]; then
+        # Windows path handling
+        echo -e "${GREEN}Installing and building hub-ui on Windows...${NC}"
+        pnpm install
+        
+        # Build the package if build script exists
+        if [ -f "package.json" ]; then
+            if grep -q "\"build\":" "package.json"; then
+                echo "Building hub-ui..."
+                pnpm build
+            fi
+        fi
+    else
+        # Unix path handling
+        pnpm install
+        
+        # Build the package if build script exists
+        if [ -f "package.json" ]; then
+            if grep -q "\"build\":" "package.json"; then
+                echo "Building hub-ui..."
+                pnpm build
+            fi
+        fi
+    fi
+    
+    cd - > /dev/null
+    echo -e "${GREEN}hub-ui installed and built successfully.${NC}"
+else
+    echo -e "${YELLOW}Warning: hub-ui directory not found at packages/hub/hub-ui.${NC}"
+fi
+
 
 # Pack and install CLI and Create packages globally
-echo -e "\n${GREEN}Packing and installing CLI and Create packages globally...${NC}"
+echo -e "\n${GREEN}Installing CLI and Create packages globally...${NC}"
 
-# Create a temporary directory for the tarballs
-TEMP_DIR=$(mktemp -d)
 
 if [ -d "packages/cli" ]; then
-    cd "packages/cli"
-    echo -e "${GREEN}Packing CLI package...${NC}"
-    TARBALL=$(npm pack)
-    mv "$TARBALL" "$TEMP_DIR/"
-    cd - > /dev/null
     echo -e "${GREEN}Installing CLI package globally...${NC}"
-    npm install -g "$TEMP_DIR/$TARBALL"
+    npm install -g "./packages/cli"
     echo -e "${GREEN}CLI package installed globally.${NC}"
 else
     echo -e "${YELLOW}Warning: CLI package directory not found.${NC}"
 fi
 
 if [ -d "packages/create" ]; then
-    cd "packages/create"
-    echo -e "${GREEN}Packing Create package...${NC}"
-    TARBALL=$(npm pack)
-    mv "$TARBALL" "$TEMP_DIR/"
-    cd - > /dev/null
     echo -e "${GREEN}Installing Create package globally...${NC}"
-    npm install -g "$TEMP_DIR/$TARBALL"
+    npm install -g "./packages/create"
     echo -e "${GREEN}Create package installed globally.${NC}"
 else
     echo -e "${YELLOW}Warning: Create package directory not found.${NC}"
 fi
-
-# Clean up temporary directory
-rm -rf "$TEMP_DIR"
-
-echo -e "\n${GREEN}Installation completed successfully!${NC}"
-echo -e "${GREEN}You can now run: ${YELLOW}tonk hello${NC}"
-echo -e "${GREEN}To get started with Tonk.${NC}" 
