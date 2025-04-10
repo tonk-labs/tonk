@@ -24,13 +24,6 @@ const EmptyState = () => {
 
   const { items, setSelectedItem } = useProjectStore();
 
-  // todo: remove
-  useEffect(() => {
-    if (items.apps && items.apps.children.length > 0) {
-      handleSelectApp(items.apps.children[0]);
-    }
-  }, [items]);
-
   const handleSelectApp = async (appName: string) => {
     const app = items[appName];
     if (!app) {
@@ -44,7 +37,7 @@ const EmptyState = () => {
   };
 
   return (
-    <div style = {{padding: 10}}>
+    <div style = {{padding: 10, width: "100%"}}>
       <TonkAsciiAnimated key={0} />
       <Text style={{ fontSize: "12pt" }}>Welcome to your Tonk Hub!</Text>
 

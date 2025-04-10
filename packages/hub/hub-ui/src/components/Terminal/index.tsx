@@ -35,6 +35,7 @@ const Terminal: React.FC = () => {
           ...subPath,
           path,
         ]);
+        console.log("fullPath", fullPath);
         setPath(fullPath ?? null);
         closeShell().then(() => {
           runShell(fullPath!);

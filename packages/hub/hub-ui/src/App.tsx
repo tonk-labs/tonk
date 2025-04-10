@@ -7,11 +7,18 @@ import { useProjectStore } from "./stores/projectStore";
 
 const App: React.FC = () => {
   const { loadConfig } = useConfigStore();
+
+  const config = useConfigStore.getState().config;
   const { startFileWatching, stopFileWatching } = useProjectStore();
 
   useEffect(() => {
-    loadConfig();
-    startFileWatching();
+    const fn = async () => {
+      await loadConfig();
+      startFileWatching();
+    };
+
+    fn();
+
     return () => {
       stopFileWatching();
     };
