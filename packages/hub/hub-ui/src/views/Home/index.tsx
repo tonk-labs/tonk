@@ -1,4 +1,4 @@
-import { RefreshCcw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ActionBar, Button, ContentArea, Tree } from "../../components";
@@ -47,7 +47,7 @@ const Home: React.FC = () => {
       {clearing && (
         <div className={styles.overlay}>
           <div className={styles.overlaySpinner}>
-            <RefreshCcw size={48} />
+            <RefreshCw size={48} />
           </div>
           <div className={styles.overlayContent}>
             <h2>Clearing Data</h2>
