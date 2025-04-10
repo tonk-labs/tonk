@@ -32,6 +32,45 @@ if ! command -v pnpm &> /dev/null; then
     echo -e "${GREEN}pnpm installed successfully!${NC}"
 fi
 
+# Check if packages are already installed globally
+echo -e "\n${GREEN}Checking for existing global installations...${NC}"
+
+CLI_INSTALLED=$(npm list -g @tonk/cli 2>/dev/null | grep -c "@tonk/cli")
+CREATE_INSTALLED=$(npm list -g @tonk/create 2>/dev/null | grep -c "@tonk/create")
+
+if [ $CLI_INSTALLED -gt 0 ] || [ $CREATE_INSTALLED -gt 0 ]; then
+    echo -e "${YELLOW}Warning: Found existing global installation of Tonk packages:${NC}"
+    
+    if [ $CLI_INSTALLED -gt 0 ]; then
+        echo -e "- @tonk/cli"
+    fi
+    
+    if [ $CREATE_INSTALLED -gt 0 ]; then
+        echo -e "- @tonk/create"
+    fi
+    
+    echo -e "\n${YELLOW}Do you want to remove these packages and continue with installation? (y/n)${NC}"
+    read -n 1 -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${GREEN}Removing existing packages...${NC}"
+        
+        if [ $CLI_INSTALLED -gt 0 ]; then
+            npm rm -g @tonk/cli
+        fi
+        
+        if [ $CREATE_INSTALLED -gt 0 ]; then
+            npm rm -g @tonk/create
+        fi
+        
+        echo -e "${GREEN}Existing packages removed. Continuing with installation...${NC}"
+    else
+        echo -e "${YELLOW}Installation aborted.${NC}"
+        exit 0
+    fi
+fi
+
 # Clone the repository if not already in it
 REPO_DIR="tonk"
 if [ ! -d ".git" ]; then
@@ -44,7 +83,7 @@ else
 fi
 
 # Install dependencies for each package in order
-PACKAGES=("server" "keepsync" "create" "hub" "hub-ui" "cli")
+PACKAGES=("server" "keepsync" "create" "hub" "cli")
 
 echo -e "\n${GREEN}Installing dependencies for all packages...${NC}"
 
@@ -65,12 +104,6 @@ for package in "${PACKAGES[@]}"; do
             echo -e "${GREEN}Installing and building hub package with npm...${NC}"
             npm install
             
-            if [ -f "package.json" ]; then
-                if grep -q "\"build\":" "package.json"; then
-                    echo "Building $package with npm..."
-                    npm run build
-                fi
-            fi
         else
             # Install dependencies with pnpm for other packages
             pnpm install
@@ -90,27 +123,60 @@ for package in "${PACKAGES[@]}"; do
     fi
 done
 
-# Link CLI and Create packages globally
-echo -e "\n${GREEN}Linking CLI and Create packages globally...${NC}"
+# Install and build hub-ui
+if [ -d "packages/hub/hub-ui" ]; then
+    echo -e "${GREEN}Installing and building hub-ui...${NC}"
+    cd "packages/hub/hub-ui"
+    
+    # Use the same pattern as the rest of the script - check OS and use appropriate commands
+    if [ "$OSTYPE" == "msys" ] || [ "$OSTYPE" == "win32" ] || [ "$OSTYPE" == "cygwin" ]; then
+        # Windows path handling
+        echo -e "${GREEN}Installing and building hub-ui on Windows...${NC}"
+        pnpm install
+        
+        # Build the package if build script exists
+        if [ -f "package.json" ]; then
+            if grep -q "\"build\":" "package.json"; then
+                echo "Building hub-ui..."
+                pnpm build
+            fi
+        fi
+    else
+        # Unix path handling
+        pnpm install
+        
+        # Build the package if build script exists
+        if [ -f "package.json" ]; then
+            if grep -q "\"build\":" "package.json"; then
+                echo "Building hub-ui..."
+                pnpm build
+            fi
+        fi
+    fi
+    
+    cd - > /dev/null
+    echo -e "${GREEN}hub-ui installed and built successfully.${NC}"
+else
+    echo -e "${YELLOW}Warning: hub-ui directory not found at packages/hub/hub-ui.${NC}"
+fi
+
+
+# Pack and install CLI and Create packages globally
+echo -e "\n${GREEN}Installing CLI and Create packages globally...${NC}"
+
 
 if [ -d "packages/cli" ]; then
-    cd "packages/cli"
-    npm link
-    cd - > /dev/null
-    echo -e "${GREEN}CLI package linked globally.${NC}"
+    echo -e "${GREEN}Installing CLI package globally...${NC}"
+    npm install -g "./packages/cli"
+    echo -e "${GREEN}CLI package installed globally.${NC}"
 else
     echo -e "${YELLOW}Warning: CLI package directory not found.${NC}"
 fi
 
 if [ -d "packages/create" ]; then
-    cd "packages/create"
-    npm link
-    cd - > /dev/null
-    echo -e "${GREEN}Create package linked globally.${NC}"
+    echo -e "${GREEN}Installing Create package globally...${NC}"
+    npm install -g "./packages/create"
+    echo -e "${GREEN}Create package installed globally.${NC}"
 else
     echo -e "${YELLOW}Warning: Create package directory not found.${NC}"
 fi
-
-echo -e "\n${GREEN}Installation completed successfully!${NC}"
-echo -e "${GREEN}You can now run: ${YELLOW}tonk hello${NC}"
-echo -e "${GREEN}To get started with Tonk.${NC}" 

@@ -26,7 +26,7 @@ declare global {
 
       getDocumentsPath: () => string;
       installIntegration: (
-        integrationLink: string
+        integrationLink: string,
       ) => Promise<{ success: boolean; data?: string; error?: string }>;
       getInstalledIntegrations: () => Promise<{
         success: boolean;

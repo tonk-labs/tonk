@@ -34,28 +34,30 @@ contextBridge.exposeInMainWorld("electronAPI", {
     getInstalledIntegrations: () =>
         ipcRenderer.invoke("get-installed-integrations"),
     runServer: (restart) => ipcRenderer.invoke('run-server', restart), 
+    saveDocument: (id, content) => ipcRenderer.invoke('save-document', id, content),
+    readDocument: (id) => ipcRenderer.invoke('read-document', id),
 });
 
 // Add IPC listener for file changes
 ipcRenderer.on("file-change", (event, payload) => {
-    // Dispatch a custom event that the React app can listen to
-    window.dispatchEvent(new CustomEvent("file-change", { detail: payload }));
+  // Dispatch a custom event that the React app can listen to
+  window.dispatchEvent(new CustomEvent("file-change", { detail: payload }));
 });
 
 // All the Node.js APIs are available in the preload process.
 // It has the same sandbox as a Chrome extension.
 window.addEventListener("DOMContentLoaded", () => {
-    const replaceText = (selector, text) => {
-        const element = document.getElementById(selector);
-        if (element) element.innerText = text;
-    };
+  const replaceText = (selector, text) => {
+    const element = document.getElementById(selector);
+    if (element) element.innerText = text;
+  };
 
-    for (const dependency of ["chrome", "node", "electron"]) {
-        replaceText(`${dependency}-version`, process.versions[dependency]);
-    }
+  for (const dependency of ["chrome", "node", "electron"]) {
+    replaceText(`${dependency}-version`, process.versions[dependency]);
+  }
 
-    // Initialize global objects for WebAssembly compatibility
-    if (!window.wbg) {
-        window.wbg = {};
-    }
+  // Initialize global objects for WebAssembly compatibility
+  if (!window.wbg) {
+    window.wbg = {};
+  }
 });

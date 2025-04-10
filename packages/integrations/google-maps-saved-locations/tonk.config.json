@@ -1,8 +1,0 @@
-{
-  "name": "google-maps-saved-locations",
-  "plan": {
-    "projectDescription": "It takes your exported Google Maps saved location data and prepares it for consumption by Tonk apps.",
-    "implementationLog": []
-  },
-  "template": "integration"
-}

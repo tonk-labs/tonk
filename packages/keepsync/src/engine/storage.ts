@@ -1,14 +1,25 @@
 import {BlobId, DocumentId} from './types';
 
+const hasElectronIPC = (): boolean => {
+  return (
+    typeof window !== 'undefined' &&
+    window.electronAPI !== undefined &&
+    typeof window.electronAPI.writeDocument === 'function' &&
+    typeof window.electronAPI.readDocument === 'function'
+  );
+};
+
 export class Storage {
   private db: IDBDatabase | null = null;
   private dbInitPromise: Promise<void> | null = null;
   private readonly DB_NAME: string;
   private readonly DOCS_STORE = 'documents';
   private readonly BLOBS_STORE = 'blobs';
+  private readonly hasElectronIPC: boolean;
 
   constructor(dbName = 'sync-engine-store') {
     this.DB_NAME = dbName;
+    this.hasElectronIPC = hasElectronIPC();
   }
 
   async init(): Promise<void> {
@@ -55,6 +66,8 @@ export class Storage {
   }
 
   async saveDocument(id: DocumentId, doc: Uint8Array): Promise<void> {
+    if (this.hasElectronIPC) await window.electronAPI.writeDocument(id, doc);
+
     const db = await this.ensureDB();
 
     return new Promise((resolve, reject) => {
@@ -81,6 +94,17 @@ export class Storage {
   }
 
   async getDocument(id: DocumentId): Promise<Uint8Array | null> {
+    if (this.hasElectronIPC) {
+      try {
+        const result = await window.electronAPI.readDocument(id);
+        return result;
+      } catch (error) {
+        console.error('Failed to read document via Electron IPC:', error);
+        // Fall back to IndexedDB if Electron IPC fails
+      }
+    }
+
+    // Fall back to IndexedDB
     const db = await this.ensureDB();
 
     return new Promise((resolve, reject) => {

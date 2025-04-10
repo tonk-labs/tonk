@@ -26,8 +26,8 @@ You should now see your Tonk Hub:
 
 Here you can see your:
 
--   Apps (there's an example app "myWorld" ready and waiting)
--   Stores (this should be empty)
+- Apps (there's an example app "myWorld" ready and waiting)
+- Stores (this should be empty)
 
 The best way to get started is to launch an existing app, so let's open myWorld.
 

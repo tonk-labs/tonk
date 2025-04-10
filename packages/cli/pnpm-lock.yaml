@@ -8,9 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@tonk/keepsync':
+        specifier: ^0.3.5
+        version: 0.3.5(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))
       '@tonk/server':
-        specifier: file:../server
-        version: file:../server(typescript@5.8.2)
+        specifier: ^0.1.7
+        version: 0.1.7(typescript@5.8.2)
       chalk:
         specifier: ^5.3.0
         version: 5.4.1
@@ -35,9 +38,6 @@ importers:
       inquirer:
         specifier: ^9.2.12
         version: 9.3.7
-      keepsync:
-        specifier: file:../keepsync
-        version: '@tonk/keepsync@file:../keepsync(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))'
       listr2:
         specifier: ^8.2.5
         version: 8.2.5
@@ -991,20 +991,15 @@ packages:
   '@tokenizer/token@0.3.0':
     resolution: {integrity: sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==}
 
-  '@tonk/keepsync@file:../keepsync':
-    resolution: {directory: ../keepsync, type: directory}
+  '@tonk/keepsync@0.3.5':
+    resolution: {integrity: sha512-ZpwbGAlLIoWfShJEUAgjSNEUuTIf49zKX5ZG7y1nogtiHYtAMcT3BfjPr03DjmDDWaaSD2ZRfCT/990krz0Cdg==}
     peerDependencies:
       '@automerge/automerge': ^2.2.8
       react: ^19.0.0
       zustand: ^5.0.3
 
-  '@tonk/server@file:../server':
-    resolution: {directory: ../server, type: directory}
-
-  '@trpc/server@11.0.0':
-    resolution: {integrity: sha512-xY9q/b/wR/tWGYTm5xmRjivkYD2EZZXmOKmHuNJRYZuLbieeNUsdfQRjJC409WB1pjKWInomhHwuA8bahZJ4lQ==}
-    peerDependencies:
-      typescript: '>=5.7.2'
+  '@tonk/server@0.1.7':
+    resolution: {integrity: sha512-554s56uttl8KOhapa9ZNDSWBiBRQCab1x9HjIBKBRdgoHJJgggUtG1F2ZcS/+stwh6Fe2JjLf/t8OpHmxe9bqg==}
 
   '@types/cacheable-request@6.0.3':
     resolution: {integrity: sha512-IQ3EbTzGxIigb1I3qPZc1rWJnH0BmSKv5QYTalEwweFvyBDLSAe24zP0le/hyi7ecGfZVlIVAg4BZqb8WBwKqw==}
@@ -4618,7 +4613,7 @@ snapshots:
 
   '@tokenizer/token@0.3.0': {}
 
-  '@tonk/keepsync@file:../keepsync(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))':
+  '@tonk/keepsync@0.3.5(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))':
     dependencies:
       '@automerge/automerge': 2.2.8
       '@automerge/automerge-wasm': 1.0.0-preview.0
@@ -4630,21 +4625,18 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@tonk/server@file:../server(typescript@5.8.2)':
+  '@tonk/server@0.1.7(typescript@5.8.2)':
     dependencies:
       '@automerge/automerge': 2.2.8
       '@flystorage/aws-s3': 1.0.1
       '@flystorage/file-storage': 1.0.1
       '@flystorage/local-fs': 1.0.1
-      '@tonk/server': 'link:'
-      '@trpc/server': 11.0.0(typescript@5.8.2)
       backblaze-b2: 1.7.0
       chalk: 5.4.1
       cors: 2.8.5
       express: 4.21.2
       gts: 6.0.2(typescript@5.8.2)
       http-proxy-middleware: 3.0.3
-      server: link:../../../../Library/pnpm/global/5/node_modules/@tonk/server
       ws: 8.18.1
       zod: 3.24.2
     transitivePeerDependencies:
@@ -4655,10 +4647,6 @@ snapshots:
       - supports-color
       - typescript
       - utf-8-validate
-
-  '@trpc/server@11.0.0(typescript@5.8.2)':
-    dependencies:
-      typescript: 5.8.2
 
   '@types/cacheable-request@6.0.3':
     dependencies:
