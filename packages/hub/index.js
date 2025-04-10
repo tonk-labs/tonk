@@ -3,8 +3,6 @@ const { app, BrowserWindow, protocol, ipcMain } = require("electron");
 const path = require("node:path");
 const process = require("node:process");
 
-const ngrok = require("ngrok");
-
 const { getConfig, readConfig } = require("./src/config.js");
 require("@electron/remote/main").initialize();
 // Import app.js directly to get access to the appWindow variable
@@ -131,11 +129,6 @@ app.whenReady().then(() => {
 // explicitly with Cmd + Q.
 app.on("window-all-closed", async () => {
   // Kill nodemon process when app is closing
-  if (ngrok.isRunning()) {
-    await ngrok.disconnect();
-    await ngrok.kill();
-  }
-
   if (nodemonProcess) {
     nodemonProcess.kill();
     nodemonProcess = null;

@@ -41,7 +41,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 });
 
 // Add IPC listener for file changes
-ipcRenderer.on("file-change", (event, payload) => {
+ipcRenderer.on("file-change", (_event, payload) => {
   // Dispatch a custom event that the React app can listen to
   window.dispatchEvent(new CustomEvent("file-change", { detail: payload }));
 });
