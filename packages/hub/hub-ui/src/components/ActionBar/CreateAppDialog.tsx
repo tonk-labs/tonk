@@ -10,24 +10,40 @@ interface CreateAppDialogProps {
   close: () => void;
 }
 
-const CreateAppDialog: React.FC<CreateAppDialogProps> = ({
-  close,
-}) => {
+const CreateAppDialog: React.FC<CreateAppDialogProps> = ({ close }) => {
   const [appName, setAppName] = useState("");
+  const [directoryName, setDirectoryName] = useState("");
 
   const addEvent = useEventStore((state) => state.addEvent);
+
+  const formatDirectoryName = (name: string): string => {
+    // Replace spaces with hyphens
+    let formatted = name.replace(/\s+/g, "-");
+    // Remove invalid characters
+    formatted = formatted.replace(/[/\\:.;*!?"'<>|]/g, "").toLowerCase();
+    return formatted;
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setAppName(value);
+    setDirectoryName(formatDirectoryName(value));
+  };
+
   const handleCreateApp = async () => {
-    if (appName.trim()) {
-      await createApp(appName.trim());
+    if (directoryName) {
+      await createApp(directoryName);
       addEvent({
-        appName: appName.trim(),
+        appName: directoryName,
         timestamp: Date.now(),
         type: "init",
       });
       setAppName("");
+      setDirectoryName("");
       close();
     }
   };
+
   return (
     <Dialog.Portal>
       <Dialog.Overlay className={styles.dialogOverlay} />
@@ -41,14 +57,27 @@ const CreateAppDialog: React.FC<CreateAppDialogProps> = ({
         <TextInput
           className={styles.input}
           value={appName}
-          onChange={(e) => setAppName(e.target.value)}
+          onChange={handleInputChange}
           placeholder="App name"
         />
+        <div className={styles.directoryPreview}>
+          {directoryName && (
+            <>
+              Directory name:{" "}
+              <span className={styles.previewName}>{directoryName}</span>
+            </>
+          )}
+        </div>
         <div className={styles.dialogButtons}>
           <Button color="ghost" size="sm" onClick={close}>
             Cancel
           </Button>
-          <Button color="green" size="sm" onClick={handleCreateApp}>
+          <Button
+            color="green"
+            size="sm"
+            onClick={handleCreateApp}
+            disabled={!directoryName}
+          >
             Create
           </Button>
         </div>
