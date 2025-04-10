@@ -15,8 +15,8 @@ const Terminal: React.FC = () => {
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const terminalManagerRef = useRef<TerminalManager | null>(null);
   const { selectedItem } = useProjectStore();
-  const [path, setPath] = useState<string | null>(null);
   const [cmd, setCmd] = useState("");
+
   useEffect(() => {
     if (cmd !== "") {
       setTimeout(() => {
@@ -27,23 +27,21 @@ const Terminal: React.FC = () => {
 
   useEffect(() => {
     const fn = async () => {
-      if (selectedItem && path) {
+      if (selectedItem) {
         const config = await getConfig();
         const subPath = selectedItem.index.split("/");
         const fullPath = await platformSensitiveJoin([
           config!.homePath,
           ...subPath,
-          path,
         ]);
-        console.log("fullPath", fullPath);
-        setPath(fullPath ?? null);
         closeShell().then(() => {
           runShell(fullPath!);
         });
       }
     };
     fn();
-  }, [selectedItem, path]);
+  }, [selectedItem]);
+
   // Initialize the terminal manager
   useEffect(() => {
     let mounted = true;
@@ -94,7 +92,7 @@ const Terminal: React.FC = () => {
       if (!terminalManagerRef.current || !selectedItem) return;
 
       // Connect to the selected item
-      terminalManagerRef.current.connectToItem(selectedItem);
+      terminalManagerRef.current.connectToItem(selectedItem.data);
     }, 50);
   }, [selectedItem]);
 

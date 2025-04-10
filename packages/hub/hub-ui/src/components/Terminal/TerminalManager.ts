@@ -1,7 +1,7 @@
 import { Terminal as XTerm } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import { WebLinksAddon } from "xterm-addon-web-links";
-import { FileType } from "../Tree";
+import { FileType, TreeItem } from "../Tree";
 import { getConfig } from "../../ipc/config";
 import { platformSensitiveJoin } from "../../ipc/files";
 
@@ -9,17 +9,17 @@ export interface TerminalOptions {
   container: HTMLDivElement;
 }
 
+type Directory = {
+  fileType: FileType;
+  name: string;
+};
+
 export class TerminalManager {
   private terminal: XTerm | null = null;
   private fitAddon: FitAddon | null = null;
   private socket: WebSocket | null = null;
   private isConnected: boolean = false;
   private isTerminalReady: boolean = false;
-  private retryCount: number = 0;
-  private maxRetries: number = 3;
-  private retryTimeout: NodeJS.Timeout | null = null;
-  private lastRetryAttempt: number = 0;
-  private retryDebounceWindow: number = 2000; // 2 seconds window between retries
   private containerRef: HTMLDivElement | null = null;
   private onConnectionChange: (isConnected: boolean) => void = () => {};
 
@@ -139,16 +139,8 @@ export class TerminalManager {
     });
   }
 
-  async connectToItem(
-    selectedItem: { data: { fileType: FileType; name: string } } | null
-  ): Promise<void> {
-    if (
-      !this.terminal ||
-      !this.fitAddon ||
-      !this.isTerminalReady ||
-      !selectedItem
-    )
-      return;
+  async connectToItem(selectedItem: Directory): Promise<void> {
+    if (!this.terminal || !this.isTerminalReady) return;
 
     // Close any existing connection first
     await this.closeConnection();
@@ -177,25 +169,18 @@ export class TerminalManager {
     } else {
       this.setConnected(false);
     }
-
-    if (this.retryTimeout) {
-      clearTimeout(this.retryTimeout);
-      this.retryTimeout = null;
-    }
   }
 
-  private async connectWebSocket(selectedItem: {
-    data: { fileType: FileType; name: string };
-  }): Promise<void> {
+  private async connectWebSocket(selectedItem: Directory): Promise<void> {
     // Get the WebSocket URL based on the environment
+    console.log("connecting to", selectedItem);
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const hostname = window.location.hostname || "localhost";
     const wsUrl = `${protocol}//${hostname}:3060`;
-
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => this.handleWebSocketOpen(ws, selectedItem);
-    ws.onmessage = (event) => this.handleWebSocketMessage(event);
+    ws.onmessage = (event) => this.handleWebSocketMessage(selectedItem, event);
     ws.onerror = (error) => this.handleWebSocketError(error);
     ws.onclose = () => this.handleWebSocketClose();
 
@@ -207,15 +192,12 @@ export class TerminalManager {
 
   async handleWebSocketOpen(
     ws: WebSocket,
-    selectedItem: { data: { fileType: FileType; name: string } }
+    selectedItem: Directory
   ): Promise<void> {
     if (!this.terminal?.element || !this.fitAddon) return;
+    console.log("handleWebSocketOpen", selectedItem);
 
     this.setConnected(true);
-
-    // Reset retry count on successful connection
-    this.retryCount = 0;
-    this.lastRetryAttempt = 0;
 
     // Ensure dimensions are correct before sending
     try {
@@ -236,19 +218,28 @@ export class TerminalManager {
 
       let isInit = false;
 
-      if (selectedItem?.data.fileType === FileType.App) {
+      if (selectedItem.fileType === FileType.App) {
         const config = await getConfig();
-        const subPath = selectedItem.data.name.split("/");
+        const subPath = selectedItem.name.split("/");
         const fullPath = await platformSensitiveJoin([
           config!.homePath,
           "apps",
           ...subPath,
         ]);
         if (fullPath) {
-          const files = await window.electronAPI.ls(fullPath);
-          const found = files.length === 0;
-          if (found) {
-            isInit = true;
+          try {
+            const files = await window.electronAPI.ls(fullPath);
+            const found = files.length === 0;
+            if (found) {
+              isInit = true;
+            }
+          } catch (e) {
+            console.error("Error during WebSocket initialization:", e);
+            this.terminal.writeln(
+              "\r\n\x1b[31mError initializing terminal: " +
+                e.message +
+                "\x1b[0m"
+            );
           }
         }
       }
@@ -267,14 +258,7 @@ export class TerminalManager {
         ws.send(
           JSON.stringify({
             type: "command",
-            command: "npm install\r",
-          })
-        );
-        await new Promise((resolve) => setTimeout(resolve, 700));
-        ws.send(
-          JSON.stringify({
-            type: "command",
-            command: "tonk markdown README.md\r",
+            command: "npm install && tonk markdown README.md\r",
           })
         );
       }
@@ -288,8 +272,12 @@ export class TerminalManager {
     }
   }
 
-  private handleWebSocketMessage(event: MessageEvent): void {
+  private async handleWebSocketMessage(
+    location: Directory,
+    event: MessageEvent
+  ): Promise<void> {
     if (!this.terminal?.element) return;
+    console.log("handleWebSocketMessage", location, event);
 
     try {
       let data;
@@ -308,6 +296,8 @@ export class TerminalManager {
       } else if (data.type === "error") {
         console.error("Terminal error:", data.data);
         this.terminal.writeln(`\r\n\x1b[31m${data.data}\x1b[0m`);
+        // await this.closeConnection();
+        // await this.connectWebSocket(location);
       } else if (data.output) {
         this.terminal.write(data.output);
       }
@@ -333,40 +323,6 @@ export class TerminalManager {
   private handleWebSocketClose(): void {
     if (!this.terminal?.element) return;
     this.setConnected(false);
-  }
-
-  private scheduleRetry(): void {
-    const now = Date.now();
-    if (now - this.lastRetryAttempt < this.retryDebounceWindow) {
-      return;
-    }
-
-    if (this.retryCount < this.maxRetries) {
-      this.retryCount++;
-      this.lastRetryAttempt = now;
-      this.terminal?.writeln(
-        `\r\n\x1b[33mRetrying connection in 1 second... (${this.retryCount}/${this.maxRetries})\x1b[0m`
-      );
-
-      if (this.retryTimeout) {
-        clearTimeout(this.retryTimeout);
-      }
-
-      this.retryTimeout = setTimeout(() => {
-        if (this.containerRef) {
-          this.connectWebSocket({
-            data: {
-              fileType: FileType.App,
-              name: "reconnect",
-            },
-          });
-        }
-      }, 1000);
-    } else {
-      this.terminal?.writeln(
-        "\r\n\x1b[31mMax retries exceeded. Please check if the terminal server is running.\x1b[0m"
-      );
-    }
   }
 
   private setConnected(connected: boolean): void {

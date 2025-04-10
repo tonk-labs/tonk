@@ -1,4 +1,4 @@
-import React from "react";
+import React, { forwardRef } from "react";
 import styles from "./Button.module.css";
 
 type ButtonColor = "blue" | "purple" | "green" | "ghost";
@@ -7,13 +7,13 @@ type ButtonSize = "sm" | "md" | "lg";
 type ButtonShape = "square" | "rounded" | "pill" | "default";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-    color?: ButtonColor;
-    variant?: ButtonVariant;
-    size?: ButtonSize;
-    shape?: ButtonShape;
-    children: React.ReactNode;
-    tooltip?: string;
-    tooltipPosition?: "top" | "bottom" | "left" | "right";
+  color?: ButtonColor;
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  shape?: ButtonShape;
+  children: React.ReactNode;
+  tooltip?: string;
+  tooltipPosition?: "top" | "bottom" | "left" | "right";
 }
 
 /**
@@ -23,44 +23,53 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
  * @returns The camelCased class name (e.g., "sizeLg" or "shapeRounded")
  */
 const toCamelCase = (prefix: string, value: string): string => {
-    return `${prefix}${value.charAt(0).toUpperCase() + value.slice(1)}`;
+  return `${prefix}${value.charAt(0).toUpperCase() + value.slice(1)}`;
 };
 
-const Button: React.FC<ButtonProps> = ({
-    color = "default",
-    variant = "outline",
-    size = "lg",
-    shape = "default",
-    children,
-    className,
-    tooltip,
-    tooltipPosition = "top",
-    disabled = false,
-    ...props
-}) => {
+const Button = forwardRef<HTMLButtonElement, ButtonProps>(
+  (
+    {
+      color = "default",
+      variant = "outline",
+      size = "lg",
+      shape = "default",
+      children,
+      className,
+      tooltip,
+      tooltipPosition = "top",
+      disabled = false,
+      ...props
+    },
+    ref
+  ) => {
     const buttonClasses = [
-        styles.button,
-        variant === "outline" && styles.outline,
-        styles[color],
-        styles[toCamelCase("size", size)],
-        styles[toCamelCase("shape", shape)],
-        tooltip && styles.hasTooltip,
-        disabled && styles.disabled,
-        className,
+      styles.button,
+      variant === "outline" && styles.outline,
+      styles[color],
+      styles[toCamelCase("size", size)],
+      styles[toCamelCase("shape", shape)],
+      tooltip && styles.hasTooltip,
+      disabled && styles.disabled,
+      className,
     ]
-        .filter(Boolean)
-        .join(" ");
+      .filter(Boolean)
+      .join(" ");
 
     return (
-        <button
-            className={buttonClasses}
-            data-tooltip={tooltip}
-            data-tooltip-position={tooltip ? tooltipPosition : undefined}
-            {...props}
-        >
-            {children}
-        </button>
+      <button
+        ref={ref}
+        className={buttonClasses}
+        data-tooltip={tooltip}
+        data-tooltip-position={tooltip ? tooltipPosition : undefined}
+        {...props}
+      >
+        {children}
+      </button>
     );
-};
+  }
+);
+
+// Add display name for debugging
+Button.displayName = "Button";
 
 export default Button;
