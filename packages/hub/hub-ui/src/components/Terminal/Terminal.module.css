@@ -6,30 +6,33 @@
   right: 0;
   bottom: 0;
   color: #f0f0f0;
-  font-family: 'Courier New', monospace;
+  font-family: "Courier New", monospace;
   overflow: hidden;
-  min-width: calc(100vw - 280px);  /* Prevent shrinking below reasonable size */
-  height: calc(100vh - 100px);
+  width: 100%;
+  min-width: calc(100vw - 280px); /* Prevent shrinking below reasonable size */
+  height: 100%;
   background: transparent;
+  padding: 8px;
+  padding-top: 0px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+  min-height: 0; /* Allow flex items to shrink below content size */
 }
 
 .terminalContainer {
-  position: relative;
-  float: left;
   width: 100%;
-  height: 100%;
   flex: 1;
-  display: flex;
+  min-height: 0; /* Allow terminal to shrink if needed */
+  overflow: auto; /* Add scrolling to terminal container */
   cursor: text;
   outline: none;
-  min-width: inherit;
-  min-height: inherit;
   background: transparent;
 }
 
 /* Make sure the xterm.js terminal takes up all available space */
 .terminalContainer :global(.xterm) {
-  padding: 8px;
   width: 100% !important;
   height: 100% !important;
   background: transparent !important;
@@ -65,4 +68,11 @@
   border-radius: 4px;
   font-size: 14px;
   z-index: 100;
+}
+
+.launchBarContainer {
+  flex-shrink: 0; /* Prevent launch bar from shrinking */
+  min-height: 40px; /* Minimum height to ensure visibility */
+  width: 100%;
+  background: transparent;
 }

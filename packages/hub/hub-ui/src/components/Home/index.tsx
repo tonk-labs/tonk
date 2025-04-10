@@ -4,6 +4,7 @@ import {
   LaunchBar,
   Link,
   LinkType,
+  Terminal,
   Text,
   TonkAsciiAnimated,
 } from "..";
@@ -12,7 +13,6 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { openExternal } from "../../ipc/app";
 import { useProjectStore } from "../../stores/projectStore";
 import CreateAppDialog from "../ActionBar/CreateAppDialog";
-import AppContent from "../AppContent";
 import { FileType } from "../Tree";
 import styles from "./Home.module.css";
 
@@ -23,6 +23,13 @@ const EmptyState = () => {
   };
 
   const { items, setSelectedItem } = useProjectStore();
+
+  // todo: remove
+  useEffect(() => {
+    if (items.apps && items.apps.children.length > 0) {
+      handleSelectApp(items.apps.children[0]);
+    }
+  }, [items]);
 
   const handleSelectApp = async (appName: string) => {
     const app = items[appName];
@@ -82,15 +89,14 @@ const EmptyState = () => {
   );
 };
 
-const Content = (props: { cmd: string }) => {
-  const { cmd } = props;
+const Home = () => {
   const { selectedItem } = useProjectStore();
   if (!selectedItem) {
     return <EmptyState />;
   }
   switch (selectedItem.data.fileType) {
     case FileType.App: {
-      return <AppContent cmd={cmd} />;
+      return <Terminal />;
     }
     case FileType.Store: {
       return <FileViewer />;
@@ -101,21 +107,5 @@ const Content = (props: { cmd: string }) => {
   }
 };
 
-const Home: React.FC = () => {
-  const [cmd, setCmd] = useState("");
-  useEffect(() => {
-    if (cmd !== "") {
-      setTimeout(() => {
-        setCmd("");
-      }, 200);
-    }
-  }, [cmd]);
-  return (
-    <div className={styles.contentArea}>
-      <Content cmd={cmd} />
-      <LaunchBar commandCallback={setCmd} />
-    </div>
-  );
-};
 
 export default Home;

@@ -2,8 +2,6 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { BookOpenText, HomeIcon, NotebookPen } from "lucide-react";
 import React, { useState } from "react";
 import { openExternal } from "../../ipc/app";
-import { clearConfig, createApp } from "../../ipc/hub";
-import { useEventStore } from "../../stores/eventStore";
 import { useProjectStore } from "../../stores/projectStore";
 import Button from "../Button";
 import styles from "./ActionBar.module.css";
@@ -18,13 +16,9 @@ const ActionBar: React.FC = () => {
     openExternal("https://tonk-labs.github.io/tonk/");
   };
 
-  
-
   const handleGoHome = () => {
     setSelectedItem(null);
   };
-
-
 
   return (
     <div className={styles.actionBar}>
@@ -51,9 +45,7 @@ const ActionBar: React.FC = () => {
             <NotebookPen size={24} />
           </Button>
         </Dialog.Trigger>
-        <CreateAppDialog
-          close={() => setIsOpen(false)}
-        />
+        <CreateAppDialog close={() => setIsOpen(false)} />
       </Dialog.Root>
       <Button
         color="ghost"

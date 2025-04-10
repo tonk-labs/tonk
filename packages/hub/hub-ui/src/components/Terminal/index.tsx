@@ -1,26 +1,48 @@
 import React, { useEffect, useRef, useState } from "react";
-import { FileType } from "../Tree";
 import styles from "./Terminal.module.css";
 import { TerminalManager } from "./TerminalManager";
 
 // Import xterm.js styles
 import "xterm/css/xterm.css";
+import { getConfig } from "../../ipc/config";
+import { platformSensitiveJoin } from "../../ipc/files";
+import { closeShell, runShell } from "../../ipc/hub";
+import { useProjectStore } from "../../stores/projectStore";
+import LaunchBar from "../LaunchBar";
 
-interface TerminalProps {
-  selectedItem: {
-    data: {
-      fileType: FileType;
-      name: string;
-    };
-  } | null;
-  cmd: string;
-}
-
-const Terminal: React.FC<TerminalProps> = ({ selectedItem, cmd }) => {
+const Terminal: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const terminalManagerRef = useRef<TerminalManager | null>(null);
+  const { selectedItem } = useProjectStore();
+  const [path, setPath] = useState<string | null>(null);
+  const [cmd, setCmd] = useState("");
+  useEffect(() => {
+    if (cmd !== "") {
+      setTimeout(() => {
+        setCmd("");
+      }, 200);
+    }
+  }, [cmd]);
 
+  useEffect(() => {
+    const fn = async () => {
+      if (selectedItem && path) {
+        const config = await getConfig();
+        const subPath = selectedItem.index.split("/");
+        const fullPath = await platformSensitiveJoin([
+          config!.homePath,
+          ...subPath,
+          path,
+        ]);
+        setPath(fullPath ?? null);
+        closeShell().then(() => {
+          runShell(fullPath!);
+        });
+      }
+    };
+    fn();
+  }, [selectedItem, path]);
   // Initialize the terminal manager
   useEffect(() => {
     let mounted = true;
@@ -95,6 +117,11 @@ const Terminal: React.FC<TerminalProps> = ({ selectedItem, cmd }) => {
           Disconnected from terminal server
         </div>
       )}
+
+      {/* The LaunchBar is placed at the bottom and will always be visible */}
+      <div className={styles.launchBarContainer}>
+        <LaunchBar commandCallback={setCmd} />
+      </div>
     </div>
   );
 };
