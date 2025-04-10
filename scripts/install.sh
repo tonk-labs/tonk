@@ -32,6 +32,45 @@ if ! command -v pnpm &> /dev/null; then
     echo -e "${GREEN}pnpm installed successfully!${NC}"
 fi
 
+# Check if packages are already installed globally
+echo -e "\n${GREEN}Checking for existing global installations...${NC}"
+
+CLI_INSTALLED=$(npm list -g @tonk/cli 2>/dev/null | grep -c "@tonk/cli")
+CREATE_INSTALLED=$(npm list -g @tonk/create 2>/dev/null | grep -c "@tonk/create")
+
+if [ $CLI_INSTALLED -gt 0 ] || [ $CREATE_INSTALLED -gt 0 ]; then
+    echo -e "${YELLOW}Warning: Found existing global installation of Tonk packages:${NC}"
+    
+    if [ $CLI_INSTALLED -gt 0 ]; then
+        echo -e "- @tonk/cli"
+    fi
+    
+    if [ $CREATE_INSTALLED -gt 0 ]; then
+        echo -e "- @tonk/create"
+    fi
+    
+    echo -e "\n${YELLOW}Do you want to remove these packages and continue with installation? (y/n)${NC}"
+    read -n 1 -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${GREEN}Removing existing packages...${NC}"
+        
+        if [ $CLI_INSTALLED -gt 0 ]; then
+            npm rm -g @tonk/cli
+        fi
+        
+        if [ $CREATE_INSTALLED -gt 0 ]; then
+            npm rm -g @tonk/create
+        fi
+        
+        echo -e "${GREEN}Existing packages removed. Continuing with installation...${NC}"
+    else
+        echo -e "${YELLOW}Installation aborted.${NC}"
+        exit 0
+    fi
+fi
+
 # Clone the repository if not already in it
 REPO_DIR="tonk"
 if [ ! -d ".git" ]; then
@@ -90,26 +129,41 @@ for package in "${PACKAGES[@]}"; do
     fi
 done
 
-# Link CLI and Create packages globally
-echo -e "\n${GREEN}Linking CLI and Create packages globally...${NC}"
+
+# Pack and install CLI and Create packages globally
+echo -e "\n${GREEN}Packing and installing CLI and Create packages globally...${NC}"
+
+# Create a temporary directory for the tarballs
+TEMP_DIR=$(mktemp -d)
 
 if [ -d "packages/cli" ]; then
     cd "packages/cli"
-    npm link
+    echo -e "${GREEN}Packing CLI package...${NC}"
+    TARBALL=$(npm pack)
+    mv "$TARBALL" "$TEMP_DIR/"
     cd - > /dev/null
-    echo -e "${GREEN}CLI package linked globally.${NC}"
+    echo -e "${GREEN}Installing CLI package globally...${NC}"
+    npm install -g "$TEMP_DIR/$TARBALL"
+    echo -e "${GREEN}CLI package installed globally.${NC}"
 else
     echo -e "${YELLOW}Warning: CLI package directory not found.${NC}"
 fi
 
 if [ -d "packages/create" ]; then
     cd "packages/create"
-    npm link
+    echo -e "${GREEN}Packing Create package...${NC}"
+    TARBALL=$(npm pack)
+    mv "$TARBALL" "$TEMP_DIR/"
     cd - > /dev/null
-    echo -e "${GREEN}Create package linked globally.${NC}"
+    echo -e "${GREEN}Installing Create package globally...${NC}"
+    npm install -g "$TEMP_DIR/$TARBALL"
+    echo -e "${GREEN}Create package installed globally.${NC}"
 else
     echo -e "${YELLOW}Warning: Create package directory not found.${NC}"
 fi
+
+# Clean up temporary directory
+rm -rf "$TEMP_DIR"
 
 echo -e "\n${GREEN}Installation completed successfully!${NC}"
 echo -e "${GREEN}You can now run: ${YELLOW}tonk hello${NC}"
