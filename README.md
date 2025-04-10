@@ -24,7 +24,7 @@ Tonk is in Alpha. This is a brand spanking new project being built fully in the 
 ## Features
 
 - **Local-First Architecture**: Built on Automerge for conflict-free data synchronization.
-- **Quick Start**: Create new projects instantly with `tonk create app`.
+- **Quick Start**: Create new projects instantly with `tonk create`.
 - **Offline Support**: IndexedDB-based storage auto syncs when connectivity resumes.
 - **Privacy Focused**: Keeps user data local by default.
 - **React + TypeScript**: Modern development stack with full type safety.

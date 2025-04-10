@@ -17,7 +17,7 @@ const RAINBOW_COLORS = [
     "#CF66FF", // Violet
 ];
 
-export const RainbowMode: React.FC<TextProps> = ({ children, ...props }) => {
+export const RainbowText: React.FC<TextProps> = ({ children, ...props }) => {
     if (!children) return "";
 
     if (typeof children !== "string") return "";
@@ -32,7 +32,7 @@ export const RainbowMode: React.FC<TextProps> = ({ children, ...props }) => {
                         ...props,
                         color: RAINBOW_COLORS[index % RAINBOW_COLORS.length],
                         "--char-index": index,
-                        fontSize: "36pt",
+                        fontSize: props.fontSize || "36pt",
                     } as React.CSSProperties
                 }
             >

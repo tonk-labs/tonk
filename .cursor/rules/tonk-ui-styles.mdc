@@ -1,0 +1,22 @@
+---
+description: Styling patterns and conventions for Tonk UI components
+globs: **/*.css, **/*.module.css, **/components/**/*
+---
+
+# Tonk UI Styling
+
+## CSS Modules
+- Use CSS modules for component-specific styling
+- Name CSS files with `.module.css` extension to match component files
+- Import styles with meaningful names like `styles` or descriptive names
+
+## Lists and Navigation
+- For clickable lists, use `cursor: pointer` on items
+- Add hover effects (like text-decoration: underline) for interactive elements
+- Use standard list-style-type with appropriate padding for bullet points
+- Include adequate spacing between list items with padding
+
+## Layout
+- Use viewport units (vh, vw) for responsive container sizing
+- Apply appropriate padding for content areas
+- Use calc() for dynamic sizing when needed 

@@ -113,7 +113,7 @@ export const Tree: React.FC<TreeProps> = ({
                     getItemTitle={(item) => item.data.name}
                     viewState={{
                         ["tree-1"]: {
-                            expandedItems: [],
+                            expandedItems: ["apps"],
                         },
                     }}
                     onSelectItems={onItemSelected}

@@ -1,14 +1,13 @@
-import { Command } from "commander";
-import inquirer from "inquirer";
 import chalk from "chalk";
-import ora from "ora";
+import { Command } from "commander";
 import fs from "fs-extra";
+import inquirer from "inquirer";
+import ora from "ora";
 import path from "path";
 import process from "process";
 import { fileURLToPath } from "url";
-import { ProjectPlan, TemplateType } from "./types";
 import { createReactTemplate } from "./templates/react";
-import { createIntegrationTemplate } from "./templates/integration";
+import { ProjectPlan, TemplateType } from "./types";
 
 /**
  * Resolves a package path by checking both local development and global installation paths
@@ -74,28 +73,9 @@ const projectQuestions = [
     default: "my-tonk-app",
   },
   {
-    type: "list",
-    name: "projectType",
-    message: "What type of project are you building?",
-    choices: [
-      "Productivity System",
-      "Creative Tool",
-      "Professional Services",
-      "Community Space",
-      "Learning & Education",
-      "Other",
-    ],
-  },
-  {
-    type: "list",
-    name: "platform",
-    message: "What platform do you want to use?",
-    choices: ["react"],
-  },
-  {
     type: "input",
     name: "description",
-    message: "Briefly describe your project and its main functionality:",
+    message: "Briefly describe your project:",
   },
 ];
 
@@ -116,7 +96,7 @@ export async function createProject(
 
     // Find template path
     let templatePath;
-    let templateName = _templateName === "default" ? "react" : _templateName;
+    const templateName = "react";
 
     try {
       templatePath = await resolvePackagePath(`templates/${templateName}`);
@@ -138,40 +118,7 @@ export async function createProject(
     }
 
     // Switch on template type and call appropriate template creator
-    try {
-      switch (templateName) {
-        case "react":
-          await createReactTemplate(
-            projectPath,
-            projectName,
-            templatePath,
-            plan
-          );
-          break;
-
-        case "integration":
-          await createIntegrationTemplate(
-            projectPath,
-            projectName,
-            templatePath,
-            plan
-          );
-          break;
-
-        default:
-          await createReactTemplate(
-            projectPath,
-            projectName,
-            templatePath,
-            plan
-          );
-          break;
-      }
-    } catch (error) {
-      spinner.fail(`Failed to create ${templateName} project`);
-      console.error(error);
-      process.exit(1);
-    }
+    await createReactTemplate(projectPath, projectName, templatePath, plan);
   } catch (error) {
     spinner.fail("Failed to setup project");
     console.error(error);
@@ -180,123 +127,45 @@ export async function createProject(
   spinner.stop();
 }
 
-const createApp = async (init: boolean) => {
+const createApp = async (options: { init: boolean; }) => {
   try {
     console.log("Scaffolding tonk code...");
     // Prepare questions, removing projectName question if provided as argument
-    const questions = init
+    const questions = options.init
       ? [...projectQuestions.slice(1)]
-      : [...projectQuestions];
+      : projectQuestions;
 
     // Get project details
     const answers = await inquirer.prompt(questions);
-    const options = program.opts();
 
     // Generate project plan
     const plan = answers;
 
     // Create project with generated plan and template
-    const finalProjectName = init
+    const finalProjectName = options.init
       ? path.basename(process.cwd())
-      : options.name || answers.projectName || "my-tonk-app";
+      : answers.projectName || "my-tonk-app";
+
     const templateName = answers.platform as TemplateType;
-    let projectPath = init ? process.cwd() : null;
+    let projectPath = options.init ? process.cwd() : null;
     await createProject(finalProjectName, plan, templateName, projectPath);
 
-    console.log("🎉 Tonk code generated successfully!");
+    console.log("🎉 Tonk project ready for vibe coding!");
   } catch (error) {
     console.error(chalk.red("Error:"), error);
     process.exit(1);
   }
 };
 
-const createTemplate = async () => {
-  try {
-    console.log("Scaffolding tonk integration...");
-
-    // Questions for integration template
-    const integrationQuestions = [
-      {
-        type: "input",
-        name: "projectName",
-        message: "What is your integration named?",
-        default: "my-tonk-integration",
-      },
-      {
-        type: "input",
-        name: "description",
-        message:
-          "Briefly describe your integration and what data it will handle:",
-      },
-    ];
-
-    // Get integration details
-    const answers = await inquirer.prompt(integrationQuestions);
-    const options = program.opts();
-
-    // Generate project plan
-    const plan = {
-      projectDescription: answers.description,
-      implementationLog: [],
-    };
-
-    // Create project with generated plan and template
-    const finalProjectName =
-      options.name || answers.projectName || "my-tonk-integration";
-    await createProject(finalProjectName, plan, "integration");
-
-    console.log("🎉 Tonk integration generated successfully!");
-  } catch (error) {
-    console.error(chalk.red("Error:"), error);
-    process.exit(1);
-  }
-};
-
-const TEMPLATE_TYPES = ["app", "integration"];
-const TEMPLATE_DESCRIPTION = [
-  "Creates an empty Tonk app",
-  "Creates a new Tonk integration for importing or fetching data",
-];
 program
   .name("create")
   .description("Scaffold code for your Tonk projects")
   .version(packageJson.version, "-v, --version", "Output the current version")
   .option("-i, --init", "initialize in the folder")
-  .argument("[type]", "Type of template to scaffold")
-  .exitOverride((e) => {
-    if (e.message.includes("invalid for argument 'type'")) {
-      console.log("\n");
-      program.outputHelp();
-      console.log("\n\n");
-      process.exit(8);
-    } else {
-      throw e;
-    }
-  })
-  .action(async (typeArg, options) => {
-    console.log(chalk.bold("\nTonk! 🚀\n"));
-
-    switch (typeArg) {
-      case TEMPLATE_TYPES[0]: {
-        await createApp(options.init);
-        return;
-      }
-      case TEMPLATE_TYPES[1] || `${TEMPLATE_TYPES[1]}s`: {
-        await createTemplate();
-        return;
-      }
-      default: {
-        console.log(
-          `Hmm, I don't recognize the template type of '${typeArg}'.`
-        );
-        console.log("\n");
-        console.log(`Available types:`);
-        TEMPLATE_TYPES.forEach((ttype, i) =>
-          console.log(` ${ttype}: \t\t${TEMPLATE_DESCRIPTION[i]}`)
-        );
-        console.log("\n\n");
-      }
-    }
+  .action(async (options) => {
+    console.log(chalk.bold("\nWelcome to Tonk! 🚀\n"));
+    await createApp({ init: options.init ?? false });
+    return;
   });
 
 program.parse(process.argv);
