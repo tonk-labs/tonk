@@ -7,6 +7,7 @@ declare global {
       runShell: (dirPath: string) => Promise<void>;
       closeShell: () => Promise<void>;
       openExternal: (link: string) => Promise<void>;
+      openUrlInElectron: (url: string) => Promise<boolean>;
       getConfig: () => Promise<Config>;
       init: (homePath: string) => Promise<void>;
       clearConfig: () => Promise<void>;

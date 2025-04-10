@@ -180,8 +180,34 @@ const launchApp = async (projectPath, ngrokUrl) => {
     throw error;
   }
 };
+
 ipcMain.handle("open-external-link", async (event, link) => {
   // Open links in the user's default browser
   await shell.openExternal(link);
   return true;
+});
+
+ipcMain.handle("open-url-in-electron", async (event, url) => {
+  try {
+    // Create a new browser window
+    const newWindow = new BrowserWindow({
+      width: 1024,
+      height: 800,
+      title: url,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        webSecurity: true,
+      },
+    });
+
+    // Load the URL
+    await newWindow.loadURL(url);
+
+    // Return success
+    return true;
+  } catch (error) {
+    console.error("Error opening URL in new window:", error);
+    throw error;
+  }
 });
