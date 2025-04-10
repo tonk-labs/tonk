@@ -24,7 +24,10 @@ const FileViewer: React.FC = () => {
     );
   }
 
-  if (selectedItem.index.startsWith("stores/")) {
+  if (
+    selectedItem.index.startsWith("stores/") &&
+    selectedItem.index.endsWith(".automerge")
+  ) {
     if (!automergeContent) {
       return (
         <div className={styles.container}>
