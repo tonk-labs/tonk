@@ -109,16 +109,9 @@ const launchApp = async (projectPath, ngrokUrl) => {
 
             appWindow.loadURL("http://localhost:8080");
 
-            // Display the ngrok URL in the corner of the window and inject USER_STORES_PATH
+            // Display the ngrok URL in the corner of the window
             appWindow.webContents.on("did-finish-load", () => {
-              // Get the stores path from the config
-              const { homePath } = getConfig();
-              const storesPath = path.join(homePath, "stores");
-
               appWindow.webContents.executeJavaScript(`
-                // Inject USER_STORES_PATH into window object
-                window.USER_STORES_PATH = ${JSON.stringify(storesPath)};
-                
                 // Display ngrok URL
                 (function() {
                     const urlDisplay = document.createElement('div');
@@ -204,6 +197,47 @@ ipcMain.handle("open-url-in-electron", async (event, url) => {
 
     // Load the URL
     await newWindow.loadURL(url);
+
+    // Display the ngrok URL in the corner of the window
+    newWindow.webContents.on("did-finish-load", () => {
+      newWindow.webContents.executeJavaScript(`
+        // Display ngrok URL
+        (function() {
+            const urlDisplay = document.createElement('div');
+            urlDisplay.textContent = '${url || "http://localhost:8080"}';
+            urlDisplay.style.position = 'fixed';
+            urlDisplay.style.bottom = '6px';
+            urlDisplay.style.right = '6px';
+            urlDisplay.style.background = 'rgba(0, 0, 0, 0.7)';
+            urlDisplay.style.color = 'white';
+            urlDisplay.style.padding = '5px 10px';
+            urlDisplay.style.borderRadius = '4px';
+            urlDisplay.style.fontSize = '12px';
+            urlDisplay.style.zIndex = '9999';
+            urlDisplay.style.cursor = 'pointer';
+            urlDisplay.title = 'Click to copy URL';
+            
+            urlDisplay.addEventListener('click', function() {
+                const url = this.textContent;
+                navigator.clipboard.writeText(url).then(() => {
+                    // Visual feedback
+                    const originalText = this.textContent;
+                    const originalBg = this.style.background;
+                    
+                    this.textContent = 'Copied!';
+                    this.style.background = 'rgba(0, 128, 0, 0.7)';
+                    
+                    setTimeout(() => {
+                        this.textContent = originalText;
+                        this.style.background = originalBg;
+                    }, 1000);
+                });
+            });
+            
+            document.body.appendChild(urlDisplay);
+        })();
+      `);
+    });
 
     // Return success
     return true;
