@@ -4,7 +4,6 @@ import { WebLinksAddon } from "xterm-addon-web-links";
 import { FileType, TreeItem } from "../Tree";
 import { getConfig } from "../../ipc/config";
 import { platformSensitiveJoin } from "../../ipc/files";
-import debounce from "lodash.debounce";
 
 export interface TerminalOptions {
   container: HTMLDivElement;
