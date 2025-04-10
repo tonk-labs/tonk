@@ -20,9 +20,6 @@ importers:
       '@flystorage/local-fs':
         specifier: ^1.0.1
         version: 1.0.1
-      '@tonk/server':
-        specifier: 'link:'
-        version: 'link:'
       '@trpc/server':
         specifier: ^11.0.0
         version: 11.0.0(typescript@5.8.2)

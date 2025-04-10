@@ -60,11 +60,6 @@ export interface SyncOptions {
 }
 
 /**
- * Import the document ID resolver
- */
-import {resolveDocId} from '../core/docIdManager';
-
-/**
  * Middleware for syncing Zustand stores with Automerge
  *
  * This middleware creates a bidirectional sync between a Zustand store and an Automerge document:
@@ -107,10 +102,6 @@ export const sync =
     // Prevents duplicate initialization and unnecessary updates before initialization
     let isSyncInit = false;
 
-    // Resolve the logical document ID to the actual document ID
-    // This allows for dynamic remapping of document IDs at runtime
-    const resolvedDocId = resolveDocId(options.docId);
-
     // Create the initial state by calling the original config function with our wrapped set function
     const state = config(
       // Wrap the original set function to sync changes to Automerge whenever state changes
@@ -133,19 +124,19 @@ export const sync =
 
           // Step 4: Update the Automerge document with the new state
           syncEngine
-            .updateDocument(resolvedDocId, (doc: any) => {
+            .updateDocument(options.docId, (doc: any) => {
               // Merge the serializable state into the Automerge document
               // This creates a new change in the Automerge document history
               Object.assign(doc, serializableState);
             })
             .catch(err => {
               // Log any errors that occur during the update process
-              logger.warn(`Error updating document ${resolvedDocId}:`, err);
+              logger.warn(`Error updating document ${options.docId}:`, err);
             });
         } catch (error) {
           // Handle errors that might occur during serialization
           logger.warn(
-            `Error preparing update for document ${resolvedDocId}:`,
+            `Error preparing update for document ${options.docId}:`,
             error,
           );
         }
@@ -193,7 +184,7 @@ export const sync =
       } catch (error) {
         // Log any errors that occur during the update process
         logger.error(
-          `Error handling document change for ${resolvedDocId}:`,
+          `Error handling document change for ${options.docId}:`,
           error,
         );
       }
@@ -220,14 +211,14 @@ export const sync =
       // The initialization will be retried by the timeout mechanism
       if (!syncEngine) {
         logger.warn(
-          `Cannot initialize sync for ${resolvedDocId}: sync engine not available`,
+          `Cannot initialize sync for ${options.docId}: sync engine not available`,
         );
         return;
       }
 
       // Start the initialization process
       syncEngine
-        .getDocument(resolvedDocId)
+        .getDocument(options.docId)
         .then(existingDoc => {
           if (existingDoc) {
             // CASE 1: Document already exists in the sync engine
@@ -251,7 +242,7 @@ export const sync =
             // Create the document in the sync engine
             // This returns a promise that resolves when the document is created
             return syncEngine!.createDocument(
-              resolvedDocId,
+              options.docId,
               Automerge.toJS(newDoc),
             );
           }
@@ -264,10 +255,10 @@ export const sync =
           // Replace the onSync callback with our own implementation
           syncEngine!.options.onSync = async docId => {
             // Only handle changes for our specific document
-            if (docId === resolvedDocId) {
+            if (docId === options.docId) {
               try {
                 // Get the updated document from the sync engine
-                const updatedDoc = await syncEngine!.getDocument(resolvedDocId);
+                const updatedDoc = await syncEngine!.getDocument(options.docId);
                 if (updatedDoc) {
                   // Update the Zustand store with the changes
                   handleDocChange(updatedDoc);
@@ -275,7 +266,7 @@ export const sync =
               } catch (error) {
                 // Log any errors that occur during the sync process
                 logger.error(
-                  `Error in sync callback for ${resolvedDocId}:`,
+                  `Error in sync callback for ${options.docId}:`,
                   error,
                 );
               }
@@ -293,7 +284,7 @@ export const sync =
         })
         .catch(err => {
           // Handle any errors during initialization
-          logger.error(`Failed to initialize document ${resolvedDocId}:`, err);
+          logger.error(`Failed to initialize document ${options.docId}:`, err);
 
           // Call the error callback if provided
           if (options.onInitError) {
@@ -374,7 +365,7 @@ export const sync =
 
         // Create and log a timeout error
         const timeoutError = new Error(
-          `Sync initialization timed out after ${MAX_INIT_TIME}ms for document ${resolvedDocId}`,
+          `Sync initialization timed out after ${MAX_INIT_TIME}ms for document ${options.docId}`,
         );
         logger.error(timeoutError.message);
 
@@ -391,7 +382,7 @@ export const sync =
       if (syncEngine && !isSyncInit) {
         // CASE 1: Sync engine is available and we haven't initialized yet
         logger.debug(
-          `Sync engine available, initializing store for ${resolvedDocId}`,
+          `Sync engine available, initializing store for ${options.docId}`,
         );
 
         // Initialize the sync
@@ -411,7 +402,7 @@ export const sync =
           window.__SYNC_ENGINE_REGISTRY__.callbacks.push(() => {
             if (!isSyncInit) {
               logger.debug(
-                `Sync engine became available, initializing store for ${resolvedDocId}`,
+                `Sync engine became available, initializing store for ${options.docId}`,
               );
               initializeSync();
             }
