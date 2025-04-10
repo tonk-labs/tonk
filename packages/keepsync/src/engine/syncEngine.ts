@@ -58,7 +58,7 @@ export class SyncEngine {
     this.documentManager = new DocumentManager(this.storage, options.name);
     this.messageRouter = new MessageRouter(options.name);
     this.connection = new WebSocketManager(
-      {url: options.url || 'ws://localhost:4080/sync'},
+      {url: options.url || 'ws://localhost:8080/sync'},
       this.handleMessage.bind(this),
       this.handleError.bind(this),
       this.handleConnectionStatusChange.bind(this),

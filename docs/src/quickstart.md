@@ -2,120 +2,57 @@
 
 > If you haven't yet, start with the [**introduction**](./introduction.md) before reading this quickstart guide.
 
-
 Tonk apps plug into Tonk stores, which store data in a local-first way. This makes Tonk apps especially collaborative and interoperable. It also means that they are private, performant, have offline support and reduce dependency on third parties. Tonk apps sidestep traditional database headaches such as caching, migrations and auth.
-
 
 ## I want to build a Tonk app
 
-First, install the Tonk CLI in your terminal:
+First, you'll need to install Tonk on your machine:
 
 ```
-$ npm i -g @tonk/cli
+$ wget https://raw.githubusercontent.com/tonk-labs/tonk/refs/heads/main/scripts/install.sh && chmod +x ./install.sh && ./install.sh
 ```
 
-Then start the Tonk Hub:
+If everything was successful you should see the message:
 
 ```
-$ tonk hello
+===============================
+🎉 Congratulations! Tonk has been successfully installed! 🎉
+You can get started by running: tonk hello
+===============================
 ```
 
+When you run `tonk hello` the Tonk Hub will open a welcome screen.
 
 The Tonk Hub is an Electron app that helps you manage your Tonk apps and stores.
 
+### Choose your Tonk home
 
-You should now see your Tonk Hub:
+![hub screenshot](./images/welcome-screen-hub.png)
 
-![hub screenshot](./images/hub-screenshot.png)
+> Note: Choose a location where you like to store your projects. You should make sure that your preferred code editor has read/write access to this location.
 
-Here you can see your:
+### Home Sidebar
 
+![hub screenshot](./images/home-hub.png)
 
-- Apps (there's an example app "myWorld" ready and waiting)
-- Stores (this should be empty)
+There are two sections in the sidebar
 
+#### Apps
 
-The best way to get started is to launch an existing app, so let's open myWorld.
+The apps section is where you develop and run your applications. For now, all Tonk applications are React web apps. We've placed lots of instructions around the Tonk app templates for LLMs which should make it much easier to vibe code.
 
-### Launch an existing app
+#### Stores
 
-Select myWorld and click "launch app".
+Stores are what make Tonk apps special. They are containers of shareable data that easily plug into any of your apps. Stores are synchronized using the Automerge CRDT library. They are just automerge files which are read in by the Hub and served to your applications during runtime. Anyone who uses your application in the Hub will participate in "replicating" the store. It's like one big collaborative, evolving database.
 
-You should now see the myWorld app:
+### Launch the hello world
 
-> image
+Select the hello-world applications
 
-The myWorld app is a collaborative maps app. You can add markers to the map, and share the map with your friends to compare saved locations, such as potential lunch spots near your office, or tourist attractions in a new city.
+![hello world](./images/hello-world.png)
 
-### Modify the store
+### Voila!
 
-When you started myWorld for the first time, a new Store was created for you. You can see it in the Tonk Hub:
+Just like that you are running your first app with Tonk.
 
-> image
-
-A Store is like a JSON file. Under the hood, it represents an Automerge document, which is a special file used by sync engines to store data in a local-first way.
-
-
-Currently, you cannot directly modify a Store from the Hub. Instead you can modify the data via the app.
-
-
-Try adding a marker to the map from the app UI - you should see it appear in the Store.
-
-### Modify the app
-
-You can modify the app by editing the files in the app directory. Try editing the app's code - you should see the changes reflected in the app UI.
-
-
-The Tonk toolchain is designed for people incorporating AI heavily into their workflow. As such, Tonk apps come ready with an _llms.txt_ file which provides context to copilots such as Claude, Cursor or Windsurf.
-
-Try launching the app in a copilot and making changes to the interface or application logic - you should see the changes reflected in the app UI.
-
-We've included a terminal in the Hub for your convenience.
-
-
-> image of terminal
-
-**Note on copilots:** We find Tonk works best with Claude Code as it's more aggressive when pulling in context. You may install and setup Claude Code [here](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview).
-
-We've found that Cursor & Windsurf require more human intervention than Claude Code. Take special care to ensure the editor is correctly pulling in the corresponding llms.txt files when using these tools.
-
-
-### Create your own app
-
-Once you're familiar with the flow of a Tonk app, you should create your own. Run the following in the Tonk Hub or your own terminal:
-
-```
-$ tonk create
-```
-
-This will start a simple CLI flow where you'll be asked a few basic questions about your app. Your answers are used to give your copilot context for streamlined development.
-
-Alternatively, use the "create" button in the Tonk Hub.
-
-![create](./images/create-app-button.png)
-
-
-Once complete, you will have a new Tonk app template. The filepath will be displayed in the Hub terminal:
-
-![test app tui](./images/test-app-tui.png)
-
-
-Now's the time to use your preferred copilot to build the app. The app already includes some basic functionality, but most importantly includes an _llms.txt_ file to provide your copilot with context. The most important context is instructions for how the copilot should manage state: by using Tonk stores to plug into your existing data in a local-first way.
-
-> ⚠️ Just because your copilot has context on _llms.txt_ doesn't mean it will always use the context - it may need some guidance.
-
-Try using your copilot to build a simple todo app that works with your data in a Tonk store.
-
-By unbundling your applications from your data, we hope this demonstrates the ease with which Tonk apps can re-use your existing information.
-
-### Publish your app
-
-_Coming soon_
-
-### Share your app
-
-_Coming soon_
-
-## Next steps
-
-Try building your own application and share it in the Tonk community chat. If it's promising we'd love to support your project any way we can.
+To understand how apps work in Tonk and why they are special, [follow the tutorial](https://tonk-labs.github.io/tonk/tutorials/my-world.html)

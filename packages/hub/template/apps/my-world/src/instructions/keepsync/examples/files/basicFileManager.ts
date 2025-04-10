@@ -14,7 +14,7 @@ import { FileMetadata } from "@tonk/keepsync";
 export function initializeFileSync() {
   // Configure the sync engine
   configureSyncEngine({
-    url: "ws://localhost:4080/sync",
+    url: "ws://localhost:8080/sync",
     name: "BasicFileManagerExample",
     dbName: "basic_file_manager_db",
     onSync: (docId) => console.log(`Document ${docId} synced`),
@@ -60,7 +60,7 @@ export const fileOperations = {
    */
   downloadFile: async (
     hash: string,
-    filename?: string,
+    filename?: string
   ): Promise<Blob | null> => {
     console.log(`Downloading file with hash: ${hash}`);
     const blob = await getFile(hash);
