@@ -8,7 +8,7 @@ export const createCommand = new Command('create')
   .action((typeArg, options) => {
     try {
       // Build the command with any passed options
-      let createCommand = `npx @tonk/create ${typeArg || 'app'} ${
+      const createCommand = `npx @tonk/create ${typeArg || 'app'} ${
         options.init ? '-i' : ''
       }`;
 

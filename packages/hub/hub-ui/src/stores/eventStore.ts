@@ -14,7 +14,7 @@ interface EventTimeMap {
   [timestamp: number]: TonkEvent;
 }
 
-interface EventState {
+export interface EventState {
   _eventsByType: EventTypeMap;
   _eventsByTime: EventTimeMap;
   addEvent: (e: TonkEvent) => void;

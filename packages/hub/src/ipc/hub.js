@@ -12,7 +12,7 @@ ipcMain.handle("init", async (e, homePath) => {
     const config = getConfig();
     writeConfig({
         ...config,
-        homePath: path.join(homePath, ".tonk"),
+        homePath: path.join(homePath, "tonk"),
     });
 });
 
@@ -25,10 +25,11 @@ ipcMain.handle("fetch-registry", async () => {
         return { success: false, error: error.message };
     }
   })
+
 ipcMain.handle('clear-config', async (e) => {
   // delete the directory
   const config = getConfig();
-  fs.removeSync(config.homePath);
+  await fs.remove(config.homePath);
   writeConfig({});
 });
 
