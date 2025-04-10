@@ -30,7 +30,8 @@ declare global {
 }
 
 const getMapKitToken = async (): Promise<string> => {
-  const token = import.meta.env.MAPKIT_TOKEN;
+  const token =
+    "eyJraWQiOiJNWUQ1MkxCUjVQIiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzQ0MjkyNDQ3LCJleHAiOjE3NDQ5NTk1OTl9.ims988bUGp24ntV-cfGhK5LYZQ3-vATmoM5sbyS3ioGEc_GZJk012UcB4OE5rA9RYmFaNVYG76b0g0YR9kgEEA";
 
   if (!token) {
     console.error("MapKit token not found in environment variables");
