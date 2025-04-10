@@ -96,12 +96,15 @@ const Terminal: React.FC = () => {
     }, 50);
   }, [selectedItem]);
 
-  // Handle commands
-  useEffect(() => {
-    if (cmd !== "" && terminalManagerRef.current) {
-      terminalManagerRef.current.executeCommand(cmd);
-    }
-  }, [cmd]);
+  const commandCallback = (cmd: string): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      if (terminalManagerRef.current) {
+        terminalManagerRef.current.executeCommand(cmd, () => {
+          resolve();
+        });
+      }
+    });
+  };
 
   return (
     <div className={styles.container}>
@@ -119,7 +122,7 @@ const Terminal: React.FC = () => {
 
       {/* The LaunchBar is placed at the bottom and will always be visible */}
       <div className={styles.launchBarContainer}>
-        <LaunchBar commandCallback={setCmd} />
+        <LaunchBar commandCallback={commandCallback} />
       </div>
     </div>
   );

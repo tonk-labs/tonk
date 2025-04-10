@@ -59,6 +59,7 @@ const launchApp = async (projectPath, ngrokUrl) => {
     // Set the distPath via API call
     const requestData = JSON.stringify({ distPath });
 
+
     return new Promise((resolve, reject) => {
       const req = http.request(
         {
