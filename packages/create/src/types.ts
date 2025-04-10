@@ -3,7 +3,7 @@ export interface ProjectPlan {
   projectDescription: string;
 }
 
-export type TemplateType = "default" | "React-PWA" | "react" | "integration";
+export type TemplateType = "default" | "React-PWA" | "react";
 
 export interface TemplateConfig {
   name: string;

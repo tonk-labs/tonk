@@ -249,7 +249,7 @@ export class TerminalManager {
         ws.send(
           JSON.stringify({
             type: "command",
-            command: "tonk create app --init\r",
+            command: "tonk create --init\r",
           })
         );
       } else {

@@ -1,6 +1,7 @@
 ---
 description: Documentation guidelines and information about the Tonk toolchain
 globs: docs/src/*.md
+alwaysApply: false
 ---
 
 # Tonk Documentation Guidelines
@@ -14,7 +15,7 @@ globs: docs/src/*.md
 ## Toolchain Components
 - Tonk CLI (`@tonk/cli`) is used to install and manage Tonk
 - The Tonk Hub is started with `tonk hello`
-- Apps can be created with `tonk create app`
+- Apps can be created with `tonk create`
 - Apps include built-in AI context via llms.txt files
 
 ## Development Flow

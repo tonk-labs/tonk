@@ -74,14 +74,14 @@ We've found that Cursor & Windsurf require more human intervention than Claude C
 Once you're familiar with the flow of a Tonk app, you should create your own. Run the following in the Tonk Hub or your own terminal:
 
 ```
-$ tonk create app
+$ tonk create
 ```
 
 This will start a simple CLI flow where you'll be asked a few basic questions about your app. Your answers are used to give your copilot context for streamlined development.
 
-Alternatively, use the "create app" button in the Tonk Hub.
+Alternatively, use the "create" button in the Tonk Hub.
 
-![create app](./images/create-app-button.png)
+![create](./images/create-app-button.png)
 
 Once complete, you will have a new Tonk app template. The filepath will be displayed in the Hub terminal:
 
