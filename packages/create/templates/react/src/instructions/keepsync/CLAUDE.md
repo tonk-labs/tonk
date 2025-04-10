@@ -6,14 +6,14 @@ Initialize the sync engine in your application entry point (or before using any 
 
 ```typescript
 // index.tsx
-import { initializeSyncEngine } from '@tonk/keepsync';
+import { initializeSyncEngine } from "@tonk/keepsync";
 
 // Initialize the sync engine
 initializeSyncEngine({
-  url: 'ws://localhost:4080',
-  name: 'MySyncEngine',
+  url: "ws://localhost:8080",
+  name: "MySyncEngine",
   onSync: (docId) => console.log(`Document ${docId} synced`),
-  onError: (error) => console.error('Sync error:', error),
+  onError: (error) => console.error("Sync error:", error),
 });
 ```
 
@@ -23,8 +23,8 @@ Use the `sync` middleware to create stores that automatically synchronize with o
 
 ```typescript
 // stores/counterStore.ts
-import { create } from 'zustand';
-import { sync } from '@tonk/keepsync';
+import { create } from "zustand";
+import { sync } from "@tonk/keepsync";
 
 interface CounterState {
   count: number;
@@ -55,12 +55,13 @@ export const useCounterStore = create<CounterState>(
       },
     }),
     // Sync configuration
-    { 
-      docId: 'counter',
+    {
+      docId: "counter",
       // Optional: configure initialization timeout
       initTimeout: 30000,
       // Optional: handle initialization errors
-      onInitError: (error) => console.error('Sync initialization error:', error) 
+      onInitError: (error) =>
+        console.error("Sync initialization error:", error),
     }
   )
 );
@@ -70,8 +71,8 @@ export const useCounterStore = create<CounterState>(
 
 ```typescript
 // components/Counter.tsx
-import React from 'react';
-import { useCounterStore } from '../stores/counterStore';
+import React from "react";
+import { useCounterStore } from "../stores/counterStore";
 
 export function Counter() {
   // Use the store hook directly - sync is handled by the middleware
@@ -87,7 +88,8 @@ export function Counter() {
       </div>
       <p>
         <small>
-          Open this app in multiple windows to see real-time collaboration in action.
+          Open this app in multiple windows to see real-time collaboration in
+          action.
         </small>
       </p>
     </div>
@@ -100,23 +102,23 @@ export function Counter() {
 If you need to access the sync engine directly:
 
 ```typescript
-import { getSyncInstance } from '@tonk/keepsync';
+import { getSyncInstance } from "@tonk/keepsync";
 
 function syncDocument() {
   const syncEngine = getSyncInstance();
-  
+
   if (syncEngine) {
     // Manually update a document
-    syncEngine.updateDocument('my-document', (doc) => {
-      doc.someProperty = 'new value';
+    syncEngine.updateDocument("my-document", (doc) => {
+      doc.someProperty = "new value";
     });
-    
+
     // Get a document
-    syncEngine.getDocument('my-document').then(doc => {
-      console.log('Document content:', doc);
+    syncEngine.getDocument("my-document").then((doc) => {
+      console.log("Document content:", doc);
     });
   } else {
-    console.warn('Sync engine not initialized yet');
+    console.warn("Sync engine not initialized yet");
   }
 }
 ```
@@ -126,67 +128,67 @@ function syncDocument() {
 KeepSync also provides a file system API for collaborative file management:
 
 ```typescript
-import { 
-  configureSyncedFileSystem, 
-  addFile, 
-  getAllFiles, 
-  getFile, 
-  removeFile 
-} from '@tonk/keepsync';
+import {
+  configureSyncedFileSystem,
+  addFile,
+  getAllFiles,
+  getFile,
+  removeFile,
+} from "@tonk/keepsync";
 
 // Configure the synced file system
 configureSyncedFileSystem({
-  docId: 'my-files',
-  dbName: 'my-app-files',
-  storeName: 'file-blobs'
+  docId: "my-files",
+  dbName: "my-app-files",
+  storeName: "file-blobs",
 });
 
 // Add a file
-const fileInput = document.getElementById('fileInput') as HTMLInputElement;
-fileInput.addEventListener('change', async () => {
+const fileInput = document.getElementById("fileInput") as HTMLInputElement;
+fileInput.addEventListener("change", async () => {
   if (fileInput.files && fileInput.files.length > 0) {
     const file = fileInput.files[0];
     const metadata = await addFile(file);
-    console.log('Added file:', metadata);
+    console.log("Added file:", metadata);
   }
 });
 
 // List all files
 async function displayAllFiles() {
   const files = await getAllFiles();
-  console.log('All files:', files);
-  
+  console.log("All files:", files);
+
   // Display files in UI
-  const fileList = document.getElementById('fileList');
+  const fileList = document.getElementById("fileList");
   if (fileList) {
-    fileList.innerHTML = '';
-    files.forEach(file => {
-      const item = document.createElement('div');
+    fileList.innerHTML = "";
+    files.forEach((file) => {
+      const item = document.createElement("div");
       item.textContent = `${file.name} (${file.size} bytes)`;
-      
+
       // Add download button
-      const downloadBtn = document.createElement('button');
-      downloadBtn.textContent = 'Download';
+      const downloadBtn = document.createElement("button");
+      downloadBtn.textContent = "Download";
       downloadBtn.onclick = async () => {
         const blob = await getFile(file.hash);
         if (blob) {
           const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
+          const a = document.createElement("a");
           a.href = url;
           a.download = file.name;
           a.click();
           URL.revokeObjectURL(url);
         }
       };
-      
+
       // Add delete button
-      const deleteBtn = document.createElement('button');
-      deleteBtn.textContent = 'Delete';
+      const deleteBtn = document.createElement("button");
+      deleteBtn.textContent = "Delete";
       deleteBtn.onclick = async () => {
         await removeFile(file.hash);
         displayAllFiles(); // Refresh the list
       };
-      
+
       item.appendChild(downloadBtn);
       item.appendChild(deleteBtn);
       fileList.appendChild(item);
@@ -200,27 +202,27 @@ async function displayAllFiles() {
 KeepSync uses a simple WebSocket server for synchronization:
 
 ```javascript
-import { WebSocketServer } from 'ws';
-import { createServer } from 'http';
+import { WebSocketServer } from "ws";
+import { createServer } from "http";
 
 // Create a simple HTTP server
 const server = createServer();
 const wss = new WebSocketServer({
   server,
-  path: '/sync'
+  path: "/sync",
 });
 
 // Store connected clients
 const connections = new Set();
 
 // Handle WebSocket connections
-wss.on('connection', (ws) => {
-  console.log('Client connected');
+wss.on("connection", (ws) => {
+  console.log("Client connected");
   connections.add(ws);
 
   // Handle messages from clients
-  ws.on('message', data => {
-    connections.forEach(client => {
+  ws.on("message", (data) => {
+    connections.forEach((client) => {
       if (client !== ws && client.readyState === WebSocket.OPEN) {
         client.send(data.toString());
       }
@@ -228,8 +230,8 @@ wss.on('connection', (ws) => {
   });
 
   // Handle client disconnection
-  ws.on('close', () => {
-    console.log('Client disconnected');
+  ws.on("close", () => {
+    console.log("Client disconnected");
     connections.delete(ws);
   });
 });
@@ -246,7 +248,7 @@ server.listen(PORT, () => {
 When your application is shutting down, make sure to clean up resources:
 
 ```typescript
-import { closeSyncEngine, closeSyncedFileSystem } from '@tonk/keepsync';
+import { closeSyncEngine, closeSyncedFileSystem } from "@tonk/keepsync";
 
 // Clean up everything when the app is shutting down
 function shutdownApp() {

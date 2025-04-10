@@ -13,7 +13,7 @@ import { FileMetadata } from "@tonk/keepsync";
 export function initializeFileSync() {
   // Configure the sync engine
   configureSyncEngine({
-    url: "ws://localhost:4080/sync",
+    url: "ws://localhost:8080/sync",
     name: "FileManagerApplication",
     dbName: "file_manager_example_db",
     onSync: (docId) => console.log(`Document ${docId} synced`),
@@ -151,7 +151,7 @@ export const FileManager: React.FC = () => {
 
   // Handle file upload
   const handleFileUpload = async (
-    event: React.ChangeEvent<HTMLInputElement>,
+    event: React.ChangeEvent<HTMLInputElement>
   ) => {
     const selectedFiles = event.target.files;
     if (!selectedFiles || selectedFiles.length === 0) return;

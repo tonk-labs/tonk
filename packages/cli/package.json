@@ -1,6 +1,6 @@
 {
   "name": "@tonk/cli",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "The Tonk stack command line utility",
   "type": "module",
   "bin": {
@@ -45,7 +45,7 @@
     "fs-extra": "^11.2.0",
     "gradient-string": "^2.0.2",
     "inquirer": "^9.2.12",
-    "@tonk/keepsync": "^0.3.5",
+    "@tonk/keepsync": "^0.3.7",
     "listr2": "^8.2.5",
     "marked": "^15.0.7",
     "open": "^10.1.0",
