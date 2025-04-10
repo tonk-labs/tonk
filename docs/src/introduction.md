@@ -42,8 +42,10 @@ Tonk abstracts those parts of the stack away.
 
 The entry route into Tonk is the **Tonk Hub**. The Tonk Hub is an Electron app that helps you manage your:
 
+
 1. **Stores.** These are the services that store your data in an application-friendly way.
 2. **Apps.** These have access to your data stores.
+
 
 ![hub screenshot](./images/hub-screenshot.png)
 
