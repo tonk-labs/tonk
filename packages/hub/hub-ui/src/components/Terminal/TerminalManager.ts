@@ -4,6 +4,7 @@ import { WebLinksAddon } from "xterm-addon-web-links";
 import { FileType, TreeItem } from "../Tree";
 import { getConfig } from "../../ipc/config";
 import { platformSensitiveJoin } from "../../ipc/files";
+import debounce from "lodash.debounce";
 
 export interface TerminalOptions {
   container: HTMLDivElement;
@@ -22,6 +23,10 @@ export class TerminalManager {
   private isTerminalReady: boolean = false;
   private containerRef: HTMLDivElement | null = null;
   private onConnectionChange: (isConnected: boolean) => void = () => {};
+  private cmdNonce = 0;
+  private callbacks: {
+    [key: string]: () => void;
+  } = {};
 
   constructor(options: TerminalOptions) {
     this.containerRef = options.container;
@@ -298,6 +303,11 @@ export class TerminalManager {
         this.terminal.writeln(`\r\n\x1b[31m${data.data}\x1b[0m`);
         // await this.closeConnection();
         // await this.connectWebSocket(location);
+      } else if (data.type === "cmdFinished") {
+        if (this.callbacks[data.id]) {
+          this.callbacks[data.id]();
+          delete this.callbacks[data.id];
+        }
       } else if (data.output) {
         this.terminal.write(data.output);
       }
@@ -330,7 +340,7 @@ export class TerminalManager {
     this.onConnectionChange(connected);
   }
 
-  executeCommand(cmd: string): void {
+  executeCommand(cmd: string, onComplete: () => void): void {
     if (cmd !== "" && this.socket) {
       switch (cmd) {
         case "stopAndReset": {
@@ -347,6 +357,17 @@ export class TerminalManager {
             })
           );
           break;
+        }
+        case "build": {
+          const cmdId = this.cmdNonce++;
+          this.callbacks[`${cmdId}`] = onComplete;
+          this.socket.send(
+            JSON.stringify({
+              type: "command",
+              id: `${cmdId}`,
+              command: "pnpm run build",
+            })
+          );
         }
         default: {
           console.error("didn't recognize the sent command");

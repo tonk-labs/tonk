@@ -1,5 +1,7 @@
 const { ipcMain, shell, BrowserWindow } = require("electron");
 const { getConfig } = require("../config.js");
+const fs = require("fs");
+const { exec } = require("child_process");
 const path = require("node:path");
 const http = require("http");
 const ngrok = require("ngrok");
@@ -58,6 +60,11 @@ const launchApp = async (projectPath, ngrokUrl) => {
     const distPath = path.join(projectPath, "dist");
     // Set the distPath via API call
     const requestData = JSON.stringify({ distPath });
+
+    const isBuilt = fs.existsSync(distPath);
+
+
+
 
     return new Promise((resolve, reject) => {
       const req = http.request(

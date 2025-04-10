@@ -9,7 +9,7 @@ import styles from "./LaunchBar.module.css";
 
 const AppLaunchBar = (props: {
   selectedItem: TreeItem;
-  commandCallback: (cmd: string) => void;
+  commandCallback: (cmd: string) => Promise<void>;
 }) => {
   const { selectedItem, commandCallback } = props;
   const [url, setUrl] = useState<string | null>(null);
@@ -22,6 +22,7 @@ const AppLaunchBar = (props: {
         config!.homePath,
         selectedItem.index,
       ]);
+      await commandCallback("build");
       const url = await launchApp(fullPath!);
       setUrl(url || null);
     } catch (error) {
@@ -65,7 +66,9 @@ const AppLaunchBar = (props: {
   );
 };
 
-const LaunchBar = (props: { commandCallback: (cmd: string) => void }) => {
+const LaunchBar = (props: {
+  commandCallback: (cmd: string) => Promise<void>;
+}) => {
   const { selectedItem } = useProjectStore();
   const { commandCallback } = props;
   if (!selectedItem) {

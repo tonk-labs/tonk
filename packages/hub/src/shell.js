@@ -4,6 +4,7 @@ const pty = require('node-pty');
 const fs = require('fs');
 const path = require('path');
 
+
 const run = (port, dirPath) => {
   // Create WebSocket server
   const wss = new WebSocket.Server({ port });
@@ -80,7 +81,17 @@ const run = (port, dirPath) => {
               // Handle terminal output
               ptyProcess.onData((data) => {
                 try {
-                  ws.send(JSON.stringify({ type: 'output', data }));
+                  if (data.includes("___TONK_CMD_FINISHED_")) {
+                    const CMD_FINISHED_REGEX = /___TONK_CMD_FINISHED_(\d+)/;
+                    const match = data.match(CMD_FINISHED_REGEX);
+                    ws.send(JSON.stringify({
+                      type: 'cmdFinished',
+                      id: match ? match[1] : null,
+                      data,
+                    }));
+                  } else {
+                    ws.send(JSON.stringify({ type: 'output', data }));
+                  }
                 } catch (err) {
                   console.error('Error sending terminal output:', err);
                 }
@@ -117,7 +128,11 @@ const run = (port, dirPath) => {
           case 'command':
             // Send command to terminal
             if (ptyProcess) {
-              ptyProcess.write(data.command);
+              if (data.id) {
+                ptyProcess.write(`${data.command} && echo \"___TONK_CMD_FINISHED_${data.id}\"\r`)
+              } else {
+                ptyProcess.write(data.command);
+              }
             }
             break;
           case 'resize':

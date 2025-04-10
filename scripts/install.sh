@@ -3,7 +3,11 @@
 # Colors for better output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+RED='\033[0;31m'
 NC='\033[0m' # No Color
+
+# Initialize error tracking
+ERRORS=()
 
 echo -e "${GREEN}=== Tonk Installation Script ===${NC}"
 
@@ -23,6 +27,9 @@ fi
 if ! command -v pnpm &> /dev/null; then
     echo -e "${YELLOW}pnpm is not installed. Installing pnpm...${NC}"
     npm install -g pnpm
+    if [ $? -ne 0 ]; then
+        ERRORS+=("Failed to install pnpm")
+    fi
     
     # Verify installation
     if ! command -v pnpm &> /dev/null; then
@@ -58,10 +65,16 @@ if [ $CLI_INSTALLED -gt 0 ] || [ $CREATE_INSTALLED -gt 0 ]; then
         
         if [ $CLI_INSTALLED -gt 0 ]; then
             npm rm -g @tonk/cli
+            if [ $? -ne 0 ]; then
+                ERRORS+=("Failed to remove @tonk/cli")
+            fi
         fi
         
         if [ $CREATE_INSTALLED -gt 0 ]; then
             npm rm -g @tonk/create
+            if [ $? -ne 0 ]; then
+                ERRORS+=("Failed to remove @tonk/create")
+            fi
         fi
         
         echo -e "${GREEN}Existing packages removed. Continuing with installation...${NC}"
@@ -76,6 +89,9 @@ REPO_DIR="tonk"
 if [ ! -d ".git" ]; then
     echo -e "\n${GREEN}Cloning Tonk repository...${NC}"
     git clone https://github.com/tonk-labs/tonk.git $REPO_DIR
+    if [ $? -ne 0 ]; then
+        ERRORS+=("Failed to clone repository")
+    fi
     cd $REPO_DIR
     echo -e "${GREEN}Repository cloned successfully!${NC}"
 else
@@ -87,11 +103,6 @@ PACKAGES=("server" "keepsync" "create" "hub" "cli")
 
 echo -e "\n${GREEN}Installing dependencies for all packages...${NC}"
 
-# First install root dependencies if package.json exists in root
-if [ -f "package.json" ]; then
-    echo -e "\n${GREEN}Installing root dependencies...${NC}"
-    pnpm install
-fi
 
 # Install dependencies for each package
 for package in "${PACKAGES[@]}"; do
@@ -103,16 +114,25 @@ for package in "${PACKAGES[@]}"; do
         if [ "$package" = "hub" ]; then
             echo -e "${GREEN}Installing and building hub package with npm...${NC}"
             npm install
+            if [ $? -ne 0 ]; then
+                ERRORS+=("Failed to install dependencies for $package")
+            fi
             
         else
             # Install dependencies with pnpm for other packages
             pnpm install
+            if [ $? -ne 0 ]; then
+                ERRORS+=("Failed to install dependencies for $package")
+            fi
             
             # Build the package
             if [ -f "package.json" ]; then
                 if grep -q "\"build\":" "package.json"; then
                     echo "Building $package..."
                     pnpm build
+                    if [ $? -ne 0 ]; then
+                        ERRORS+=("Failed to build $package")
+                    fi
                 fi
             fi
         fi
@@ -133,23 +153,35 @@ if [ -d "packages/hub/hub-ui" ]; then
         # Windows path handling
         echo -e "${GREEN}Installing and building hub-ui on Windows...${NC}"
         pnpm install
+        if [ $? -ne 0 ]; then
+            ERRORS+=("Failed to install dependencies for hub-ui")
+        fi
         
         # Build the package if build script exists
         if [ -f "package.json" ]; then
             if grep -q "\"build\":" "package.json"; then
                 echo "Building hub-ui..."
                 pnpm build
+                if [ $? -ne 0 ]; then
+                    ERRORS+=("Failed to build hub-ui")
+                fi
             fi
         fi
     else
         # Unix path handling
         pnpm install
+        if [ $? -ne 0 ]; then
+            ERRORS+=("Failed to install dependencies for hub-ui")
+        fi
         
         # Build the package if build script exists
         if [ -f "package.json" ]; then
             if grep -q "\"build\":" "package.json"; then
                 echo "Building hub-ui..."
                 pnpm build
+                if [ $? -ne 0 ]; then
+                    ERRORS+=("Failed to build hub-ui")
+                fi
             fi
         fi
     fi
@@ -168,6 +200,9 @@ echo -e "\n${GREEN}Installing CLI and Create packages globally...${NC}"
 if [ -d "packages/cli" ]; then
     echo -e "${GREEN}Installing CLI package globally...${NC}"
     npm install -g "./packages/cli"
+    if [ $? -ne 0 ]; then
+        ERRORS+=("Failed to install CLI package globally")
+    fi
     echo -e "${GREEN}CLI package installed globally.${NC}"
 else
     echo -e "${YELLOW}Warning: CLI package directory not found.${NC}"
@@ -176,7 +211,25 @@ fi
 if [ -d "packages/create" ]; then
     echo -e "${GREEN}Installing Create package globally...${NC}"
     npm install -g "./packages/create"
+    if [ $? -ne 0 ]; then
+        ERRORS+=("Failed to install Create package globally")
+    fi
     echo -e "${GREEN}Create package installed globally.${NC}"
 else
     echo -e "${YELLOW}Warning: Create package directory not found.${NC}"
 fi
+
+# Print final status message
+echo -e "\n${GREEN}===============================${NC}"
+if [ ${#ERRORS[@]} -eq 0 ]; then
+    echo -e "${GREEN}🎉 Congratulations! Tonk has been successfully installed! 🎉${NC}"
+    echo -e "${GREEN}You can get started by running: ${YELLOW}tonk hello${NC}"
+else
+    echo -e "${RED}⚠️ Installation ran with errors: ⚠️${NC}"
+    for error in "${ERRORS[@]}"; do
+        echo -e "${RED}- $error${NC}"
+    done
+    echo -e "\n${YELLOW}Need help? Join our Telegram support group: ${NC}https://t.me/+9W-4wDR9RcM2NWZk"
+fi
+echo -e "${GREEN}===============================${NC}"
+
