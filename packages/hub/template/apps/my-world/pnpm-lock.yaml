@@ -12,7 +12,7 @@ importers:
         specifier: ^2.2.8
         version: 2.2.8
       '@tonk/keepsync':
-        specifier: ^0.3.1
+        specifier: 0.3.2
         version: 0.3.2(@automerge/automerge@2.2.8)(react@19.0.0)(zustand@5.0.3(@types/react@19.0.12)(react@19.0.0))
       body-parser:
         specifier: ^1.20.3
