@@ -52,31 +52,39 @@ An evolving dataset for your friends to add locations, routes, reviews, planned 
 
 A fluctuating set of todos for your colleagues to track progress on ephemeral projects without forcing everyone to use the same productivity app.
 
+*Hackathon idea:* A multiplayer to-do list for temporary teams - where shared project tasks live in a public space and AI nudges contributors to focus on what matters before the project dissolves.
 
 ### 💰 Banking
 
 Aggregated financial information for your household to track your finances and make intelligent investments.
 
+*Hackathon idea:* A household finance dashboard that syncs every member’s bank accounts, applies AI to optimize spending, and auto-generates investment proposals based on shared goals.
 
 ### ❤️ Health
 
 A dataset for your family to make health data available to bespoke meditation, exercise or sleep apps.
 
+*Hackathon idea:* A health data layer for families — syncing sleep, steps, and stress scores across devices and enabling personalized wellness bots that work across meditation, exercise, and diet apps.
+
 ### 💬 Social
 
 An ad-free, private chatboard for your friends, but where everyone customises their experience with pluggable components such as games, calendars and notifications.
+
+*Hackathon idea:* A modular group chat app where every conversation is a programmable space - friends can add shared games, calendars, polls, or moodboards, and the feed adapts to how your group vibes, not how the algorithm dictates.
 
 ### 🤖 Assistants
 
 An AI that can assist you with full context from your chat apps, calendars, todo boards and social feeds.
 
+*Hackathon idea:* A privacy-first AI assistant that reads your calendar, chat threads, and todos from your shared spaces — then recommends actions, summarizes life, and shares updates with your friends.
+
 ## How it works
 
 Building with Tonk feels like magic because it's copilot-friendly, local-first and multiplayer.
 
-Apps generated with the *Tonk CLI* come pre-bundled with React, Typescript, Tailwind and aggressively prompt your copilot to ensure smooth vibe-coding.
+Apps generated with the **Tonk CLI** come pre-bundled with React, Typescript, Tailwind and aggressively prompt your copilot to ensure smooth vibe-coding.
 
-The *Tonk Store* manages state with an optimised sync engine. The *Tonk Hub* is a desktop app for managing the whole stack:
+The **Tonk Store** manages state with an optimised sync engine. The **Tonk Hub** is a desktop app for managing the whole stack:
 
 ![hub screenshot](./images/hub-screenshot.png)
 
