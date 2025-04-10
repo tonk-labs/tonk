@@ -37,15 +37,13 @@ const EmptyState = () => {
   };
 
   return (
-    <>
+    <div style = {{padding: 10}}>
       <TonkAsciiAnimated key={0} />
       <Text style={{ fontSize: "12pt" }}>Welcome to your Tonk Hub!</Text>
 
       {items.apps && items.apps.children.length > 0 ? (
-        <>
-          <Text>&nbsp;</Text>
+        <div style={{ border: "1px solid white", marginTop: "10px", padding: "10px", width: "fit-content" }}>
           <Text>Your Apps:</Text>
-          <div>
             <ul className={styles.appsList}>
               {items.apps.children.map((appName, index) => (
                 <li
@@ -56,18 +54,19 @@ const EmptyState = () => {
                   <Text>{appName.slice(5)}</Text>
                 </li>
               ))}
-  <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
-              <Dialog.Trigger asChild>
-                <div className={styles.appItem} style = {{marginLeft: "-16px", color: "#35ff3c"}}>
-                  <Text style = {{color: "blue"}}>+ Create new app</Text>
-                </div>
-              </Dialog.Trigger>
-              <CreateAppDialog close={() => setIsOpen(false)} />
-            </Dialog.Root>
+              <Dialog.Root open={isOpen} onOpenChange={setIsOpen}>
+                <Dialog.Trigger asChild>
+                  <div
+                    className={styles.appItem}
+                    style={{ marginLeft: "-16px", color: "#35ff3c" }}
+                  >
+                    <Text style={{ color: "blue" }}>+ Create new app</Text>
+                  </div>
+                </Dialog.Trigger>
+                <CreateAppDialog close={() => setIsOpen(false)} />
+              </Dialog.Root>
             </ul>
-          
-          </div>
-        </>
+        </div>
       ) : (
         <>
           <Text>&nbsp;</Text>
@@ -79,7 +78,7 @@ const EmptyState = () => {
           </Text>
         </>
       )}
-    </>
+    </div>
   );
 };
 
