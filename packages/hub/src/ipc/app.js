@@ -308,7 +308,7 @@ const launchApp = async (projectPath, pinggyUrl) => {
   }
 };
 
-const launchAppDev = async (projectPath, pinggyUrl) => {
+const launchAppDev = async (projectPath) => {
   try {
     console.log("Launching app in development mode...");
 
@@ -387,12 +387,6 @@ const launchAppDev = async (projectPath, pinggyUrl) => {
             if (newWindow.devProcess) {
               newWindow.devProcess.kill();
             }
-
-            // Only kill pinggy if this was the last window using it
-            if (pinggyProcess && BrowserWindow.getAllWindows().length === 0) {
-              pinggyProcess.kill();
-              pinggyProcess = null;
-            }
           });
 
           // Update the appWindow reference to the new window
@@ -400,47 +394,6 @@ const launchAppDev = async (projectPath, pinggyUrl) => {
 
           // Load the dev server URL
           newWindow.loadURL(`http://localhost:${frontendPort}`);
-
-          // Display the pinggy URL in the corner of the window
-          newWindow.webContents.on("did-finish-load", () => {
-            appWindow.webContents.executeJavaScript(`
-              // Display pinggy URL
-              (function() {
-                  const urlDisplay = document.createElement('div');
-                  urlDisplay.textContent = '${pinggyUrl || `http://localhost:${frontendPort}`}';
-                  urlDisplay.style.position = 'fixed';
-                  urlDisplay.style.bottom = '6px';
-                  urlDisplay.style.right = '6px';
-                  urlDisplay.style.background = 'rgba(0, 0, 0, 0.7)';
-                  urlDisplay.style.color = 'white';
-                  urlDisplay.style.padding = '5px 10px';
-                  urlDisplay.style.borderRadius = '4px';
-                  urlDisplay.style.fontSize = '12px';
-                  urlDisplay.style.zIndex = '9999';
-                  urlDisplay.style.cursor = 'pointer';
-                  urlDisplay.title = 'Click to copy URL';
-                  
-                  urlDisplay.addEventListener('click', function() {
-                      const url = this.textContent;
-                      navigator.clipboard.writeText(url).then(() => {
-                          // Visual feedback
-                          const originalText = this.textContent;
-                          const originalBg = this.style.background;
-                          
-                          this.textContent = 'Copied!';
-                          this.style.background = 'rgba(0, 128, 0, 0.7)';
-                          
-                          setTimeout(() => {
-                              this.textContent = originalText;
-                              this.style.background = originalBg;
-                          }, 1000);
-                      });
-                  });
-                  
-                  document.body.appendChild(urlDisplay);
-              })();
-            `);
-          });
 
           resolve(true);
         }
@@ -472,14 +425,8 @@ ipcMain.handle("launch-app-dev", async (_, projectPath) => {
   try {
     console.log("Launching app in development mode...");
 
-    // Start Pinggy and get the public URL
-    const url = await startPinggy();
-
-    // Launch the app in development mode with the pinggy URL
-    await launchAppDev(projectPath, url);
-
-    // Keep the process running until interrupted
-    return url;
+    // Launch the app in development mode
+    await launchAppDev(projectPath);
   } catch (e) {
     console.error("Error in launch-app-dev:", e);
     throw e;
