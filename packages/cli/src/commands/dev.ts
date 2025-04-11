@@ -38,9 +38,6 @@ export const devCommand = new Command('dev')
       mode: 'development',
       verbose: true,
       distPath: undefined,
-      apiProxy: {
-        target: 'http://localhost:6080/api',
-      },
     });
 
     // Start webpack dev server
