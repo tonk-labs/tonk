@@ -8,7 +8,7 @@
 .treeSection {
   font-weight: 700;
   font-size: 1.2em;
-  color: rgba(255,255,255,0.5);
+  color: rgba(255, 255, 255, 0.5);
   display: flex;
   flex-direction: row;
 }
@@ -17,3 +17,21 @@
   transform: translateY(3px);
   margin-right: 5px;
 }
+
+:global(.rct-tree-item-button) {
+  white-space: normal !important;
+  height: auto !important;
+  min-height: 24px;
+  padding: 4px 25px;
+  word-break: break-word;
+}
+
+:global(.rct-tree-item-title-container) {
+  height: auto !important;
+  min-height: 24px;
+}
+
+:global(.rct-tree-item-li) {
+  height: auto !important;
+}
+

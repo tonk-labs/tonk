@@ -1,7 +1,7 @@
 import { Terminal as XTerm } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import { WebLinksAddon } from "xterm-addon-web-links";
-import { FileType, TreeItem } from "../Tree";
+import { FileType } from "../Tree";
 import { getConfig } from "../../ipc/config";
 import { platformSensitiveJoin } from "../../ipc/files";
 
@@ -137,7 +137,7 @@ export class TerminalManager {
           JSON.stringify({
             type: "command",
             command: data,
-          })
+          }),
         );
       }
     });
@@ -160,7 +160,7 @@ export class TerminalManager {
           JSON.stringify({
             type: "command",
             command: "\x03",
-          })
+          }),
         );
       }
       // Small delay to ensure termination signal is processed
@@ -196,7 +196,7 @@ export class TerminalManager {
 
   async handleWebSocketOpen(
     ws: WebSocket,
-    selectedItem: Directory
+    selectedItem: Directory,
   ): Promise<void> {
     if (!this.terminal?.element || !this.fitAddon) return;
     console.log("handleWebSocketOpen", selectedItem);
@@ -217,7 +217,7 @@ export class TerminalManager {
           shell: defaultShell,
           cols,
           rows,
-        })
+        }),
       );
 
       let isInit = false;
@@ -237,12 +237,12 @@ export class TerminalManager {
             if (found) {
               isInit = true;
             }
-          } catch (e) {
+          } catch (e: any) {
             console.error("Error during WebSocket initialization:", e);
             this.terminal.writeln(
               "\r\n\x1b[31mError initializing terminal: " +
                 e.message +
-                "\x1b[0m"
+                "\x1b[0m",
             );
           }
         }
@@ -254,23 +254,22 @@ export class TerminalManager {
           JSON.stringify({
             type: "command",
             command: "tonk create --init\r",
-          })
+          }),
         );
       } else {
         // Add a small delay to ensure the shell is ready before sending the command
-        // TODO: only run npm install if if node_modules doesn't exist
         ws.send(
           JSON.stringify({
             type: "command",
-            command: "npm install && tonk markdown README.md\r",
-          })
+            command: "pnpm install && tonk markdown README.md\r",
+          }),
         );
       }
     } catch (e: unknown) {
       if (e instanceof Error) {
         console.error("Error during WebSocket initialization:", e);
         this.terminal.writeln(
-          "\r\n\x1b[31mError initializing terminal: " + e.message + "\x1b[0m"
+          "\r\n\x1b[31mError initializing terminal: " + e.message + "\x1b[0m",
         );
       }
     }
@@ -278,7 +277,7 @@ export class TerminalManager {
 
   private async handleWebSocketMessage(
     location: Directory,
-    event: MessageEvent
+    event: MessageEvent,
   ): Promise<void> {
     if (!this.terminal?.element) return;
     console.log("handleWebSocketMessage", location, event);
@@ -314,7 +313,7 @@ export class TerminalManager {
       if (error instanceof Error) {
         console.error("Error processing terminal message:", error);
         this.terminal.writeln(
-          `\r\n\x1b[31mError processing message: ${error.message}\x1b[0m`
+          `\r\n\x1b[31mError processing message: ${error.message}\x1b[0m`,
         );
       }
     }
@@ -325,7 +324,7 @@ export class TerminalManager {
     console.error("Terminal WebSocket error:", error);
     this.setConnected(false);
     this.terminal.writeln(
-      `\r\n\x1b[31mWebSocket error: ${JSON.stringify(error)}\x1b[0m`
+      `\r\n\x1b[31mWebSocket error: ${JSON.stringify(error)}\x1b[0m`,
     );
   }
 
@@ -347,13 +346,13 @@ export class TerminalManager {
             JSON.stringify({
               type: "command",
               command: "\x03",
-            })
+            }),
           );
           this.socket.send(
             JSON.stringify({
               type: "command",
               command: "clear\r",
-            })
+            }),
           );
           break;
         }
@@ -365,7 +364,7 @@ export class TerminalManager {
               type: "command",
               id: `${cmdId}`,
               command: "pnpm run build",
-            })
+            }),
           );
         }
         default: {
@@ -410,7 +409,7 @@ export class TerminalManager {
                 type: "resize",
                 cols,
                 rows,
-              })
+              }),
             );
           }
         } catch (e) {

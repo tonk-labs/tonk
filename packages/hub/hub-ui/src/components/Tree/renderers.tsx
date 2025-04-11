@@ -1,6 +1,6 @@
 import React from "react";
-import { TreeRenderProps, TreeItem } from "react-complex-tree";
-import { Notebook, Cylinder, Package } from "lucide-react";
+import { TreeRenderProps } from "react-complex-tree";
+import { Notebook, Cylinder } from "lucide-react";
 import styles from "./Tree.module.css";
 import { TreeItemMetadata, FileType } from "./index";
 
@@ -27,7 +27,7 @@ const renderSection = (title: React.ReactNode) => {
         </span>
       );
     }
-   
+
     default: {
       return title;
     }
@@ -49,7 +49,7 @@ export const renderers: TreeRenderProps<TreeItemMetadata> = {
           context.isExpanded && "rct-tree-item-li-expanded",
           context.isFocused && "rct-tree-item-li-focused",
           context.isDraggingOver && "rct-tree-item-li-dragging-over",
-          context.isSearchMatching && "rct-tree-item-li-search-match"
+          context.isSearchMatching && "rct-tree-item-li-search-match",
         )}
       >
         <div
@@ -64,7 +64,7 @@ export const renderers: TreeRenderProps<TreeItemMetadata> = {
             context.isDraggingOver &&
               "rct-tree-item-title-container-dragging-over",
             context.isSearchMatching &&
-              "rct-tree-item-title-container-search-match"
+              "rct-tree-item-title-container-search-match",
           )}
         >
           {arrow}
@@ -78,7 +78,7 @@ export const renderers: TreeRenderProps<TreeItemMetadata> = {
               context.isExpanded && "rct-tree-item-button-expanded",
               context.isFocused && "rct-tree-item-button-focused",
               context.isDraggingOver && "rct-tree-item-button-dragging-over",
-              context.isSearchMatching && "rct-tree-item-button-search-match"
+              context.isSearchMatching && "rct-tree-item-button-search-match",
             )}
           >
             {item.isFolder
