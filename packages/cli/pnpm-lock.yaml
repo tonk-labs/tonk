@@ -12,8 +12,8 @@ importers:
         specifier: ^0.3.7
         version: 0.3.7(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))
       '@tonk/server':
-        specifier: ^0.1.9
-        version: 0.1.9(typescript@5.8.2)
+        specifier: ^0.1.10
+        version: 0.1.10(typescript@5.8.2)
       chalk:
         specifier: ^5.3.0
         version: 5.4.1
@@ -987,8 +987,8 @@ packages:
       react: ^19.0.0
       zustand: ^5.0.3
 
-  '@tonk/server@0.1.9':
-    resolution: {integrity: sha512-QbqOpuqMmHgL/+2lnDgInupDtgogt1bYNvD0rdpuKjFVYWzbt6B9xsgzoNLpPzK1zaDu5un6/iDbyT95llaPdg==}
+  '@tonk/server@0.1.10':
+    resolution: {integrity: sha512-kpUETXsIaZ0T+DAOP4qkywqjIMipAMQ4YlvtgkJM5yKI8+m7s8oALqDLoerYrEN805bIzq3S/b91HC5oIO9+iA==}
 
   '@types/estree@1.0.6':
     resolution: {integrity: sha512-AYnb1nQyY49te+VRAVgmzfcgjYS91mY5P0TKUDCLEM+gNnA+3T6rWITXRLYCpahpqSQbN5cE+gHpnPyXjHWxcw==}
@@ -4491,7 +4491,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@tonk/server@0.1.9(typescript@5.8.2)':
+  '@tonk/server@0.1.10(typescript@5.8.2)':
     dependencies:
       '@automerge/automerge': 2.2.8
       '@flystorage/aws-s3': 1.0.1
