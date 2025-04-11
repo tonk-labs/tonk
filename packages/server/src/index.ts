@@ -1,4 +1,5 @@
 import {WebSocketServer, WebSocket} from 'ws';
+import {createProxyMiddleware} from 'http-proxy-middleware';
 import express from 'express';
 import http from 'http';
 import path from 'path';
@@ -19,6 +20,8 @@ export class TonkServer {
   private connections: Map<WebSocket, Set<string>> = new Map(); // Map of connections to subscribed document IDs
   private options: ServerOptions;
   private initialDistPathSet: boolean = false; // Track if distPath was set at construction time
+  private serverManagerPingInterval: NodeJS.Timeout | null = null;
+  private serverManagerProxyActive: boolean = false;
 
   constructor(options: ServerOptions) {
     this.options = {
@@ -104,7 +107,7 @@ export class TonkServer {
     });
   }
 
-  private async setupExpressMiddleware() {
+  private setupExpressMiddleware() {
     this.app.get('/ping', (_req, res) => {
       res.send('pong');
     });
@@ -271,16 +274,96 @@ export class TonkServer {
     }
   }
 
+  private startServerManagerMonitoring(): void {
+    if (this.serverManagerPingInterval) {
+      clearInterval(this.serverManagerPingInterval);
+      this.serverManagerPingInterval = null;
+    }
+
+    this.log('blue', 'Starting server manager monitoring...');
+
+    // Try to ping the server manager every 2 seconds
+    this.serverManagerPingInterval = setInterval(async () => {
+      try {
+        const response = await fetch('http://localhost:6080/ping', {
+          method: 'GET',
+          headers: {'Content-Type': 'application/json'},
+        });
+
+        if (response.ok) {
+          // If we get a response and the proxy isn't active, set it up
+          if (!this.serverManagerProxyActive) {
+            this.setupServerManagerProxy();
+          }
+        } else {
+          // If we get a bad response and the proxy is active, remove it
+          if (this.serverManagerProxyActive) {
+            this.removeServerManagerProxy();
+          }
+        }
+      } catch (error: any) {
+        // If we can't connect and the proxy is active, remove it
+        if (this.serverManagerProxyActive) {
+          this.log('yellow', `Server manager not responding: ${error.message}`);
+          this.removeServerManagerProxy();
+        }
+      }
+    }, 2000);
+  }
+
+  private setupServerManagerProxy(): void {
+    if (this.serverManagerProxyActive) return;
+
+    this.log('green', 'Server manager found, setting up proxy');
+
+    // Create a proxy middleware to the server manager
+    const serverManagerProxy = createProxyMiddleware({
+      target: 'http://localhost:6080/api',
+      changeOrigin: true,
+    });
+
+    // Add the proxy middleware
+    this.app.use('/api', serverManagerProxy);
+    this.serverManagerProxyActive = true;
+
+    this.log('green', 'Server manager proxy active at /api');
+  }
+
+  private removeServerManagerProxy(): void {
+    if (!this.serverManagerProxyActive) return;
+
+    this.log('yellow', 'Removing server manager proxy');
+
+    // Remove the proxy middleware
+    this.app._router.stack = this.app._router.stack.filter(
+      (layer: any) => !layer.route || layer.route.path !== '/api',
+    );
+
+    this.serverManagerProxyActive = false;
+  }
+
+  private stopServerManagerMonitoring(): void {
+    if (this.serverManagerPingInterval) {
+      clearInterval(this.serverManagerPingInterval);
+      this.serverManagerPingInterval = null;
+      this.log('yellow', 'Server manager monitoring stopped');
+    }
+
+    this.removeServerManagerProxy();
+  }
+
   public start(): Promise<void> {
     return new Promise(async resolve => {
       if (this.options.mode === 'production' && this.options.distPath) {
         await this.updateWasmCache();
       }
+      // Start monitoring for server manager instead of launching it
+      this.startServerManagerMonitoring();
 
       this.server.listen(this.options.port, () => {
         this.log(
           'green',
-          `Server running on port ${this.options.port}, update: 5`,
+          `Server running on port ${this.options.port}, update: 6`,
         );
 
         if (this.options.mode === 'production') {
@@ -301,6 +384,9 @@ export class TonkServer {
             'blue',
             `Development sync server running on port ${this.options.port}`,
           );
+
+          // Also start monitoring in development mode
+          this.startServerManagerMonitoring();
         }
 
         resolve();
@@ -310,6 +396,9 @@ export class TonkServer {
 
   public stop(): Promise<void> {
     return new Promise((resolve, reject) => {
+      // Stop the server manager monitoring
+      this.stopServerManagerMonitoring();
+
       this.connections.forEach((_, conn) => {
         conn.terminate();
       });
