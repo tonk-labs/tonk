@@ -36,7 +36,7 @@ Learning Tonk requires a mindset shift because as developers we're used to think
 Tonk doesn't just help you build apps or store data. Tonk can be best described as helping you build **your own little internet: a way to store shared highly mutable state across many apps and many users, and build ephemeral services, apps and tools on top of that shared state.**
 
 <p style="text-align: center;">
-  <img src="./images/illustrative-example.png" style="width: 100%; margin: 4rem auto;"/>
+  <img src="./images/illustrative-example.png" style="width: 100%; margin: 4rem auto; background-color: white; padding: 20px; border-radius: 8px;"/>
 </p>
 
 Each app can read and write to the shared state with barely any development overhead - no need to worry about migrations, caching, auth or permissions.
