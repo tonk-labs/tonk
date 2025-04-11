@@ -36,13 +36,13 @@ The CLI will guide you through the project creation process with interactive pro
 ## Development
 
 1. Clone the repository
-2. Install dependencies: `npm install`
-3. Build the package: `npm run build`
+2. Install dependencies: `pnpm install`
+3. Build the package: `pnpm build`
 4. Link for local testing: `npm link`
 
 ## Testing
 
-Run `npm test` to execute the test suite.
+Run `pnpm test` to execute the test suite.
 
 ## License
 
