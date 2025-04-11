@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button } from "../";
-import { launchApp } from "../../ipc/app";
+import { launchApp, launchAppDev } from "../../ipc/app";
 import { getConfig } from "../../ipc/config";
 import { platformSensitiveJoin } from "../../ipc/files";
 import { useProjectStore } from "../../stores/projectStore";
@@ -31,6 +31,22 @@ const AppLaunchBar = (props: {
     }
   };
 
+  const launchDev = async () => {
+    try {
+      const config = await getConfig();
+      const fullPath = await platformSensitiveJoin([
+        config!.homePath,
+        selectedItem.index,
+      ]);
+      await commandCallback("build");
+      const url = await launchAppDev(fullPath!);
+      setUrl(url || null);
+    } catch (error) {
+      console.error("Error launching app in dev mode:", error);
+      setUrl(null);
+    }
+  };
+
   const copyToClipboard = () => {
     if (url) {
       navigator.clipboard.writeText(url);
@@ -41,9 +57,14 @@ const AppLaunchBar = (props: {
 
   return (
     <div className={styles.buttonArea}>
-      <Button color="green" size="sm" shape="rounded" onClick={launch}>
-        Launch
-      </Button>
+      <div style={{ display: "flex", gap: "10px" }}>
+        <Button color="blue" size="sm" shape="rounded" onClick={launchDev}>
+          Dev Mode
+        </Button>
+        <Button color="green" size="sm" shape="rounded" onClick={launch}>
+          Launch
+        </Button>
+      </div>
       {url && (
         <div
           style={{
