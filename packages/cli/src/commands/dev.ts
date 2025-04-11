@@ -69,7 +69,9 @@ export const devCommand = new Command('dev')
       shell: true,
       env: {
         ...process.env,
-        PORT: frontendPort.toString(),
+        // PORT: frontendPort.toString(),
+        // We now assume server is running on 8080 at all times with the hub
+        PORT: '8080',
       },
     });
 

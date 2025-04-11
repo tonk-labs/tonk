@@ -96,7 +96,7 @@ module.exports = (env, argv) => {
       port: 3000,
       proxy: [{
         context: ['/sync', '/api'],
-        target: 'http://localhost:4080',
+        target: 'http://localhost:8080',
         ws: true,
         changeOrigin: true
       }],
