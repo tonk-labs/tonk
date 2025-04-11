@@ -11,7 +11,7 @@ Select the my-world application, you should see the terminal and readme.
 Run the command:
 
 ```
-pnpm run dev
+tonk dev
 ```
 
 This will launch the app in dev mode.
@@ -54,9 +54,13 @@ if you are using Windsurf on Mac, then run the command
 
 and so on.
 
-### Modifying the App
+### Vibe Coding
 
-Try editing the app's code - you should see the changes reflected in the app UI.
+You can simply ask your co-pilot to make the necessary changes you'd like to see.
+
+> ❗ pro-tip: Vibe Coding is best done in small incremental steps. Tell the LLM the simplest, most concise possible feature you'd like to add and work with it until you think everything is functional. Once it's working, make a commit into git. Then keep going on to the next feature.
+
+As you make changes to the app's code - you should see the changes reflected in the app UI.
 
 The Tonk toolchain is designed for people incorporating AI heavily into their workflow. As such, Tonk apps have prompts throughout the project structure as (_llms.txt_, CLAUDE.md, .cursorrules, .windsurfrules). These are files which provide context to copilots such as Claude, Cursor or Windsurf.
 
