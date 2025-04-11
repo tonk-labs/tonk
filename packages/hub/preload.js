@@ -5,6 +5,8 @@ const { app } = require("@electron/remote");
 
 contextBridge.exposeInMainWorld("electronAPI", {
   launchApp: (projectPath) => ipcRenderer.invoke("launch-app", projectPath),
+  launchAppDev: (projectPath) =>
+    ipcRenderer.invoke("launch-app-dev", projectPath),
   isAppRunning: () => {
     return ipcRenderer.invoke("is-app-running");
   },
