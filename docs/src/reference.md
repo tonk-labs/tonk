@@ -13,12 +13,16 @@ We encourage you to look into the llms.txt files in any of your app project file
 1. Do a wsl install (https://learn.microsoft.com/en-us/windows/wsl/install)
 
 2. Install node and npm
+```
    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
-
-3. Install necessary shared libraries
+```
+4. Install necessary shared libraries
+```
    sudo apt install libnss3
+   ```
+```
    sudo apt install libasound2t64
-
+```
 then copy and paste the install command listed on the [tonk.xyz](https://tonk.xyz) website.
 
 ## How do I make changes to my application?
