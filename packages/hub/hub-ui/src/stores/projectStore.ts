@@ -97,7 +97,7 @@ const createTreeItem = (
   },
 });
 
-const getFileType = (path: string, isDirectory: boolean): FileType => {
+const getFileType = (path: string): FileType => {
   const segments = path.split("/");
   const topLevel = segments[0];
 
@@ -127,36 +127,6 @@ const initializeBaseTreeItems = (): TreeItems => ({
   stores: createTreeItem("stores", "stores", FileType.Section, true, []),
 });
 
-const processSubContents = async (
-  parentPath: string,
-  parentId: string,
-  items: TreeItems,
-  sectionType: FileType,
-): Promise<void> => {
-  const subContents = await ls(parentPath);
-  if (!subContents) return;
-
-  for (const subItem of subContents) {
-    // Skip blacklisted files
-    if (shouldIgnoreFile(subItem.name)) {
-      continue;
-    }
-
-    const subItemPath = await platformSensitiveJoin([parentId, subItem.name]);
-    const subItemId = subItemPath!.replace(/\//g, "/");
-
-    items[subItemId] = createTreeItem(
-      subItemId,
-      subItem.name,
-      sectionType, // Use the parent section's type for all children
-      subItem.isDirectory,
-      [],
-    );
-
-    items[parentId].children.push(subItemId);
-  }
-};
-
 const processDirectoryContents = async (
   dirPath: string,
   dir: string,
@@ -167,12 +137,22 @@ const processDirectoryContents = async (
   if (!contents) return;
 
   for (const item of contents) {
-    const itemPath = await platformSensitiveJoin([dir, item.name]);
-    const itemId = itemPath!.replace(/\//g, "/");
-
+    // Skip blacklisted files
     if (shouldIgnoreFile(item.name)) {
       continue;
     }
+
+    // For stores directory, only include files ending with .automerge
+    if (
+      dir === "stores" &&
+      ((!item.isDirectory && !item.name.endsWith(".automerge")) ||
+        item.isDirectory)
+    ) {
+      continue;
+    }
+
+    const itemPath = await platformSensitiveJoin([dir, item.name]);
+    const itemId = itemPath!.replace(/\//g, "/");
 
     items[itemId] = createTreeItem(
       itemId,
@@ -202,7 +182,7 @@ const loadProjectStructure = async (homePath: string): Promise<TreeItems> => {
   for (const dir of REQUIRED_DIRECTORIES) {
     const dirPath = await platformSensitiveJoin([homePath, dir]);
     // Determine the section type based on the directory
-    const sectionType = getFileType(dir, true);
+    const sectionType = getFileType(dir);
     await processDirectoryContents(dirPath!, dir, items, sectionType);
   }
 

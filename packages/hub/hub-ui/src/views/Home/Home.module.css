@@ -6,8 +6,9 @@
 }
 
 .sidebar {
-  padding-top: 3em;
-  width: clamp(15rem, 15vw, 20rem);
+  padding-top: 1em;
+  width: 12rem;
+  min-width: 12rem;
   height: 100%;
   background-color: #232323;
   position: relative;
