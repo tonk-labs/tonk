@@ -1,6 +1,6 @@
 {
   "name": "@tonk/server",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Server package for Tonk applications",
   "type": "module",
   "main": "dist/index.js",

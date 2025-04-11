@@ -5,12 +5,17 @@ import http from 'http';
 import path from 'path';
 import chalk from 'chalk';
 import fs from 'fs';
+import {FileSystemStorageMiddleware} from './filesystemMiddleware.js';
+import {FileSystemStorageOptions} from './filesystemStorage.js';
 
 export interface ServerOptions {
   port?: number;
   mode: 'development' | 'production';
   distPath: string | undefined; // Path to the built frontend files
   verbose?: boolean;
+  filesystemStorage?: FileSystemStorageOptions | undefined;
+  primaryStorage: 'filesystem' | null;
+  syncInterval?: number; // Optional interval to trigger storage sync in ms
 }
 
 export class TonkServer {
@@ -22,13 +27,18 @@ export class TonkServer {
   private initialDistPathSet: boolean = false; // Track if distPath was set at construction time
   private serverManagerPingInterval: NodeJS.Timeout | null = null;
   private serverManagerProxyActive: boolean = false;
+  private filesystemMiddleware: FileSystemStorageMiddleware | null = null;
+  private fsSyncTimer: NodeJS.Timeout | null = null;
 
   constructor(options: ServerOptions) {
     this.options = {
       port: options.port || (options.mode === 'development' ? 4080 : 8080),
       mode: options.mode,
       distPath: options.distPath,
+      syncInterval: options.syncInterval || 0,
       verbose: options.verbose ?? true,
+      filesystemStorage: options.filesystemStorage,
+      primaryStorage: 'filesystem',
     };
 
     // Track if distPath was initially set
@@ -44,8 +54,17 @@ export class TonkServer {
       path: '/sync',
     });
 
+    if (this.options.filesystemStorage) {
+      this.filesystemMiddleware = new FileSystemStorageMiddleware(
+        this.options.filesystemStorage,
+        'TonkServer-Filesystem',
+        this.options.verbose,
+      );
+    }
+
     this.setupWebSocketHandlers();
     this.setupExpressMiddleware();
+    this.setupStorageSyncTimers();
   }
 
   private log(color: 'green' | 'red' | 'blue' | 'yellow', message: string) {
@@ -54,11 +73,52 @@ export class TonkServer {
     }
   }
 
+  // Force sync all documents to Filesystem
+  public async forceSyncToFileSystem(): Promise<void> {
+    if (this.filesystemMiddleware) {
+      return this.filesystemMiddleware.forceSyncToFileSystem();
+    }
+  }
+
+  private setupStorageSyncTimers(): void {
+    // Set up Filesystem sync timer if configured
+    if (this.options.syncInterval && this.filesystemMiddleware) {
+      this.fsSyncTimer = setInterval(() => {
+        this.filesystemMiddleware!.forceSyncToFileSystem().catch(error => {
+          this.log('red', `Scheduled Filesystem sync failed: ${error.message}`);
+        });
+      }, this.options.syncInterval);
+    }
+  }
+
   private setupWebSocketHandlers() {
     // Handle WebSocket connections
     this.wss.on('connection', (ws: WebSocket) => {
       this.log('green', `Client connected`);
       this.connections.set(ws, new Set());
+
+      if (this.filesystemMiddleware) {
+        // Determine which storage middleware to use for initial document loading
+        const primaryMiddleware = this.filesystemMiddleware;
+
+        // Send stored documents to the new client if a primary storage middleware is enabled
+        if (primaryMiddleware && primaryMiddleware.isInitialized()) {
+          // Get all document IDs
+          const docIds = primaryMiddleware.getAllDocumentIds();
+
+          if (docIds.length > 0) {
+            this.log(
+              'blue',
+              `Sending ${docIds.length} stored documents to new client`,
+            );
+
+            // Send each document to the client
+            for (const docId of docIds) {
+              this.sendDocumentToClient(ws, docId);
+            }
+          }
+        }
+      }
 
       // Handle messages from clients
       ws.on('message', async (data: Buffer) => {
@@ -79,12 +139,23 @@ export class TonkServer {
             }
           });
 
-          // Track document subscriptions if it's a valid message with docId
-          if (messageData && messageData.docId) {
-            const subscriptions = this.connections.get(ws);
-            if (subscriptions) {
-              subscriptions.add(messageData.docId);
+          // Process through primary storage middleware first if available
+          const primaryMiddleware = this.filesystemMiddleware;
+          if (primaryMiddleware) {
+            const result = await primaryMiddleware.handleIncomingChanges(
+              messageData.docId,
+              messageData.changes,
+            );
+
+            if (result && result.didChange) {
+              // Track that this client is subscribed to this document
+              const subscriptions = this.connections.get(ws);
+              if (subscriptions) {
+                subscriptions.add(messageData.docId);
+              }
             }
+          } else {
+            console.error('THERE IS NO PRIMARY MIDDLEWARE');
           }
         } catch (error) {
           this.log(
@@ -105,6 +176,53 @@ export class TonkServer {
         this.log('red', `WebSocket error: ${error.message}`);
       });
     });
+  }
+
+  private async sendDocumentToClient(
+    ws: WebSocket,
+    docId: string,
+  ): Promise<void> {
+    if (!this.filesystemMiddleware) {
+      return;
+    }
+
+    const primaryMiddleware = this.filesystemMiddleware;
+    if (!primaryMiddleware) return;
+
+    try {
+      // Track that this client is subscribed to this document
+      const subscriptions = this.connections.get(ws);
+      if (subscriptions) {
+        subscriptions.add(docId);
+      }
+
+      // Generate a sync message for this client
+      // This will use in-memory documents when available
+      const syncMessage = await primaryMiddleware.generateSyncMessage(docId);
+
+      if (syncMessage && syncMessage.length > 0) {
+        const message = {
+          docId,
+          changes: Array.from(syncMessage),
+        };
+
+        this.log(
+          'blue',
+          `Sending document ${docId} sync message to client (${syncMessage.length} bytes)`,
+        );
+        ws.send(JSON.stringify(message));
+      } else {
+        this.log(
+          'yellow',
+          `No sync message generated for document ${docId}, document may be empty`,
+        );
+      }
+    } catch (error) {
+      this.log(
+        'red',
+        `Error sending document ${docId}: ${(error as Error).message}`,
+      );
+    }
   }
 
   private setupExpressMiddleware() {
@@ -394,7 +512,25 @@ export class TonkServer {
     });
   }
 
-  public stop(): Promise<void> {
+  public async stop(): Promise<void> {
+    if (this.fsSyncTimer) {
+      clearInterval(this.fsSyncTimer);
+      this.fsSyncTimer = null;
+    }
+
+    if (this.filesystemMiddleware) {
+      try {
+        await this.filesystemMiddleware.shutdown();
+      } catch (error) {
+        this.log(
+          'red',
+          `Error shutting down Filesystem middleware: ${
+            (error as Error).message
+          }`,
+        );
+      }
+    }
+
     return new Promise((resolve, reject) => {
       // Stop the server manager monitoring
       this.stopServerManagerMonitoring();
