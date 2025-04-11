@@ -1,7 +1,6 @@
 import {Command} from 'commander';
 import path from 'path';
-import {spawn} from 'child_process';
-import {createServer} from '@tonk/server';
+import {ChildProcess, spawn} from 'child_process';
 import chalk from 'chalk';
 import fs from 'fs';
 
@@ -31,14 +30,6 @@ export const devCommand = new Command('dev')
     }
 
     console.log(chalk.blue('Starting Tonk development environment...'));
-
-    // Start the sync server
-    const server = await createServer({
-      port,
-      mode: 'development',
-      verbose: true,
-      distPath: undefined,
-    });
 
     // Start webpack dev server
     const webpackArgs = [
@@ -72,11 +63,39 @@ export const devCommand = new Command('dev')
       },
     });
 
+    let serverProcess: ChildProcess;
+    const serverPath = path.join(projectRoot, 'server', 'dist', 'index.js');
+    try {
+      if (fs.existsSync(serverPath)) {
+        serverProcess = spawn('node', [serverPath], {
+          cwd: projectRoot,
+          stdio: 'inherit',
+          shell: true,
+          env: {
+            ...process.env,
+          },
+        });
+
+        serverProcess.on('exit', code => {
+          if (code !== 0 && code !== null) {
+            console.error(
+              chalk.red(`Webpack process exited with code ${code}`),
+            );
+          }
+          process.exit(code || 0);
+        });
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
     // Handle process termination
     const cleanup = () => {
       console.log(chalk.yellow('\nShutting down servers...'));
       webpackProcess.kill();
-      server.stop().catch(console.error);
+      if (serverProcess) {
+        serverProcess.kill();
+      }
     };
 
     process.on('SIGINT', cleanup);
@@ -87,7 +106,6 @@ export const devCommand = new Command('dev')
       if (code !== 0 && code !== null) {
         console.error(chalk.red(`Webpack process exited with code ${code}`));
       }
-      server.stop().catch(console.error);
       process.exit(code || 0);
     });
   });

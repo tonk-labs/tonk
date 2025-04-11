@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       '@tonk/keepsync':
-        specifier: ^0.3.5
-        version: 0.3.5(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))
+        specifier: ^0.3.7
+        version: 0.3.7(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))
       '@tonk/server':
-        specifier: ^0.1.7
-        version: 0.1.7(typescript@5.8.2)
+        specifier: file://../server
+        version: file:../server(typescript@5.8.2)
       chalk:
         specifier: ^5.3.0
         version: 5.4.1
@@ -980,15 +980,15 @@ packages:
   '@tokenizer/token@0.3.0':
     resolution: {integrity: sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==}
 
-  '@tonk/keepsync@0.3.5':
-    resolution: {integrity: sha512-ZpwbGAlLIoWfShJEUAgjSNEUuTIf49zKX5ZG7y1nogtiHYtAMcT3BfjPr03DjmDDWaaSD2ZRfCT/990krz0Cdg==}
+  '@tonk/keepsync@0.3.7':
+    resolution: {integrity: sha512-7SISBnNeBBHB49pNcu0RO6Q6lhY1/T62kX2h+XvYD6qK0CUt0XctQhA6D0J3YRcIjydTdZOBEXlOGetiXkwMvw==}
     peerDependencies:
       '@automerge/automerge': ^2.2.8
       react: ^19.0.0
       zustand: ^5.0.3
 
-  '@tonk/server@0.1.7':
-    resolution: {integrity: sha512-554s56uttl8KOhapa9ZNDSWBiBRQCab1x9HjIBKBRdgoHJJgggUtG1F2ZcS/+stwh6Fe2JjLf/t8OpHmxe9bqg==}
+  '@tonk/server@file:../server':
+    resolution: {directory: ../server, type: directory}
 
   '@types/estree@1.0.6':
     resolution: {integrity: sha512-AYnb1nQyY49te+VRAVgmzfcgjYS91mY5P0TKUDCLEM+gNnA+3T6rWITXRLYCpahpqSQbN5cE+gHpnPyXjHWxcw==}
@@ -4479,7 +4479,7 @@ snapshots:
 
   '@tokenizer/token@0.3.0': {}
 
-  '@tonk/keepsync@0.3.5(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))':
+  '@tonk/keepsync@0.3.7(@automerge/automerge@2.2.8)(react@19.1.0)(zustand@5.0.3(react@19.1.0))':
     dependencies:
       '@automerge/automerge': 2.2.8
       '@automerge/automerge-wasm': 1.0.0-preview.0
@@ -4491,7 +4491,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@tonk/server@0.1.7(typescript@5.8.2)':
+  '@tonk/server@file:../server(typescript@5.8.2)':
     dependencies:
       '@automerge/automerge': 2.2.8
       '@flystorage/aws-s3': 1.0.1

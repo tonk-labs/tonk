@@ -2,6 +2,8 @@ const { ipcMain, shell, BrowserWindow } = require("electron");
 const path = require("node:path");
 const http = require("http");
 const { spawn } = require("child_process");
+const fs = require('fs');
+const { spawnSync } = require("node:child_process");
 
 // Track the app window globally
 let appWindow = null;
@@ -114,11 +116,43 @@ ipcMain.handle("launch-app", async (_, projectPath) => {
   }
 });
 
+const runCommandAsync = (fn) => {
+  return new Promise((resolve, reject) => {
+    const r = fn();
+    r.on('error', () => {
+      resolve();
+    });
+    r.on('close', () => {
+      resolve();
+    });
+    r.on('exit', () => {
+      resolve();
+    });
+  });
+}
+
 const launchApp = async (projectPath, pinggyUrl) => {
   try {
     const distPath = path.join(projectPath, "dist");
+
     // Set the distPath via API call
     const requestData = JSON.stringify({ distPath });
+
+    const serverPath = path.join(projectPath, 'server');
+    if (fs.existsSync(serverPath)) {
+      const installEverything = () => {
+        return spawn('pnpm', ['install'], {
+          cwd: path.join(projectPath, 'server')
+        })
+      }
+      await runCommandAsync(installEverything);
+      const buildTheServer = () => {
+        return spawn('pnpm', ['build'], {
+          cwd: path.join(projectPath, 'server')
+        })
+      }
+      await runCommandAsync(buildTheServer);
+    }
 
     return new Promise((resolve, reject) => {
       const req = http.request(
@@ -153,6 +187,31 @@ const launchApp = async (projectPath, pinggyUrl) => {
                 },
               });
 
+              let serverProcess;
+              const serverPath = path.join(projectPath, 'server', 'dist', 'index.js');
+              try {
+                if (fs.existsSync(serverPath)) {
+                  serverProcess = spawn('node', [serverPath], {
+                    cwd: projectPath,
+                    stdio: 'inherit',
+                    shell: true,
+                    env: {
+                      ...process.env,
+                    },
+                  });
+
+                  serverProcess.on('exit', code => {
+                    if (code !== 0 && code !== null) {
+                      console.error(
+                        chalk.red(`Webpack process exited with code ${code}`),
+                      );
+                    }
+                    process.exit(code || 0);
+                  });
+                }
+              } catch (e) {
+                console.error(e);
+              }
               // Enable @electron/remote for this window
               require("@electron/remote/main").enable(appWindow.webContents);
 
@@ -167,6 +226,9 @@ const launchApp = async (projectPath, pinggyUrl) => {
               // Clean up the window reference when window is closed
               appWindow.on("closed", () => {
                 appWindow = null;
+                if (serverProcess) {
+                  serverProcess.kill();
+                }
                 // Also kill the pinggy process when window is closed
                 if (pinggyProcess) {
                   pinggyProcess.kill();
