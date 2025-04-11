@@ -2,8 +2,7 @@ const { ipcMain, shell, BrowserWindow } = require("electron");
 const path = require("node:path");
 const http = require("http");
 const { spawn } = require("child_process");
-const fs = require('fs');
-const { spawnSync } = require("node:child_process");
+const fs = require("fs");
 
 // Track the app window globally
 let appWindow = null;
@@ -39,7 +38,6 @@ const startPinggy = async () => {
     ]);
 
     let url = null;
-    const urlRegex = /(https?:\/\/[^\s]+)/;
 
     // Listen for output to capture the URL
     pinggyProcess.stdout.on("data", (data) => {
@@ -117,19 +115,19 @@ ipcMain.handle("launch-app", async (_, projectPath) => {
 });
 
 const runCommandAsync = (fn) => {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve, _reject) => {
     const r = fn();
-    r.on('error', () => {
+    r.on("error", () => {
       resolve();
     });
-    r.on('close', () => {
+    r.on("close", () => {
       resolve();
     });
-    r.on('exit', () => {
+    r.on("exit", () => {
       resolve();
     });
   });
-}
+};
 
 const launchApp = async (projectPath, pinggyUrl) => {
   try {
@@ -138,19 +136,19 @@ const launchApp = async (projectPath, pinggyUrl) => {
     // Set the distPath via API call
     const requestData = JSON.stringify({ distPath });
 
-    const serverPath = path.join(projectPath, 'server');
+    const serverPath = path.join(projectPath, "server");
     if (fs.existsSync(serverPath)) {
       const installEverything = () => {
-        return spawn('pnpm', ['install'], {
-          cwd: path.join(projectPath, 'server')
-        })
-      }
+        return spawn("pnpm", ["install"], {
+          cwd: path.join(projectPath, "server"),
+        });
+      };
       await runCommandAsync(installEverything);
       const buildTheServer = () => {
-        return spawn('pnpm', ['build'], {
-          cwd: path.join(projectPath, 'server')
-        })
-      }
+        return spawn("pnpm", ["build"], {
+          cwd: path.join(projectPath, "server"),
+        });
+      };
       await runCommandAsync(buildTheServer);
     }
 
@@ -188,19 +186,24 @@ const launchApp = async (projectPath, pinggyUrl) => {
               });
 
               let serverProcess;
-              const serverPath = path.join(projectPath, 'server', 'dist', 'index.js');
+              const serverPath = path.join(
+                projectPath,
+                "server",
+                "dist",
+                "index.js",
+              );
               try {
                 if (fs.existsSync(serverPath)) {
-                  serverProcess = spawn('node', [serverPath], {
+                  serverProcess = spawn("node", [serverPath], {
                     cwd: projectPath,
-                    stdio: 'inherit',
+                    stdio: "inherit",
                     shell: true,
                     env: {
                       ...process.env,
                     },
                   });
 
-                  serverProcess.on('exit', code => {
+                  serverProcess.on("exit", (code) => {
                     if (code !== 0 && code !== null) {
                       console.error(
                         chalk.red(`Webpack process exited with code ${code}`),
@@ -304,6 +307,184 @@ const launchApp = async (projectPath, pinggyUrl) => {
     throw error;
   }
 };
+
+const launchAppDev = async (projectPath, pinggyUrl) => {
+  try {
+    console.log("Launching app in development mode...");
+
+    // Set default port
+    const frontendPort = 3000;
+
+    console.log("Starting Tonk development environment...");
+
+    // Start the tonk dev command
+    const devProcess = spawn("tonk", ["dev"], {
+      cwd: projectPath,
+      env: {
+        ...process.env,
+      },
+    });
+
+    // Log output from the dev process
+    devProcess.stdout.on("data", (data) => {
+      console.log(`Tonk dev: ${data}`);
+    });
+
+    devProcess.stderr.on("data", (data) => {
+      console.error(`Tonk dev error: ${data}`);
+    });
+
+    // Wait for the dev server to start
+    return new Promise((resolve, reject) => {
+      let isReady = false;
+      const timeout = setTimeout(() => {
+        if (!isReady) {
+          reject(new Error("Timeout waiting for dev server to start"));
+        }
+      }, 60000); // 60 second timeout
+
+      devProcess.stdout.on("data", (data) => {
+        const output = data.toString();
+        // Check for webpack dev server ready message
+        if (
+          output.includes("compiled successfully") ||
+          output.includes("Compiled successfully")
+        ) {
+          clearTimeout(timeout);
+          isReady = true;
+
+          const newWindow = new BrowserWindow({
+            width: 1024,
+            height: 800,
+            title: "",
+            webPreferences: {
+              preload: path.join(__dirname, "..", "..", "preload.js"),
+              nodeIntegration: true,
+              contextIsolation: true,
+              webSecurity: false,
+              allowRunningInsecureContent: true,
+              webgl: true,
+              enableRemoteModule: true,
+              // Enable WebAssembly
+              experimentalFeatures: true,
+            },
+          });
+
+          // Enable @electron/remote for this window
+          require("@electron/remote/main").enable(newWindow.webContents);
+
+          // Set the window title to match the page title
+          newWindow.webContents.on("page-title-updated", (_event, title) => {
+            newWindow.setTitle(title);
+          });
+
+          // Store a reference to the process for this window
+          newWindow.devProcess = devProcess;
+
+          // Clean up when window is closed
+          newWindow.on("closed", () => {
+            // Kill the dev process when window is closed
+            if (newWindow.devProcess) {
+              newWindow.devProcess.kill();
+            }
+
+            // Only kill pinggy if this was the last window using it
+            if (pinggyProcess && BrowserWindow.getAllWindows().length === 0) {
+              pinggyProcess.kill();
+              pinggyProcess = null;
+            }
+          });
+
+          // Update the appWindow reference to the new window
+          appWindow = newWindow;
+
+          // Load the dev server URL
+          newWindow.loadURL(`http://localhost:${frontendPort}`);
+
+          // Display the pinggy URL in the corner of the window
+          newWindow.webContents.on("did-finish-load", () => {
+            appWindow.webContents.executeJavaScript(`
+              // Display pinggy URL
+              (function() {
+                  const urlDisplay = document.createElement('div');
+                  urlDisplay.textContent = '${pinggyUrl || `http://localhost:${frontendPort}`}';
+                  urlDisplay.style.position = 'fixed';
+                  urlDisplay.style.bottom = '6px';
+                  urlDisplay.style.right = '6px';
+                  urlDisplay.style.background = 'rgba(0, 0, 0, 0.7)';
+                  urlDisplay.style.color = 'white';
+                  urlDisplay.style.padding = '5px 10px';
+                  urlDisplay.style.borderRadius = '4px';
+                  urlDisplay.style.fontSize = '12px';
+                  urlDisplay.style.zIndex = '9999';
+                  urlDisplay.style.cursor = 'pointer';
+                  urlDisplay.title = 'Click to copy URL';
+                  
+                  urlDisplay.addEventListener('click', function() {
+                      const url = this.textContent;
+                      navigator.clipboard.writeText(url).then(() => {
+                          // Visual feedback
+                          const originalText = this.textContent;
+                          const originalBg = this.style.background;
+                          
+                          this.textContent = 'Copied!';
+                          this.style.background = 'rgba(0, 128, 0, 0.7)';
+                          
+                          setTimeout(() => {
+                              this.textContent = originalText;
+                              this.style.background = originalBg;
+                          }, 1000);
+                      });
+                  });
+                  
+                  document.body.appendChild(urlDisplay);
+              })();
+            `);
+          });
+
+          resolve(true);
+        }
+      });
+
+      devProcess.on("error", (error) => {
+        clearTimeout(timeout);
+        console.error("Failed to start tonk dev process:", error);
+        reject(error);
+      });
+
+      devProcess.on("close", (code) => {
+        clearTimeout(timeout);
+        if (!isReady) {
+          console.log(`Tonk dev process exited with code ${code} before ready`);
+          reject(
+            new Error(`Tonk dev process exited with code ${code} before ready`),
+          );
+        }
+      });
+    });
+  } catch (error) {
+    console.error("Error launching app in dev mode:", error);
+    throw error;
+  }
+};
+
+ipcMain.handle("launch-app-dev", async (_, projectPath) => {
+  try {
+    console.log("Launching app in development mode...");
+
+    // Start Pinggy and get the public URL
+    const url = await startPinggy();
+
+    // Launch the app in development mode with the pinggy URL
+    await launchAppDev(projectPath, url);
+
+    // Keep the process running until interrupted
+    return url;
+  } catch (e) {
+    console.error("Error in launch-app-dev:", e);
+    throw e;
+  }
+});
 
 ipcMain.handle("open-external-link", async (_event, link) => {
   // Open links in the user's default browser
