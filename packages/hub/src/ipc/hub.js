@@ -68,7 +68,7 @@ ipcMain.handle('create-app', async (e, name) => {
   // Assuming you're using npm start or similar to launch the app
   let config = getConfig();
   let appPath = path.join(config.homePath, 'apps');
-  child.exec(`cd "${appPath}" && mkdir ${name}`, (error, stdout, stderr) => {
+  child.exec(`cd "${appPath}" && mkdir "${name}"`, (error, stdout, stderr) => {
     if (error) {
       console.error(`Error launching app: ${error}`);
       return;
@@ -91,7 +91,7 @@ ipcMain.handle('run-server', async (event, restart = false) => {
     // Assuming you're using npm start or similar to launch the app
     let config = getConfig();
     let storesPath = path.join(config.homePath, 'stores');
-    server = child.exec(`tonk serve -u -f ${storesPath}`, {
+    server = child.exec(`tonk serve -u -f "${storesPath}"`, {
       cwd: config.homePath,
       
       // Ensure we get string output instead of buffers

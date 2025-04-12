@@ -127,7 +127,7 @@ export async function createProject(
   spinner.stop();
 }
 
-const createApp = async (options: { init: boolean; }) => {
+const createApp = async (options: { init: boolean }) => {
   try {
     console.log("Scaffolding tonk code...");
     // Prepare questions, removing projectName question if provided as argument
