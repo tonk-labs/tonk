@@ -26,17 +26,43 @@ export const readFile = async (filePath: string) => {
   }
 };
 
-export const readBinary = async (filePath: string) => {
+export const readBinary = async (
+  filePath: string,
+): Promise<Uint8Array | undefined> => {
   try {
-    // Launch the app with the selected docId
     return await window.electronAPI.readBinary(filePath);
   } catch (error: unknown) {
+    // Log the error for debugging
     console.error("Error reading binary:", error);
+
+    // Check for specific error conditions
     if (error instanceof Error) {
-      console.error("Error reading binary: " + error.message);
+      const errorMessage = error.message;
+
+      // Handle specific error cases
+      if (
+        errorMessage.includes("empty") ||
+        errorMessage.includes("initializing")
+      ) {
+        console.warn(
+          `File at ${filePath} exists but may still be initializing`,
+        );
+      } else if (
+        errorMessage.includes("locked") ||
+        errorMessage.includes("being written")
+      ) {
+        console.warn(
+          `File at ${filePath} is currently locked or being written to`,
+        );
+      } else {
+        console.error("Error reading binary: " + errorMessage);
+      }
     } else {
       console.error("An unexpected error occurred while reading binary");
     }
+
+    // Return undefined to indicate failure
+    return undefined;
   }
 };
 

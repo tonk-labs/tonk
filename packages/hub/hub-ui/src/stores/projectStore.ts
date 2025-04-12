@@ -284,22 +284,53 @@ const useProjectStore = create<ProjectState>((set, get) => ({
         throw new Error("Failed to construct file path");
       }
 
-      // Use the IPC readFile function instead of fetch
+      // Use the IPC readFile function
       const fileContent = await readBinary(fullPath);
+
+      // Handle case when file content is not available
       if (!fileContent) {
-        throw new Error("Failed to read file");
+        // Set a user-friendly message
+        set({
+          automergeContent: null,
+          error: "The file is being processed. Please try again in a moment.",
+        });
+        return;
       }
 
       // Load the Automerge document
       const doc = Automerge.load(fileContent);
 
       const content = JSON.stringify(doc, null, 2);
-      set({ automergeContent: content });
+      set({ automergeContent: content, error: null });
     } catch (error) {
       console.error("Failed to inspect Automerge file:", error);
+
+      // Provide more helpful error messages based on the error type
+      let errorMessage = "Failed to read Automerge document";
+
+      if (error instanceof Error) {
+        const message = error.message;
+
+        if (message.includes("initializing") || message.includes("empty")) {
+          errorMessage =
+            "The file is still being created. Please try again in a moment.";
+        } else if (
+          message.includes("locked") ||
+          message.includes("being written")
+        ) {
+          errorMessage =
+            "The file is currently being modified. Please try again in a moment.";
+        } else if (message.includes("Failed to read file")) {
+          errorMessage =
+            "The file could not be read. It may still be initializing.";
+        } else {
+          errorMessage = `${errorMessage}: ${message}`;
+        }
+      }
+
       set({
         automergeContent: null,
-        error: `Failed to read Automerge document: ${error instanceof Error ? error.message : "Unknown error"}`,
+        error: errorMessage,
       });
     }
   },
