@@ -24,6 +24,6 @@ Runs your apps and listens for changes to stores. Changes are propagated to ever
 
 ---
 
-**Keepsync** ([docs](./keepsync.md))
+**Keepsync** [docs](keepsync.md)
 
 A Typescript library that wraps any Zustand store and allows it to sync to the server.
