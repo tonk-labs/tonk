@@ -73,17 +73,19 @@ export async function createReactTemplate(
     spinner.succeed("Dependencies installed successfully!");
 
     // Print next steps instructions
-    console.log("\n" + chalk.bold("🎉 Your Tonk react app is ready for vibe coding! 🎉"));
+    console.log(
+      "\n" + chalk.bold("🎉 Your Tonk react app is ready for vibe coding! 🎉"),
+    );
     console.log("\n" + chalk.bold("Next:"));
+    console.log("  • Open your favorite vibe coding editor to begin coding.\n");
     console.log(
-      "  • Open your favorite vibe coding editor to begin coding.\n",
+      "  • " + chalk.cyan("pnpm dev") + " - Start the development server",
     );
+
     console.log(
-      "  • " + chalk.cyan("npm run dev") + " - Start the development server",
-    );
-    
-    console.log(
-      "  • " + chalk.cyan("npm run build") + " - Build your project for production.\n",
+      "  • " +
+        chalk.cyan("pnpm build") +
+        " - Build your project for production.\n",
     );
   } catch (error) {
     spinner.fail("Failed to create React project");
