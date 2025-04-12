@@ -396,9 +396,15 @@ const useProjectStore = create<ProjectState>((set, get) => ({
         changedParents,
       });
 
-      // If the changed file is the currently selected file, reload its content
+      // If the changed file is the currently selected file and it's an automerge file in the stores directory, reload its content
       const selectedItem = get().selectedItem;
-      if (selectedItem && event.path.includes(selectedItem.index)) {
+      if (
+        selectedItem &&
+        event.path.includes(selectedItem.index) &&
+        selectedItem.index.startsWith("stores/") &&
+        selectedItem.index.endsWith(".automerge") &&
+        !selectedItem.isFolder
+      ) {
         await get().inspectAutomergeFile(selectedItem.index);
       }
     } catch (error) {
