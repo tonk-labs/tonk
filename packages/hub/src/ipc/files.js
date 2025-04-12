@@ -31,7 +31,6 @@ ipcMain.handle("read-binary", async (e, filePath) => {
 
   // Use fs.promises for better async handling
   try {
-    console.log("attempting to read:", filePath);
     // Check file stats to ensure it's fully written and accessible
     const stats = await fs.promises.stat(filePath);
 
