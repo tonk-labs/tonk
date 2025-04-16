@@ -14,7 +14,6 @@ export interface ServerOptions {
   distPath: string | undefined; // Path to the built frontend files
   verbose?: boolean;
   filesystemStorage?: FileSystemStorageOptions | undefined;
-  primaryStorage: 'filesystem' | null;
   syncInterval?: number; // Optional interval to trigger storage sync in ms
 }
 
@@ -38,7 +37,6 @@ export class TonkServer {
       syncInterval: options.syncInterval || 0,
       verbose: options.verbose ?? true,
       filesystemStorage: options.filesystemStorage,
-      primaryStorage: 'filesystem',
     };
 
     // Track if distPath was initially set

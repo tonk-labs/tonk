@@ -16,7 +16,6 @@
     "@flystorage/aws-s3": "^1.0.1",
     "@flystorage/file-storage": "^1.0.1",
     "@flystorage/local-fs": "^1.0.1",
-    "backblaze-b2": "^1.7.0",
     "chalk": "^5.4.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
