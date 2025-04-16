@@ -6,62 +6,6 @@ const { getConfig } = require('../config.js');
 let watchers = new Map();
 
 const createWatcher = (homePath, webContents) => {
-  // Watch the apps, stores, and integrations directories
-  // const watchPaths = ['apps', 'stores', 'integrations'].map(dir => 
-  //   path.join(homePath, dir, '**/*')
-  // );
-
-  // const watcher = chokidar.watch(watchPaths, {
-  //   ignored: [
-  //     /(^|[\/\\])\../, // Ignore dotfiles
-  //     '**/node_modules/**',
-  //     '**/*.log',
-  //     '**/Thumbs.db',
-  //     '**/.DS_Store',
-  //   ],
-  //   persistent: true,
-  //   ignoreInitial: true,
-  // });
-
-  // // File events
-  // watcher.on('add', path => {
-  //   console.log("Detected file change!", path);
-  //   webContents.send('file-change', { type: 'add', path });
-  // });
-
-  // watcher.on('change', path => {
-  //   console.log("Detected file change!", path);
-  //   webContents.send('file-change', { type: 'change', path });
-  // });
-
-  // watcher.on('unlink', path => {
-  //   console.log("Detected file change!", path);
-  //   webContents.send('file-change', { type: 'unlink', path });
-  // });
-
-  // // Directory events
-  // watcher.on('addDir', path => {
-  //   console.log("Detected file change!", path);
-  //   webContents.send('file-change', { type: 'addDir', path });
-  // });
-
-  // watcher.on('unlinkDir', path => {
-  //   console.log("Detected file change!", path);
-  //   webContents.send('file-change', { type: 'unlinkDir', path });
-  // });
-
-  // // Add error handling
-  // watcher.on('error', error => {
-  //   console.error('Watcher error:', error);
-  //   // Clean up the errored watcher
-  //   const windowId = webContents.id;
-  //   if (watchers.has(windowId)) {
-  //     watchers.delete(windowId);
-  //   }
-  // });
-
-  // return watcher;
-
   const watcher = chokidar.watch(homePath, {
     ignored: [
       '**/.git/**',

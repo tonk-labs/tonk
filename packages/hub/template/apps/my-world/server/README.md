@@ -5,17 +5,20 @@ This is a simple Express server that acts as a proxy for the Google Maps API req
 ## Setup
 
 1. Install dependencies:
+
 ```
 cd server
 npm install
 ```
 
 2. Start the server:
+
 ```
 npm start
 ```
 
 For development with auto-restart:
+
 ```
 npm run dev
 ```
@@ -34,9 +37,11 @@ The server uses the following environment variables from the parent project's `.
 Proxies requests to the Google Maps API.
 
 Query parameters:
+
 - `url`: The URL to proxy (required)
 
 Example:
+
 ```
 GET /api/proxy?url=https://maps.googleapis.com/maps/api/place/details/json?place_id=PLACE_ID&fields=opening_hours&key=API_KEY
 ```
@@ -46,12 +51,14 @@ GET /api/proxy?url=https://maps.googleapis.com/maps/api/place/details/json?place
 In production, the server also serves the static files from the React app's build directory. This allows you to deploy both the frontend and the proxy server together.
 
 To build the React app for production:
+
 ```
 cd ..
 npm run build
 ```
 
 Then start the server in production mode:
+
 ```
 cd server
 NODE_ENV=production npm start

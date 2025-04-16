@@ -1,7 +1,5 @@
 import {Command} from 'commander';
-import {configCommand} from './commands/config.js';
 import {createCommand} from './commands/create.js';
-import {deployCommand} from './commands/deploy.js';
 import {devCommand} from './commands/dev.js';
 import {helloCommand} from './commands/hello.js';
 import {printMarkdown} from './commands/prettyPrint.js';
@@ -21,8 +19,6 @@ program
 program.addCommand(createCommand);
 program.addCommand(devCommand);
 program.addCommand(serveCommand);
-program.addCommand(deployCommand);
-program.addCommand(configCommand);
 program.addCommand(helloCommand);
 program.addCommand(printMarkdown);
 
