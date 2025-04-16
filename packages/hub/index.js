@@ -8,7 +8,6 @@ require("@electron/remote/main").initialize();
 // Import app.js directly to get access to the appWindow variable
 const appModule = require("./src/ipc/app.js");
 require("./src/ipc/hub.js");
-require("./src/ipc/integrations.js");
 require("./src/ipc/files.js");
 require("./src/ipc/watcher.js");
 require("./src/ipc/docs.js");
