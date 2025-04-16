@@ -11,7 +11,6 @@
     "build": "webpack --mode production",
     "serve": "tonk serve",
     "serve:dev": "npm run build && tonk serve",
-    "deployment": "tonk deploy",
     "test": "jest",
     "test:watch": "jest --watch",
     "install:all": "npm install && cd server && npm install",
