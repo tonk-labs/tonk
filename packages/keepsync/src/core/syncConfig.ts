@@ -1,39 +1,52 @@
-import {configureSyncInstance, getSyncInstance, SyncEngine} from '../engine';
-import {SyncEngineOptions} from '../engine/types';
+import {SyncEngine, SyncEngineOptions} from '../engine';
+import {Repo} from '@automerge/automerge-repo';
 import {logger} from '../utils/logger';
+
+// Singleton instance of the SyncEngine
+let syncEngineInstance: SyncEngine | null = null;
 
 /**
  * Configure the global sync engine with the provided options
  * This should be called once at the application startup
+ * @param options Configuration options for the SyncEngine
+ * @returns The configured SyncEngine instance
  */
-export function configureSyncEngine(options: SyncEngineOptions): void {
-  const syncEngine = getSyncInstance();
+export function configureSyncEngine(options: SyncEngineOptions): SyncEngine {
+  if (!syncEngineInstance) {
+    logger.info('Creating new SyncEngine instance');
+    syncEngineInstance = new SyncEngine(options);
+  } else {
+    logger.warn('SyncEngine instance already exists. Ignoring new options.');
+  }
 
-  if (!syncEngine) configureSyncInstance(options);
+  return syncEngineInstance;
 }
 
 /**
  * Get the sync engine instance
- * If not initialized, it will initialize automatically with default settings
+ * @returns The SyncEngine instance or null if not created yet
  */
-export async function getSyncEngine(): Promise<SyncEngine | null> {
-  const syncEngine = getSyncInstance();
-
-  if (!syncEngine) {
+export function getSyncEngine(): SyncEngine | null {
+  if (!syncEngineInstance) {
     logger.warn('Sync engine not created yet');
     return null;
   }
 
-  if (!syncEngine.isInitialized()) await syncEngine.init();
-
-  return syncEngine;
+  return syncEngineInstance;
 }
 
 /**
- * Close the sync engine connection
- * Should be called when the application is shutting down
+ * Get the Automerge Repo instance from the SyncEngine
+ * @returns The Repo instance or null if SyncEngine not created yet
  */
-export function closeSyncEngine(): void {
-  const syncEngine = getSyncInstance();
-  if (syncEngine) syncEngine.close();
+export function getRepo(): Repo | null {
+  const syncEngine = getSyncEngine();
+  return syncEngine ? syncEngine.getRepo() : null;
+}
+
+/**
+ * Reset the sync engine instance (mainly for testing purposes)
+ */
+export function resetSyncEngine(): void {
+  syncEngineInstance = null;
 }

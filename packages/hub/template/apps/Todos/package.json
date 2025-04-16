@@ -8,7 +8,6 @@
     "dev": "tonk dev",
     "build": "webpack --mode production",
     "serve": "npm run build && tonk serve",
-    "deployment": "tonk deploy",
     "test": "jest",
     "test:watch": "jest --watch"
   },

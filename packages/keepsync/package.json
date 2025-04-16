@@ -18,13 +18,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "npm run clean && webpack && tsc --emitDeclarationOnly",
-    "dev": "webpack --mode development --watch",
+    "build": "npm run clean && vite build",
+    "dev": "vite build --watch --mode development",
     "type-check": "tsc --noEmit",
     "clean": "rimraf dist",
     "test": "vitest",
     "lint": "gts lint",
-    "compile": "tsc",
+    "compile": "tsc --noEmit",
     "fix": "gts fix",
     "prepare": "npm run build",
     "pretest": "npm run compile",
@@ -48,19 +48,18 @@
     "fake-indexeddb": "^6.0.0",
     "gts": "^6.0.2",
     "rimraf": "^5.0.5",
-    "ts-loader": "^9.5.1",
     "typescript": "^5.3.3",
-    "vitest": "^3.0.7",
-    "webpack": "^5.90.3",
-    "webpack-cli": "^5.1.4"
+    "vite": "^5.2.6",
+    "vite-plugin-dts": "^3.8.0",
+    "vitest": "^3.0.7"
   },
   "dependencies": {
-    "@automerge/automerge-wasm": "1.0.0-preview.0",
+    "@automerge/automerge-repo": "^1.2.1",
     "chalk": "^5.4.1",
+    "vite-plugin-wasm": "^3.4.1",
     "ws": "^8.18.1"
   },
   "peerDependencies": {
-    "@automerge/automerge": "^2.2.8",
     "react": "^19.0.0",
     "zustand": "^5.0.3"
   }

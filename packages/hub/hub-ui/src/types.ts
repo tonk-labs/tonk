@@ -27,14 +27,6 @@ declare global {
       runServer: (restart: boolean) => Promise<void>;
 
       getDocumentsPath: () => string;
-      installIntegration: (
-        integrationLink: string,
-      ) => Promise<{ success: boolean; data?: string; error?: string }>;
-      getInstalledIntegrations: () => Promise<{
-        success: boolean;
-        data?: InstalledIntegration[];
-        error?: string;
-      }>;
     };
     require: (module: string) => any;
   }
