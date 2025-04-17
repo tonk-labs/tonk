@@ -6,7 +6,7 @@ import chalk from 'chalk';
 import fs from 'fs';
 import os from 'os';
 import {WebSocketServer} from 'ws';
-import {PeerId, Repo, RepoConfig} from '@automerge/automerge-repo';
+import {PeerId, Repo, RepoConfig} from '@tonk/automerge-repo';
 import {NodeWSServerAdapter} from '@automerge/automerge-repo-network-websocket';
 import {NodeFSStorageAdapter} from '@automerge/automerge-repo-storage-nodefs';
 

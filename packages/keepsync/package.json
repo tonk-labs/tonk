@@ -55,7 +55,7 @@
     "vitest": "^3.0.7"
   },
   "dependencies": {
-    "@tonk/automerge-repo": "file:../../../automerge-repo/packages/automerge-repo",
+    "@tonk/automerge-repo": "^1.0.0",
     "bs58check": "^4.0.0",
     "chalk": "^5.4.1",
     "crypto-js": "^4.2.0",

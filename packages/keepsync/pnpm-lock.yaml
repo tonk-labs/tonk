@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@tonk/automerge-repo':
-        specifier: file:../../../automerge-repo/packages/automerge-repo
-        version: file:../../../automerge-repo/packages/automerge-repo(@types/node@20.17.19)(typescript@5.7.3)
+        specifier: ^1.0.0
+        version: 1.0.0(@types/node@20.17.19)(typescript@5.7.3)
       bs58check:
         specifier: ^4.0.0
         version: 4.0.0
@@ -490,8 +490,8 @@ packages:
   '@rushstack/ts-command-line@4.19.1':
     resolution: {integrity: sha512-J7H768dgcpG60d7skZ5uSSwyCZs/S2HrWP1Ds8d1qYAyaaeJmpmmLr9BVw97RjFzmQPOYnoXcKA4GkqDCkduQg==}
 
-  '@tonk/automerge-repo@file:../../../automerge-repo/packages/automerge-repo':
-    resolution: {directory: ../../../automerge-repo/packages/automerge-repo, type: directory}
+  '@tonk/automerge-repo@1.0.0':
+    resolution: {integrity: sha512-yNEpU6a6h7KOiEXFvC/sE+ccwIZO6klyRhrbygaaA7zEH+gfGQoNEZQsnDXpiLIAJzn+33Qs3foEwO6Q4CyzFA==}
 
   '@tsconfig/node10@1.0.11':
     resolution: {integrity: sha512-DcRjDCujK/kCk/cUe8Xz8ZSpm8mS3mNNpta+jGCA6USEDfktlNvm1+IuZ9eTcDbNk41BHwpHHeW+N1lKCz4zOw==}
@@ -2355,7 +2355,7 @@ snapshots:
     transitivePeerDependencies:
       - '@types/node'
 
-  '@tonk/automerge-repo@file:../../../automerge-repo/packages/automerge-repo(@types/node@20.17.19)(typescript@5.7.3)':
+  '@tonk/automerge-repo@1.0.0(@types/node@20.17.19)(typescript@5.7.3)':
     dependencies:
       '@automerge/automerge': 2.2.8
       bs58check: 3.0.1

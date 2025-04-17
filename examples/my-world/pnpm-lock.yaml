@@ -1265,8 +1265,8 @@ packages:
   '@surma/rollup-plugin-off-main-thread@2.2.3':
     resolution: {integrity: sha512-lR8q/9W7hZpMWweNiAKU7NQerBnzQQLvi8qnTDU/fxItPhtZVMbPV3lbCwjhIlNBe9Bbr5V+KHshvWmVSG9cxQ==}
 
-  '@tonk/automerge-repo@file:../../../automerge-repo/packages/automerge-repo':
-    resolution: {directory: ../../../automerge-repo/packages/automerge-repo, type: directory}
+  '@tonk/automerge-repo@1.0.0':
+    resolution: {integrity: sha512-yNEpU6a6h7KOiEXFvC/sE+ccwIZO6klyRhrbygaaA7zEH+gfGQoNEZQsnDXpiLIAJzn+33Qs3foEwO6Q4CyzFA==}
 
   '@tonk/keepsync@file:../../packages/keepsync':
     resolution: {directory: ../../packages/keepsync, type: directory}
@@ -6021,7 +6021,7 @@ snapshots:
       magic-string: 0.25.9
       string.prototype.matchall: 4.0.12
 
-  '@tonk/automerge-repo@file:../../../automerge-repo/packages/automerge-repo(@types/node@22.13.10)(typescript@5.8.2)':
+  '@tonk/automerge-repo@1.0.0(@types/node@22.13.10)(typescript@5.8.2)':
     dependencies:
       '@automerge/automerge': 2.2.8
       bs58check: 3.0.1
@@ -6043,7 +6043,7 @@ snapshots:
 
   '@tonk/keepsync@file:../../packages/keepsync(@types/node@22.13.10)(react@19.0.0)(typescript@5.8.2)(vite@6.3.1(@types/node@22.13.10)(jiti@1.21.7)(terser@5.39.0)(tsx@4.19.3)(yaml@2.7.0))(zustand@5.0.3(@types/react@19.0.12)(react@19.0.0))':
     dependencies:
-      '@tonk/automerge-repo': file:../../../automerge-repo/packages/automerge-repo(@types/node@22.13.10)(typescript@5.8.2)
+      '@tonk/automerge-repo': 1.0.0(@types/node@22.13.10)(typescript@5.8.2)
       bs58check: 4.0.0
       chalk: 5.4.1
       crypto-js: 4.2.0

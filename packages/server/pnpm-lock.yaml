@@ -8,9 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@automerge/automerge-repo':
-        specifier: ^1.2.1
-        version: 1.2.1(@types/node@20.17.24)(typescript@5.8.2)
       '@automerge/automerge-repo-network-websocket':
         specifier: ^1.2.1
         version: 1.2.1(@types/node@20.17.24)(typescript@5.8.2)
@@ -26,6 +23,9 @@ importers:
       '@flystorage/local-fs':
         specifier: ^1.0.1
         version: 1.0.1
+      '@tonk/automerge-repo':
+        specifier: ^1.0.0
+        version: 1.0.0(@types/node@20.17.24)(typescript@5.8.2)
       chalk:
         specifier: ^5.4.1
         version: 5.4.1
@@ -851,6 +851,9 @@ packages:
   '@tokenizer/token@0.3.0':
     resolution: {integrity: sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==}
 
+  '@tonk/automerge-repo@1.0.0':
+    resolution: {integrity: sha512-yNEpU6a6h7KOiEXFvC/sE+ccwIZO6klyRhrbygaaA7zEH+gfGQoNEZQsnDXpiLIAJzn+33Qs3foEwO6Q4CyzFA==}
+
   '@tsconfig/node10@1.0.11':
     resolution: {integrity: sha512-DcRjDCujK/kCk/cUe8Xz8ZSpm8mS3mNNpta+jGCA6USEDfktlNvm1+IuZ9eTcDbNk41BHwpHHeW+N1lKCz4zOw==}
 
@@ -1286,6 +1289,9 @@ packages:
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
     engines: {node: '>= 8'}
+
+  crypto-js@4.2.0:
+    resolution: {integrity: sha512-KALDyEYgpY+Rlob/iriUtjV6d5Eq+Y191A5g4UqLAi8CyGP9N1+FdVbkc1SxKc2r4YAYqG8JzO2KGL+AizD70Q==}
 
   debug@2.6.9:
     resolution: {integrity: sha512-bC7ElrdJaJnPbAP+1EotYvqZsb3ecl5wi6Bfi6BJTUcNowp6cvspg0jXznRTKDjm/E7AdgFBVeAPVMNcKGsHMA==}
@@ -4279,6 +4285,26 @@ snapshots:
 
   '@tokenizer/token@0.3.0': {}
 
+  '@tonk/automerge-repo@1.0.0(@types/node@20.17.24)(typescript@5.8.2)':
+    dependencies:
+      '@automerge/automerge': 2.2.8
+      bs58check: 3.0.1
+      cbor-x: 1.6.0
+      crypto-js: 4.2.0
+      debug: 4.4.0
+      eventemitter3: 5.0.1
+      fast-sha256: 1.3.0
+      tiny-typed-emitter: 2.1.0
+      ts-node: 10.9.2(@types/node@20.17.24)(typescript@5.8.2)
+      uuid: 9.0.1
+      xstate: 5.19.2
+    transitivePeerDependencies:
+      - '@swc/core'
+      - '@swc/wasm'
+      - '@types/node'
+      - supports-color
+      - typescript
+
   '@tsconfig/node10@1.0.11': {}
 
   '@tsconfig/node12@1.0.11': {}
@@ -4793,6 +4819,8 @@ snapshots:
       path-key: 3.1.1
       shebang-command: 2.0.0
       which: 2.0.2
+
+  crypto-js@4.2.0: {}
 
   debug@2.6.9:
     dependencies:
