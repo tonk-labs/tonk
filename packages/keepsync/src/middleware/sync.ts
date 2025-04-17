@@ -7,7 +7,7 @@ import {StateCreator} from 'zustand';
 /**
  * Import Repo and related types from automerge-repo
  */
-import {Repo, DocHandle, DocumentId} from '@automerge/automerge-repo';
+import {Repo, DocHandle, DocumentId} from '@tonk/automerge-repo';
 
 /**
  * Utility functions for state management:
@@ -183,7 +183,7 @@ export const sync =
 
       try {
         // Get the document handle from the repo or create a new one if it doesn't exist
-        docHandle = repo.find<T>(options.docId);
+        docHandle = repo.findOrCreate<T>(options.docId);
 
         // Set up the change callback to handle document updates
         docHandle.on('change', ({doc}) => {

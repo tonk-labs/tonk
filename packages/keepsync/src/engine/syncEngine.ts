@@ -1,10 +1,10 @@
 import {
   RepoConfig,
   Repo,
-  NetworkAdapter,
   StorageAdapterInterface,
   PeerId,
-} from '@automerge/automerge-repo';
+  NetworkAdapterInterface,
+} from '@tonk/automerge-repo';
 import {logger} from '../utils/logger';
 
 /**
@@ -14,7 +14,7 @@ export interface SyncEngineOptions {
   /** Storage adapter for persistence */
   storage?: StorageAdapterInterface;
   /** Additional network adapters */
-  networkAdapters?: NetworkAdapter[];
+  networkAdapters?: NetworkAdapterInterface[];
   /** Peer ID for this client */
   peerId?: PeerId;
   /** Share policy */

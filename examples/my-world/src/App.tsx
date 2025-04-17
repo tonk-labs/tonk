@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import { useEffect } from "react";
 import { MapView } from "./components";
 import { useUserStore } from "./stores";
 

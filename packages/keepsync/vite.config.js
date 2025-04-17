@@ -14,13 +14,7 @@ export default defineConfig({
     sourcemap: true,
     outDir: 'dist',
     rollupOptions: {
-      external: [
-        'react',
-        'zustand',
-        '@automerge/automerge-repo',
-        'ws',
-        'chalk',
-      ],
+      external: ['react', 'zustand', '@tonk/automerge-repo', 'ws', 'chalk'],
       output: {
         globals: {
           react: 'React',

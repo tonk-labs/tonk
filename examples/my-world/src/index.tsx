@@ -11,7 +11,6 @@ import {
 } from "./serviceWorkerRegistration";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
-import { NetworkAdapter } from "@automerge/automerge-repo";
 
 // Service worker logic based on environment
 if (process.env.NODE_ENV === "production") {
@@ -22,13 +21,13 @@ if (process.env.NODE_ENV === "production") {
   unregisterServiceWorker();
 }
 
-const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
+// const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+// const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 
 configureSyncEngine({
   storage: new IndexedDBStorageAdapter(),
   networkAdapters: [
-    new BrowserWebSocketClientAdapter(wsUrl, 30000) as any as NetworkAdapter,
+    new BrowserWebSocketClientAdapter("wss://sync.automerge.org"),
   ],
 });
 

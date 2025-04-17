@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { sync } from "@tonk/keepsync";
+import { DocumentId, sync } from "@tonk/keepsync";
 import { useUserStore } from "./userStore";
 
 export interface Review {
@@ -199,7 +199,7 @@ export const useLocationStore = create<LocationState>(
       },
     }),
     {
-      docId: "my-world-locations",
+      docId: "my-world-locations" as DocumentId,
       initTimeout: 30000,
       onInitError: (error) =>
         console.error("Location sync initialization error:", error),

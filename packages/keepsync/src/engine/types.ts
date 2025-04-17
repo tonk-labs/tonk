@@ -1,9 +1,9 @@
 import {
-  NetworkAdapter,
+  NetworkAdapterInterface,
   StorageAdapterInterface,
-} from '@automerge/automerge-repo';
+} from '@tonk/automerge-repo';
 
 export interface SyncEngineOptions {
   storage?: StorageAdapterInterface;
-  networkAdapters?: NetworkAdapter[];
+  networkAdapters?: NetworkAdapterInterface[];
 }

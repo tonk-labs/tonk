@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { sync } from "@tonk/keepsync";
+import { DocumentId, sync } from "@tonk/keepsync";
 import { useLocationStore } from "./locationStore";
 
 export interface UserProfile {
@@ -99,7 +99,7 @@ export const useUserStore = create<UserState>(
       },
     }),
     {
-      docId: "my-world-users",
+      docId: "my-world-users" as DocumentId,
       initTimeout: 30000,
       onInitError: (error) =>
         console.error("User sync initialization error:", error),

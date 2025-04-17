@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { sync } from "@tonk/keepsync";
+import { DocumentId, sync } from "@tonk/keepsync";
 import { useUserStore } from "./userStore";
 
 export interface Category {
@@ -155,7 +155,7 @@ export const useCategoryStore = create<CategoryState>(
       },
     }),
     {
-      docId: "my-world-categories",
+      docId: "my-world-categories" as DocumentId,
       initTimeout: 30000,
       onInitError: (error) =>
         console.error("Category sync initialization error:", error),

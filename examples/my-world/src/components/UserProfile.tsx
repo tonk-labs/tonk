@@ -1,16 +1,27 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useUserStore } from "../stores";
 
 const UserProfile: React.FC = () => {
-  const { profile: userProfile, setUserProfile } = useUserStore();
+  const { profiles, activeProfileId, updateProfileName } = useUserStore();
   const [isEditing, setIsEditing] = useState(false);
-  const [name, setName] = useState(userProfile.name);
+
+  // Find the active profile from the profiles array
+  const activeProfile = profiles.find(
+    (profile) => profile.id === activeProfileId,
+  ) || { id: "", name: "Guest" }; // Fallback if no active profile
+
+  const [name, setName] = useState(activeProfile.name);
+
+  // Update name state when active profile changes
+  useEffect(() => {
+    setName(activeProfile.name);
+  }, [activeProfile]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (name.trim() === "") return;
 
-    setUserProfile(name);
+    updateProfileName(activeProfile.id, name);
     setIsEditing(false);
   };
 
@@ -39,7 +50,7 @@ const UserProfile: React.FC = () => {
               type="button"
               onClick={() => {
                 setIsEditing(false);
-                setName(userProfile.name);
+                setName(activeProfile.name);
               }}
               className="bg-gray-200 text-gray-800 py-2 px-4 rounded hover:bg-gray-300"
             >
@@ -51,11 +62,11 @@ const UserProfile: React.FC = () => {
         <div>
           <div className="mb-3">
             <span className="font-medium">Name: </span>
-            <span>{userProfile.name}</span>
+            <span>{activeProfile.name}</span>
           </div>
           <div className="mb-4">
             <span className="font-medium">User ID: </span>
-            <span className="text-sm text-gray-600">{userProfile.id}</span>
+            <span className="text-sm text-gray-600">{activeProfile.id}</span>
           </div>
           <button
             onClick={() => setIsEditing(true)}

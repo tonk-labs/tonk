@@ -30,7 +30,8 @@ declare global {
 }
 
 const getMapKitToken = async (): Promise<string> => {
-  const token = import.meta.env.MAPKIT_TOKEN;
+  const token =
+    "eyJraWQiOiJGVlA0MkJNVDJMIiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzQ0ODE4MjMwLCJleHAiOjE3NDU0Nzc5OTl9.D8oB7bH2rLBI6Bwx7MxGKiIVdFUshEn9dHJYeeCH6LD9yA_AXT7QBlu0B1Iiqa-vUqUo2gp8vIaNnuIE2o2CmQ";
 
   if (!token) {
     console.error("MapKit token not found in environment variables");
@@ -155,47 +156,47 @@ const MapView: React.FC = () => {
       title: "Welcome to My World!",
       content:
         "This is a demo app made by Tonk to get you started. Let's take a quick look around. Click 'Next' to begin.",
-      position: "center",
+      position: "center" as const,
     },
     {
       target: ".user-selector",
       title: "User Profiles",
       content:
         "Create and switch between different user profiles to manage your locations.",
-      position: "right",
+      position: "right" as const,
     },
     {
       target: ".category-manager",
       title: "Categories",
       content:
         "Organise your locations by creating custom categories with colours.",
-      position: "right",
+      position: "right" as const,
     },
     {
       target: ".location-list",
       title: "Saved Locations",
       content:
         "View all your saved locations here. Click on any location to see details.",
-      position: "right",
+      position: "right" as const,
     },
     {
       target: ".search-bar",
       title: "Interactive Map",
       content:
         "Use the search bar to add a new location to the map, then continue to the next step.",
-      position: "right",
+      position: "right" as const,
     },
     {
       title: "Transparent Data",
       content:
         "Go back to the Tonk Hub and navigate to the file <code>my-world-locations.automerge</code> under <code>stores</code>. You should see your new location present in the list.",
-      position: "center",
+      position: "center" as const,
     },
     {
       title: "Add a Feature",
       content:
         "If you haven't already, open this project in your AI editor of choice and run the following prompt:\n\n\"Add a new 'Bucket List' feature that lets users star saved locations and displays them in a special list under saved locations in the sidebar.\"",
-      position: "center",
+      position: "center" as const,
       persistAfterReload: true,
     },
   ];

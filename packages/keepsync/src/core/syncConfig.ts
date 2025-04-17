@@ -1,5 +1,5 @@
 import {SyncEngine, SyncEngineOptions} from '../engine';
-import {Repo} from '@automerge/automerge-repo';
+import {Repo} from '@tonk/automerge-repo';
 import {logger} from '../utils/logger';
 
 // Singleton instance of the SyncEngine
