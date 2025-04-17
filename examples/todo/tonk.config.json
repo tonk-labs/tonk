@@ -1,0 +1,10 @@
+{
+  "name": "todo",
+  "plan": {
+    "projectName": "todo",
+    "projectType": "Productivity System",
+    "platform": "react",
+    "description": "a simple app that appends todos to a list"
+  },
+  "template": "react"
+}

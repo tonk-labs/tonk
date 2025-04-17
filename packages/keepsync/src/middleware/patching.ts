@@ -1,33 +1,3 @@
-// import * as Automerge from '@automerge/automerge';
-// import {logger} from '../utils/logger';
-
-// Patch the Automerge document from Zustand state
-// export function patchAutomergeDoc<T>(
-//   doc: Automerge.Doc<T>,
-//   state: T,
-// ): Automerge.Doc<T> {
-//   try {
-//     // Remove functions and other non-serializable data before storing in Automerge
-//     const serializableState = removeNonSerializable(state);
-
-//     return Automerge.change(doc, (d: any) => {
-//       // Clear existing properties first
-//       Object.keys(d).forEach(key => {
-//         // Don't delete internal Automerge properties
-//         if (!key.startsWith('_')) {
-//           delete d[key];
-//         }
-//       });
-
-//       // Copy all properties from state
-//       Object.assign(d, serializableState);
-//     });
-//   } catch (error) {
-//     logger.error('Error patching Automerge document:', error);
-//     throw error;
-//   }
-// }
-
 // Update the Zustand store from Automerge document
 export const patchStore = <T>(
   api: {
