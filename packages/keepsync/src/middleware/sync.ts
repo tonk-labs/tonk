@@ -186,14 +186,14 @@ export const sync =
         docHandle = repo.findOrCreate<T>(options.docId);
 
         // Set up the change callback to handle document updates
-        docHandle.on('change', ({doc}) => {
+        docHandle?.on('change', ({doc}) => {
           if (doc) {
             handleDocChange(doc);
           }
         });
 
         // Get the current document
-        const currentDoc = docHandle.docSync();
+        const currentDoc = docHandle?.docSync();
 
         if (currentDoc) {
           // CASE 1: Document already exists - update the Zustand store with its contents
@@ -204,7 +204,7 @@ export const sync =
           const serializableState = removeNonSerializable(initialState);
 
           // Create the initial document with the current state
-          docHandle.change((doc: any) => {
+          docHandle?.change((doc: any) => {
             Object.assign(doc, serializableState);
           });
         }

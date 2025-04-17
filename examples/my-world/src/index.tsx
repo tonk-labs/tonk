@@ -21,14 +21,12 @@ if (process.env.NODE_ENV === "production") {
   unregisterServiceWorker();
 }
 
-// const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-// const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
+const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const wsUrl = `${wsProtocol}//${window.location.host}`;
 
 configureSyncEngine({
   storage: new IndexedDBStorageAdapter(),
-  networkAdapters: [
-    new BrowserWebSocketClientAdapter("wss://sync.automerge.org"),
-  ],
+  networkAdapters: [new BrowserWebSocketClientAdapter(wsUrl)],
 });
 
 const container = document.getElementById("root");

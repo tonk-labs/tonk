@@ -116,14 +116,7 @@ const MapView: React.FC = () => {
     null,
   );
   const [isLoadingHours, setIsLoadingHours] = useState(false);
-  const [showTour, setShowTour] = useState(() => {
-    const hasSeenTour = localStorage.getItem("tour-main-seen");
-    if (hasSeenTour === null || hasSeenTour === "false") {
-      localStorage.setItem("tour-main-active", "true");
-      return true;
-    }
-    return localStorage.getItem("tour-main-active") === "true";
-  });
+  const [showTour, setShowTour] = useState(false);
   const [currentTourStep, setCurrentTourStep] = useState(() => {
     const savedStep = localStorage.getItem("tour-main-step");
     return savedStep ? parseInt(savedStep, 10) : 0;
@@ -1600,7 +1593,6 @@ const MapView: React.FC = () => {
                 setCurrentTourStep(0);
                 localStorage.removeItem("tour-main-active");
                 localStorage.removeItem("tour-main-step");
-                localStorage.setItem("tour-main-seen", "true");
               }}
               totalSteps={tourSteps.length}
               tourId="main"
