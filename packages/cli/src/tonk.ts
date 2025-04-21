@@ -4,6 +4,7 @@ import {devCommand} from './commands/dev.js';
 import {helloCommand} from './commands/hello.js';
 import {printMarkdown} from './commands/prettyPrint.js';
 import {serveCommand} from './commands/serve.js';
+import {initCommand} from './commands/init.js';
 
 const program = new Command();
 
@@ -16,6 +17,7 @@ program
     console.log('\nWork in progress!');
   });
 
+program.addCommand(initCommand);
 program.addCommand(createCommand);
 program.addCommand(devCommand);
 program.addCommand(serveCommand);
