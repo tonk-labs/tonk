@@ -10,6 +10,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "esModuleInterop": true,
+    // JSX Support
+    "jsx": "react",
     // Strict Type-Checking
     "strict": true,
     "noImplicitAny": true,
