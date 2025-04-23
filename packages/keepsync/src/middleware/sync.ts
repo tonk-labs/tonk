@@ -1,20 +1,13 @@
 /**
- * Automerge - CRDT library for managing distributed state
- * Used for handling the underlying document synchronization
- */
-import * as Automerge from '@automerge/automerge';
-
-/**
  * Zustand state creator type
  * Represents the function that creates the initial state and actions for a Zustand store
  */
 import {StateCreator} from 'zustand';
 
 /**
- * DocumentId type from engine
- * Represents a unique identifier for Automerge documents
+ * Import Repo and related types from automerge-repo
  */
-import {DocumentId} from '../engine/types';
+import {Repo, DocHandle, DocumentId} from '@tonk/automerge-repo';
 
 /**
  * Utility functions for state management:
@@ -29,10 +22,9 @@ import {patchStore, removeNonSerializable} from './patching';
 import {logger} from '../utils/logger';
 
 /**
- * Function to get the singleton instance of the sync engine
- * The sync engine might not be immediately available on initialization
+ * Function to get the Repo instance
  */
-import {getSyncInstance} from '../engine';
+import {getRepo} from '../core/syncConfig';
 
 /**
  * Configuration options for the sync middleware
@@ -45,7 +37,7 @@ export interface SyncOptions {
   docId: DocumentId;
 
   /**
-   * Maximum time to wait for sync engine initialization (in milliseconds)
+   * Maximum time to wait for Repo initialization (in milliseconds)
    * After this time, the initialization will time out and call onInitError
    * @default 30000 (30 seconds)
    */
@@ -66,12 +58,8 @@ export interface SyncOptions {
  * 1. Changes to the Zustand store are automatically synced to Automerge
  * 2. Changes from Automerge (from other peers) are automatically applied to the Zustand store
  *
- * The sync is established when the sync engine becomes available, which may not be immediate.
+ * The sync is established when the Repo becomes available, which may not be immediate.
  * The middleware handles the initialization timing and retries automatically.
- *
- * Document IDs can be dynamically managed through the docIdManager module:
- * - Document IDs can be prefixed globally (e.g., for multi-user isolation)
- * - Logical document IDs can be mapped to different actual IDs at runtime
  *
  * @example
  * const useStore = create(
@@ -94,9 +82,8 @@ export const sync =
     options: SyncOptions,
   ): StateCreator<T> =>
   (set, get, api) => {
-    // The current Automerge document instance
-    // This is null until initialization is complete
-    let currentDoc: Automerge.Doc<T> | null = null;
+    // Reference to the DocHandle
+    let docHandle: DocHandle<T> | null = null;
 
     // Flag to track if sync has been initialized
     // Prevents duplicate initialization and unnecessary updates before initialization
@@ -107,13 +94,11 @@ export const sync =
       // Wrap the original set function to sync changes to Automerge whenever state changes
       (partial, replace) => {
         // Step 1: Apply changes to Zustand state first (local state update)
-        // Type assertion is needed because Zustand's types don't match perfectly with our generic T
         set(partial as any, replace as any);
 
         // Step 2: Check if we can sync to Automerge
-        const syncEngine = getSyncInstance();
-        // Skip syncing if the engine isn't available or sync hasn't been initialized yet
-        if (!syncEngine || !isSyncInit) return;
+        // Skip syncing if the docHandle isn't available or sync hasn't been initialized yet
+        if (!docHandle || !isSyncInit) return;
 
         // Step 3: Get the current complete state to update Automerge
         const currentState = get();
@@ -122,23 +107,14 @@ export const sync =
           // This is important because Automerge can only store serializable data
           const serializableState = removeNonSerializable(currentState);
 
-          // Step 4: Update the Automerge document with the new state
-          syncEngine
-            .updateDocument(options.docId, (doc: any) => {
-              // Merge the serializable state into the Automerge document
-              // This creates a new change in the Automerge document history
-              Object.assign(doc, serializableState);
-            })
-            .catch(err => {
-              // Log any errors that occur during the update process
-              logger.warn(`Error updating document ${options.docId}:`, err);
-            });
+          // Step 4: Update the Automerge document through the docHandle
+          docHandle.change((doc: any) => {
+            // Merge the serializable state into the Automerge document
+            Object.assign(doc, serializableState);
+          });
         } catch (error) {
-          // Handle errors that might occur during serialization
-          logger.warn(
-            `Error preparing update for document ${options.docId}:`,
-            error,
-          );
+          // Handle errors that might occur during serialization or update
+          logger.warn(`Error updating document ${options.docId}:`, error);
         }
       },
       // Pass through the original get and api functions
@@ -153,34 +129,26 @@ export const sync =
      * 1. The document is first loaded
      * 2. Changes are received from other peers via the sync engine
      *
-     * It converts the Automerge document to plain JS and updates the Zustand store
-     * without triggering the sync-back mechanism (to avoid loops).
+     * It updates the Zustand store without triggering the sync-back mechanism.
      *
-     * @param newDoc - The updated Automerge document
+     * @param updatedDoc - The updated Automerge document
      */
-    const handleDocChange = (newDoc: Automerge.Doc<T>) => {
+    const handleDocChange = (updatedDoc: any) => {
       // Safety check - skip if we received a null/undefined document
-      if (!newDoc) return;
+      if (!updatedDoc) return;
 
       try {
-        // Update our reference to the current document
-        currentDoc = newDoc;
-
-        // Convert the Automerge document to a plain JavaScript object
-        // This is necessary because Zustand works with plain objects, not Automerge docs
-        const jsData = Automerge.toJS(newDoc);
-
         // Log the incoming changes for debugging
         logger.debugWithContext(
           'sync-middleware',
           'Received doc change, updating Zustand store:',
-          jsData,
+          updatedDoc,
         );
 
         // Update the Zustand store with the new data
         // patchStore only updates state synced with Automerge and avoids
         // our custom set function, which would cause an infinite loop
-        patchStore(api, jsData);
+        patchStore(api, updatedDoc);
       } catch (error) {
         // Log any errors that occur during the update process
         logger.error(
@@ -191,113 +159,75 @@ export const sync =
     };
 
     /**
-     * Initializes the synchronization between Zustand and Automerge
+     * Initializes the synchronization between Zustand and the Automerge document
      *
      * This function:
-     * 1. Retrieves or creates the Automerge document
+     * 1. Gets or creates the document handle from the repo
      * 2. Sets up callbacks to handle changes from other peers
      * 3. Marks the sync as initialized when complete
-     *
-     * The function is called when the sync engine becomes available.
      */
     function initializeSync() {
       // Skip if already initialized to prevent duplicate initialization
       if (isSyncInit) return;
 
-      // Get the sync engine instance
-      const syncEngine = getSyncInstance();
+      // Get the repo instance
+      const repo = getRepo();
 
-      // If the sync engine is not available, log a warning and exit
-      // The initialization will be retried by the timeout mechanism
-      if (!syncEngine) {
+      // If the repo is not available, log a warning and exit
+      if (!repo) {
         logger.warn(
-          `Cannot initialize sync for ${options.docId}: sync engine not available`,
+          `Cannot initialize sync for ${options.docId}: repo not available`,
         );
         return;
       }
 
-      // Start the initialization process
-      syncEngine
-        .getDocument(options.docId)
-        .then(existingDoc => {
-          if (existingDoc) {
-            // CASE 1: Document already exists in the sync engine
-            // Store the document reference and update the Zustand store with its contents
-            currentDoc = existingDoc;
-            handleDocChange(existingDoc);
-          } else {
-            // CASE 2: Document doesn't exist yet, create a new one
-            // Get the current state from Zustand to use as initial document state
-            const initialState = get();
+      try {
+        // Get the document handle from the repo or create a new one if it doesn't exist
+        docHandle = repo.findOrCreate<T>(options.docId);
 
-            // Create a new Automerge document with the initial state
-            const newDoc = Automerge.change(Automerge.init<T>(), (doc: any) => {
-              // Copy the serializable parts of the state to the new document
-              Object.assign(doc, removeNonSerializable(initialState));
-            });
-
-            // Store the document reference
-            currentDoc = newDoc;
-
-            // Create the document in the sync engine
-            // This returns a promise that resolves when the document is created
-            return syncEngine!.createDocument(
-              options.docId,
-              Automerge.toJS(newDoc),
-            );
-          }
-        })
-        .then(() => {
-          // Set up the sync callback to handle changes from other peers
-          // We need to preserve any existing callback that might be set
-          const originalOnSync = syncEngine!.options.onSync;
-
-          // Replace the onSync callback with our own implementation
-          syncEngine!.options.onSync = async docId => {
-            // Only handle changes for our specific document
-            if (docId === options.docId) {
-              try {
-                // Get the updated document from the sync engine
-                const updatedDoc = await syncEngine!.getDocument(options.docId);
-                if (updatedDoc) {
-                  // Update the Zustand store with the changes
-                  handleDocChange(updatedDoc);
-                }
-              } catch (error) {
-                // Log any errors that occur during the sync process
-                logger.error(
-                  `Error in sync callback for ${options.docId}:`,
-                  error,
-                );
-              }
-            }
-
-            // Call the original callback if it exists
-            // This allows multiple documents to be synced independently
-            if (originalOnSync) {
-              originalOnSync(docId);
-            }
-          };
-
-          // Mark initialization as complete
-          isSyncInit = true;
-        })
-        .catch(err => {
-          // Handle any errors during initialization
-          logger.error(`Failed to initialize document ${options.docId}:`, err);
-
-          // Call the error callback if provided
-          if (options.onInitError) {
-            // Ensure we always pass an Error object
-            options.onInitError(
-              err instanceof Error ? err : new Error(String(err)),
-            );
+        // Set up the change callback to handle document updates
+        docHandle?.on('change', ({doc}) => {
+          if (doc) {
+            handleDocChange(doc);
           }
         });
+
+        // Get the current document
+        const currentDoc = docHandle?.docSync();
+
+        if (currentDoc) {
+          // CASE 1: Document already exists - update the Zustand store with its contents
+          handleDocChange(currentDoc);
+        } else {
+          // CASE 2: Document doesn't exist yet - initialize it with current Zustand state
+          const initialState = get();
+          const serializableState = removeNonSerializable(initialState);
+
+          // Create the initial document with the current state
+          docHandle?.change((doc: any) => {
+            Object.assign(doc, serializableState);
+          });
+        }
+
+        // Mark initialization as complete
+        isSyncInit = true;
+        logger.debug(`Sync initialized for document ${options.docId}`);
+      } catch (err) {
+        // Handle any errors during initialization
+        logger.error(`Failed to initialize document ${options.docId}:`, err);
+
+        // Call the error callback if provided
+        if (options.onInitError) {
+          // Ensure we always pass an Error object
+          options.onInitError(
+            err instanceof Error ? err : new Error(String(err)),
+          );
+        }
+      }
     }
 
     // Configuration for the initialization process
-    // Maximum time to wait for the sync engine to become available
+    // Maximum time to wait for the repo to become available
     const MAX_INIT_TIME = options.initTimeout ?? 30000; // Default 30 seconds timeout
 
     // Timer reference for cleanup and cancellation
@@ -309,36 +239,34 @@ export const sync =
     /**
      * Global Registry Setup
      *
-     * This creates a global registry to track callbacks waiting for the sync engine.
+     * This creates a global registry to track callbacks waiting for the repo.
      * It's more efficient than having each store instance poll independently.
-     *
-     * The registry is only created once, even if multiple stores are created.
      */
-    if (typeof window !== 'undefined' && !window.__SYNC_ENGINE_REGISTRY__) {
+    if (typeof window !== 'undefined' && !window.__REPO_REGISTRY__) {
       // Create the registry if it doesn't exist yet
-      window.__SYNC_ENGINE_REGISTRY__ = {
-        // Array of callbacks to call when the sync engine becomes available
+      window.__REPO_REGISTRY__ = {
+        // Array of callbacks to call when the repo becomes available
         callbacks: [],
 
         // Function to notify all waiting callbacks
         notifyCallbacks: function () {
-          const syncEngine = getSyncInstance();
-          if (syncEngine) {
-            // Call each callback with the sync engine instance
-            this.callbacks.forEach(cb => cb(syncEngine));
+          const repo = getRepo();
+          if (repo) {
+            // Call each callback with the repo instance
+            this.callbacks.forEach(cb => cb(repo));
             // Clear the callbacks after notifying them
             this.callbacks = [];
           }
         },
       };
 
-      // Set up a global interval to check for sync engine availability
+      // Set up a global interval to check for repo availability
       const checkInterval = setInterval(() => {
-        const syncEngine = getSyncInstance();
-        // When the sync engine becomes available, notify all waiting callbacks
-        if (syncEngine && window.__SYNC_ENGINE_REGISTRY__) {
-          window.__SYNC_ENGINE_REGISTRY__.notifyCallbacks();
-          // Stop checking once the engine is available
+        const repo = getRepo();
+        // When the repo becomes available, notify all waiting callbacks
+        if (repo && window.__REPO_REGISTRY__) {
+          window.__REPO_REGISTRY__.notifyCallbacks();
+          // Stop checking once the repo is available
           clearInterval(checkInterval);
         }
       }, 100); // Check every 100ms
@@ -349,10 +277,8 @@ export const sync =
      *
      * This function:
      * 1. Checks if we've exceeded the maximum wait time
-     * 2. Tries to initialize sync if the engine is available
-     * 3. Sets up callbacks or timers to retry if the engine isn't available yet
-     *
-     * It uses different strategies depending on the environment (browser vs. non-browser)
+     * 2. Tries to initialize sync if the repo is available
+     * 3. Sets up callbacks or timers to retry if the repo isn't available yet
      */
     const initSyncWithTimeout = () => {
       // STEP 1: Check if we've exceeded the timeout period
@@ -376,14 +302,12 @@ export const sync =
         return; // Exit the function, giving up on initialization
       }
 
-      // STEP 2: Check if the sync engine is available now
-      const syncEngine = getSyncInstance();
+      // STEP 2: Check if the repo is available now
+      const repo = getRepo();
 
-      if (syncEngine && !isSyncInit) {
-        // CASE 1: Sync engine is available and we haven't initialized yet
-        logger.debug(
-          `Sync engine available, initializing store for ${options.docId}`,
-        );
+      if (repo && !isSyncInit) {
+        // CASE 1: Repo is available and we haven't initialized yet
+        logger.debug(`Repo available, initializing store for ${options.docId}`);
 
         // Initialize the sync
         initializeSync();
@@ -393,16 +317,16 @@ export const sync =
           clearTimeout(initTimer);
           initTimer = null;
         }
-      } else if (!syncEngine) {
-        // CASE 2: Sync engine is not available yet
+      } else if (!repo) {
+        // CASE 2: Repo is not available yet
 
         // In browser environments, use the registry mechanism
-        if (typeof window !== 'undefined' && window.__SYNC_ENGINE_REGISTRY__) {
-          // Register a callback to be called when the sync engine becomes available
-          window.__SYNC_ENGINE_REGISTRY__.callbacks.push(() => {
+        if (typeof window !== 'undefined' && window.__REPO_REGISTRY__) {
+          // Register a callback to be called when the repo becomes available
+          window.__REPO_REGISTRY__.callbacks.push(() => {
             if (!isSyncInit) {
               logger.debug(
-                `Sync engine became available, initializing store for ${options.docId}`,
+                `Repo became available, initializing store for ${options.docId}`,
               );
               initializeSync();
             }
@@ -417,7 +341,7 @@ export const sync =
           initTimer = setTimeout(initSyncWithTimeout, 100);
         }
       }
-      // If syncEngine is available but isSyncInit is true, we've already initialized
+      // If repo is available but isSyncInit is true, we've already initialized
       // so we don't need to do anything
     };
 
@@ -431,3 +355,13 @@ export const sync =
       // We could add cleanup methods or sync status indicators here if needed
     };
   };
+
+// Add necessary TypeScript interfaces for global registry
+declare global {
+  interface Window {
+    __REPO_REGISTRY__?: {
+      callbacks: ((repo: Repo) => void)[];
+      notifyCallbacks: () => void;
+    };
+  }
+}

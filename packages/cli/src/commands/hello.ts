@@ -1,10 +1,8 @@
-import chalk from 'chalk';
 import {Command} from 'commander';
-import {launchTonkGUI} from '../lib/launchGUI.js';
+import displayTonkAnimation from './hello/index.js';
 
 export const helloCommand = new Command('hello')
-  .description('Launch the Tonk HUB')
+  .description('Print out initial instructions and contact information')
   .action(() => {
-    console.log(chalk.blue('Launching Tonk GUI...'));
-    launchTonkGUI();
+    displayTonkAnimation();
   });

@@ -1,43 +1,52 @@
-import {WebSocketServer, WebSocket} from 'ws';
 import {createProxyMiddleware} from 'http-proxy-middleware';
 import express from 'express';
 import http from 'http';
 import path from 'path';
 import chalk from 'chalk';
 import fs from 'fs';
-import {FileSystemStorageMiddleware} from './filesystemMiddleware.js';
-import {FileSystemStorageOptions} from './filesystemStorage.js';
+import os from 'os';
+import {WebSocketServer} from 'ws';
+import {PeerId, Repo, RepoConfig} from '@tonk/automerge-repo';
+import {NodeWSServerAdapter} from '@automerge/automerge-repo-network-websocket';
+import {NodeFSStorageAdapter} from '@automerge/automerge-repo-storage-nodefs';
 
 export interface ServerOptions {
   port?: number;
   mode: 'development' | 'production';
-  distPath: string | undefined; // Path to the built frontend files
+  distPath?: string; // Path to the built frontend files
+  dirPath?: string;
   verbose?: boolean;
-  filesystemStorage?: FileSystemStorageOptions | undefined;
   syncInterval?: number; // Optional interval to trigger storage sync in ms
 }
 
 export class TonkServer {
   private app: express.Application;
+  private socket: WebSocketServer;
   private server: http.Server;
-  private wss: WebSocketServer;
-  private connections: Map<WebSocket, Set<string>> = new Map(); // Map of connections to subscribed document IDs
+  private readyResolvers: ((value: any) => void)[] = [];
+  // @ts-ignore
+  private repo: Repo;
   private options: ServerOptions;
   private initialDistPathSet: boolean = false; // Track if distPath was set at construction time
   private serverManagerPingInterval: NodeJS.Timeout | null = null;
   private serverManagerProxyActive: boolean = false;
-  private filesystemMiddleware: FileSystemStorageMiddleware | null = null;
   private fsSyncTimer: NodeJS.Timeout | null = null;
 
   constructor(options: ServerOptions) {
     this.options = {
       port: options.port || (options.mode === 'development' ? 4080 : 8080),
       mode: options.mode,
-      distPath: options.distPath,
+      distPath: options.distPath!,
+      dirPath: options.dirPath || 'stores',
       syncInterval: options.syncInterval || 0,
       verbose: options.verbose ?? true,
-      filesystemStorage: options.filesystemStorage,
     };
+
+    if (!fs.existsSync(this.options.dirPath!))
+      fs.mkdirSync(this.options.dirPath!);
+
+    const hostname = os.hostname();
+    this.socket = new WebSocketServer({noServer: true});
 
     // Track if distPath was initially set
     this.initialDistPathSet = this.options.distPath !== undefined;
@@ -46,180 +55,20 @@ export class TonkServer {
     this.app = express();
     this.server = http.createServer(this.app);
 
-    // Create WebSocket server
-    this.wss = new WebSocketServer({
-      server: this.server,
-      path: '/sync',
-    });
+    const config: RepoConfig = {
+      network: [new NodeWSServerAdapter(this.socket as any)],
+      storage: new NodeFSStorageAdapter(this.options.dirPath!),
+      peerId: `sync-server-${hostname}` as PeerId,
+      sharePolicy: async () => false,
+    };
+    this.repo = new Repo(config);
 
-    if (this.options.filesystemStorage) {
-      this.filesystemMiddleware = new FileSystemStorageMiddleware(
-        this.options.filesystemStorage,
-        'TonkServer-Filesystem',
-        this.options.verbose,
-      );
-    }
-
-    this.setupWebSocketHandlers();
     this.setupExpressMiddleware();
-    this.setupStorageSyncTimers();
   }
 
   private log(color: 'green' | 'red' | 'blue' | 'yellow', message: string) {
     if (this.options.verbose) {
       console.log(chalk[color](message));
-    }
-  }
-
-  // Force sync all documents to Filesystem
-  public async forceSyncToFileSystem(): Promise<void> {
-    if (this.filesystemMiddleware) {
-      return this.filesystemMiddleware.forceSyncToFileSystem();
-    }
-  }
-
-  private setupStorageSyncTimers(): void {
-    // Set up Filesystem sync timer if configured
-    if (this.options.syncInterval && this.filesystemMiddleware) {
-      this.fsSyncTimer = setInterval(() => {
-        this.filesystemMiddleware!.forceSyncToFileSystem().catch(error => {
-          this.log('red', `Scheduled Filesystem sync failed: ${error.message}`);
-        });
-      }, this.options.syncInterval);
-    }
-  }
-
-  private setupWebSocketHandlers() {
-    // Handle WebSocket connections
-    this.wss.on('connection', (ws: WebSocket) => {
-      this.log('green', `Client connected`);
-      this.connections.set(ws, new Set());
-
-      if (this.filesystemMiddleware) {
-        // Determine which storage middleware to use for initial document loading
-        const primaryMiddleware = this.filesystemMiddleware;
-
-        // Send stored documents to the new client if a primary storage middleware is enabled
-        if (primaryMiddleware && primaryMiddleware.isInitialized()) {
-          // Get all document IDs
-          const docIds = primaryMiddleware.getAllDocumentIds();
-
-          if (docIds.length > 0) {
-            this.log(
-              'blue',
-              `Sending ${docIds.length} stored documents to new client`,
-            );
-
-            // Send each document to the client
-            for (const docId of docIds) {
-              this.sendDocumentToClient(ws, docId);
-            }
-          }
-        }
-      }
-
-      // Handle messages from clients
-      ws.on('message', async (data: Buffer) => {
-        try {
-          let messageData: any;
-          try {
-            // Try to parse the message
-            messageData = JSON.parse(data.toString());
-          } catch (error) {
-            // Not JSON, treat as binary data
-            messageData = null;
-          }
-
-          // Forward the raw message immediately to all other clients for real-time sync
-          this.connections.forEach((_, client) => {
-            if (client !== ws && client.readyState === WebSocket.OPEN) {
-              client.send(data);
-            }
-          });
-
-          // Process through primary storage middleware first if available
-          const primaryMiddleware = this.filesystemMiddleware;
-          if (primaryMiddleware) {
-            const result = await primaryMiddleware.handleIncomingChanges(
-              messageData.docId,
-              messageData.changes,
-            );
-
-            if (result && result.didChange) {
-              // Track that this client is subscribed to this document
-              const subscriptions = this.connections.get(ws);
-              if (subscriptions) {
-                subscriptions.add(messageData.docId);
-              }
-            }
-          } else {
-            console.error('THERE IS NO PRIMARY MIDDLEWARE');
-          }
-        } catch (error) {
-          this.log(
-            'red',
-            `Error processing message: ${(error as Error).message}`,
-          );
-        }
-      });
-
-      // Handle client disconnection
-      ws.on('close', () => {
-        this.log('red', `Client disconnected`);
-        this.connections.delete(ws);
-      });
-
-      // Handle errors
-      ws.on('error', (error: Error) => {
-        this.log('red', `WebSocket error: ${error.message}`);
-      });
-    });
-  }
-
-  private async sendDocumentToClient(
-    ws: WebSocket,
-    docId: string,
-  ): Promise<void> {
-    if (!this.filesystemMiddleware) {
-      return;
-    }
-
-    const primaryMiddleware = this.filesystemMiddleware;
-    if (!primaryMiddleware) return;
-
-    try {
-      // Track that this client is subscribed to this document
-      const subscriptions = this.connections.get(ws);
-      if (subscriptions) {
-        subscriptions.add(docId);
-      }
-
-      // Generate a sync message for this client
-      // This will use in-memory documents when available
-      const syncMessage = await primaryMiddleware.generateSyncMessage(docId);
-
-      if (syncMessage && syncMessage.length > 0) {
-        const message = {
-          docId,
-          changes: Array.from(syncMessage),
-        };
-
-        this.log(
-          'blue',
-          `Sending document ${docId} sync message to client (${syncMessage.length} bytes)`,
-        );
-        ws.send(JSON.stringify(message));
-      } else {
-        this.log(
-          'yellow',
-          `No sync message generated for document ${docId}, document may be empty`,
-        );
-      }
-    } catch (error) {
-      this.log(
-        'red',
-        `Error sending document ${docId}: ${(error as Error).message}`,
-      );
     }
   }
 
@@ -482,6 +331,8 @@ export class TonkServer {
           `Server running on port ${this.options.port}, update: 6`,
         );
 
+        this.readyResolvers.forEach((resolve: any) => resolve(true));
+
         if (this.options.mode === 'production') {
           this.log(
             'blue',
@@ -507,6 +358,12 @@ export class TonkServer {
 
         resolve();
       });
+
+      this.server.on('upgrade', (request, socket, head) => {
+        this.socket.handleUpgrade(request, socket, head, socket => {
+          this.socket.emit('connection', socket, request);
+        });
+      });
     });
   }
 
@@ -516,28 +373,11 @@ export class TonkServer {
       this.fsSyncTimer = null;
     }
 
-    if (this.filesystemMiddleware) {
-      try {
-        await this.filesystemMiddleware.shutdown();
-      } catch (error) {
-        this.log(
-          'red',
-          `Error shutting down Filesystem middleware: ${
-            (error as Error).message
-          }`,
-        );
-      }
-    }
-
     return new Promise((resolve, reject) => {
       // Stop the server manager monitoring
       this.stopServerManagerMonitoring();
 
-      this.connections.forEach((_, conn) => {
-        conn.terminate();
-      });
-      this.connections.clear();
-
+      this.socket.close();
       this.server.close(err => {
         if (err) {
           reject(err);
