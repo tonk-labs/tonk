@@ -9,6 +9,6 @@
     "forceConsistentCasingInFileNames": true,
     "outDir": "./dist"
   },
-  "include": ["packages/**/*.ts"],
+  "include": ["packages/**/*.ts", "packages/cli/src/commands/hello/index.tsx"],
   "exclude": ["node_modules", "dist"]
 } 

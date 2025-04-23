@@ -1,4 +1,4 @@
-import { defineConfig } from 'tsup';
+import {defineConfig} from 'tsup';
 
 export default defineConfig({
   entry: ['src/tonk.ts'],
@@ -12,4 +12,9 @@ export default defineConfig({
     js: '#!/usr/bin/env node',
   },
   onSuccess: 'chmod +x dist/tonk.js',
-}); 
+  esbuildOptions(options) {
+    options.loader = {
+      '.tsx': 'tsx',
+    };
+  },
+});
