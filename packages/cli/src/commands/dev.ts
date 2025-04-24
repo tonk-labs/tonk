@@ -3,6 +3,10 @@ import path from 'path';
 import {ChildProcess, spawn} from 'child_process';
 import chalk from 'chalk';
 import fs from 'fs';
+/**
+ *
+ * WARNING THIS FILE IS DEPRECATED THIS USES OLD API DO NOT USE THIS FILE
+ */
 
 export const devCommand = new Command('dev')
   .description('Start a Tonk app in development mode')

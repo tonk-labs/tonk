@@ -4,6 +4,11 @@ import fs from 'fs';
 import {createServer} from '@tonk/server';
 import chalk from 'chalk';
 
+/**
+ *
+ * WARNING THIS FILE IS DEPRECATED THIS USES OLD API DO NOT USE THIS FILE
+ */
+
 function normalizePath(inputPath: string): string {
   // If path starts with ~, expand to home directory
   if (inputPath.startsWith('~/')) {

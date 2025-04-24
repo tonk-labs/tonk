@@ -2,8 +2,8 @@ import express from 'express';
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
-import {createProxyMiddleware} from 'http-proxy-middleware';
-import {BundleServerConfig} from './types';
+// import {createProxyMiddleware} from 'http-proxy-middleware';
+import {BundleServerConfig} from './types.js';
 import chalk from 'chalk';
 
 export class BundleServer {
@@ -34,7 +34,7 @@ export class BundleServer {
     });
 
     // If the bundle has a services directory, set up a proxy to it
-    // TODO this needs to create another express server to run the functionality for this target
+    // TODO this needs to load in services from the bundle and plug that functionality into an express server which will be this proxy target
     // if (this.config.hasServices) {
     //   this.app.use(
     //     '/api',
