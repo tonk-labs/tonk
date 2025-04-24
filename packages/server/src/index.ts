@@ -1,4 +1,3 @@
-import {createProxyMiddleware} from 'http-proxy-middleware';
 import express from 'express';
 import http from 'http';
 import path from 'path';
@@ -9,12 +8,50 @@ import {WebSocketServer} from 'ws';
 import {PeerId, Repo, RepoConfig} from '@tonk/automerge-repo';
 import {NodeWSServerAdapter} from '@automerge/automerge-repo-network-websocket';
 import {NodeFSStorageAdapter} from '@automerge/automerge-repo-storage-nodefs';
+import multer from 'multer';
+import AdmZip from 'adm-zip';
+import {v4 as uuidv4} from 'uuid';
+import {BundleServer} from './bundleServer';
+import {BundleServerInfo} from './types';
+
+// A simple mutex implementation for bundle extraction
+class Mutex {
+  private locked: boolean = false;
+  private waitQueue: (() => void)[] = [];
+
+  async acquire(): Promise<void> {
+    if (!this.locked) {
+      this.locked = true;
+      return Promise.resolve();
+    }
+
+    return new Promise<void>(resolve => {
+      this.waitQueue.push(resolve);
+    });
+  }
+
+  release(): void {
+    if (this.waitQueue.length > 0) {
+      const nextResolve = this.waitQueue.shift()!;
+      nextResolve();
+    } else {
+      this.locked = false;
+    }
+  }
+
+  hasNoPendingAcquires(): boolean {
+    return this.waitQueue.length === 0;
+  }
+}
+
+// A map to store mutexes for each bundle name
+const bundleMutexes: Map<string, Mutex> = new Map();
 
 export interface ServerOptions {
   port?: number;
-  mode: 'development' | 'production';
-  distPath?: string; // Path to the built frontend files
+  distPath?: string | undefined; // Path to the built frontend files (deprecated)
   dirPath?: string;
+  bundlesPath?: string; // Path to store bundle files
   verbose?: boolean;
   syncInterval?: number; // Optional interval to trigger storage sync in ms
 }
@@ -27,17 +64,16 @@ export class TonkServer {
   // @ts-ignore
   private repo: Repo;
   private options: ServerOptions;
-  private initialDistPathSet: boolean = false; // Track if distPath was set at construction time
-  private serverManagerPingInterval: NodeJS.Timeout | null = null;
-  private serverManagerProxyActive: boolean = false;
   private fsSyncTimer: NodeJS.Timeout | null = null;
+  private bundleServers: Map<string, BundleServer> = new Map();
+  private upload: multer.Multer;
 
   constructor(options: ServerOptions) {
     this.options = {
-      port: options.port || (options.mode === 'development' ? 4080 : 8080),
-      mode: options.mode,
-      distPath: options.distPath!,
+      port: options.port || 7777,
+      distPath: options.distPath,
       dirPath: options.dirPath || 'stores',
+      bundlesPath: options.bundlesPath || 'bundles',
       syncInterval: options.syncInterval || 0,
       verbose: options.verbose ?? true,
     };
@@ -45,11 +81,24 @@ export class TonkServer {
     if (!fs.existsSync(this.options.dirPath!))
       fs.mkdirSync(this.options.dirPath!);
 
+    if (!fs.existsSync(this.options.bundlesPath!))
+      fs.mkdirSync(this.options.bundlesPath!, {recursive: true});
+
     const hostname = os.hostname();
     this.socket = new WebSocketServer({noServer: true});
 
-    // Track if distPath was initially set
-    this.initialDistPathSet = this.options.distPath !== undefined;
+    // Configure multer for file uploads
+    this.upload = multer({
+      storage: multer.diskStorage({
+        destination: (_req, _file, cb) => {
+          cb(null, os.tmpdir());
+        },
+        filename: (_req, _file, cb) => {
+          cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}.zip`);
+        },
+      }),
+      limits: {fileSize: 500 * 1024 * 1024}, // 500MB limit
+    });
 
     // Create Express app and HTTP server
     this.app = express();
@@ -73,288 +122,199 @@ export class TonkServer {
   }
 
   private setupExpressMiddleware() {
+    // Parse JSON bodies
+    this.app.use(express.json());
+
+    // Health check endpoint
     this.app.get('/ping', (_req, res) => {
       res.send('pong');
     });
 
-    // Add endpoint to toggle distPath value
-    this.app.post('/api/toggle-dist-path', express.json(), (req, res) => {
-      // Only set distPath if it was not set at construction time
-      if (!this.initialDistPathSet) {
-        // Use the distPath from the request body
-        if (req.body && req.body.distPath !== undefined) {
-          this.options.distPath = req.body.distPath;
-          this.log('green', `distPath set to: ${this.options.distPath}`);
-
-          // Refresh the static file middleware
-          this.refreshStaticFileMiddleware();
-
-          res.json({
-            success: true,
-            distPath: this.options.distPath,
-            message: 'distPath updated successfully',
-          });
-        } else {
-          res.json({
-            success: false,
-            distPath: this.options.distPath,
-            message: 'No distPath provided in request body',
-          });
-        }
-      } else {
-        // Don't update if initially set
-        res.json({
-          success: false,
-          distPath: this.options.distPath,
-          message: 'Cannot update distPath that was set at construction time',
-        });
-      }
-    });
-
-    // Set up static file middleware for production mode
-    this.setupStaticFileMiddleware();
-  }
-
-  // In production mode, serve static files and handle client-side routing
-  private setupStaticFileMiddleware(): void {
-    if (this.options.mode === 'production' && this.options.distPath) {
-      // Handle WASM files with correct MIME type
-      this.app.get('*.wasm', (_req, res, next) => {
-        res.set('Content-Type', 'application/wasm');
-        next();
-      });
-
-      // Static file serving after specific routes
-      this.app.use(express.static(this.options.distPath));
-
-      // Client-side routing - only match routes that don't start with /api or /ping
-      this.app.get(/^(?!\/api|\/ping).*$/, (_req, res) => {
-        res.sendFile(path.join(this.options.distPath!, 'index.html'));
-      });
-    }
-  }
-
-  // Helper method to refresh the static file middleware when distPath changes
-  private refreshStaticFileMiddleware(): void {
-    if (this.options.mode === 'production' && this.options.distPath) {
-      // Remove any existing static middleware (not directly possible with Express)
-      // Instead, we'll set up the routes again in the correct order
-
-      // Re-apply the WASM mime type handler
-      this.app._router.stack = this.app._router.stack.filter(
-        (layer: any) => !(layer.route && layer.route.path === '*.wasm'),
-      );
-      this.app.get('*.wasm', (_req, res, next) => {
-        res.set('Content-Type', 'application/wasm');
-        next();
-      });
-
-      // Remove existing static middleware
-      this.app._router.stack = this.app._router.stack.filter(
-        (layer: any) => layer.name !== 'serveStatic',
-      );
-
-      // Re-add static file serving with new path
-      this.app.use(express.static(this.options.distPath));
-
-      // Remove existing catchall route for client-side routing
-      // Using string representation for the regex comparison
-      this.app._router.stack = this.app._router.stack.filter(
-        (layer: any) =>
-          !(
-            layer.route &&
-            layer.route.path &&
-            layer.route.path.toString() === /^(?!\/api|\/ping).*$/.toString()
-          ),
-      );
-
-      // Re-add client-side routing handler
-      this.app.get(/^(?!\/api|\/ping).*$/, (_req, res) => {
-        res.sendFile(path.join(this.options.distPath!, 'index.html'));
-      });
-
-      this.log(
-        'blue',
-        `Static file middleware refreshed with path: ${this.options.distPath}`,
-      );
-    }
-  }
-
-  // Helper method to update service worker to cache WASM files in production
-  public async updateWasmCache(): Promise<void> {
-    if (this.options.mode !== 'production' || !this.options.distPath) {
-      return;
-    }
-
-    try {
-      const distDir = this.options.distPath;
-      const serviceWorkerPath = path.join(distDir, 'service-worker.js');
-
-      // Check if service worker exists
-      if (!fs.existsSync(serviceWorkerPath)) {
-        this.log(
-          'yellow',
-          'No service worker found. Skipping WASM cache update.',
-        );
-        return;
-      }
-
-      // Find the WASM file
-      const files = fs.readdirSync(distDir);
-      const wasmFile = files.find(file => file.endsWith('.wasm'));
-
-      if (!wasmFile) {
-        this.log('yellow', 'No WASM file found. Skipping cache update.');
-        return;
-      }
-
-      this.log('blue', `Found WASM file: ${wasmFile}`);
-
-      // Update the service worker
-      let swContent = fs.readFileSync(serviceWorkerPath, 'utf8');
-      const wasmPattern = /["']([^"']+\.wasm)["']/g;
-      const wasmMatches = [...swContent.matchAll(wasmPattern)];
-
-      if (wasmMatches.length === 0) {
-        this.log('yellow', 'No WASM file reference found in service worker');
-        return;
-      }
-
-      // Replace all occurrences of WASM files with the current one
-      for (const match of wasmMatches) {
-        const oldWasmPath = match[1];
-        // If the path starts with a slash, we need to add it to our replacement
-        const prefix = oldWasmPath.startsWith('/') ? '/' : '';
-        swContent = swContent.replace(oldWasmPath, `${prefix}${wasmFile}`);
-      }
-
-      // Write the updated service worker back to disk
-      fs.writeFileSync(serviceWorkerPath, swContent);
-      this.log(
-        'green',
-        `Service worker updated to cache WASM file: ${wasmFile}`,
-      );
-    } catch (error) {
-      this.log('red', `Error updating WASM cache: ${error}`);
-    }
-  }
-
-  private startServerManagerMonitoring(): void {
-    if (this.serverManagerPingInterval) {
-      clearInterval(this.serverManagerPingInterval);
-      this.serverManagerPingInterval = null;
-    }
-
-    this.log('blue', 'Starting server manager monitoring...');
-
-    // Try to ping the server manager every 2 seconds
-    this.serverManagerPingInterval = setInterval(async () => {
-      try {
-        const response = await fetch('http://localhost:6080/ping', {
-          method: 'GET',
-          headers: {'Content-Type': 'application/json'},
-        });
-
-        if (response.ok) {
-          // If we get a response and the proxy isn't active, set it up
-          if (!this.serverManagerProxyActive) {
-            this.setupServerManagerProxy();
+    // Bundle upload endpoint
+    this.app.post(
+      '/upload-bundle',
+      this.upload.single('bundle'),
+      async (req, res) => {
+        try {
+          if (!req.file) {
+            return res.status(400).send({error: 'No bundle file uploaded'});
           }
-        } else {
-          // If we get a bad response and the proxy is active, remove it
-          if (this.serverManagerProxyActive) {
-            this.removeServerManagerProxy();
+
+          const bundleName =
+            req.body.name || path.basename(req.file.originalname, '.zip');
+          const bundlePath = path.join(this.options.bundlesPath!, bundleName);
+
+          // Get or create a mutex for this bundle name
+          if (!bundleMutexes.has(bundleName)) {
+            bundleMutexes.set(bundleName, new Mutex());
           }
+          const mutex = bundleMutexes.get(bundleName)!;
+
+          // Acquire mutex lock to prevent race conditions
+          await mutex.acquire();
+
+          try {
+            // Create bundle directory if it doesn't exist
+            if (!fs.existsSync(bundlePath)) {
+              fs.mkdirSync(bundlePath, {recursive: true});
+            }
+
+            // Extract the zip file
+            const zip = new AdmZip(req.file.path);
+            zip.extractAllTo(bundlePath, true);
+
+            // Check if the bundle has a services directory
+            const hasServices = fs.existsSync(
+              path.join(bundlePath, 'services'),
+            );
+
+            // Delete the temporary zip file
+            fs.unlinkSync(req.file.path);
+
+            this.log(
+              'green',
+              `Bundle ${bundleName} uploaded and extracted to ${bundlePath}`,
+            );
+
+            res.status(200).send({
+              success: true,
+              message: 'Bundle uploaded and extracted successfully',
+              bundleName,
+              hasServices,
+            });
+          } finally {
+            // Always release the mutex
+            mutex.release();
+
+            // Clean up mutex if no more uploads are pending
+            if (mutex.hasNoPendingAcquires()) {
+              bundleMutexes.delete(bundleName);
+            }
+          }
+        } catch (error: any) {
+          this.log('red', `Error uploading bundle: ${error.message}`);
+          res.status(500).send({error: error.message});
         }
-      } catch (error: any) {
-        // If we can't connect and the proxy is active, remove it
-        if (this.serverManagerProxyActive) {
-          this.log('yellow', `Server manager not responding: ${error.message}`);
-          this.removeServerManagerProxy();
-        }
-      }
-    }, 2000);
-  }
-
-  private setupServerManagerProxy(): void {
-    if (this.serverManagerProxyActive) return;
-
-    this.log('green', 'Server manager found, setting up proxy');
-
-    // Create a proxy middleware to the server manager
-    const serverManagerProxy = createProxyMiddleware({
-      target: 'http://localhost:6080/api',
-      changeOrigin: true,
-    });
-
-    // Add the proxy middleware
-    this.app.use('/api', serverManagerProxy);
-    this.serverManagerProxyActive = true;
-
-    this.log('green', 'Server manager proxy active at /api');
-  }
-
-  private removeServerManagerProxy(): void {
-    if (!this.serverManagerProxyActive) return;
-
-    this.log('yellow', 'Removing server manager proxy');
-
-    // Remove the proxy middleware
-    this.app._router.stack = this.app._router.stack.filter(
-      (layer: any) => !layer.route || layer.route.path !== '/api',
+        return;
+      },
     );
 
-    this.serverManagerProxyActive = false;
+    // Bundle server management endpoints
+    this.app.post('/start', async (req, res) => {
+      try {
+        const {bundleName, port} = req.body;
+
+        if (!bundleName) {
+          return res.status(400).send({error: 'Bundle name is required'});
+        }
+
+        const bundlePath = path.join(this.options.bundlesPath!, bundleName);
+
+        if (!fs.existsSync(bundlePath)) {
+          return res
+            .status(404)
+            .send({error: `Bundle ${bundleName} not found`});
+        }
+
+        const hasServices = fs.existsSync(path.join(bundlePath, 'services'));
+        const serverPort = port || this.findAvailablePort();
+        const serverId = uuidv4();
+
+        const bundleServer = new BundleServer({
+          bundleName,
+          bundlePath,
+          port: serverPort,
+          hasServices,
+          verbose:
+            this.options.verbose === undefined ? true : this.options.verbose,
+        });
+
+        await bundleServer.start();
+        this.bundleServers.set(serverId, bundleServer);
+
+        res.status(200).send({
+          id: serverId,
+          bundleName,
+          port: serverPort,
+          status: 'running',
+        });
+      } catch (error: any) {
+        this.log('red', `Error starting bundle server: ${error.message}`);
+        res.status(500).send({error: error.message});
+      }
+      return;
+    });
+
+    this.app.post('/kill', async (req, res) => {
+      try {
+        const {id} = req.body;
+
+        if (!id) {
+          return res.status(400).send({error: 'Server ID is required'});
+        }
+
+        const bundleServer = this.bundleServers.get(id);
+
+        if (!bundleServer) {
+          return res
+            .status(404)
+            .send({error: `Server with ID ${id} not found`});
+        }
+
+        await bundleServer.stop();
+        this.bundleServers.delete(id);
+
+        res
+          .status(200)
+          .send({success: true, message: 'Server stopped successfully'});
+      } catch (error: any) {
+        this.log('red', `Error stopping bundle server: ${error.message}`);
+        res.status(500).send({error: error.message});
+      }
+      return;
+    });
+
+    this.app.get('/ps', (_req, res) => {
+      const servers: BundleServerInfo[] = [];
+
+      this.bundleServers.forEach((server, id) => {
+        const status = server.getStatus();
+        servers.push({
+          id,
+          port: status.port,
+          bundleName: status.bundleName,
+          status: status.isRunning ? 'running' : 'stopped',
+          startedAt: status.startTime,
+        } as BundleServerInfo);
+      });
+
+      res.status(200).send(servers);
+    });
   }
 
-  private stopServerManagerMonitoring(): void {
-    if (this.serverManagerPingInterval) {
-      clearInterval(this.serverManagerPingInterval);
-      this.serverManagerPingInterval = null;
-      this.log('yellow', 'Server manager monitoring stopped');
+  // Find an available port starting from 8000
+  private findAvailablePort(startPort: number = 8000): number {
+    for (let port = startPort; port < startPort + 1000; port++) {
+      const inUse = Array.from(this.bundleServers.values()).some(
+        server =>
+          server.getStatus().port === port && server.getStatus().isRunning,
+      );
+
+      if (!inUse) {
+        return port;
+      }
     }
 
-    this.removeServerManagerProxy();
+    // If we can't find an available port, return a random one
+    return startPort + Math.floor(Math.random() * 1000);
   }
 
   public start(): Promise<void> {
     return new Promise(async resolve => {
-      if (this.options.mode === 'production' && this.options.distPath) {
-        await this.updateWasmCache();
-      }
-      // Start monitoring for server manager instead of launching it
-      this.startServerManagerMonitoring();
-
       this.server.listen(this.options.port, () => {
-        this.log(
-          'green',
-          `Server running on port ${this.options.port}, update: 6`,
-        );
+        this.log('green', `Server running on port ${this.options.port}`);
 
         this.readyResolvers.forEach((resolve: any) => resolve(true));
-
-        if (this.options.mode === 'production') {
-          this.log(
-            'blue',
-            `Open http://localhost:${this.options.port} to view your app`,
-          );
-          this.log(
-            'blue',
-            "On your phone, connect to this server using your computer's local IP address",
-          );
-          this.log(
-            'blue',
-            `Use pinggy to expose this server: ssh -p 443 -R0:localhost:${this.options.port} a.pinggy.io`,
-          );
-        } else {
-          this.log(
-            'blue',
-            `Development sync server running on port ${this.options.port}`,
-          );
-
-          // Also start monitoring in development mode
-          this.startServerManagerMonitoring();
-        }
 
         resolve();
       });
@@ -373,10 +333,16 @@ export class TonkServer {
       this.fsSyncTimer = null;
     }
 
-    return new Promise((resolve, reject) => {
-      // Stop the server manager monitoring
-      this.stopServerManagerMonitoring();
+    // Stop all bundle servers
+    const stopPromises: Promise<void>[] = [];
+    this.bundleServers.forEach(server => {
+      stopPromises.push(server.stop());
+    });
 
+    await Promise.all(stopPromises);
+    this.bundleServers.clear();
+
+    return new Promise((resolve, reject) => {
       this.socket.close();
       this.server.close(err => {
         if (err) {
