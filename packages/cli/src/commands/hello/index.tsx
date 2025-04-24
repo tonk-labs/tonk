@@ -182,23 +182,26 @@ const WelcomeMessage = () => {
 
       <Box marginLeft={2} marginTop={1}>
         <Text>
-          • Initialize a new repository:{' '}
+          • Create a new Tonk project:{' '}
           <Text bold color="yellow">
-            tonk init
+            tonk create
           </Text>
         </Text>
       </Box>
+      <Box marginLeft={2} marginTop={1}>
+        <Text>• Open in your agentic editor and let the vibecode flow 😎</Text>
+      </Box>
 
-      <Box marginLeft={2}>
+      <Box marginLeft={2} marginTop={1}>
         <Text>
-          • Start your sync server in the repo:{' '}
+          • Share your project:{' '}
           <Text bold color="yellow">
-            tonk sync
+            tonk start
           </Text>
         </Text>
       </Box>
 
-      <Box marginLeft={2}>
+      <Box marginLeft={2} marginTop={1}>
         <Text>
           • Read the documentation:{' '}
           <Text bold color="blue">
