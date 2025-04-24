@@ -1,4 +1,4 @@
-> These docs are accurate as of 10th April 2024 and the product is undergoing rapid changes. Please ask in the [**Tonk community chat**](https://t.me/+9W-4wDR9RcM2NWZk) when things don't work as expected.
+> These docs are accurate as of 10th April 2024 & the product is undergoing rapid changes. Please ask in the [**Tonk community chat**](https://t.me/+9W-4wDR9RcM2NWZk) when things don't work as expected.
 
 # Build your own little internet with Tonk
 
