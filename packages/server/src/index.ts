@@ -9,10 +9,10 @@ import {PeerId, Repo, RepoConfig} from '@tonk/automerge-repo';
 import {NodeWSServerAdapter} from '@automerge/automerge-repo-network-websocket';
 import {NodeFSStorageAdapter} from '@automerge/automerge-repo-storage-nodefs';
 import multer from 'multer';
-import AdmZip from 'adm-zip';
+import * as tar from 'tar';
 import {v4 as uuidv4} from 'uuid';
-import {BundleServer} from './bundleServer';
-import {BundleServerInfo} from './types';
+import {BundleServer} from './bundleServer.js';
+import {BundleServerInfo} from './types.js';
 
 // A simple mutex implementation for bundle extraction
 class Mutex {
@@ -49,7 +49,6 @@ const bundleMutexes: Map<string, Mutex> = new Map();
 
 export interface ServerOptions {
   port?: number;
-  distPath?: string | undefined; // Path to the built frontend files (deprecated)
   dirPath?: string;
   bundlesPath?: string; // Path to store bundle files
   verbose?: boolean;
@@ -71,18 +70,13 @@ export class TonkServer {
   constructor(options: ServerOptions) {
     this.options = {
       port: options.port || 7777,
-      distPath: options.distPath,
       dirPath: options.dirPath || 'stores',
       bundlesPath: options.bundlesPath || 'bundles',
       syncInterval: options.syncInterval || 0,
       verbose: options.verbose ?? true,
     };
 
-    if (!fs.existsSync(this.options.dirPath!))
-      fs.mkdirSync(this.options.dirPath!);
-
-    if (!fs.existsSync(this.options.bundlesPath!))
-      fs.mkdirSync(this.options.bundlesPath!, {recursive: true});
+    this.setupDirectories();
 
     const hostname = os.hostname();
     this.socket = new WebSocketServer({noServer: true});
@@ -94,9 +88,24 @@ export class TonkServer {
           cb(null, os.tmpdir());
         },
         filename: (_req, _file, cb) => {
-          cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}.zip`);
+          cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}.tar.gz`);
         },
       }),
+      fileFilter: (_req, file, cb) => {
+        // Accept only tar.gz and tgz files
+        if (
+          file.mimetype === 'application/gzip' ||
+          file.mimetype === 'application/x-gzip' ||
+          file.mimetype === 'application/tar+gzip' ||
+          file.originalname.endsWith('.tar.gz') ||
+          file.originalname.endsWith('.tgz')
+        ) {
+          cb(null, true);
+        } else {
+          cb(null, false);
+          cb(new Error('Only .tar.gz or .tgz files are allowed'));
+        }
+      },
       limits: {fileSize: 500 * 1024 * 1024}, // 500MB limit
     });
 
@@ -113,6 +122,20 @@ export class TonkServer {
     this.repo = new Repo(config);
 
     this.setupExpressMiddleware();
+  }
+
+  private async setupDirectories() {
+    try {
+      await fs.promises.access(this.options.dirPath!).catch(async () => {
+        await fs.promises.mkdir(this.options.dirPath!);
+      });
+
+      await fs.promises.access(this.options.bundlesPath!).catch(async () => {
+        await fs.promises.mkdir(this.options.bundlesPath!, {recursive: true});
+      });
+    } catch (error) {
+      console.error('Error setting up directories:', error);
+    }
   }
 
   private log(color: 'green' | 'red' | 'blue' | 'yellow', message: string) {
@@ -141,7 +164,7 @@ export class TonkServer {
           }
 
           const bundleName =
-            req.body.name || path.basename(req.file.originalname, '.zip');
+            req.body.name || path.basename(req.file.originalname, '.tar.gz');
           const bundlePath = path.join(this.options.bundlesPath!, bundleName);
 
           // Get or create a mutex for this bundle name
@@ -155,21 +178,27 @@ export class TonkServer {
 
           try {
             // Create bundle directory if it doesn't exist
-            if (!fs.existsSync(bundlePath)) {
-              fs.mkdirSync(bundlePath, {recursive: true});
+            try {
+              await fs.promises.access(bundlePath);
+            } catch {
+              await fs.promises.mkdir(bundlePath, {recursive: true});
             }
 
-            // Extract the zip file
-            const zip = new AdmZip(req.file.path);
-            zip.extractAllTo(bundlePath, true);
+            // Extract the tar.gz file
+            await tar.extract({
+              file: req.file.path,
+              cwd: bundlePath,
+              strict: true,
+            });
 
             // Check if the bundle has a services directory
-            const hasServices = fs.existsSync(
-              path.join(bundlePath, 'services'),
-            );
+            const hasServices = await fs.promises
+              .access(path.join(bundlePath, 'services'))
+              .then(() => true)
+              .catch(() => false);
 
-            // Delete the temporary zip file
-            fs.unlinkSync(req.file.path);
+            // Delete the temporary archive file
+            await fs.promises.unlink(req.file.path);
 
             this.log(
               'green',
@@ -210,13 +239,19 @@ export class TonkServer {
 
         const bundlePath = path.join(this.options.bundlesPath!, bundleName);
 
-        if (!fs.existsSync(bundlePath)) {
+        try {
+          await fs.promises.access(bundlePath);
+        } catch {
           return res
             .status(404)
             .send({error: `Bundle ${bundleName} not found`});
         }
 
-        const hasServices = fs.existsSync(path.join(bundlePath, 'services'));
+        const hasServices = await fs.promises
+          .access(path.join(bundlePath, 'services'))
+          .then(() => true)
+          .catch(() => false);
+
         const serverPort = port || this.findAvailablePort();
         const serverId = uuidv4();
 
@@ -269,6 +304,37 @@ export class TonkServer {
           .send({success: true, message: 'Server stopped successfully'});
       } catch (error: any) {
         this.log('red', `Error stopping bundle server: ${error.message}`);
+        res.status(500).send({error: error.message});
+      }
+      return;
+    });
+
+    this.app.get('/ls', async (_req, res) => {
+      try {
+        const bundlesPath = this.options.bundlesPath!;
+
+        try {
+          await fs.promises.access(bundlesPath);
+        } catch (err) {
+          return res
+            .status(404)
+            .send({error: `Bundles directory ${bundlesPath} not found`});
+        }
+
+        const files = await fs.promises.readdir(bundlesPath);
+        const statPromises = files.map(async file => {
+          const stats = await fs.promises.stat(path.join(bundlesPath, file));
+          return {file, isDirectory: stats.isDirectory()};
+        });
+
+        const fileStats = await Promise.all(statPromises);
+        const bundleNames = fileStats
+          .filter(item => item.isDirectory)
+          .map(item => item.file);
+
+        res.status(200).send(bundleNames);
+      } catch (error: any) {
+        this.log('red', `Error listing bundles: ${error.message}`);
         res.status(500).send({error: error.message});
       }
       return;
