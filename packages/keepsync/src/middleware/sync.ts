@@ -356,6 +356,17 @@ export const sync =
     };
   };
 
+/**
+ * This is meant to be used for debugging purposes
+ * @param id
+ * @returns
+ */
+export const getDocHandleById = (id: string): DocHandle<any> => {
+  const repo = getRepo();
+  // Get the document handle from the repo or create a new one if it doesn't exist
+  return repo!.findOrCreate<any>(id);
+};
+
 // Add necessary TypeScript interfaces for global registry
 declare global {
   interface Window {

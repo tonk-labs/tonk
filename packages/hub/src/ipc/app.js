@@ -33,7 +33,7 @@ const startPinggy = async () => {
       "443",
       "-o",
       "StrictHostKeyChecking=no",
-      "-R0:localhost:8080",
+      "-R0:localhost:7777",
       "a.pinggy.io",
     ]);
 
@@ -240,7 +240,7 @@ const launchApp = async (projectPath, pinggyUrl) => {
               });
             }
 
-            appWindow.loadURL("http://localhost:8080");
+            appWindow.loadURL("http://localhost:7777");
 
             // Display the pinggy URL in the corner of the window
             appWindow.webContents.on("did-finish-load", () => {
@@ -249,7 +249,7 @@ const launchApp = async (projectPath, pinggyUrl) => {
                 (function() {
                     const urlDisplay = document.createElement('div');
                     urlDisplay.textContent = '${
-                      pinggyUrl || "http://localhost:8080"
+                      pinggyUrl || "http://localhost:7777"
                     }';
                     urlDisplay.style.position = 'fixed';
                     urlDisplay.style.bottom = '6px';
@@ -462,7 +462,7 @@ ipcMain.handle("open-url-in-electron", async (_event, url) => {
         // Display URL
         (function() {
             const urlDisplay = document.createElement('div');
-            urlDisplay.textContent = '${url || "http://localhost:8080"}';
+            urlDisplay.textContent = '${url || "http://localhost:7777"}';
             urlDisplay.style.position = 'fixed';
             urlDisplay.style.bottom = '6px';
             urlDisplay.style.right = '6px';

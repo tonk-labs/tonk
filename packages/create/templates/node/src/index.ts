@@ -7,7 +7,7 @@ import {
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { createStore } from "zustand/vanilla";
 
-const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:8080");
+const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:7777");
 const syncEngine = configureSyncEngine({
   networkAdapters: [wsAdapter as any as NetworkAdapterInterface],
 });

@@ -7,6 +7,7 @@ import path from "path";
 import process from "process";
 import { fileURLToPath } from "url";
 import { createReactTemplate } from "./templates/react";
+import { createNodeTemplate } from "./templates/node";
 import { ProjectPlan, TemplateType } from "./types";
 
 /**
@@ -67,6 +68,13 @@ const program = new Command();
 // Questions to understand project requirements
 const projectQuestions = [
   {
+    type: "list",
+    name: "platform",
+    message: "What template would you like to use?",
+    choices: ["react", "node"],
+    default: "react",
+  },
+  {
     type: "input",
     name: "projectName",
     message: "What is your project named?",
@@ -83,7 +91,7 @@ const projectQuestions = [
 export async function createProject(
   projectName: string,
   plan: ProjectPlan,
-  _templateName: TemplateType,
+  templateName: TemplateType,
   _projectPath: string | null = null
 ) {
   const spinner = ora("Creating project structure...").start();
@@ -96,7 +104,6 @@ export async function createProject(
 
     // Find template path
     let templatePath;
-    const templateName = "react";
 
     try {
       templatePath = await resolvePackagePath(`templates/${templateName}`);
@@ -118,7 +125,16 @@ export async function createProject(
     }
 
     // Switch on template type and call appropriate template creator
-    await createReactTemplate(projectPath, projectName, templatePath, plan);
+    switch (templateName) {
+      case "react": {
+        await createReactTemplate(projectPath, projectName, templatePath, plan);
+        break;
+      }
+      case "node": {
+        await createNodeTemplate(projectPath, projectName, templatePath, plan);
+        break;
+      }
+    }
   } catch (error) {
     spinner.fail("Failed to setup project");
     console.error(error);
