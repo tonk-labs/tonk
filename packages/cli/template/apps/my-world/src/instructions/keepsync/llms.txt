@@ -10,7 +10,7 @@ import { configureSyncEngine } from '@tonk/keepsync';
 
 // Initialize the sync engine
 configureSyncEngine({
-  url: 'ws://localhost:8080',
+  url: 'ws://localhost:7777',
   name: 'MySyncEngine',
   onSync: (docId) => console.log(`Document ${docId} synced`),
   onError: (error) => console.error('Sync error:', error),
