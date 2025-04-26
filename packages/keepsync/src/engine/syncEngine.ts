@@ -57,6 +57,10 @@ export class SyncEngine {
     logger.info('SyncEngine created successfully');
   }
 
+  whenReady(): Promise<void> {
+    return this.repo.networkSubsystem.whenReady();
+  }
+
   /**
    * Get the Automerge Repo instance
    * @returns The configured Repo instance

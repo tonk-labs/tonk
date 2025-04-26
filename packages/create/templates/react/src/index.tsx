@@ -3,7 +3,7 @@ import "./index.css";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
-import { configureSyncEngine, setDocIdPrefix, mapDocId } from "@tonk/keepsync";
+import { configureSyncEngine } from "@tonk/keepsync";
 import {
   registerServiceWorker,
   unregisterServiceWorker,

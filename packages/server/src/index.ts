@@ -60,9 +60,11 @@ export class TonkServer {
   private socket: WebSocketServer;
   private server: http.Server;
   private readyResolvers: ((value: any) => void)[] = [];
-  // @ts-ignore
-  private repo: Repo;
   private options: ServerOptions;
+  // Repo is essential for the server to work but not directly referenced after initialization
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  //@ts-ignore
+  private repo: Repo;
   private fsSyncTimer: NodeJS.Timeout | null = null;
   private bundleServers: Map<string, BundleServer> = new Map();
   private upload: multer.Multer;
@@ -77,6 +79,13 @@ export class TonkServer {
     };
 
     this.setupDirectories();
+
+    if (!fs.existsSync(this.options.dirPath!)) {
+      fs.mkdirSync(this.options.dirPath!);
+    }
+    if (!fs.existsSync(this.options.bundlesPath!)) {
+      fs.mkdirSync(this.options.bundlesPath!);
+    }
 
     const hostname = os.hostname();
     this.socket = new WebSocketServer({noServer: true});
@@ -119,8 +128,8 @@ export class TonkServer {
       peerId: `sync-server-${hostname}` as PeerId,
       sharePolicy: async () => false,
     };
-    this.repo = new Repo(config);
 
+    this.repo = new Repo(config);
     this.setupExpressMiddleware();
   }
 
