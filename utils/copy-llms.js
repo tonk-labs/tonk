@@ -10,9 +10,7 @@ const __dirname = path.dirname(__filename);
 // Define project subdirectories that should get their own .cursor/rules
 const PROJECT_SUBDIRS = [
   'packages/create/templates/react',
-  'packages/hub/template/apps/Hello-World',
-  'packages/hub/template/apps/my-world',
-  'packages/hub/template/apps/Todos',
+  'packages/create/templates/node',
 ];
 
 function generateMDCName(dirPath) {
