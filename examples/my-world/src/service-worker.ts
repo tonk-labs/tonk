@@ -45,7 +45,7 @@ sw.addEventListener("install", (event) => {
         "/icons/icon-512x512.png",
         "/1234567890abc.module.wasm", // will get replaced with actual module on build
       ]);
-    }),
+    })
   );
   sw.skipWaiting();
 });
@@ -57,9 +57,9 @@ sw.addEventListener("activate", (event) => {
       return Promise.all(
         cacheNames
           .filter((cacheName) => cacheName !== CACHE_NAME)
-          .map((cacheName) => caches.delete(cacheName)),
+          .map((cacheName) => caches.delete(cacheName))
       );
-    }),
+    })
   );
   sw.clients.claim();
 });
@@ -123,6 +123,6 @@ sw.addEventListener("fetch", (event) => {
 
         throw err;
       }
-    })(),
+    })()
   );
 });
