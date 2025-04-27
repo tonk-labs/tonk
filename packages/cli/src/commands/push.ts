@@ -3,7 +3,9 @@ import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
 import fetch from 'node-fetch';
-import FormData from 'form-data';
+import {FormData} from 'formdata-node';
+import {fileFromPath} from 'formdata-node/file-from-path';
+import {FormDataEncoder} from 'form-data-encoder';
 import {Readable} from 'stream';
 import * as tar from 'tar';
 
@@ -81,7 +83,7 @@ async function createTarball(
 ): Promise<string> {
   console.log(
     chalk.blue(
-      `Packaging directory ${sourcePath} as bundle '${bundleName}'...`,
+      `Packaging contents of directory ${sourcePath} as bundle '${bundleName}'...`,
     ),
   );
 
@@ -90,13 +92,21 @@ async function createTarball(
     `${bundleName}-${Date.now()}.tar.gz`,
   );
 
+  // Get all directories and files in the source directory
+  const children = fs.readdirSync(sourcePath);
+
+  if (children.length === 0) {
+    throw new Error(`Source directory ${sourcePath} is empty.`);
+  }
+
+  // Create tarball with all children of the source directory
   await tar.create(
     {
       gzip: true,
       file: tempTarPath,
-      cwd: path.dirname(sourcePath),
+      cwd: sourcePath,
     },
-    [path.basename(sourcePath)],
+    children,
   );
 
   return tempTarPath;
@@ -113,12 +123,15 @@ async function uploadBundle(
   console.log(chalk.blue(`Uploading bundle to ${serverUrl}...`));
 
   const form = new FormData();
-  form.append('name', bundleName);
-  form.append('bundle', fs.createReadStream(tarballPath));
+  form.set('name', bundleName);
+  form.set('bundle', await fileFromPath(tarballPath));
+
+  const encoder = new FormDataEncoder(form);
 
   const response = await fetch(`${serverUrl}/upload-bundle`, {
     method: 'POST',
-    body: form as unknown as Readable,
+    headers: encoder.headers,
+    body: Readable.from(encoder),
   });
 
   // Clean up temp file

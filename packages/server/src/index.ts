@@ -88,7 +88,7 @@ export class TonkServer {
     }
 
     const hostname = os.hostname();
-    this.socket = new WebSocketServer({noServer: true});
+    this.socket = new WebSocketServer({path: '/sync', noServer: true});
 
     // Configure multer for file uploads
     this.upload = multer({
@@ -189,6 +189,20 @@ export class TonkServer {
             // Create bundle directory if it doesn't exist
             try {
               await fs.promises.access(bundlePath);
+
+              // Clear existing files in the bundle directory
+              const existingFiles = await fs.promises.readdir(bundlePath);
+              if (existingFiles.length > 0) {
+                this.log('blue', `Clearing existing files in ${bundlePath}`);
+                const deletePromises = existingFiles.map(file => {
+                  const filePath = path.join(bundlePath, file);
+                  return fs.promises.rm(filePath, {
+                    recursive: true,
+                    force: true,
+                  });
+                });
+                await Promise.all(deletePromises);
+              }
             } catch {
               await fs.promises.mkdir(bundlePath, {recursive: true});
             }
