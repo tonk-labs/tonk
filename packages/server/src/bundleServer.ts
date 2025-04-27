@@ -2,7 +2,7 @@ import express from 'express';
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
-// import {createProxyMiddleware} from 'http-proxy-middleware';
+import {createProxyMiddleware} from 'http-proxy-middleware';
 import {BundleServerConfig} from './types.js';
 import chalk from 'chalk';
 
@@ -52,6 +52,41 @@ export class BundleServer {
     this.app.get(/^(?!\/api|\/services).*$/, (_req, res) => {
       res.sendFile(path.join(this.config.bundlePath, 'index.html'));
     });
+
+    const wsProxy = createProxyMiddleware({
+      target: 'ws://localhost:7777',
+      changeOrigin: true,
+      ws: true,
+      pathFilter: '/sync',
+      // @ts-expect-error - These options help with binary data
+      bufferData: true,
+      // Prevent automatic parsing of messages
+      onProxyReqWs: (
+        _proxyReq: http.ClientRequest,
+        _req: http.IncomingMessage,
+        _socket: any,
+      ) => {
+        // Don't modify the incoming WebSocket requests
+      },
+      onError: (
+        err: Error,
+        _req: http.IncomingMessage,
+        res: http.ServerResponse,
+      ) => {
+        this.log('red', `WebSocket proxy error: ${err.message}`);
+        if (res.writeHead && !res.headersSent) {
+          res.writeHead(500);
+          res.end('Proxy error');
+        }
+      },
+      onProxyRes: (proxyRes: http.IncomingMessage) => {
+        this.log('blue', `Proxy response status: ${proxyRes.statusCode}`);
+      },
+    });
+    // Proxy /sync requests to localhost:7777
+    this.app.use(wsProxy);
+
+    this.server.on('upgrade', wsProxy.upgrade);
   }
 
   // Helper method to update service worker to cache WASM files
@@ -141,6 +176,7 @@ export class BundleServer {
         return resolve();
       }
 
+      this.server.closeAllConnections();
       this.server.close(() => {
         this.isRunning = false;
         this.log(
