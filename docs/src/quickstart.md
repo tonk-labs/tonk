@@ -2,57 +2,156 @@
 
 > If you haven't yet, start with the [**introduction**](./introduction.md) before reading this quickstart guide.
 
-Tonk apps plug into Tonk stores, which store data in a local-first way. This makes Tonk apps especially collaborative and interoperable. It also means that they are private, performant, have offline support and reduce dependency on third parties. Tonk apps sidestep traditional database headaches such as caching, migrations and auth.
+Tonk apps plug into Tonk stores, which store data in a local-first way. This makes applications especially collaborative and interoperable. It also means that they are private, performant, have offline support and reduce dependency on third parties. Apps on Tonk sidestep traditional database headaches such as caching, migrations and auth.
 
-## I want to build a Tonk app
+## Installing Tonk
 
 First, you'll need to install Tonk on your machine:
 
-```
-$ wget https://raw.githubusercontent.com/tonk-labs/tonk/refs/heads/main/scripts/install.sh && chmod +x ./install.sh && ./install.sh
-```
-
-If everything was successful you should see the message:
-
-```
-===============================
-🎉 Congratulations! Tonk has been successfully installed! 🎉
-You can get started by running: tonk hello
-===============================
+```bash
+npm install -g @tonk/cli && tonk hello
 ```
 
-When you run `tonk hello` the Tonk Hub will open a welcome screen.
+This will install the Tonk CLI globally and run the `hello` command, which sets up the Tonk daemon for synchronizing your data.
 
-The Tonk Hub is an Electron app that helps you manage your Tonk apps and stores.
+## Creating a new Tonk app
 
-### Choose your Tonk home
+To create a new Tonk app, use the `create` command:
 
-![hub screenshot](./images/welcome-screen-hub.png)
+```bash
+tonk create
+```
 
-> Note: Choose a location where you like to store your projects. You should make sure that your preferred code editor has read/write access to this location.
+The CLI will guide you through a series of prompts to configure your project:
 
-### Home Sidebar
+1. Choose a template (React or Node.js)
+2. Enter a project name (or accept the default)
+3. Provide a brief description of your project
 
-![hub screenshot](./images/home-hub.png)
+After answering these questions, Tonk will scaffold a new project with everything you need to get started, including:
 
-There are two sections in the sidebar
+- React, TypeScript, and Tailwind CSS
+- Keepsync for state management and synchronization
+- Development tools and configuration
 
-#### Apps
+## Developing your app
 
-The apps section is where you develop and run your applications. For now, all Tonk applications are React web apps. We've placed lots of instructions around the Tonk app templates for LLMs which should make it much easier to vibe code.
+Navigate to your project directory and start development:
 
-#### Stores
+```bash
+cd my-app
+pnpm dev
+```
 
-Stores are what make Tonk apps special. They are containers of shareable data that easily plug into any of your apps. Stores are synchronized using the Automerge CRDT library. They are just automerge files which are read in by the Hub and served to your applications during runtime. Anyone who uses your application in the Hub will participate in "replicating" the store. It's like one big collaborative, evolving database.
+This will:
 
-### Launch the hello world
+1. Start a development server with hot reloading
+2. Set up a sync server for real-time collaboration
+3. Open your app in the browser (typically at http://localhost:3000)
 
-Select the hello-world applications
+## Understanding Tonk Stores
 
-![hello world](./images/hello-world.png)
+Stores are what make Tonk apps special. They're containers of shareable data that easily plug into any app. Stores are synchronized using the Automerge CRDT library, which enables automatic conflict resolution when multiple users edit the same data.
 
-### Voila!
+Unlike traditional databases, Tonk stores:
 
-Just like that you are running your first app with Tonk.
+- Work offline first, then sync when connections are available
+- Don't require schema migrations
+- Handle synchronization automatically
+- Provide real-time updates across all connected clients
 
-To understand how apps work in Tonk and why they are special, [follow the tutorial](https://tonk-labs.github.io/tonk/tutorials/my-world.html)
+### Working with stores in your app
+
+Your Tonk app comes with the `@tonk/keepsync` library already integrated. Here's how to use it:
+
+```typescript
+// 1. Import the sync middleware
+import { create } from "zustand";
+import { sync } from "@tonk/keepsync";
+
+// 2. Create a synced store
+const useTodoStore = create(
+  sync(
+    (set) => ({
+      todos: [],
+      addTodo: (text) =>
+        set((state) => ({
+          todos: [...state.todos, { id: Date.now(), text, completed: false }],
+        })),
+      toggleTodo: (id) =>
+        set((state) => ({
+          todos: state.todos.map((todo) =>
+            todo.id === id ? { ...todo, completed: !todo.completed } : todo
+          ),
+        })),
+    }),
+    { docId: "todos" } // This identifies the store for synchronization
+  )
+);
+```
+
+When multiple users access your app, any changes they make to the store will automatically synchronize across all clients in real-time.
+
+## Deploying your app
+
+Once your app is ready for deployment, you can build and serve it:
+
+```bash
+# Build the app
+pnpm run build
+
+# Push the bundle you've just built
+tonk push
+
+```
+
+# Start a service to host your bundle
+
+`tonk start <bundleName>`
+
+The bundleName will likely be the folder of your project. You can see available bundles by running `tonk ls`
+
+```
+
+Usage: tonk start [options] <bundleName>
+
+Start a bundle server
+
+Arguments:
+bundleName Name of the bundle to start
+
+Options:
+-u, --url <url> URL of the Tonk server (default: "http://localhost:7777")
+-p, --port <port> Port for the bundle server (optional)
+
+```
+
+You should see a message like:
+
+```
+
+Bundle server started successfully!
+Server ID: 454f91d5-40a9-4892-aca8-f6cfaa3936a5
+Running on port: 8000
+Status: running
+Use 'tonk ps' to see all running servers
+
+```
+
+# Use a reverse-proxy to share your application to external devices
+
+Pinggy makes this simple and free
+
+```
+
+ssh -p 443 -R0:localhost:8000 free.pinggy.io
+
+```
+
+The caveat is of course that free pinggy tunnels last only 60 minutes. If you pay for a dedicated tunnel, then you could serve the application off that.
+
+## Tonk Deploy (Coming Soon TM)
+
+Dedicated hosting of bundles at Tonk is on the roadmap. Please let us know if you'd like to join early access.
+
+For more advanced deployment options, see the [reference](./reference.md) section.
