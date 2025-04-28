@@ -1,23 +1,14 @@
-# Build your own little internet with Tonk
+# Elevate your creative intelligence
 
-Tonk is a copilot-friendly toolchain that gives independent developers freedom to build powerful shared software.
+Tonk is a simple toolchain for better vibe coding that helps you build and share applets that integrate with your data and embed into your daily life.
 
-AI makes it easy for anyone to build bespoke tools for small groups - households, communities, teams and friends. But making these tools multiplayer is still hard. Server-database setups are clunky, expensive and devolve into platforms that lock you in and degrade over time.
+It's for creative people of all stripes - you just need basic coding ability.
 
-Tonk is a toolchain for shared, just-in-time applications - copilot-friendly, local-first and multiplayer. You can use the Tonk tooolchain to:
+AI makes it easier for people to understand the world, but not necessarily their world. Coding copilots make it easier for people to build static websites, but it's still tricky for local experts to embed AI into their idiosyncratic daily lives.
 
-- Build applications within a copilot-friendly framework
-- Manage complex state interoperable across people and apps
-- Publish and share your apps
-- Pull in outside data\*
+In spite of that, future-facing people with basic coding ability are scraping data, organising files and running it all through LLMs to get smarter, faster and more creative.
 
-<br/>
-
-<p style="text-align: center;">
-  <img src="./images/components.png" style="width: 70%; margin: 0 auto;"/>
-</p>
-
-<p style="text-align: center;"><em>*under construction</em></p>
+Setting up that infrastructure is painful. What if it were simple?
 
 Because we replace a traditional server-database architecture with a local-first approach, Tonk apps are:
 
@@ -26,6 +17,44 @@ Because we replace a traditional server-database architecture with a local-first
 - Private by default
 - Work offline
 - Guaranteed to stay independent from platforms
+
+<br/>
+
+<div style="display: flex; margin-bottom: 15px;">
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Keepsync Library</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Offline + private<br>functionality</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Tonk<br>CLI</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Tonk Daemon</strong>
+</div>
+</div>
+<div style="display: flex; margin-bottom: 15px;">
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>React + Typescript + Tailwind</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>State<br>management</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Distributed<br>auth*</strong>
+</div>
+</div>
+<div style="display: flex;">
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Share Links</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Deployment*</strong>
+</div>
+</div>
+
+<p style="text-align: center;"><em>*under construction</em></p>
 
 ## Example usecases
 
@@ -57,7 +86,7 @@ _Hackathon idea:_ A multiplayer to-do list for temporary teams - where shared pr
 
 Aggregated financial information for your household to track your finances and make intelligent investments.
 
-_Hackathon idea:_ A household finance dashboard that syncs every member’s bank accounts, applies AI to optimize spending, and auto-generates investment proposals based on shared goals.
+_Hackathon idea:_ A household finance dashboard that syncs every member's bank accounts, applies AI to optimize spending, and auto-generates investment proposals based on shared goals.
 
 ### ❤️ Health
 
@@ -79,13 +108,15 @@ _Hackathon idea:_ A privacy-first AI assistant that reads your calendar, chat th
 
 ## How it works
 
-Building with Tonk feels like magic because it's copilot-friendly, local-first and multiplayer.
+Building with Tonk feels like magic because it's default vibecode-friendly, local-first and multiplayer.
 
-Apps generated with the **Tonk CLI** come pre-bundled with React, Typescript, Tailwind and aggressively prompt your copilot to ensure smooth vibe-coding.
+Apps generated with the **Tonk CLI** come pre-bundled with React, Typescript, Tailwind and aggressively prompt your agent to ensure smooth vibe-coding.
 
-The **Tonk Store** manages state with an optimised sync engine. The **Tonk Hub** is a desktop app for managing the whole stack:
+The **Tonk CLI** provides a simple but powerful command-line interface for interfacing with your Tonk and scaffolding Tonk templates.
 
-![hub screenshot](./images/home-hub.png)
+The **Tonk** runs in the background on your computer. It hosts your bundles and stores. It's the glue between all your applications.
+
+The **keepsync** library manages state with an optimized sync engine based on Automerge CRDTs, enabling real-time collaboration without a central server.
 
 ## Get started
 

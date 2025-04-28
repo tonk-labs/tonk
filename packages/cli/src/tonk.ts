@@ -1,7 +1,6 @@
 import {Command} from 'commander';
 import {createCommand} from './commands/create.js';
 import {helloCommand} from './commands/hello.js';
-import {printMarkdown} from './commands/prettyPrint.js';
 import {lsCommand} from './commands/ls.js';
 import {psCommand} from './commands/ps.js';
 import {startCommand} from './commands/start.js';
