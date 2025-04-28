@@ -7,8 +7,8 @@ import {
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { createStore } from "zustand/vanilla";
 
-const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:7777");
-const syncEngine = configureSyncEngine({
+const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:7777/sync");
+configureSyncEngine({
   networkAdapters: [wsAdapter as any as NetworkAdapterInterface],
 });
 
@@ -28,8 +28,8 @@ const createStoreAndRun = () => {
       }),
       {
         docId: "counter-doc" as DocumentId,
-      }
-    )
+      },
+    ),
   );
 
   const state = store.getState();
