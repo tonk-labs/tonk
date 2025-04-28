@@ -1,6 +1,6 @@
 {
   "name": "@tonk/cli",
-  "version": "0.1.14",
+  "version": "0.2.0",
   "description": "The Tonk stack command line utility",
   "type": "module",
   "bin": {
@@ -36,20 +36,25 @@
     "posttest": "npm run lint"
   },
   "dependencies": {
-    "@tonk/server": "^0.1.10",
+    "@tonk/server": "^0.2.0",
     "chalk": "^5.3.0",
     "commander": "^11.1.0",
     "dotenv": "^16.4.7",
-    "execa": "^8.0.1",
+    "env-paths": "^3.0.0",
     "fastmcp": "^1.20.2",
+    "form-data-encoder": "^4.0.2",
+    "formdata-node": "^6.0.3",
     "fs-extra": "^11.2.0",
     "gradient-string": "^2.0.2",
+    "ink": "^5.2.0",
     "inquirer": "^9.2.12",
-    "@tonk/keepsync": "^0.3.7",
     "listr2": "^8.2.5",
     "marked": "^15.0.7",
+    "node-fetch": "^3.3.2",
     "open": "^10.1.0",
     "ora": "^7.0.1",
+    "react": "18",
+    "tar": "^6.2.1",
     "zod": "^3.24.2"
   },
   "devDependencies": {
@@ -57,6 +62,9 @@
     "@types/gradient-string": "^1.1.5",
     "@types/inquirer": "^9.0.7",
     "@types/node": "^22.7.5",
+    "@types/node-fetch": "^2.6.9",
+    "@types/react": "18",
+    "@types/tar": "^6.1.11",
     "gts": "^6.0.2",
     "rimraf": "^5.0.5",
     "tsup": "^8.0.1",

@@ -3,28 +3,15 @@ import "./index.css";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
-import { configureSyncEngine, setDocIdPrefix, mapDocId } from "@tonk/keepsync";
-import {
-  registerServiceWorker,
-  unregisterServiceWorker,
-} from "./serviceWorkerRegistration";
-
-// Service worker logic based on environment
-if (process.env.NODE_ENV === "production") {
-  // Only register service worker in production mode
-  registerServiceWorker();
-} else {
-  // In development, make sure to unregister any existing service workers
-  unregisterServiceWorker();
-}
+import { configureSyncEngine, NetworkAdapterInterface } from "@tonk/keepsync";
+import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
+const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
 
 configureSyncEngine({
-  url: wsUrl,
-  onSync: (docId) => console.log(`Document ${docId} synced`),
-  onError: (error) => console.error("Sync error:", error),
+  networkAdapters: [wsAdapter as any as NetworkAdapterInterface],
 });
 
 const container = document.getElementById("root");

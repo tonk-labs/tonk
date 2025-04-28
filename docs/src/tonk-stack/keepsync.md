@@ -18,14 +18,15 @@ Initialize the sync engine in your application entry point (or before using any 
 
 ```typescript
 // index.tsx
-import { configureSyncEngine } from "@tonk/keepsync";
+import { configureSyncEngine, NetworkAdapterInterface } from "@tonk/keepsync";
+import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 
-// Initialize the sync engine
+const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
+const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
+
 configureSyncEngine({
-  url: "ws://localhost:8080",
-  name: "MySyncEngine",
-  onSync: (docId) => console.log(`Document ${docId} synced`),
-  onError: (error) => console.error("Sync error:", error),
+  networkAdapters: [wsAdapter as any as NetworkAdapterInterface],
 });
 ```
 

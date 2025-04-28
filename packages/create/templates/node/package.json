@@ -1,0 +1,33 @@
+{
+  "name": "tonk-node-template",
+  "version": "1.0.0",
+  "description": "A starter template for working with Tonk stack in node",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "watch": "tsc --watch",
+    "test": "jest"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@automerge/automerge-repo-network-websocket": "^1.2.1",
+    "@tonk/keepsync": "^0.4.0",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^18.15.0",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@tonk/keepsync": "link:../../../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync"
+    }
+  }
+}

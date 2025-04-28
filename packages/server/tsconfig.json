@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     // Module Settings
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "target": "ESNext",
     "lib": [
       "ESNext"
@@ -41,7 +41,8 @@
       "@/*": [
         "src/*"
       ]
-    }
+    },
+    "types": ["node", "jest"]
   },
   "include": [
     "src/**/*"
@@ -49,6 +50,5 @@
   "exclude": [
     "node_modules",
     "dist",
-    "**/*.test.ts"
   ]
 }

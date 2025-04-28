@@ -21,13 +21,13 @@ npm install @tonk/server
 ### Basic Server Setup
 
 ```typescript
-import { createServer } from '@tonk/server';
+import {createServer} from '@tonk/server';
 
 // Create and start a server in production mode
 const server = await createServer({
   mode: 'production',
   distPath: './dist',
-  port: 8080
+  port: 8080,
 });
 
 // To stop the server
@@ -37,13 +37,13 @@ await server.stop();
 ### Development Mode
 
 ```typescript
-import { createServer } from '@tonk/server';
+import {createServer} from '@tonk/server';
 
 // Create a development server for WebSocket sync
 const server = await createServer({
   mode: 'development',
   distPath: undefined,
-  port: 4080
+  port: 4080,
 });
 ```
 
@@ -66,13 +66,22 @@ The package includes a standalone server script that can be used to serve your a
 ```
 
 This script will:
+
 1. Check if your application is built, and build it if necessary
-3. Create a local Express server
-4. Serve your application with WebSocket sync capabilities
+2. Create a local Express server
+3. Serve your application with WebSocket sync capabilities
 
 ## WebSocket Sync Protocol
 
 The server establishes a WebSocket endpoint at `/sync` that allows connected clients to synchronize data. Any message sent by a client is broadcast to all other connected clients.
+
+## Testing
+
+To run the tests:
+
+```bash
+pnpm test
+```
 
 ## Development
 

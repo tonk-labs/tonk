@@ -1,4 +1,4 @@
-import { sync } from "@tonk/keepsync";
+import { sync, DocumentId } from "@tonk/keepsync";
 import { create } from "zustand";
 
 // Define the Todo type
@@ -44,7 +44,7 @@ export const useTodoStore = create<TodoState>(
       toggleTodo: (id: string) => {
         set((state) => ({
           todos: state.todos.map((todo) =>
-            todo.id === id ? { ...todo, completed: !todo.completed } : todo,
+            todo.id === id ? { ...todo, completed: !todo.completed } : todo
           ),
         }));
       },
@@ -58,7 +58,7 @@ export const useTodoStore = create<TodoState>(
     }),
     {
       // Unique document ID for this store
-      docId: "todo-list",
-    },
-  ),
+      docId: "todo-list" as DocumentId,
+    }
+  )
 );

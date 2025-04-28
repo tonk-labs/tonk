@@ -11,14 +11,15 @@ Initialize the sync engine in your application entry point (or before using any 
 
 ```typescript
 // index.tsx
-import { configureSyncEngine } from '@tonk/keepsync';
+import { configureSyncEngine, NetworkAdapterInterface } from "@tonk/keepsync";
+import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 
-// Initialize the sync engine
+const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
+const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
+
 configureSyncEngine({
-  url: 'ws://localhost:8080',
-  name: 'MySyncEngine',
-  onSync: (docId) => console.log(`Document ${docId} synced`),
-  onError: (error) => console.error('Sync error:', error),
+  networkAdapters: [wsAdapter as any as NetworkAdapterInterface],
 });
 ```
 
@@ -29,7 +30,7 @@ Use the `sync` middleware to create stores that automatically synchronize with o
 ```typescript
 // stores/counterStore.ts
 import { create } from 'zustand';
-import { sync } from '@tonk/keepsync';
+import { sync, DocumentId } from '@tonk/keepsync';
 
 interface CounterState {
   count: number;
@@ -61,7 +62,7 @@ export const useCounterStore = create<CounterState>(
     }),
     // Sync configuration
     { 
-      docId: 'counter',
+      docId: 'counter' as DocumentId,
       // Optional: configure initialization timeout
       initTimeout: 30000,
       // Optional: handle initialization errors
