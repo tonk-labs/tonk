@@ -1,20 +1,14 @@
-> These docs are accurate as of 10th April 2024 & the product is undergoing rapid changes. Please ask in the [**Tonk community chat**](https://t.me/+9W-4wDR9RcM2NWZk) when things don't work as expected.
+# Elevate your creative intelligence
 
 Tonk is a simple toolchain for better vibe coding that helps you build and share applets that integrate with your data and embed into your daily life.
 
-<p style="text-align: center;">
-  <img src="./images/illustrative-example.png" style="width: 100%; margin: 4rem auto; background-color: white; padding: 20px; border-radius: 8px;"/>
-</p>
+It's for creative people of all stripes - you just need basic coding ability.
 
-Each app can read and write to the shared state with barely any development overhead - no need to worry about migrations, caching, auth or permissions.
+AI makes it easier for people to understand the world, but not necessarily their world. Coding copilots make it easier for people to build static websites, but it's still tricky for local experts to embed AI into their idiosyncratic daily lives.
 
-## How it works
+In spite of that, future-facing people with basic coding ability are scraping data, organising files and running it all through LLMs to get smarter, faster and more creative.
 
-`tonk hello` sets up your local **Tonk store** - a super lightweight, local-first data store
-
-`tonk create app` creates a new, LLM-friendly React app that gives strong guidance to Windsurf, Claude or Cursor (you pick)
-
-## Features
+Setting up that infrastructure is painful. What if it were simple?
 
 Because we replace a traditional server-database architecture with a local-first approach, Tonk apps are:
 
@@ -23,6 +17,106 @@ Because we replace a traditional server-database architecture with a local-first
 - Private by default
 - Work offline
 - Guaranteed to stay independent from platforms
+
+<br/>
+
+<div style="display: flex; margin-bottom: 15px;">
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Keepsync Library</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Offline + private<br>functionality</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Tonk<br>CLI</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Tonk Daemon</strong>
+</div>
+</div>
+<div style="display: flex; margin-bottom: 15px;">
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>React + Typescript + Tailwind</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>State<br>management</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Distributed<br>auth*</strong>
+</div>
+</div>
+<div style="display: flex;">
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Share Links</strong>
+</div>
+<div style="background-color: #FF4500; color: white; padding: 15px; flex: 0.7; text-align: center; border-radius: 5px; display: flex; align-items: center; justify-content: center; margin: 5px">
+<strong>Deployment*</strong>
+</div>
+</div>
+
+<p style="text-align: center;"><em>*under construction</em></p>
+
+## Example usecases
+
+Learning Tonk requires a mindset shift because as developers we're used to thinking in terms of singular applications that are tightly coupled to databases.
+
+Tonk doesn't just help you build apps or store data. Tonk can be best described as helping you build **your own little internet: a way to store shared highly mutable state across many apps and many users, and build ephemeral services, apps and tools on top of that shared state.**
+
+<p style="text-align: center;">
+  <img src="./images/illustrative-example.png" style="width: 100%; margin: 4rem auto; background-color: white; padding: 20px; border-radius: 8px;"/>
+</p>
+
+Each app can read and write to the shared state with barely any development overhead - no need to worry about migrations, caching, auth or permissions.
+
+Here are some examples of what Tonk can help with:
+
+### 🗺️ Maps
+
+An evolving dataset for your friends to add locations, routes, reviews, planned trips - and surface whatever you like in custom maps apps.
+
+_Hackathon idea:_ A social mapping app where friends can collaboratively pin spots, share routes, and plan trips—with the option to remix the shared dataset into custom experiences like foodie maps, hiking guides, or road trip planners.
+
+### 🎯 Productivity
+
+A fluctuating set of todos for your colleagues to track progress on ephemeral projects without forcing everyone to use the same productivity app.
+
+_Hackathon idea:_ A multiplayer to-do list for temporary teams - where shared project tasks live in a public space and AI nudges contributors to focus on what matters before the project dissolves.
+
+### 💰 Banking
+
+Aggregated financial information for your household to track your finances and make intelligent investments.
+
+_Hackathon idea:_ A household finance dashboard that syncs every member's bank accounts, applies AI to optimize spending, and auto-generates investment proposals based on shared goals.
+
+### ❤️ Health
+
+A dataset for your family to make health data available to bespoke meditation, exercise or sleep apps.
+
+_Hackathon idea:_ A health data layer for families — syncing sleep, steps, and stress scores across devices and enabling personalized wellness bots that work across meditation, exercise, and diet apps.
+
+### 💬 Social
+
+An ad-free, private chatboard for your friends, but where everyone customises their experience with pluggable components such as games, calendars and notifications.
+
+_Hackathon idea:_ A modular group chat app where every conversation is a programmable space - friends can add shared games, calendars, polls, or moodboards, and the feed adapts to how your group vibes, not how the algorithm dictates.
+
+### 🤖 Assistants
+
+An AI that can assist you with full context from your chat apps, calendars, todo boards and social feeds.
+
+_Hackathon idea:_ A privacy-first AI assistant that reads your calendar, chat threads, and todos from your shared spaces — then recommends actions, summarizes life, and shares updates with your friends.
+
+## How it works
+
+Building with Tonk feels like magic because it's default vibecode-friendly, local-first and multiplayer.
+
+Apps generated with the **Tonk CLI** come pre-bundled with React, Typescript, Tailwind and aggressively prompt your agent to ensure smooth vibe-coding.
+
+The **Tonk CLI** provides a simple but powerful command-line interface for interfacing with your Tonk and scaffolding Tonk templates.
+
+The **Tonk** runs in the background on your computer. It hosts your bundles and stores. It's the glue between all your applications.
+
+The **keepsync** library manages state with an optimized sync engine based on Automerge CRDTs, enabling real-time collaboration without a central server.
 
 ## Get started
 
