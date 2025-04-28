@@ -1,0 +1,111 @@
+## Basic Usage
+
+### 1. Set Up the Sync Provider
+
+Initialize the sync engine in your application entry point (or before using any synced stores):
+
+```typescript
+// index.tsx
+import { configureSyncEngine, NetworkAdapterInterface } from "@tonk/keepsync";
+import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
+
+const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
+const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
+
+configureSyncEngine({
+  networkAdapters: [wsAdapter as any as NetworkAdapterInterface],
+});
+```
+
+### 2. Create a Synced Store with the Middleware
+
+Use the `sync` middleware to create stores that automatically synchronize with other clients:
+
+```typescript
+// stores/counterStore.ts
+import { createStore } from 'zustand/vanilla';
+import { sync, DocumentId } from '@tonk/keepsync';
+
+interface CounterState {
+  count: number;
+  increment: () => void;
+  decrement: () => void;
+  reset: () => void;
+}
+
+export const counterStore = createStore<CounterState>(
+  sync(
+    // The store implementation
+    (set) => ({
+      count: 0,
+
+      // Increment the counter
+      increment: () => {
+        set((state) => ({ count: state.count + 1 }));
+      },
+
+      // Decrement the counter
+      decrement: () => {
+        set((state) => ({ count: Math.max(0, state.count - 1) }));
+      },
+
+      // Reset the counter
+      reset: () => {
+        set({ count: 0 });
+      },
+    }),
+    // Sync configuration
+    { 
+      docId: 'counter' as DocumentId,
+      // Optional: configure initialization timeout
+      initTimeout: 30000,
+      // Optional: handle initialization errors
+      onInitError: (error) => console.error('Sync initialization error:', error) 
+    }
+  )
+);
+```
+
+### 3. Manually fetch the state
+
+Because this is a Node project, we need to use zustand in a different way as it is used in React components. Each time you want fresh state you will need to use the `getState()` function.
+
+```typescript
+  const counterStore = createStore<CounterState>(
+    sync(
+      // The store implementation
+      (set) => ({
+        count: 0,
+
+        // Increment the counter
+        increment: () => {
+          set((state) => ({ count: state.count + 1 }));
+        },
+
+        // Decrement the counter
+        decrement: () => {
+          set((state) => ({ count: Math.max(0, state.count - 1) }));
+        },
+
+        // Reset the counter
+        reset: () => {
+          set({ count: 0 });
+        },
+      }),
+      // Sync configuration
+      { 
+        docId: 'counter' as DocumentId,
+        // Optional: configure initialization timeout
+        initTimeout: 30000,
+        // Optional: handle initialization errors
+        onInitError: (error) => console.error('Sync initialization error:', error) 
+      }
+    )
+  );
+
+  const state = counterStore.getState();
+
+  state.increment(); 
+  console.log(`The current count is: ${store.getState().count}`);
+```
