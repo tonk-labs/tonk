@@ -25,7 +25,7 @@ Use the `sync` middleware to create stores that automatically synchronize with o
 ```typescript
 // stores/counterStore.ts
 import { create } from 'zustand';
-import { sync } from '@tonk/keepsync';
+import { sync, DocumentId } from '@tonk/keepsync';
 
 interface CounterState {
   count: number;
@@ -57,7 +57,7 @@ export const useCounterStore = create<CounterState>(
     }),
     // Sync configuration
     { 
-      docId: 'counter',
+      docId: 'counter' as DocumentId,
       // Optional: configure initialization timeout
       initTimeout: 30000,
       // Optional: handle initialization errors
