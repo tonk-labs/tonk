@@ -5,24 +5,11 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { configureSyncEngine } from "@tonk/keepsync";
-import {
-  registerServiceWorker,
-  unregisterServiceWorker,
-} from "./serviceWorkerRegistration";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 
-// Service worker logic based on environment
-if (process.env.NODE_ENV === "production") {
-  // Only register service worker in production mode
-  registerServiceWorker();
-} else {
-  // In development, make sure to unregister any existing service workers
-  unregisterServiceWorker();
-}
-
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-const wsUrl = `${wsProtocol}//${window.location.host}`;
+const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 
 configureSyncEngine({
   storage: new IndexedDBStorageAdapter(),
