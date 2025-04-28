@@ -6,14 +6,14 @@ Initialize the sync engine in your application entry point (or before using any 
 
 ```typescript
 // index.tsx
-import {configureSyncEngine} from '@tonk/keepsync';
+import { configureSyncEngine } from '@tonk/keepsync';
 
 // Initialize the sync engine
 configureSyncEngine({
   url: 'ws://localhost:7777',
   name: 'MySyncEngine',
-  onSync: docId => console.log(`Document ${docId} synced`),
-  onError: error => console.error('Sync error:', error),
+  onSync: (docId) => console.log(`Document ${docId} synced`),
+  onError: (error) => console.error('Sync error:', error),
 });
 ```
 
@@ -23,8 +23,8 @@ Use the `sync` middleware to create stores that automatically synchronize with o
 
 ```typescript
 // stores/counterStore.ts
-import {create} from 'zustand';
-import {sync} from '@tonk/keepsync';
+import { create } from 'zustand';
+import { sync } from '@tonk/keepsync';
 
 interface CounterState {
   count: number;
@@ -36,33 +36,33 @@ interface CounterState {
 export const useCounterStore = create<CounterState>(
   sync(
     // The store implementation
-    set => ({
+    (set) => ({
       count: 0,
 
       // Increment the counter
       increment: () => {
-        set(state => ({count: state.count + 1}));
+        set((state) => ({ count: state.count + 1 }));
       },
 
       // Decrement the counter
       decrement: () => {
-        set(state => ({count: Math.max(0, state.count - 1)}));
+        set((state) => ({ count: Math.max(0, state.count - 1) }));
       },
 
       // Reset the counter
       reset: () => {
-        set({count: 0});
+        set({ count: 0 });
       },
     }),
     // Sync configuration
-    {
+    { 
       docId: 'counter',
       // Optional: configure initialization timeout
       initTimeout: 30000,
       // Optional: handle initialization errors
-      onInitError: error => console.error('Sync initialization error:', error),
-    },
-  ),
+      onInitError: (error) => console.error('Sync initialization error:', error) 
+    }
+  )
 );
 ```
 
@@ -71,11 +71,11 @@ export const useCounterStore = create<CounterState>(
 ```typescript
 // components/Counter.tsx
 import React from 'react';
-import {useCounterStore} from '../stores/counterStore';
+import { useCounterStore } from '../stores/counterStore';
 
 export function Counter() {
   // Use the store hook directly - sync is handled by the middleware
-  const {count, increment, decrement, reset} = useCounterStore();
+  const { count, increment, decrement, reset } = useCounterStore();
 
   return (
     <div>
@@ -87,8 +87,7 @@ export function Counter() {
       </div>
       <p>
         <small>
-          Open this app in multiple windows to see real-time collaboration in
-          action.
+          Open this app in multiple windows to see real-time collaboration in action.
         </small>
       </p>
     </div>

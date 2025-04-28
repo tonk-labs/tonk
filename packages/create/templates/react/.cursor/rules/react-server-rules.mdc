@@ -1,16 +1,15 @@
 ---
 description: Rules and guidelines for server
 globs: server/**/*.js, server/**/*.ts, server/**/*.tsx
-alwaysApply: false
 ---
 
 # Tonk Server API Proxy
 
-> WARNING THIS IS NOT CURRENTLY FUNCTIONING
-
 This Express server provides API proxy functionality for your Tonk application.
 
 ## API Proxy Functionality
+
+> WARNING THIS IS NOT CURRENTLY FUNCTIONING
 
 All requests to `/api/:endpoint` are automatically proxied from the frontend to this server running on port 8080.
 
