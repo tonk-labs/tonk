@@ -9,14 +9,12 @@ This Express server provides API proxy functionality for your Tonk application.
 All requests to `/api/:endpoint` are automatically proxied from the frontend to this server running on port 8080.
 
 ### Benefits of using the API proxy:
-
 1. **CORS handling** - Make cross-origin requests without browser restrictions
 2. **Security** - Store API keys and sensitive credentials server-side
 3. **Local resource access** - Access local file system or other local resources
 4. **Request transformation** - Modify requests or responses before forwarding
 
 ## How it works:
-
 - Your frontend makes requests to `/api/your-endpoint`
 - The webpack dev server proxies these to `http://localhost:8080/api/your-endpoint`
 - Your Express server handles the request, makes any needed external calls, and returns the response
@@ -27,15 +25,15 @@ You can create new API endpoints in the server directory. For example:
 
 ```javascript
 // Example endpoint in server/index.js
-app.get("/api/data", async (req, res) => {
+app.get('/api/data', async (req, res) => {
   // Access API keys from environment variables (not exposed to client)
   const API_KEY = process.env.MY_SECRET_API_KEY;
-
+  
   // Make requests to external services
-  const response = await fetch("https://external-api.com/data", {
-    headers: { Authorization: `Bearer ${API_KEY}` },
+  const response = await fetch('https://external-api.com/data', {
+    headers: { 'Authorization': `Bearer ${API_KEY}` }
   });
-
+  
   // Return the data to the client
   const data = await response.json();
   res.json(data);
@@ -49,7 +47,6 @@ app.get("/api/data", async (req, res) => {
 Returns a simple hello world message.
 
 Example response:
-
 ```
 Hello World Api!
 ```
@@ -59,17 +56,15 @@ Hello World Api!
 ⚠️ **IMPORTANT**: Your server MUST include a `/ping` endpoint that returns a 200 OK response. This endpoint is used for health checks and service discovery. Without this endpoint, your application will not function properly.
 
 Example implementation:
-
 ```javascript
-app.get("/ping", (req, res) => {
-  res.status(200).send("OK");
+app.get('/ping', (req, res) => {
+  res.status(200).send('OK');
 });
 ```
 
 ## Setup
 
 1. Install server dependencies in the server/ folder:
-
 ```
 cd server
 pnpm install
@@ -77,7 +72,6 @@ pnpm build
 ```
 
 2. Start the development server in the top-level app project:
-
 ```
 tonk dev
 ```
