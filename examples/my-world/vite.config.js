@@ -1,36 +1,57 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { resolve } from "path";
 import wasm from "vite-plugin-wasm";
+import { VitePWA } from "vite-plugin-pwa";
+import topLevelAwait from "vite-plugin-top-level-await";
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => {
-  const isProduction = mode === "production";
-
-  return {
-    plugins: [wasm(), react()],
-    build: {
-      target: "esnext",
-      outDir: "dist",
-      sourcemap: !isProduction,
-      chunkSizeWarningLimit: 512, // in kB
-      rollupOptions: {
-        input: {
-          main: resolve(__dirname, "index.html"),
-        },
-        output: {
-          manualChunks: undefined,
+export default defineConfig({
+  plugins: [
+    wasm(),
+    react(),
+    topLevelAwait(),
+    VitePWA({
+      registerType: "autoUpdate",
+      devOptions: {
+        enabled: true,
+      },
+      manifest: {
+        name: "My World",
+        short_name: "My World",
+        description: "Share cool places with friends",
+      },
+    }),
+  ],
+  server: {
+    port: 3000,
+    proxy: {
+      "/sync": {
+        target: "ws://localhost:7777",
+        ws: true,
+        changeOrigin: true,
+      },
+    },
+  },
+  build: {
+    sourcemap: true,
+    outDir: "dist",
+    assetsDir: "assets",
+    rollupOptions: {
+      // Improves chunking to address the large file size warning
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom", "react-router-dom"],
+          automerge: ["@automerge/automerge"],
         },
       },
     },
-    worker: {
-      format: "es",
-      plugins: () => [wasm()],
+  },
+  optimizeDeps: {
+    esbuildOptions: {
+      target: "esnext",
     },
-    define: {
-      "process.env.NODE_ENV": JSON.stringify(
-        isProduction ? "production" : "development",
-      ),
-    },
-  };
+  },
+  esbuild: {
+    target: "esnext",
+  },
 });
