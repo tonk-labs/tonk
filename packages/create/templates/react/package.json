@@ -40,7 +40,7 @@
   "dependencies": {
     "@automerge/automerge": "^2.2.8",
     "@automerge/automerge-repo-network-websocket": "^1.2.1",
-    "@tonk/keepsync": "^0.3.0",
+    "@tonk/keepsync": "^0.4.0",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

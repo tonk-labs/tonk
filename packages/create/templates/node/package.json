@@ -14,7 +14,7 @@
   "license": "MIT",
   "dependencies": {
     "@automerge/automerge-repo-network-websocket": "^1.2.1",
-    "@tonk/keepsync": "^0.3.7",
+    "@tonk/keepsync": "^0.4.0",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
