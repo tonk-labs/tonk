@@ -17,7 +17,7 @@ const storage = new IndexedDBStorageAdapter();
 
 configureSyncEngine({
   hostname: window.location.host,
-  networkAdapters: [wsAdapter as any as NetworkAdapterInterface],
+  network: [wsAdapter as any as NetworkAdapterInterface],
   storage,
 });
 ```
@@ -28,8 +28,8 @@ Use the `sync` middleware to create stores that automatically synchronize with o
 
 ```typescript
 // stores/counterStore.ts
-import { create } from 'zustand';
-import { sync, DocumentId } from '@tonk/keepsync';
+import { create } from "zustand";
+import { sync, DocumentId } from "@tonk/keepsync";
 
 interface CounterState {
   count: number;
@@ -60,12 +60,13 @@ export const useCounterStore = create<CounterState>(
       },
     }),
     // Sync configuration
-    { 
-      docId: 'counter' as DocumentId,
+    {
+      docId: "counter" as DocumentId,
       // Optional: configure initialization timeout
       initTimeout: 30000,
       // Optional: handle initialization errors
-      onInitError: (error) => console.error('Sync initialization error:', error) 
+      onInitError: (error) =>
+        console.error("Sync initialization error:", error),
     }
   )
 );
@@ -75,8 +76,8 @@ export const useCounterStore = create<CounterState>(
 
 ```typescript
 // components/Counter.tsx
-import React from 'react';
-import { useCounterStore } from '../stores/counterStore';
+import React from "react";
+import { useCounterStore } from "../stores/counterStore";
 
 export function Counter() {
   // Use the store hook directly - sync is handled by the middleware
@@ -92,20 +93,19 @@ export function Counter() {
       </div>
       <p>
         <small>
-          Open this app in multiple windows to see real-time collaboration in action.
+          Open this app in multiple windows to see real-time collaboration in
+          action.
         </small>
       </p>
     </div>
   );
 }
-
 ```
 
 # Directly reading and writing documents
 
-You can also directly read and write documents and address them using paths similar to a filesystem. This is useful for when you need more fine-grained control over document access and 
+You can also directly read and write documents and address them using paths similar to a filesystem. This is useful for when you need more fine-grained control over document access and
 a zustand store is too cumbersome (e.g. when you want each document to have its own space and be directly addressable);
-
 
 ```
 import { readDoc, writeDoc } from "@tonk/keepsync";

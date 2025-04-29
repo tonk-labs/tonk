@@ -29,7 +29,7 @@ const storage = new IndexedDBStorageAdapter();
 
 configureSyncEngine({
   hostname: window.location.host,
-  networkAdapters: [wsAdapter as any as NetworkAdapterInterface],
+  network: [wsAdapter as any as NetworkAdapterInterface],
   storage,
 });
 ```
