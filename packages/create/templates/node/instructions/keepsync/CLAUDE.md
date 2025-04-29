@@ -8,13 +8,15 @@ Initialize the sync engine in your application entry point (or before using any 
 // index.tsx
 import { configureSyncEngine, NetworkAdapterInterface } from "@tonk/keepsync";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
+import { NodeFSStorageAdapter } from "@automerge/automerge-repo-storage-nodefs";
 
-const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
-const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
+const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:7777/sync);
+const storage = new NodeFSStorageAdapter();
 
 configureSyncEngine({
-  networkAdapters: [wsAdapter as any as NetworkAdapterInterface],
+  hostname: "localhost:7777",
+  network: [wsAdapter as any as NetworkAdapterInterface],
+  storage,
 });
 ```
 
@@ -24,8 +26,8 @@ Use the `sync` middleware to create stores that automatically synchronize with o
 
 ```typescript
 // stores/counterStore.ts
-import { createStore } from 'zustand/vanilla';
-import { sync, DocumentId } from '@tonk/keepsync';
+import { createStore } from "zustand/vanilla";
+import { sync, DocumentId } from "@tonk/keepsync";
 
 interface CounterState {
   count: number;
@@ -56,12 +58,13 @@ export const counterStore = createStore<CounterState>(
       },
     }),
     // Sync configuration
-    { 
-      docId: 'counter' as DocumentId,
+    {
+      docId: "counter" as DocumentId,
       // Optional: configure initialization timeout
       initTimeout: 30000,
       // Optional: handle initialization errors
-      onInitError: (error) => console.error('Sync initialization error:', error) 
+      onInitError: (error) =>
+        console.error("Sync initialization error:", error),
     }
   )
 );
@@ -72,40 +75,74 @@ export const counterStore = createStore<CounterState>(
 Because this is a Node project, we need to use zustand in a different way as it is used in React components. Each time you want fresh state you will need to use the `getState()` function.
 
 ```typescript
-  const counterStore = createStore<CounterState>(
-    sync(
-      // The store implementation
-      (set) => ({
-        count: 0,
+const counterStore = createStore<CounterState>(
+  sync(
+    // The store implementation
+    (set) => ({
+      count: 0,
 
-        // Increment the counter
-        increment: () => {
-          set((state) => ({ count: state.count + 1 }));
-        },
+      // Increment the counter
+      increment: () => {
+        set((state) => ({ count: state.count + 1 }));
+      },
 
-        // Decrement the counter
-        decrement: () => {
-          set((state) => ({ count: Math.max(0, state.count - 1) }));
-        },
+      // Decrement the counter
+      decrement: () => {
+        set((state) => ({ count: Math.max(0, state.count - 1) }));
+      },
 
-        // Reset the counter
-        reset: () => {
-          set({ count: 0 });
-        },
-      }),
-      // Sync configuration
-      { 
-        docId: 'counter' as DocumentId,
-        // Optional: configure initialization timeout
-        initTimeout: 30000,
-        // Optional: handle initialization errors
-        onInitError: (error) => console.error('Sync initialization error:', error) 
-      }
-    )
-  );
+      // Reset the counter
+      reset: () => {
+        set({ count: 0 });
+      },
+    }),
+    // Sync configuration
+    {
+      docId: "counter" as DocumentId,
+      // Optional: configure initialization timeout
+      initTimeout: 30000,
+      // Optional: handle initialization errors
+      onInitError: (error) =>
+        console.error("Sync initialization error:", error),
+    }
+  )
+);
 
-  const state = counterStore.getState();
+const state = counterStore.getState();
 
-  state.increment(); 
-  console.log(`The current count is: ${store.getState().count}`);
+state.increment();
+console.log(`The current count is: ${store.getState().count}`);
+```
+
+# Directly reading and writing documents
+
+You can also directly read and write documents and address them using paths similar to a filesystem. This is useful for when you need more fine-grained control over document access and
+a zustand store is too cumbersome (e.g. when you want each document to have its own space and be directly addressable);
+
+```
+import { readDoc, writeDoc } from "@tonk/keepsync";
+
+ * Reads a document from keepsync
+ *
+ * This function retrieves a document at the specified path in your sync engine.
+ * It returns the document content if found, or undefined if the document doesn't exist.
+ *
+ * @param path - The path identifying the document to read
+ * @returns Promise resolving to the document content or undefined if not found
+ * @throws Error if the SyncEngine is not properly initialized
+ */
+readDoc = async <T>(path: string): Promise<T | undefined>;
+
+/**
+ * Writes content to a document to keepsync
+ *
+ * This function creates or updates a document at the specified path.
+ * If the document doesn't exist, it creates a new one.
+ * If the document already exists, it updates it with the provided content.
+ *
+ * @param path - The path identifying the document to write
+ * @param content - The content to write to the document
+ * @throws Error if the SyncEngine is not properly initialized
+ */
+writeDoc = async <T>(path: string, content: T);
 ```

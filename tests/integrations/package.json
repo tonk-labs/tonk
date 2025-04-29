@@ -1,0 +1,24 @@
+{
+  "name": "integrations",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start-server": "node start-server.js",
+    "test-keepsync": "node test-keepsync.js",
+    "test": "node start-server.js & sleep 3 && node test-keepsync.js"
+  },
+  "dependencies": {
+    "@automerge/automerge-repo-network-websocket": "^1.2.1",
+    "@automerge/automerge-repo-storage-nodefs": "^1.2.1",
+    "@tonk/keepsync": "../../packages/keepsync",
+    "@tonk/server": "../../packages/server",
+    "axios": "^1.9.0",
+    "zustand": "^5.0.3"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.7.1",
+  "type": "module"
+}

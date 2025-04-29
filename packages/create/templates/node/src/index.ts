@@ -5,11 +5,14 @@ import {
   DocumentId,
 } from "@tonk/keepsync";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
+import { NodeFSStorageAdapter } from "@automerge/automerge-repo-storage-nodefs";
 import { createStore } from "zustand/vanilla";
 
 const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:7777/sync");
 configureSyncEngine({
-  networkAdapters: [wsAdapter as any as NetworkAdapterInterface],
+  hostname: "localhost:7777",
+  network: [wsAdapter as any as NetworkAdapterInterface],
+  storage: new NodeFSStorageAdapter(),
 });
 
 interface CounterStore {
@@ -28,8 +31,8 @@ const createStoreAndRun = () => {
       }),
       {
         docId: "counter-doc" as DocumentId,
-      },
-    ),
+      }
+    )
   );
 
   const state = store.getState();

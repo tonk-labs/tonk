@@ -13,7 +13,7 @@ const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 
 configureSyncEngine({
   storage: new IndexedDBStorageAdapter(),
-  networkAdapters: [new BrowserWebSocketClientAdapter(wsUrl)],
+  network: [new BrowserWebSocketClientAdapter(wsUrl)],
 });
 
 const container = document.getElementById("root");
@@ -25,5 +25,5 @@ root.render(
     <BrowserRouter>
       <App />
     </BrowserRouter>
-  </React.StrictMode>,
+  </React.StrictMode>
 );

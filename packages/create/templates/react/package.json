@@ -40,6 +40,7 @@
   "dependencies": {
     "@automerge/automerge": "^2.2.8",
     "@automerge/automerge-repo-network-websocket": "^1.2.1",
+    "@automerge/automerge-repo-storage-indexeddb": "^1.2.1",
     "@tonk/keepsync": "^0.4.0",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
@@ -56,10 +57,5 @@
   "bugs": {
     "url": "https://github.com/tonk-labs/tonk/issues"
   },
-  "homepage": "https://github.com/tonk-labs/tonk#readme",
-  "pnpm": {
-    "overrides": {
-      "@tonk/keepsync": "link:../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync"
-    }
-  }
+  "homepage": "https://github.com/tonk-labs/tonk#readme"
 }
