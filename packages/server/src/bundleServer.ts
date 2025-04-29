@@ -86,6 +86,15 @@ export class BundleServer {
     // Proxy /sync requests to localhost:7777
     this.app.use(wsProxy);
 
+    // Proxy _automerge_root requests to localhost:7777
+    this.app.use(
+      '/_automerge_root',
+      createProxyMiddleware({
+        target: 'http://localhost:7777',
+        changeOrigin: true,
+      }),
+    );
+
     this.server.on('upgrade', wsProxy.upgrade);
   }
 

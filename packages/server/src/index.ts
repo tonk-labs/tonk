@@ -5,7 +5,7 @@ import chalk from 'chalk';
 import fs from 'fs';
 import os from 'os';
 import {WebSocketServer} from 'ws';
-import {PeerId, Repo, RepoConfig} from '@tonk/automerge-repo';
+import {PeerId, Repo, RepoConfig, DocumentId} from '@tonk/automerge-repo';
 import {NodeWSServerAdapter} from '@automerge/automerge-repo-network-websocket';
 import {NodeFSStorageAdapter} from '@automerge/automerge-repo-storage-nodefs';
 import multer from 'multer';
@@ -13,6 +13,8 @@ import * as tar from 'tar';
 import {v4 as uuidv4} from 'uuid';
 import {BundleServer} from './bundleServer.js';
 import {BundleServerInfo} from './types.js';
+// use env-path to store the rootId file
+import envPaths from 'env-paths';
 
 // A simple mutex implementation for bundle extraction
 class Mutex {
@@ -47,13 +49,81 @@ class Mutex {
 // A map to store mutexes for each bundle name
 const bundleMutexes: Map<string, Mutex> = new Map();
 
+class RootNode {
+  private configPath: string;
+
+  constructor(configPath: string = '') {
+    this.configPath = configPath;
+  }
+
+  private getRootIdFilePath(): string {
+    if (this.configPath === '') {
+      return envPaths('tonk-daemon').config;
+    }
+    return this.configPath;
+  }
+
+  async getRootId(): Promise<DocumentId | undefined> {
+    try {
+      // Attempt to read the rootId from file
+      const content = await fs.promises.readFile(
+        this.getRootIdFilePath(),
+        'utf8',
+      );
+      const data = JSON.parse(content);
+      return data.rootId as DocumentId;
+    } catch (error) {
+      // If file doesn't exist or is invalid, generate a new rootId
+      return undefined;
+    }
+  }
+
+  async setRootId(rootId: DocumentId): Promise<void> {
+    // Write rootId to file atomically
+    const content = JSON.stringify({rootId: rootId, timestamp: Date.now()});
+    const filePath = this.getRootIdFilePath();
+    const tmpPath = `${filePath}.tmp`;
+
+    try {
+      // Ensure directory exists
+      await fs.promises
+        .mkdir(path.dirname(filePath), {recursive: true})
+        .catch(() => {});
+
+      // Write to temp file first
+      await fs.promises.writeFile(tmpPath, content, 'utf8');
+      // Rename is atomic on most filesystems
+      await fs.promises.rename(tmpPath, filePath);
+    } catch (error) {
+      console.error('Failed to save rootId:', error);
+      // Clean up tmp file if it exists
+      try {
+        await fs.promises.unlink(tmpPath).catch(() => {});
+      } catch {
+        // Ignore errors during cleanup
+      }
+    }
+  }
+}
+
 export interface ServerOptions {
   port?: number;
   dirPath?: string;
   bundlesPath?: string; // Path to store bundle files
   verbose?: boolean;
   syncInterval?: number; // Optional interval to trigger storage sync in ms
+  configPath?: string;
 }
+
+type DocNode = {
+  type: 'doc' | 'dir';
+  timestamps: {
+    create: number;
+    modified: number;
+  };
+  pointer?: DocumentId;
+  children?: DocNode[];
+};
 
 export class TonkServer {
   private app: express.Application;
@@ -68,6 +138,7 @@ export class TonkServer {
   private fsSyncTimer: NodeJS.Timeout | null = null;
   private bundleServers: Map<string, BundleServer> = new Map();
   private upload: multer.Multer;
+  private rootNode: RootNode;
 
   constructor(options: ServerOptions) {
     this.options = {
@@ -76,7 +147,11 @@ export class TonkServer {
       bundlesPath: options.bundlesPath || 'bundles',
       syncInterval: options.syncInterval || 0,
       verbose: options.verbose ?? true,
+      configPath: options.configPath || '',
     };
+
+    // Initialize RootNode with configPath
+    this.rootNode = new RootNode(this.options.configPath);
 
     this.setupDirectories();
 
@@ -131,6 +206,36 @@ export class TonkServer {
 
     this.repo = new Repo(config);
     this.setupExpressMiddleware();
+    this.initRoot();
+  }
+
+  private async initRoot() {
+    const createRoot = async () => {
+      const docHandle = this.repo.create();
+      docHandle.change((_doc: any) => {
+        Object.assign(_doc, {
+          type: 'dir',
+          timestamps: {
+            create: Date.now(),
+            modified: Date.now(),
+          },
+          children: [],
+        } as DocNode);
+      });
+      // Store the new document's ID
+      await this.rootNode.setRootId(docHandle.documentId);
+    };
+
+    const rootId = await this.rootNode.getRootId();
+    if (rootId) {
+      const rootHandle = this.repo.find(rootId as DocumentId);
+      const doc = await rootHandle.doc();
+      if (!doc) {
+        await createRoot();
+      }
+    } else {
+      await createRoot();
+    }
   }
 
   private async setupDirectories() {
@@ -160,6 +265,11 @@ export class TonkServer {
     // Health check endpoint
     this.app.get('/ping', (_req, res) => {
       res.send('pong');
+    });
+
+    this.app.get('/_automerge_root', async (_req, res) => {
+      const rootId = await this.rootNode.getRootId();
+      res.json({rootId});
     });
 
     // Bundle upload endpoint

@@ -7,7 +7,7 @@ import {StateCreator} from 'zustand';
 /**
  * Import Repo and related types from automerge-repo
  */
-import {Repo, DocHandle, DocumentId} from '@tonk/automerge-repo';
+import {Repo, DocHandle, DocumentId} from '@automerge/automerge-repo';
 
 /**
  * Utility functions for state management:
@@ -15,6 +15,8 @@ import {Repo, DocHandle, DocumentId} from '@tonk/automerge-repo';
  * - removeNonSerializable: Prepares state for serialization by removing functions and non-serializable values
  */
 import {patchStore, removeNonSerializable} from './patching';
+
+import {findDocument, createDocument} from '../documents/addressing';
 
 /**
  * Logger utility for consistent logging throughout the application
@@ -24,7 +26,7 @@ import {logger} from '../utils/logger';
 /**
  * Function to get the Repo instance
  */
-import {getRepo} from '../core/syncConfig';
+import {getRepo, getRootId} from '../core/syncConfig';
 
 /**
  * Configuration options for the sync middleware
@@ -166,12 +168,13 @@ export const sync =
      * 2. Sets up callbacks to handle changes from other peers
      * 3. Marks the sync as initialized when complete
      */
-    function initializeSync() {
+    async function initializeSync() {
       // Skip if already initialized to prevent duplicate initialization
       if (isSyncInit) return;
 
       // Get the repo instance
       const repo = getRepo();
+      const root = getRootId()!;
 
       // If the repo is not available, log a warning and exit
       if (!repo) {
@@ -183,7 +186,14 @@ export const sync =
 
       try {
         // Get the document handle from the repo or create a new one if it doesn't exist
-        docHandle = repo.findOrCreate<T>(options.docId);
+        let doc = await findDocument(repo, root, options.docId);
+        if (!doc) {
+          docHandle = repo.create<T>();
+          createDocument(repo, root, options.docId, docHandle);
+        } else {
+          docHandle = repo.find<T>(doc.pointer!);
+          await docHandle.doc();
+        }
 
         // Set up the change callback to handle document updates
         docHandle?.on('change', ({doc}) => {
@@ -280,7 +290,7 @@ export const sync =
      * 2. Tries to initialize sync if the repo is available
      * 3. Sets up callbacks or timers to retry if the repo isn't available yet
      */
-    const initSyncWithTimeout = () => {
+    const initSyncWithTimeout = async () => {
       // STEP 1: Check if we've exceeded the timeout period
       if (Date.now() - initStartTime > MAX_INIT_TIME) {
         // Clean up any pending timers
@@ -310,7 +320,7 @@ export const sync =
         logger.debug(`Repo available, initializing store for ${options.docId}`);
 
         // Initialize the sync
-        initializeSync();
+        await initializeSync();
 
         // Clean up any pending timers
         if (initTimer) {
@@ -323,12 +333,12 @@ export const sync =
         // In browser environments, use the registry mechanism
         if (typeof window !== 'undefined' && window.__REPO_REGISTRY__) {
           // Register a callback to be called when the repo becomes available
-          window.__REPO_REGISTRY__.callbacks.push(() => {
+          window.__REPO_REGISTRY__.callbacks.push(async () => {
             if (!isSyncInit) {
               logger.debug(
                 `Repo became available, initializing store for ${options.docId}`,
               );
-              initializeSync();
+              await initializeSync();
             }
           });
 
@@ -357,14 +367,65 @@ export const sync =
   };
 
 /**
- * This is meant to be used for debugging purposes
- * @param id
- * @returns
+ * Reads a document from keepsync
+ *
+ * This function retrieves a document at the specified path from the repository.
+ * It returns the document content if found, or undefined if the document doesn't exist.
+ *
+ * @param path - The path identifying the document to read
+ * @returns Promise resolving to the document content or undefined if not found
+ * @throws Error if the SyncEngine is not properly initialized
  */
-export const getDocHandleById = (id: string): DocHandle<any> => {
+export const readDoc = async <T>(path: string): Promise<T | undefined> => {
   const repo = getRepo();
-  // Get the document handle from the repo or create a new one if it doesn't exist
-  return repo!.findOrCreate<any>(id);
+  const root = getRootId();
+
+  if (!repo || !root) {
+    throw new Error('SyncEngine is not properly initialized');
+  }
+
+  const docNode = await findDocument(repo, root, path);
+  if (!docNode) {
+    return undefined;
+  }
+
+  const docHandle = repo.find<T>(docNode.pointer!);
+  return await docHandle.doc();
+};
+
+/**
+ * Writes content to a document to keepsync
+ *
+ * This function creates or updates a document at the specified path.
+ * If the document doesn't exist, it creates a new one.
+ * If the document already exists, it updates it with the provided content.
+ *
+ * @param path - The path identifying the document to write
+ * @param content - The content to write to the document
+ * @throws Error if the SyncEngine is not properly initialized
+ */
+export const writeDoc = async <T>(path: string, content: T) => {
+  const repo = getRepo();
+  const root = getRootId();
+
+  if (!repo || !root) {
+    throw new Error('SyncEngine is not properly initialized');
+  }
+
+  let docNode = await findDocument(repo, root, path);
+  let newHandle;
+  if (!docNode) {
+    newHandle = repo.create<T>();
+    await newHandle.doc();
+  } else {
+    newHandle = repo.find<T>(docNode.pointer!);
+    await newHandle.doc();
+    await createDocument(repo, root, path, newHandle);
+  }
+  newHandle.change((doc: any) => {
+    Object.assign(doc, content);
+  });
+  newHandle.docSync();
 };
 
 // Add necessary TypeScript interfaces for global registry

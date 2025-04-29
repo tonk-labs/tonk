@@ -1,5 +1,12 @@
 import SHA256 from 'crypto-js/sha256.js';
 import pkg from 'crypto-js';
+import bs58check from 'bs58check';
+import * as Uuid from 'uuid';
+import {
+  parseAutomergeUrl,
+  DocumentId,
+  AutomergeUrl,
+} from '@tonk/automerge-repo';
 const {enc} = pkg;
 
 /**
@@ -35,4 +42,13 @@ export function stringToUuidV4(input: string): string {
     12,
     16,
   )}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
+}
+
+export function stringToDocumentId(input: string): DocumentId {
+  const {documentId} = parseAutomergeUrl(
+    `automerge:${bs58check.encode(
+      new Uint8Array(Uuid.parse(stringToUuidV4(input))),
+    )}` as AutomergeUrl,
+  );
+  return documentId;
 }

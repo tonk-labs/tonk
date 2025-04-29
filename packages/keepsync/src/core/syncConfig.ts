@@ -1,10 +1,12 @@
-import {SyncEngine, SyncEngineOptions} from '../engine';
-import {Repo} from '@tonk/automerge-repo';
+import {SyncEngine, SyncEngineConfig} from '../engine';
+import {Repo, DocumentId} from '@automerge/automerge-repo';
 import {logger} from '../utils/logger';
+import {SyncEngineOptions} from '../engine/syncEngine';
 
 // Singleton instance of the SyncEngine
 let syncEngineInstance: SyncEngine | null = null;
 
+//TODO: split up keepsync for different platforms and pull out the core keepsync libraries into a core package
 /**
  * Configure the global sync engine with the provided options
  * This should be called once at the application startup
@@ -42,6 +44,15 @@ export function getSyncEngine(): SyncEngine | null {
 export function getRepo(): Repo | null {
   const syncEngine = getSyncEngine();
   return syncEngine ? syncEngine.getRepo() : null;
+}
+
+/**
+ * Get the Automerge Repo instance from the SyncEngine
+ * @returns The Repo instance or null if SyncEngine not created yet
+ */
+export function getRootId(): DocumentId | undefined {
+  const syncEngine = getSyncEngine();
+  return syncEngine ? syncEngine.getRootId() : undefined;
 }
 
 /**

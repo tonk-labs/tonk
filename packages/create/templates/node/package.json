@@ -14,6 +14,7 @@
   "license": "MIT",
   "dependencies": {
     "@automerge/automerge-repo-network-websocket": "^1.2.1",
+    "@automerge/automerge-repo-storage-nodefs": "^1.2.1",
     "@tonk/keepsync": "^0.4.0",
     "zustand": "^5.0.3"
   },
@@ -24,10 +25,5 @@
     "ts-jest": "^29.1.0",
     "ts-node": "^10.9.1",
     "typescript": "^5.0.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "@tonk/keepsync": "link:../../../../../../Library/pnpm/global/5/node_modules/@tonk/keepsync"
-    }
   }
 }

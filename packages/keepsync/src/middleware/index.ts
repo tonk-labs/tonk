@@ -1,5 +1,5 @@
-import {sync, getDocHandleById} from './sync';
+import {sync, readDoc, writeDoc} from './sync';
 
 export default sync;
-export {sync, getDocHandleById};
+export {sync, readDoc, writeDoc};
 export type {SyncOptions} from './sync';

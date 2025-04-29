@@ -9,5 +9,3 @@ export * from './core/index.js';
 
 // Re-export specific functions for easier access
 export {configureSyncEngine, getSyncEngine} from './core/syncConfig.js';
-
-export * from '@tonk/automerge-repo';
