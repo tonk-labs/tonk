@@ -13,9 +13,10 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@automerge/automerge-repo": "^1.2.1",
     "@automerge/automerge-repo-network-websocket": "^1.2.1",
     "@automerge/automerge-repo-storage-nodefs": "^1.2.1",
-    "@tonk/keepsync": "^0.4.0",
+    "@tonk/keepsync": "^0.4.3",
     "zustand": "^5.0.3"
   },
   "devDependencies": {

@@ -10,6 +10,7 @@ import {NodeWSServerAdapter} from '@automerge/automerge-repo-network-websocket';
 import {NodeFSStorageAdapter} from '@automerge/automerge-repo-storage-nodefs';
 import multer from 'multer';
 import * as tar from 'tar';
+import cors from 'cors';
 import {v4 as uuidv4} from 'uuid';
 import {BundleServer} from './bundleServer.js';
 import {BundleServerInfo} from './types.js';
@@ -58,7 +59,7 @@ class RootNode {
 
   private getRootIdFilePath(): string {
     if (this.configPath === '') {
-      return envPaths('tonk-daemon').config;
+      return path.join(envPaths('tonk').data, 'config.tonk');
     }
     return this.configPath;
   }
@@ -210,31 +211,38 @@ export class TonkServer {
   }
 
   private async initRoot() {
-    const createRoot = async () => {
-      const docHandle = this.repo.create();
-      docHandle.change((_doc: any) => {
-        Object.assign(_doc, {
-          type: 'dir',
-          timestamps: {
-            create: Date.now(),
-            modified: Date.now(),
-          },
-          children: [],
-        } as DocNode);
-      });
-      // Store the new document's ID
-      await this.rootNode.setRootId(docHandle.documentId);
-    };
+    try {
+      const createRoot = async () => {
+        const docHandle = this.repo.create();
+        docHandle.change((_doc: any) => {
+          Object.assign(_doc, {
+            type: 'dir',
+            timestamps: {
+              create: Date.now(),
+              modified: Date.now(),
+            },
+            children: [],
+          } as DocNode);
+        });
+        // Store the new document's ID
+        await this.rootNode.setRootId(docHandle.documentId);
+      };
 
-    const rootId = await this.rootNode.getRootId();
-    if (rootId) {
-      const rootHandle = this.repo.find(rootId as DocumentId);
-      const doc = await rootHandle.doc();
-      if (!doc) {
+      const rootId = await this.rootNode.getRootId();
+      if (rootId) {
+        const rootHandle = this.repo.find(rootId as DocumentId);
+        const doc = await rootHandle.doc();
+        if (!doc) {
+          await createRoot();
+        }
+      } else {
         await createRoot();
       }
-    } else {
-      await createRoot();
+    } catch (err) {
+      console.error('Error initializing root:', err);
+      throw new Error(
+        'Failed to initialize the root, this error is fatal. Shutting down server.',
+      );
     }
   }
 
@@ -267,9 +275,16 @@ export class TonkServer {
       res.send('pong');
     });
 
-    this.app.get('/_automerge_root', async (_req, res) => {
-      const rootId = await this.rootNode.getRootId();
-      res.json({rootId});
+    this.app.get('/_automerge_root', cors(), async (_req, res) => {
+      try {
+        const rootId = await this.rootNode.getRootId();
+        res.json({rootId});
+      } catch (e) {
+        res.status(500).json({
+          error: 'Failed to retrieve root ID',
+          message: e instanceof Error ? e.message : 'Unknown error',
+        });
+      }
     });
 
     // Bundle upload endpoint

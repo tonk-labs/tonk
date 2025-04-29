@@ -1,9 +1,4 @@
-import {
-  sync,
-  configureSyncEngine,
-  NetworkAdapterInterface,
-  DocumentId,
-} from "@tonk/keepsync";
+import { sync, configureSyncEngine, DocumentId } from "@tonk/keepsync";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { NodeFSStorageAdapter } from "@automerge/automerge-repo-storage-nodefs";
 import { createStore } from "zustand/vanilla";
@@ -11,7 +6,7 @@ import { createStore } from "zustand/vanilla";
 const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:7777/sync");
 configureSyncEngine({
   hostname: "localhost:7777",
-  network: [wsAdapter as any as NetworkAdapterInterface],
+  network: [wsAdapter as any],
   storage: new NodeFSStorageAdapter(),
 });
 

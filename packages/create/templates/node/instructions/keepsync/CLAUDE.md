@@ -6,7 +6,7 @@ Initialize the sync engine in your application entry point (or before using any 
 
 ```typescript
 // index.tsx
-import { configureSyncEngine, NetworkAdapterInterface } from "@tonk/keepsync";
+import { configureSyncEngine } from "@tonk/keepsync";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { NodeFSStorageAdapter } from "@automerge/automerge-repo-storage-nodefs";
 
@@ -15,7 +15,7 @@ const storage = new NodeFSStorageAdapter();
 
 configureSyncEngine({
   hostname: "localhost:7777",
-  network: [wsAdapter as any as NetworkAdapterInterface],
+  network: [wsAdapter as any],
   storage,
 });
 ```

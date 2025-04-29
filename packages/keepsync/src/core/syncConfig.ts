@@ -1,7 +1,7 @@
-import {SyncEngine, SyncEngineConfig} from '../engine';
+import {SyncEngine, SyncEngineConfig} from '../engine/index.js';
 import {Repo, DocumentId} from '@automerge/automerge-repo';
-import {logger} from '../utils/logger';
-import {SyncEngineOptions} from '../engine/syncEngine';
+import {logger} from '../utils/logger.js';
+import {SyncEngineOptions} from '../engine/syncEngine.js';
 
 // Singleton instance of the SyncEngine
 let syncEngineInstance: SyncEngine | null = null;

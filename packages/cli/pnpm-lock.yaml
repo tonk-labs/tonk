@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@tonk/server':
-        specifier: ^0.2.1
-        version: 0.2.1(@types/node@22.13.10)(typescript@5.8.2)
+        specifier: ^0.2.2
+        version: 0.2.2(@types/node@22.13.10)(typescript@5.8.2)
       chalk:
         specifier: ^5.3.0
         version: 5.4.1
@@ -1058,8 +1058,8 @@ packages:
   '@tonk/automerge-repo@1.0.0':
     resolution: {integrity: sha512-yNEpU6a6h7KOiEXFvC/sE+ccwIZO6klyRhrbygaaA7zEH+gfGQoNEZQsnDXpiLIAJzn+33Qs3foEwO6Q4CyzFA==}
 
-  '@tonk/server@0.2.1':
-    resolution: {integrity: sha512-WIKJlq8tIlQcMN+OVEEcSRBoflQZ3zhFxUAAVriS6XEUjlYZuEqVBZp/lllKWBmtEB0AIX7qqm9S80W+J3hpeA==}
+  '@tonk/server@0.2.2':
+    resolution: {integrity: sha512-2NuiIkigjgKfRT6aLl/eExbMM5duDGQyrAHkIhFmwxZnI80Un+pJA7ZmbP/8uTI/kZZn7P4Z4BVzA2yXwJWTlw==}
 
   '@tsconfig/node10@1.0.11':
     resolution: {integrity: sha512-DcRjDCujK/kCk/cUe8Xz8ZSpm8mS3mNNpta+jGCA6USEDfktlNvm1+IuZ9eTcDbNk41BHwpHHeW+N1lKCz4zOw==}
@@ -5010,7 +5010,7 @@ snapshots:
       - supports-color
       - typescript
 
-  '@tonk/server@0.2.1(@types/node@22.13.10)(typescript@5.8.2)':
+  '@tonk/server@0.2.2(@types/node@22.13.10)(typescript@5.8.2)':
     dependencies:
       '@automerge/automerge-repo-network-websocket': 1.2.1(@types/node@22.13.10)(typescript@5.8.2)
       '@automerge/automerge-repo-storage-nodefs': 1.2.1(@types/node@22.13.10)(typescript@5.8.2)
