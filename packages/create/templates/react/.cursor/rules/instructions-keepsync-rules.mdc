@@ -1,6 +1,6 @@
 ---
-description: Rules and guidelines for src/instructions/keepsync
-globs: src/instructions/keepsync/**/*.js, src/instructions/keepsync/**/*.ts, src/instructions/keepsync/**/*.tsx
+description: Rules and guidelines for instructions/keepsync
+globs: instructions/keepsync/**/*.js, instructions/keepsync/**/*.ts, instructions/keepsync/**/*.tsx
 ---
 
 ## Basic Usage

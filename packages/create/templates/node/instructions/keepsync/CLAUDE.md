@@ -26,8 +26,8 @@ Use the `sync` middleware to create stores that automatically synchronize with o
 
 ```typescript
 // stores/counterStore.ts
-import { createStore } from "zustand/vanilla";
-import { sync, DocumentId } from "@tonk/keepsync";
+import { createStore } from 'zustand/vanilla';
+import { sync, DocumentId } from '@tonk/keepsync';
 
 interface CounterState {
   count: number;
@@ -58,13 +58,12 @@ export const counterStore = createStore<CounterState>(
       },
     }),
     // Sync configuration
-    {
-      docId: "counter" as DocumentId,
+    { 
+      docId: 'counter' as DocumentId,
       // Optional: configure initialization timeout
       initTimeout: 30000,
       // Optional: handle initialization errors
-      onInitError: (error) =>
-        console.error("Sync initialization error:", error),
+      onInitError: (error) => console.error('Sync initialization error:', error) 
     }
   )
 );
@@ -75,49 +74,49 @@ export const counterStore = createStore<CounterState>(
 Because this is a Node project, we need to use zustand in a different way as it is used in React components. Each time you want fresh state you will need to use the `getState()` function.
 
 ```typescript
-const counterStore = createStore<CounterState>(
-  sync(
-    // The store implementation
-    (set) => ({
-      count: 0,
+  const counterStore = createStore<CounterState>(
+    sync(
+      // The store implementation
+      (set) => ({
+        count: 0,
 
-      // Increment the counter
-      increment: () => {
-        set((state) => ({ count: state.count + 1 }));
-      },
+        // Increment the counter
+        increment: () => {
+          set((state) => ({ count: state.count + 1 }));
+        },
 
-      // Decrement the counter
-      decrement: () => {
-        set((state) => ({ count: Math.max(0, state.count - 1) }));
-      },
+        // Decrement the counter
+        decrement: () => {
+          set((state) => ({ count: Math.max(0, state.count - 1) }));
+        },
 
-      // Reset the counter
-      reset: () => {
-        set({ count: 0 });
-      },
-    }),
-    // Sync configuration
-    {
-      docId: "counter" as DocumentId,
-      // Optional: configure initialization timeout
-      initTimeout: 30000,
-      // Optional: handle initialization errors
-      onInitError: (error) =>
-        console.error("Sync initialization error:", error),
-    }
-  )
-);
+        // Reset the counter
+        reset: () => {
+          set({ count: 0 });
+        },
+      }),
+      // Sync configuration
+      { 
+        docId: 'counter' as DocumentId,
+        // Optional: configure initialization timeout
+        initTimeout: 30000,
+        // Optional: handle initialization errors
+        onInitError: (error) => console.error('Sync initialization error:', error) 
+      }
+    )
+  );
 
-const state = counterStore.getState();
+  const state = counterStore.getState();
 
-state.increment();
-console.log(`The current count is: ${store.getState().count}`);
+  state.increment(); 
+  console.log(`The current count is: ${store.getState().count}`);
 ```
 
 # Directly reading and writing documents
 
-You can also directly read and write documents and address them using paths similar to a filesystem. This is useful for when you need more fine-grained control over document access and
+You can also directly read and write documents and address them using paths similar to a filesystem. This is useful for when you need more fine-grained control over document access and 
 a zustand store is too cumbersome (e.g. when you want each document to have its own space and be directly addressable);
+
 
 ```
 import { readDoc, writeDoc } from "@tonk/keepsync";
