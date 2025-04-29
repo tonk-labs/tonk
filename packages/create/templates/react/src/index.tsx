@@ -3,18 +3,18 @@ import "./index.css";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
-import { configureSyncEngine, NetworkAdapterInterface } from "@tonk/keepsync";
+import { configureSyncEngine } from "@tonk/keepsync";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
-import { IndexedDBStoraegAdapter } from "@automerge/automerge-repo-storage-indexeddb";
+import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
-const storage = new IndexedDBStoraegAdapter();
+const storage = new IndexedDBStorageAdapter();
 
 configureSyncEngine({
   hostname: window.location.host,
-  network: [wsAdapter as any as NetworkAdapterInterface],
+  network: [wsAdapter as any],
   storage,
 });
 

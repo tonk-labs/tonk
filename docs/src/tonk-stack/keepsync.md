@@ -18,7 +18,7 @@ Initialize the sync engine in your application entry point (or before using any 
 
 ```typescript
 // index.tsx
-import { configureSyncEngine, NetworkAdapterInterface } from "@tonk/keepsync";
+import { configureSyncEngine } from "@tonk/keepsync";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 
@@ -29,7 +29,7 @@ const storage = new IndexedDBStorageAdapter();
 
 configureSyncEngine({
   hostname: window.location.host,
-  network: [wsAdapter as any as NetworkAdapterInterface],
+  network: [wsAdapter as any],
   storage,
 });
 ```

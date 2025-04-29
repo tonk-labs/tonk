@@ -14,19 +14,19 @@ import {Repo, DocHandle, DocumentId} from '@automerge/automerge-repo';
  * - patchStore: Updates Zustand store with changes from Automerge
  * - removeNonSerializable: Prepares state for serialization by removing functions and non-serializable values
  */
-import {patchStore, removeNonSerializable} from './patching';
+import {patchStore, removeNonSerializable} from './patching.js';
 
-import {findDocument, createDocument} from '../documents/addressing';
+import {findDocument, createDocument} from '../documents/addressing.js';
 
 /**
  * Logger utility for consistent logging throughout the application
  */
-import {logger} from '../utils/logger';
+import {logger} from '../utils/logger.js';
 
 /**
  * Function to get the Repo instance
  */
-import {getRepo, getRootId} from '../core/syncConfig';
+import {getRepo, getRootId} from '../core/syncConfig.js';
 
 /**
  * Configuration options for the sync middleware
@@ -417,10 +417,10 @@ export const writeDoc = async <T>(path: string, content: T) => {
   if (!docNode) {
     newHandle = repo.create<T>();
     await newHandle.doc();
+    await createDocument(repo, root, path, newHandle);
   } else {
     newHandle = repo.find<T>(docNode.pointer!);
     await newHandle.doc();
-    await createDocument(repo, root, path, newHandle);
   }
   newHandle.change((doc: any) => {
     Object.assign(doc, content);

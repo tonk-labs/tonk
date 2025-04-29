@@ -9,16 +9,16 @@ importers:
   .:
     dependencies:
       '@automerge/automerge-repo':
-        specifier: 1.2.1
+        specifier: ^1.2.1
         version: 1.2.1(@swc/core@1.11.21)(@types/node@20.17.32)(typescript@5.8.3)
       '@automerge/automerge-repo-network-websocket':
-        specifier: 1.2.1
+        specifier: ^1.2.1
         version: 1.2.1(@swc/core@1.11.21)(@types/node@20.17.32)(typescript@5.8.3)
       '@automerge/automerge-repo-storage-indexeddb':
-        specifier: 1.2.1
+        specifier: ^1.2.1
         version: 1.2.1(@swc/core@1.11.21)(@types/node@20.17.32)(typescript@5.8.3)
       '@automerge/automerge-repo-storage-nodefs':
-        specifier: 1.2.1
+        specifier: ^1.2.1
         version: 1.2.1(@swc/core@1.11.21)(@types/node@20.17.32)(typescript@5.8.3)
       axios:
         specifier: ^1.9.0
@@ -32,6 +32,9 @@ importers:
       crypto-js:
         specifier: ^4.2.0
         version: 4.2.0
+      react:
+        specifier: ^19.0.0
+        version: 19.1.0
       uuid:
         specifier: ^11.1.0
         version: 11.1.0
@@ -46,7 +49,7 @@ importers:
         version: 8.18.1
       zustand:
         specifier: ^5.0.3
-        version: 5.0.3(@types/react@19.1.2)
+        version: 5.0.3(@types/react@19.1.2)(react@19.1.0)
     devDependencies:
       '@types/crypto-js':
         specifier: ^4.2.2
@@ -1712,6 +1715,10 @@ packages:
   quick-lru@4.0.1:
     resolution: {integrity: sha512-ARhCpm70fzdcvNQfPoy49IaanKkTlRWF2JMzqhcJbhSFRZv7nPTvZJdcY7301IPmvW+/p0RgIWnQDLJxifsQ7g==}
     engines: {node: '>=8'}
+
+  react@19.1.0:
+    resolution: {integrity: sha512-FS+XFBNvn3GTAWq26joslQgWNoFu08F4kl0J4CgdNKADkdSGXQyTCnKteIAJy96Br6YbpEU1LSzV5dYtjMkMDg==}
+    engines: {node: '>=0.10.0'}
 
   read-pkg-up@7.0.1:
     resolution: {integrity: sha512-zK0TB7Xd6JpCLmlLmufqykGE+/TlOePD6qKClNW7hHDKFh/J7/7gCWGR7joEQEW1bKq3a3yUZSObOoWLFQ4ohg==}
@@ -3798,6 +3805,8 @@ snapshots:
 
   quick-lru@4.0.1: {}
 
+  react@19.1.0: {}
+
   read-pkg-up@7.0.1:
     dependencies:
       find-up: 4.1.0
@@ -4232,6 +4241,7 @@ snapshots:
     optionalDependencies:
       commander: 9.5.0
 
-  zustand@5.0.3(@types/react@19.1.2):
+  zustand@5.0.3(@types/react@19.1.2)(react@19.1.0):
     optionalDependencies:
       '@types/react': 19.1.2
+      react: 19.1.0

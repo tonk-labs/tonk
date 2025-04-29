@@ -2,7 +2,8 @@
 export * from './engine/index.js';
 
 // Export the middleware
-export * from './middleware/index.js';
+export {readDoc, writeDoc, sync} from './middleware/index.js';
+export type {SyncOptions, DocumentId} from './middleware/index.js';
 
 // Export the core functionality
 export * from './core/index.js';

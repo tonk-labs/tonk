@@ -10,7 +10,7 @@ import util from 'util';
 const execPromise = util.promisify(exec);
 
 // Configuration for connecting to the test server
-const SERVER_URL = process.env.SERVER_URL || 'localhost:8888';
+const SERVER_URL = process.env.SERVER_URL || 'localhost:7777';
 const TEST_DOCUMENT_PATH = '/integration-test/document';
 const TEST_DATA = { message: 'Hello from integration test', timestamp: Date.now() };
 
