@@ -13,8 +13,8 @@ import axios from 'axios';
  * Options for configuring the SyncEngine
  */
 export interface SyncEngineOptions {
-  /** hostname of the service to resolve root document */
-  hostname: string;
+  /** url of the service to resolve root document */
+  url: string;
   /** Storage adapter for persistence */
   storage?: StorageAdapterInterface;
   /** Additional network adapters */
@@ -39,7 +39,7 @@ export class SyncEngine {
    * Create a new SyncEngine instance
    * @param options Configuration options for the Repo
    */
-  constructor(options: SyncEngineOptions = {hostname: ''}) {
+  constructor(options: SyncEngineOptions = {url: ''}) {
     // Generate a default peerId if not provided
     const peerId =
       options.peerId ||
@@ -63,7 +63,7 @@ export class SyncEngine {
     this.#root = undefined;
 
     // Initialize root document
-    this.#getRoot(options.hostname, this.#repo)
+    this.#getRoot(options.url, this.#repo)
       .then(rootId => {
         this.#root = rootId;
         logger.info('Root document initialized');
@@ -91,9 +91,9 @@ export class SyncEngine {
     });
   };
 
-  #getRoot = async (hostname: string, repo: Repo): Promise<DocumentId> => {
+  #getRoot = async (url: string, repo: Repo): Promise<DocumentId> => {
     // If URL is empty, create a new root document
-    if (!hostname || hostname.trim() === '') {
+    if (!url || url.trim() === '') {
       logger.warn('Creating new root document (no URL provided)');
       const docHandle = repo.create();
       return docHandle.documentId;
@@ -101,7 +101,7 @@ export class SyncEngine {
 
     try {
       // Fetch the root document ID from URL using axios instead of fetch
-      const response = await axios.get(`http://${hostname}/_automerge_root`);
+      const response = await axios.get(`${url}/.well-known/root.json`);
 
       if (!response.data) {
         throw new Error('No data was returned from the url provided');

@@ -13,7 +13,7 @@ const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
 const storage = new IndexedDBStorageAdapter();
 
 configureSyncEngine({
-  hostname: window.location.host,
+  url: `${window.location.protocol}//${window.location.host}`,
   network: [wsAdapter as any],
   storage,
 });

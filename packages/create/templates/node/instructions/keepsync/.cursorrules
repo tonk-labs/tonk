@@ -14,7 +14,7 @@ const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:7777/sync);
 const storage = new NodeFSStorageAdapter();
 
 configureSyncEngine({
-  hostname: "localhost:7777",
+  url: "http://localhost:7777",
   network: [wsAdapter as any],
   storage,
 });

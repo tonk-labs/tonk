@@ -12,7 +12,7 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8888;
 const tempDir = path.join(os.tmpdir(), 'tonk-integration-test');
 const bundlesPath = path.join(tempDir, 'bundles');
 const storesPath = path.join(tempDir, 'stores');
-const configPath = path.join(tempDir, 'config.json');
+const configPath = path.join(tempDir, 'config');
 
 // Ensure the directories exist
 if (!fs.existsSync(tempDir)) {

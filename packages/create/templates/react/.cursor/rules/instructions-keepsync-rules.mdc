@@ -20,8 +20,13 @@ const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
 const storage = new IndexedDBStorageAdapter();
 
+const url =
+  window.location.host.indexOf("localhost") === 0
+    ? "http://localhost:7777"
+    : `${window.location.protocol}//${window.location.host}`;
+
 configureSyncEngine({
-  hostname: window.location.host,
+  url,
   network: [wsAdapter as any],
   storage,
 });
