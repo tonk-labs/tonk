@@ -5,6 +5,7 @@ import fs from 'fs';
 import {createProxyMiddleware} from 'http-proxy-middleware';
 import {BundleServerConfig} from './types.js';
 import chalk from 'chalk';
+import {RootNode} from './rootNode.js';
 
 export class BundleServer {
   private app: express.Application;
@@ -12,11 +13,13 @@ export class BundleServer {
   private config: BundleServerConfig;
   private isRunning: boolean = false;
   private startTime?: Date;
+  private rootNode: RootNode;
 
   constructor(config: BundleServerConfig) {
     this.config = config;
     this.app = express();
     this.server = http.createServer(this.app);
+    this.rootNode = config.rootNode;
     this.setupRoutes();
   }
 
@@ -49,7 +52,10 @@ export class BundleServer {
     this.app.use(express.static(this.config.bundlePath));
 
     // Client-side routing - for SPA, send index.html for all non-api paths
-    this.app.get(/^(?!\/api|\/services).*$/, (_req, res) => {
+    this.app.get(/^(?!\/api|\/services).*$/, (req, res) => {
+      if (req.path === '/.well-known/root.json') {
+        return res.sendFile(this.rootNode.getRootIdFilePath());
+      }
       res.sendFile(path.join(this.config.bundlePath, 'index.html'));
     });
 
@@ -85,15 +91,6 @@ export class BundleServer {
     });
     // Proxy /sync requests to localhost:7777
     this.app.use(wsProxy);
-
-    // Proxy _automerge_root requests to localhost:7777
-    this.app.use(
-      '/_automerge_root',
-      createProxyMiddleware({
-        target: 'http://localhost:7777',
-        changeOrigin: true,
-      }),
-    );
 
     this.server.on('upgrade', wsProxy.upgrade);
   }

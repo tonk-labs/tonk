@@ -23,12 +23,14 @@ import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const httpProtocol =
+  window.location.protocol === "https:" ? "https://" : "http://";
 const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
 const storage = new IndexedDBStorageAdapter();
 
 configureSyncEngine({
-  hostname: window.location.host,
+  url: `${httpProtocol}//${window.location.host}`,
   network: [wsAdapter as any],
   storage,
 });

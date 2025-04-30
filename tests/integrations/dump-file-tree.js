@@ -78,7 +78,7 @@ async function dumpFileTree() {
   try {
     // Initialize the sync engine with the server
     const syncEngine = configureSyncEngine({
-      hostname: SERVER_URL,
+      url: `http://${SERVER_URL}`,
       storage: new NodeFSStorageAdapter(),
       network: [new BrowserWebSocketClientAdapter(`ws://${SERVER_URL}/sync`)]
     });

@@ -5,7 +5,7 @@ import { createStore } from "zustand/vanilla";
 
 const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:7777/sync");
 configureSyncEngine({
-  hostname: "localhost:7777",
+  url: "http://localhost:7777",
   network: [wsAdapter as any],
   storage: new NodeFSStorageAdapter(),
 });

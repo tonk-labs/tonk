@@ -1,3 +1,4 @@
+import {RootNode} from './rootNode.js';
 export type DocumentId = string;
 
 export interface BundleServerConfig {
@@ -6,6 +7,7 @@ export interface BundleServerConfig {
   bundlePath: string;
   hasServices: boolean;
   verbose?: boolean;
+  rootNode: RootNode;
 }
 
 export interface BundleServerInfo {
