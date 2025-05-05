@@ -1,0 +1,37 @@
+services:
+  tonk-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tonk-server
+    ports:
+      - '${PORT:-7777}:${PORT:-7777}'
+    environment:
+      - PORT=${PORT:-7777}
+      - BUNDLES_PATH=/data/tonk/bundles
+      - STORES_PATH=/data/tonk/stores
+      - CONFIG_PATH=/data/tonk/config
+      - VERBOSE=${VERBOSE:-true}
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-0}
+      - NODE_ENV=production
+    volumes:
+      - tonk-data:/data/tonk
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '--no-verbose',
+          '--tries=1',
+          '--spider',
+          'http://localhost:${PORT:-7777}/ping',
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  tonk-data:
+    name: tonk-data

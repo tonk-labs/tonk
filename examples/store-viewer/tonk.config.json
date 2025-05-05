@@ -1,0 +1,9 @@
+{
+  "name": "store-viewer",
+  "plan": {
+    "platform": "react",
+    "projectName": "store-viewer",
+    "description": "Its a simple debugging tool that helps me to view a store"
+  },
+  "template": "react"
+}

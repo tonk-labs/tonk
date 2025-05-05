@@ -142,7 +142,7 @@ export class TonkServer {
     this.server = http.createServer(this.app);
 
     const config: RepoConfig = {
-      network: [new NodeWSServerAdapter(this.socket as any)],
+      network: [new NodeWSServerAdapter(this.socket as any) as any],
       storage: new NodeFSStorageAdapter(this.options.dirPath!),
       peerId: `sync-server-${hostname}` as PeerId,
       sharePolicy: async () => false,

@@ -19,7 +19,7 @@ importers:
         version: 1.2.1(@swc/core@1.11.22)(@types/node@22.13.10)(typescript@5.8.2)
       '@tonk/keepsync':
         specifier: file:../../packages/keepsync/
-        version: file:../../packages/keepsync(@swc/core@1.11.22)(@types/node@22.13.10)(react@19.0.0)(typescript@5.8.2)(vite@6.3.1(@types/node@22.13.10)(jiti@1.21.7)(terser@5.39.0)(tsx@4.19.3)(yaml@2.7.0))(zustand@5.0.3(@types/react@19.0.12)(react@19.0.0))
+        version: link:../../packages/keepsync
       '@vitejs/plugin-react':
         specifier: ^4.4.0
         version: 4.4.0(vite@6.3.1(@types/node@22.13.10)(jiti@1.21.7)(terser@5.39.0)(tsx@4.19.3)(yaml@2.7.0))
@@ -1312,15 +1312,6 @@ packages:
   '@swc/types@0.1.21':
     resolution: {integrity: sha512-2YEtj5HJVbKivud9N4bpPBAyZhj4S2Ipe5LkUG94alTpr7in/GU/EARgPAd3BwU+YOmFVJC2+kjqhGRi3r0ZpQ==}
 
-  '@tonk/automerge-repo@1.0.0':
-    resolution: {integrity: sha512-yNEpU6a6h7KOiEXFvC/sE+ccwIZO6klyRhrbygaaA7zEH+gfGQoNEZQsnDXpiLIAJzn+33Qs3foEwO6Q4CyzFA==}
-
-  '@tonk/keepsync@file:../../packages/keepsync':
-    resolution: {directory: ../../packages/keepsync, type: directory}
-    peerDependencies:
-      react: ^19.0.0
-      zustand: ^5.0.3
-
   '@tootallnate/once@1.1.2':
     resolution: {integrity: sha512-RbzJvlNzmRq5c3O09UipeuXno4tA1FE6ikOjxZK0tuxVv3412l64l5t1W5pj4+rJq9vpkm/kwiR07aZXnsKPxw==}
     engines: {node: '>= 6'}
@@ -1675,9 +1666,6 @@ packages:
   base-x@4.0.1:
     resolution: {integrity: sha512-uAZ8x6r6S3aUM9rbHGVOIsR15U/ZSc82b3ymnCPsT45Gk1DDvhDPdIgB5MrhirZWt+5K0EEPQH985kNqZgNPFw==}
 
-  base-x@5.0.1:
-    resolution: {integrity: sha512-M7uio8Zt++eg3jPj+rHMfCC+IuygQHHCOU+IYsVtik6FWjuYpVt/+MRKcgsAMHh8mMFAwnB+Bs+mTrFiXjMzKg==}
-
   base64-js@1.5.1:
     resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
 
@@ -1717,14 +1705,8 @@ packages:
   bs58@5.0.0:
     resolution: {integrity: sha512-r+ihvQJvahgYT50JD05dyJNKlmmSlMoOGwn1lCcEzanPglg7TxYjioQUYehQ9mAR/+hOSd2jRc/Z2y5UxBymvQ==}
 
-  bs58@6.0.0:
-    resolution: {integrity: sha512-PD0wEnEYg6ijszw/u8s+iI3H17cTymlrwkKhDhPZq+Sokl3AU4htyBFTjAeNAlCCmg0f53g6ih3jATyCKftTfw==}
-
   bs58check@3.0.1:
     resolution: {integrity: sha512-hjuuJvoWEybo7Hn/0xOrczQKKEKD63WguEjlhLExYs2wUBcebDC1jDNK17eEAD2lYfw82d5ASC1d7K3SWszjaQ==}
-
-  bs58check@4.0.0:
-    resolution: {integrity: sha512-FsGDOnFg9aVI9erdriULkd/JjEWONV/lQE5aYziB5PoBsXRind56lh8doIZIc9X4HoxT5x4bLjMWN1/NB8Zp5g==}
 
   bser@2.1.1:
     resolution: {integrity: sha512-gQxTNE/GAfIIrmHLUE3oJyp5FO6HRBfhjnw4/wMmA63ZGDJnWBmgY/lyQBpnDUkGmAhbSe39tx2d/iTOAfglwQ==}
@@ -1908,9 +1890,6 @@ packages:
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
     engines: {node: '>= 8'}
-
-  crypto-js@4.2.0:
-    resolution: {integrity: sha512-KALDyEYgpY+Rlob/iriUtjV6d5Eq+Y191A5g4UqLAi8CyGP9N1+FdVbkc1SxKc2r4YAYqG8JzO2KGL+AizD70Q==}
 
   crypto-random-string@2.0.0:
     resolution: {integrity: sha512-v1plID3y9r/lPhviJ1wrXpLeyUIGAZ2SHNYTEapm7/8A9nLPoyvVp3RK/EPFqn5kEznyWgYZNsRtYYIWbuG8KA==}
@@ -4010,10 +3989,6 @@ packages:
     resolution: {integrity: sha512-8XkAphELsDnEGrDxUOHB3RGvXz6TeuYSGEZBOjtTtPm2lwhGBjLgOzLHB63IUWfBpNucQjND6d3AOudO+H3RWQ==}
     hasBin: true
 
-  uuid@11.1.0:
-    resolution: {integrity: sha512-0/A9rDy9P7cJ+8w1c9WD9V//9Wj15Ce2MPz8Ri6032usz+NfePxx5AcN3bN+r6ZL6jEo066/yNYB3tn4pQEx+A==}
-    hasBin: true
-
   uuid@9.0.1:
     resolution: {integrity: sha512-b+1eJOlsR9K8HJpow9Ok3fiWOWSIcIzXodvv0rQjVoOVNpWMpxf1wZNpt4y9h10odCNrqnYp1OBzRktckBe3sA==}
     hasBin: true
@@ -5601,47 +5576,6 @@ snapshots:
     dependencies:
       '@swc/counter': 0.1.3
 
-  '@tonk/automerge-repo@1.0.0(@swc/core@1.11.22)(@types/node@22.13.10)(typescript@5.8.2)':
-    dependencies:
-      '@automerge/automerge': 2.2.8
-      bs58check: 3.0.1
-      cbor-x: 1.6.0
-      crypto-js: 4.2.0
-      debug: 4.4.0
-      eventemitter3: 5.0.1
-      fast-sha256: 1.3.0
-      tiny-typed-emitter: 2.1.0
-      ts-node: 10.9.2(@swc/core@1.11.22)(@types/node@22.13.10)(typescript@5.8.2)
-      uuid: 9.0.1
-      xstate: 5.19.2
-    transitivePeerDependencies:
-      - '@swc/core'
-      - '@swc/wasm'
-      - '@types/node'
-      - supports-color
-      - typescript
-
-  '@tonk/keepsync@file:../../packages/keepsync(@swc/core@1.11.22)(@types/node@22.13.10)(react@19.0.0)(typescript@5.8.2)(vite@6.3.1(@types/node@22.13.10)(jiti@1.21.7)(terser@5.39.0)(tsx@4.19.3)(yaml@2.7.0))(zustand@5.0.3(@types/react@19.0.12)(react@19.0.0))':
-    dependencies:
-      '@tonk/automerge-repo': 1.0.0(@swc/core@1.11.22)(@types/node@22.13.10)(typescript@5.8.2)
-      bs58check: 4.0.0
-      chalk: 5.4.1
-      crypto-js: 4.2.0
-      react: 19.0.0
-      uuid: 11.1.0
-      vite-plugin-wasm: 3.4.1(vite@6.3.1(@types/node@22.13.10)(jiti@1.21.7)(terser@5.39.0)(tsx@4.19.3)(yaml@2.7.0))
-      ws: 8.18.1
-      zustand: 5.0.3(@types/react@19.0.12)(react@19.0.0)
-    transitivePeerDependencies:
-      - '@swc/core'
-      - '@swc/wasm'
-      - '@types/node'
-      - bufferutil
-      - supports-color
-      - typescript
-      - utf-8-validate
-      - vite
-
   '@tootallnate/once@1.1.2':
     optional: true
 
@@ -6092,8 +6026,6 @@ snapshots:
 
   base-x@4.0.1: {}
 
-  base-x@5.0.1: {}
-
   base64-js@1.5.1: {}
 
   binary-extensions@2.3.0: {}
@@ -6153,19 +6085,10 @@ snapshots:
     dependencies:
       base-x: 4.0.1
 
-  bs58@6.0.0:
-    dependencies:
-      base-x: 5.0.1
-
   bs58check@3.0.1:
     dependencies:
       '@noble/hashes': 1.7.2
       bs58: 5.0.0
-
-  bs58check@4.0.0:
-    dependencies:
-      '@noble/hashes': 1.7.2
-      bs58: 6.0.0
 
   bser@2.1.1:
     dependencies:
@@ -6375,8 +6298,6 @@ snapshots:
       path-key: 3.1.1
       shebang-command: 2.0.0
       which: 2.0.2
-
-  crypto-js@4.2.0: {}
 
   crypto-random-string@2.0.0: {}
 
@@ -8831,8 +8752,6 @@ snapshots:
   utils-merge@1.0.1: {}
 
   uuid@10.0.0: {}
-
-  uuid@11.1.0: {}
 
   uuid@9.0.1: {}
 

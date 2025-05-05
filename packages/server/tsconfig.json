@@ -45,7 +45,8 @@
     "types": ["node", "jest"]
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "docker-start.ts",
   ],
   "exclude": [
     "node_modules",

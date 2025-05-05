@@ -11,10 +11,13 @@ import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 
-configureSyncEngine({
+const engine = configureSyncEngine({
+  hostname: "localhost:7777",
   storage: new IndexedDBStorageAdapter(),
   network: [new BrowserWebSocketClientAdapter(wsUrl)],
 });
+
+await engine.whenReady();
 
 const container = document.getElementById("root");
 if (!container) throw new Error("Failed to find the root element");
@@ -25,5 +28,5 @@ root.render(
     <BrowserRouter>
       <App />
     </BrowserRouter>
-  </React.StrictMode>
+  </React.StrictMode>,
 );
