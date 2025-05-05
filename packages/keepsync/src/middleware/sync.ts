@@ -509,13 +509,10 @@ export const listenToDoc = async <T>(
   }
 
   // Find the document
-  const docNode = await findDocument(repo, root, path);
-  if (!docNode) {
+  const docHandle = await findDocument<T>(repo, root, path);
+  if (!docHandle) {
     throw new Error(`Document not found at path: ${path}`);
   }
-
-  // Get a handle to the document
-  const docHandle = repo.find<T>(docNode.pointer!);
 
   // Create a wrapper function that will call the listener with the document
   const handleChange = ({doc}: {doc: T | undefined}) => {
