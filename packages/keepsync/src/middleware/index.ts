@@ -1,6 +1,6 @@
-import {sync, readDoc, writeDoc} from './sync.js';
+import {sync, readDoc, writeDoc, listenToDoc} from './sync.js';
 import {DocumentId} from '@automerge/automerge-repo';
 export type {DocumentId};
 
-export {sync, readDoc, writeDoc};
+export {sync, readDoc, writeDoc, listenToDoc};
 export type {SyncOptions} from './sync.js';

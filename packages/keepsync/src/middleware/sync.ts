@@ -428,6 +428,71 @@ export const writeDoc = async <T>(path: string, content: T) => {
   newHandle.docSync();
 };
 
+export type DocChangeListener<T> = (doc: T) => void;
+
+/**
+ * Attaches a listener to a document at the specified path
+ *
+ * This function allows you to listen for changes to a document without using the full sync middleware.
+ * It returns a function that can be called to remove the listener when it's no longer needed.
+ *
+ * @example
+ * // Attach a listener to a document
+ * const removeListener = await listenToDoc('my/document/path', (doc) => {
+ *   console.log('Document changed:', doc);
+ * });
+ *
+ * // Later, when you want to stop listening
+ * removeListener();
+ *
+ * @param path - The path identifying the document to listen to
+ * @param listener - The callback function that will be called when the document changes
+ * @returns Promise resolving to a function that removes the listener
+ * @throws Error if the SyncEngine is not properly initialized or the document doesn't exist
+ */
+export const listenToDoc = async <T>(
+  path: string,
+  listener: DocChangeListener<T>,
+): Promise<() => void> => {
+  const repo = getRepo();
+  const root = getRootId();
+
+  if (!repo || !root) {
+    throw new Error('SyncEngine is not properly initialized');
+  }
+
+  // Find the document
+  const docNode = await findDocument(repo, root, path);
+  if (!docNode) {
+    throw new Error(`Document not found at path: ${path}`);
+  }
+
+  // Get a handle to the document
+  const docHandle = repo.find<T>(docNode.pointer!);
+
+  // Create a wrapper function that will call the listener with the document
+  const handleChange = ({doc}: {doc: T | undefined}) => {
+    if (doc) {
+      listener(doc);
+    }
+  };
+
+  // Attach the listener to the document
+  docHandle.on('change', handleChange);
+
+  // Get the current document state and call the listener immediately
+  const currentDoc = await docHandle.doc();
+  if (currentDoc) {
+    listener(currentDoc);
+  }
+
+  // Return a function that removes the listener
+  return () => {
+    docHandle.off('change', handleChange);
+    logger.debug(`Removed listener for document ${path}`);
+  };
+};
+
 // Add necessary TypeScript interfaces for global registry
 declare global {
   interface Window {
