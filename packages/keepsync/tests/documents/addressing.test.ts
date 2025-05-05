@@ -1,6 +1,11 @@
 import {describe, it, expect, beforeAll} from 'vitest';
 import {Repo, DocumentId} from '@automerge/automerge-repo';
-import {findDocument, createDocument} from '../../src/documents/addressing';
+import {
+  traverseDocTree,
+  findDocument,
+  createDocument,
+  removeDocument,
+} from '../../src/documents/addressing';
 import {DummyNetworkAdapter} from '../dummy/DummyNetworkAdapter';
 import {DummyStorageAdapter} from '../dummy/DummyStorageAdapter';
 
@@ -66,12 +71,9 @@ describe('Document Addressing', () => {
     const docNode = await findDocument(repo, rootId, '/test');
     expect(docNode).toBeDefined();
     if (docNode) {
-      // DocNode should have a pointer property that references the actual document
-      expect(docNode.pointer).toBeDefined();
       // Use the pointer to get the actual document
-      const docHandle = repo.find(docNode.pointer!);
-      const doc = (await docHandle.doc()) as any;
-      expect(doc.text).toBe('HI!');
+      const doc = (await docNode.doc()) as {text: string};
+      expect(doc!.text).toBe('HI!');
     }
   });
 
@@ -89,11 +91,8 @@ describe('Document Addressing', () => {
     );
     expect(docNode).toBeDefined();
     if (docNode) {
-      // DocNode should have a pointer property that references the actual document
-      expect(docNode.pointer).toBeDefined();
       // Use the pointer to get the actual document
-      const docHandle = repo.find(docNode.pointer!);
-      const doc = (await docHandle.doc()) as any;
+      const doc = (await docNode.doc()) as any;
       expect(doc.text).toBe('HI!');
     }
   });
@@ -105,12 +104,50 @@ describe('Document Addressing', () => {
       doc.text = 'HI!';
     });
     await createDocument(repo, rootId, '/test/this/deeply/nested/doc', newDoc);
-    const docNode = await findDocument(repo, rootId, '/');
+    const docNode = await traverseDocTree(repo, rootId, '/');
     expect(docNode).toBeDefined();
     if (docNode) {
       // DocNode should have a pointer property that references the actual document
-      expect(docNode.children).toBeDefined();
-      expect(docNode.children!.length).toBe(1);
+      expect(docNode.node.children).toBeDefined();
+      expect(docNode.node.children!.length).toBe(1);
     }
   });
+
+  it('it will delete a document deeply', async () => {
+    const {repo, rootId} = await setup();
+    const newDoc = repo.create();
+    const id = newDoc.documentId;
+    newDoc.change((doc: any) => {
+      doc.text = 'HI!';
+    });
+    await createDocument(repo, rootId, '/test/this/deeply/nested/doc', newDoc);
+    await removeDocument(repo, rootId, '/test');
+    const handle = repo.find(id);
+
+    // Expect whenReady to time out since the document was deleted
+    await expect(
+      Promise.race([
+        handle.whenReady(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout')), 2000),
+        ),
+      ]),
+    ).rejects.toThrow('Timeout');
+  });
+
+  // it('it can find a directory document', async () => {
+  //   const {repo, rootId} = await setup();
+  //   const newDoc = repo.create();
+  //   newDoc.change((doc: any) => {
+  //     doc.text = 'HI!';
+  //   });
+  //   await createDocument(repo, rootId, '/test/this/deeply/nested/doc', newDoc);
+  //   // we have to temporarily modify ls here to work cause I'm too lazy to mock syncEngine and all that stuff too right now
+  //   // I modify it to work like ls(repo, rootId, path);
+  //   const docNode = await ls(repo, rootId, '/');
+  //   expect(docNode).toBeDefined();
+  //   expect(docNode!.children!.length).toBe(1);
+  //   const dir = await ls(repo, rootId, '/test/this');
+  //   expect(dir!.children![0].name).toBe('deeply');
+  // });
 });

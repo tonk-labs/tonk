@@ -2,8 +2,11 @@
 export * from './engine/index.js';
 
 // Export the middleware
-export {readDoc, writeDoc, sync} from './middleware/index.js';
+export {ls, mkDir, rm, readDoc, writeDoc, sync} from './middleware/index.js';
 export type {SyncOptions, DocumentId} from './middleware/index.js';
+
+// This is useful for exploring the filesystem
+export type {DocNode, DirNode, RefNode} from './documents/addressing.js';
 
 // Export the core functionality
 export * from './core/index.js';
