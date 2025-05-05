@@ -3,7 +3,6 @@ import displayTonkAnimation from './hello/index.js';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import envPaths from 'env-paths';
-import path from 'node:path';
 import {exec} from 'child_process';
 import {promisify} from 'util';
 
@@ -11,7 +10,7 @@ const execAsync = promisify(exec);
 
 export const helloCommand = new Command('hello')
   .description('Say hello to start and launch the tonk daemon')
-  .action(async options => {
+  .action(async () => {
     try {
       // Check if pm2 is installed
       let pm2Exists = false;
