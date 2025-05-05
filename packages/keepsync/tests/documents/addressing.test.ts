@@ -135,6 +135,24 @@ describe('Document Addressing', () => {
     ).rejects.toThrow('Timeout');
   });
 
+  it('protect bug on writing a document to a top-level dir', async () => {
+    const {repo, rootId} = await setup();
+    const newDoc = repo.create();
+    const id = newDoc.documentId;
+    newDoc.change((doc: any) => {
+      doc.text = 'HI!';
+    });
+    await createDocument(repo, rootId, '/test/this', newDoc);
+    const doc = await findDocument<{text: string}>(repo, rootId, '/test/this');
+    expect(doc).toBeDefined();
+    expect((await doc!.doc())!.text).toBe('HI!');
+
+    await createDocument(repo, rootId, '/test/next', newDoc);
+    const doc2 = await findDocument<{text: string}>(repo, rootId, '/test/next');
+    expect(doc2).toBeDefined();
+    expect((await doc2!.doc())!.text).toBe('HI!');
+  });
+
   // it('it can find a directory document', async () => {
   //   const {repo, rootId} = await setup();
   //   const newDoc = repo.create();
