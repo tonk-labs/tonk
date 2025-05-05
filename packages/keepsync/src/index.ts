@@ -2,7 +2,7 @@
 export * from './engine/index.js';
 
 // Export the middleware
-export {ls, mkDir, rm, readDoc, writeDoc, sync} from './middleware/index.js';
+export {ls, mkDir, rm, readDoc, writeDoc, sync, listenToDoc} from './middleware/index.js';
 export type {SyncOptions, DocumentId} from './middleware/index.js';
 
 // This is useful for exploring the filesystem
