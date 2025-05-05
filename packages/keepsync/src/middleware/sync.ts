@@ -16,7 +16,15 @@ import {Repo, DocHandle, DocumentId} from '@automerge/automerge-repo';
  */
 import {patchStore, removeNonSerializable} from './patching.js';
 
-import {findDocument, createDocument} from '../documents/addressing.js';
+import {
+  findDocument,
+  createDocument,
+  DocNode,
+  RefNode,
+  DirNode,
+  traverseDocTree,
+  removeDocument,
+} from '../documents/addressing.js';
 
 /**
  * Logger utility for consistent logging throughout the application
@@ -186,13 +194,13 @@ export const sync =
 
       try {
         // Get the document handle from the repo or create a new one if it doesn't exist
-        let doc = await findDocument(repo, root, options.docId);
-        if (!doc) {
+        let docNode = await findDocument<T>(repo, root, options.docId);
+        if (!docNode) {
           docHandle = repo.create<T>();
           createDocument(repo, root, options.docId, docHandle);
         } else {
-          docHandle = repo.find<T>(doc.pointer!);
-          await docHandle.doc();
+          docHandle = docNode;
+          await docNode.doc();
         }
 
         // Set up the change callback to handle document updates
@@ -366,6 +374,56 @@ export const sync =
     };
   };
 
+const addressingParams = () => {
+  const repo = getRepo();
+  const root = getRootId();
+
+  if (!repo || !root) {
+    throw new Error('SyncEngine is not properly initialized');
+  }
+
+  return {
+    repo,
+    root,
+  };
+};
+
+export const ls = async (path: string): Promise<DocNode | undefined> => {
+  const {repo, root} = addressingParams();
+
+  const result = await traverseDocTree(repo, root, path);
+  if (!result) {
+    return undefined;
+  }
+  if (!result.targetRef) {
+    if (result.node) {
+      return result.node as DocNode;
+    }
+  }
+
+  if (result.targetRef?.type === 'doc') {
+    throw new Error('You cannot ls a document');
+  }
+
+  const dir = repo.find<DirNode>(result.targetRef!.pointer);
+
+  return await dir.doc();
+};
+
+export const rm = async (path: string): Promise<boolean> => {
+  const {repo, root} = addressingParams();
+  return await removeDocument(repo, root, path);
+};
+
+export const mkDir = async (path: string): Promise<DirNode | undefined> => {
+  const {repo, root} = addressingParams();
+  const result = await traverseDocTree(repo, root, path, true);
+  if (!result) {
+    return undefined;
+  }
+  return result!.node;
+};
+
 /**
  * Reads a document from keepsync
  *
@@ -377,20 +435,14 @@ export const sync =
  * @throws Error if the SyncEngine is not properly initialized
  */
 export const readDoc = async <T>(path: string): Promise<T | undefined> => {
-  const repo = getRepo();
-  const root = getRootId();
+  const {repo, root} = addressingParams();
 
-  if (!repo || !root) {
-    throw new Error('SyncEngine is not properly initialized');
-  }
-
-  const docNode = await findDocument(repo, root, path);
+  const docNode = await findDocument<T>(repo, root, path);
   if (!docNode) {
     return undefined;
   }
 
-  const docHandle = repo.find<T>(docNode.pointer!);
-  return await docHandle.doc();
+  return await docNode.doc();
 };
 
 /**
@@ -405,21 +457,16 @@ export const readDoc = async <T>(path: string): Promise<T | undefined> => {
  * @throws Error if the SyncEngine is not properly initialized
  */
 export const writeDoc = async <T>(path: string, content: T) => {
-  const repo = getRepo();
-  const root = getRootId();
+  const {repo, root} = addressingParams();
 
-  if (!repo || !root) {
-    throw new Error('SyncEngine is not properly initialized');
-  }
-
-  let docNode = await findDocument(repo, root, path);
+  let docNode = await findDocument<T>(repo, root, path);
   let newHandle;
   if (!docNode) {
     newHandle = repo.create<T>();
     await newHandle.doc();
     await createDocument(repo, root, path, newHandle);
   } else {
-    newHandle = repo.find<T>(docNode.pointer!);
+    newHandle = docNode;
     await newHandle.doc();
   }
   newHandle.change((doc: any) => {
