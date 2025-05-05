@@ -70,15 +70,13 @@ export async function traverseDocTree(
     // Initialize root if it doesn't exist and we're creating missing nodes
     if (!rootDoc && createMissing) {
       rootHandle.change((doc: DirNode) => {
-        Object.assign(doc, {
-          type: 'dir',
-          name: '/',
-          timestamps: {
-            create: Date.now(),
-            modified: Date.now(),
-          },
-          children: [],
-        } as DirNode);
+        doc.type = 'dir';
+        doc.name = '/';
+        doc.timestamps = {
+          create: Date.now(),
+          modified: Date.now(),
+        };
+        doc.children = [];
       });
 
       const newDoc = await rootHandle.doc();
@@ -88,7 +86,7 @@ export async function traverseDocTree(
 
       return {
         nodeHandle: rootHandle,
-        node: newDoc as DirNode,
+        node: JSON.parse(JSON.stringify(newDoc)) as DirNode,
         parentPath: '',
       };
     } else if (!rootDoc) {
@@ -97,7 +95,7 @@ export async function traverseDocTree(
 
     return {
       nodeHandle: rootHandle,
-      node: rootDoc as DirNode,
+      node: JSON.parse(JSON.stringify(rootDoc)) as DirNode,
       parentPath: '',
     };
   }
@@ -111,26 +109,24 @@ export async function traverseDocTree(
   // Initialize root if needed and we're creating missing directories
   if (!currentDoc && createMissing) {
     currentHandle.change((doc: DirNode) => {
-      Object.assign(doc, {
-        type: 'dir',
-        name: '/',
-        timestamps: {
-          create: Date.now(),
-          modified: Date.now(),
-        },
-        children: [],
-      } as DirNode);
+      doc.type = 'dir';
+      doc.name = '/';
+      doc.timestamps = {
+        create: Date.now(),
+        modified: Date.now(),
+      };
+      doc.children = [];
     });
 
     const updatedDoc = await currentHandle.doc();
     if (!updatedDoc) {
       return undefined;
     }
-    currentDoc = updatedDoc as DirNode;
+    currentDoc = JSON.parse(JSON.stringify(updatedDoc)) as DirNode;
   } else if (!currentDoc) {
     return undefined;
   } else {
-    currentDoc = currentDoc as DirNode;
+    currentDoc = JSON.parse(JSON.stringify(currentDoc)) as DirNode;
   }
 
   // Track parent for document creation
@@ -173,15 +169,13 @@ export async function traverseDocTree(
 
       // Initialize the new node as a directory
       newNodeHandle.change((doc: DirNode) => {
-        Object.assign(doc, {
-          type: 'dir',
-          name: segment,
-          timestamps: {
-            create: Date.now(),
-            modified: Date.now(),
-          },
-          children: [],
-        } as DirNode);
+        doc.type = 'dir';
+        doc.name = segment;
+        doc.timestamps = {
+          create: Date.now(),
+          modified: Date.now(),
+        };
+        doc.children = [];
       });
 
       // Add the new node to the parent's children
@@ -225,7 +219,7 @@ export async function traverseDocTree(
       if (isLastSegment) {
         return {
           nodeHandle: currentHandle,
-          node: currentDoc,
+          node: JSON.parse(JSON.stringify(currentDoc)),
           parentPath: currentPath,
         };
       }
@@ -258,7 +252,9 @@ export async function traverseDocTree(
           return undefined;
         }
 
-        currentDoc = nextDoc as DirNode;
+        // Create a clean copy of the document to avoid "Cannot create a reference to an existing document object" error
+        // We need to use a completely new reference to avoid carrying over Automerge metadata
+        currentDoc = JSON.parse(JSON.stringify(nextDoc)) as DirNode;
       } else {
         // Found a document when we need to navigate further, so fail
         return undefined;
@@ -272,7 +268,7 @@ export async function traverseDocTree(
   // If we get here, we've reached the requested node
   return {
     nodeHandle: currentHandle,
-    node: currentDoc,
+    node: JSON.parse(JSON.stringify(currentDoc)),
     targetRef: lastSegmentRef,
     parentPath: currentPath,
   };

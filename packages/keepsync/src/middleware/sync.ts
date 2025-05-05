@@ -119,8 +119,8 @@ export const sync =
 
           // Step 4: Update the Automerge document through the docHandle
           docHandle.change((doc: any) => {
-            // Merge the serializable state into the Automerge document
-            Object.assign(doc, serializableState);
+            // Avoid "Cannot create a reference to an existing document object" error
+            Object.assign(doc, JSON.parse(JSON.stringify(serializableState)));
           });
         } catch (error) {
           // Handle errors that might occur during serialization or update
@@ -223,7 +223,8 @@ export const sync =
 
           // Create the initial document with the current state
           docHandle?.change((doc: any) => {
-            Object.assign(doc, serializableState);
+            // Avoid "Cannot create a reference to an existing document object" error
+            Object.assign(doc, JSON.parse(JSON.stringify(serializableState)));
           });
         }
 
@@ -470,7 +471,9 @@ export const writeDoc = async <T>(path: string, content: T) => {
     await newHandle.doc();
   }
   newHandle.change((doc: any) => {
-    Object.assign(doc, content);
+    // Avoid "Cannot create a reference to an existing document object" error
+    // by ensuring we don't reference objects from outside the current document context
+    Object.assign(doc, JSON.parse(JSON.stringify(content)));
   });
   newHandle.docSync();
 };
