@@ -336,8 +336,15 @@ export async function createDocument<T>(
     throw new Error(`Failed to create directory structure for ${path}`);
   }
 
+  let parentHandle;
+  if (result.targetRef) {
+    parentHandle = repo.find<DirNode>(result.targetRef.pointer);
+  } else {
+    parentHandle = result.nodeHandle;
+  }
+
   // Add the document to its parent directory
-  result.nodeHandle.change((doc: DirNode) => {
+  parentHandle.change((doc: DirNode) => {
     if (!doc.children) {
       doc.children = [];
     }
