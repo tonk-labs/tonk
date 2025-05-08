@@ -46,7 +46,6 @@
   },
   "include": [
     "src/**/*",
-    "docker-start.ts",
   ],
   "exclude": [
     "node_modules",
