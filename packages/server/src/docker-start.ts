@@ -1,4 +1,4 @@
-import {createServer, ServerOptions, TonkServer} from './src/index.js';
+import {createServer, ServerOptions, TonkServer} from './index.js';
 import fs from 'fs';
 import chalk from 'chalk';
 
