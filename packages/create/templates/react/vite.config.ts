@@ -34,6 +34,12 @@ export default defineConfig({
         target: "http://localhost:7777",
         changeOrigin: true,
       },
+      "/api": {
+        target: "http://localhost:6080",
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path
+      },
     },
   },
   build: {

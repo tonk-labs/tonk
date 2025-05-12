@@ -4,9 +4,7 @@ This Express server provides API proxy functionality for your Tonk application.
 
 ## API Proxy Functionality
 
-> WARNING THIS IS NOT CURRENTLY FUNCTIONING
-
-All requests to `/api/:endpoint` are automatically proxied from the frontend to this server running on port 8080.
+All requests to `/api/:endpoint` are automatically proxied from the frontend to this server running on port 6080.
 
 ### Benefits of using the API proxy:
 1. **CORS handling** - Make cross-origin requests without browser restrictions
