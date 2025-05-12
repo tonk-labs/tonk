@@ -6,6 +6,7 @@ import {psCommand} from './commands/ps.js';
 import {startCommand} from './commands/start.js';
 import {killCommand} from './commands/kill.js';
 import {pushCommand} from './commands/push.js';
+import {proxyCommand} from './commands/proxy.js';
 import {createServer} from '@tonk/server';
 import chalk from 'chalk';
 import envPaths from 'env-paths';
@@ -32,6 +33,7 @@ program.addCommand(startCommand);
 program.addCommand(psCommand);
 program.addCommand(lsCommand);
 program.addCommand(killCommand);
+program.addCommand(proxyCommand);
 
 const startServer = async () => {
   try {
