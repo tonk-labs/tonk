@@ -1,86 +1,108 @@
 import express from "express";
-import { createProxyMiddleware } from "http-proxy-middleware";
 import cors from "cors";
-import dotenv from "dotenv";
+import { createProxyMiddleware } from "http-proxy-middleware";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import fs from "fs";
 
-// Load environment variables from .env file
-dotenv.config();
+interface ApiService {
+  prefix: string; // The route prefix (e.g., "weather")
+  baseUrl: string; // The actual API base URL
+  requiresAuth?: boolean; // Whether authentication is needed
+  authType?: "bearer" | "apikey" | "basic" | "query"; // Authentication type
+  authHeaderName?: string; // Header name for auth (e.g., "Authorization" or "X-API-Key")
+  authEnvVar?: string; // API key or auth secret
+  authQueryParamName?: string; // If using query auth type, the corresponding query param
+}
+
+// Import API services configuration
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const projectRoot = join(__dirname, "..", "..");
+
+// Read API services from the frontend project
+const apiServicesPath = join(projectRoot, "src", "services", "apiServices.ts");
+const apiServicesContent = fs.readFileSync(apiServicesPath, "utf-8");
+
+// Extract API services using regex (a simple approach)
+const servicesRegex =
+  /export const apiServices: ApiService\[\] = \[([\s\S]*?)\];/;
+const servicesMatch = apiServicesContent.match(servicesRegex);
+
+if (!servicesMatch) {
+  console.error("Could not parse API services from the frontend project");
+  process.exit(1);
+}
+
+// Parse the services (this is a simplified approach)
+const servicesString = servicesMatch[1];
+const services = eval(`[${servicesString}]`);
 
 const app = express();
 const PORT = process.env.PORT || 6080;
 
-// Enable CORS for all routes
+// Enable CORS
 app.use(cors());
 
-// Parse JSON request bodies
-app.use(express.json());
+// Setup API proxies based on the configuration
+services.forEach((service: ApiService) => {
+  const {
+    prefix,
+    baseUrl,
+    requiresAuth,
+    authType,
+    authEnvVar,
+    authHeaderName,
+    authQueryParamName,
+  } = service;
 
-// Basic route for hello world
-app.get("/api/hello", (_req, res) => {
-  res.send("Hello World Api!");
-});
+  // Create proxy middleware for this service
+  app.use(
+    `/api/${prefix}`,
+    createProxyMiddleware({
+      target: baseUrl,
+      changeOrigin: true,
+      pathRewrite: {
+        [`^/api/${prefix}`]: "",
+      },
+      on: {
+        proxyReq: (proxyReq, _req, _res) => {
+          // Add authentication if required
+          if (requiresAuth) {
+            const authValue = authEnvVar || ""; // In production, this would be process.env[authEnvVar]
 
-// Health check endpoint
-app.get("/ping", (_req, res) => {
-  res.status(200).send("OK");
-});
-
-/**
- * API Proxy Middleware
- *
- * This middleware proxies requests from /api/:endpoint to external services
- * while keeping API keys and credentials secure on the server side.
- *
- * Example: A request to /api/weather will be handled by the proxy
- * and forwarded to the appropriate external service.
- */
-
-// Generic API proxy handler
-app.use("/api/:endpoint", (req, res, next) => {
-  const endpoint = req.params.endpoint;
-
-  // Skip if this is a direct API endpoint we've defined
-  if (endpoint === "hello") {
-    return next();
-  }
-
-  // Handle different API endpoints
-  switch (endpoint) {
-    case "weather":
-      // Example: Proxy to a weather API
-      const weatherApiKey = process.env.WEATHER_API_KEY;
-      if (!weatherApiKey) {
-        return res
-          .status(500)
-          .json({ error: "Weather API key not configured" });
-      }
-
-      // Create a proxy for this specific request
-      createProxyMiddleware({
-        target: "https://api.weatherapi.com/v1",
-        changeOrigin: true,
-        pathRewrite: {
-          [`^/api/weather`]: "",
+            if (authType === "bearer") {
+              proxyReq.setHeader(
+                authHeaderName || "Authorization",
+                `Bearer ${authValue}`,
+              );
+            } else if (authType === "apikey") {
+              proxyReq.setHeader(authHeaderName || "X-API-Key", authValue);
+            } else if (authType === "basic") {
+              proxyReq.setHeader(
+                authHeaderName || "Authorization",
+                `Basic ${authValue}`,
+              );
+            } else if (authType === "query") {
+              // For query params, we need to modify the URL
+              const url = new URL(proxyReq.path, baseUrl);
+              url.searchParams.set(authQueryParamName || "apikey", authValue);
+              proxyReq.path = url.pathname + url.search;
+            }
+          }
+          // Log the request
+          console.log(`Proxying request to ${baseUrl}${proxyReq.path}`);
         },
-        on: {
-          proxyReq: (proxyReq) => {
-            // Add API key to the request
-            proxyReq.path = `${proxyReq.path}${proxyReq.path.includes("?") ? "&" : "?"}key=${weatherApiKey}`;
-          },
-        },
-      })(req, res, next);
-      break;
-
-    // Add more API endpoints as needed
-
-    default:
-      // If no specific handler is defined, return a 404
-      res.status(404).json({ error: `API endpoint '${endpoint}' not found` });
-  }
+      },
+    }),
+  );
 });
 
 // Start the server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`API proxy available at http://localhost:${PORT}/api/:endpoint`);
+  console.log(`API proxy server running on port ${PORT}`);
+  console.log(`Proxying the following services:`);
+  services.forEach((service: ApiService) => {
+    console.log(`- ${service.prefix} -> ${service.baseUrl}`);
+  });
 });

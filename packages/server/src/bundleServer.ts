@@ -6,6 +6,7 @@ import {createProxyMiddleware} from 'http-proxy-middleware';
 import {BundleServerConfig} from './types.js';
 import chalk from 'chalk';
 import {RootNode} from './rootNode.js';
+import {ApiService} from './types.js';
 
 export class BundleServer {
   private app: express.Application;
@@ -29,6 +30,191 @@ export class BundleServer {
     }
   }
 
+  private setupApiProxies() {
+    const apiServicesPath = path.join(
+      this.config.bundlePath,
+      'apiServices.json',
+    );
+
+    // Check if apiServices.json exists
+    if (!fs.existsSync(apiServicesPath)) {
+      this.log(
+        'yellow',
+        'No apiServices.json found. Skipping API proxy setup.',
+      );
+      return;
+    }
+
+    try {
+      // Read and parse the apiServices.json file
+      const apiServicesContent = fs.readFileSync(apiServicesPath, 'utf8');
+      const apiServices: ApiService[] = JSON.parse(apiServicesContent);
+
+      if (!Array.isArray(apiServices) || apiServices.length === 0) {
+        this.log(
+          'yellow',
+          'apiServices.json is empty or not an array. Skipping API proxy setup.',
+        );
+        return;
+      }
+
+      // Set up a proxy for each API service
+      for (const service of apiServices) {
+        const {
+          prefix,
+          baseUrl,
+          requiresAuth,
+          authType,
+          authHeaderName,
+          authEnvVar,
+          authQueryParamName,
+        } = service;
+
+        if (!prefix || !baseUrl) {
+          this.log(
+            'yellow',
+            `Skipping invalid API service: ${JSON.stringify(service)}`,
+          );
+          continue;
+        }
+
+        // For query parameter authentication, we need to handle it differently
+        if (requiresAuth && authType === 'query' && authQueryParamName) {
+          // Create a router to handle query parameter authentication
+          const router = express.Router();
+          
+          // Middleware to add the query parameter to all requests
+          router.use((req, _res, next) => {
+            let authValue = authEnvVar || '';
+            
+            // If authEnvVar is specified, try to get it from environment variables
+            if (authEnvVar && authEnvVar.startsWith('$')) {
+              const envVarName = authEnvVar.substring(1);
+              authValue = process.env[envVarName] || authEnvVar;
+            }
+            
+            // Add the query parameter to the URL
+            const url = new URL(req.url, 'http://localhost');
+            url.searchParams.set(authQueryParamName, authValue);
+            req.url = url.pathname + url.search;
+            
+            if (this.config.verbose) {
+              this.log(
+                'blue',
+                `Added query param ${authQueryParamName} to request: ${req.url}`,
+              );
+            }
+            
+            next();
+          });
+          
+          // Mount the router at the API path
+          const proxyPath = `/api/${prefix}`;
+          this.log('blue', `Setting up API proxy with query auth: ${proxyPath} -> ${baseUrl}`);
+          
+          this.app.use(
+            proxyPath,
+            router,
+            createProxyMiddleware({
+              target: baseUrl,
+              changeOrigin: true,
+              pathRewrite: {
+                [`^/api/${prefix}`]: '', // Remove the /api/prefix part when forwarding
+              },
+              on: {
+                proxyReq: (_proxyReq, req, _res) => {
+                  // Log the proxied request in verbose mode
+                  if (this.config.verbose) {
+                    this.log(
+                      'blue',
+                      `Proxying request: ${req.method} ${req.url} -> ${baseUrl}`,
+                    );
+                  }
+                },
+                error: (err, _req, res) => {
+                  this.log(
+                    'red',
+                    `API proxy error for ${prefix}: ${err.message}`,
+                  );
+                  res.end(
+                    JSON.stringify({error: 'Proxy error', message: err.message}),
+                  );
+                },
+              },
+            }),
+          );
+        } else {
+          // Standard header-based authentication
+          const proxyPath = `/api/${prefix}`;
+          this.log('blue', `Setting up API proxy: ${proxyPath} -> ${baseUrl}`);
+
+          this.app.use(
+            proxyPath,
+            createProxyMiddleware({
+              target: baseUrl,
+              changeOrigin: true,
+              pathRewrite: {
+                [`^/api/${prefix}`]: '', // Remove the /api/prefix part when forwarding
+              },
+              on: {
+                proxyReq: (proxyReq, req, _res) => {
+                  // Add authentication if required
+                  if (requiresAuth && authType) {
+                    let authValue = authEnvVar;
+
+                    // If authEnvVar is specified, try to get it from environment variables
+                    if (authEnvVar && authEnvVar.startsWith('$')) {
+                      const envVarName = authEnvVar.substring(1);
+                      authValue = process.env[envVarName] || authEnvVar;
+                    }
+
+                    if (authType === 'apikey' && authHeaderName) {
+                      proxyReq.setHeader(authHeaderName, authValue || '');
+                    } else if (authType === 'bearer') {
+                      proxyReq.setHeader(
+                        'Authorization',
+                        `Bearer ${authValue || ''}`,
+                      );
+                    } else if (authType === 'basic') {
+                      proxyReq.setHeader(
+                        'Authorization',
+                        `Basic ${authValue || ''}`,
+                      );
+                    }
+                  }
+
+                  // Log the proxied request in verbose mode
+                  if (this.config.verbose) {
+                    this.log(
+                      'blue',
+                      `Proxying request: ${req.method} ${req.url} -> ${baseUrl}`,
+                    );
+                  }
+                },
+                error: (err, _req, res) => {
+                  this.log(
+                    'red',
+                    `API proxy error for ${prefix}: ${err.message}`,
+                  );
+                  res.end(
+                    JSON.stringify({error: 'Proxy error', message: err.message}),
+                  );
+                },
+              },
+            }),
+          );
+        }
+      }
+
+      this.log(
+        'green',
+        `API proxies set up for ${apiServices.length} services`,
+      );
+    } catch (error) {
+      this.log('red', `Error setting up API proxies: ${error}`);
+    }
+  }
+
   private setupRoutes() {
     // Handle WASM files with correct MIME type
     this.app.get('*.wasm', (_req, res, next) => {
@@ -36,17 +222,8 @@ export class BundleServer {
       next();
     });
 
-    // If the bundle has a services directory, set up a proxy to it
-    // TODO this needs to load in services from the bundle and plug that functionality into an express server which will be this proxy target
-    // if (this.config.hasServices) {
-    //   this.app.use(
-    //     '/api',
-    //     createProxyMiddleware({
-    //       target: `http://localhost:${this.config.port}`,
-    //       changeOrigin: true,
-    //     }),
-    //   );
-    // }
+    // Set up API proxies based on apiServices.json if it exists
+    this.setupApiProxies();
 
     // Serve static files from the bundle
     this.app.use(express.static(this.config.bundlePath));
