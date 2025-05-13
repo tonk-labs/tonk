@@ -1,23 +1,34 @@
-# Tonk App Server Proxy
+# API Proxy Server for Development
 
-This is a simple Express server that provides an API passthrough for your Tonk application.
-
-Whenever you run `tonk dev` or
+This server provides API proxying for development mode. It reads the API service configurations from the frontend project and creates proxy endpoints for each service.
 
 ## Setup
 
-## Setup
+1. Install dependencies:
+   ```
+   cd server
+   pnpm install
+   ```
 
-1. Install server dependencies in the server/ folder:
+2. Start the server:
+   ```
+   pnpm dev
+   ```
 
-```
-cd server
-pnpm install
-pnpm build
-```
+## How it works
 
-2. Start the development server in the top-level app project:
+The server reads the API service configurations from `src/services/apiServices.ts` in the frontend project and creates proxy endpoints for each service. When a request is made to `/api/{service-prefix}/*`, the server proxies the request to the corresponding API endpoint, adding any required authentication.
 
-```
-tonk dev
-```
+In development mode, the Vite dev server is configured to proxy requests to `/api/*` to this server.
+
+## Configuration
+
+API services are configured in `src/services/apiServices.ts` in the frontend project. Each service has the following properties:
+
+- `prefix`: The route prefix (e.g., "weather")
+- `baseUrl`: The actual API base URL
+- `requiresAuth`: Whether authentication is needed
+- `authType`: Authentication type ("bearer", "apikey", "basic", or "query")
+- `authHeaderName`: Header name for auth (e.g., "Authorization" or "X-API-Key")
+- `authEnvVar`: API key or auth secret
+- `authQueryParamName`: If using query auth type, the corresponding query param

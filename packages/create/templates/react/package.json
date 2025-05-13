@@ -1,13 +1,15 @@
 {
-  "name": "store-viewer",
+  "name": "tonk-app",
   "version": "0.1.0",
   "description": "A Tonk application",
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently \"pnpm dev:client\" \"pnpm dev:server\"",
+    "dev:client": "vite",
+    "dev:server": "cd server && pnpm dev",
     "clean": "rm -rf dist",
-    "build": "npm run clean && tsc && vite build",
+    "build": "npm run clean && tsc && vite build && tsx scripts/exportApiConfig.ts",
     "serve": "vite preview",
     "deployment": "tonk deploy",
     "test": "jest",
