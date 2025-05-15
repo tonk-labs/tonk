@@ -3,7 +3,7 @@ export interface ProjectPlan {
   projectDescription: string;
 }
 
-export type TemplateType = "react" | "node";
+export type TemplateType = "react" | "node" | "worker";
 
 export interface TemplateConfig {
   name: string;
