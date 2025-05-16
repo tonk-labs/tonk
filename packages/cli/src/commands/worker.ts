@@ -114,13 +114,12 @@ workerCommand
         head: [
           chalk.cyan('ID'),
           chalk.cyan('Name'),
-          chalk.cyan('Type'),
           chalk.cyan('Endpoint'),
           chalk.cyan('Protocol'),
           chalk.cyan('Status'),
           chalk.cyan('Last Seen'),
         ],
-        colWidths: [24, 20, 10, 30, 10, 10, 20],
+        colWidths: [24, 20, 30, 10, 10, 20],
       });
 
       // Add workers to table
@@ -132,7 +131,6 @@ workerCommand
         table.push([
           worker.id,
           worker.name,
-          worker.config.type || 'custom',
           worker.endpoint,
           worker.protocol,
           worker.status.active
@@ -473,13 +471,24 @@ function displayWorkerDetails(worker: any) {
     chalk.cyan('Description:'),
     worker.description || '(No description)',
   );
-  console.log(chalk.cyan('Type:'), worker.config.type || 'custom');
   console.log(chalk.cyan('Endpoint:'), worker.endpoint);
   console.log(chalk.cyan('Protocol:'), worker.protocol);
   console.log(
     chalk.cyan('Status:'),
     worker.status.active ? chalk.green('Active') : chalk.yellow('Inactive'),
   );
+
+  // Display dependencies if any
+  if (
+    worker.config.dependencies &&
+    Array.isArray(worker.config.dependencies) &&
+    worker.config.dependencies.length > 0
+  ) {
+    console.log(chalk.cyan('Dependencies:'));
+    worker.config.dependencies.forEach((dep: string) => {
+      console.log(`  - ${dep}`);
+    });
+  }
 
   if (worker.status.lastSeen) {
     console.log(
@@ -653,6 +662,11 @@ version: 1.0.0
 # Connection Details
 endpoint: http://localhost:${port}/tonk
 protocol: http
+
+# Dependencies
+# List of worker names that this worker depends on
+# These workers will be started automatically when this worker is started
+dependencies: []
 
 # Health Check Configuration
 healthCheck:

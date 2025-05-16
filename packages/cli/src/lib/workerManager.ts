@@ -133,7 +133,7 @@ export class TonkWorkerManager implements WorkerManager {
       config: {
         type: yamlConfig.type || 'custom',
         version: yamlConfig.version,
-        capabilities: yamlConfig.capabilities,
+        dependencies: yamlConfig.dependencies || [],
         healthCheck: yamlConfig.healthCheck,
         process: yamlConfig.process,
         ...yamlConfig.config,
@@ -246,13 +246,65 @@ export class TonkWorkerManager implements WorkerManager {
   }
 
   /**
-   * Start a worker
+   * Start a worker and its dependencies
+   * @param id Worker ID to start
+   * @param startedWorkers Set of worker IDs that have already been started (to prevent circular dependencies)
+   * @param isRootWorker Whether this is the root worker being started (for logging purposes)
    */
-  async start(id: string): Promise<boolean> {
+  async start(
+    id: string,
+    startedWorkers: Set<string> = new Set(),
+    isRootWorker: boolean = true,
+  ): Promise<boolean> {
+    // Prevent circular dependencies by tracking started workers
+    if (startedWorkers.has(id)) {
+      console.log(`Worker ${id} already started or in progress.`);
+      return true;
+    }
+
+    startedWorkers.add(id);
+
     const worker = await this.get(id);
 
     if (!worker) {
       throw new Error(`Worker with ID '${id}' not found.`);
+    }
+
+    // Start dependencies first (if any)
+    if (
+      worker.config.dependencies &&
+      Array.isArray(worker.config.dependencies) &&
+      worker.config.dependencies.length > 0
+    ) {
+      if (isRootWorker) {
+        console.log(`Starting dependencies for worker '${worker.name}'...`);
+      }
+
+      // Get all workers to find dependencies by name
+      const allWorkers = await this.list();
+
+      for (const dependencyName of worker.config.dependencies) {
+        // Find the dependency by name
+        const dependency = allWorkers.find(w => w.name === dependencyName);
+
+        if (!dependency) {
+          console.warn(
+            `Dependency '${dependencyName}' not found for worker '${worker.name}'.`,
+          );
+          continue;
+        }
+
+        console.log(`Starting dependency '${dependency.name}'...`);
+        // Recursively start the dependency and its dependencies
+        const success = await this.start(dependency.id, startedWorkers, false);
+
+        if (!success) {
+          console.error(
+            `Failed to start dependency '${dependency.name}' for worker '${worker.name}'.`,
+          );
+          // Continue with other dependencies even if one fails
+        }
+      }
     }
 
     const execAsync = promisify(exec);
@@ -286,8 +338,18 @@ export class TonkWorkerManager implements WorkerManager {
         const maxMemory = worker.config.process.max_memory_restart
           ? `--max-memory-restart ${worker.config.process.max_memory_restart}`
           : '';
+        
+        // Add log configuration
+        const logConfig = `--log ${path.join(envPaths('tonk', {suffix: ''}).log, `${worker.id}.log`)}`;
+        const errorLogConfig = `--error ${path.join(envPaths('tonk', {suffix: ''}).log, `${worker.id}-error.log`)}`;
+        
+        // Ensure log directory exists
+        const logDir = envPaths('tonk', {suffix: ''}).log;
+        if (!fs.existsSync(logDir)) {
+          fs.mkdirSync(logDir, { recursive: true });
+        }
 
-        const startCmd = `cd ${cwd} && ${envVars} pm2 start ${worker.config.process.script} --name ${worker.id} --instances ${instances} ${watch} ${maxMemory}`;
+        const startCmd = `cd ${cwd} && ${envVars} pm2 start ${worker.config.process.script} --name ${worker.id} --instances ${instances} ${watch} ${maxMemory} ${logConfig} ${errorLogConfig}`;
 
         await execAsync(startCmd);
       }
@@ -302,7 +364,14 @@ export class TonkWorkerManager implements WorkerManager {
 
       return true;
     } catch (error) {
-      console.error(`Error starting worker:`, error);
+      console.error(`Error starting worker '${worker.name}':`, error);
+      
+      // Log detailed error information
+      if (error instanceof Error) {
+        console.error(`Error message: ${error.message}`);
+        console.error(`Stack trace: ${error.stack}`);
+      }
+      
       return false;
     }
   }
