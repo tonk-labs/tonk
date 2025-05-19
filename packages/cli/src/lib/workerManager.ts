@@ -133,7 +133,6 @@ export class TonkWorkerManager implements WorkerManager {
       config: {
         type: yamlConfig.type || 'custom',
         version: yamlConfig.version,
-        dependencies: yamlConfig.dependencies || [],
         healthCheck: yamlConfig.healthCheck,
         process: yamlConfig.process,
         ...yamlConfig.config,
@@ -246,77 +245,19 @@ export class TonkWorkerManager implements WorkerManager {
   }
 
   /**
-   * Start a worker and its dependencies
+   * Start a worker
    * @param id Worker ID to start
-   * @param startedWorkers Set of worker IDs that have already been started (to prevent circular dependencies)
-   * @param isRootWorker Whether this is the root worker being started (for logging purposes)
    */
-  async start(
-    id: string,
-    startedWorkers: Set<string> = new Set(),
-    isRootWorker: boolean = true,
-  ): Promise<boolean> {
-    // Prevent circular dependencies by tracking started workers
-    if (startedWorkers.has(id)) {
-      console.log(`Worker ${id} already started or in progress.`);
-      return true;
-    }
-
-    startedWorkers.add(id);
-
+  async start(id: string): Promise<boolean> {
     const worker = await this.get(id);
 
     if (!worker) {
       throw new Error(`Worker with ID '${id}' not found.`);
     }
 
-    // Start dependencies first (if any)
-    if (
-      worker.config.dependencies &&
-      Array.isArray(worker.config.dependencies) &&
-      worker.config.dependencies.length > 0
-    ) {
-      if (isRootWorker) {
-        console.log(`Starting dependencies for worker '${worker.name}'...`);
-      }
-
-      // Get all workers to find dependencies by name
-      const allWorkers = await this.list();
-
-      for (const dependencyName of worker.config.dependencies) {
-        // Find the dependency by name
-        const dependency = allWorkers.find(w => w.name === dependencyName);
-
-        if (!dependency) {
-          console.warn(
-            `Dependency '${dependencyName}' not found for worker '${worker.name}'.`,
-          );
-          continue;
-        }
-
-        console.log(`Starting dependency '${dependency.name}'...`);
-        // Recursively start the dependency and its dependencies
-        const success = await this.start(dependency.id, startedWorkers, false);
-
-        if (!success) {
-          console.error(
-            `Failed to start dependency '${dependency.name}' for worker '${worker.name}'.`,
-          );
-          // Continue with other dependencies even if one fails
-        }
-      }
-    }
-
     const execAsync = promisify(exec);
 
     try {
-      // Check if worker has process configuration
-      if (!worker.config.process || !worker.config.process.script) {
-        throw new Error(
-          `Worker '${worker.name}' does not have a valid process configuration.`,
-        );
-      }
-
       // Check if worker is already running in PM2
       const {stdout} = await execAsync('pm2 list');
 
@@ -330,28 +271,80 @@ export class TonkWorkerManager implements WorkerManager {
         const envVars = Object.entries(worker.env)
           .map(([key, value]) => `${key}=${value}`)
           .join(' ');
-
-        // Start the worker with PM2
-        const cwd = worker.config.process.cwd || '.';
-        const instances = worker.config.process.instances || 1;
-        const watch = worker.config.process.watch ? '--watch' : '';
-        const maxMemory = worker.config.process.max_memory_restart
-          ? `--max-memory-restart ${worker.config.process.max_memory_restart}`
-          : '';
-        
-        // Add log configuration
-        const logConfig = `--log ${path.join(envPaths('tonk', {suffix: ''}).log, `${worker.id}.log`)}`;
-        const errorLogConfig = `--error ${path.join(envPaths('tonk', {suffix: ''}).log, `${worker.id}-error.log`)}`;
         
         // Ensure log directory exists
         const logDir = envPaths('tonk', {suffix: ''}).log;
         if (!fs.existsSync(logDir)) {
           fs.mkdirSync(logDir, { recursive: true });
         }
+        
+        // Add log configuration
+        const logConfig = `--log ${path.join(logDir, `${worker.id}.log`)}`;
+        const errorLogConfig = `--error ${path.join(logDir, `${worker.id}-error.log`)}`;
 
-        const startCmd = `cd ${cwd} && ${envVars} pm2 start ${worker.config.process.script} --name ${worker.id} --instances ${instances} ${watch} ${maxMemory} ${logConfig} ${errorLogConfig}`;
+        // Handle different worker types
+        if (worker.config.type === 'npm') {
+          // For npm-based workers, we need to find the entry point
+          const packageName = worker.name;
+          
+          try {
+            // Get the package's bin entry point
+            const { stdout: binInfo } = await execAsync(`npm bin -g`);
+            const binPath = binInfo.trim();
+            const executablePath = path.join(binPath, packageName);
+            
+            // Check if the executable exists
+            if (fs.existsSync(executablePath)) {
+              // Start the npm package with PM2
+              const startCmd = `${envVars} pm2 start ${executablePath} --name ${worker.id} ${logConfig} ${errorLogConfig}`;
+              await execAsync(startCmd);
+            } else {
+              // Try to find the main entry point
+              const { stdout: packageInfo } = await execAsync(`npm list -g ${packageName} --json`);
+              const packageData = JSON.parse(packageInfo);
+              
+              if (packageData.dependencies && packageData.dependencies[packageName]) {
+                const packagePath = packageData.dependencies[packageName].path;
+                const packageJsonPath = path.join(packagePath, 'package.json');
+                
+                if (fs.existsSync(packageJsonPath)) {
+                  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+                  const mainScript = packageJson.main || 'index.js';
+                  const scriptPath = path.join(packagePath, mainScript);
+                  
+                  // Start the npm package with PM2
+                  const startCmd = `cd ${packagePath} && ${envVars} pm2 start ${scriptPath} --name ${worker.id} ${logConfig} ${errorLogConfig}`;
+                  await execAsync(startCmd);
+                } else {
+                  throw new Error(`Could not find package.json for ${packageName}`);
+                }
+              } else {
+                throw new Error(`Could not find installed package ${packageName}`);
+              }
+            }
+          } catch (error) {
+            console.error(`Error starting npm worker:`, error);
+            throw error;
+          }
+        } else {
+          // For traditional workers with process configuration
+          if (!worker.config.process || !worker.config.process.script) {
+            throw new Error(
+              `Worker '${worker.name}' does not have a valid process configuration.`,
+            );
+          }
+          
+          // Start the worker with PM2
+          const cwd = worker.config.process.cwd || '.';
+          const instances = worker.config.process.instances || 1;
+          const watch = worker.config.process.watch ? '--watch' : '';
+          const maxMemory = worker.config.process.max_memory_restart
+            ? `--max-memory-restart ${worker.config.process.max_memory_restart}`
+            : '';
 
-        await execAsync(startCmd);
+          const startCmd = `cd ${cwd} && ${envVars} pm2 start ${worker.config.process.script} --name ${worker.id} --instances ${instances} ${watch} ${maxMemory} ${logConfig} ${errorLogConfig}`;
+          await execAsync(startCmd);
+        }
       }
 
       // Update worker status

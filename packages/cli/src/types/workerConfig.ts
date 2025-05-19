@@ -28,9 +28,6 @@ export const WorkerConfigSchema = z.object({
   endpoint: z.string(),
   protocol: z.string().default('http'),
 
-  // Dependencies
-  dependencies: z.array(z.string()).optional(),
-
   // Health check configuration
   healthCheck: WorkerHealthCheckSchema.optional(),
 
@@ -66,12 +63,6 @@ export type WorkerConfig = z.infer<typeof WorkerConfigSchema>;
  * # Connection Details
  * endpoint: http://localhost:5555/tonk
  * protocol: http
- *
- * # Dependencies
- * # List of worker names that this worker depends on
- * dependencies:
- *   - vector-store-worker
- *   - embedding-worker
  *
  * # Health Check Configuration
  * healthCheck:

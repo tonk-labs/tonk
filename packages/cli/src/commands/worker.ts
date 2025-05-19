@@ -6,6 +6,9 @@ import * as YAML from 'yaml';
 import Table from 'cli-table3';
 import inquirer from 'inquirer';
 import {TonkWorkerManager} from '../lib/workerManager.js';
+import {promisify} from 'node:util';
+import {exec} from 'node:child_process';
+import net from 'node:net';
 
 export const workerCommand = new Command('worker')
   .description('Manage Tonk workers')
@@ -355,13 +358,56 @@ workerCommand
     }
   });
 
+// TODO: pull worker info from worker.config.ts
 workerCommand
   .command('register')
   .description('Register a worker with Tonk')
   .argument('[dir]', 'Path to worker directory (defaults to current directory)')
-  .action(async (dir = '.') => {
+  .option('-n, --name <name>', 'Name of the worker')
+  .option('-e, --endpoint <endpoint>', 'Endpoint URL of the worker')
+  .option('-p, --port <port>', 'Port number for the worker')
+  .option('-d, --description <description>', 'Description of the worker')
+  .action(async (dir = '.', options) => {
     try {
-      // Find the worker.yaml file
+      // Create worker manager
+      const workerManager = new TonkWorkerManager();
+
+      // If options are provided, use them directly
+      if (options.name && options.endpoint) {
+        // Register worker using provided options
+        const worker = await workerManager.register({
+          name: options.name,
+          description: options.description || `Worker at ${options.endpoint}`,
+          endpoint: options.endpoint,
+          protocol: 'http',
+          env: options.port ? [`WORKER_PORT=${options.port}`] : [],
+        });
+
+        console.log(
+          chalk.green(`Worker '${worker.name}' registered successfully!`),
+        );
+        console.log(chalk.cyan('Worker ID:'), chalk.bold(worker.id));
+        console.log(chalk.cyan('Endpoint:'), chalk.bold(worker.endpoint));
+        console.log(chalk.cyan('Protocol:'), chalk.bold(worker.protocol));
+        console.log(
+          chalk.cyan('Status:'),
+          worker.status.active
+            ? chalk.green('Active')
+            : chalk.yellow('Inactive'),
+        );
+
+        if (Object.keys(worker.env).length > 0) {
+          console.log(chalk.cyan('Environment Variables:'));
+          Object.entries(worker.env).forEach(([key, value]) => {
+            console.log(`  ${key}=${value}`);
+          });
+        }
+        return;
+      }
+
+      // TODO: replace YAML config with worker.config.ts
+      //
+      // Otherwise, look for worker.yaml file
       const workerDir = await findWorkerRoot(dir);
 
       if (!workerDir) {
@@ -372,7 +418,7 @@ workerCommand
         );
         console.log(
           chalk.yellow(
-            'Make sure you are in a valid worker directory or specify the path to one.',
+            'Make sure you are in a valid worker directory or specify the path to one, or provide --name and --endpoint options.',
           ),
         );
         return;
@@ -390,9 +436,6 @@ workerCommand
         );
         return;
       }
-
-      // Create worker manager
-      const workerManager = new TonkWorkerManager();
 
       // Register worker using the YAML config
       const worker = await workerManager.registerFromYamlConfig(workerConfig);
@@ -416,6 +459,88 @@ workerCommand
       }
     } catch (error) {
       console.error(chalk.red('Failed to register worker:'), error);
+    }
+  });
+
+workerCommand
+  .command('install <package>')
+  .description('Install and start a worker from npm')
+  .option(
+    '-p, --port <port>',
+    'Specify a port for the worker (default: auto-detect)',
+  )
+  .option(
+    '-n, --name <name>',
+    'Custom name for the worker (default: npm package name)',
+  )
+  .action(async (packageName, options) => {
+    try {
+      console.log(
+        chalk.blue(`Installing worker from npm package: ${packageName}...`),
+      );
+
+      // Create worker manager
+      const workerManager = new TonkWorkerManager();
+
+      // Execute npm install
+      const execAsync = promisify(exec);
+
+      try {
+        console.log(chalk.blue('Installing package...'));
+        await execAsync(`npm install -g ${packageName}`);
+        console.log(chalk.green('Package installed successfully!'));
+      } catch (error) {
+        console.error(chalk.red('Failed to install package:'), error);
+        return;
+      }
+
+      // Find an available port starting from 5555
+      let port = options.port;
+      if (!port) {
+        port = await findAvailablePort(5555);
+        console.log(chalk.blue(`Found available port: ${port}`));
+      }
+
+      // Get package info to determine the worker name and entry point
+      let packageInfo;
+      try {
+        const {stdout} = await execAsync(`npm view ${packageName} --json`);
+        packageInfo = JSON.parse(stdout);
+      } catch (error) {
+        console.error(chalk.red('Failed to get package info:'), error);
+        return;
+      }
+
+      // Register the worker with the npm package name (use display name in description)
+      const worker = await workerManager.register({
+        name: packageName, // Use the actual package name for npm resolution
+        description:
+          packageInfo.description || `Worker from npm package ${packageName}`,
+        endpoint: `http://localhost:${port}/tonk`,
+        protocol: 'http',
+        env: [`WORKER_PORT=${port}`],
+        type: 'npm',
+      });
+
+      console.log(
+        chalk.green(`Worker '${worker.name}' registered successfully!`),
+      );
+
+      // Start the worker
+      console.log(chalk.blue(`Starting worker '${worker.name}'...`));
+      const success = await workerManager.start(worker.id);
+
+      if (success) {
+        console.log(
+          chalk.green(`Worker '${worker.name}' started successfully!`),
+        );
+        console.log(chalk.cyan('Worker ID:'), chalk.bold(worker.id));
+        console.log(chalk.cyan('Endpoint:'), chalk.bold(worker.endpoint));
+      } else {
+        console.error(chalk.red(`Failed to start worker '${worker.name}'.`));
+      }
+    } catch (error) {
+      console.error(chalk.red('Failed to install worker:'), error);
     }
   });
 
@@ -477,18 +602,6 @@ function displayWorkerDetails(worker: any) {
     chalk.cyan('Status:'),
     worker.status.active ? chalk.green('Active') : chalk.yellow('Inactive'),
   );
-
-  // Display dependencies if any
-  if (
-    worker.config.dependencies &&
-    Array.isArray(worker.config.dependencies) &&
-    worker.config.dependencies.length > 0
-  ) {
-    console.log(chalk.cyan('Dependencies:'));
-    worker.config.dependencies.forEach((dep: string) => {
-      console.log(`  - ${dep}`);
-    });
-  }
 
   if (worker.status.lastSeen) {
     console.log(
@@ -648,6 +761,38 @@ async function promptForMissingOptions(options: any) {
   return inquirer.prompt(questions);
 }
 
+/**
+ * Find an available port starting from the given port number
+ * @param startPort The port to start checking from
+ * @returns A promise that resolves to an available port
+ */
+async function findAvailablePort(startPort: number): Promise<number> {
+  let port = startPort;
+
+  const isPortAvailable = (port: number): Promise<boolean> => {
+    return new Promise(resolve => {
+      const server = net.createServer();
+
+      server.once('error', () => {
+        resolve(false);
+      });
+
+      server.once('listening', () => {
+        server.close();
+        resolve(true);
+      });
+
+      server.listen(port);
+    });
+  };
+
+  while (!(await isPortAvailable(port))) {
+    port++;
+  }
+
+  return port;
+}
+
 // Helper function to generate YAML content (for init command)
 function generateYamlContent(options: any): string {
   const port = options.port || '5555';
@@ -662,11 +807,6 @@ version: 1.0.0
 # Connection Details
 endpoint: http://localhost:${port}/tonk
 protocol: http
-
-# Dependencies
-# List of worker names that this worker depends on
-# These workers will be started automatically when this worker is started
-dependencies: []
 
 # Health Check Configuration
 healthCheck:
