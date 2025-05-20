@@ -4,6 +4,7 @@ export interface ProjectPlan {
   description?: string;
   platform?: string;
   projectName?: string;
+  workerDependencies?: string[];
 }
 
 export type TemplateType = "react" | "node" | "worker";

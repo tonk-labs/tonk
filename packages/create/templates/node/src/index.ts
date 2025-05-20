@@ -2,6 +2,7 @@ import { sync, configureSyncEngine, DocumentId } from "@tonk/keepsync";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { NodeFSStorageAdapter } from "@automerge/automerge-repo-storage-nodefs";
 import { createStore } from "zustand/vanilla";
+import { setupWorkers } from "./utils/workers";
 
 const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:7777/sync");
 configureSyncEngine({
@@ -38,4 +39,18 @@ const createStoreAndRun = () => {
   }, 2000);
 };
 
-createStoreAndRun();
+// Initialize the application
+async function init() {
+  try {
+    // Set up required workers
+    await setupWorkers();
+    
+    // Start the application
+    createStoreAndRun();
+  } catch (error) {
+    console.error("Failed to initialize application:", error);
+    process.exit(1);
+  }
+}
+
+init();

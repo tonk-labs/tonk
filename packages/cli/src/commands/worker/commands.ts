@@ -674,8 +674,7 @@ export function registerInitCommand(workerCommand: Command): void {
         }
 
         // Generate the worker.config.js content
-        const workerConfigContent =
-          generateWorkerConfigJsContent(mergedOptions);
+        const workerConfigContent = generateWorkerConfigJsContent();
         const workerConfigPath = path.join(targetDir, 'worker.config.js');
         fs.writeFileSync(workerConfigPath, workerConfigContent);
 

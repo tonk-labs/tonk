@@ -26,7 +26,7 @@ A Tonk worker service for building local-first applications.
 
 ## Worker Configuration
 
-The worker is configured using the `worker.yaml` file. You can modify this file to change the worker's behavior.
+The worker is configured using the `worker.config.js` file. You can modify this file to change the worker's behavior.
 
 ## Environment Variables
 
@@ -37,9 +37,10 @@ Create a `.env` file based on the `.env.example` file to configure the worker.
 ```
 my-worker/
 ├── src/
-│   ├── index.ts    # Main entry point
-├── worker.yaml     # Worker configuration
-└── package.json    # Project configuration
+│   ├── index.ts      # Main entry point
+│   ├── cli.ts        # For controlling the worker
+├── worker.config.js  # Worker configuration
+└── package.json      # Project configuration
 ```
 
 ## License

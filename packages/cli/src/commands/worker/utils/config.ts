@@ -80,9 +80,7 @@ export function generatePackageJsonContent(options: any): string {
 /**
  * Generate worker.config.js content
  */
-export function generateWorkerConfigJsContent(options: any): string {
-  const port = options.port || '5555';
-
+export function generateWorkerConfigJsContent(): string {
   return `/**
  * Tonk Worker Configuration
  */
