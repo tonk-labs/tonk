@@ -3,10 +3,13 @@
   "version": "1.0.0",
   "description": "Tonk worker service",
   "main": "dist/index.js",
+  "bin": {
+    "tonk-worker": "dist/cli.js"
+  },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "nodemon --exec ts-node src/index.ts",
+    "start": "node dist/cli.js start",
+    "dev": "nodemon --exec ts-node src/cli.ts start",
     "watch": "tsc --watch",
     "test": "jest",
     "prepublishOnly": "npm run build"
@@ -19,13 +22,15 @@
   ],
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "worker.config.js"
   ],
   "dependencies": {
     "@automerge/automerge-repo": "^1.2.1",
     "@automerge/automerge-repo-network-websocket": "^1.2.1",
     "@automerge/automerge-repo-storage-nodefs": "^1.2.1",
     "@tonk/keepsync": "^0.4.8",
+    "commander": "^11.1.0",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0"
