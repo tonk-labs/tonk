@@ -2,7 +2,6 @@ import {Command} from 'commander';
 import chalk from 'chalk';
 import fs from 'node:fs';
 import path from 'node:path';
-import * as YAML from 'yaml';
 import Table from 'cli-table3';
 import inquirer from 'inquirer';
 import {TonkWorkerManager} from '../lib/workerManager.js';
@@ -358,7 +357,6 @@ workerCommand
     }
   });
 
-// TODO: pull worker info from worker.config.ts
 workerCommand
   .command('register')
   .description('Register a worker with Tonk')
@@ -405,15 +403,13 @@ workerCommand
         return;
       }
 
-      // TODO: replace YAML config with worker.config.ts
-      //
-      // Otherwise, look for worker.yaml file
+      // Look for package.json and worker.config.js files
       const workerDir = await findWorkerRoot(dir);
 
       if (!workerDir) {
         console.error(
           chalk.red(
-            `No worker.yaml file found in ${path.resolve(dir)} or its parent directories.`,
+            `No package.json or worker.config.js found in ${path.resolve(dir)} or its parent directories.`,
           ),
         );
         console.log(
@@ -426,19 +422,48 @@ workerCommand
 
       console.log(chalk.blue(`Found worker directory at: ${workerDir}`));
 
-      // Read the worker.yaml file
-      const workerYamlPath = path.join(workerDir, 'worker.yaml');
-      const workerConfig = await readWorkerConfig(workerYamlPath);
+      // Read package.json for worker metadata
+      const packageJsonPath = path.join(workerDir, 'package.json');
+      const packageJson = await readPackageJson(packageJsonPath);
 
-      if (!workerConfig) {
+      if (!packageJson) {
         console.error(
-          chalk.red(`Failed to parse worker.yaml file at ${workerYamlPath}`),
+          chalk.red(`Failed to parse package.json file at ${packageJsonPath}`),
         );
         return;
       }
 
-      // Register worker using the YAML config
-      const worker = await workerManager.registerFromYamlConfig(workerConfig);
+      // Read worker.config.js for configuration
+      const workerConfigPath = path.join(workerDir, 'worker.config.js');
+      const workerConfig = await readWorkerConfigJs(workerConfigPath);
+
+      if (!workerConfig) {
+        console.error(
+          chalk.red(
+            `Failed to parse worker.config.js file at ${workerConfigPath}`,
+          ),
+        );
+        return;
+      }
+
+      // Determine port from config or use default
+      const port = options.port || workerConfig.runtime?.port || 5555;
+
+      // Create worker registration options
+      const registrationOptions = {
+        name: packageJson.name,
+        description: packageJson.description || 'Tonk worker',
+        endpoint: options.endpoint || `http://localhost:${port}/tonk`,
+        protocol: 'http',
+        env: [`WORKER_PORT=${port}`],
+        config: {
+          ...workerConfig,
+          version: packageJson.version,
+        },
+      };
+
+      // Register worker
+      const worker = await workerManager.register(registrationOptions);
 
       console.log(
         chalk.green(`Worker '${worker.name}' registered successfully!`),
@@ -567,15 +592,23 @@ workerCommand
         console.log(chalk.blue(`Created directory: ${targetDir}`));
       }
 
-      // Generate the YAML content
-      const yamlContent = generateYamlContent(mergedOptions);
+      // Generate the package.json content if it doesn't exist
+      const packageJsonPath = path.join(targetDir, 'package.json');
+      if (!fs.existsSync(packageJsonPath)) {
+        const packageJsonContent = generatePackageJsonContent(mergedOptions);
+        fs.writeFileSync(packageJsonPath, packageJsonContent);
+        console.log(chalk.green(`Created package.json at: ${packageJsonPath}`));
+      }
 
-      // Write the YAML file
-      const yamlPath = path.join(targetDir, 'worker.yaml');
-      fs.writeFileSync(yamlPath, yamlContent);
+      // Generate the worker.config.js content
+      const workerConfigContent = generateWorkerConfigJsContent(mergedOptions);
+      const workerConfigPath = path.join(targetDir, 'worker.config.js');
+      fs.writeFileSync(workerConfigPath, workerConfigContent);
 
       console.log(
-        chalk.green(`Worker configuration file created at: ${yamlPath}`),
+        chalk.green(
+          `Worker configuration file created at: ${workerConfigPath}`,
+        ),
       );
       console.log(chalk.blue(`\nYou can now register this worker with:`));
       console.log(chalk.cyan(`  tonk worker register ${targetDir}`));
@@ -682,7 +715,7 @@ async function updateWorkerConfig(
 }
 
 /**
- * Find the worker root directory by looking for worker.yaml
+ * Find the worker root directory by looking for package.json and worker.config.js
  * Searches in the given directory and parent directories
  */
 async function findWorkerRoot(startDir: string): Promise<string | null> {
@@ -692,9 +725,11 @@ async function findWorkerRoot(startDir: string): Promise<string | null> {
 
     // Search up to the root directory
     while (currentDir !== rootDir) {
-      const workerYamlPath = path.join(currentDir, 'worker.yaml');
+      const packageJsonPath = path.join(currentDir, 'package.json');
+      const workerConfigPath = path.join(currentDir, 'worker.config.js');
 
-      if (fs.existsSync(workerYamlPath)) {
+      // Check if both files exist
+      if (fs.existsSync(packageJsonPath) && fs.existsSync(workerConfigPath)) {
         return currentDir;
       }
 
@@ -717,18 +752,36 @@ async function findWorkerRoot(startDir: string): Promise<string | null> {
 }
 
 /**
- * Read and parse the worker.yaml file
+ * Read and parse the package.json file
  */
-async function readWorkerConfig(configPath: string): Promise<any | null> {
+async function readPackageJson(packageJsonPath: string): Promise<any | null> {
+  try {
+    if (!fs.existsSync(packageJsonPath)) {
+      return null;
+    }
+
+    const fileContent = fs.readFileSync(packageJsonPath, 'utf-8');
+    return JSON.parse(fileContent);
+  } catch (error) {
+    console.error('Error reading package.json:', error);
+    return null;
+  }
+}
+
+/**
+ * Read and parse the worker.config.js file
+ */
+async function readWorkerConfigJs(configPath: string): Promise<any | null> {
   try {
     if (!fs.existsSync(configPath)) {
       return null;
     }
 
-    const fileContent = fs.readFileSync(configPath, 'utf-8');
-    return YAML.parse(fileContent);
+    // For JavaScript files, we can use dynamic import
+    const configModule = await import(`file://${configPath}`);
+    return configModule.default || configModule;
   } catch (error) {
-    console.error('Error reading worker config:', error);
+    console.error('Error reading worker.config.js:', error);
     return null;
   }
 }
@@ -793,40 +846,73 @@ async function findAvailablePort(startPort: number): Promise<number> {
   return port;
 }
 
-// Helper function to generate YAML content (for init command)
-function generateYamlContent(options: any): string {
+/**
+ * Generate package.json content for a worker
+ */
+function generatePackageJsonContent(options: any): string {
+  const name = options.name || 'tonk-worker';
+
+  return JSON.stringify(
+    {
+      name,
+      version: '1.0.0',
+      description: 'A Tonk worker',
+      main: 'dist/index.js',
+      scripts: {
+        start: 'node dist/index.js',
+        build: 'tsc',
+        dev: 'ts-node src/index.ts',
+      },
+      dependencies: {
+        '@tonk/worker': '^0.1.0',
+      },
+      devDependencies: {
+        typescript: '^5.0.0',
+        'ts-node': '^10.9.1',
+        '@types/node': '^18.0.0',
+      },
+    },
+    null,
+    2,
+  );
+}
+
+/**
+ * Generate worker.config.js content
+ */
+function generateWorkerConfigJsContent(options: any): string {
   const port = options.port || '5555';
 
-  return `# Worker Configuration
+  return `/**
+ * Tonk Worker Configuration
+ */
+module.exports = {
+  // Runtime configuration
+  runtime: {
+    port: ${port},
+    healthCheck: {
+      endpoint: '/health',
+      method: 'GET',
+      interval: 30000,
+      timeout: 5000,
+    },
+  },
 
-# Worker Information
-name: ${options.name}
-description: Tonk worker
-version: 1.0.0
+  // Process management
+  process: {
+    script: './dist/index.js',
+    cwd: './',
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: '500M',
+    env: {
+      NODE_ENV: 'production',
+    },
+  },
 
-# Connection Details
-endpoint: http://localhost:${port}/tonk
-protocol: http
-
-# Health Check Configuration
-healthCheck:
-  endpoint: http://localhost:${port}/health
-  method: GET
-  interval: 30000
-  timeout: 5000
-
-# Process Management
-process:
-  script: ./dist/index.js
-  cwd: ./
-  instances: 1
-  autorestart: true
-  watch: false
-  max_memory_restart: 500M
-  env:
-    NODE_ENV: production
-
-# Additional Configuration
-config: {}
+  // Additional configuration
+  config: {},
+};
 `;
 }

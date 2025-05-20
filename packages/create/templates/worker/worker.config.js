@@ -14,10 +14,4 @@ module.exports = {
 
   // Worker-specific configuration
   worker: {},
-
-  // Logging configuration
-  logger: {
-    level: process.env.LOG_LEVEL || "info",
-    pretty: process.env.NODE_ENV !== "production",
-  },
 };
