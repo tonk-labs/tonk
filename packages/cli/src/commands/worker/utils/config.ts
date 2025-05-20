@@ -89,7 +89,7 @@ export function generateWorkerConfigJsContent(options: any): string {
 module.exports = {
   // Runtime configuration
   runtime: {
-    port: ${port},
+    port: {{port}},
     healthCheck: {
       endpoint: '/health',
       method: 'GET',
@@ -100,7 +100,7 @@ module.exports = {
 
   // Process management
   process: {
-    script: './dist/index.js',
+    script: './dist/cli.js',
     cwd: './',
     instances: 1,
     autorestart: true,
@@ -115,6 +115,26 @@ module.exports = {
   cli: {
     script: './dist/cli.js',
     command: 'start',
+    args: ['--port', '{{port}}'],
+  },
+
+  // Data schema
+  // This section defines the schemas for data stored in keepsync
+  // Can be used to validate data before storing it
+  schemas: {
+    // Define schemas for different document types
+    documents: {
+      // Main document schema
+      default: {},
+
+      // Additional document types can be defined here
+      // For example:
+      //
+      // specialDocument: {
+      //   type: "object",
+      //   properties: { ... }
+      // }
+    },
   },
 
   // Additional configuration

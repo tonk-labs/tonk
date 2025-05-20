@@ -33,6 +33,25 @@ module.exports = {
     args: ['--port', '{{port}}'],
   },
 
+  // Data schema
+  // This section defines the schemas for data stored in keepsync
+  // Can be used to validate data before storing it
+  schemas: {
+    // Define schemas for different document types
+    documents: {
+      // Main document schema
+      default: {},
+
+      // Additional document types can be defined here
+      // For example:
+      //
+      // specialDocument: {
+      //   type: "object",
+      //   properties: { ... }
+      // }
+    },
+  },
+
   // Additional configuration
   config: {},
 };
