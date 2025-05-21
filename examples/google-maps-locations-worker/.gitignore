@@ -1,0 +1,5 @@
+exported_locations
+node_modules
+.env
+credentials.json
+token.json
