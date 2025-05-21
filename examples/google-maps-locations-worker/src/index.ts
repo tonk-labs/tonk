@@ -8,6 +8,7 @@ import { main as exportLocations } from "./exportLocations";
 import fs from "fs";
 import path from "path";
 import { parse } from "csv-parse";
+import { getProjectRoot } from "./utils";
 
 /**
  * Set up daily location export
@@ -221,7 +222,7 @@ async function runLocationExport(config?: { keepsyncDocPath?: string }) {
 
     // If we have a Keepsync docPath, write to Keepsync
     if (config?.keepsyncDocPath) {
-      const outputDir = "./exported_locations";
+      const outputDir = path.join(getProjectRoot(), "exported_locations");
 
       const locationsData = await convertCsvToJson(outputDir);
       if (locationsData.metadata.count > 0) {

@@ -4,6 +4,7 @@ import { google } from "googleapis";
 import { authenticate } from "@google-cloud/local-auth";
 import AdmZip from "adm-zip";
 import * as https from "https";
+import { getProjectRoot } from "./utils";
 
 // Configuration
 const SCOPES = [
@@ -11,9 +12,9 @@ const SCOPES = [
 ];
 
 // Path to store token
-const TOKEN_PATH = path.join(process.cwd(), "token.json");
+const TOKEN_PATH = path.join(getProjectRoot(), "token.json");
 // Path to credentials file (you'll need to download this from Google Cloud Console)
-const CREDENTIALS_PATH = path.join(process.cwd(), "credentials.json");
+const CREDENTIALS_PATH = path.join(getProjectRoot(), "credentials.json");
 
 /**
  * Load or request authentication
@@ -199,7 +200,7 @@ async function fetchSavedLocations(
     console.log(`Found ${urls.length} download URLs`);
 
     // Create a directory to store all CSV files
-    const outputDir = path.join(process.cwd(), "exported_locations");
+    const outputDir = path.join(getProjectRoot(), "exported_locations");
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true });
     }
@@ -212,7 +213,7 @@ async function fetchSavedLocations(
       );
 
       // Create a temporary file to store the downloaded archive
-      const tempFilePath = path.join(process.cwd(), `temp_archive_${i}.zip`);
+      const tempFilePath = path.join(getProjectRoot(), `temp_archive_${i}.zip`);
 
       try {
         // Download the file
@@ -242,7 +243,7 @@ async function fetchSavedLocations(
 
         // Unzip the archive
         const zip = new AdmZip(tempFilePath);
-        const extractDir = path.join(process.cwd(), `extracted_${i}`);
+        const extractDir = path.join(getProjectRoot(), `extracted_${i}`);
 
         // Extract all files
         zip.extractAllTo(extractDir, true);

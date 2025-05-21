@@ -15,8 +15,9 @@ module.exports = {
 
   // Process management
   process: {
-    script: "./dist/cli.js",
-    cwd: "./",
+    file: "cli.js",
+    args: "start",
+    cwd: "./dist",
     instances: 1,
     autorestart: true,
     watch: false,

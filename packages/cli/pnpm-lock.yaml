@@ -68,9 +68,6 @@ importers:
       tar:
         specifier: ^6.2.1
         version: 6.2.1
-      yaml:
-        specifier: ^2.3.4
-        version: 2.7.1
       zod:
         specifier: ^3.24.2
         version: 3.24.2
@@ -7853,7 +7850,8 @@ snapshots:
 
   yallist@5.0.0: {}
 
-  yaml@2.7.1: {}
+  yaml@2.7.1:
+    optional: true
 
   yargs-parser@20.2.9: {}
 

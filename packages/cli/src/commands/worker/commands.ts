@@ -22,22 +22,24 @@ import {
  */
 export function registerInspectCommand(workerCommand: Command): void {
   workerCommand
-    .command('inspect <id>')
+    .command('inspect <nameOrId>')
     .description('Inspect a specific worker')
     .option('-s, --start', 'Start the worker')
     .option('-S, --stop', 'Stop the worker')
     .option('-c, --config <path>', 'Path to worker configuration file')
     .option('-p, --ping', 'Ping the worker to check its status')
-    .action(async (id, options) => {
+    .action(async (nameOrId, options) => {
       try {
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
         // Get worker
-        const worker = await workerManager.get(id);
+        const worker = await workerManager.findByNameOrId(nameOrId);
 
         if (!worker) {
-          console.error(chalk.red(`Worker with ID '${id}' not found.`));
+          console.error(
+            chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
+          );
           return;
         }
 
@@ -61,7 +63,7 @@ export function registerInspectCommand(workerCommand: Command): void {
           );
 
           // Check worker health
-          const isHealthy = await workerManager.checkHealth(id);
+          const isHealthy = await workerManager.checkHealth(worker.id);
 
           if (isHealthy) {
             console.log(chalk.green(`Worker '${worker.name}' is active!`));
@@ -76,7 +78,7 @@ export function registerInspectCommand(workerCommand: Command): void {
         // Handle start option
         if (options.start) {
           console.log(chalk.blue(`Starting worker '${worker.name}'...`));
-          await workerManager.start(id);
+          await workerManager.start(worker.id);
           console.log(
             chalk.green(`Worker '${worker.name}' started successfully!`),
           );
@@ -86,7 +88,7 @@ export function registerInspectCommand(workerCommand: Command): void {
         // Handle stop option
         if (options.stop) {
           console.log(chalk.blue(`Stopping worker '${worker.name}'...`));
-          await workerManager.stop(id);
+          await workerManager.stop(worker.id);
           console.log(
             chalk.green(`Worker '${worker.name}' stopped successfully!`),
           );
@@ -163,7 +165,7 @@ export function registerListCommand(workerCommand: Command): void {
         console.log(table.toString());
         console.log(
           chalk.blue(
-            `\nUse '${chalk.bold('tonk worker inspect <id>')}' to view details of a specific worker.`,
+            `\nUse '${chalk.bold('tonk worker inspect <name or id>')}' to view details of a specific worker.`,
           ),
         );
       } catch (error) {
@@ -177,25 +179,29 @@ export function registerListCommand(workerCommand: Command): void {
  */
 export function registerRemoveCommand(workerCommand: Command): void {
   workerCommand
-    .command('rm <id>')
+    .command('rm <nameOrId>')
     .description('Remove a registered worker')
-    .action(async id => {
+    .action(async nameOrId => {
       try {
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
         // Get worker
-        const worker = await workerManager.get(id);
+        const worker = await workerManager.findByNameOrId(nameOrId);
 
         if (!worker) {
-          console.error(chalk.red(`Worker with ID '${id}' not found.`));
+          console.error(
+            chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
+          );
           return;
         }
 
         // Remove worker
-        await workerManager.remove(id);
+        await workerManager.remove(worker.id);
         console.log(
-          chalk.green(`Worker '${worker.name}' (${id}) removed successfully.`),
+          chalk.green(
+            `Worker '${worker.name}' (${worker.id}) removed successfully.`,
+          ),
         );
       } catch (error) {
         console.error(chalk.red('Failed to remove worker:'), error);
@@ -208,18 +214,20 @@ export function registerRemoveCommand(workerCommand: Command): void {
  */
 export function registerPingCommand(workerCommand: Command): void {
   workerCommand
-    .command('ping <id>')
+    .command('ping <nameOrId>')
     .description('Ping a worker to check its status')
-    .action(async id => {
+    .action(async nameOrId => {
       try {
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
         // Get worker
-        const worker = await workerManager.get(id);
+        const worker = await workerManager.findByNameOrId(nameOrId);
 
         if (!worker) {
-          console.error(chalk.red(`Worker with ID '${id}' not found.`));
+          console.error(
+            chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
+          );
           return;
         }
 
@@ -230,7 +238,7 @@ export function registerPingCommand(workerCommand: Command): void {
         );
 
         // Check worker health
-        const isHealthy = await workerManager.checkHealth(id);
+        const isHealthy = await workerManager.checkHealth(worker.id);
 
         if (isHealthy) {
           console.log(chalk.green(`Worker '${worker.name}' is active!`));
@@ -248,23 +256,25 @@ export function registerPingCommand(workerCommand: Command): void {
  */
 export function registerStartCommand(workerCommand: Command): void {
   workerCommand
-    .command('start <id>')
+    .command('start <nameOrId>')
     .description('Start a worker')
-    .action(async id => {
+    .action(async nameOrId => {
       try {
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
         // Get worker
-        const worker = await workerManager.get(id);
+        const worker = await workerManager.findByNameOrId(nameOrId);
 
         if (!worker) {
-          console.error(chalk.red(`Worker with ID '${id}' not found.`));
+          console.error(
+            chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
+          );
           return;
         }
 
         console.log(chalk.blue(`Starting worker '${worker.name}'...`));
-        await workerManager.start(id);
+        await workerManager.start(worker.id);
         console.log(
           chalk.green(`Worker '${worker.name}' started successfully!`),
         );
@@ -279,23 +289,25 @@ export function registerStartCommand(workerCommand: Command): void {
  */
 export function registerStopCommand(workerCommand: Command): void {
   workerCommand
-    .command('stop <id>')
+    .command('stop <nameOrId>')
     .description('Stop a worker')
-    .action(async id => {
+    .action(async nameOrId => {
       try {
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
         // Get worker
-        const worker = await workerManager.get(id);
+        const worker = await workerManager.findByNameOrId(nameOrId);
 
         if (!worker) {
-          console.error(chalk.red(`Worker with ID '${id}' not found.`));
+          console.error(
+            chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
+          );
           return;
         }
 
         console.log(chalk.blue(`Stopping worker '${worker.name}'...`));
-        await workerManager.stop(id);
+        await workerManager.stop(worker.id);
         console.log(
           chalk.green(`Worker '${worker.name}' stopped successfully!`),
         );
@@ -310,22 +322,24 @@ export function registerStopCommand(workerCommand: Command): void {
  */
 export function registerLogsCommand(workerCommand: Command): void {
   workerCommand
-    .command('logs <id>')
+    .command('logs <nameOrId>')
     .description('View logs for a worker')
     .option('-f, --follow', 'Follow log output')
     .option('-l, --lines <n>', 'Number of lines to show', '100')
     .option('-e, --error', 'Show only error logs')
     .option('-o, --out', 'Show only standard output logs')
-    .action(async (id, options) => {
+    .action(async (nameOrId, options) => {
       try {
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
         // Get worker
-        const worker = await workerManager.get(id);
+        const worker = await workerManager.findByNameOrId(nameOrId);
 
         if (!worker) {
-          console.error(chalk.red(`Worker with ID '${id}' not found.`));
+          console.error(
+            chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
+          );
           return;
         }
 
