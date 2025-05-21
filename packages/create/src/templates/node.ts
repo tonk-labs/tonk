@@ -8,7 +8,7 @@ export async function createNodeTemplate(
   projectPath: string,
   projectName: string,
   templatePath: string,
-  plan: ProjectPlan
+  plan: ProjectPlan,
 ) {
   const spinner = ora("Creating Node project structure...").start();
 
@@ -41,7 +41,7 @@ export async function createNodeTemplate(
     // Verify project contents after copying
     const projectContents = await fs.readdir(projectPath);
     console.log(
-      `Project directory now contains: ${projectContents.join(", ")}`
+      `Project directory now contains: ${projectContents.join(", ")}`,
     );
 
     // Update package.json name
@@ -52,15 +52,16 @@ export async function createNodeTemplate(
       await fs.writeJson(packageJsonPath, packageJson, { spaces: 2 });
     }
 
-    // Create tonk.config.json with project plan
+    // Create tonk.config.json with project plan and worker dependencies
     await fs.writeJSON(
       path.join(projectPath, "tonk.config.json"),
       {
         name: projectName,
         plan,
         template: "node",
+        workers: plan.workerDependencies || [],
       },
-      { spaces: 2 }
+      { spaces: 2 },
     );
 
     spinner.succeed("Node project created successfully!");
@@ -74,18 +75,18 @@ export async function createNodeTemplate(
 
     // Print next steps instructions
     console.log(
-      "\n" + chalk.bold("🎉 Your Tonk node app is ready for vibe coding! 🎉")
+      "\n" + chalk.bold("🎉 Your Tonk node app is ready for vibe coding! 🎉"),
     );
     console.log("\n" + chalk.bold("Next:"));
     console.log("  • Open your favorite vibe coding editor to begin coding.\n");
     console.log(
-      "  • " + chalk.cyan("pnpm dev") + " - Start the development server"
+      "  • " + chalk.cyan("pnpm dev") + " - Start the development server",
     );
 
     console.log(
       "  • " +
         chalk.cyan("pnpm build") +
-        " - Build your project for production.\n"
+        " - Build your project for production.\n",
     );
   } catch (error) {
     spinner.fail("Failed to create React project");

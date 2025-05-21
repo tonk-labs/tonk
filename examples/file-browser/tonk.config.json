@@ -1,0 +1,9 @@
+{
+  "name": "file-browser",
+  "plan": {
+    "platform": "react",
+    "projectName": "file-browser",
+    "description": "Explore your keepsync like a filesystem"
+  },
+  "template": "react"
+}

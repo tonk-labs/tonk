@@ -8,6 +8,7 @@ import process from "process";
 import { fileURLToPath } from "url";
 import { createReactTemplate } from "./templates/react";
 import { createNodeTemplate } from "./templates/node";
+import { createWorkerTemplate } from "./templates/worker";
 import { ProjectPlan, TemplateType } from "./types";
 
 /**
@@ -35,14 +36,14 @@ async function resolvePackagePath(relativePath: string): Promise<string> {
       const globalPath = path.join(
         globalNodeModules,
         "@tonk/create",
-        relativePath
+        relativePath,
       );
 
       if (await fs.pathExists(globalPath)) {
         return globalPath;
       } else {
         throw new Error(
-          `Could not locate ${relativePath} in local or global paths`
+          `Could not locate ${relativePath} in local or global paths`,
         );
       }
     }
@@ -71,7 +72,7 @@ const projectQuestions = [
     type: "list",
     name: "platform",
     message: "What template would you like to use?",
-    choices: ["react", "node"],
+    choices: ["react", "node", "worker"],
     default: "react",
   },
   {
@@ -92,7 +93,7 @@ export async function createProject(
   projectName: string,
   plan: ProjectPlan,
   templateName: TemplateType,
-  _projectPath: string | null = null
+  _projectPath: string | null = null,
 ) {
   const spinner = ora("Creating project structure...").start();
   let projectPath = _projectPath;
@@ -110,17 +111,17 @@ export async function createProject(
     } catch (error) {
       console.error(
         `Error resolving template path for "${templateName}":`,
-        error
+        error,
       );
       throw new Error(
-        `Could not locate template "${templateName}". Please ensure the package is installed correctly and the template exists.`
+        `Could not locate template "${templateName}". Please ensure the package is installed correctly and the template exists.`,
       );
     }
 
     // Ensure templatePath is defined before using it
     if (!templatePath || !(await fs.pathExists(templatePath))) {
       throw new Error(
-        `Template path not found for "${templateName}": ${templatePath}`
+        `Template path not found for "${templateName}": ${templatePath}`,
       );
     }
 
@@ -132,6 +133,15 @@ export async function createProject(
       }
       case "node": {
         await createNodeTemplate(projectPath, projectName, templatePath, plan);
+        break;
+      }
+      case "worker": {
+        await createWorkerTemplate(
+          projectPath,
+          projectName,
+          templatePath,
+          plan,
+        );
         break;
       }
     }

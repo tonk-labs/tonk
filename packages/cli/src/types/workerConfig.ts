@@ -28,10 +28,6 @@ export const WorkerConfigSchema = z.object({
   endpoint: z.string(),
   protocol: z.string().default('http'),
 
-  // Worker type and capabilities
-  type: z.string().default('custom'),
-  capabilities: z.array(z.string()).optional(),
-
   // Health check configuration
   healthCheck: WorkerHealthCheckSchema.optional(),
 
@@ -67,12 +63,6 @@ export type WorkerConfig = z.infer<typeof WorkerConfigSchema>;
  * # Connection Details
  * endpoint: http://localhost:5555/tonk
  * protocol: http
- *
- * # Worker Type and Capabilities
- * type: obsidian
- * capabilities:
- *   - sync
- *   - rag
  *
  * # Health Check Configuration
  * healthCheck:

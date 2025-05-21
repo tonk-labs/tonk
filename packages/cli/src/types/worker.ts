@@ -1,6 +1,6 @@
 /**
  * Worker specification for Tonk
- * 
+ *
  * This file defines the standard format for worker definitions in Tonk.
  */
 
@@ -54,8 +54,6 @@ export interface Worker {
     type?: string;
     /** Optional worker version */
     version?: string;
-    /** Optional worker capabilities */
-    capabilities?: string[];
     /** Any other configuration options */
     [key: string]: any;
   };
