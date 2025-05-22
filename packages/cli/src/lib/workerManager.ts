@@ -280,7 +280,6 @@ export class TonkWorkerManager implements WorkerManager {
             // Start the npm package with PM2 using the package name as the command
             // and 'start' as the argument
             const startCmd = `${envVars} pm2 start "${commandName} start" --name ${worker.id} ${logConfig} ${errorLogConfig}`;
-            console.log('NPM START COMMAND:', startCmd);
             await execAsync(startCmd);
 
             console.log(
@@ -329,7 +328,6 @@ export class TonkWorkerManager implements WorkerManager {
             startCmd = `cd ${cwd} && chmod +x "${filePath}" && ${envVars} pm2 start "./${filePath} ${args ? args : ''}" --name ${worker.id} --instances ${instances} ${watch} ${maxMemory} ${logConfig} ${errorLogConfig}`;
           }
 
-          console.log('TRAD START COMMAND:', startCmd);
           await execAsync(startCmd);
         }
       }
@@ -456,7 +454,17 @@ export class TonkWorkerManager implements WorkerManager {
    * Generate a worker ID
    */
   private generateWorkerId(name: string): string {
-    const normalizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    // Normalize the name: lowercase and replace non-alphanumeric chars with hyphens
+    let normalizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    
+    // Ensure the name doesn't start with a hyphen (would cause issues with PM2)
+    normalizedName = normalizedName.replace(/^-+/, '');
+    
+    // If after normalization the name is empty, use a default prefix
+    if (!normalizedName) {
+      normalizedName = 'worker';
+    }
+    
     const timestamp = Date.now().toString(36);
     return `${normalizedName}-${timestamp}`;
   }
