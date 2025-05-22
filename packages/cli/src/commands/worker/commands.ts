@@ -615,7 +615,70 @@ export function registerInstallCommand(workerCommand: Command): void {
           return;
         }
 
-        // Register the worker with the npm package name (use display name in description)
+        // Strip scope from package name for display purposes (e.g., @tonk/worker -> worker)
+        const commandName =
+          options.name || packageName.replace(/^@[^/]+\//, '');
+
+        // Verify the package can be executed directly
+        try {
+          // Check if the command exists by running a simple help command
+          await execAsync(`${commandName} --help`);
+          console.log(
+            chalk.green(`Verified that '${packageName}' is executable.`),
+          );
+
+          // Try running the setup command if it exists
+          try {
+            console.log(chalk.blue(`Running setup for '${packageName}'...`));
+            // Use spawn to allow user interaction during setup
+            const {spawn} = await import('node:child_process');
+
+            const setupProcess = spawn(commandName, ['setup'], {
+              stdio: 'inherit',
+              shell: true,
+            });
+
+            // Wait for the setup process to complete
+            await new Promise((resolve, reject) => {
+              setupProcess.on('close', code => {
+                if (code === 0) {
+                  console.log(
+                    chalk.green(
+                      `Setup completed successfully for '${packageName}'`,
+                    ),
+                  );
+                  resolve(true);
+                } else {
+                  console.warn(
+                    chalk.yellow(`Setup command exited with code ${code}`),
+                  );
+                  resolve(false);
+                }
+              });
+
+              setupProcess.on('error', err => {
+                reject(err);
+              });
+            });
+          } catch (setupError) {
+            console.log(
+              chalk.yellow(
+                `Setup command not available for '${packageName}', continuing with installation...`,
+              ),
+            );
+          }
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          console.warn(
+            chalk.yellow(
+              `Warning: Could not verify that '${packageName}' is executable. It may not be properly installed or may not provide a CLI.`,
+            ),
+          );
+          console.warn(chalk.yellow(`Error: ${errorMessage}`));
+        }
+
+        // Register the worker with the npm package name
         const worker = await workerManager.register({
           name: packageName, // Use the actual package name for npm resolution
           description:
@@ -627,21 +690,21 @@ export function registerInstallCommand(workerCommand: Command): void {
         });
 
         console.log(
-          chalk.green(`Worker '${worker.name}' registered successfully!`),
+          chalk.green(`Worker '${packageName}' registered successfully!`),
         );
 
         // Start the worker
-        console.log(chalk.blue(`Starting worker '${worker.name}'...`));
+        console.log(chalk.blue(`Starting worker '${packageName}'...`));
         const success = await workerManager.start(worker.id);
 
         if (success) {
           console.log(
-            chalk.green(`Worker '${worker.name}' started successfully!`),
+            chalk.green(`Worker '${packageName}' started successfully!`),
           );
           console.log(chalk.cyan('Worker ID:'), chalk.bold(worker.id));
           console.log(chalk.cyan('Endpoint:'), chalk.bold(worker.endpoint));
         } else {
-          console.error(chalk.red(`Failed to start worker '${worker.name}'.`));
+          console.error(chalk.red(`Failed to start worker '${packageName}'.`));
         }
       } catch (error) {
         console.error(chalk.red('Failed to install worker:'), error);

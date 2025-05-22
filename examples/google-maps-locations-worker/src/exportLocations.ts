@@ -7,16 +7,20 @@ import * as http from "http";
 import { URL } from "url";
 import open from "open";
 import { getProjectRoot } from "./utils";
+import { createGoogleOAuthCredentialsManager } from "./credentialsManager";
 
 // Configuration
 const SCOPES = [
   "https://www.googleapis.com/auth/dataportability.saved.collections",
 ];
 
+// Get credentials manager
+const credentialsManager = createGoogleOAuthCredentialsManager();
+
 // Path to store token
 const TOKEN_PATH = path.join(getProjectRoot(), "token.json");
-// Path to credentials file (you'll need to download this from Google Cloud Console)
-const CREDENTIALS_PATH = path.join(getProjectRoot(), "credentials.json");
+// Path to credentials file
+const CREDENTIALS_PATH = credentialsManager.getCredentialPath("credentials.json");
 
 /**
  * Load or request authentication

@@ -271,55 +271,21 @@ export class TonkWorkerManager implements WorkerManager {
 
         // Handle different worker types
         if (worker.config.type === 'npm') {
-          // For npm-based workers, we need to find the entry point
+          // For npm-based workers, we directly use the package name as the command
           const packageName = worker.name;
+          // Strip scope from package name for display purposes (e.g., @tonk/worker -> worker)
+          const commandName = packageName.replace(/^@[^/]+\//, '');
 
           try {
-            // Get the package's bin entry point
-            const {stdout: binInfo} = await execAsync(`npm bin -g`);
-            const binPath = binInfo.trim();
-            const executablePath = path.join(binPath, packageName);
+            // Start the npm package with PM2 using the package name as the command
+            // and 'start' as the argument
+            const startCmd = `${envVars} pm2 start "${commandName} start" --name ${worker.id} ${logConfig} ${errorLogConfig}`;
+            console.log('NPM START COMMAND:', startCmd);
+            await execAsync(startCmd);
 
-            // Check if the executable exists
-            if (fs.existsSync(executablePath)) {
-              // Start the npm package with PM2
-              const startCmd = `${envVars} pm2 start ${executablePath} --name ${worker.id} ${logConfig} ${errorLogConfig}`;
-              await execAsync(startCmd);
-            } else {
-              // Try to find the main entry point
-              const {stdout: packageInfo} = await execAsync(
-                `npm list -g ${packageName} --json`,
-              );
-              const packageData = JSON.parse(packageInfo);
-
-              if (
-                packageData.dependencies &&
-                packageData.dependencies[packageName]
-              ) {
-                const packagePath = packageData.dependencies[packageName].path;
-                const packageJsonPath = path.join(packagePath, 'package.json');
-
-                if (fs.existsSync(packageJsonPath)) {
-                  const packageJson = JSON.parse(
-                    fs.readFileSync(packageJsonPath, 'utf-8'),
-                  );
-                  const mainScript = packageJson.main || 'index.js';
-                  const scriptPath = path.join(packagePath, mainScript);
-
-                  // Start the npm package with PM2
-                  const startCmd = `cd ${packagePath} && ${envVars} pm2 start ${scriptPath} --name ${worker.id} ${logConfig} ${errorLogConfig}`;
-                  await execAsync(startCmd);
-                } else {
-                  throw new Error(
-                    `Could not find package.json for ${packageName}`,
-                  );
-                }
-              } else {
-                throw new Error(
-                  `Could not find installed package ${packageName}`,
-                );
-              }
-            }
+            console.log(
+              `Started npm worker '${packageName}' with command: ${commandName} start`,
+            );
           } catch (error) {
             console.error(`Error starting npm worker:`, error);
             throw error;
@@ -363,6 +329,7 @@ export class TonkWorkerManager implements WorkerManager {
             startCmd = `cd ${cwd} && chmod +x "${filePath}" && ${envVars} pm2 start "./${filePath} ${args ? args : ''}" --name ${worker.id} --instances ${instances} ${watch} ${maxMemory} ${logConfig} ${errorLogConfig}`;
           }
 
+          console.log('TRAD START COMMAND:', startCmd);
           await execAsync(startCmd);
         }
       }
