@@ -1,20 +1,26 @@
 import fs from "fs";
 import path from "path";
 import { google } from "googleapis";
-import { authenticate } from "@google-cloud/local-auth";
 import AdmZip from "adm-zip";
 import * as https from "https";
+import * as http from "http";
+import { URL } from "url";
+import open from "open";
 import { getProjectRoot } from "./utils";
+import { createGoogleOAuthCredentialsManager } from "./credentialsManager";
 
 // Configuration
 const SCOPES = [
   "https://www.googleapis.com/auth/dataportability.saved.collections",
 ];
 
+// Get credentials manager
+const credentialsManager = createGoogleOAuthCredentialsManager();
+
 // Path to store token
 const TOKEN_PATH = path.join(getProjectRoot(), "token.json");
-// Path to credentials file (you'll need to download this from Google Cloud Console)
-const CREDENTIALS_PATH = path.join(getProjectRoot(), "credentials.json");
+// Path to credentials file
+const CREDENTIALS_PATH = credentialsManager.getCredentialPath("credentials.json");
 
 /**
  * Load or request authentication
@@ -66,7 +72,7 @@ async function authorize() {
 }
 
 /**
- * Authenticate using OAuth 2.0
+ * Authenticate using OAuth 2.0 with offline access to get a refresh token
  */
 async function authenticateWithOAuth() {
   try {
@@ -78,17 +84,120 @@ async function authenticateWithOAuth() {
       throw new Error("Invalid credentials format: missing 'web' object");
     }
 
-    // Authenticate using local server
-    const client = await authenticate({
-      scopes: SCOPES,
-      keyfilePath: CREDENTIALS_PATH,
+    // Create OAuth2 client
+    const oauth2Client = new google.auth.OAuth2(
+      credentials.web.client_id,
+      credentials.web.client_secret,
+      credentials.web.redirect_uris[0] ||
+        "http://localhost:4444/oauth2callback",
+    );
+
+    // Generate auth URL with offline access
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: "offline",
+      scope: SCOPES,
+      prompt: "consent", // Force consent screen to ensure refresh token
     });
 
+    console.log(`Opening authorization URL in your default browser...`);
+
+    try {
+      // Try to open the authorization URL in the default browser
+      await open(authUrl);
+      console.log(
+        "After authorization, the app will automatically receive the auth code.",
+      );
+    } catch (error) {
+      // If opening the browser fails, provide the URL for manual opening
+      console.error(
+        "Failed to open browser automatically. Please open this URL manually:",
+      );
+      console.log(`\n${authUrl}\n`);
+      console.log(
+        "After authorization, the app will automatically receive the auth code.",
+      );
+    }
+
+    // Create a local server to receive the OAuth2 callback
+    const getAuthorizationCode = async (): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const server = http
+          .createServer(async (req: any, res: any) => {
+            try {
+              if (req.url.indexOf("/oauth2callback") > -1) {
+                // Get the authorization code from the callback URL
+                const qs = new URL(req.url, "http://localhost:4444")
+                  .searchParams;
+                const code = qs.get("code");
+
+                if (!code) {
+                  throw new Error("No authorization code provided");
+                }
+
+                // Send a more user-friendly response page
+                res.writeHead(200, { "Content-Type": "text/html" });
+                res.end(`
+                  <!DOCTYPE html>
+                  <html>
+                  <head>
+                    <title>Authentication Successful</title>
+                    <style>
+                      body {
+                        font-family: sans-serif;
+                        text-align: center;
+                        padding: 40px;
+                        background-color: #f5f5f5;
+                      }
+                      .container {
+                        background-color: white;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+                        padding: 30px;
+                        max-width: 500px;
+                        margin: 0 auto;
+                      }
+                      h1 {
+                        color: #3a3b3c;
+                      }
+                    </style>
+                  </head>
+                  <body>
+                    <div class="container">
+                      <h1>Authentication Successful!</h1>
+                      <p>You have successfully authenticated with Google.</p>
+                      <p>You can now close this window and return to the application.</p>
+                    </div>
+                  </body>
+                  </html>
+                `);
+                server.close();
+
+                // Resolve with the authorization code
+                resolve(code);
+              }
+            } catch (e) {
+              reject(e);
+            }
+          })
+          .listen(4444, () => {
+            console.log("Listening for OAuth2 callback on port 4444");
+          });
+      });
+    };
+
+    // Wait for the authorization code
+    const code = await getAuthorizationCode();
+    console.log("Authorization code received");
+
+    // Exchange the authorization code for tokens
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+
     // Save the credentials for future use
-    if (client.credentials) {
+    if (tokens) {
       // Add client_id and client_secret to the saved token for future use
       const tokenToSave = {
-        ...client.credentials,
+        ...tokens,
         client_id: credentials.web.client_id,
         client_secret: credentials.web.client_secret,
       };
@@ -96,9 +205,21 @@ async function authenticateWithOAuth() {
       const content = JSON.stringify(tokenToSave);
       fs.writeFileSync(TOKEN_PATH, content);
       console.log(`Token stored to ${TOKEN_PATH}`);
+
+      // Check if we got a refresh token
+      if (tokens.refresh_token) {
+        console.log("Successfully obtained refresh token");
+      } else {
+        console.warn(
+          "No refresh token received. You may need to revoke access and try again.",
+        );
+        console.warn(
+          "To revoke access, visit: https://myaccount.google.com/permissions",
+        );
+      }
     }
 
-    return client;
+    return oauth2Client;
   } catch (err) {
     console.error("Error during OAuth authentication:", err);
     throw err;

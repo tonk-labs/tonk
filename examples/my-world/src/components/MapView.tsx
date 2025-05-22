@@ -21,6 +21,7 @@ import UserComparison from "./UserComparison";
 import UserSelector from "./UserSelector";
 import CategoryManager from "./CategoryManager";
 import TourGuide from "./TourGuide";
+import ImportLocationsButton from "./ImportLocationsButton";
 
 // Declare MapKit JS types
 declare global {
@@ -31,7 +32,7 @@ declare global {
 
 const getMapKitToken = async (): Promise<string> => {
   const token =
-    "eyJraWQiOiI1Q1lXRkpaUlFXIiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzQ1ODM3NzI3LCJleHAiOjE3NDY1MTQ3OTl9.jjoB4nsE_cJPVQO8jenS5NYwmnMcvU9HBkhUWjrC4ZLdi8_LJqzdFCFMhm7rmC2Jp4hJ9nu6aXRUtNYN8eBclg";
+    "eyJraWQiOiJHOEM5QlMzVjczIiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzQ3OTI3NDUzLCJleHAiOjE3NDg1ODgzOTl9.pJvlNvqXqrARQxWhacAkpLOsWj6Sqg5B7f0qe59WaOWpuRkB_MbfDnYskIrDcOxI9L5mG8IlBardKy30PE2VtQ";
 
   if (!token) {
     console.error("MapKit token not found in environment variables");
@@ -955,6 +956,33 @@ const MapView: React.FC = () => {
                     })
                 )}
               </div>
+            </div>
+
+            {/* Import Locations Button */}
+            <div className="mb-6">
+              <h3 className="font-medium mb-2 flex items-center gap-2">
+                <MapPin className="h-4 w-4" />
+                Import Locations
+              </h3>
+              <ImportLocationsButton
+                docPath="/jack/locations"
+                username="Jack"
+                onComplete={(result) => {
+                  if (result.success && result.imported > 0) {
+                    // Center the map on the first location if any were imported
+                    const locationValues = Object.values(locations);
+                    if (locationValues.length > 0) {
+                      const lastLocation =
+                        locationValues[locationValues.length - 1];
+                      setMapCenter([
+                        lastLocation.latitude,
+                        lastLocation.longitude,
+                      ]);
+                      setMapZoom(12);
+                    }
+                  }
+                }}
+              />
             </div>
 
             {/* About Section */}

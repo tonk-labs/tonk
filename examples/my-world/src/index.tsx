@@ -12,7 +12,7 @@ const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 
 const engine = configureSyncEngine({
-  hostname: "localhost:7777",
+  url: "http://localhost:7777",
   storage: new IndexedDBStorageAdapter(),
   network: [new BrowserWebSocketClientAdapter(wsUrl)],
 });

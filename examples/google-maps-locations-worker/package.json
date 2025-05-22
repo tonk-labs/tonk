@@ -1,6 +1,6 @@
 {
-  "name": "google-maps-locations-worker",
-  "version": "1.0.0",
+  "name": "@tonk/google-maps-locations-worker",
+  "version": "1.0.1",
   "description": "Retrieves user's saved Google Maps locations",
   "main": "dist/index.js",
   "bin": {
@@ -23,7 +23,8 @@
   "files": [
     "dist",
     "README.md",
-    "worker.config.js"
+    "worker.config.js",
+    ".env.example"
   ],
   "dependencies": {
     "@automerge/automerge-repo": "^1.2.1",

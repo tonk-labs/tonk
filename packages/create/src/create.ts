@@ -88,6 +88,27 @@ const projectQuestions = [
   },
 ];
 
+// Additional questions for React template
+const reactQuestions = [
+  {
+    type: "confirm",
+    name: "useWorkers",
+    message: "Do you want to use workers with your React app?",
+    default: false,
+  },
+  {
+    type: "input",
+    name: "workers",
+    message: "Enter worker packages (comma-separated npm package names):",
+    when: (answers: any) => answers.useWorkers,
+    filter: (input: string) =>
+      input
+        .split(",")
+        .map((pkg: string) => pkg.trim())
+        .filter((pkg: string) => pkg.length > 0),
+  },
+];
+
 // Function to create project structure
 export async function createProject(
   projectName: string,
@@ -95,6 +116,17 @@ export async function createProject(
   templateName: TemplateType,
   _projectPath: string | null = null,
 ) {
+  // Get additional template-specific configuration
+  let additionalConfig = {};
+
+  if (templateName === "react") {
+    const reactAnswers = await inquirer.prompt(reactQuestions);
+    additionalConfig = reactAnswers;
+  }
+
+  // Merge the additional config with the plan
+  const fullPlan = { ...plan, ...additionalConfig };
+
   const spinner = ora("Creating project structure...").start();
   let projectPath = _projectPath;
 
@@ -128,7 +160,12 @@ export async function createProject(
     // Switch on template type and call appropriate template creator
     switch (templateName) {
       case "react": {
-        await createReactTemplate(projectPath, projectName, templatePath, plan);
+        await createReactTemplate(
+          projectPath,
+          projectName,
+          templatePath,
+          fullPlan,
+        );
         break;
       }
       case "node": {

@@ -11,8 +11,8 @@ const path_1 = __importDefault(require("path"));
  */
 function getProjectRoot() {
     // When running from dist, we need to go up one level
-    const isRunningFromDist = __dirname.includes('dist');
+    const isRunningFromDist = __dirname.includes("dist") || __dirname.includes("src");
     return isRunningFromDist
-        ? path_1.default.resolve(__dirname, '..')
+        ? path_1.default.resolve(__dirname, "..")
         : path_1.default.resolve(__dirname);
 }
