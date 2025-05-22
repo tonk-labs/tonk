@@ -6,8 +6,9 @@ import path from "path";
  */
 export function getProjectRoot(): string {
   // When running from dist, we need to go up one level
-  const isRunningFromDist = __dirname.includes('dist');
-  return isRunningFromDist 
-    ? path.resolve(__dirname, '..') 
+  const isRunningFromDist =
+    __dirname.includes("dist") || __dirname.includes("src");
+  return isRunningFromDist
+    ? path.resolve(__dirname, "..")
     : path.resolve(__dirname);
 }
