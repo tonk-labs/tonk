@@ -8,20 +8,13 @@ Initialize the sync engine in your application entry point (or before using any 
 // index.tsx
 import { configureSyncEngine } from "@tonk/keepsync";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
-import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
+import { NodeFSStorageAdapter } from "@automerge/automerge-repo-storage-nodefs";
 
-const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
-const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
-const storage = new IndexedDBStorageAdapter();
-
-const url =
-  window.location.host.indexOf("localhost") === 0
-    ? "http://localhost:7777"
-    : `${window.location.protocol}//${window.location.host}`;
+const wsAdapter = new BrowserWebSocketClientAdapter("ws://localhost:7777/sync);
+const storage = new NodeFSStorageAdapter();
 
 configureSyncEngine({
-  url,
+  url: "http://localhost:7777",
   network: [wsAdapter as any],
   storage,
 });
@@ -33,7 +26,7 @@ Use the `sync` middleware to create stores that automatically synchronize with o
 
 ```typescript
 // stores/counterStore.ts
-import { create } from 'zustand';
+import { createStore } from 'zustand/vanilla';
 import { sync, DocumentId } from '@tonk/keepsync';
 
 interface CounterState {
@@ -43,7 +36,7 @@ interface CounterState {
   reset: () => void;
 }
 
-export const useCounterStore = create<CounterState>(
+export const counterStore = createStore<CounterState>(
   sync(
     // The store implementation
     (set) => ({
@@ -76,34 +69,47 @@ export const useCounterStore = create<CounterState>(
 );
 ```
 
-### 3. Use the Store in React Components
+### 3. Manually fetch the state
+
+Because this is a Node project, we need to use zustand in a different way as it is used in React components. Each time you want fresh state you will need to use the `getState()` function.
 
 ```typescript
-// components/Counter.tsx
-import React from 'react';
-import { useCounterStore } from '../stores/counterStore';
+  const counterStore = createStore<CounterState>(
+    sync(
+      // The store implementation
+      (set) => ({
+        count: 0,
 
-export function Counter() {
-  // Use the store hook directly - sync is handled by the middleware
-  const { count, increment, decrement, reset } = useCounterStore();
+        // Increment the counter
+        increment: () => {
+          set((state) => ({ count: state.count + 1 }));
+        },
 
-  return (
-    <div>
-      <h2>Collaborative Counter: {count}</h2>
-      <div>
-        <button onClick={decrement}>-</button>
-        <button onClick={increment}>+</button>
-        <button onClick={reset}>Reset</button>
-      </div>
-      <p>
-        <small>
-          Open this app in multiple windows to see real-time collaboration in action.
-        </small>
-      </p>
-    </div>
+        // Decrement the counter
+        decrement: () => {
+          set((state) => ({ count: Math.max(0, state.count - 1) }));
+        },
+
+        // Reset the counter
+        reset: () => {
+          set({ count: 0 });
+        },
+      }),
+      // Sync configuration
+      { 
+        docId: 'counter' as DocumentId,
+        // Optional: configure initialization timeout
+        initTimeout: 30000,
+        // Optional: handle initialization errors
+        onInitError: (error) => console.error('Sync initialization error:', error) 
+      }
+    )
   );
-}
 
+  const state = counterStore.getState();
+
+  state.increment(); 
+  console.log(`The current count is: ${store.getState().count}`);
 ```
 
 # Directly reading and writing documents
