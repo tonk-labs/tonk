@@ -179,8 +179,6 @@ const createApp = async (options: { init: boolean }) => {
     const templateName = answers.platform as TemplateType;
     let projectPath = options.init ? process.cwd() : null;
     await createProject(finalProjectName, plan, templateName, projectPath);
-
-    console.log("🎉 Tonk project ready for vibe coding!");
   } catch (error) {
     console.error(chalk.red("Error:"), error);
     process.exit(1);

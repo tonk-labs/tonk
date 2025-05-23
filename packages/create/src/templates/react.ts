@@ -10,7 +10,7 @@ export async function createReactTemplate(
   templatePath: string,
   plan: ProjectPlan,
 ) {
-  const spinner = ora("Creating React project structure...").start();
+  const spinner = ora("Creating React project structure...\n").start();
 
   try {
     // Copy template files
@@ -81,16 +81,20 @@ export async function createReactTemplate(
       "\n" + chalk.bold("🎉 Your Tonk react app is ready for vibe coding! 🎉"),
     );
     console.log("\n" + chalk.bold("Next:"));
-    console.log("  • Open your favorite vibe coding editor to begin coding.\n");
+    console.log(
+      "  • " +
+        chalk.cyan(`cd ${projectName}`) +
+        " - Navigate to your new project",
+    );
     console.log(
       "  • " + chalk.cyan("pnpm dev") + " - Start the development server",
     );
-
     console.log(
       "  • " +
         chalk.cyan("pnpm build") +
         " - Build your project for production.\n",
     );
+    console.log("  • Open your favorite vibe coding editor to begin coding.\n");
   } catch (error) {
     spinner.fail("Failed to create React project");
     console.error(error);
