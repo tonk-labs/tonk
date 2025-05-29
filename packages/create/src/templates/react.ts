@@ -8,7 +8,7 @@ export async function createReactTemplate(
   projectPath: string,
   projectName: string,
   templatePath: string,
-  plan: ProjectPlan & { useWorkers?: boolean; workers?: string[] },
+  plan: ProjectPlan,
 ) {
   const spinner = ora("Creating React project structure...").start();
 
@@ -55,19 +55,13 @@ export async function createReactTemplate(
     // Create tonk.config.json with project plan
     const tonkConfig: {
       name: string;
-      plan: ProjectPlan & { useWorkers?: boolean; workers?: string[] };
+      plan: ProjectPlan;
       template: string;
-      workers?: string[];
     } = {
       name: projectName,
       plan,
       template: "react",
     };
-
-    // Add workers if specified
-    if (plan.useWorkers && plan.workers && plan.workers.length > 0) {
-      tonkConfig.workers = plan.workers;
-    }
 
     await fs.writeJSON(path.join(projectPath, "tonk.config.json"), tonkConfig, {
       spaces: 2,
@@ -81,16 +75,6 @@ export async function createReactTemplate(
     process.chdir(projectPath);
     execSync("pnpm install", { stdio: "inherit" });
     spinner.succeed("Dependencies installed successfully!");
-
-    // Install and start workers if specified
-    if (plan.useWorkers && plan.workers && plan.workers.length > 0) {
-      spinner.start("Installing worker dependencies...");
-      for (const worker of plan.workers) {
-        console.log(`\nInstalling worker: ${worker}`);
-        execSync(`tonk worker install ${worker}`, { stdio: "inherit" });
-      }
-      spinner.succeed("Worker dependencies installed successfully!");
-    }
 
     // Print next steps instructions
     console.log(
