@@ -6,7 +6,6 @@ import App from "./App";
 import { configureSyncEngine } from "@tonk/keepsync";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
-import { setupWorkers } from "./utils/workers";
 
 // Setup sync engine
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -20,13 +19,7 @@ const engine = configureSyncEngine({
   storage,
 });
 
-// Setup workers and wait for sync engine to be ready
-await Promise.all([
-  engine.whenReady(),
-  setupWorkers().catch(error => {
-    console.error("Failed to setup workers:", error);
-  })
-]);
+await engine.whenReady();
 
 const container = document.getElementById("root");
 if (!container) throw new Error("Failed to find the root element");
