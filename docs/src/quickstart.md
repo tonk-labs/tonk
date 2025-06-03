@@ -150,8 +150,6 @@ ssh -p 443 -R0:localhost:8000 free.pinggy.io
 
 The caveat is of course that free pinggy tunnels last only 60 minutes. If you pay for a dedicated tunnel, then you could serve the application off that.
 
-## Tonk Deploy (Coming Soon TM)
+## Tonk Deploy
 
-Dedicated hosting of bundles at Tonk is on the roadmap. Please let us know if you'd like to join early access.
-
-For more advanced deployment options, see the [reference](./reference.md) section.
+For comprehensive deployment options including Docker containerization and cloud deployment, see the [Deployment Guide](./deployment.md). For CLI command reference, see the [Reference](./reference.md) section.

@@ -11,6 +11,7 @@ const FileViewer: React.FC = () => {
   const [editedContent, setEditedContent] = useState<string>("");
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [showRawContent, setShowRawContent] = useState<boolean>(false);
 
   // Extract file path from URL query parameters
   useEffect(() => {
@@ -131,6 +132,15 @@ const FileViewer: React.FC = () => {
       return <div className="text-[#86868b] italic">Empty file</div>;
     }
 
+    // If showing raw content, display the entire fileContent object as JSON
+    if (showRawContent) {
+      return (
+        <pre className="whitespace-pre-wrap">
+          {JSON.stringify(fileContent, null, 2)}
+        </pre>
+      );
+    }
+
     // Check if it's our content object format
     if (fileContent && typeof fileContent === 'object' && 'content' in fileContent) {
       return <pre className="whitespace-pre-wrap">{fileContent.content}</pre>;
@@ -208,6 +218,16 @@ const FileViewer: React.FC = () => {
               className="px-4 py-2 rounded-full text-sm font-medium bg-[#f5f5f7] text-[#0066cc] hover:bg-[#e5e5ea] transition-all"
             >
               ↻ Refresh
+            </button>
+            <button
+              onClick={() => setShowRawContent(!showRawContent)}
+              className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
+                showRawContent 
+                  ? 'bg-[#0066cc] text-white hover:bg-[#0056b3]'
+                  : 'bg-[#f5f5f7] text-[#0066cc] hover:bg-[#e5e5ea]'
+              }`}
+            >
+              {showRawContent ? '📄 Formatted' : '🔍 Raw'}
             </button>
           </div>
 
