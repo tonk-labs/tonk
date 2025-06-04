@@ -125,25 +125,13 @@ The best place to get started is our [quickstart guide](./quickstart.md).
 ## Walkthrough Videos
 
 <div style="text-align: center;">
-  <div style="margin: 4rem auto; padding: 20px; background-color: white; border-radius: 8px;">
-    <iframe src="https://vimeo.com/1090470142/d0f33fc88d" width="640" height="360" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
-    <p><a href="https://vimeo.com/1090470142/d0f33fc88d">Tonk Introduction</a></p>
-  </div>
+  <div style="padding:62.65% 0 0 0;position:relative;"><iframe src="https://player.vimeo.com/video/1090470142?h=d0f33fc88d&amp;title=0&amp;byline=0&amp;portrait=0&amp;badge=0&amp;autopause=0&amp;player_id=0&amp;app_id=58479" frameborder="0" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" style="position:absolute;top:0;left:0;width:100%;height:100%;" title="Intro"></iframe></div><script src="https://player.vimeo.com/api/player.js"></script>
   
-  <div style="margin: 4rem auto; padding: 20px; background-color: white; border-radius: 8px;">
-    <iframe src="https://vimeo.com/1090470104/d9dcca232a" width="640" height="360" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
-    <p><a href="https://vimeo.com/1090470104/d9dcca232a">First Vibe Code</a></p>
-  </div>
+  <div style="padding:62.79% 0 0 0;position:relative;"><iframe src="https://player.vimeo.com/video/1090470104?h=d9dcca232a&amp;title=0&amp;byline=0&amp;portrait=0&amp;badge=0&amp;autopause=0&amp;player_id=0&amp;app_id=58479" frameborder="0" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" style="position:absolute;top:0;left:0;width:100%;height:100%;" title="First Vibe Code"></iframe></div><script src="https://player.vimeo.com/api/player.js"></script>
   
-  <div style="margin: 4rem auto; padding: 20px; background-color: white; border-radius: 8px;">
-    <iframe src="https://vimeo.com/1090470074/7c18bc820a" width="640" height="360" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
-    <p><a href="https://vimeo.com/1090470074/7c18bc820a">Calendar Demo</a></p>
-  </div>
+  <div style="padding:62.65% 0 0 0;position:relative;"><iframe src="https://player.vimeo.com/video/1090470074?h=7c18bc820a&amp;title=0&amp;byline=0&amp;portrait=0&amp;badge=0&amp;autopause=0&amp;player_id=0&amp;app_id=58479" frameborder="0" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" style="position:absolute;top:0;left:0;width:100%;height:100%;" title="Cal"></iframe></div><script src="https://player.vimeo.com/api/player.js"></script>
   
-  <div style="margin: 4rem auto; padding: 20px; background-color: white; border-radius: 8px;">
-    <iframe src="https://vimeo.com/1090470033/5c90389dfc" width="640" height="360" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
-    <p><a href="https://vimeo.com/1090470033/5c90389dfc">Agentic Features</a></p>
-  </div>
+  <div style="padding:62.79% 0 0 0;position:relative;"><iframe src="https://player.vimeo.com/video/1090470033?h=5c90389dfc&amp;title=0&amp;byline=0&amp;portrait=0&amp;badge=0&amp;autopause=0&amp;player_id=0&amp;app_id=58479" frameborder="0" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" style="position:absolute;top:0;left:0;width:100%;height:100%;" title="Agentic"></iframe></div><script src="https://player.vimeo.com/api/player.js"></script>
 </div>
 
 ## Project status
