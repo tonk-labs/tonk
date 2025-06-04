@@ -81,6 +81,7 @@ An AI that can assist you with full context from your chat apps, calendars, todo
 *Hackathon idea:* A privacy-first AI assistant that reads your calendar, chat threads, and todos from your shared spaces — then recommends actions, summarizes life, and shares updates with your friends.
 
 
+
 ## License
 
 Simplicity and freedom.
