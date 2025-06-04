@@ -9,6 +9,11 @@ import {TonkWorkerManager} from '../../lib/workerManager.js';
 import {displayWorkerDetails} from './utils/display.js';
 import {findWorkerRoot, findAvailablePort} from './utils/finder.js';
 import {
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+} from '../../utils/analytics.js';
+import {
   readPackageJson,
   readWorkerConfigJs,
   updateWorkerConfig,
@@ -29,7 +34,17 @@ export function registerInspectCommand(workerCommand: Command): void {
     .option('-c, --config <path>', 'Path to worker configuration file')
     .option('-p, --ping', 'Ping the worker to check its status')
     .action(async (nameOrId, options) => {
+      const startTime = Date.now();
+
       try {
+        trackCommand('worker-inspect', {
+          nameOrId,
+          start: options.start,
+          stop: options.stop,
+          config: !!options.config,
+          ping: options.ping,
+        });
+
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
@@ -39,6 +54,16 @@ export function registerInspectCommand(workerCommand: Command): void {
         if (!worker) {
           console.error(
             chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
+          );
+
+          const duration = Date.now() - startTime;
+          trackCommandError(
+            'worker-inspect',
+            new Error('Worker not found'),
+            duration,
+            {
+              nameOrId,
+            },
           );
           return;
         }
@@ -51,6 +76,13 @@ export function registerInspectCommand(workerCommand: Command): void {
           !options.ping
         ) {
           displayWorkerDetails(worker);
+
+          const duration = Date.now() - startTime;
+          trackCommandSuccess('worker-inspect', duration, {
+            workerId: worker.id,
+            workerName: worker.name,
+            action: 'display',
+          });
           return;
         }
 
@@ -72,6 +104,14 @@ export function registerInspectCommand(workerCommand: Command): void {
               chalk.red(`Worker '${worker.name}' is not responding.`),
             );
           }
+
+          const duration = Date.now() - startTime;
+          trackCommandSuccess('worker-inspect', duration, {
+            workerId: worker.id,
+            workerName: worker.name,
+            action: 'ping',
+            isHealthy,
+          });
           return;
         }
 
@@ -82,6 +122,13 @@ export function registerInspectCommand(workerCommand: Command): void {
           console.log(
             chalk.green(`Worker '${worker.name}' started successfully!`),
           );
+
+          const duration = Date.now() - startTime;
+          trackCommandSuccess('worker-inspect', duration, {
+            workerId: worker.id,
+            workerName: worker.name,
+            action: 'start',
+          });
           return;
         }
 
@@ -92,14 +139,34 @@ export function registerInspectCommand(workerCommand: Command): void {
           console.log(
             chalk.green(`Worker '${worker.name}' stopped successfully!`),
           );
+
+          const duration = Date.now() - startTime;
+          trackCommandSuccess('worker-inspect', duration, {
+            workerId: worker.id,
+            workerName: worker.name,
+            action: 'stop',
+          });
           return;
         }
 
         // Handle config option
         if (options.config) {
           await updateWorkerConfig(workerManager, worker.id, options.config);
+
+          const duration = Date.now() - startTime;
+          trackCommandSuccess('worker-inspect', duration, {
+            workerId: worker.id,
+            workerName: worker.name,
+            action: 'config',
+            configPath: options.config,
+          });
         }
       } catch (error) {
+        const duration = Date.now() - startTime;
+        trackCommandError('worker-inspect', error as Error, duration, {
+          nameOrId,
+          options,
+        });
         console.error(chalk.red('Failed to manage worker:'), error);
       }
     });
@@ -113,7 +180,11 @@ export function registerListCommand(workerCommand: Command): void {
     .command('ls')
     .description('List all registered workers')
     .action(async () => {
+      const startTime = Date.now();
+
       try {
+        trackCommand('worker-ls', {});
+
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
@@ -127,6 +198,11 @@ export function registerListCommand(workerCommand: Command): void {
               `Use '${chalk.bold('tonk worker register')}' to register a worker.`,
             ),
           );
+
+          const duration = Date.now() - startTime;
+          trackCommandSuccess('worker-ls', duration, {
+            workerCount: 0,
+          });
           return;
         }
 
@@ -168,7 +244,15 @@ export function registerListCommand(workerCommand: Command): void {
             `\nUse '${chalk.bold('tonk worker inspect <name or id>')}' to view details of a specific worker.`,
           ),
         );
+
+        const duration = Date.now() - startTime;
+        trackCommandSuccess('worker-ls', duration, {
+          workerCount: workers.length,
+          activeWorkers: workers.filter(w => w.status.active).length,
+        });
       } catch (error) {
+        const duration = Date.now() - startTime;
+        trackCommandError('worker-ls', error as Error, duration);
         console.error(chalk.red('Failed to list workers:'), error);
       }
     });
@@ -182,7 +266,13 @@ export function registerRemoveCommand(workerCommand: Command): void {
     .command('rm <nameOrId>')
     .description('Remove a registered worker')
     .action(async nameOrId => {
+      const startTime = Date.now();
+
       try {
+        trackCommand('worker-rm', {
+          nameOrId,
+        });
+
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
@@ -192,6 +282,16 @@ export function registerRemoveCommand(workerCommand: Command): void {
         if (!worker) {
           console.error(
             chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
+          );
+
+          const duration = Date.now() - startTime;
+          trackCommandError(
+            'worker-rm',
+            new Error('Worker not found'),
+            duration,
+            {
+              nameOrId,
+            },
           );
           return;
         }
@@ -203,7 +303,17 @@ export function registerRemoveCommand(workerCommand: Command): void {
             `Worker '${worker.name}' (${worker.id}) removed successfully.`,
           ),
         );
+
+        const duration = Date.now() - startTime;
+        trackCommandSuccess('worker-rm', duration, {
+          workerId: worker.id,
+          workerName: worker.name,
+        });
       } catch (error) {
+        const duration = Date.now() - startTime;
+        trackCommandError('worker-rm', error as Error, duration, {
+          nameOrId,
+        });
         console.error(chalk.red('Failed to remove worker:'), error);
       }
     });
@@ -217,7 +327,13 @@ export function registerPingCommand(workerCommand: Command): void {
     .command('ping <nameOrId>')
     .description('Ping a worker to check its status')
     .action(async nameOrId => {
+      const startTime = Date.now();
+
       try {
+        trackCommand('worker-ping', {
+          nameOrId,
+        });
+
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
@@ -227,6 +343,16 @@ export function registerPingCommand(workerCommand: Command): void {
         if (!worker) {
           console.error(
             chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
+          );
+
+          const duration = Date.now() - startTime;
+          trackCommandError(
+            'worker-ping',
+            new Error('Worker not found'),
+            duration,
+            {
+              nameOrId,
+            },
           );
           return;
         }
@@ -245,7 +371,18 @@ export function registerPingCommand(workerCommand: Command): void {
         } else {
           console.log(chalk.red(`Worker '${worker.name}' is not responding.`));
         }
+
+        const duration = Date.now() - startTime;
+        trackCommandSuccess('worker-ping', duration, {
+          workerId: worker.id,
+          workerName: worker.name,
+          isHealthy,
+        });
       } catch (error) {
+        const duration = Date.now() - startTime;
+        trackCommandError('worker-ping', error as Error, duration, {
+          nameOrId,
+        });
         console.error(chalk.red('Failed to ping worker:'), error);
       }
     });
@@ -259,7 +396,13 @@ export function registerStartCommand(workerCommand: Command): void {
     .command('start <nameOrId>')
     .description('Start a worker')
     .action(async nameOrId => {
+      const startTime = Date.now();
+
       try {
+        trackCommand('worker-start', {
+          nameOrId,
+        });
+
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
@@ -270,6 +413,16 @@ export function registerStartCommand(workerCommand: Command): void {
           console.error(
             chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
           );
+
+          const duration = Date.now() - startTime;
+          trackCommandError(
+            'worker-start',
+            new Error('Worker not found'),
+            duration,
+            {
+              nameOrId,
+            },
+          );
           return;
         }
 
@@ -278,7 +431,17 @@ export function registerStartCommand(workerCommand: Command): void {
         console.log(
           chalk.green(`Worker '${worker.name}' started successfully!`),
         );
+
+        const duration = Date.now() - startTime;
+        trackCommandSuccess('worker-start', duration, {
+          workerId: worker.id,
+          workerName: worker.name,
+        });
       } catch (error) {
+        const duration = Date.now() - startTime;
+        trackCommandError('worker-start', error as Error, duration, {
+          nameOrId,
+        });
         console.error(chalk.red('Failed to start worker:'), error);
       }
     });
@@ -292,7 +455,13 @@ export function registerStopCommand(workerCommand: Command): void {
     .command('stop <nameOrId>')
     .description('Stop a worker')
     .action(async nameOrId => {
+      const startTime = Date.now();
+
       try {
+        trackCommand('worker-stop', {
+          nameOrId,
+        });
+
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
@@ -303,6 +472,16 @@ export function registerStopCommand(workerCommand: Command): void {
           console.error(
             chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
           );
+
+          const duration = Date.now() - startTime;
+          trackCommandError(
+            'worker-stop',
+            new Error('Worker not found'),
+            duration,
+            {
+              nameOrId,
+            },
+          );
           return;
         }
 
@@ -311,7 +490,17 @@ export function registerStopCommand(workerCommand: Command): void {
         console.log(
           chalk.green(`Worker '${worker.name}' stopped successfully!`),
         );
+
+        const duration = Date.now() - startTime;
+        trackCommandSuccess('worker-stop', duration, {
+          workerId: worker.id,
+          workerName: worker.name,
+        });
       } catch (error) {
+        const duration = Date.now() - startTime;
+        trackCommandError('worker-stop', error as Error, duration, {
+          nameOrId,
+        });
         console.error(chalk.red('Failed to stop worker:'), error);
       }
     });
@@ -329,7 +518,17 @@ export function registerLogsCommand(workerCommand: Command): void {
     .option('-e, --error', 'Show only error logs')
     .option('-o, --out', 'Show only standard output logs')
     .action(async (nameOrId, options) => {
+      const startTime = Date.now();
+
       try {
+        trackCommand('worker-logs', {
+          nameOrId,
+          follow: options.follow,
+          lines: options.lines,
+          error: options.error,
+          out: options.out,
+        });
+
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
@@ -339,6 +538,16 @@ export function registerLogsCommand(workerCommand: Command): void {
         if (!worker) {
           console.error(
             chalk.red(`Worker with name or ID '${nameOrId}' not found.`),
+          );
+
+          const duration = Date.now() - startTime;
+          trackCommandError(
+            'worker-logs',
+            new Error('Worker not found'),
+            duration,
+            {
+              nameOrId,
+            },
           );
           return;
         }
@@ -411,10 +620,30 @@ export function registerLogsCommand(workerCommand: Command): void {
               child.on('exit', resolve);
             });
           }
+
+          const duration = Date.now() - startTime;
+          trackCommandSuccess('worker-logs', duration, {
+            workerId: worker.id,
+            workerName: worker.name,
+            follow: options.follow,
+            lines: options.lines,
+            logType: options.error ? 'error' : options.out ? 'out' : 'all',
+          });
         } catch (error) {
+          const duration = Date.now() - startTime;
+          trackCommandError('worker-logs', error as Error, duration, {
+            workerId: worker.id,
+            workerName: worker.name,
+            options,
+          });
           console.error(chalk.red('Failed to fetch logs:'), error);
         }
       } catch (error) {
+        const duration = Date.now() - startTime;
+        trackCommandError('worker-logs', error as Error, duration, {
+          nameOrId,
+          options,
+        });
         console.error(chalk.red('Failed to fetch worker logs:'), error);
       }
     });
@@ -436,7 +665,17 @@ export function registerRegisterCommand(workerCommand: Command): void {
     .option('-p, --port <port>', 'Port number for the worker')
     .option('-d, --description <description>', 'Description of the worker')
     .action(async (dir = '.', options) => {
+      const startTime = Date.now();
+
       try {
+        trackCommand('worker-register', {
+          hasDir: !!dir && dir !== '.',
+          hasName: !!options.name,
+          hasEndpoint: !!options.endpoint,
+          hasPort: !!options.port,
+          hasDescription: !!options.description,
+        });
+
         // Create worker manager
         const workerManager = new TonkWorkerManager();
 
@@ -470,6 +709,14 @@ export function registerRegisterCommand(workerCommand: Command): void {
               console.log(`  ${key}=${value}`);
             });
           }
+
+          const duration = Date.now() - startTime;
+          trackCommandSuccess('worker-register', duration, {
+            workerId: worker.id,
+            workerName: worker.name,
+            registrationType: 'direct',
+            hasCustomPort: !!options.port,
+          });
           return;
         }
 
@@ -487,6 +734,16 @@ export function registerRegisterCommand(workerCommand: Command): void {
               'Make sure you are in a valid worker directory or specify the path to one, or provide --name and --endpoint options.',
             ),
           );
+
+          const duration = Date.now() - startTime;
+          trackCommandError(
+            'worker-register',
+            new Error('Worker directory not found'),
+            duration,
+            {
+              dir: path.resolve(dir),
+            },
+          );
           return;
         }
 
@@ -502,6 +759,16 @@ export function registerRegisterCommand(workerCommand: Command): void {
               `Failed to parse package.json file at ${packageJsonPath}`,
             ),
           );
+
+          const duration = Date.now() - startTime;
+          trackCommandError(
+            'worker-register',
+            new Error('Failed to parse package.json'),
+            duration,
+            {
+              packageJsonPath,
+            },
+          );
           return;
         }
 
@@ -514,6 +781,16 @@ export function registerRegisterCommand(workerCommand: Command): void {
             chalk.red(
               `Failed to parse worker.config.js file at ${workerConfigPath}`,
             ),
+          );
+
+          const duration = Date.now() - startTime;
+          trackCommandError(
+            'worker-register',
+            new Error('Failed to parse worker.config.js'),
+            duration,
+            {
+              workerConfigPath,
+            },
           );
           return;
         }
@@ -556,7 +833,22 @@ export function registerRegisterCommand(workerCommand: Command): void {
             console.log(`  ${key}=${value}`);
           });
         }
+
+        const duration = Date.now() - startTime;
+        trackCommandSuccess('worker-register', duration, {
+          workerId: worker.id,
+          workerName: worker.name,
+          registrationType: 'config-based',
+          workerDir,
+          port,
+          hasCustomEndpoint: !!options.endpoint,
+        });
       } catch (error) {
+        const duration = Date.now() - startTime;
+        trackCommandError('worker-register', error as Error, duration, {
+          dir,
+          options,
+        });
         console.error(chalk.red('Failed to register worker:'), error);
       }
     });
@@ -578,7 +870,15 @@ export function registerInstallCommand(workerCommand: Command): void {
       'Custom name for the worker (default: npm package name)',
     )
     .action(async (packageName, options) => {
+      const startTime = Date.now();
+
       try {
+        trackCommand('worker-install', {
+          packageName,
+          hasCustomPort: !!options.port,
+          hasCustomName: !!options.name,
+        });
+
         console.log(
           chalk.blue(`Installing worker from npm package: ${packageName}...`),
         );
@@ -595,6 +895,12 @@ export function registerInstallCommand(workerCommand: Command): void {
           console.log(chalk.green('Package installed successfully!'));
         } catch (error) {
           console.error(chalk.red('Failed to install package:'), error);
+
+          const duration = Date.now() - startTime;
+          trackCommandError('worker-install', error as Error, duration, {
+            packageName,
+            stage: 'npm-install',
+          });
           return;
         }
 
@@ -612,6 +918,12 @@ export function registerInstallCommand(workerCommand: Command): void {
           packageInfo = JSON.parse(stdout);
         } catch (error) {
           console.error(chalk.red('Failed to get package info:'), error);
+
+          const duration = Date.now() - startTime;
+          trackCommandError('worker-install', error as Error, duration, {
+            packageName,
+            stage: 'package-info',
+          });
           return;
         }
 
@@ -620,6 +932,7 @@ export function registerInstallCommand(workerCommand: Command): void {
           options.name || packageName.replace(/^@[^/]+\//, '');
 
         // Verify the package can be executed directly
+        let setupCompleted = false;
         try {
           // Check if the command exists by running a simple help command
           await execAsync(`${commandName} --help`);
@@ -639,7 +952,7 @@ export function registerInstallCommand(workerCommand: Command): void {
             });
 
             // Wait for the setup process to complete
-            await new Promise((resolve, reject) => {
+            setupCompleted = await new Promise((resolve, reject) => {
               setupProcess.on('close', code => {
                 if (code === 0) {
                   console.log(
@@ -703,10 +1016,37 @@ export function registerInstallCommand(workerCommand: Command): void {
           );
           console.log(chalk.cyan('Worker ID:'), chalk.bold(worker.id));
           console.log(chalk.cyan('Endpoint:'), chalk.bold(worker.endpoint));
+
+          const duration = Date.now() - startTime;
+          trackCommandSuccess('worker-install', duration, {
+            workerId: worker.id,
+            workerName: worker.name,
+            packageName,
+            port,
+            setupCompleted,
+            startedSuccessfully: true,
+          });
         } else {
           console.error(chalk.red(`Failed to start worker '${packageName}'.`));
+
+          const duration = Date.now() - startTime;
+          trackCommandError(
+            'worker-install',
+            new Error('Failed to start worker'),
+            duration,
+            {
+              workerId: worker.id,
+              packageName,
+              stage: 'worker-start',
+            },
+          );
         }
       } catch (error) {
+        const duration = Date.now() - startTime;
+        trackCommandError('worker-install', error as Error, duration, {
+          packageName,
+          options,
+        });
         console.error(chalk.red('Failed to install worker:'), error);
       }
     });
@@ -728,26 +1068,39 @@ export function registerInitCommand(workerCommand: Command): void {
     .option('-p, --port <port>', 'Port number for the worker', '5555')
     .option('-D, --description <description>', 'Description of the worker')
     .action(async options => {
+      const startTime = Date.now();
+
       try {
+        trackCommand('worker-init', {
+          hasCustomDir: options.dir !== '.',
+          hasName: !!options.name,
+          hasCustomPort: options.port !== '5555',
+          hasDescription: !!options.description,
+        });
+
         // Prompt for missing options
         const answers = await promptForMissingOptions(options);
         const mergedOptions = {...options, ...answers};
 
         // Create the directory if it doesn't exist
         const targetDir = path.resolve(mergedOptions.dir);
+        let directoryCreated = false;
         if (!fs.existsSync(targetDir)) {
           fs.mkdirSync(targetDir, {recursive: true});
           console.log(chalk.blue(`Created directory: ${targetDir}`));
+          directoryCreated = true;
         }
 
         // Generate the package.json content if it doesn't exist
         const packageJsonPath = path.join(targetDir, 'package.json');
+        let packageJsonCreated = false;
         if (!fs.existsSync(packageJsonPath)) {
           const packageJsonContent = generatePackageJsonContent(mergedOptions);
           fs.writeFileSync(packageJsonPath, packageJsonContent);
           console.log(
             chalk.green(`Created package.json at: ${packageJsonPath}`),
           );
+          packageJsonCreated = true;
         }
 
         // Generate the worker.config.js content
@@ -757,9 +1110,11 @@ export function registerInitCommand(workerCommand: Command): void {
 
         // Create src directory if it doesn't exist
         const srcDir = path.join(targetDir, 'src');
+        let srcDirCreated = false;
         if (!fs.existsSync(srcDir)) {
           fs.mkdirSync(srcDir, {recursive: true});
           console.log(chalk.blue(`Created src directory: ${srcDir}`));
+          srcDirCreated = true;
         }
 
         // Copy CLI template file
@@ -769,6 +1124,7 @@ export function registerInitCommand(workerCommand: Command): void {
           'cli.ts.template',
         );
         const cliDestPath = path.join(srcDir, 'cli.ts');
+        let cliFileCreated = false;
 
         if (fs.existsSync(cliTemplatePath)) {
           let cliContent = fs.readFileSync(cliTemplatePath, 'utf-8');
@@ -784,6 +1140,7 @@ export function registerInitCommand(workerCommand: Command): void {
 
           fs.writeFileSync(cliDestPath, cliContent);
           console.log(chalk.green(`Created CLI file at: ${cliDestPath}`));
+          cliFileCreated = true;
         } else {
           console.warn(
             chalk.yellow(`CLI template not found at: ${cliTemplatePath}`),
@@ -797,6 +1154,7 @@ export function registerInitCommand(workerCommand: Command): void {
           'index.ts.template',
         );
         const indexDestPath = path.join(srcDir, 'index.ts');
+        let indexFileCreated = false;
 
         if (!fs.existsSync(indexDestPath) && fs.existsSync(indexTemplatePath)) {
           let indexContent = fs.readFileSync(indexTemplatePath, 'utf-8');
@@ -814,6 +1172,7 @@ export function registerInitCommand(workerCommand: Command): void {
           console.log(
             chalk.green(`Created index.ts file at: ${indexDestPath}`),
           );
+          indexFileCreated = true;
         } else if (!fs.existsSync(indexTemplatePath)) {
           console.warn(
             chalk.yellow(`Index template not found at: ${indexTemplatePath}`),
@@ -827,6 +1186,7 @@ export function registerInitCommand(workerCommand: Command): void {
           'tsconfig.json.template',
         );
         const tsconfigDestPath = path.join(targetDir, 'tsconfig.json');
+        let tsconfigFileCreated = false;
 
         if (
           !fs.existsSync(tsconfigDestPath) &&
@@ -840,6 +1200,7 @@ export function registerInitCommand(workerCommand: Command): void {
           console.log(
             chalk.green(`Created tsconfig.json file at: ${tsconfigDestPath}`),
           );
+          tsconfigFileCreated = true;
         } else if (!fs.existsSync(tsconfigTemplatePath)) {
           console.warn(
             chalk.yellow(
@@ -855,7 +1216,32 @@ export function registerInitCommand(workerCommand: Command): void {
         );
         console.log(chalk.blue(`\nYou can now register this worker with:`));
         console.log(chalk.cyan(`  tonk worker register ${targetDir}`));
+
+        const duration = Date.now() - startTime;
+        trackCommandSuccess('worker-init', duration, {
+          workerName: mergedOptions.name,
+          targetDir,
+          port: mergedOptions.port,
+          directoryCreated,
+          packageJsonCreated,
+          srcDirCreated,
+          cliFileCreated,
+          indexFileCreated,
+          tsconfigFileCreated,
+          filesCreated: [
+            packageJsonCreated && 'package.json',
+            'worker.config.js',
+            srcDirCreated && 'src/',
+            cliFileCreated && 'cli.ts',
+            indexFileCreated && 'index.ts',
+            tsconfigFileCreated && 'tsconfig.json',
+          ].filter(Boolean).length,
+        });
       } catch (error) {
+        const duration = Date.now() - startTime;
+        trackCommandError('worker-init', error as Error, duration, {
+          options,
+        });
         console.error(
           chalk.red('Failed to initialise worker configuration:'),
           error,

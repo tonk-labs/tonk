@@ -8,6 +8,7 @@ import {fileFromPath} from 'formdata-node/file-from-path';
 import {FormDataEncoder} from 'form-data-encoder';
 import {Readable} from 'stream';
 import * as tar from 'tar';
+import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
 
 interface PushOptions {
   url: string;
@@ -187,6 +188,7 @@ async function startBundle(
  * Main push command handler
  */
 async function handlePushCommand(options: PushOptions): Promise<void> {
+  const startTime = Date.now();
   const serverUrl = options.url;
   const sourceDir = options.dir || './dist';
   const projectRoot = process.cwd();
@@ -195,6 +197,13 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
     : path.join(projectRoot, sourceDir);
 
   try {
+    trackCommand('push', {
+      serverUrl,
+      sourceDir,
+      name: options.name,
+      start: options.start,
+    });
+
     // Validate source directory
     validateSourceDirectory(sourcePath);
 
@@ -211,9 +220,11 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
     // Upload bundle
     const uploadResult = await uploadBundle(serverUrl, bundleName, tarballPath);
 
+    let startResult: StartResult | undefined;
+    
     // Start bundle if requested
     if (options.start) {
-      await startBundle(serverUrl, uploadResult.bundleName);
+      startResult = await startBundle(serverUrl, uploadResult.bundleName);
     } else {
       console.log(
         chalk.blue(
@@ -221,7 +232,24 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
         ),
       );
     }
+
+    const duration = Date.now() - startTime;
+    trackCommandSuccess('push', duration, {
+      bundleName: uploadResult.bundleName,
+      serverUrl,
+      started: options.start,
+      serverId: startResult?.id,
+      port: startResult?.port,
+    });
   } catch (error) {
+    const duration = Date.now() - startTime;
+    trackCommandError('push', error as Error, duration, {
+      serverUrl,
+      sourceDir,
+      name: options.name,
+      start: options.start,
+    });
+
     console.error(
       chalk.red(
         `Error: ${error instanceof Error ? error.message : String(error)}`,

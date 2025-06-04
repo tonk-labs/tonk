@@ -13,6 +13,7 @@ import chalk from 'chalk';
 import envPaths from 'env-paths';
 import fs from 'node:fs';
 import path from 'node:path';
+import {shutdownAnalytics, trackCommand, trackCommandError, trackCommandSuccess} from './utils/analytics.js';
 
 const program = new Command();
 
@@ -38,7 +39,11 @@ program.addCommand(proxyCommand);
 program.addCommand(workerCommand);
 
 const startServer = async () => {
+  const startTime = Date.now();
+  
   try {
+    trackCommand('daemon', {});
+    
     // Create paths for Tonk daemon home
     const paths = envPaths('tonk', {suffix: ''});
     const tonkHome = paths.data;
@@ -67,11 +72,15 @@ const startServer = async () => {
     // Start the server
     const server = await createServer(serverConfig);
 
+    const duration = Date.now() - startTime;
+    trackCommandSuccess('daemon', duration);
+
     // Handle process termination
     const cleanup = async () => {
       console.log(chalk.yellow('\nShutting down server...'));
       try {
         await server.stop();
+        await shutdownAnalytics();
         console.log(chalk.green('Server shutdown complete.'));
         // Force exit after brief delay to ensure any pending operations complete
         setTimeout(() => process.exit(0), 500);
@@ -85,6 +94,8 @@ const startServer = async () => {
     process.on('SIGINT', cleanup);
     process.on('SIGTERM', cleanup);
   } catch (error) {
+    const duration = Date.now() - startTime;
+    trackCommandError('daemon', error as Error, duration);
     console.error(chalk.red('Failed to start TonkServer daemon:'), error);
     process.exit(1);
   }
