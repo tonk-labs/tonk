@@ -1,6 +1,7 @@
 import {Command} from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
+import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
 
 interface ServerInfo {
   id: string;
@@ -14,9 +15,12 @@ export const psCommand = new Command('ps')
   .description('List running bundle servers')
   .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
   .action(async options => {
+    const startTime = Date.now();
     const serverUrl = options.url;
 
     try {
+      trackCommand('ps', {serverUrl});
+
       console.log(chalk.blue(`Fetching running servers from ${serverUrl}...`));
 
       const response = await fetch(`${serverUrl}/ps`);
@@ -30,6 +34,12 @@ export const psCommand = new Command('ps')
 
       if (servers.length === 0) {
         console.log(chalk.yellow('No servers currently running.'));
+        
+        const duration = Date.now() - startTime;
+        trackCommandSuccess('ps', duration, {
+          serverUrl,
+          serverCount: 0,
+        });
         return;
       }
 
@@ -50,7 +60,19 @@ export const psCommand = new Command('ps')
           ).padEnd(6)} | ${server.status}`,
         );
       });
+
+      const duration = Date.now() - startTime;
+      trackCommandSuccess('ps', duration, {
+        serverUrl,
+        serverCount: servers.length,
+        bundleNames: servers.map(s => s.bundleName),
+      });
     } catch (error) {
+      const duration = Date.now() - startTime;
+      trackCommandError('ps', error as Error, duration, {
+        serverUrl,
+      });
+
       console.error(
         chalk.red(
           `Error: ${error instanceof Error ? error.message : String(error)}`,

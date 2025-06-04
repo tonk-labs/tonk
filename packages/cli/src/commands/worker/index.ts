@@ -1,4 +1,5 @@
 import {Command} from 'commander';
+import {trackCommand} from '../../utils/analytics.js';
 import {
   registerInspectCommand,
   registerListCommand,
@@ -19,6 +20,7 @@ export function createWorkerCommand(): Command {
   const workerCommand = new Command('worker')
     .description('Manage Tonk workers')
     .action(async () => {
+      trackCommand('worker', {subcommand: 'help'});
       // Display help when no subcommand is provided
       workerCommand.help();
     });

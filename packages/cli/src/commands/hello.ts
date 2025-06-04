@@ -5,13 +5,18 @@ import inquirer from 'inquirer';
 import envPaths from 'env-paths';
 import {exec} from 'child_process';
 import {promisify} from 'util';
+import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
 
 const execAsync = promisify(exec);
 
 export const helloCommand = new Command('hello')
   .description('Say hello to start and launch the tonk daemon')
   .action(async () => {
+    const startTime = Date.now();
+    
     try {
+      trackCommand('hello', {});
+      
       // Check if pm2 is installed
       let pm2Exists = false;
       try {
@@ -69,12 +74,22 @@ export const helloCommand = new Command('hello')
 
           // Display the welcome animation
           displayTonkAnimation();
+
+          const duration = Date.now() - startTime;
+          trackCommandSuccess('hello', duration, {
+            pm2AlreadyInstalled: pm2Exists,
+            tonkAlreadyRunning: stdout.includes('tonkserver'),
+          });
         } catch (error) {
+          const duration = Date.now() - startTime;
+          trackCommandError('hello', error as Error, duration);
           console.error(chalk.red('Failed to start tonk daemon:'), error);
           process.exit(1);
         }
       }
     } catch (error) {
+      const duration = Date.now() - startTime;
+      trackCommandError('hello', error as Error, duration);
       console.error(chalk.red('An error occurred:'), error);
       process.exit(1);
     }
