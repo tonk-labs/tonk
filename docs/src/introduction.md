@@ -122,6 +122,30 @@ The **keepsync** library manages state with an optimized sync engine based on Au
 
 The best place to get started is our [quickstart guide](./quickstart.md).
 
+## Walkthrough Videos
+
+<div style="text-align: center;">
+  <div style="margin: 4rem auto; padding: 20px; background-color: white; border-radius: 8px;">
+    <iframe src="https://vimeo.com/1090470142/d0f33fc88d" width="640" height="360" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+    <p><a href="https://vimeo.com/1090470142/d0f33fc88d">Tonk Introduction</a></p>
+  </div>
+  
+  <div style="margin: 4rem auto; padding: 20px; background-color: white; border-radius: 8px;">
+    <iframe src="https://vimeo.com/1090470104/d9dcca232a" width="640" height="360" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+    <p><a href="https://vimeo.com/1090470104/d9dcca232a">First Vibe Code</a></p>
+  </div>
+  
+  <div style="margin: 4rem auto; padding: 20px; background-color: white; border-radius: 8px;">
+    <iframe src="https://vimeo.com/1090470074/7c18bc820a" width="640" height="360" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+    <p><a href="https://vimeo.com/1090470074/7c18bc820a">Calendar Demo</a></p>
+  </div>
+  
+  <div style="margin: 4rem auto; padding: 20px; background-color: white; border-radius: 8px;">
+    <iframe src="https://vimeo.com/1090470033/5c90389dfc" width="640" height="360" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+    <p><a href="https://vimeo.com/1090470033/5c90389dfc">Agentic Features</a></p>
+  </div>
+</div>
+
 ## Project status
 
 The team behind Tonk is a venture-backed startup based in London.
