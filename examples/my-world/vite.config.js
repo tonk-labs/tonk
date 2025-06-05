@@ -30,6 +30,15 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
+      "/.well-known/root.json": {
+        target: "http://localhost:7777",
+        changeOrigin: true,
+      },
+      "/api": {
+        target: "http://localhost:6080",
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
   build: {
