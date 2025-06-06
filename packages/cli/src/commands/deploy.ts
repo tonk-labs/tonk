@@ -149,6 +149,12 @@ function createStartupScript(): void {
 echo "Installing curl..."
 apk add curl
 
+# Ensure data directories exist and have proper permissions
+echo "Setting up data directories..."
+mkdir -p /data/tonk/stores
+mkdir -p /data/tonk/bundles
+chown -R app:app /data 2>/dev/null || true
+
 echo "Starting Tonk server in background..."
 tsx src/docker-start.ts &
 SERVER_PID=$!
@@ -286,9 +292,17 @@ primary_region = "${region}"
   cpu_kind = "shared"
   cpus = 1
 
+# Volume mounts for persistent data
+[mounts]
+  source = "tonk_data"
+  destination = "/data"
+
 [env]
   NODE_ENV = "production"
   PORT = "7777"
+  # Configure Tonk server paths to use persistent volumes
+  STORES_PATH = "/data/tonk/stores"
+  BUNDLES_PATH = "/data/tonk/bundles"
 `;
 
   fs.writeFileSync(flyConfigPath, flyConfig);
@@ -395,21 +409,7 @@ async function deployToFly(
     } catch (error) {
       spinner.text = 'Creating tonk_data volume...';
       execSync(
-        `flyctl volumes create tonk_data --size 3 -a ${appName} --region ${region} --yes`,
-        {
-          stdio: 'pipe',
-        },
-      );
-    }
-
-    try {
-      execSync(`flyctl volumes list -a ${appName} | grep tonk_bundles`, {
-        stdio: 'pipe',
-      });
-    } catch (error) {
-      spinner.text = 'Creating tonk_bundles volume...';
-      execSync(
-        `flyctl volumes create tonk_bundles --size 1 -a ${appName} --region ${region} --yes`,
+        `flyctl volumes create tonk_data --size 5 -a ${appName} --region ${region} --yes`,
         {
           stdio: 'pipe',
         },

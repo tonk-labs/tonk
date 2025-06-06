@@ -24,6 +24,15 @@ primary_region = "ord"
   cpu_kind = "shared"
   cpus = 1
 
+# Volume mounts for persistent data
+[mounts]
+  source = "tonk_data"
+  destination = "/data"
+
 [env]
   NODE_ENV = "production"
   PORT = "7777"
+  # Configure Tonk server paths to use persistent volumes
+  STORES_PATH = "/data/tonk/stores"
+  BUNDLES_PATH = "/data/tonk/bundles"
+  ROOT_CONFIG_PATH = "/data/tonk/root.json"
