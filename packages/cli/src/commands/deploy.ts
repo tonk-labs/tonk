@@ -197,16 +197,40 @@ async function deployApp(
     spinner.text = 'Creating app bundle...';
     const bundlePath = await createAppBundle();
 
+    // Stop spinner before prompting for access code
+    spinner.stop();
+
+    // Prompt for access code
+    const {accessCode} = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'accessCode',
+        message: 'Enter your access code:',
+        mask: '*',
+        validate: (input: string) => {
+          if (!input || input.trim().length === 0) {
+            return 'Access code is required';
+          }
+          return true;
+        },
+      },
+    ]);
+
+    // Restart spinner for upload
+    spinner.start();
+
     // Prepare form data
     const formData = new FormData();
     const bundleBuffer = fs.readFileSync(bundlePath);
     const bundleBlob = new Blob([bundleBuffer], {type: 'application/gzip'});
 
     formData.append('appBundle', bundleBlob, 'app-bundle.tar.gz');
+
     formData.append(
       'deployData',
       JSON.stringify({
         appName,
+        accessCode: accessCode.trim(),
         region: options.region || 'ord',
         memory: options.memory || '1gb',
         cpus: options.cpus || '1',
