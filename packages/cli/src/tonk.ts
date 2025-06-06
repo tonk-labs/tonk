@@ -13,15 +13,15 @@ import chalk from 'chalk';
 import envPaths from 'env-paths';
 import fs from 'node:fs';
 import path from 'node:path';
+import pkg from '../package.json' with { type: 'json' };
 import {shutdownAnalytics, trackCommand, trackCommandError, trackCommandSuccess} from './utils/analytics.js';
 
 const program = new Command();
-
 // Main program setup
 program
   .name('tonk')
   .description('The tonk cli helps you to manage your tonk stack and apps.')
-  .version('0.1.2')
+  .version(pkg.version)
   .option('-d', 'Run the Tonk daemon')
   .on('--help', () => {
     console.log('\nWork in progress!');
