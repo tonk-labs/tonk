@@ -3,6 +3,12 @@
 echo "Installing curl..."
 apk add curl
 
+# Ensure data directories exist and have proper permissions
+echo "Setting up data directories..."
+mkdir -p /data/tonk/stores
+mkdir -p /data/tonk/bundles
+chown -R app:app /data 2>/dev/null || true
+
 echo "Starting Tonk server in background..."
 tsx src/docker-start.ts &
 SERVER_PID=$!
