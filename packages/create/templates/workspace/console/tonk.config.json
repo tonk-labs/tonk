@@ -1,0 +1,9 @@
+{
+  "name": "console",
+  "plan": {
+    "platform": "react",
+    "projectName": "console",
+    "description": "it's a helpful tool with many tabs showing different functions I use to assist my development with Tonk. It has a files tab that shows different keepsync files and a worker inspector that shows me logs and status of my workers as well as a space where I can quickly launch views and play with data."
+  },
+  "template": "react"
+}
