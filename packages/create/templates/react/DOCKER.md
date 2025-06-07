@@ -1,106 +1,100 @@
 # Docker Deployment Guide for Tonk Apps
 
-This guide explains how to deploy your Tonk application using Docker, making it easy to self-host using the Tonk server.
+This guide explains how to deploy your Tonk application using Docker, making it easy to self-host with the Tonk server.
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) installed on your system
-- [Docker Compose](https://docs.docker.com/compose/install/) installed on your system
 
 ## Quick Start
 
-1. Build your application first:
+1. Build and run the containerized application:
    ```bash
-   pnpm build
+   docker build -t my-tonk-app .
+   docker run -p 7777:7777 -p 8000:8000 my-tonk-app
    ```
 
-2. Start the Tonk server container with your app:
+2. Access your application at http://localhost:8000
+
+3. View logs:
    ```bash
-   docker-compose up -d
+   docker logs <container-id>
    ```
 
-3. Access your application at http://localhost:8000
-
-4. View logs:
+4. Stop the container:
    ```bash
-   docker-compose logs -f
-   ```
-
-5. Stop the container:
-   ```bash
-   docker-compose down
+   docker stop <container-id>
    ```
 
 ## How It Works
 
-The Docker setup:
-1. Starts the Tonk server container
-2. Mounts your local `dist` directory into the container
-3. Creates a bundle from your application
-4. Uploads the bundle to the Tonk server
-5. Starts your application on port 8000
+The Docker setup uses a multi-stage build:
+1. **Build stage**: Installs dependencies and builds your application
+2. **Production stage**: Uses the Tonk server base image
+3. Copies the built application into the container
+4. Runs a startup script that:
+   - Starts the Tonk server
+   - Creates a bundle from your application
+   - Uploads the bundle to the Tonk server
+   - Starts your application on port 8000
 
-This approach is similar to using `tonk push` and `tonk start` with the Tonk CLI locally.
+This provides a completely self-contained deployment with no external dependencies.
 
 ## Configuration
 
 ### Environment Variables
 
-Edit the `docker-compose.yml` file to add any required API keys or environment variables for your services:
+Pass environment variables to the container at runtime:
 
-```yaml
-tonk-server:
-  environment:
-    - PORT=7777
-    # Add more environment variables as needed
+```bash
+docker run -p 7777:7777 -p 8000:8000 -e API_KEY=your-key my-tonk-app
 ```
 
 ### Ports
 
-By default, the Tonk server runs on port 7777 and your application runs on port 8000. You can change these ports in the `docker-compose.yml` file:
+By default, the Tonk server runs on port 7777 and your application runs on port 8000. You can map these to different host ports:
 
-```yaml
-tonk-server:
-  ports:
-    - "7777:7777"  # Tonk server port (change the first number to change the host port)
-    - "8000:8000"  # App bundle port (change the first number to change the host port)
-```
-
-You'll also need to update the port in the start command if you change the app port:
-
-```yaml
-command: >
-  sh -c "
-    # ...
-    curl -X POST -H 'Content-Type: application/json' -d '{\"bundleName\":\"tonk-app\",\"port\":8000}' http://localhost:7777/start
-    # ...
-  "
+```bash
+docker run -p 8080:7777 -p 9000:8000 my-tonk-app
 ```
 
 ### Volumes
 
-The Docker setup creates two persistent volumes:
-- `tonk-data`: Stores the Tonk server's data
-- `tonk-bundles`: Stores application bundles
+For data persistence, mount volumes:
 
-These volumes ensure your data persists even if the container is removed.
+```bash
+docker run -p 7777:7777 -p 8000:8000 \
+  -v tonk-data:/app/stores \
+  -v tonk-bundles:/app/bundles \
+  my-tonk-app
+```
 
 ## Advanced Configuration
 
-### Custom Tonk Server Image
+### Custom Base Image
 
-If you have a custom Tonk server image, you can specify it in the `docker-compose.yml` file:
+To use a custom Tonk server base image, modify the Dockerfile:
 
-```yaml
-tonk-server:
-  image: your-custom-tonk-server-image:tag
+```dockerfile
+# Change the base image in the production stage
+FROM your-custom-tonk-server:tag
 ```
 
-### Using a Reverse Proxy
+### Health Checks
 
-For production deployments, it's recommended to use a reverse proxy such as Nginx to handle SSL termination and routing:
+The Dockerfile includes a health check that verifies your app is running on port 8000. You can customize this:
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8000/health || exit 1
+```
+
+### Production Deployment
+
+For production, consider using Docker Compose or Kubernetes for orchestration:
 
 ```yaml
+# docker-compose.yml
 services:
   nginx:
     image: nginx:alpine
@@ -111,101 +105,56 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf
       - ./ssl:/etc/nginx/ssl
     depends_on:
-      - tonk-server
-    networks:
-      - tonk-network
+      - app
 
-  tonk-server:
-    image: tonklabs/tonk-server:latest
-    volumes:
-      - tonk-data:/app/stores
-      - tonk-bundles:/app/bundles
-      - ./dist:/tmp/app-bundle
+  app:
+    build: .
     expose:
-      - "7777"
       - "8000"
     environment:
-      - PORT=7777
-    networks:
-      - tonk-network
-    command: >
-      sh -c "
-        # Install curl if not already installed
-        echo 'Installing curl...'
-        apk add curl
-
-        # Start Tonk server in the background
-        echo 'Starting Tonk server...'
-        tsx src/docker-start.ts &
-        
-        # Wait for the server to be ready
-        echo 'Waiting for Tonk server to start...'
-        until $(curl --output /dev/null --silent --fail http://localhost:7777/ping); do
-          printf '.'
-          sleep 1
-        done
-        echo 'Tonk server is up!'
-        
-        # Create a tarball from the mounted dist directory
-        echo 'Creating app bundle...'
-        cd /tmp
-        tar -czf app-bundle.tar.gz -C /tmp/app-bundle .
-        
-        # Upload the bundle to the Tonk server
-        echo 'Uploading app bundle to Tonk server...'
-        curl -X POST -F 'bundle=@/tmp/app-bundle.tar.gz' -F 'name=tonk-app' http://localhost:7777/upload-bundle
-        
-        # Start the bundle
-        echo 'Starting app bundle...'
-        curl -X POST -H 'Content-Type: application/json' -d '{\"bundleName\":\"tonk-app\",\"port\":8000}' http://localhost:7777/start
-        
-        # Keep the container running
-        tail -f /dev/null
-      "
-
-networks:
-  tonk-network:
-    driver: bridge
+      - NODE_ENV=production
+    volumes:
+      - app-data:/app/stores
+      - app-bundles:/app/bundles
 
 volumes:
-  tonk-data:
-  tonk-bundles:
+  app-data:
+  app-bundles:
 ```
 
 ## Troubleshooting
 
 ### Container Fails to Start
 
-If the container fails to start, check the logs:
+Check the container logs:
 
 ```bash
-docker-compose logs tonk-server
+docker logs <container-id>
 ```
 
-### Data Persistence Issues
+### Build Issues
 
-If you're experiencing data persistence issues, make sure the volumes are properly mounted:
+If the build fails, ensure you have the required dependencies and the correct Node.js version:
 
 ```bash
-docker volume ls
+docker build --no-cache -t my-tonk-app .
 ```
 
-You should see `tonk-data` and `tonk-bundles` in the list.
+### Application Not Accessible
 
-### Bundle Deployment Issues
-
-If your application bundle isn't being deployed correctly:
-
-1. Make sure your application is built before starting the container:
+1. Verify ports are correctly mapped:
    ```bash
-   pnpm build
+   docker ps
    ```
 
-2. Check that the `dist` directory exists and contains your built application.
-
-3. Check the container logs for any errors during the bundle creation or upload process:
+2. Check if the application started successfully in the logs:
    ```bash
-   docker-compose logs tonk-server
+   docker logs <container-id>
+   ```
+
+3. Test the health check endpoint:
+   ```bash
+   curl http://localhost:8000/
    ```
 
 ## Resources
