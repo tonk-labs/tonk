@@ -179,14 +179,14 @@ rm = async (path: string, recursive?: boolean): Promise<void>;
  * Listens for changes to a document
  *
  * This function sets up a listener for changes to a document at the specified path.
- * The callback will be called whenever the document changes.
+ * The callback will be called whenever the document changes with detailed patch information.
  *
  * @param path - The path of the document to listen to
- * @param callback - Function to call when the document changes
+ * @param callback - Function to call when the document changes, receives payload with doc, patches, patchInfo, and handle
  * @returns A function that can be called to stop listening
  * @throws Error if the SyncEngine is not properly initialized
  */
-listenToDoc = <T>(path: string, callback: (doc: T | undefined) => void): () => void;
+listenToDoc = <T>(path: string, callback: (payload: { doc: T; patches: any[]; patchInfo: any; handle: DocHandle<T> }) => void): Promise<() => void>;
 ```
 
 ## File System Operations Example
@@ -212,11 +212,12 @@ const user1 = await readDoc<{ name: string, age: number }>("/users/user1");
 console.log(user1); // { name: "Alice", age: 30 }
 
 // Listen for changes to a document
-const unsubscribe = listenToDoc<{ name: string, age: number }>("/users/user1", (user) => {
+const unsubscribe = await listenToDoc<{ name: string, age: number }>("/users/user1", (payload) => {
+  const { doc: user, patches, patchInfo, handle } = payload;
   if (user) {
     console.log(`User updated: ${user.name}, ${user.age}`);
-  } else {
-    console.log("User document not found or deleted");
+    console.log("Patches:", patches);
+    console.log("Patch info:", patchInfo);
   }
 });
 

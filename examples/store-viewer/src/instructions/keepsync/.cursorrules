@@ -94,3 +94,13 @@ export function Counter() {
   );
 }
 ```
+
+There is also a new super useful api that lets you fetch a store directly by ID and then use it.
+```
+import { getDocHandleById } from '@tonk/keepsync';
+
+const handle = getDocHandleById('my doc id');
+const doc = handle.docSync();
+
+//doc is just a normal JS object, you can now do whatever you want with it
+```
