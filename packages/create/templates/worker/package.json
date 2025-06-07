@@ -1,10 +1,10 @@
 {
-  "name": "tonk-worker",
+  "name": "obsidian-notes",
   "version": "1.0.0",
-  "description": "Tonk worker service",
+  "description": "Reads in the topics of interest note from my obsidian icloud",
   "main": "dist/index.js",
   "bin": {
-    "tonk-worker": "dist/cli.js"
+    "obsidian-notes": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
@@ -29,13 +29,15 @@
     "@automerge/automerge-repo": "^1.2.1",
     "@automerge/automerge-repo-network-websocket": "^1.2.1",
     "@automerge/automerge-repo-storage-nodefs": "^1.2.1",
-    "@tonk/keepsync": "^0.4.8",
+    "@tonk/keepsync": "^0.5.0",
+    "chokidar": "^4.0.3",
     "commander": "^11.1.0",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0"
   },
   "devDependencies": {
+    "@types/chokidar": "^2.1.7",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.1",
     "@types/jest": "^29.5.0",

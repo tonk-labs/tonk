@@ -1,3 +1,22 @@
+/**
+ * ⚠️  IMPORTANT: DO NOT POLLUTE THIS FILE WITH BUSINESS LOGIC! ⚠️
+ *
+ * This file should ONLY contain:
+ * - HTTP server setup and routing
+ * - Credential manager initialization
+ * - KeepSync engine configuration
+ * - Basic endpoint handlers that delegate to other modules
+ *
+ * ALL business logic should go in separate modules
+ * FOR EXAMPLE:
+ * - Gmail API operations → src/services/gmailService.ts
+ * - OpenAI operations → src/services/openaiService.ts
+ * - Email processing → src/services/emailProcessor.ts
+ * - Data transformation → src/utils/dataTransforms.ts
+ * - And so on...
+ *
+ * Keep this file clean and focused on infrastructure only!
+ */
 import { configureSyncEngine } from "@tonk/keepsync";
 import { NetworkAdapterInterface } from "@automerge/automerge-repo";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
@@ -36,7 +55,7 @@ interface WorkerConfig {
  */
 export async function startWorker(config: WorkerConfig): Promise<http.Server> {
   const { port } = config;
-  
+
   // Configure sync engine
   const SYNC_WS_URL = process.env.SYNC_WS_URL || "ws://localhost:7777/sync";
   const SYNC_URL = process.env.SYNC_URL || "http://localhost:7777";
@@ -73,7 +92,7 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
       res.end(JSON.stringify({ status: "ok" }));
       return;
     }
-    
+
     // Hello endpoint
     if (req.method === "GET" && req.url === "/hello") {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -102,13 +121,13 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
             JSON.stringify({
               success: true,
               message: "Request processed successfully",
-            }),
+            })
           );
         } catch (error) {
           console.error("Error processing request:", error);
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(
-            JSON.stringify({ success: false, error: "Invalid data format" }),
+            JSON.stringify({ success: false, error: "Invalid data format" })
           );
         }
       });
@@ -122,7 +141,7 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
   // Start the server
   return new Promise((resolve) => {
     server.listen(port, async () => {
-        console.log(`{{name}} worker listening on http://localhost:${port}/tonk`);
+      console.log(`{{name}} worker listening on http://localhost:${port}/tonk`);
 
       // Initialize the sync engine
       try {
@@ -140,7 +159,7 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
 
       process.on("SIGINT", cleanup);
       process.on("SIGTERM", cleanup);
-      
+
       resolve(server);
     });
   });
@@ -148,8 +167,10 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
 
 // If this file is run directly, start the worker
 if (require.main === module) {
-  const port = process.env.WORKER_PORT ? parseInt(process.env.WORKER_PORT, 10) : 5555;
+  const port = process.env.WORKER_PORT
+    ? parseInt(process.env.WORKER_PORT, 10)
+    : 5555;
   startWorker({ port })
     .then(() => console.log(`Worker started on port ${port}`))
-    .catch(err => console.error('Failed to start worker:', err));
+    .catch((err) => console.error("Failed to start worker:", err));
 }
