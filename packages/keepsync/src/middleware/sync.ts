@@ -478,18 +478,37 @@ export const writeDoc = async <T>(path: string, content: T) => {
   newHandle.docSync();
 };
 
-export type DocChangeListener<T> = (doc: T) => void;
+export type DocChangeListener<T> = (payload: {
+  doc: T;
+  patches: any[];
+  patchInfo: any;
+  handle: DocHandle<T>;
+}) => void;
 
 /**
  * Attaches a listener to a document at the specified path
  *
  * This function allows you to listen for changes to a document without using the full sync middleware.
  * It returns a function that can be called to remove the listener when it's no longer needed.
+ * The listener receives detailed change information including patches and before/after state.
  *
  * @example
- * // Attach a listener to a document
- * const removeListener = await listenToDoc('my/document/path', (doc) => {
+ * // Attach a listener to a document with patch information
+ * const removeListener = await listenToDoc('my/document/path', (payload) => {
+ *   const { doc, patches, patchInfo, handle } = payload;
+ *
  *   console.log('Document changed:', doc);
+ *   console.log('Patches:', patches);
+ *   console.log('Before:', patchInfo.before);
+ *   console.log('After:', patchInfo.after);
+ *   console.log('Source:', patchInfo.source);
+ *
+ *   // Inspect individual patches for granular changes
+ *   patches.forEach(patch => {
+ *     console.log('Patch action:', patch.action);
+ *     console.log('Patch path:', patch.path);
+ *     console.log('Patch value:', patch.value);
+ *   });
  * });
  *
  * // Later, when you want to stop listening
@@ -517,10 +536,11 @@ export const listenToDoc = async <T>(
     throw new Error(`Document not found at path: ${path}`);
   }
 
-  // Create a wrapper function that will call the listener with the document
-  const handleChange = ({doc}: {doc: T | undefined}) => {
+  // Create a wrapper function that will call the listener with the full payload
+  const handleChange = (payload: any) => {
+    const {doc, patches, patchInfo, handle} = payload;
     if (doc) {
-      listener(doc);
+      listener({doc, patches, patchInfo, handle});
     }
   };
 
@@ -528,9 +548,15 @@ export const listenToDoc = async <T>(
   docHandle.on('change', handleChange);
 
   // Get the current document state and call the listener immediately
+  // For the initial call, we don't have patch information, so we provide empty defaults
   const currentDoc = await docHandle.doc();
   if (currentDoc) {
-    listener(currentDoc);
+    listener({
+      doc: currentDoc,
+      patches: [],
+      patchInfo: {before: null, after: currentDoc, source: 'initial'},
+      handle: docHandle,
+    });
   }
 
   // Return a function that removes the listener

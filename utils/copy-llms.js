@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 const PROJECT_SUBDIRS = [
   'packages/create/templates/react',
   'packages/create/templates/node',
+  'packages/create/templates/worker'
 ];
 
 function generateMDCName(dirPath) {
