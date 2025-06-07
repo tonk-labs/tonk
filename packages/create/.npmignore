@@ -1,0 +1,27 @@
+node_modules/
+
+# Exclude node_modules and workspace folders from templates (comprehensive patterns)
+templates/**/node_modules/
+templates/**/node_modules/**
+templates/**/workspace/
+templates/**/workspace/**
+templates/**/.pnpm/
+templates/**/.pnpm/**
+
+# Exclude lock files from templates
+templates/**/pnpm-lock.yaml
+templates/**/package-lock.json
+templates/**/yarn.lock
+
+# Exclude other build/dev artifacts from templates
+templates/**/.DS_Store
+templates/**/dist/
+templates/**/dist/**
+templates/**/dev-dist/
+templates/**/dev-dist/**
+templates/**/.next/
+templates/**/.next/**
+templates/**/coverage/
+templates/**/coverage/**
+templates/**/.nyc_output/
+templates/**/.nyc_output/**
