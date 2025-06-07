@@ -19,7 +19,16 @@
   "files": [
     "bin",
     "dist",
-    "templates"
+    "templates",
+    "!templates/**/node_modules/**",
+    "!templates/**/.pnpm/**",
+    "!templates/**/pnpm-lock.yaml",
+    "!templates/**/package-lock.json",
+    "!templates/**/yarn.lock",
+    "!templates/**/dist/**",
+    "!templates/**/dev-dist/**",
+    "!templates/**/.DS_Store",
+    "!templates/workspace"
   ],
   "scripts": {
     "build": "tsup && chmod +x ./dist/create.js",
