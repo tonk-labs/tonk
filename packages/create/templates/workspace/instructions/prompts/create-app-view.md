@@ -174,14 +174,9 @@ I'm helping you set up a new Tonk View. To scaffold it properly, I need a few de
 
 1. **What is this view's main purpose?** (e.g., data visualization, user management, content editing)
 2. **What data will it display?** Should it connect to existing KeepSync documents or create new ones?
-3. **Who are the users?** Will multiple people use this simultaneously (requiring real-time sync)?
-4. **What are the key interactions?** (e.g., CRUD operations, filtering, search, file uploads)
-5. **Any external integrations needed?** (APIs, file systems, third-party services)
-6. **Special requirements?** (offline support, mobile-first, accessibility needs)
 
 After collecting this information, I'll:
 
-- Scaffold the view structure
-- Create the implementation spec and checklist
-- Set up KeepSync document schemas
-- Stub out key components and routes
+- Run tonk create in /views
+- Begin coding the view structure
+- Create the implementation checklist at root of workspace project /checklist.md

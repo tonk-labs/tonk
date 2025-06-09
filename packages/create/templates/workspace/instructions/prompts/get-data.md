@@ -223,27 +223,17 @@ Obsidian Note → Parse Topics → Generate Queries → Web Search → Read Webs
 
 Your Responsibilities as the AI Agent 1. Ask the user:
 • What is the primary function of the worker?
-• What endpoints (if any) should it expose?
-• Should it integrate with KeepSync?
 • What credentials or third-party APIs are needed?
-• Should it react to file system events or timers? 2. Create a spec document (/instructions/spec.md) containing:
-• Worker name and summary
-• Planned endpoints and parameters
-• Required credentials
-• Listeners or event sources
-• Implementation checklist (with completion status) 3. Adapt to context:
+• Should it react to file system events or timers?
 • Read and respect existing files, templates, and metadata
 • Do not delete or overwrite scaffolded files unless specifically allowed
-• Modify configuration files only when necessary and clearly commented 4. Output formats:
-• Use TypeScript for source files
-• Use Markdown for specs and checklists
-• Follow existing patterns in the repository when available
+• Modify configuration files only when necessary and clearly commented
 
 Example Initial Agent Prompt
 
-I’m helping you set up a new Tonk Worker. To scaffold it properly, I need a few details: 1. What is this worker’s main function? 2. Should it expose any HTTP routes? If so, which ones? 3. Does it need to synchronize data via KeepSync? 4. Are any API credentials required? 5. Should it listen to file system events or run on a schedule?
+I’m helping you set up a new Tonk Worker. To scaffold it properly, I need a few details: 1. What is this worker’s main function?
 
 After collecting this information, proceed to:
 • Scaffold or adapt the worker
-• Populate the spec/checklist
+• Populate a spec/checklist at the root of the workspace named checklist.md
 • Stub out endpoint or listener handlers
