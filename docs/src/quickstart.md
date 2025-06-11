@@ -138,18 +138,6 @@ Use 'tonk ps' to see all running servers
 
 ```
 
-# Use a reverse-proxy to share your application to external devices
-
-Pinggy makes this simple and free
-
-```
-
-ssh -p 443 -R0:localhost:8000 free.pinggy.io
-
-```
-
-The caveat is of course that free pinggy tunnels last only 60 minutes. If you pay for a dedicated tunnel, then you could serve the application off that.
-
 ## Tonk Deploy
 
 For comprehensive deployment options including Docker containerization and cloud deployment, see the [Deployment Guide](./deployment.md). For CLI command reference, see the [Reference](./reference.md) section.
