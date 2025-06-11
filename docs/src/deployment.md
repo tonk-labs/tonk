@@ -113,6 +113,3 @@ tonk ps
 ## Next Steps
 
 - Explore [Tonk Workers](./tonk-stack/workers.md) for background processing
-- Set up [monitoring and alerting](./monitoring.md) for production deployments
-- Learn about [scaling Tonk applications](./scaling.md) for high-traffic scenarios
-
