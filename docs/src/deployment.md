@@ -8,8 +8,7 @@ Tonk applications can be deployed in several ways:
 
 1. **Local Development**: Using `tonk -d` daemon for development
 2. **Docker Containerization**: Packaging apps and the Tonk server in containers
-3. **Cloud Deployment**: Deploying to cloud platforms like AWS EC2
-4. **Hybrid Deployment**: Combining local and cloud resources
+3. **One-Touch Hosting**: Using `tonk deploy` for managed hosting (experimental)
 
 ## Docker Deployment
 
@@ -109,6 +108,45 @@ curl http://localhost:7777/ping
 # Check running bundles
 tonk ps
 ```
+
+## One-Touch Hosting (Experimental)
+
+⚠️ **EXPERIMENTAL FEATURE** ⚠️
+
+The `tonk deploy` command provides experimental one-touch hosting for Tonk applications. **This feature is highly experimental and will change drastically. Expect data loss.** You must obtain an access code to use this feature (see below).
+
+### Usage
+
+In your Tonk app directory run:
+```bash
+tonk deploy
+```
+
+Options:
+- `-n, --name <name>`: Name for the deployed app (defaults to package.json name)
+- `-r, --region <region>`: Region to deploy to (default: ord)
+- `-m, --memory <memory>`: Memory allocation (e.g., 256mb, 1gb) (default: 1gb)
+- `-c, --cpus <cpus>`: Number of CPUs (default: 1)
+- `--skip-build`: Skip the build step
+- `--remote`: Use remote Docker build
+
+### Important Warnings
+
+- **Data Loss**: Your deployed applications and data may be lost at any time
+- **Breaking Changes**: The deployment architecture will change soon
+- **No SLA**: This is an experimental service with no uptime guarantees
+- **Access Required**: You must have a valid deploy code from Tonk
+
+### How It Works
+
+1. Builds your Tonk application locally
+2. Creates a compressed bundle of your project
+3. Uploads the bundle to Tonk's hosting service
+4. Returns a public URL for your deployed application
+
+### Getting Access
+
+Contact Jack at Tonk ([Telegram](https://t.me/jackddouglas)) to request a deploy code.
 
 ## Next Steps
 
