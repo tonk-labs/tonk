@@ -8,6 +8,7 @@ const startDockerizedServer = async (): Promise<void> => {
     const port = 7777;
     const bundlesPath = process.env.BUNDLES_PATH || '/data/tonk/bundles';
     const storesPath = process.env.STORES_PATH || '/data/tonk/stores';
+    const configPath = process.env.ROOT_CONFIG_PATH || '/data/tonk/root.json';
 
     // Ensure directories exist
     for (const dir of [bundlesPath, storesPath]) {
@@ -17,15 +18,24 @@ const startDockerizedServer = async (): Promise<void> => {
       }
     }
 
+    // Ensure the root config directory exists
+    const configDir = configPath.substring(0, configPath.lastIndexOf('/'));
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, {recursive: true});
+      console.log(chalk.blue(`Created config directory: ${configDir}`));
+    }
+
     console.log(chalk.cyan('📦 Tonk Docker Configuration:'));
     console.log(chalk.cyan('   Port:'), chalk.bold.green(port));
     console.log(chalk.cyan('   Bundles path:'), chalk.bold.green(bundlesPath));
     console.log(chalk.cyan('   Stores path:'), chalk.bold.green(storesPath));
+    console.log(chalk.cyan('   Config path:'), chalk.bold.green(configPath));
 
     // Create server configuration
     const serverConfig: ServerOptions = {
       bundlesPath,
       dirPath: storesPath,
+      configPath,
     };
 
     console.log(chalk.blue('Starting TonkServer in Docker...'));

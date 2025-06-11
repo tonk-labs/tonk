@@ -1,5 +1,6 @@
 import {Command} from 'commander';
 import {createCommand} from './commands/create.js';
+import {deployCommand} from './commands/deploy.js';
 import {helloCommand} from './commands/hello.js';
 import {lsCommand} from './commands/ls.js';
 import {psCommand} from './commands/ps.js';
@@ -29,6 +30,7 @@ program
 
 program.addCommand(helloCommand);
 program.addCommand(createCommand);
+program.addCommand(deployCommand);
 // Add bundle management commands
 program.addCommand(pushCommand);
 program.addCommand(startCommand);

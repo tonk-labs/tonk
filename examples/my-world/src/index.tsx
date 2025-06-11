@@ -8,13 +8,16 @@ import { configureSyncEngine } from "@tonk/keepsync";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 
+// Setup sync engine
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
+const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
+const storage = new IndexedDBStorageAdapter();
 
 const engine = configureSyncEngine({
-  url: "http://localhost:7777",
-  storage: new IndexedDBStorageAdapter(),
-  network: [new BrowserWebSocketClientAdapter(wsUrl)],
+  url: `${window.location.protocol}//${window.location.host}`,
+  network: [wsAdapter as any],
+  storage,
 });
 
 await engine.whenReady();

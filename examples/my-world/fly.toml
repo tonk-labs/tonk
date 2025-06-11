@@ -1,0 +1,38 @@
+# Fly.io configuration for Tonk app
+app = "my-world"
+primary_region = "ord"
+
+[build]
+
+# Main HTTP service for the frontend app
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+
+# Additional service for Tonk sync server
+[[services]]
+  internal_port = 7777
+  protocol = "tcp"
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+# Volume mounts for persistent data
+[mounts]
+  source = "tonk_data"
+  destination = "/data"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "7777"
+  # Configure Tonk server paths to use persistent volumes
+  STORES_PATH = "/data/tonk/stores"
+  BUNDLES_PATH = "/data/tonk/bundles"
+  ROOT_CONFIG_PATH = "/data/tonk/root.json"

@@ -4,6 +4,7 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import fs from "fs";
+import dotenv from "dotenv";
 
 interface ApiService {
   prefix: string; // The route prefix (e.g., "weather")
@@ -19,6 +20,9 @@ interface ApiService {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, "..", "..");
+
+// Load environment variables from .env file in project root
+dotenv.config({ path: join(projectRoot, ".env") });
 
 // Read API services from the frontend project
 const apiServicesPath = join(projectRoot, "src", "services", "apiServices.ts");
@@ -69,7 +73,7 @@ services.forEach((service: ApiService) => {
         proxyReq: (proxyReq, _req, _res) => {
           // Add authentication if required
           if (requiresAuth) {
-            const authValue = authEnvVar || ""; // In production, this would be process.env[authEnvVar]
+            const authValue = process.env[authEnvVar!] || "";
 
             if (authType === "bearer") {
               proxyReq.setHeader(
