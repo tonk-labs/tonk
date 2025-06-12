@@ -1,8 +1,11 @@
-# Quickstart guide
+# Quickstart Guide
 
-> If you haven't yet, start with the [**introduction**](./introduction.md) before reading this quickstart guide.
+Tonk follows a simple two-mode workflow:
 
-Tonk apps plug into Tonk stores, which store data in a local-first way. This makes applications especially collaborative and interoperable. It also means that they are private, performant, have offline support and reduce dependency on third parties. Apps on Tonk sidestep traditional database headaches such as caching, migrations and auth.
+1. **Workers stream data in** - Background services connect to external APIs or your file system and stream data into your local Tonk store
+2. **Apps visualise data** - Frontend applications provide interfaces to explore and interact with that data
+
+This architecture separates data ingestion from visualisation, making your applications more maintainable and your data more reusable across different interfaces.
 
 ## Installing Tonk
 
@@ -12,31 +15,79 @@ First, you'll need to install Tonk on your machine:
 npm install -g @tonk/cli && tonk hello
 ```
 
-This will install the Tonk CLI globally and run the `hello` command, which sets up the Tonk daemon for synchronizing your data.
+This will install the Tonk CLI globally and run the `hello` command, which sets up the Tonk daemon for synchronising your data.
 
-## Creating a new Tonk app
+## The Tonk Workflow
 
-To create a new Tonk app, use the `create` command:
+### Mode 1: Create Workers (Data Ingestion)
+
+Workers are background services that connect to the outside world and stream data into your Tonk store. Start by creating a worker:
 
 ```bash
-tonk create
+tonk create  # choose 'worker' when prompted
+cd my-worker
 ```
 
-The CLI will guide you through a series of prompts to configure your project:
+Workers handle tasks like:
+- Syncing data from Google Maps, Gmail, or other APIs
+- Processing scheduled tasks
+- Real-time data streaming
+- API integrations
 
-1. Choose a template (React or Node.js)
-2. Enter a project name (or accept the default)
-3. Provide a brief description of your project
+Example worker structure:
+```typescript
+// src/index.ts - Your worker's main logic
+app.post('/tonk', async (req, res) => {
+  // Connect to external API
+  const data = await fetchFromExternalAPI();
+  
+  // Store in Tonk via keepsync
+  await writeDoc('my-collection/data', data);
+  
+  res.json({ success: true });
+});
+```
 
-After answering these questions, Tonk will scaffold a new project with everything you need to get started, including:
+### Mode 2: Create Apps (Data Visualisation)
 
+Once you have data flowing in via workers, create frontend apps to visualise and interact with that data:
+
+```bash
+tonk create  # choose 'react' when prompted
+cd my-app
+```
+
+Apps are React applications that:
+- Connect to your Tonk stores
+- Provide interfaces for your data
+- Enable real-time collaboration
+- Work offline-first
+
+The CLI will scaffold a project with:
 - React, TypeScript, and Tailwind CSS
-- Keepsync for state management and synchronization
-- Development tools and configuration
+- Keepsync for accessing your data stores
+- Development tools
 
-## Developing your app
+## Development Workflow
 
-Navigate to your project directory and start development:
+### Start Your Worker
+
+First, get your worker running to begin data ingestion:
+
+```bash
+cd my-worker
+pnpm dev
+```
+
+Register and start the worker:
+```bash
+tonk worker register
+tonk worker start my-worker
+```
+
+### Start Your App
+
+Then start your frontend app and navigate to [http://localhost:3000](http://localhost:3000) in the browser:
 
 ```bash
 cd my-app
@@ -44,100 +95,104 @@ pnpm dev
 ```
 
 This will:
+1. Start a development server with hot reloading (so changes in the code are instantly reflected)
+2. Connect to your Tonk stores (where workers are streaming data)
 
-1. Start a development server with hot reloading
-2. Set up a sync server for real-time collaboration
-3. Open your app in the browser (typically at http://localhost:3000)
+## Understanding the Data Flow
 
-## Understanding Tonk Stores
+The magic happens through **Tonk Stores** - shared data containers that connect workers and apps:
 
-Stores are what make Tonk apps special. They're containers of shareable data that easily plug into any app. Stores are synchronized using the Automerge CRDT library, which enables automatic conflict resolution when multiple users edit the same data.
+```
+External APIs → Workers → Tonk Stores → Apps → Users
+                  ↑                ↓
+                  └ Real-time sync ┘
+```
 
-Unlike traditional databases, Tonk stores:
+### In Workers: Writing Data
 
-- Work offline first, then sync when connections are available
-- Don't require schema migrations
-- Handle synchronization automatically
-- Provide real-time updates across all connected clients
-
-### Working with stores in your app
-
-Your Tonk app comes with the `@tonk/keepsync` library already integrated. Here's how to use it:
+Workers stream data into stores using `keepsync`:
 
 ```typescript
-// 1. Import the sync middleware
+import { writeDoc } from '@tonk/keepsync';
+
+// Worker streams in location data
+await writeDoc('locations/favorites', {
+  places: googleMapsData,
+  lastSync: Date.now()
+});
+```
+
+### In Apps: Sculpting Data
+
+Apps connect to these stores allowing you to perform sophisticated actions over your data.
+
+```typescript
 import { create } from "zustand";
 import { sync } from "@tonk/keepsync";
 
-// 2. Create a synced store
-const useTodoStore = create(
+// App reads and displays the same data
+const useLocationStore = create(
   sync(
     (set) => ({
-      todos: [],
-      addTodo: (text) =>
-        set((state) => ({
-          todos: [...state.todos, { id: Date.now(), text, completed: false }],
-        })),
-      toggleTodo: (id) =>
-        set((state) => ({
-          todos: state.todos.map((todo) =>
-            todo.id === id ? { ...todo, completed: !todo.completed } : todo
-          ),
-        })),
+      locations: [],
+      // ... your app logic
     }),
-    { docId: "todos" } // This identifies the store for synchronization
+    { docId: "locations/favorites" }
   )
 );
 ```
 
-When multiple users access your app, any changes they make to the store will automatically synchronize across all clients in real-time.
+### Key Benefits
 
-## Deploying your app
+- **Separation of concerns**: Workers handle data, apps handle logic and rendering
+- **Real-time sync**: Changes appear instantly across all connected apps
+- **Offline-first**: Everything works without internet, syncs when reconnected
+- **No database complexity**: No migrations, caching, or auth headaches
+- **Collaborative**: Multiple users see updates in real-time
 
-Once your app is ready for deployment, you can build and serve it:
+## Deployment Options
+
+Tonk provides several ways to deploy your workers and apps:
+
+### Local Deployment
+
+Build and serve locally:
 
 ```bash
-# Build the app
+# Build your app
 pnpm run build
 
-# Push the bundle you've just built
+# Push the bundle to Tonk
 tonk push
 
+# Start hosting the bundle
+tonk start <bundleName>
 ```
 
-# Start a service to host your bundle
+### One-Touch Hosting (Experimental)
 
-`tonk start <bundleName>`
+For quick deployment to the cloud:
 
-The bundleName will likely be the folder of your project. You can see available bundles by running `tonk ls`
-
+```bash
+tonk deploy
 ```
 
-Usage: tonk start [options] <bundleName>
+> ⚠️ **Note**: This is experimental and requires an access code. Contact Tonk support for access.
 
-Start a bundle server
+### Docker & Production
 
-Arguments:
-bundleName Name of the bundle to start
+For production deployments, Tonk includes Docker support and cloud deployment options.
 
-Options:
--u, --url <url> URL of the Tonk server (default: "http://localhost:7777")
--p, --port <port> Port for the bundle server (optional)
+## Next Steps
 
-```
+- **Learn Workers**: [Tonk Workers Guide](./workers.md) - Create background services
+- **Learn Keepsync**: [Keepsync Guide](./keepsync.md) - Master data synchronization  
+- **Deploy to Production**: [Deployment Guide](./deployment.md) - Docker, cloud, and hosting options
+- **CLI Reference**: [Command Reference](./reference.md) - Complete command documentation
 
-You should see a message like:
+## Real-World Examples
 
-```
-
-Bundle server started successfully!
-Server ID: 454f91d5-40a9-4892-aca8-f6cfaa3936a5
-Running on port: 8000
-Status: running
-Use 'tonk ps' to see all running servers
-
-```
-
-## Tonk Deploy
-
-For comprehensive deployment options including Docker containerization and cloud deployment, see the [Deployment Guide](./deployment.md). For CLI command reference, see the [Reference](./reference.md) section.
+Check out these complete examples in the repository:
+- **Google Maps Locations Worker** - Syncs your saved places from Google Maps
+- **My World App** - Visualizes location data on an interactive map
+- **File Browser App** - Browse and manage files with real-time sync
