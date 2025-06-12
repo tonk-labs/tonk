@@ -1,6 +1,8 @@
-# Build your own little internet with Tonk
+# Vibe code over your own data with Tonk
 
-Tonk is the copilot-friendly toolchain for building powerful shared software with a simple two-mode workflow:
+Tonk is a CLI designed to simplify the process of building custom dashboards, tools, and AI agents using your own data.
+
+Tonk follows a simple two-mode workflow:
 
 1. **Workers stream data in** - Background services connect to external APIs and stream data into your local Tonk store
 2. **Apps visualise data** - Frontend applications provide interfaces to explore and interact with that data
