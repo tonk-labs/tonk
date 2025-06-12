@@ -122,17 +122,18 @@ export class TonkServer {
         },
       }),
       fileFilter: (_req, file, cb) => {
-        // Accept only tar.gz and tgz files
+        // Accept tar.gz, tgz files and gzip MIME types
         if (
           file.mimetype === 'application/gzip' ||
           file.mimetype === 'application/x-gzip' ||
           file.mimetype === 'application/tar+gzip' ||
+          file.mimetype === 'application/octet-stream' ||
           file.originalname.endsWith('.tar.gz') ||
-          file.originalname.endsWith('.tgz')
+          file.originalname.endsWith('.tgz') ||
+          file.originalname.includes('tar.gz')
         ) {
           cb(null, true);
         } else {
-          cb(null, false);
           cb(new Error('Only .tar.gz or .tgz files are allowed'));
         }
       },
@@ -489,6 +490,12 @@ export class TonkServer {
   private setupBundleRoute(bundleName: string, bundlePath: string, route: string, _serverId: string) {
     this.log('blue', `Setting up bundle route: ${route} -> ${bundlePath}`);
     
+    // Check if there's a dist folder - if so, serve from there, otherwise serve from the bundle root
+    const distPath = path.join(bundlePath, 'dist');
+    const servePath = fs.existsSync(distPath) ? distPath : bundlePath;
+    
+    this.log('blue', `Serving static files from: ${servePath}`);
+    
     // Setup API proxies for this bundle
     this.setupBundleApiProxies(bundlePath, route);
     
@@ -498,15 +505,15 @@ export class TonkServer {
       next();
     });
     
-    // Serve static files from the bundle directory
-    this.app.use(route, express.static(bundlePath));
+    // Serve static files from the appropriate directory (dist if available, otherwise bundle root)
+    this.app.use(route, express.static(servePath));
     
     // Client-side routing - for SPA, send index.html for all non-api paths under this route
     this.app.get(new RegExp(`^${route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\/api|\\/services)(?!\\.\\w+$).*$`), (req, res) => {
       if (req.path === `${route}/.well-known/root.json`) {
         return res.sendFile(this.rootNode.getRootIdFilePath());
       }
-      res.sendFile(path.join(bundlePath, 'index.html'));
+      res.sendFile(path.join(servePath, 'index.html'));
     });
     
     this.log('green', `Bundle route setup complete: ${route} serving ${bundleName}`);
