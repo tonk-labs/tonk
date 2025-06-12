@@ -1,6 +1,6 @@
 # Vibe code over your own data with Tonk
 
-Tonk is a CLI designed to simplify the process of building custom dashboards, tools, and AI agents using your own data.
+Tonk is a stack designed to simplify the process of building custom dashboards, tools, and AI agents using your own data.
 
 Tonk follows a simple two-mode workflow:
 
