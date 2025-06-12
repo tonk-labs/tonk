@@ -156,17 +156,24 @@ Tonk provides several ways to deploy your workers and apps:
 
 ### Local Deployment
 
-Build and serve locally:
+Deploy in one command:
 
 ```bash
-# Build your app
-pnpm run build
-
-# Push the bundle to Tonk
+# Build, push, and start your app in one step
 tonk push
+```
 
-# Start hosting the bundle
-tonk start <bundleName>
+Or for more control:
+
+```bash
+# Skip building (if already built)
+tonk push --no-build
+
+# Upload only (don't start automatically)
+tonk push --no-start
+
+# Then start manually later
+tonk start <bundleName> --route /<route>
 ```
 
 ### One-Touch Hosting (Experimental)

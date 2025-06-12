@@ -1,7 +1,11 @@
 import {Command} from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
-import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+} from '../utils/analytics.js';
 
 interface ServerInfo {
   id: string;
@@ -36,7 +40,7 @@ export const psCommand = new Command('ps')
 
       if (servers.length === 0) {
         console.log(chalk.yellow('No servers currently running.'));
-        
+
         const duration = Date.now() - startTime;
         trackCommandSuccess('ps', duration, {
           serverUrl,
@@ -56,7 +60,8 @@ export const psCommand = new Command('ps')
       console.log('-'.repeat(85));
 
       servers.forEach((server: ServerInfo) => {
-        const routeOrPort = server.route || (server.port ? `:${server.port}` : 'N/A');
+        const routeOrPort =
+          server.route || (server.port ? `:${server.port}` : 'N/A');
         console.log(
           `${server.id.padEnd(36)} | ${server.bundleName.padEnd(20)} | ${routeOrPort.padEnd(15)} | ${server.status}`,
         );

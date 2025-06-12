@@ -9,15 +9,19 @@ import {FormDataEncoder} from 'form-data-encoder';
 import {Readable} from 'stream';
 import * as tar from 'tar';
 import {spawn} from 'child_process';
-import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+} from '../utils/analytics.js';
 
 interface PushOptions {
   url: string;
   name?: string;
   dir?: string;
-  start?: boolean;
+  noBuild?: boolean;
+  noStart?: boolean;
   route?: string;
-  build?: boolean;
 }
 
 interface UploadResult {
@@ -88,7 +92,7 @@ async function buildWithBasePath(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     console.log(chalk.blue(`Building project with base path ${route}/...`));
-    
+
     const buildCommand = 'npm';
     const buildArgs = ['run', 'build'];
     const env = {
@@ -102,7 +106,7 @@ async function buildWithBasePath(
       stdio: 'inherit',
     });
 
-    buildProcess.on('close', (code) => {
+    buildProcess.on('close', code => {
       if (code === 0) {
         console.log(chalk.green('Build completed successfully!'));
         resolve();
@@ -111,7 +115,7 @@ async function buildWithBasePath(
       }
     });
 
-    buildProcess.on('error', (error) => {
+    buildProcess.on('error', error => {
       reject(new Error(`Failed to start build process: ${error.message}`));
     });
   });
@@ -205,7 +209,7 @@ async function startBundle(
   console.log(chalk.blue(`Starting bundle '${bundleName}'...`));
 
   const requestBody: {bundleName: string; route?: string} = {bundleName};
-  
+
   // Use provided route or default to bundle name
   if (route) {
     requestBody.route = route;
@@ -231,15 +235,19 @@ async function startBundle(
 
   console.log(chalk.green(`Bundle started successfully!`));
   console.log(chalk.green(`Server ID: ${startResult.id}`));
-  
+
   if (startResult.route) {
     console.log(chalk.green(`Route: ${startResult.route}`));
-    console.log(chalk.green(`URL: ${startResult.url || `${serverUrl}${startResult.route}`}`));
+    console.log(
+      chalk.green(
+        `URL: ${startResult.url || `${serverUrl}${startResult.route}`}`,
+      ),
+    );
   } else if (startResult.port) {
     // Fallback for old port-based deployments
     console.log(chalk.green(`Running on port: ${startResult.port}`));
   }
-  
+
   console.log(chalk.green(`Status: ${startResult.status}`));
 
   return startResult;
@@ -262,17 +270,17 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
       serverUrl,
       sourceDir,
       name: options.name,
-      start: options.start,
+      noBuild: options.noBuild,
+      noStart: options.noStart,
       route: options.route,
-      build: options.build,
     });
 
     // Determine bundle name first (needed for route)
     const bundleName = determineBundleName(projectRoot, options.name);
     const route = options.route || `/${bundleName}`;
 
-    // Build with correct base path if requested
-    if (options.build) {
+    // Build with correct base path by default (unless --no-build is specified)
+    if (!options.noBuild) {
       await buildWithBasePath(projectRoot, route);
     }
 
@@ -290,10 +298,14 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
     const uploadResult = await uploadBundle(serverUrl, bundleName, tarballPath);
 
     let startResult: StartResult | undefined;
-    
-    // Start bundle if requested
-    if (options.start) {
-      startResult = await startBundle(serverUrl, uploadResult.bundleName, route);
+
+    // Start bundle by default (unless --no-start is specified)
+    if (!options.noStart) {
+      startResult = await startBundle(
+        serverUrl,
+        uploadResult.bundleName,
+        route,
+      );
     } else {
       console.log(
         chalk.blue(
@@ -306,7 +318,7 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
     trackCommandSuccess('push', duration, {
       bundleName: uploadResult.bundleName,
       serverUrl,
-      started: options.start,
+      started: !options.noStart,
       serverId: startResult?.id,
       route: startResult?.route,
       port: startResult?.port,
@@ -317,9 +329,9 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
       serverUrl,
       sourceDir,
       name: options.name,
-      start: options.start,
+      noBuild: options.noBuild,
+      noStart: options.noStart,
       route: options.route,
-      build: options.build,
     });
 
     console.error(
@@ -332,14 +344,17 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
 }
 
 export const pushCommand = new Command('push')
-  .description('Package and upload a bundle to the Tonk server')
+  .description('Package, upload, build and start a bundle on the Tonk server')
   .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
   .option(
     '-n, --name <name>',
     'Name for the bundle (defaults to directory name)',
   )
   .option('-d, --dir <dir>', 'Directory to bundle (defaults to ./dist)')
-  .option('-r, --route <route>', 'Route path for the bundle (defaults to /bundleName)')
-  .option('-s, --start', 'Start the bundle after upload')
-  .option('-b, --build', 'Build the project with correct base path before pushing')
+  .option(
+    '-r, --route <route>',
+    'Route path for the bundle (defaults to /bundleName)',
+  )
+  .option('--no-build', 'Skip building the project before pushing')
+  .option('--no-start', 'Skip starting the bundle after upload')
   .action(handlePushCommand);

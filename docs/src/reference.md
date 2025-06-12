@@ -35,19 +35,21 @@ Options:
 
 ### `tonk push`
 
-Packages and uploads your application bundle to the Tonk server.
+Builds, packages, uploads, and starts your application bundle on the Tonk server. This is the primary deployment command that handles the complete workflow by default.
 
 ```bash
 Usage: tonk push [options]
 
-Package and upload a bundle to the Tonk server
+Package, upload, build and start a bundle on the Tonk server
 
 Options:
-  -u, --url <url>    URL of the Tonk server (default: "http://localhost:7777")
-  -n, --name <name>  Name for the bundle (defaults to directory name)
-  -d, --dir <dir>    Directory to bundle (defaults to ./dist)
-  -s, --start        Start the bundle after upload
-  -h, --help         display help for command
+  -u, --url <url>       URL of the Tonk server (default: "http://localhost:7777")
+  -n, --name <name>     Name for the bundle (defaults to directory name)
+  -d, --dir <dir>       Directory to bundle (defaults to ./dist)
+  -r, --route <route>   Route path for the bundle (defaults to /bundleName)
+  --no-build            Skip building the project before pushing
+  --no-start            Skip starting the bundle after upload
+  -h, --help            display help for command
 ```
 
 ### `tonk ls`

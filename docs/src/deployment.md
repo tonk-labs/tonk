@@ -139,10 +139,13 @@ Options:
 
 ### How It Works
 
-1. Builds your Tonk application locally
+1. Automatically builds your Tonk application with the correct configuration
 2. Creates a compressed bundle of your project
 3. Uploads the bundle to Tonk's hosting service
-4. Returns a public URL for your deployed application
+4. Starts the application with route-based serving
+5. Returns a public URL for your deployed application
+
+Use `tonk push` for local deployment or `tonk deploy` for cloud hosting.
 
 ### Getting Access
 

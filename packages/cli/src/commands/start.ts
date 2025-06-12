@@ -1,7 +1,11 @@
 import {Command} from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
-import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+} from '../utils/analytics.js';
 
 interface StartResult {
   id: string;
@@ -15,8 +19,14 @@ interface StartResult {
 export const startCommand = new Command('start')
   .description('Start a bundle on a route')
   .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
-  .option('-r, --route <route>', 'Route path for the bundle (defaults to /bundleName)')
-  .option('-p, --port <port>', 'Port for the bundle server (legacy option, prefer --route)')
+  .option(
+    '-r, --route <route>',
+    'Route path for the bundle (defaults to /bundleName)',
+  )
+  .option(
+    '-p, --port <port>',
+    'Port for the bundle server (legacy option, prefer --route)',
+  )
   .argument('<bundleName>', 'Name of the bundle to start')
   .action(async (bundleName, options) => {
     const startTime = Date.now();
@@ -63,15 +73,17 @@ export const startCommand = new Command('start')
 
       console.log(chalk.green('Bundle started successfully!'));
       console.log(chalk.green(`Server ID: ${result.id}`));
-      
+
       if (result.route) {
         console.log(chalk.green(`Route: ${result.route}`));
-        console.log(chalk.green(`URL: ${result.url || `${serverUrl}${result.route}`}`));
+        console.log(
+          chalk.green(`URL: ${result.url || `${serverUrl}${result.route}`}`),
+        );
       } else if (result.port) {
         // Fallback for legacy port-based deployments
         console.log(chalk.green(`Running on port: ${result.port}`));
       }
-      
+
       console.log(chalk.green(`Status: ${result.status}`));
       console.log(chalk.blue(`Use 'tonk ps' to see all running bundles`));
 
