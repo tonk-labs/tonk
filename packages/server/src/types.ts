@@ -22,8 +22,10 @@ export interface BundleServerConfig {
 
 export interface BundleServerInfo {
   id: string;
-  port: number;
+  port?: number;
+  route?: string;
   bundleName: string;
   status: 'running' | 'stopped';
   startedAt?: Date;
+  url?: string;
 }

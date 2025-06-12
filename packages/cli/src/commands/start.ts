@@ -6,14 +6,17 @@ import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/ana
 interface StartResult {
   id: string;
   bundleName: string;
-  port: number;
+  port?: number;
+  route?: string;
   status: string;
+  url?: string;
 }
 
 export const startCommand = new Command('start')
-  .description('Start a bundle server')
+  .description('Start a bundle on a route')
   .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
-  .option('-p, --port <port>', 'Port for the bundle server (optional)')
+  .option('-r, --route <route>', 'Route path for the bundle (defaults to /bundleName)')
+  .option('-p, --port <port>', 'Port for the bundle server (legacy option, prefer --route)')
   .argument('<bundleName>', 'Name of the bundle to start')
   .action(async (bundleName, options) => {
     const startTime = Date.now();
@@ -23,18 +26,24 @@ export const startCommand = new Command('start')
       trackCommand('start', {
         bundleName,
         serverUrl,
+        route: options.route,
         port: options.port,
       });
 
-      console.log(chalk.blue(`Starting bundle server for ${bundleName}...`));
+      console.log(chalk.blue(`Starting bundle ${bundleName}...`));
 
-      const requestBody: {bundleName: string; port?: number} = {
+      const requestBody: {bundleName: string; route?: string; port?: number} = {
         bundleName,
       };
 
-      // Add port if specified
-      if (options.port) {
+      // Prefer route over port
+      if (options.route) {
+        requestBody.route = options.route;
+      } else if (options.port) {
         requestBody.port = parseInt(options.port, 10);
+      } else {
+        // Default to route-based deployment
+        requestBody.route = `/${bundleName}`;
       }
 
       const response = await fetch(`${serverUrl}/start`, {
@@ -52,16 +61,25 @@ export const startCommand = new Command('start')
 
       const result = (await response.json()) as StartResult;
 
-      console.log(chalk.green('Bundle server started successfully!'));
+      console.log(chalk.green('Bundle started successfully!'));
       console.log(chalk.green(`Server ID: ${result.id}`));
-      console.log(chalk.green(`Running on port: ${result.port}`));
+      
+      if (result.route) {
+        console.log(chalk.green(`Route: ${result.route}`));
+        console.log(chalk.green(`URL: ${result.url || `${serverUrl}${result.route}`}`));
+      } else if (result.port) {
+        // Fallback for legacy port-based deployments
+        console.log(chalk.green(`Running on port: ${result.port}`));
+      }
+      
       console.log(chalk.green(`Status: ${result.status}`));
-      console.log(chalk.blue(`Use 'tonk ps' to see all running servers`));
+      console.log(chalk.blue(`Use 'tonk ps' to see all running bundles`));
 
       const duration = Date.now() - startTime;
       trackCommandSuccess('start', duration, {
         bundleName,
         serverUrl,
+        route: result.route,
         port: result.port,
         serverId: result.id,
       });

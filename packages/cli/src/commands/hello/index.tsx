@@ -1,17 +1,16 @@
 import React, {useState, useEffect} from 'react';
 import {render, Box, Text, useInput} from 'ink';
-import chalk from 'chalk';
 
 // Original ascii art for reference (using template literals to preserve exact spacing)
-const ORIGINAL_ASCII = `
-       _____   U  ___ u  _   _       _  __    
-      |_ " _|   \\/"_ \\/ | \\ |"|     |"|/ /    
-        | |     | | | |<|  \\| |>    | ' /     
-       /| |\\.-,_| |_| |U| |\\  |u  U/| . \\\\u   
-      u |_|U \\_)-\\___/  |_| \\_|     |_|\\_\\    
-      _// \\\\_     \\\\    ||   \\\\,-.,-,>> \\\\,-. 
-     (__) (__)   (__)   (_")  (_/  \\.)   (_/  
-`;
+// const ORIGINAL_ASCII = `
+//        _____   U  ___ u  _   _       _  __
+//       |_ " _|   \\/"_ \\/ | \\ |"|     |"|/ /
+//         | |     | | | |<|  \\| |>    | ' /
+//        /| |\\.-,_| |_| |U| |\\  |u  U/| . \\\\u
+//       u |_|U \\_)-\\___/  |_| \\_|     |_|\\_\\
+//       _// \\\\_     \\\\    ||   \\\\,-.,-,>> \\\\,-.
+//      (__) (__)   (__)   (_")  (_/  \\.)   (_/
+// `;
 
 // T character frames (using template literals to preserve exact spacing)
 const T_FRAMES = [
@@ -182,7 +181,7 @@ const WelcomeMessage = () => {
 
       <Box marginLeft={2} marginTop={1}>
         <Text>
-          • Create a new Tonk project:{' '}
+          • Create a new Tonk app or worker:{' '}
           <Text bold color="yellow">
             tonk create
           </Text>
@@ -194,9 +193,18 @@ const WelcomeMessage = () => {
 
       <Box marginLeft={2} marginTop={1}>
         <Text>
-          • Share your project:{' '}
+          • View your project:{' '}
           <Text bold color="yellow">
             tonk start
+          </Text>
+        </Text>
+      </Box>
+
+      <Box marginLeft={2} marginTop={1}>
+        <Text>
+          • Share it out:{' '}
+          <Text bold color="yellow">
+            tonk deploy
           </Text>
         </Text>
       </Box>
@@ -257,7 +265,7 @@ const TonkAsciiAnimated = () => {
   const [shouldExit, setShouldExit] = useState(false);
 
   // Capture key input to exit
-  useInput((input, key) => {
+  useInput(() => {
     setShouldExit(true);
   });
 
