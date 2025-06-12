@@ -1,11 +1,9 @@
 # Quickstart Guide
 
-> If you haven't yet, start with the [**introduction**](./introduction.md) before reading this quickstart guide.
-
 Tonk follows a simple two-mode workflow:
 
-1. **Workers stream data in** - Background services connect to external APIs or your filesystem and stream data into your local Tonk store
-2. **Apps visualise data** - Frontend applications provide beautiful interfaces to explore and interact with that data
+1. **Workers stream data in** - Background services connect to external APIs or your file system and stream data into your local Tonk store
+2. **Apps visualise data** - Frontend applications provide interfaces to explore and interact with that data
 
 This architecture separates data ingestion from visualisation, making your applications more maintainable and your data more reusable across different interfaces.
 
@@ -68,7 +66,7 @@ Apps are React applications that:
 The CLI will scaffold a project with:
 - React, TypeScript, and Tailwind CSS
 - Keepsync for accessing your data stores
-- Development tools and hot reloading
+- Development tools
 
 ## Development Workflow
 
@@ -89,7 +87,7 @@ tonk worker start my-worker
 
 ### Start Your App
 
-Then start your frontend app:
+Then start your frontend app and navigate to [http://localhost:3000](http://localhost:3000) in the browser:
 
 ```bash
 cd my-app
@@ -97,9 +95,8 @@ pnpm dev
 ```
 
 This will:
-1. Start a development server with hot reloading
+1. Start a development server with hot reloading (so changes in the code are instantly reflected)
 2. Connect to your Tonk stores (where workers are streaming data)
-3. Open your app in the browser (typically at http://localhost:3000)
 
 ## Understanding the Data Flow
 
@@ -113,7 +110,7 @@ External APIs → Workers → Tonk Stores → Apps → Users
 
 ### In Workers: Writing Data
 
-Workers stream data into stores using keepsync:
+Workers stream data into stores using `keepsync`:
 
 ```typescript
 import { writeDoc } from '@tonk/keepsync';
@@ -186,28 +183,10 @@ tonk deploy
 
 For production deployments, Tonk includes Docker support and cloud deployment options.
 
-## Complete Example
-
-Here's how a typical Tonk project structure looks:
-
-```
-my-tonk-project/
-├── workers/
-│   ├── gmail-sync/          # Worker: syncs Gmail data
-│   ├── calendar-sync/       # Worker: syncs calendar events
-│   └── api-processor/       # Worker: processes external APIs
-└── apps/
-    ├── dashboard/           # App: main dashboard view
-    ├── mobile-viewer/       # App: mobile-friendly viewer
-    └── admin-panel/         # App: admin interface
-```
-
-All workers stream data into shared Tonk stores, and all apps can access that data in real-time.
-
 ## Next Steps
 
-- **Learn Workers**: [Tonk Workers Guide](./tonk-stack/workers.md) - Create background services
-- **Learn Keepsync**: [Keepsync Guide](./tonk-stack/keepsync.md) - Master data synchronization  
+- **Learn Workers**: [Tonk Workers Guide](./workers.md) - Create background services
+- **Learn Keepsync**: [Keepsync Guide](./keepsync.md) - Master data synchronization  
 - **Deploy to Production**: [Deployment Guide](./deployment.md) - Docker, cloud, and hosting options
 - **CLI Reference**: [Command Reference](./reference.md) - Complete command documentation
 

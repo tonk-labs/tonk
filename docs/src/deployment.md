@@ -150,4 +150,4 @@ Contact Jack at Tonk ([Telegram](https://t.me/jackddouglas)) to request a deploy
 
 ## Next Steps
 
-- Explore [Tonk Workers](./tonk-stack/workers.md) for background processing
+- Explore [Tonk Workers](./workers.md) for background processing
