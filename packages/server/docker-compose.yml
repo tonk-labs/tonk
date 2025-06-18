@@ -8,9 +8,7 @@ services:
       - '${PORT:-7777}:${PORT:-7777}'
     environment:
       - PORT=${PORT:-7777}
-      - BUNDLES_PATH=/data/tonk/bundles
-      - STORES_PATH=/data/tonk/stores
-      - CONFIG_PATH=/data/tonk/config
+      - PERSISTENCE_PATH=/data/tonk
       - VERBOSE=${VERBOSE:-true}
       - SYNC_INTERVAL=${SYNC_INTERVAL:-0}
       - NODE_ENV=production

@@ -45,14 +45,22 @@ You can deploy your app to a running Tonk server using the Tonk CLI:
 tonk push
 ```
 
-This will:
-1. Build your application
+This will automatically:
+1. Build your application with the correct base path
 2. Upload the bundle to your Tonk server
+3. Start the application on a route (e.g., `/file-browser`)
 
-To start an uploaded Tonk app:
+For more control, use:
 
 ```bash
-tonk start <bundleName>
+# Skip building (if already built)
+tonk push --no-build
+
+# Upload only (don't start automatically)
+tonk push --no-start
+
+# Custom route
+tonk push --route /my-custom-path
 ```
 
 ### 2. Docker Deployment

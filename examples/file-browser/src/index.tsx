@@ -24,9 +24,14 @@ const container = document.getElementById("root");
 if (!container) throw new Error("Failed to find the root element");
 const root = createRoot(container);
 
+const basename =
+  import.meta.env.VITE_BASE_PATH !== "/"
+    ? import.meta.env.VITE_BASE_PATH.replace(/\/$/, "")
+    : "";
+
 root.render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={basename}>
       <App />
     </BrowserRouter>
   </React.StrictMode>,

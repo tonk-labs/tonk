@@ -1,18 +1,24 @@
 import {Command} from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
-import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+} from '../utils/analytics.js';
 
 interface ServerInfo {
   id: string;
   bundleName: string;
-  port: number;
+  port?: number;
+  route?: string;
   status: string;
   startedAt?: string;
+  url?: string;
 }
 
 export const psCommand = new Command('ps')
-  .description('List running bundle servers')
+  .description('List running bundles')
   .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
   .action(async options => {
     const startTime = Date.now();
@@ -34,7 +40,7 @@ export const psCommand = new Command('ps')
 
       if (servers.length === 0) {
         console.log(chalk.yellow('No servers currently running.'));
-        
+
         const duration = Date.now() - startTime;
         trackCommandSuccess('ps', duration, {
           serverUrl,
@@ -43,21 +49,21 @@ export const psCommand = new Command('ps')
         return;
       }
 
-      console.log(chalk.green(`Running servers (${servers.length}):`));
+      console.log(chalk.green(`Running bundles (${servers.length}):`));
 
       // Format the output as a table
       console.log(
         `${chalk.bold('ID'.padEnd(36))} | ${chalk.bold(
           'Bundle'.padEnd(20),
-        )} | ${chalk.bold('Port'.padEnd(6))} | ${chalk.bold('Status')}`,
+        )} | ${chalk.bold('Route/Port'.padEnd(15))} | ${chalk.bold('Status')}`,
       );
-      console.log('-'.repeat(80));
+      console.log('-'.repeat(85));
 
       servers.forEach((server: ServerInfo) => {
+        const routeOrPort =
+          server.route || (server.port ? `:${server.port}` : 'N/A');
         console.log(
-          `${server.id.padEnd(36)} | ${server.bundleName.padEnd(20)} | ${String(
-            server.port,
-          ).padEnd(6)} | ${server.status}`,
+          `${server.id.padEnd(36)} | ${server.bundleName.padEnd(20)} | ${routeOrPort.padEnd(15)} | ${server.status}`,
         );
       });
 
