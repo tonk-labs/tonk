@@ -82,36 +82,39 @@ export class BundleServer {
         if (requiresAuth && authType === 'query' && authQueryParamName) {
           // Create a router to handle query parameter authentication
           const router = express.Router();
-          
+
           // Middleware to add the query parameter to all requests
           router.use((req, _res, next) => {
             let authValue = authEnvVar || '';
-            
+
             // If authEnvVar is specified, try to get it from environment variables
             if (authEnvVar && authEnvVar.startsWith('$')) {
               const envVarName = authEnvVar.substring(1);
               authValue = process.env[envVarName] || authEnvVar;
             }
-            
+
             // Add the query parameter to the URL
             const url = new URL(req.url, 'http://localhost');
             url.searchParams.set(authQueryParamName, authValue);
             req.url = url.pathname + url.search;
-            
+
             if (this.config.verbose) {
               this.log(
                 'blue',
                 `Added query param ${authQueryParamName} to request: ${req.url}`,
               );
             }
-            
+
             next();
           });
-          
+
           // Mount the router at the API path
           const proxyPath = `/api/${prefix}`;
-          this.log('blue', `Setting up API proxy with query auth: ${proxyPath} -> ${baseUrl}`);
-          
+          this.log(
+            'blue',
+            `Setting up API proxy with query auth: ${proxyPath} -> ${baseUrl}`,
+          );
+
           this.app.use(
             proxyPath,
             router,
@@ -137,7 +140,10 @@ export class BundleServer {
                     `API proxy error for ${prefix}: ${err.message}`,
                   );
                   res.end(
-                    JSON.stringify({error: 'Proxy error', message: err.message}),
+                    JSON.stringify({
+                      error: 'Proxy error',
+                      message: err.message,
+                    }),
                   );
                 },
               },
@@ -197,7 +203,10 @@ export class BundleServer {
                     `API proxy error for ${prefix}: ${err.message}`,
                   );
                   res.end(
-                    JSON.stringify({error: 'Proxy error', message: err.message}),
+                    JSON.stringify({
+                      error: 'Proxy error',
+                      message: err.message,
+                    }),
                   );
                 },
               },

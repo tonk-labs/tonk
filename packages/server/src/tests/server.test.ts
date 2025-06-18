@@ -25,7 +25,7 @@ describe('TonkServer', () => {
 
     const options: ServerOptions = {
       bundlesPath: bundlesDir,
-      dirPath: path.join(tempDir, 'stores'),
+      storesPath: path.join(tempDir, 'stores'),
       verbose: false,
     };
 

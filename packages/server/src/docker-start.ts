@@ -6,11 +6,23 @@ const startDockerizedServer = async (): Promise<void> => {
   try {
     // Read configuration from environment variables
     const port = 7777;
-    const bundlesPath = process.env.BUNDLES_PATH || '/data/tonk/bundles';
-    const storesPath = process.env.STORES_PATH || '/data/tonk/stores';
-    const configPath = process.env.ROOT_CONFIG_PATH || '/data/tonk/root.json';
+    const persistencePath = process.env.PERSISTENCE_PATH || '/data/tonk';
 
-    // Ensure directories exist
+    // Derive all paths from the persistence path
+    const bundlesPath = `${persistencePath}/bundles`;
+    const storesPath = `${persistencePath}/stores`;
+    const configPath = `${persistencePath}/root.json`;
+    const serverPin = process.env.SERVER_PIN;
+
+    // Ensure the persistence directory exists
+    if (!fs.existsSync(persistencePath)) {
+      fs.mkdirSync(persistencePath, {recursive: true});
+      console.log(
+        chalk.blue(`Created persistence directory: ${persistencePath}`),
+      );
+    }
+
+    // Ensure subdirectories exist
     for (const dir of [bundlesPath, storesPath]) {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, {recursive: true});
@@ -18,24 +30,24 @@ const startDockerizedServer = async (): Promise<void> => {
       }
     }
 
-    // Ensure the root config directory exists
-    const configDir = configPath.substring(0, configPath.lastIndexOf('/'));
-    if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, {recursive: true});
-      console.log(chalk.blue(`Created config directory: ${configDir}`));
-    }
-
     console.log(chalk.cyan('📦 Tonk Docker Configuration:'));
     console.log(chalk.cyan('   Port:'), chalk.bold.green(port));
     console.log(chalk.cyan('   Bundles path:'), chalk.bold.green(bundlesPath));
     console.log(chalk.cyan('   Stores path:'), chalk.bold.green(storesPath));
+    console.log(
+      chalk.cyan('   Persistence path:'),
+      chalk.bold.green(persistencePath),
+    );
     console.log(chalk.cyan('   Config path:'), chalk.bold.green(configPath));
+    console.log(
+      chalk.cyan('   Server PIN:'),
+      serverPin ? chalk.bold.green('✓ Configured') : chalk.yellow('⚠ Not set'),
+    );
 
     // Create server configuration
     const serverConfig: ServerOptions = {
-      bundlesPath,
-      dirPath: storesPath,
-      configPath,
+      persistencePath,
+      ...(serverPin && {serverPin}),
     };
 
     console.log(chalk.blue('Starting TonkServer in Docker...'));

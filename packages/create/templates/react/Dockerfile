@@ -55,10 +55,10 @@ CMD sh -c ' \
   echo "Creating app bundle..." && \
   cd /tmp && tar -czf app-bundle.tar.gz -C /tmp/app-bundle . && \
   echo "Uploading app bundle to Tonk server..." && \
-  curl -X POST -F "bundle=@/tmp/app-bundle.tar.gz" -F "name=${APP_NAME}" http://localhost:7777/upload-bundle && \
+  curl -X POST -F "bundle=@/tmp/app-bundle.tar.gz" -F "name=${APP_NAME}" -F "serverPin=${SERVER_PIN}" http://localhost:7777/upload-bundle && \
   echo "Starting app bundle on route..." && \
   ROUTE_PATH=${APP_ROUTE:-/${APP_NAME}} && \
-  curl -X POST -H "Content-Type: application/json" -d "{\"bundleName\":\"${APP_NAME}\",\"route\":\"${ROUTE_PATH}\"}" http://localhost:7777/start && \
+  curl -X POST -H "Content-Type: application/json" -d "{\"bundleName\":\"${APP_NAME}\",\"route\":\"${ROUTE_PATH}\",\"serverPin\":\"${SERVER_PIN}\"}" http://localhost:7777/start && \
   echo "App started successfully on route ${ROUTE_PATH}!" && \
   echo "App available at: http://localhost:7777${ROUTE_PATH}" && \
   wait $SERVER_PID \

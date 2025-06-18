@@ -16,7 +16,7 @@ import {createProxyMiddleware} from 'http-proxy-middleware';
 import {BundleServer} from './bundleServer.js';
 import {BundleServerInfo} from './types.js';
 import {RootNode} from './rootNode.js';
-// use env-path to store the rootId file
+import {BundlePersistence} from './bundlePersistence.js';
 
 // A simple mutex implementation for bundle extraction
 class Mutex {
@@ -53,11 +53,12 @@ const bundleMutexes: Map<string, Mutex> = new Map();
 
 export interface ServerOptions {
   port?: number;
-  dirPath?: string;
-  bundlesPath?: string; // Path to store bundle files
+  persistencePath?: string;
+  storesPath?: string;
+  bundlesPath?: string;
+  serverPin?: string; // Server PIN for additional security
   verbose?: boolean;
   syncInterval?: number; // Optional interval to trigger storage sync in ms
-  configPath?: string;
 }
 
 type DocNode = {
@@ -82,30 +83,53 @@ export class TonkServer {
   private repo: Repo;
   private fsSyncTimer: NodeJS.Timeout | null = null;
   private bundleServers: Map<string, BundleServer> = new Map();
-  private bundleRoutes: Map<string, {bundleName: string, bundlePath: string, route: string, id: string, startTime: Date, isRunning: boolean}> = new Map();
+  private bundleRoutes: Map<
+    string,
+    {
+      bundleName: string;
+      bundlePath: string;
+      route: string;
+      id: string;
+      startTime: Date;
+      isRunning: boolean;
+    }
+  > = new Map();
   private upload: multer.Multer;
   private rootNode: RootNode;
+  private bundlePersistence: BundlePersistence;
 
   constructor(options: ServerOptions) {
     this.options = {
       port: options.port || 7777,
-      dirPath: options.dirPath || 'stores',
-      bundlesPath: options.bundlesPath || 'bundles',
+      persistencePath: options.persistencePath || '',
+      storesPath: options.storesPath || `${options.persistencePath}/stores`,
+      bundlesPath: options.bundlesPath || `${options.persistencePath}/bundles`,
       syncInterval: options.syncInterval || 0,
       verbose: options.verbose ?? true,
-      configPath: options.configPath || '',
+      serverPin: options.serverPin || '',
     };
 
     // Initialize RootNode with configPath
-    this.rootNode = new RootNode(this.options.configPath);
+    this.rootNode = new RootNode(`${this.options.persistencePath}/root.json`);
+
+    // Initialize bundle persistence
+    this.bundlePersistence = new BundlePersistence({
+      persistencePath: this.options.persistencePath!,
+      verbose: this.options.verbose ?? true,
+    });
 
     this.setupDirectories();
 
-    if (!fs.existsSync(this.options.dirPath!)) {
-      fs.mkdirSync(this.options.dirPath!);
+    if (!fs.existsSync(this.options.storesPath!)) {
+      fs.mkdirSync(this.options.storesPath!);
     }
+
     if (!fs.existsSync(this.options.bundlesPath!)) {
       fs.mkdirSync(this.options.bundlesPath!);
+    }
+
+    if (!fs.existsSync(this.options.persistencePath!)) {
+      fs.mkdirSync(this.options.persistencePath!, {recursive: true});
     }
 
     const hostname = os.hostname();
@@ -146,7 +170,7 @@ export class TonkServer {
 
     const config: RepoConfig = {
       network: [new NodeWSServerAdapter(this.socket as any) as any],
-      storage: new NodeFSStorageAdapter(this.options.dirPath!),
+      storage: new NodeFSStorageAdapter(this.options.storesPath!),
       peerId: `sync-server-${hostname}` as PeerId,
       sharePolicy: async () => false,
     };
@@ -154,6 +178,7 @@ export class TonkServer {
     this.repo = new Repo(config);
     this.setupExpressMiddleware();
     this.initRoot();
+    this.restorePersistedBundles();
   }
 
   private async initRoot() {
@@ -192,15 +217,97 @@ export class TonkServer {
     }
   }
 
+  private async restorePersistedBundles() {
+    try {
+      this.log('blue', 'Restoring persisted bundles...');
+
+      // Load persisted bundle routes
+      const persistedRoutes = await this.bundlePersistence.loadBundleRoutes();
+
+      if (persistedRoutes.size === 0) {
+        this.log('yellow', 'No persisted bundles found');
+        return;
+      }
+
+      // Validate that the bundles still exist and filter out missing ones
+      const {valid: validRoutes, removed: removedBundles} =
+        await this.bundlePersistence.validateAndFilterBundles(persistedRoutes);
+
+      if (removedBundles.length > 0) {
+        this.log(
+          'yellow',
+          `Removed ${removedBundles.length} missing bundles: ${removedBundles.join(', ')}`,
+        );
+      }
+
+      // Restore each valid bundle route
+      for (const [id, bundle] of validRoutes.entries()) {
+        try {
+          // Check if route is already in use (shouldn't happen, but safety check)
+          const existingRoute = Array.from(this.bundleRoutes.values()).find(
+            r => r.route === bundle.route,
+          );
+          if (existingRoute) {
+            this.log(
+              'yellow',
+              `Route ${bundle.route} is already in use, skipping bundle ${bundle.bundleName}`,
+            );
+            continue;
+          }
+
+          // Setup the bundle route
+          this.setupBundleRoute(
+            bundle.bundleName,
+            bundle.bundlePath,
+            bundle.route,
+            bundle.id,
+          );
+
+          // Restore to the current bundle routes map
+          this.bundleRoutes.set(id, bundle);
+
+          this.log(
+            'green',
+            `Restored bundle ${bundle.bundleName} on route ${bundle.route}`,
+          );
+        } catch (error) {
+          this.log(
+            'red',
+            `Failed to restore bundle ${bundle.bundleName}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          );
+        }
+      }
+
+      this.log(
+        'green',
+        `Successfully restored ${this.bundleRoutes.size} bundles`,
+      );
+    } catch (error) {
+      this.log(
+        'red',
+        `Error restoring persisted bundles: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+      // Don't throw here - we want the server to start even if bundle restoration fails
+    }
+  }
+
   private async setupDirectories() {
     try {
-      await fs.promises.access(this.options.dirPath!).catch(async () => {
-        await fs.promises.mkdir(this.options.dirPath!);
+      await fs.promises.access(this.options.storesPath!).catch(async () => {
+        await fs.promises.mkdir(this.options.storesPath!);
       });
 
       await fs.promises.access(this.options.bundlesPath!).catch(async () => {
         await fs.promises.mkdir(this.options.bundlesPath!, {recursive: true});
       });
+
+      await fs.promises
+        .access(this.options.persistencePath!)
+        .catch(async () => {
+          await fs.promises.mkdir(this.options.persistencePath!, {
+            recursive: true,
+          });
+        });
     } catch (error) {
       console.error('Error setting up directories:', error);
     }
@@ -210,6 +317,16 @@ export class TonkServer {
     if (this.options.verbose) {
       console.log(chalk[color](message));
     }
+  }
+
+  private validateServerPin(providedPin?: string): boolean {
+    // If no server PIN is configured, allow all requests (for backward compatibility)
+    if (!this.options.serverPin) {
+      return true;
+    }
+
+    // If server PIN is configured, it must be provided and match
+    return providedPin === this.options.serverPin;
   }
 
   private setupExpressMiddleware() {
@@ -246,6 +363,15 @@ export class TonkServer {
 
           const bundleName =
             req.body.name || path.basename(req.file.originalname, '.tar.gz');
+          const serverPin = req.body.serverPin;
+
+          // Validate server PIN
+          if (!this.validateServerPin(serverPin)) {
+            return res
+              .status(403)
+              .send({error: 'Invalid or missing server PIN'});
+          }
+
           const bundlePath = path.join(this.options.bundlesPath!, bundleName);
 
           // Get or create a mutex for this bundle name
@@ -326,10 +452,15 @@ export class TonkServer {
     // Bundle server management endpoints - now serves bundles on routes instead of separate ports
     this.app.post('/start', async (req, res) => {
       try {
-        const {bundleName, route} = req.body;
+        const {bundleName, route, serverPin} = req.body;
 
         if (!bundleName) {
           return res.status(400).send({error: 'Bundle name is required'});
+        }
+
+        // Validate server PIN
+        if (!this.validateServerPin(serverPin)) {
+          return res.status(403).send({error: 'Invalid or missing server PIN'});
         }
 
         const bundlePath = path.join(this.options.bundlesPath!, bundleName);
@@ -346,9 +477,13 @@ export class TonkServer {
         const serverId = uuidv4();
 
         // Check if route is already in use
-        const existingRoute = Array.from(this.bundleRoutes.values()).find(r => r.route === appRoute);
+        const existingRoute = Array.from(this.bundleRoutes.values()).find(
+          r => r.route === appRoute,
+        );
         if (existingRoute) {
-          return res.status(400).send({error: `Route ${appRoute} is already in use by bundle ${existingRoute.bundleName}`});
+          return res.status(400).send({
+            error: `Route ${appRoute} is already in use by bundle ${existingRoute.bundleName}`,
+          });
         }
 
         // Setup the bundle route on this server
@@ -363,6 +498,13 @@ export class TonkServer {
           startTime: new Date(),
           isRunning: true,
         });
+
+        // Persist the updated bundle routes
+        this.bundlePersistence
+          .saveBundleRoutes(this.bundleRoutes)
+          .catch(err => {
+            this.log('red', `Failed to persist bundle routes: ${err.message}`);
+          });
 
         res.status(200).send({
           id: serverId,
@@ -393,12 +535,26 @@ export class TonkServer {
           // so we mark it as stopped and it won't be served anymore)
           bundleRoute.isRunning = false;
           this.bundleRoutes.delete(id);
-          
-          this.log('yellow', `Bundle route ${bundleRoute.route} for ${bundleRoute.bundleName} stopped`);
-          
-          res
-            .status(200)
-            .send({success: true, message: 'Bundle route stopped successfully'});
+
+          // Persist the updated bundle routes
+          this.bundlePersistence
+            .saveBundleRoutes(this.bundleRoutes)
+            .catch(err => {
+              this.log(
+                'red',
+                `Failed to persist bundle routes after removal: ${err.message}`,
+              );
+            });
+
+          this.log(
+            'yellow',
+            `Bundle route ${bundleRoute.route} for ${bundleRoute.bundleName} stopped`,
+          );
+
+          res.status(200).send({
+            success: true,
+            message: 'Bundle route stopped successfully',
+          });
           return;
         }
 
@@ -414,9 +570,7 @@ export class TonkServer {
           return;
         }
 
-        return res
-          .status(404)
-          .send({error: `Bundle with ID ${id} not found`});
+        return res.status(404).send({error: `Bundle with ID ${id} not found`});
       } catch (error: any) {
         this.log('red', `Error stopping bundle: ${error.message}`);
         res.status(500).send({error: error.message});
@@ -486,37 +640,49 @@ export class TonkServer {
     });
   }
 
-
-  private setupBundleRoute(bundleName: string, bundlePath: string, route: string, _serverId: string) {
+  private setupBundleRoute(
+    bundleName: string,
+    bundlePath: string,
+    route: string,
+    _serverId: string,
+  ) {
     this.log('blue', `Setting up bundle route: ${route} -> ${bundlePath}`);
-    
+
     // Check if there's a dist folder - if so, serve from there, otherwise serve from the bundle root
     const distPath = path.join(bundlePath, 'dist');
     const servePath = fs.existsSync(distPath) ? distPath : bundlePath;
-    
+
     this.log('blue', `Serving static files from: ${servePath}`);
-    
+
     // Setup API proxies for this bundle
     this.setupBundleApiProxies(bundlePath, route);
-    
+
     // Handle WASM files with correct MIME type for this route
     this.app.get(`${route}/*.wasm`, (_req, res, next) => {
       res.set('Content-Type', 'application/wasm');
       next();
     });
-    
+
     // Serve static files from the appropriate directory (dist if available, otherwise bundle root)
     this.app.use(route, express.static(servePath));
-    
+
     // Client-side routing - for SPA, send index.html for all non-api paths under this route
-    this.app.get(new RegExp(`^${route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\/api|\\/services)(?!\\.\\w+$).*$`), (req, res) => {
-      if (req.path === `${route}/.well-known/root.json`) {
-        return res.sendFile(this.rootNode.getRootIdFilePath());
-      }
-      res.sendFile(path.join(servePath, 'index.html'));
-    });
-    
-    this.log('green', `Bundle route setup complete: ${route} serving ${bundleName}`);
+    this.app.get(
+      new RegExp(
+        `^${route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\/api|\\/services)(?!\\.\\w+$).*$`,
+      ),
+      (req, res) => {
+        if (req.path === `${route}/.well-known/root.json`) {
+          return res.sendFile(this.rootNode.getRootIdFilePath());
+        }
+        res.sendFile(path.join(servePath, 'index.html'));
+      },
+    );
+
+    this.log(
+      'green',
+      `Bundle route setup complete: ${route} serving ${bundleName}`,
+    );
   }
 
   private setupBundleApiProxies(bundlePath: string, route: string) {
@@ -553,7 +719,10 @@ export class TonkServer {
         }
 
         const proxyPath = `${route}/api/${prefix}`;
-        this.log('blue', `Setting up API proxy for bundle: ${proxyPath} -> ${baseUrl}`);
+        this.log(
+          'blue',
+          `Setting up API proxy for bundle: ${proxyPath} -> ${baseUrl}`,
+        );
 
         this.app.use(
           proxyPath,

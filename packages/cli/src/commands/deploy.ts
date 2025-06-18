@@ -215,8 +215,8 @@ async function deployBundle(
     // Stop spinner before prompting for access code
     spinner.stop();
 
-    // Prompt for access code
-    const {accessCode} = await inquirer.prompt([
+    // Prompt for access code and server PIN
+    const {accessCode, serverPin} = await inquirer.prompt([
       {
         type: 'password',
         name: 'accessCode',
@@ -225,6 +225,18 @@ async function deployBundle(
         validate: (input: string) => {
           if (!input || input.trim().length === 0) {
             return 'Access code is required';
+          }
+          return true;
+        },
+      },
+      {
+        type: 'password',
+        name: 'serverPin',
+        message: 'Enter the server PIN:',
+        mask: '*',
+        validate: (input: string) => {
+          if (!input || input.trim().length === 0) {
+            return 'Server PIN is required';
           }
           return true;
         },
@@ -247,6 +259,7 @@ async function deployBundle(
         bundleName,
         serverName,
         accessCode: accessCode.trim(),
+        serverPin: serverPin.trim(),
         deployType: 'bundle',
         tonkConfig,
         packageJson,
@@ -292,8 +305,8 @@ async function createServer(
     // Stop spinner before prompting for access code
     spinner.stop();
 
-    // Prompt for access code
-    const {accessCode} = await inquirer.prompt([
+    // Prompt for access code and server PIN
+    const {accessCode, serverPin} = await inquirer.prompt([
       {
         type: 'password',
         name: 'accessCode',
@@ -302,6 +315,18 @@ async function createServer(
         validate: (input: string) => {
           if (!input || input.trim().length === 0) {
             return 'Access code is required';
+          }
+          return true;
+        },
+      },
+      {
+        type: 'password',
+        name: 'serverPin',
+        message: 'Create a PIN for this server (minimum 4 characters):',
+        mask: '*',
+        validate: (input: string) => {
+          if (!input || input.trim().length < 4) {
+            return 'Server PIN must be at least 4 characters long';
           }
           return true;
         },
@@ -318,6 +343,7 @@ async function createServer(
       JSON.stringify({
         serverName,
         accessCode: accessCode.trim(),
+        serverPin: serverPin.trim(),
         region: options.region || 'ord',
         memory: options.memory || '1gb',
         cpus: options.cpus || '1',
