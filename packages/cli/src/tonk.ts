@@ -14,8 +14,13 @@ import chalk from 'chalk';
 import envPaths from 'env-paths';
 import fs from 'node:fs';
 import path from 'node:path';
-import pkg from '../package.json' with { type: 'json' };
-import {shutdownAnalytics, trackCommand, trackCommandError, trackCommandSuccess} from './utils/analytics.js';
+import pkg from '../package.json' with {type: 'json'};
+import {
+  shutdownAnalytics,
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+} from './utils/analytics.js';
 
 const program = new Command();
 // Main program setup
@@ -43,10 +48,10 @@ program.addCommand(workerCommand);
 
 const startServer = async () => {
   const startTime = Date.now();
-  
+
   try {
     trackCommand('daemon', {});
-    
+
     // Create paths for Tonk daemon home
     const paths = envPaths('tonk', {suffix: ''});
     const tonkHome = paths.data;
@@ -69,7 +74,7 @@ const startServer = async () => {
     // Create server configuration matching ServerOptions interface
     const serverConfig = {
       bundlesPath,
-      dirPath: storesPath,
+      storesPath,
     };
 
     // Start the server

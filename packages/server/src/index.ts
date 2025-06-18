@@ -110,7 +110,11 @@ export class TonkServer {
     };
 
     // Initialize RootNode with configPath
-    this.rootNode = new RootNode(`${this.options.persistencePath}/root.json`);
+    this.rootNode = new RootNode(
+      this.options.persistencePath
+        ? `${this.options.persistencePath}/root.json`
+        : '',
+    );
 
     // Initialize bundle persistence
     this.bundlePersistence = new BundlePersistence({
@@ -126,10 +130,6 @@ export class TonkServer {
 
     if (!fs.existsSync(this.options.bundlesPath!)) {
       fs.mkdirSync(this.options.bundlesPath!);
-    }
-
-    if (!fs.existsSync(this.options.persistencePath!)) {
-      fs.mkdirSync(this.options.persistencePath!, {recursive: true});
     }
 
     const hostname = os.hostname();
@@ -300,14 +300,6 @@ export class TonkServer {
       await fs.promises.access(this.options.bundlesPath!).catch(async () => {
         await fs.promises.mkdir(this.options.bundlesPath!, {recursive: true});
       });
-
-      await fs.promises
-        .access(this.options.persistencePath!)
-        .catch(async () => {
-          await fs.promises.mkdir(this.options.persistencePath!, {
-            recursive: true,
-          });
-        });
     } catch (error) {
       console.error('Error setting up directories:', error);
     }
