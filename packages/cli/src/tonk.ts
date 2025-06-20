@@ -6,6 +6,7 @@ import {lsCommand} from './commands/ls.js';
 import {psCommand} from './commands/ps.js';
 import {startCommand} from './commands/start.js';
 import {killCommand} from './commands/kill.js';
+import {deleteCommand} from './commands/delete.js';
 import {pushCommand} from './commands/push.js';
 import {proxyCommand} from './commands/proxy.js';
 import {workerCommand} from './commands/worker/index.js';
@@ -43,6 +44,7 @@ program.addCommand(startCommand);
 program.addCommand(psCommand);
 program.addCommand(lsCommand);
 program.addCommand(killCommand);
+program.addCommand(deleteCommand);
 program.addCommand(proxyCommand);
 program.addCommand(workerCommand);
 

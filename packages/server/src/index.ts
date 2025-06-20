@@ -601,6 +601,75 @@ export class TonkServer {
       return;
     });
 
+    this.app.post('/delete', async (req, res) => {
+      try {
+        const {bundleName, serverPin} = req.body;
+
+        if (!bundleName) {
+          return res.status(400).send({
+            success: false,
+            error: 'Bundle name is required',
+          });
+        }
+
+        // Validate server PIN if configured
+        if (!this.validateServerPin(serverPin)) {
+          return res.status(403).send({
+            success: false,
+            error: 'Invalid or missing server PIN',
+          });
+        }
+
+        const bundlePath = path.join(this.options.bundlesPath!, bundleName);
+
+        // Check if bundle exists
+        if (!fs.existsSync(bundlePath)) {
+          return res.status(404).send({
+            success: false,
+            error: `Bundle '${bundleName}' not found`,
+          });
+        }
+
+        // Stop any running instances of this bundle
+        const bundlesToStop: string[] = [];
+        this.bundleRoutes.forEach((bundle, id) => {
+          if (bundle.bundleName === bundleName) {
+            bundlesToStop.push(id);
+          }
+        });
+
+        for (const bundleId of bundlesToStop) {
+          const bundle = this.bundleRoutes.get(bundleId);
+          if (bundle) {
+            bundle.isRunning = false;
+            this.bundleRoutes.delete(bundleId);
+            this.log('yellow', `Stopped running instance of bundle '${bundleName}' (ID: ${bundleId})`);
+          }
+        }
+
+        // Delete the bundle directory from filesystem
+        await fs.promises.rm(bundlePath, { recursive: true, force: true });
+        this.log('green', `Deleted bundle directory: ${bundlePath}`);
+
+        // Update persistence
+        this.bundlePersistence.saveBundleRoutes(this.bundleRoutes);
+
+        res.status(200).send({
+          success: true,
+          message: `Bundle '${bundleName}' deleted successfully${bundlesToStop.length > 0 ? ` (stopped ${bundlesToStop.length} running instance${bundlesToStop.length > 1 ? 's' : ''})` : ''}`,
+        });
+
+        this.log('green', `Bundle '${bundleName}' deleted successfully`);
+      } catch (error: any) {
+        this.log('red', `Error deleting bundle: ${error.message}`);
+        res.status(500).send({
+          success: false,
+          error: error.message,
+        });
+      }
+      return;
+    });
+
     this.app.get('/ps', (_req, res) => {
       const servers: BundleServerInfo[] = [];
 
