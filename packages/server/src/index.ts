@@ -570,8 +570,17 @@ export class TonkServer {
       return;
     });
 
-    this.app.get('/ls', async (_req, res) => {
+    this.app.get('/ls', async (req, res) => {
       try {
+        const serverPin = req.query.serverPin as string;
+        
+        // Validate server PIN if configured
+        if (!this.validateServerPin(serverPin)) {
+          return res.status(403).send({
+            error: 'Invalid or missing server PIN',
+          });
+        }
+
         const bundlesPath = this.options.bundlesPath!;
 
         try {
@@ -670,34 +679,49 @@ export class TonkServer {
       return;
     });
 
-    this.app.get('/ps', (_req, res) => {
-      const servers: BundleServerInfo[] = [];
+    this.app.get('/ps', (req, res) => {
+      try {
+        const serverPin = req.query.serverPin as string;
+        
+        // Validate server PIN if configured
+        if (!this.validateServerPin(serverPin)) {
+          return res.status(403).send({
+            error: 'Invalid or missing server PIN',
+          });
+        }
 
-      // Add route-based bundles
-      this.bundleRoutes.forEach((bundle, id) => {
-        servers.push({
-          id,
-          route: bundle.route,
-          bundleName: bundle.bundleName,
-          status: bundle.isRunning ? 'running' : 'stopped',
-          startedAt: bundle.startTime,
-          url: `http://localhost:${this.options.port}${bundle.route}`,
-        } as BundleServerInfo);
-      });
+        const servers: BundleServerInfo[] = [];
 
-      // Add separate bundle servers (for backward compatibility)
-      this.bundleServers.forEach((server, id) => {
-        const status = server.getStatus();
-        servers.push({
-          id,
-          port: status.port,
-          bundleName: status.bundleName,
-          status: status.isRunning ? 'running' : 'stopped',
-          startedAt: status.startTime,
-        } as BundleServerInfo);
-      });
+        // Add route-based bundles
+        this.bundleRoutes.forEach((bundle, id) => {
+          servers.push({
+            id,
+            route: bundle.route,
+            bundleName: bundle.bundleName,
+            status: bundle.isRunning ? 'running' : 'stopped',
+            startedAt: bundle.startTime,
+            url: `http://localhost:${this.options.port}${bundle.route}`,
+          } as BundleServerInfo);
+        });
 
-      res.status(200).send(servers);
+        // Add separate bundle servers (for backward compatibility)
+        this.bundleServers.forEach((server, id) => {
+          const status = server.getStatus();
+          servers.push({
+            id,
+            port: status.port,
+            bundleName: status.bundleName,
+            status: status.isRunning ? 'running' : 'stopped',
+            startedAt: status.startTime,
+          } as BundleServerInfo);
+        });
+
+        res.status(200).send(servers);
+      } catch (error: any) {
+        this.log('red', `Error listing processes: ${error.message}`);
+        res.status(500).send({error: error.message});
+      }
+      return;
     });
   }
 
