@@ -22,13 +22,6 @@ interface DeployOptions {
   remote?: boolean;
 }
 
-interface ServerOptions {
-  name?: string;
-  region?: string;
-  memory?: string;
-  cpus?: string;
-  remote?: boolean;
-}
 
 interface TonkConfig {
   name?: string;
@@ -292,93 +285,6 @@ async function deployBundle(
   }
 }
 
-/**
- * Creates a new Tonk server
- */
-async function createServer(
-  serverName: string,
-  options: ServerOptions,
-): Promise<void> {
-  const spinner = ora('Creating Tonk server...').start();
-
-  try {
-    // Stop spinner before prompting for access code
-    spinner.stop();
-
-    // Prompt for access code and server PIN
-    const {accessCode, serverPin} = await inquirer.prompt([
-      {
-        type: 'password',
-        name: 'accessCode',
-        message: 'Enter your access code:',
-        mask: '*',
-        validate: (input: string) => {
-          if (!input || input.trim().length === 0) {
-            return 'Access code is required';
-          }
-          return true;
-        },
-      },
-      {
-        type: 'password',
-        name: 'serverPin',
-        message: 'Create a PIN for this server (minimum 4 characters):',
-        mask: '*',
-        validate: (input: string) => {
-          if (!input || input.trim().length < 4) {
-            return 'Server PIN must be at least 4 characters long';
-          }
-          return true;
-        },
-      },
-    ]);
-
-    // Restart spinner for server creation
-    spinner.start();
-
-    // Prepare form data for server creation
-    const formData = new FormData();
-    formData.append(
-      'serverData',
-      JSON.stringify({
-        serverName,
-        accessCode: accessCode.trim(),
-        serverPin: serverPin.trim(),
-        region: options.region || 'ord',
-        memory: options.memory || '1gb',
-        cpus: options.cpus || '1',
-        remote: options.remote || false,
-        deployType: 'server',
-      }),
-    );
-
-    // Send server creation request
-    spinner.text = 'Creating server...';
-    const response = await fetch(`${DEPLOYMENT_SERVICE_URL}/create-server`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    const result: any = await response.json();
-
-    if (!response.ok || !result.success) {
-      throw new Error(result.error || 'Server creation failed');
-    }
-
-    spinner.succeed('Server created successfully!');
-
-    console.log(chalk.green(`🚀 Your Tonk server is ready!`));
-    console.log(chalk.blue(`   URL: ${result.serverUrl}`));
-    console.log(
-      chalk.yellow(
-        `   Use this server name for future bundle deployments: ${serverName}`,
-      ),
-    );
-  } catch (error) {
-    spinner.fail('Server creation failed');
-    throw error;
-  }
-}
 
 /**
  * Main deploy command handler
@@ -479,94 +385,6 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
   }
 }
 
-/**
- * Server create command handler
- */
-async function handleServerCreateCommand(
-  options: ServerOptions,
-): Promise<void> {
-  const startTime = Date.now();
-
-  try {
-    trackCommand('server-create', {
-      name: options.name,
-      region: options.region,
-      memory: options.memory,
-      cpus: options.cpus,
-      remote: options.remote,
-    });
-
-    console.log(chalk.cyan('🔧 Tonk Server Create\n'));
-
-    // Check prerequisites
-    console.log(chalk.blue('Checking prerequisites...'));
-    await checkDeploymentService();
-
-    // Determine server name
-    let serverName = options.name;
-    if (!serverName) {
-      const {inputName} = await inquirer.prompt([
-        {
-          type: 'input',
-          name: 'inputName',
-          message: 'Enter server name:',
-          validate: (input: string) => {
-            if (!input || input.trim().length === 0) {
-              return 'Server name is required';
-            }
-            return true;
-          },
-        },
-      ]);
-      serverName = inputName
-        .trim()
-        .replace(/[^a-zA-Z0-9-]/g, '-')
-        .toLowerCase();
-    }
-
-    console.log(chalk.green(`✓ Server name: ${serverName}`));
-
-    // Confirm server creation
-    const {confirm} = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'confirm',
-        message: `Create Tonk server "${serverName}"?`,
-        default: true,
-      },
-    ]);
-
-    if (!confirm) {
-      console.log(chalk.yellow('Server creation cancelled'));
-      return;
-    }
-
-    // Create the server
-    await createServer(serverName!, options);
-
-    const duration = Date.now() - startTime;
-    trackCommandSuccess('server-create', duration, {
-      serverName,
-      region: options.region,
-      memory: options.memory,
-      cpus: options.cpus,
-      remote: options.remote,
-    });
-  } catch (error) {
-    const duration = Date.now() - startTime;
-    trackCommandError('server-create', error as Error, duration, {
-      name: options.name,
-      region: options.region,
-    });
-
-    console.error(
-      chalk.red(
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-      ),
-    );
-    process.exit(1);
-  }
-}
 
 export const deployCommand = new Command('deploy')
   .description('Deploy a Tonk bundle to an existing server')
@@ -589,24 +407,3 @@ export const deployCommand = new Command('deploy')
   )
   .action(handleDeployCommand);
 
-export const serverCommand = new Command('server').description(
-  'Manage Tonk servers',
-);
-
-const serverCreateCommand = new Command('create')
-  .description('Create a new Tonk server')
-  .option('-n, --name <name>', 'Name for the server')
-  .option('-r, --region <region>', 'Region to deploy to', 'ord')
-  .option(
-    '-m, --memory <memory>',
-    'Memory allocation (e.g., 256mb, 1gb)',
-    '1gb',
-  )
-  .option('-c, --cpus <cpus>', 'Number of CPUs', '1')
-  .option(
-    '--remote',
-    'Use remote Docker build (slower but works with limited local resources)',
-  )
-  .action(handleServerCreateCommand);
-
-serverCommand.addCommand(serverCreateCommand);

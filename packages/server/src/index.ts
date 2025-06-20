@@ -570,8 +570,17 @@ export class TonkServer {
       return;
     });
 
-    this.app.get('/ls', async (_req, res) => {
+    this.app.get('/ls', async (req, res) => {
       try {
+        const serverPin = req.query.serverPin as string;
+        
+        // Validate server PIN if configured
+        if (!this.validateServerPin(serverPin)) {
+          return res.status(403).send({
+            error: 'Invalid or missing server PIN',
+          });
+        }
+
         const bundlesPath = this.options.bundlesPath!;
 
         try {
@@ -601,34 +610,118 @@ export class TonkServer {
       return;
     });
 
-    this.app.get('/ps', (_req, res) => {
-      const servers: BundleServerInfo[] = [];
+    this.app.post('/delete', async (req, res) => {
+      try {
+        const {bundleName, serverPin} = req.body;
 
-      // Add route-based bundles
-      this.bundleRoutes.forEach((bundle, id) => {
-        servers.push({
-          id,
-          route: bundle.route,
-          bundleName: bundle.bundleName,
-          status: bundle.isRunning ? 'running' : 'stopped',
-          startedAt: bundle.startTime,
-          url: `http://localhost:${this.options.port}${bundle.route}`,
-        } as BundleServerInfo);
-      });
+        if (!bundleName) {
+          return res.status(400).send({
+            success: false,
+            error: 'Bundle name is required',
+          });
+        }
 
-      // Add separate bundle servers (for backward compatibility)
-      this.bundleServers.forEach((server, id) => {
-        const status = server.getStatus();
-        servers.push({
-          id,
-          port: status.port,
-          bundleName: status.bundleName,
-          status: status.isRunning ? 'running' : 'stopped',
-          startedAt: status.startTime,
-        } as BundleServerInfo);
-      });
+        // Validate server PIN if configured
+        if (!this.validateServerPin(serverPin)) {
+          return res.status(403).send({
+            success: false,
+            error: 'Invalid or missing server PIN',
+          });
+        }
 
-      res.status(200).send(servers);
+        const bundlePath = path.join(this.options.bundlesPath!, bundleName);
+
+        // Check if bundle exists
+        if (!fs.existsSync(bundlePath)) {
+          return res.status(404).send({
+            success: false,
+            error: `Bundle '${bundleName}' not found`,
+          });
+        }
+
+        // Stop any running instances of this bundle
+        const bundlesToStop: string[] = [];
+        this.bundleRoutes.forEach((bundle, id) => {
+          if (bundle.bundleName === bundleName) {
+            bundlesToStop.push(id);
+          }
+        });
+
+        for (const bundleId of bundlesToStop) {
+          const bundle = this.bundleRoutes.get(bundleId);
+          if (bundle) {
+            bundle.isRunning = false;
+            this.bundleRoutes.delete(bundleId);
+            this.log('yellow', `Stopped running instance of bundle '${bundleName}' (ID: ${bundleId})`);
+          }
+        }
+
+        // Delete the bundle directory from filesystem
+        await fs.promises.rm(bundlePath, { recursive: true, force: true });
+        this.log('green', `Deleted bundle directory: ${bundlePath}`);
+
+        // Update persistence
+        this.bundlePersistence.saveBundleRoutes(this.bundleRoutes);
+
+        res.status(200).send({
+          success: true,
+          message: `Bundle '${bundleName}' deleted successfully${bundlesToStop.length > 0 ? ` (stopped ${bundlesToStop.length} running instance${bundlesToStop.length > 1 ? 's' : ''})` : ''}`,
+        });
+
+        this.log('green', `Bundle '${bundleName}' deleted successfully`);
+      } catch (error: any) {
+        this.log('red', `Error deleting bundle: ${error.message}`);
+        res.status(500).send({
+          success: false,
+          error: error.message,
+        });
+      }
+      return;
+    });
+
+    this.app.get('/ps', (req, res) => {
+      try {
+        const serverPin = req.query.serverPin as string;
+        
+        // Validate server PIN if configured
+        if (!this.validateServerPin(serverPin)) {
+          return res.status(403).send({
+            error: 'Invalid or missing server PIN',
+          });
+        }
+
+        const servers: BundleServerInfo[] = [];
+
+        // Add route-based bundles
+        this.bundleRoutes.forEach((bundle, id) => {
+          servers.push({
+            id,
+            route: bundle.route,
+            bundleName: bundle.bundleName,
+            status: bundle.isRunning ? 'running' : 'stopped',
+            startedAt: bundle.startTime,
+            url: `http://localhost:${this.options.port}${bundle.route}`,
+          } as BundleServerInfo);
+        });
+
+        // Add separate bundle servers (for backward compatibility)
+        this.bundleServers.forEach((server, id) => {
+          const status = server.getStatus();
+          servers.push({
+            id,
+            port: status.port,
+            bundleName: status.bundleName,
+            status: status.isRunning ? 'running' : 'stopped',
+            startedAt: status.startTime,
+          } as BundleServerInfo);
+        });
+
+        res.status(200).send(servers);
+      } catch (error: any) {
+        this.log('red', `Error listing processes: ${error.message}`);
+        res.status(500).send({error: error.message});
+      }
+      return;
     });
   }
 
