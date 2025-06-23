@@ -11,7 +11,7 @@ import {
   trackCommandError,
   trackCommandSuccess,
 } from '../utils/analytics.js';
-import { authHook } from '@/lib/tonkAuth.js';
+import {authHook} from '../lib/tonkAuth.js';
 
 interface DeployOptions {
   name?: string;
@@ -22,7 +22,6 @@ interface DeployOptions {
   skipBuild?: boolean;
   remote?: boolean;
 }
-
 
 interface TonkConfig {
   name?: string;
@@ -286,7 +285,6 @@ async function deployBundle(
   }
 }
 
-
 /**
  * Main deploy command handler
  */
@@ -386,7 +384,6 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
   }
 }
 
-
 export const deployCommand = new Command('deploy')
   .description('Deploy a Tonk bundle to an existing server')
   .option(
@@ -406,6 +403,5 @@ export const deployCommand = new Command('deploy')
     '--remote',
     'Use remote Docker build (slower but works with limited local resources)',
   )
-  .hook("preAction", authHook)
+  .hook('preAction', authHook)
   .action(handleDeployCommand);
-

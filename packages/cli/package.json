@@ -6,6 +6,9 @@
   "bin": {
     "tonk": "./bin/tonk.js"
   },
+  "imports": {
+    "@clerk/clerk-js/headless": "@clerk/clerk-js/headless/index.js"
+  },
   "exports": {
     ".": "./dist/index.js"
   },
@@ -37,7 +40,7 @@
   },
   "dependencies": {
     "@tonk/server": "^0.2.15",
-    "@tonk/tonk-auth": "^0.1.0",
+    "@tonk/tonk-auth": "^0.1.5",
     "chalk": "^5.3.0",
     "cli-table3": "^0.6.5",
     "commander": "^11.1.0",
