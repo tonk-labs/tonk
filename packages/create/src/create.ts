@@ -107,6 +107,16 @@ export async function createProject(
   let projectPath = _projectPath;
 
   try {
+    // Check if pnpm is installed, if not, install it
+    const { execSync } = await import("child_process");
+    try {
+      execSync("pnpm --version", { stdio: "pipe" });
+    } catch (error) {
+      spinner.text = "Installing pnpm...";
+      execSync("npm install -g pnpm", { stdio: "inherit" });
+      spinner.text = "Creating project structure...";
+    }
+
     // Create project directory
     projectPath = projectPath || path.resolve(projectName);
     await fs.ensureDir(projectPath);
