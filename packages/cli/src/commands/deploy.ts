@@ -11,6 +11,7 @@ import {
   trackCommandError,
   trackCommandSuccess,
 } from '../utils/analytics.js';
+import { authHook } from '@/lib/tonkAuth.js';
 
 interface DeployOptions {
   name?: string;
@@ -405,5 +406,6 @@ export const deployCommand = new Command('deploy')
     '--remote',
     'Use remote Docker build (slower but works with limited local resources)',
   )
+  .hook("preAction", authHook)
   .action(handleDeployCommand);
 
