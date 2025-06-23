@@ -3,49 +3,113 @@ import { TonkAuth } from "@tonk/tonk-auth";
 import chalk from "chalk";
 import inquirer from "inquirer";
 
-const tonkAuth = await TonkAuth({
-  onSubscriptionDisabled: () => {
-    console.log(chalk.red('🚨 Your subscription is inactive, upgrade your subscription to Deploy to Tonk'));
+// TonkAuth wrapped in a Singleton class with (non-blocking) async initilization keeps the CLI load snappy 🐢
+class TonkAuthManager {
+  private instance: any = null;
+  private initPromise: Promise<any> | null = null;
+  private _isReady = false;
+
+  constructor() {
+    this.initialize();
   }
-});
 
+  private async initialize() {
+    if (this.initPromise) return this.initPromise;
+    
+    this.initPromise = TonkAuth({
+      onSubscriptionDisabled: () => {
+        console.log(chalk.red('🚨 Your subscription is inactive, upgrade your subscription to Deploy to Tonk'));
+      }
+    }).then(auth => {
+      this.instance = auth;
+      this._isReady = true;
+      return auth;
+    }).catch(error => {
+      console.error(chalk.red('Failed to initialize auth:'), error);
+      this._isReady = false;
+      return null;
+    });
 
-/**
- * Checks if the user is logged in and has an active subscription
- */
+    return this.initPromise;
+  }
+
+  get isSignedIn(): boolean {
+    return this.instance?.isSignedIn ?? false;
+  }
+
+  get activeSubscription(): boolean {
+    return this.instance?.activeSubscription ?? false;
+  }
+
+  get friendlyName(): string {
+    return this.instance?.friendlyName ?? '';
+  }
+
+  get isReady(): boolean {
+    return this._isReady;
+  }
+
+  async ensureReady(): Promise<void> {
+    if (!this._isReady && this.initPromise) {
+      await this.initPromise;
+    }
+  }
+
+  async login() {
+    await this.ensureReady();
+    if (!this.instance) return { ok: false, error: 'Auth not initialized' };
+    
+    try {
+      return await this.instance.login();
+    } catch (error) {
+      return { ok: false, error: String(error) };
+    }
+  }
+
+  async logout() {
+    await this.ensureReady();
+    if (!this.instance) return { ok: false, error: 'Auth not initialized' };
+    
+    try {
+      return await this.instance.logout();
+    } catch (error) {
+      return { ok: false, error: String(error) };
+    }
+  }
+}
+
+export const tonkAuth = new TonkAuthManager();
+
 export function checkAuth(): boolean {
-    if (!tonkAuth.isSignedIn) {
-      return false;
-    }
-
-    const authOk = tonkAuth.isSignedIn && tonkAuth.activeSubscription;
-    if (!authOk) {
-      return false;
-    }
-    return true;
+  return tonkAuth.isSignedIn && tonkAuth.activeSubscription;
 }
 
-export const authHook = async() => {
-  if (!checkAuth()) {
-      console.log(chalk.yellow(RESPONSES.needSubscription));
-      const {confirm} = await inquirer.prompt([
-            {
-              type: 'confirm',
-              name: 'confirm',
-              message: 'Do you want to login?',
-              default: true,
-            }
-          ]);
-      if (!confirm) {
-        process.exit(1);
-      }
-      console.log("\n🗺️ Great, let's sign you in using your browser!")
-      const res = await tonkAuth.login();
-      if (!res.ok) {
-        throw new Error('Failed to login to Tonk' + res.error);
-      }
-      console.log(chalk.green(`🎉 Welcome back to Tonk ${tonkAuth.friendlyName}\n`));
-    }
-}
-
-export { tonkAuth };
+export const authHook = async () => {
+  // Ensure auth is initialized
+  await tonkAuth.ensureReady();
+  
+  if (checkAuth()) return;
+  
+  console.log(chalk.yellow(RESPONSES.needSubscription));
+  const { confirm } = await inquirer.prompt([{
+    type: 'confirm',
+    name: 'confirm',
+    message: 'Do you want to login?',
+    default: true,
+  }]);
+  
+  if (!confirm) {
+    console.log(chalk.yellow('Authentication required. Exiting.'));
+    process.exit(1);
+  }
+  
+  console.log("\n🗺️ Great, let's sign you in using your browser!");
+  const res = await tonkAuth.login();
+  
+  if (!res.ok) {
+    console.error(chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`));
+    process.exit(1);
+  }
+  
+  console.log(chalk.green(`🎉 Welcome back to Tonk ${tonkAuth.friendlyName || 'user'}!\n`));
+};
