@@ -456,15 +456,15 @@ export class TonkWorkerManager implements WorkerManager {
   private generateWorkerId(name: string): string {
     // Normalize the name: lowercase and replace non-alphanumeric chars with hyphens
     let normalizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    
+
     // Ensure the name doesn't start with a hyphen (would cause issues with PM2)
     normalizedName = normalizedName.replace(/^-+/, '');
-    
+
     // If after normalization the name is empty, use a default prefix
     if (!normalizedName) {
       normalizedName = 'worker';
     }
-    
+
     const timestamp = Date.now().toString(36);
     return `${normalizedName}-${timestamp}`;
   }

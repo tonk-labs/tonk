@@ -1,7 +1,7 @@
-import { RESPONSES } from "@/utils/messages";
-import { TonkAuth } from "@tonk/tonk-auth";
-import chalk from "chalk";
-import inquirer from "inquirer";
+import {RESPONSES} from '../utils/messages.js';
+import {TonkAuth} from '@tonk/tonk-auth';
+import chalk from 'chalk';
+import inquirer from 'inquirer';
 
 // TonkAuth wrapped in a Singleton class with (non-blocking) async initilization keeps the CLI load snappy 🐢
 class TonkAuthManager {
@@ -15,20 +15,26 @@ class TonkAuthManager {
 
   private async initialize() {
     if (this.initPromise) return this.initPromise;
-    
+
     this.initPromise = TonkAuth({
       onSubscriptionDisabled: () => {
-        console.log(chalk.red('🚨 Your subscription is inactive, upgrade your subscription to Deploy to Tonk'));
-      }
-    }).then(auth => {
-      this.instance = auth;
-      this._isReady = true;
-      return auth;
-    }).catch(error => {
-      console.error(chalk.red('Failed to initialize auth:'), error);
-      this._isReady = false;
-      return null;
-    });
+        console.log(
+          chalk.red(
+            '🚨 Your subscription is inactive, upgrade your subscription to Deploy to Tonk',
+          ),
+        );
+      },
+    })
+      .then(auth => {
+        this.instance = auth;
+        this._isReady = true;
+        return auth;
+      })
+      .catch(error => {
+        console.error(chalk.red('Failed to initialize auth:'), error);
+        this._isReady = false;
+        return null;
+      });
 
     return this.initPromise;
   }
@@ -57,23 +63,23 @@ class TonkAuthManager {
 
   async login() {
     await this.ensureReady();
-    if (!this.instance) return { ok: false, error: 'Auth not initialized' };
-    
+    if (!this.instance) return {ok: false, error: 'Auth not initialized'};
+
     try {
       return await this.instance.login();
     } catch (error) {
-      return { ok: false, error: String(error) };
+      return {ok: false, error: String(error)};
     }
   }
 
   async logout() {
     await this.ensureReady();
-    if (!this.instance) return { ok: false, error: 'Auth not initialized' };
-    
+    if (!this.instance) return {ok: false, error: 'Auth not initialized'};
+
     try {
       return await this.instance.logout();
     } catch (error) {
-      return { ok: false, error: String(error) };
+      return {ok: false, error: String(error)};
     }
   }
 }
@@ -87,29 +93,38 @@ export function checkAuth(): boolean {
 export const authHook = async () => {
   // Ensure auth is initialized
   await tonkAuth.ensureReady();
-  
+
   if (checkAuth()) return;
-  
+
   console.log(chalk.yellow(RESPONSES.needSubscription));
-  const { confirm } = await inquirer.prompt([{
-    type: 'confirm',
-    name: 'confirm',
-    message: 'Do you want to login?',
-    default: true,
-  }]);
-  
+  const {confirm} = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'confirm',
+      message: 'Do you want to login?',
+      default: true,
+    },
+  ]);
+
   if (!confirm) {
     console.log(chalk.yellow('Authentication required. Exiting.'));
     process.exit(1);
   }
-  
+
   console.log("\n🗺️ Great, let's sign you in using your browser!");
   const res = await tonkAuth.login();
-  
+
   if (!res.ok) {
-    console.error(chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`));
+    console.error(
+      chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`),
+    );
     process.exit(1);
   }
-  
-  console.log(chalk.green(`🎉 Welcome back to Tonk ${tonkAuth.friendlyName || 'user'}!\n`));
+
+  console.log(
+    chalk.green(
+      `🎉 Welcome back to Tonk ${tonkAuth.friendlyName || 'user'}!\n`,
+    ),
+  );
 };
+
