@@ -6,9 +6,6 @@
   "bin": {
     "tonk": "./bin/tonk.js"
   },
-  "imports": {
-    "@clerk/clerk-js/headless": "@clerk/clerk-js/headless/index.js"
-  },
   "exports": {
     ".": "./dist/index.js"
   },

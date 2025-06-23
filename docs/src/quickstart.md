@@ -17,6 +17,8 @@ npm install -g @tonk/cli && tonk hello
 
 This will install the Tonk CLI globally and run the `hello` command, which sets up the Tonk daemon for synchronising your data.
 
+If you encounter issues at this stage, see the troubleshooting guide at the bottom of the page.
+
 ## The Tonk Workflow
 
 ### Mode 1: Create Workers (Data Ingestion)
@@ -203,3 +205,29 @@ Check out these complete examples in the repository:
 - **Google Maps Locations Worker** - Syncs your saved places from Google Maps
 - **My World App** - Visualizes location data on an interactive map
 - **File Browser App** - Browse and manage files with real-time sync
+
+## Troubleshooting
+### Permission Denied Error During Installation
+
+If you encounter a permission denied error when installing the Tonk CLI globally:
+
+```bash
+npm install -g @tonk/cli
+# Error: EACCES: permission denied, mkdir '/usr/local/lib/node_modules'
+```
+
+This is a common npm issue on Unix systems. Here are several solutions:
+
+#### Option 1: Fix npm permissions
+```bash
+sudo chown -R $(whoami) $(npm config get prefix)/{lib/node_modules,bin,share}
+```
+
+#### Option 2: Configure npm to use a different directory
+```bash
+mkdir ~/.npm-global
+npm config set prefix '~/.npm-global'
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+npm install -g @tonk/cli
+```
