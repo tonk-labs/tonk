@@ -1,11 +1,14 @@
 import {Command} from 'commander';
 import displayTonkAnimation from './hello/index.js';
 import chalk from 'chalk';
-import inquirer from 'inquirer';
 import envPaths from 'env-paths';
 import {exec} from 'child_process';
 import {promisify} from 'util';
-import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+} from '../utils/analytics.js';
 
 const execAsync = promisify(exec);
 
@@ -13,10 +16,10 @@ export const helloCommand = new Command('hello')
   .description('Say hello to start and launch the tonk daemon')
   .action(async () => {
     const startTime = Date.now();
-    
+
     try {
       trackCommand('hello', {});
-      
+
       // Check if pm2 is installed
       let pm2Exists = false;
       try {
@@ -24,32 +27,16 @@ export const helloCommand = new Command('hello')
         pm2Exists = true;
       } catch (error) {
         // pm2 is not installed or not in PATH
-        console.log(chalk.yellow('PM2 is required to run the tonk daemon.'));
-
-        const {installPm2} = await inquirer.prompt([
-          {
-            type: 'confirm',
-            name: 'installPm2',
-            message: 'Would you like to install PM2?',
-            default: true,
-          },
-        ]);
-
-        if (installPm2) {
-          console.log(chalk.blue('Installing PM2...'));
-          await execAsync('npm install -g pm2');
-          pm2Exists = true;
-          console.log(chalk.green('PM2 installed successfully.'));
-        } else {
-          console.log(
-            chalk.red('PM2 is required to run the tonk daemon. Exiting.'),
-          );
-          process.exit(1);
-        }
+        console.log(
+          chalk.blue('PM2 is required to run Tonk. Installing now...'),
+        );
+        await execAsync('npm install -g pm2');
+        pm2Exists = true;
+        console.log(chalk.green('PM2 installed successfully.'));
       }
 
       if (pm2Exists) {
-        console.log(chalk.blue('Starting tonk daemon with PM2...'));
+        console.log(chalk.blue('Starting Tonk daemon...'));
         try {
           // Check if tonk process is already running in PM2
           const {stdout} = await execAsync('pm2 list');
