@@ -121,13 +121,13 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
             JSON.stringify({
               success: true,
               message: "Request processed successfully",
-            })
+            }),
           );
         } catch (error) {
           console.error("Error processing request:", error);
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(
-            JSON.stringify({ success: false, error: "Invalid data format" })
+            JSON.stringify({ success: false, error: "Invalid data format" }),
           );
         }
       });
@@ -142,6 +142,24 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
   return new Promise((resolve) => {
     server.listen(port, async () => {
       console.log(`{{name}} worker listening on http://localhost:${port}/tonk`);
+      console.log("");
+      console.log("🚀 Welcome to Tonk Workers!");
+      console.log("");
+      console.log(
+        "Workers are long-running processes that handle background tasks, API integrations, and workflows.",
+      );
+      console.log(
+        "They connect to your Tonk app and can sync data, process requests, and more.",
+      );
+      console.log("");
+      console.log(
+        "💡 Explain your goals to your vibe coding agent and get started!",
+      );
+      console.log("");
+      console.log(
+        "📚 Learn more: https://tonk-labs.github.io/tonk/workers.html",
+      );
+      console.log("");
 
       // Initialize the sync engine
       try {
