@@ -12,6 +12,7 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../../utils/analytics.js';
 import {
   readPackageJson,
@@ -65,7 +66,8 @@ export function registerInspectCommand(workerCommand: Command): void {
               nameOrId,
             },
           );
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         // If no options provided, show worker details
@@ -83,7 +85,8 @@ export function registerInspectCommand(workerCommand: Command): void {
             workerName: worker.name,
             action: 'display',
           });
-          return;
+          await shutdownAnalytics();
+          process.exit(0);
         }
 
         // Handle ping option
@@ -112,7 +115,8 @@ export function registerInspectCommand(workerCommand: Command): void {
             action: 'ping',
             isHealthy,
           });
-          return;
+          await shutdownAnalytics();
+          process.exit(0);
         }
 
         // Handle start option
@@ -129,7 +133,8 @@ export function registerInspectCommand(workerCommand: Command): void {
             workerName: worker.name,
             action: 'start',
           });
-          return;
+          await shutdownAnalytics();
+          process.exit(0);
         }
 
         // Handle stop option
@@ -146,7 +151,8 @@ export function registerInspectCommand(workerCommand: Command): void {
             workerName: worker.name,
             action: 'stop',
           });
-          return;
+          await shutdownAnalytics();
+          process.exit(0);
         }
 
         // Handle config option
@@ -160,6 +166,8 @@ export function registerInspectCommand(workerCommand: Command): void {
             action: 'config',
             configPath: options.config,
           });
+          await shutdownAnalytics();
+          process.exit(0);
         }
       } catch (error) {
         const duration = Date.now() - startTime;
@@ -168,6 +176,8 @@ export function registerInspectCommand(workerCommand: Command): void {
           options,
         });
         console.error(chalk.red('Failed to manage worker:'), error);
+        await shutdownAnalytics();
+        process.exit(1);
       }
     });
 }
@@ -203,7 +213,8 @@ export function registerListCommand(workerCommand: Command): void {
           trackCommandSuccess('worker-ls', duration, {
             workerCount: 0,
           });
-          return;
+          await shutdownAnalytics();
+          process.exit(0);
         }
 
         // Create a table for display
@@ -250,10 +261,14 @@ export function registerListCommand(workerCommand: Command): void {
           workerCount: workers.length,
           activeWorkers: workers.filter(w => w.status.active).length,
         });
+        await shutdownAnalytics();
+        process.exit(0);
       } catch (error) {
         const duration = Date.now() - startTime;
         trackCommandError('worker-ls', error as Error, duration);
         console.error(chalk.red('Failed to list workers:'), error);
+        await shutdownAnalytics();
+        process.exit(1);
       }
     });
 }
@@ -293,7 +308,8 @@ export function registerRemoveCommand(workerCommand: Command): void {
               nameOrId,
             },
           );
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         // Remove worker
@@ -309,12 +325,16 @@ export function registerRemoveCommand(workerCommand: Command): void {
           workerId: worker.id,
           workerName: worker.name,
         });
+        await shutdownAnalytics();
+        process.exit(0);
       } catch (error) {
         const duration = Date.now() - startTime;
         trackCommandError('worker-rm', error as Error, duration, {
           nameOrId,
         });
         console.error(chalk.red('Failed to remove worker:'), error);
+        await shutdownAnalytics();
+        process.exit(1);
       }
     });
 }
@@ -354,7 +374,8 @@ export function registerPingCommand(workerCommand: Command): void {
               nameOrId,
             },
           );
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         console.log(
@@ -378,12 +399,16 @@ export function registerPingCommand(workerCommand: Command): void {
           workerName: worker.name,
           isHealthy,
         });
+        await shutdownAnalytics();
+        process.exit(0);
       } catch (error) {
         const duration = Date.now() - startTime;
         trackCommandError('worker-ping', error as Error, duration, {
           nameOrId,
         });
         console.error(chalk.red('Failed to ping worker:'), error);
+        await shutdownAnalytics();
+        process.exit(1);
       }
     });
 }
@@ -423,7 +448,8 @@ export function registerStartCommand(workerCommand: Command): void {
               nameOrId,
             },
           );
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         console.log(chalk.blue(`Starting worker '${worker.name}'...`));
@@ -437,12 +463,16 @@ export function registerStartCommand(workerCommand: Command): void {
           workerId: worker.id,
           workerName: worker.name,
         });
+        await shutdownAnalytics();
+        process.exit(0);
       } catch (error) {
         const duration = Date.now() - startTime;
         trackCommandError('worker-start', error as Error, duration, {
           nameOrId,
         });
         console.error(chalk.red('Failed to start worker:'), error);
+        await shutdownAnalytics();
+        process.exit(1);
       }
     });
 }
@@ -482,7 +512,8 @@ export function registerStopCommand(workerCommand: Command): void {
               nameOrId,
             },
           );
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         console.log(chalk.blue(`Stopping worker '${worker.name}'...`));
@@ -496,12 +527,16 @@ export function registerStopCommand(workerCommand: Command): void {
           workerId: worker.id,
           workerName: worker.name,
         });
+        await shutdownAnalytics();
+        process.exit(0);
       } catch (error) {
         const duration = Date.now() - startTime;
         trackCommandError('worker-stop', error as Error, duration, {
           nameOrId,
         });
         console.error(chalk.red('Failed to stop worker:'), error);
+        await shutdownAnalytics();
+        process.exit(1);
       }
     });
 }
@@ -549,7 +584,8 @@ export function registerLogsCommand(workerCommand: Command): void {
               nameOrId,
             },
           );
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         console.log(chalk.blue(`Fetching logs for worker '${worker.name}'...`));
@@ -610,8 +646,9 @@ export function registerLogsCommand(workerCommand: Command): void {
             });
 
             // Handle process exit
-            process.on('SIGINT', () => {
+            process.on('SIGINT', async () => {
               child.kill();
+              await shutdownAnalytics();
               process.exit(0);
             });
 
@@ -629,6 +666,8 @@ export function registerLogsCommand(workerCommand: Command): void {
             lines: options.lines,
             logType: options.error ? 'error' : options.out ? 'out' : 'all',
           });
+          await shutdownAnalytics();
+          process.exit(0);
         } catch (error) {
           const duration = Date.now() - startTime;
           trackCommandError('worker-logs', error as Error, duration, {
@@ -637,6 +676,8 @@ export function registerLogsCommand(workerCommand: Command): void {
             options,
           });
           console.error(chalk.red('Failed to fetch logs:'), error);
+          await shutdownAnalytics();
+          process.exit(1);
         }
       } catch (error) {
         const duration = Date.now() - startTime;
@@ -645,6 +686,8 @@ export function registerLogsCommand(workerCommand: Command): void {
           options,
         });
         console.error(chalk.red('Failed to fetch worker logs:'), error);
+        await shutdownAnalytics();
+        process.exit(1);
       }
     });
 }
@@ -717,7 +760,8 @@ export function registerRegisterCommand(workerCommand: Command): void {
             registrationType: 'direct',
             hasCustomPort: !!options.port,
           });
-          return;
+          await shutdownAnalytics();
+          process.exit(0);
         }
 
         // Look for package.json and worker.config.js files
@@ -744,7 +788,8 @@ export function registerRegisterCommand(workerCommand: Command): void {
               dir: path.resolve(dir),
             },
           );
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         console.log(chalk.blue(`Found worker directory at: ${workerDir}`));
@@ -769,7 +814,8 @@ export function registerRegisterCommand(workerCommand: Command): void {
               packageJsonPath,
             },
           );
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         // Read worker.config.js for configuration
@@ -792,7 +838,8 @@ export function registerRegisterCommand(workerCommand: Command): void {
               workerConfigPath,
             },
           );
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         // Determine port from config or use default
@@ -843,6 +890,8 @@ export function registerRegisterCommand(workerCommand: Command): void {
           port,
           hasCustomEndpoint: !!options.endpoint,
         });
+        await shutdownAnalytics();
+        process.exit(0);
       } catch (error) {
         const duration = Date.now() - startTime;
         trackCommandError('worker-register', error as Error, duration, {
@@ -850,6 +899,8 @@ export function registerRegisterCommand(workerCommand: Command): void {
           options,
         });
         console.error(chalk.red('Failed to register worker:'), error);
+        await shutdownAnalytics();
+        process.exit(1);
       }
     });
 }
@@ -901,7 +952,8 @@ export function registerInstallCommand(workerCommand: Command): void {
             packageName,
             stage: 'npm-install',
           });
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         // Find an available port starting from 5555
@@ -924,7 +976,8 @@ export function registerInstallCommand(workerCommand: Command): void {
             packageName,
             stage: 'package-info',
           });
-          return;
+          await shutdownAnalytics();
+          process.exit(1);
         }
 
         // Strip scope from package name for display purposes (e.g., @tonk/worker -> worker)
@@ -1026,6 +1079,8 @@ export function registerInstallCommand(workerCommand: Command): void {
             setupCompleted,
             startedSuccessfully: true,
           });
+          await shutdownAnalytics();
+          process.exit(0);
         } else {
           console.error(chalk.red(`Failed to start worker '${packageName}'.`));
 
@@ -1040,6 +1095,8 @@ export function registerInstallCommand(workerCommand: Command): void {
               stage: 'worker-start',
             },
           );
+          await shutdownAnalytics();
+          process.exit(1);
         }
       } catch (error) {
         const duration = Date.now() - startTime;
@@ -1048,6 +1105,8 @@ export function registerInstallCommand(workerCommand: Command): void {
           options,
         });
         console.error(chalk.red('Failed to install worker:'), error);
+        await shutdownAnalytics();
+        process.exit(1);
       }
     });
 }
@@ -1237,6 +1296,8 @@ export function registerInitCommand(workerCommand: Command): void {
             tsconfigFileCreated && 'tsconfig.json',
           ].filter(Boolean).length,
         });
+        await shutdownAnalytics();
+        process.exit(0);
       } catch (error) {
         const duration = Date.now() - startTime;
         trackCommandError('worker-init', error as Error, duration, {
@@ -1246,6 +1307,8 @@ export function registerInitCommand(workerCommand: Command): void {
           chalk.red('Failed to initialise worker configuration:'),
           error,
         );
+        await shutdownAnalytics();
+        process.exit(1);
       }
     });
 }
