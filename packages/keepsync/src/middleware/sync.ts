@@ -20,7 +20,6 @@ import {
   findDocument,
   createDocument,
   DocNode,
-  RefNode,
   DirNode,
   traverseDocTree,
   removeDocument,
@@ -30,6 +29,64 @@ import {
  * Logger utility for consistent logging throughout the application
  */
 import {logger} from '../utils/logger.js';
+
+/**
+ * Efficiently mutates an Automerge document by directly setting properties.
+ * This allows Automerge to track individual property changes for better performance
+ * and conflict resolution.
+ *
+ * @param doc - The Automerge document to mutate (within a change callback)
+ * @param newState - The new state to apply to the document
+ */
+const mutateDocument = (doc: any, newState: any) => {
+  // Handle null or undefined newState
+  if (newState == null) return;
+
+  // Get all keys from both the document and new state
+  const docKeys = new Set(Object.keys(doc));
+  const newStateKeys = new Set(Object.keys(newState));
+
+  // Set/update properties from newState
+  for (const key of newStateKeys) {
+    const newValue = newState[key];
+
+    // Skip undefined values as Automerge doesn't support them
+    if (newValue === undefined) {
+      continue;
+    }
+    
+    // For primitive values or null, directly assign
+    if (newValue == null || typeof newValue !== 'object') {
+      doc[key] = newValue;
+    }
+    // For arrays, replace the entire array (Automerge handles array mutations efficiently)
+    else if (Array.isArray(newValue)) {
+      doc[key] = newValue;
+    }
+    // For objects, check if we need to recurse or replace
+    else {
+      // If the property doesn't exist in doc or is not an object, replace it
+      if (
+        !doc.hasOwnProperty(key) ||
+        typeof doc[key] !== 'object' ||
+        doc[key] == null ||
+        Array.isArray(doc[key])
+      ) {
+        doc[key] = newValue;
+      } else {
+        // Both are objects, recurse to mutate nested properties
+        mutateDocument(doc[key], newValue);
+      }
+    }
+  }
+
+  // Remove properties that exist in doc but not in newState
+  for (const key of docKeys) {
+    if (!newStateKeys.has(key)) {
+      delete doc[key];
+    }
+  }
+};
 
 /**
  * Function to get the Repo instance
@@ -119,8 +176,7 @@ export const sync =
 
           // Step 4: Update the Automerge document through the docHandle
           docHandle.change((doc: any) => {
-            // Avoid "Cannot create a reference to an existing document object" error
-            Object.assign(doc, JSON.parse(JSON.stringify(serializableState)));
+            mutateDocument(doc, serializableState);
           });
         } catch (error) {
           // Handle errors that might occur during serialization or update
@@ -223,8 +279,7 @@ export const sync =
 
           // Create the initial document with the current state
           docHandle?.change((doc: any) => {
-            // Avoid "Cannot create a reference to an existing document object" error
-            Object.assign(doc, JSON.parse(JSON.stringify(serializableState)));
+            mutateDocument(doc, serializableState);
           });
         }
 
@@ -471,9 +526,7 @@ export const writeDoc = async <T>(path: string, content: T) => {
     await newHandle.doc();
   }
   newHandle.change((doc: any) => {
-    // Avoid "Cannot create a reference to an existing document object" error
-    // by ensuring we don't reference objects from outside the current document context
-    Object.assign(doc, JSON.parse(JSON.stringify(content)));
+    mutateDocument(doc, content);
   });
   newHandle.docSync();
 };

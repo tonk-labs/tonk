@@ -1,4 +1,4 @@
-import {SyncEngine, SyncEngineConfig} from '../engine/index.js';
+import {SyncEngine} from '../engine/index.js';
 import {Repo, DocumentId} from '@automerge/automerge-repo';
 import {logger} from '../utils/logger.js';
 import {SyncEngineOptions} from '../engine/syncEngine.js';
@@ -6,7 +6,6 @@ import {SyncEngineOptions} from '../engine/syncEngine.js';
 // Singleton instance of the SyncEngine
 let syncEngineInstance: SyncEngine | null = null;
 
-//TODO: split up keepsync for different platforms and pull out the core keepsync libraries into a core package
 /**
  * Configure the global sync engine with the provided options
  * This should be called once at the application startup
