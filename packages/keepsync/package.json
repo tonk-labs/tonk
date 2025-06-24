@@ -1,6 +1,6 @@
 {
   "name": "@tonk/keepsync",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "A reactive sync engine framework for use with Tonk apps",
   "type": "module",
   "main": "./dist/index.js",
