@@ -1,10 +1,14 @@
 import {Command} from 'commander';
 import path from 'path';
-import {ChildProcess, spawn} from 'child_process';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import {fileURLToPath} from 'url';
-import {dir} from 'console';
+import {
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+  shutdownAnalytics,
+} from '../utils/analytics.js';
 
 /**
  * Resolves a package path by checking both local development and global installation paths
@@ -55,28 +59,109 @@ export const initCommand = new Command('init')
     'optionally creates a directory and initializes the tonk repo in that directory',
   )
   .action(async dirPath => {
-    const cwd = process.cwd();
-    const templatePath = await resolvePackagePath(`template`);
-    const target = dirPath ? path.join(cwd, dirPath) : cwd;
+    const startTime = Date.now();
 
-    if (dirPath) {
-      await fs.mkdir(target);
-    }
+    try {
+      trackCommand('init', {
+        hasDirectory: !!dirPath,
+        targetDirectory: dirPath || 'current',
+      });
 
-    await fs.copy(templatePath, target, {
-      filter: (src: string) => {
-        // Get the relative path from the template directory
-        const relativePath = path.relative(templatePath, src);
-        // Only filter out node_modules and .git within the template
-        const shouldCopy = !relativePath
-          .split(path.sep)
-          .some(part => part === 'node_modules' || part === '.git');
-        if (!shouldCopy) {
-          console.log(`Skipping: ${relativePath}`);
+      const cwd = process.cwd();
+      const target = dirPath ? path.join(cwd, dirPath) : cwd;
+
+      // Check if target already exists and has files
+      const targetExists = await fs.pathExists(target);
+      let existingFiles = 0;
+      if (targetExists) {
+        const files = await fs.readdir(target);
+        existingFiles = files.filter(file => !file.startsWith('.')).length;
+      }
+
+      console.log(chalk.blue(`🚀 Initializing Tonk repository in ${target}`));
+
+      const templatePath = await resolvePackagePath(`template`);
+
+      // Create directory if needed
+      let directoryCreated = false;
+      if (dirPath && !targetExists) {
+        await fs.mkdir(target);
+        directoryCreated = true;
+        console.log(chalk.green(`✅ Created directory: ${dirPath}`));
+      }
+
+      // Count files to be copied
+      let copiedFiles = 0;
+      let skippedFiles = 0;
+
+      await fs.copy(templatePath, target, {
+        filter: (src: string) => {
+          // Get the relative path from the template directory
+          const relativePath = path.relative(templatePath, src);
+          // Only filter out node_modules and .git within the template
+          const shouldCopy = !relativePath
+            .split(path.sep)
+            .some(part => part === 'node_modules' || part === '.git');
+
+          if (!shouldCopy) {
+            console.log(chalk.yellow(`Skipping: ${relativePath}`));
+            skippedFiles++;
+          } else if (relativePath) {
+            copiedFiles++;
+          }
+
+          return shouldCopy;
+        },
+        overwrite: true,
+        errorOnExist: false,
+      });
+
+      console.log(chalk.green(`✅ Successfully initialized Tonk repository!`));
+      console.log(chalk.cyan(`📁 Files copied: ${copiedFiles}`));
+      if (skippedFiles > 0) {
+        console.log(chalk.yellow(`📁 Files skipped: ${skippedFiles}`));
+      }
+
+      const duration = Date.now() - startTime;
+      trackCommandSuccess('init', duration, {
+        hasDirectory: !!dirPath,
+        directoryCreated,
+        existingFiles,
+        copiedFiles,
+        skippedFiles,
+        targetPath: target,
+        templatePath,
+      });
+
+      await shutdownAnalytics();
+    } catch (error) {
+      const duration = Date.now() - startTime;
+
+      // Determine error type
+      let errorType = 'unknown_error';
+      if (error instanceof Error) {
+        if (error.message.includes('ENOENT')) {
+          errorType = 'template_not_found';
+        } else if (error.message.includes('EACCES')) {
+          errorType = 'permission_denied';
+        } else if (error.message.includes('EEXIST')) {
+          errorType = 'directory_exists';
+        } else if (error.message.includes('Could not locate')) {
+          errorType = 'package_resolution_failed';
         }
-        return shouldCopy;
-      },
-      overwrite: true,
-      errorOnExist: false,
-    });
+      }
+
+      trackCommandError('init', error as Error, duration, {
+        hasDirectory: !!dirPath,
+        errorType,
+        targetPath: dirPath ? path.join(process.cwd(), dirPath) : process.cwd(),
+      });
+
+      console.error(
+        chalk.red('❌ Failed to initialize Tonk repository:'),
+        error,
+      );
+      await shutdownAnalytics();
+      process.exit(1);
+    }
   });

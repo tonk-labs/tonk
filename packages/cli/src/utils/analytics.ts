@@ -1,5 +1,8 @@
 import {PostHog} from 'posthog-node';
 import os from 'os';
+import fs from 'fs';
+import path from 'path';
+import {CLI_VERSION} from '../utils/version.js';
 
 // Fallback machine ID generation if node-machine-id is not available
 function generateFallbackMachineId(): string {
@@ -17,6 +20,54 @@ function generateFallbackMachineId(): string {
     hash = hash & hash; // Convert to 32-bit integer
   }
   return Math.abs(hash).toString(16);
+}
+
+/**
+ * Get CLI version from shared version constant
+ */
+function getCliVersion(): string {
+  return CLI_VERSION || 'unknown';
+}
+
+/**
+ * Detect workspace type (pnpm, npm, yarn)
+ */
+function detectWorkspaceType(): string {
+  try {
+    const cwd = process.cwd();
+    if (fs.existsSync(path.join(cwd, 'pnpm-lock.yaml'))) return 'pnpm';
+    if (fs.existsSync(path.join(cwd, 'yarn.lock'))) return 'yarn';
+    if (fs.existsSync(path.join(cwd, 'package-lock.json'))) return 'npm';
+    return 'unknown';
+  } catch (error) {
+    return 'unknown';
+  }
+}
+
+/**
+ * Check if tonk.config.json exists in current directory
+ */
+function hasTonkConfig(): boolean {
+  try {
+    return fs.existsSync(path.join(process.cwd(), 'tonk.config.json'));
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Get enhanced system context for analytics
+ */
+function getSystemContext(): Record<string, any> {
+  return {
+    platform: os.platform(),
+    arch: os.arch(),
+    nodeVersion: process.version,
+    cliVersion: getCliVersion(),
+    workspaceType: detectWorkspaceType(),
+    hasTonkConfig: hasTonkConfig(),
+    timestamp: new Date().toISOString(),
+  };
 }
 
 // Singleton PostHog instance
@@ -66,9 +117,7 @@ export function trackCommand(
       properties: {
         command: commandName,
         options,
-        platform: os.platform(),
-        arch: os.arch(),
-        nodeVersion: process.version,
+        ...getSystemContext(),
         ...additionalProps,
       },
     });
@@ -96,9 +145,7 @@ export function trackCommandSuccess(
       properties: {
         command: commandName,
         duration_ms: duration,
-        platform: os.platform(),
-        arch: os.arch(),
-        nodeVersion: process.version,
+        ...getSystemContext(),
         ...additionalProps,
       },
     });
@@ -127,10 +174,9 @@ export function trackCommandError(
         command: commandName,
         error: error instanceof Error ? error.message : error,
         error_type: error instanceof Error ? error.constructor.name : 'string',
+        error_stack: error instanceof Error ? error.stack : undefined,
         duration_ms: duration,
-        platform: os.platform(),
-        arch: os.arch(),
-        nodeVersion: process.version,
+        ...getSystemContext(),
         ...additionalProps,
       },
     });

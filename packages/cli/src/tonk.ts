@@ -16,7 +16,7 @@ import chalk from 'chalk';
 import envPaths from 'env-paths';
 import fs from 'node:fs';
 import path from 'node:path';
-import pkg from '../package.json' with {type: 'json'};
+import {CLI_VERSION} from './utils/version.js';
 import {
   shutdownAnalytics,
   trackCommand,
@@ -30,7 +30,7 @@ const program = new Command();
 program
   .name('tonk')
   .description('The tonk cli helps you to manage your tonk stack and apps.')
-  .version(pkg.version)
+  .version(CLI_VERSION)
   .option('-d', 'Run the Tonk daemon')
   .on('--help', () => {
     console.log('\nWork in progress!');

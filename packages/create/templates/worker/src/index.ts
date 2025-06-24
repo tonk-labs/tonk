@@ -86,17 +86,10 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
       return;
     }
 
-    // Example endpoint
+    // Health endpoint
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok" }));
-      return;
-    }
-
-    // Hello endpoint
-    if (req.method === "GET" && req.url === "/hello") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ message: "Hello from {{name}}!" }));
       return;
     }
 

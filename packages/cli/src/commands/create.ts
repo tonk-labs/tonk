@@ -4,6 +4,7 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../utils/analytics.js';
 
 export const createCommand = new Command('create')
@@ -27,14 +28,39 @@ export const createCommand = new Command('create')
       });
 
       const duration = Date.now() - startTime;
-      trackCommandSuccess('create', duration, {init: options.init});
+      trackCommandSuccess('create', duration, {
+        init: options.init,
+        command: createCommand,
+      });
 
+      shutdownAnalytics();
       process.exit(0);
     } catch (error: any) {
       const duration = Date.now() - startTime;
-      trackCommandError('create', error, duration, {init: options.init});
+
+      // Enhanced error context
+      let errorType = 'unknown_error';
+      if (error instanceof Error) {
+        if (error.message.includes('ENOENT')) {
+          errorType = 'command_not_found';
+        } else if (error.message.includes('EACCES')) {
+          errorType = 'permission_denied';
+        } else if (error.message.includes('NETWORK')) {
+          errorType = 'network_error';
+        } else if (error.message.includes('npm')) {
+          errorType = 'npm_error';
+        }
+      }
+
+      trackCommandError('create', error, duration, {
+        init: options.init,
+        command: createCommand,
+        errorType,
+        exitCode: error.status || error.code,
+      });
 
       console.error('Failed to generate Tonk code:', error);
+      shutdownAnalytics();
       process.exit(1);
     }
   });

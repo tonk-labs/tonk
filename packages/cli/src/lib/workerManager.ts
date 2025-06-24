@@ -404,10 +404,21 @@ export class TonkWorkerManager implements WorkerManager {
       throw new Error(`Worker with ID '${id}' not found.`);
     }
 
-    // If no health check configured, just ping the endpoint
-    const healthCheckEndpoint =
-      worker.config.healthCheck?.endpoint || worker.endpoint;
-    const healthCheckTimeout = worker.config.healthCheck?.timeout || 5000;
+    // Extract base URL from worker endpoint and combine with health check endpoint
+    let healthCheckEndpoint: string;
+    if (worker.config.runtime?.healthCheck?.endpoint) {
+      // Parse the worker endpoint to get the base URL (protocol + host + port)
+      const workerUrl = new URL(worker.endpoint);
+      const baseUrl = `${workerUrl.protocol}//${workerUrl.host}`;
+      healthCheckEndpoint =
+        baseUrl + worker.config.runtime.healthCheck.endpoint;
+    } else {
+      // If no health check configured, just use the worker endpoint
+      healthCheckEndpoint = worker.endpoint;
+    }
+
+    const healthCheckTimeout =
+      worker.config.runtime?.healthCheck?.timeout || 5000;
 
     try {
       // Perform health check based on protocol
