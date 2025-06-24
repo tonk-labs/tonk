@@ -23,7 +23,7 @@ import {
   trackCommandError,
   trackCommandSuccess,
 } from './utils/analytics.js';
-import { authCommand } from './commands/auth.js';
+import {authCommand} from './commands/auth.js';
 
 const program = new Command();
 // Main program setup
@@ -36,8 +36,8 @@ program
     console.log('\nWork in progress!');
   });
 
-  program.addCommand(helloCommand);
-  program.addCommand(authCommand);
+program.addCommand(helloCommand);
+program.addCommand(authCommand);
 program.addCommand(createCommand);
 program.addCommand(deployCommand);
 program.addCommand(serverCommand);

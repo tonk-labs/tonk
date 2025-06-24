@@ -175,6 +175,32 @@ During deployment, you'll be guided through setting up your preferred storage op
 2. Install dependencies: `npm install`
 3. Run the dev mode: `npm run dev`
 
+## Troubleshooting
+### Permission Denied Error During Installation
+
+If you encounter a permission denied error when installing the Tonk CLI globally:
+
+```bash
+npm install -g @tonk/cli
+# Error: EACCES: permission denied, mkdir '/usr/local/lib/node_modules'
+```
+
+This is a common npm issue on Unix systems. Here are several solutions:
+
+#### Option 1: Fix npm permissions
+```bash
+sudo chown -R $(whoami) $(npm config get prefix)/{lib/node_modules,bin,share}
+```
+
+#### Option 2: Configure npm to use a different directory
+```bash
+mkdir ~/.npm-global
+npm config set prefix '~/.npm-global'
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+npm install -g @tonk/cli
+```
+
 ## License
 
 Simplicity and freedom.

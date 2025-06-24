@@ -1,0 +1,7 @@
+onlyBuiltDependencies:
+  - '@clerk/shared'
+  - browser-tabs-lock
+  - cbor-extract
+  - core-js
+  - esbuild
+  - keytar

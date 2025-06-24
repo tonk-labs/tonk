@@ -47,9 +47,7 @@ function validateSourceDirectory(sourcePath: string): void {
   if (!fs.existsSync(sourcePath)) {
     console.error(chalk.red(`Error: Directory ${sourcePath} does not exist.`));
     console.log(
-      chalk.yellow(
-        `Run 'npm run build' or 'yarn build' to create the dist directory.`,
-      ),
+      chalk.yellow(`Run 'npm run build' to create the dist directory.`),
     );
     process.exit(1);
   }
