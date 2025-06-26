@@ -48,8 +48,9 @@ export const helloCommand = new Command('hello')
             await execAsync('pm2 restart tonkserver');
           } else {
             // Start the tonk daemon with PM2
-            const {stdout: tonkPath} = await execAsync('which tonk');
-            await execAsync(`pm2 start --interpreter bash "${tonkPath.trim()}" --name tonkserver -- -d`);
+            const {stdout: whichTonk} = await execAsync('which tonk');
+            const tonkPath = whichTonk.trim();
+            await execAsync(`pm2 start ${tonkPath} --name tonkserver -- -d`);
           }
 
           console.log(chalk.green('Tonk daemon started successfully!'));
