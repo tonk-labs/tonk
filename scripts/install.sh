@@ -66,6 +66,16 @@ fi
 
 echo -e "${GREEN}✅ @tonk/cli installed successfully${NC}"
 
+# Download and install @tonk/create package
+echo -e "${BLUE}Downloading and installing @tonk/create...${NC}"
+npm install @tonk/create
+if [ $? -ne 0 ]; then
+  echo -e "${RED}❌ Failed to install @tonk/create${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}✅ @tonk/create installed successfully${NC}"
+
 # Create wrapper script
 echo -e "${BLUE}Creating tonk command wrapper...${NC}"
 cat >"$TONK_BIN_DIR/tonk" <<'EOF'
@@ -76,6 +86,17 @@ EOF
 
 # Make the wrapper executable
 chmod +x "$TONK_BIN_DIR/tonk"
+
+# Create tonk-create wrapper script
+echo -e "${BLUE}Creating tonk-create command wrapper...${NC}"
+cat >"$TONK_BIN_DIR/tonk-create" <<'EOF'
+#!/bin/bash
+# Tonk Create CLI wrapper script
+NODE_PATH="$HOME/.tonk/packages/node_modules" exec node "$HOME/.tonk/packages/node_modules/.bin/create" "$@"
+EOF
+
+# Make the wrapper executable
+chmod +x "$TONK_BIN_DIR/tonk-create"
 
 # Check if tonk bin directory is in PATH
 echo -e "${BLUE}Checking PATH configuration...${NC}"
@@ -124,14 +145,52 @@ else
   echo -e "${YELLOW}You may need to restart your terminal or run: source ~/.bashrc${NC}"
 fi
 
-echo -e "\n${GREEN}===============================${NC}"
+# Prompt user for workspace creation
+echo -e "\n${BLUE}===============================${NC}"
 echo -e "${GREEN}🎉 Tonk CLI installed successfully! 🎉${NC}"
-echo -e "\n${BLUE}Next steps:${NC}"
+echo -e "${BLUE}===============================${NC}"
+
+# Check if user wants to create a workspace
+echo -e "\n${YELLOW}Would you like to create a Tonk workspace in your home directory?${NC}"
+echo -e "${BLUE}A workspace provides a structured environment for organizing your Tonk projects,${NC}"
+echo -e "${BLUE}including apps, workers, and data processing pipelines.${NC}"
+echo -e "\n${YELLOW}Create workspace now? (y/n):${NC} "
+read -r CREATE_WORKSPACE
+
+if [[ "$CREATE_WORKSPACE" =~ ^[Yy]$ ]]; then
+  echo -e "\n${BLUE}Creating Tonk workspace at $HOME/tonk-workspace...${NC}"
+
+  # Create workspace using tonk-create
+  if "$TONK_BIN_DIR/tonk-create" -t workspace -n tonk-workspace -d "My Tonk workspace" --init; then
+    echo -e "${GREEN}✅ Workspace created successfully at $HOME/tonk-workspace!${NC}"
+    echo -e "\n${BLUE}Next steps:${NC}"
+    echo -e "1. ${YELLOW}cd ~/tonk-workspace${NC} - Navigate to your workspace"
+    echo -e "2. ${YELLOW}cd console && pnpm install && pnpm dev${NC} - Start the console app"
+    echo -e "3. ${YELLOW}Open your favourite vibe coding editor to get started"
+  else
+    echo -e "${RED}❌ Failed to create workspace${NC}"
+    echo -e "${YELLOW}You can create one manually later with:${NC}"
+    echo -e "  ${YELLOW}cd ~ && tonk-create -t workspace -n tonk-workspace${NC}"
+  fi
+else
+  echo -e "\n${BLUE}No workspace created.${NC}"
+  echo -e "\n${YELLOW}To create a workspace later:${NC}"
+  echo -e "1. Navigate to your desired directory: ${YELLOW}cd ~/desired-location${NC}"
+  echo -e "2. Create workspace: ${YELLOW}tonk-create -t workspace -n my-workspace${NC}"
+  echo -e "\n${BLUE}Why create a workspace?${NC}"
+  echo -e "• Organize multiple Tonk projects in one place"
+  echo -e "• Built-in console app for monitoring your data flows"
+  echo -e "• Structured directories for apps (/views) and workers (/workers)"
+  echo -e "• Agent-friendly environment with co-located instructions"
+  echo -e "• Seamless data processing pipeline development"
+fi
+
+echo -e "\n${BLUE}General next steps:${NC}"
 echo -e "1. Restart your terminal or run: ${YELLOW}source ~/.bashrc${NC} (or ~/.zshrc)"
 echo -e "2. Run: ${YELLOW}tonk --help${NC} to see available commands"
-echo -e "3. Get started with: ${YELLOW}tonk hello${NC}"
+echo -e "3. Run: ${YELLOW}tonk-create --help${NC} to see project creation options"
+echo -e "4. Get started with: ${YELLOW}tonk hello${NC}"
 echo -e "\n${BLUE}Installation location:${NC} $TONK_DIR"
-echo -e "${BLUE}Command location:${NC} $TONK_BIN_DIR/tonk"
+echo -e "${BLUE}Command locations:${NC} $TONK_BIN_DIR/tonk, $TONK_BIN_DIR/tonk-create"
 echo -e "\n${BLUE}To uninstall:${NC} rm -rf $TONK_DIR and remove from PATH"
 echo -e "${GREEN}===============================${NC}"
-
