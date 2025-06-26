@@ -8,6 +8,7 @@ import process from "process";
 import { fileURLToPath } from "url";
 import { createReactTemplate } from "./templates/react";
 import { createWorkerTemplate } from "./templates/worker";
+import { createWorkspaceTemplate } from "./templates/workspace";
 import { ProjectPlan, TemplateType } from "./types";
 
 /**
@@ -80,6 +81,10 @@ const projectQuestions = [
         name: "Worker - retrieve data to use later",
         value: "worker",
       },
+      {
+        name: "Workspace - organize multiple projects",
+        value: "workspace",
+      },
     ],
     default: "react",
   },
@@ -151,6 +156,15 @@ export async function createProject(
       }
       case "worker": {
         await createWorkerTemplate(
+          projectPath,
+          projectName,
+          templatePath,
+          plan,
+        );
+        break;
+      }
+      case "workspace": {
+        await createWorkspaceTemplate(
           projectPath,
           projectName,
           templatePath,
