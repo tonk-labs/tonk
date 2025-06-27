@@ -2,10 +2,11 @@ import {Command} from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
 import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {getServerConfig} from '../config/environment.js';
 
 export const lsCommand = new Command('ls')
   .description('List available bundles on the Tonk server')
-  .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
+  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
   .action(async options => {
     const startTime = Date.now();
     const serverUrl = options.url;

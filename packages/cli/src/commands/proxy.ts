@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import fetch from 'node-fetch';
 import {spawn} from 'child_process';
 import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {getServerConfig} from '../config/environment.js';
 
 interface BundleInfo {
   id: string;
@@ -13,7 +14,7 @@ interface BundleInfo {
 
 export const proxyCommand = new Command('proxy')
   .description('Create a reverse proxy to access a Tonk bundle')
-  .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
+  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
   .argument('<bundleName>', 'Name of the bundle to proxy')
   .action(async (bundleName, options) => {
     const startTime = Date.now();

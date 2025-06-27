@@ -6,6 +6,7 @@ import {
   trackCommandError,
   trackCommandSuccess,
 } from '../utils/analytics.js';
+import {getServerConfig} from '../config/environment.js';
 
 interface StartResult {
   id: string;
@@ -18,7 +19,7 @@ interface StartResult {
 
 export const startCommand = new Command('start')
   .description('Start a bundle on a route')
-  .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
+  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
   .option(
     '-r, --route <route>',
     'Route path for the bundle (defaults to /bundleName)',

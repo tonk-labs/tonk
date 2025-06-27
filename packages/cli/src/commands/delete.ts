@@ -6,11 +6,12 @@ import {
   trackCommandError,
   trackCommandSuccess,
 } from '../utils/analytics.js';
+import {getServerConfig} from '../config/environment.js';
 
 export const deleteCommand = new Command('delete')
   .alias('rm')
   .description('Delete a bundle from the server')
-  .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
+  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
   .argument('<bundleName>', 'Name of the bundle to delete')
   .action(async (bundleName, options) => {
     const startTime = Date.now();

@@ -12,6 +12,7 @@ import {
   trackCommandSuccess,
 } from '../utils/analytics.js';
 import {authHook} from '../lib/tonkAuth.js';
+import {getDeploymentServiceUrl, config} from '../config/environment.js';
 
 interface DeployOptions {
   name?: string;
@@ -29,17 +30,13 @@ interface TonkConfig {
   [key: string]: any;
 }
 
-const DEPLOYMENT_SERVICE_URL =
-  process.env.TONK_DEPLOYMENT_SERVICE_URL ||
-  'http://ec2-51-20-65-254.eu-north-1.compute.amazonaws.com:4444';
-// 'http://localhost:4444';
-
 /**
  * Checks if the deployment service is reachable
  */
 async function checkDeploymentService(): Promise<void> {
   try {
-    const response = await fetch(`${DEPLOYMENT_SERVICE_URL}/health`);
+    const deploymentServiceUrl = getDeploymentServiceUrl();
+    const response = await fetch(`${deploymentServiceUrl}/health`);
     if (!response.ok) {
       throw new Error(`Service returned ${response.status}`);
     }
@@ -261,7 +258,8 @@ async function deployBundle(
 
     // Send deployment request
     spinner.text = 'Uploading bundle to server...';
-    const response = await fetch(`${DEPLOYMENT_SERVICE_URL}/deploy-bundle`, {
+    const deploymentServiceUrl = getDeploymentServiceUrl();
+    const response = await fetch(`${deploymentServiceUrl}/deploy-bundle`, {
       method: 'POST',
       body: formData,
     });
@@ -392,13 +390,13 @@ export const deployCommand = new Command('deploy')
     'Name for the deployed bundle (defaults to package.json name)',
   )
   .option('-s, --server <server>', 'Name of the Tonk server to deploy to')
-  .option('-r, --region <region>', 'Region to deploy to', 'ord')
+  .option('-r, --region <region>', 'Region to deploy to', config.deployment.defaultRegion)
   .option(
     '-m, --memory <memory>',
     'Memory allocation (e.g., 256mb, 1gb)',
-    '1gb',
+    config.deployment.defaultMemory,
   )
-  .option('-c, --cpus <cpus>', 'Number of CPUs', '1')
+  .option('-c, --cpus <cpus>', 'Number of CPUs', config.deployment.defaultCpus)
   .option('--skip-build', 'Skip the build step')
   .option(
     '--remote',

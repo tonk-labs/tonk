@@ -14,6 +14,7 @@ import {
   trackCommandError,
   trackCommandSuccess,
 } from '../utils/analytics.js';
+import {getServerConfig} from '../config/environment.js';
 
 interface PushOptions {
   url: string;
@@ -344,7 +345,7 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
 
 export const pushCommand = new Command('push')
   .description('Package, upload, build and start a bundle on the Tonk server')
-  .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
+  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
   .option(
     '-n, --name <name>',
     'Name for the bundle (defaults to directory name)',

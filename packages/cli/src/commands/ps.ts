@@ -6,6 +6,7 @@ import {
   trackCommandError,
   trackCommandSuccess,
 } from '../utils/analytics.js';
+import {getServerConfig} from '../config/environment.js';
 
 interface ServerInfo {
   id: string;
@@ -19,7 +20,7 @@ interface ServerInfo {
 
 export const psCommand = new Command('ps')
   .description('List running bundles')
-  .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
+  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
   .action(async options => {
     const startTime = Date.now();
     const serverUrl = options.url;

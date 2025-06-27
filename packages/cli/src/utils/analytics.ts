@@ -3,6 +3,7 @@ import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import {CLI_VERSION} from '../utils/version.js';
+import {getAnalyticsConfig} from '../config/environment.js';
 
 // Fallback machine ID generation if node-machine-id is not available
 function generateFallbackMachineId(): string {
@@ -76,10 +77,18 @@ let posthog: PostHog | null = null;
 /**
  * Initialize PostHog analytics
  */
-export function initAnalytics(): PostHog {
+export function initAnalytics(): PostHog | null {
   if (!posthog) {
-    posthog = new PostHog('phc_8w3fpFuLkY7Agheficdo7GKPpg4XlXg4irucXhhXXTw', {
-      host: 'https://eu.i.posthog.com',
+    const analyticsConfig = getAnalyticsConfig();
+    
+    // Only initialize if analytics is enabled and API key is provided
+    if (!analyticsConfig.enabled || !analyticsConfig.apiKey) {
+      console.debug('Analytics disabled or no API key provided');
+      return null;
+    }
+    
+    posthog = new PostHog(analyticsConfig.apiKey, {
+      host: analyticsConfig.host,
     });
   }
   return posthog;
@@ -109,6 +118,10 @@ export function trackCommand(
 ): void {
   try {
     const analytics = initAnalytics();
+    if (!analytics) {
+      return; // Analytics disabled
+    }
+    
     const machineId = getMachineId();
 
     analytics.capture({
@@ -137,6 +150,10 @@ export function trackCommandSuccess(
 ): void {
   try {
     const analytics = initAnalytics();
+    if (!analytics) {
+      return; // Analytics disabled
+    }
+    
     const machineId = getMachineId();
 
     analytics.capture({
@@ -165,6 +182,10 @@ export function trackCommandError(
 ): void {
   try {
     const analytics = initAnalytics();
+    if (!analytics) {
+      return; // Analytics disabled
+    }
+    
     const machineId = getMachineId();
 
     analytics.capture({

@@ -2,10 +2,11 @@ import {Command} from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
 import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {getServerConfig} from '../config/environment.js';
 
 export const killCommand = new Command('kill')
   .description('Stop a running bundle server')
-  .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
+  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
   .argument('<serverId>', 'ID of the server to stop')
   .action(async (serverId, options) => {
     const startTime = Date.now();
