@@ -58,7 +58,7 @@ echo -e "${BLUE}Downloading and installing @tonk/cli...${NC}"
 cd "$TONK_PACKAGES_DIR"
 
 # Install the package locally (not globally)
-npm install @tonk/cli
+npm install @tonk/cli &>/dev/null
 if [ $? -ne 0 ]; then
   echo -e "${RED}❌ Failed to install @tonk/cli${NC}"
   exit 1
@@ -68,7 +68,7 @@ echo -e "${GREEN}✅ @tonk/cli installed successfully${NC}"
 
 # Download and install @tonk/create package
 echo -e "${BLUE}Downloading and installing @tonk/create...${NC}"
-npm install @tonk/create
+npm install @tonk/create &>/dev/null
 if [ $? -ne 0 ]; then
   echo -e "${RED}❌ Failed to install @tonk/create${NC}"
   exit 1
@@ -92,7 +92,7 @@ echo -e "${BLUE}Creating tonk-create command wrapper...${NC}"
 cat >"$TONK_BIN_DIR/tonk-create" <<'EOF'
 #!/bin/bash
 # Tonk Create CLI wrapper script
-NODE_PATH="$HOME/.tonk/packages/node_modules" exec node "$HOME/.tonk/packages/node_modules/.bin/create" "$@"
+NODE_PATH="$HOME/.tonk/packages/node_modules" exec node "$HOME/.tonk/packages/node_modules/.bin/tonk-create" "$@"
 EOF
 
 # Make the wrapper executable
@@ -145,10 +145,67 @@ else
   echo -e "${YELLOW}You may need to restart your terminal or run: source ~/.bashrc${NC}"
 fi
 
-# Prompt user for workspace creation
+# ASCII Art Display
+display_tonk_ascii() {
+  # Static TONK ASCII art (simplified version for bash)
+  echo -e "${GREEN}"
+  echo "       _____   U  ___ u  _   _       _  __"
+  echo "      |_ \" _|   \\/\"_ \\/ | \\ |\"|     |\"|/ /"
+  echo "        | |     | | | |<|  \\| |>    | ' /"
+  echo "       /| |\\.-,_| |_| |U| |\\  |u  U/| . \\\\u"
+  echo "      u |_|U \\_)-\\___/  |_| \\_|     |_|\\_\\"
+  echo "      _// \\\\_     \\\\    ||   \\\\,-.,-,>> \\\\,-."
+  echo "     (__) (__)   (__)   (_\")  (_/  \\.)   (_/"
+  echo -e "${NC}"
+  echo -e "${YELLOW}・。゜☆。・゜。・。゜☆。・゜★・。゜☆。・゜。・。゜☆。・゜☆。・゜☆。・゜☆。・゜${NC}"
+}
+
+# Welcome message with workspace creation
 echo -e "\n${BLUE}===============================${NC}"
 echo -e "${GREEN}🎉 Tonk CLI installed successfully! 🎉${NC}"
 echo -e "${BLUE}===============================${NC}"
+
+# Display ASCII art
+display_tonk_ascii
+
+echo -e "\n${GREEN}Hello Builder!${NC}"
+echo -e "\nThank you for choosing Tonk! We're thrilled to have you onboard and"
+echo -e "excited to see what we can build together."
+
+# Start Tonk daemon with PM2
+echo -e "\n${BLUE}Starting Tonk daemon...${NC}"
+
+# Check if pm2 is installed
+PM2_EXISTS=false
+if command -v pm2 &>/dev/null; then
+  PM2_EXISTS=true
+else
+  echo -e "${BLUE}PM2 is required to run Tonk. Installing now...${NC}"
+  if npm install -g pm2 &>/dev/null; then
+    PM2_EXISTS=true
+    echo -e "${GREEN}PM2 installed successfully.${NC}"
+  else
+    echo -e "${RED}❌ Failed to install PM2${NC}"
+    echo -e "${YELLOW}You can install it manually later with: npm install -g pm2${NC}"
+  fi
+fi
+
+if [ "$PM2_EXISTS" = true ]; then
+  # Check if tonk process is already running in PM2
+  if pm2 list 2>/dev/null | grep -q "tonkserver"; then
+    echo -e "${YELLOW}Tonk daemon is already running. Restarting...${NC}"
+    pm2 restart tonkserver &>/dev/null
+  else
+    # Start the tonk daemon with PM2
+    pm2 start bash --name tonkserver -- "$TONK_BIN_DIR/tonk" -d &>/dev/null
+  fi
+
+  if pm2 list 2>/dev/null | grep -q "tonkserver"; then
+    echo -e "${GREEN}✅ Tonk daemon started successfully!${NC}"
+  else
+    echo -e "${YELLOW}⚠️  Tonk daemon startup may have failed. You can start it manually with: tonk hello${NC}"
+  fi
+fi
 
 # Check if user wants to create a workspace
 echo -e "\n${YELLOW}Would you like to create a Tonk workspace in your home directory?${NC}"
@@ -157,40 +214,56 @@ echo -e "${BLUE}including apps, workers, and data processing pipelines.${NC}"
 echo -e "\n${YELLOW}Create workspace now? (y/n):${NC} "
 read -r CREATE_WORKSPACE
 
+WORKSPACE_CREATED=false
+WORKSPACE_PATH=""
+
 if [[ "$CREATE_WORKSPACE" =~ ^[Yy]$ ]]; then
   echo -e "\n${BLUE}Creating Tonk workspace at $HOME/tonk-workspace...${NC}"
 
   # Create workspace using tonk-create
-  if "$TONK_BIN_DIR/tonk-create" -t workspace -n tonk-workspace -d "My Tonk workspace" --init; then
+  if (cd "$HOME" && "$TONK_BIN_DIR/tonk-create" -t workspace -n tonk-workspace -d "My Tonk workspace" >/dev/null 2>&1); then
     echo -e "${GREEN}✅ Workspace created successfully at $HOME/tonk-workspace!${NC}"
-    echo -e "\n${BLUE}Next steps:${NC}"
-    echo -e "1. ${YELLOW}cd ~/tonk-workspace${NC} - Navigate to your workspace"
-    echo -e "2. ${YELLOW}cd console && pnpm install && pnpm dev${NC} - Start the console app"
-    echo -e "3. ${YELLOW}Open your favourite vibe coding editor to get started"
+    WORKSPACE_CREATED=true
+    WORKSPACE_PATH="$HOME/tonk-workspace"
   else
     echo -e "${RED}❌ Failed to create workspace${NC}"
     echo -e "${YELLOW}You can create one manually later with:${NC}"
     echo -e "  ${YELLOW}cd ~ && tonk-create -t workspace -n tonk-workspace${NC}"
   fi
-else
-  echo -e "\n${BLUE}No workspace created.${NC}"
-  echo -e "\n${YELLOW}To create a workspace later:${NC}"
-  echo -e "1. Navigate to your desired directory: ${YELLOW}cd ~/desired-location${NC}"
-  echo -e "2. Create workspace: ${YELLOW}tonk-create -t workspace -n my-workspace${NC}"
-  echo -e "\n${BLUE}Why create a workspace?${NC}"
-  echo -e "• Organize multiple Tonk projects in one place"
-  echo -e "• Built-in console app for monitoring your data flows"
-  echo -e "• Structured directories for apps (/views) and workers (/workers)"
-  echo -e "• Agent-friendly environment with co-located instructions"
-  echo -e "• Seamless data processing pipeline development"
 fi
 
-echo -e "\n${BLUE}General next steps:${NC}"
-echo -e "1. Restart your terminal or run: ${YELLOW}source ~/.bashrc${NC} (or ~/.zshrc)"
-echo -e "2. Run: ${YELLOW}tonk --help${NC} to see available commands"
-echo -e "3. Run: ${YELLOW}tonk-create --help${NC} to see project creation options"
-echo -e "4. Get started with: ${YELLOW}tonk hello${NC}"
-echo -e "\n${BLUE}Installation location:${NC} $TONK_DIR"
-echo -e "${BLUE}Command locations:${NC} $TONK_BIN_DIR/tonk, $TONK_BIN_DIR/tonk-create"
-echo -e "\n${BLUE}To uninstall:${NC} rm -rf $TONK_DIR and remove from PATH"
+# Final welcome message with getting started instructions
+echo -e "\n${BLUE}${YELLOW}・。゜☆。・゜。・。゜☆。・゜★・。゜☆。・゜。・。゜☆。・゜☆。・゜☆。・゜☆。・゜${NC}"
+
+echo -e "\n${BLUE}Getting Started:${NC}"
+
+if [ "$WORKSPACE_CREATED" = true ]; then
+  echo -e "• Navigate to your new workspace: ${YELLOW}cd $WORKSPACE_PATH${NC}"
+  echo -e "• Start the console app: ${YELLOW}cd console && pnpm install && pnpm dev${NC}"
+else
+  echo -e "• Create a workspace: ${YELLOW}tonk-create -t workspace -n my-workspace${NC}"
+  echo -e "• Navigate to your workspace directory"
+fi
+
+echo -e "• Open your favourite vibe coding editor and let the vibecode flow 😎"
+echo -e "• Talk to your LLM to create new projects and share them out"
+
+echo -e "\n${BLUE}Resources:${NC}"
+echo -e "• Documentation: ${BLUE}https://tonk-labs.github.io/tonk/${NC}"
+echo -e "• Join our Telegram: ${BLUE}https://t.me/+9W-4wDR9RcM2NWZk${NC}"
+
+echo -e "\nOur team would love to hear from you. If you need any assistance or"
+echo -e "have questions, please don't hesitate to reach out through our"
+echo -e "community channels."
+
+echo -e "\n${GREEN}Happy building with Tonk!${NC}"
+
+echo -e "\n${BLUE}Installation details:${NC}"
+echo -e "• Location: $TONK_DIR"
+echo -e "• To uninstall: rm -rf $TONK_DIR and remove from PATH"
+if [ "$WORKSPACE_CREATED" = true ]; then
+  echo -e "• Workspace: $WORKSPACE_PATH"
+fi
+
+echo -e "\n${YELLOW}Restart your terminal to start using tonk commands!${NC}"
 echo -e "${GREEN}===============================${NC}"
