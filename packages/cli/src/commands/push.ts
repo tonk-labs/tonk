@@ -321,6 +321,7 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
       route: startResult?.route,
       port: startResult?.port,
     });
+    process.exit(0);
   } catch (error) {
     const duration = Date.now() - startTime;
     trackCommandError('push', error as Error, duration, {

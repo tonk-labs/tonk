@@ -348,7 +348,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
 
       if (!confirm) {
         console.log(chalk.yellow('Deployment cancelled'));
-        return;
+        process.exit(0);
       }
     }
 
@@ -367,6 +367,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       cpus: options.cpus,
       remote: options.remote,
     });
+    process.exit(0);
   } catch (error) {
     const duration = Date.now() - startTime;
     trackCommandError('deploy', error as Error, duration, {

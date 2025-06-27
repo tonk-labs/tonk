@@ -69,6 +69,7 @@ export const helloCommand = new Command('hello')
             pm2AlreadyInstalled: pm2Exists,
             tonkAlreadyRunning: stdout.includes('tonkserver'),
           });
+          process.exit(0);
         } catch (error) {
           const duration = Date.now() - startTime;
           trackCommandError('hello', error as Error, duration);

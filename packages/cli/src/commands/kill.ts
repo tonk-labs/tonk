@@ -47,6 +47,7 @@ export const killCommand = new Command('kill')
           serverUrl,
           success: true,
         });
+        process.exit(0);
       } else {
         console.log(
           chalk.yellow('Server stop command sent, but with warnings:'),
@@ -60,6 +61,7 @@ export const killCommand = new Command('kill')
           success: false,
           message: result.message,
         });
+        process.exit(0);
       }
     } catch (error) {
       const duration = Date.now() - startTime;

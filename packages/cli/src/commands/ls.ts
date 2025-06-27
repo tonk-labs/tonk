@@ -32,7 +32,7 @@ export const lsCommand = new Command('ls')
           serverUrl,
           bundleCount: 0,
         });
-        return;
+        process.exit(0);
       }
 
       console.log(chalk.green(`Available bundles (${bundles.length}):`));
@@ -46,6 +46,7 @@ export const lsCommand = new Command('ls')
         bundleCount: bundles.length,
         bundles,
       });
+      process.exit(0);
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('ls', error as Error, duration, {

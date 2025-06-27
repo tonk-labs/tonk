@@ -95,6 +95,7 @@ export const startCommand = new Command('start')
         port: result.port,
         serverId: result.id,
       });
+      process.exit(0);
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('start', error as Error, duration, {

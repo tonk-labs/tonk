@@ -368,7 +368,7 @@ async function handleServerCreateCommand(
 
     if (!confirm) {
       console.log(chalk.yellow('Server creation cancelled'));
-      return;
+      process.exit(0);
     }
 
     // Create the server
@@ -382,6 +382,7 @@ async function handleServerCreateCommand(
       cpus: options.cpus,
       remote: options.remote,
     });
+    process.exit(0);
   } catch (error) {
     const duration = Date.now() - startTime;
     trackCommandError('server-create', error as Error, duration, {
@@ -444,6 +445,7 @@ const serverLsCommand = new Command('ls')
       trackCommandSuccess('server-ls', duration, {
         serverName,
       });
+      process.exit(0);
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('server-ls', error as Error, duration, {
@@ -488,6 +490,7 @@ const serverPsCommand = new Command('ps')
       trackCommandSuccess('server-ps', duration, {
         serverName,
       });
+      process.exit(0);
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('server-ps', error as Error, duration, {
@@ -540,7 +543,7 @@ const serverRmCommand = new Command('rm')
 
       if (!confirm) {
         console.log(chalk.yellow('Bundle deletion cancelled'));
-        return;
+        process.exit(0);
       }
 
       // Delete bundle
@@ -551,6 +554,7 @@ const serverRmCommand = new Command('rm')
         bundleName,
         serverName,
       });
+      process.exit(0);
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('server-rm', error as Error, duration, {

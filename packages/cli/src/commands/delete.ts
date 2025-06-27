@@ -52,6 +52,7 @@ export const deleteCommand = new Command('delete')
           serverUrl,
           success: true,
         });
+        process.exit(0);
       } else {
         console.log(
           chalk.yellow('Bundle deletion command sent, but with warnings:'),
@@ -65,6 +66,7 @@ export const deleteCommand = new Command('delete')
           success: false,
           message: result.message,
         });
+        process.exit(0);
       }
     } catch (error) {
       const duration = Date.now() - startTime;

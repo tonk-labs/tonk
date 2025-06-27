@@ -46,7 +46,7 @@ export const psCommand = new Command('ps')
           serverUrl,
           serverCount: 0,
         });
-        return;
+        process.exit(0);
       }
 
       console.log(chalk.green(`Running bundles (${servers.length}):`));
@@ -73,6 +73,7 @@ export const psCommand = new Command('ps')
         serverCount: servers.length,
         bundleNames: servers.map(s => s.bundleName),
       });
+      process.exit(0);
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('ps', error as Error, duration, {
