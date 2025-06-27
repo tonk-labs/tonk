@@ -10,8 +10,13 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../utils/analytics.js';
-import {authHook} from '../lib/tonkAuth.js';
+// Lazy-load authHook to prevent initialization on import
+async function getAuthHook() {
+  const {authHook} = await import('../lib/tonkAuth.js');
+  return authHook;
+}
 import {getDeploymentServiceUrl, config} from '../config/environment.js';
 
 interface DeployOptions {
@@ -47,7 +52,9 @@ async function checkDeploymentService(): Promise<void> {
     console.log(
       chalk.yellow('Please reach out for support or try again later.'),
     );
-    process.exit(1);
+    await shutdownAnalytics();
+    process.exitCode = 1;
+    return;
   }
 }
 
@@ -290,6 +297,10 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
   const startTime = Date.now();
 
   try {
+    // Run auth check (replaces the preAction hook)
+    const authHook = await getAuthHook();
+    await authHook();
+
     trackCommand('deploy', {
       name: options.name,
       server: options.server,
@@ -304,7 +315,11 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
 
     // Check prerequisites
     console.log(chalk.blue('Checking prerequisites...'));
-    await checkDeploymentService();
+    try {
+      await checkDeploymentService();
+    } catch (error) {
+      return; // Early return after checkDeploymentService handles the error
+    }
 
     // Read project configuration
     const tonkConfig = readTonkConfig();
@@ -346,7 +361,8 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
 
       if (!confirm) {
         console.log(chalk.yellow('Deployment cancelled'));
-        process.exit(0);
+        await shutdownAnalytics();
+        return;
       }
     }
 
@@ -365,7 +381,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       cpus: options.cpus,
       remote: options.remote,
     });
-    process.exit(0);
+    await shutdownAnalytics();
   } catch (error) {
     const duration = Date.now() - startTime;
     trackCommandError('deploy', error as Error, duration, {
@@ -379,7 +395,8 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
         `Error: ${error instanceof Error ? error.message : String(error)}`,
       ),
     );
-    process.exit(1);
+    await shutdownAnalytics();
+    process.exitCode = 1;
   }
 }
 
@@ -390,7 +407,11 @@ export const deployCommand = new Command('deploy')
     'Name for the deployed bundle (defaults to package.json name)',
   )
   .option('-s, --server <server>', 'Name of the Tonk server to deploy to')
-  .option('-r, --region <region>', 'Region to deploy to', config.deployment.defaultRegion)
+  .option(
+    '-r, --region <region>',
+    'Region to deploy to',
+    config.deployment.defaultRegion,
+  )
   .option(
     '-m, --memory <memory>',
     'Memory allocation (e.g., 256mb, 1gb)',
@@ -402,5 +423,4 @@ export const deployCommand = new Command('deploy')
     '--remote',
     'Use remote Docker build (slower but works with limited local resources)',
   )
-  .hook('preAction', authHook)
   .action(handleDeployCommand);

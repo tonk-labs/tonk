@@ -5,13 +5,18 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../utils/analytics.js';
 import {getServerConfig} from '../config/environment.js';
 
 export const deleteCommand = new Command('delete')
   .alias('rm')
   .description('Delete a bundle from the server')
-  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
+  .option(
+    '-u, --url <url>',
+    'URL of the Tonk server',
+    getServerConfig().defaultUrl,
+  )
   .argument('<bundleName>', 'Name of the bundle to delete')
   .action(async (bundleName, options) => {
     const startTime = Date.now();
@@ -53,7 +58,7 @@ export const deleteCommand = new Command('delete')
           serverUrl,
           success: true,
         });
-        process.exit(0);
+        await shutdownAnalytics();
       } else {
         console.log(
           chalk.yellow('Bundle deletion command sent, but with warnings:'),
@@ -67,7 +72,7 @@ export const deleteCommand = new Command('delete')
           success: false,
           message: result.message,
         });
-        process.exit(0);
+        await shutdownAnalytics();
       }
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -81,7 +86,7 @@ export const deleteCommand = new Command('delete')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      await shutdownAnalytics();
+      process.exitCode = 1;
     }
   });
-

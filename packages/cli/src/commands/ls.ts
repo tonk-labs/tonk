@@ -1,12 +1,21 @@
 import {Command} from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
-import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+  shutdownAnalytics,
+} from '../utils/analytics.js';
 import {getServerConfig} from '../config/environment.js';
 
 export const lsCommand = new Command('ls')
   .description('List available bundles on the Tonk server')
-  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
+  .option(
+    '-u, --url <url>',
+    'URL of the Tonk server',
+    getServerConfig().defaultUrl,
+  )
   .action(async options => {
     const startTime = Date.now();
     const serverUrl = options.url;
@@ -27,13 +36,13 @@ export const lsCommand = new Command('ls')
 
       if (bundles.length === 0) {
         console.log(chalk.yellow('No bundles found on the server.'));
-        
+
         const duration = Date.now() - startTime;
         trackCommandSuccess('ls', duration, {
           serverUrl,
           bundleCount: 0,
         });
-        process.exit(0);
+        await shutdownAnalytics();
       }
 
       console.log(chalk.green(`Available bundles (${bundles.length}):`));
@@ -47,7 +56,7 @@ export const lsCommand = new Command('ls')
         bundleCount: bundles.length,
         bundles,
       });
-      process.exit(0);
+      await shutdownAnalytics();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('ls', error as Error, duration, {
@@ -59,6 +68,7 @@ export const lsCommand = new Command('ls')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      await shutdownAnalytics();
+      process.exitCode = 1;
     }
   });

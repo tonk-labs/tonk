@@ -6,6 +6,7 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../utils/analytics.js';
 import {getDeploymentServiceUrl, config} from '../config/environment.js';
 
@@ -33,7 +34,9 @@ async function checkDeploymentService(): Promise<void> {
     console.log(
       chalk.yellow('Please reach out for support or try again later.'),
     );
-    process.exit(1);
+    await shutdownAnalytics();
+    process.exitCode = 1;
+    return;
   }
 }
 
@@ -365,7 +368,8 @@ async function handleServerCreateCommand(
 
     if (!confirm) {
       console.log(chalk.yellow('Server creation cancelled'));
-      process.exit(0);
+      await shutdownAnalytics();
+      return;
     }
 
     // Create the server
@@ -379,7 +383,7 @@ async function handleServerCreateCommand(
       cpus: options.cpus,
       remote: options.remote,
     });
-    process.exit(0);
+    await shutdownAnalytics();
   } catch (error) {
     const duration = Date.now() - startTime;
     trackCommandError('server-create', error as Error, duration, {
@@ -392,7 +396,8 @@ async function handleServerCreateCommand(
         `Error: ${error instanceof Error ? error.message : String(error)}`,
       ),
     );
-    process.exit(1);
+    await shutdownAnalytics();
+    process.exitCode = 1;
   }
 }
 
@@ -400,7 +405,11 @@ async function handleServerCreateCommand(
 const serverCreateCommand = new Command('create')
   .description('Create a new Tonk server')
   .option('-n, --name <name>', 'Name for the server')
-  .option('-r, --region <region>', 'Region to deploy to', config.deployment.defaultRegion)
+  .option(
+    '-r, --region <region>',
+    'Region to deploy to',
+    config.deployment.defaultRegion,
+  )
   .option(
     '-m, --memory <memory>',
     'Memory allocation (e.g., 256mb, 1gb)',
@@ -442,7 +451,7 @@ const serverLsCommand = new Command('ls')
       trackCommandSuccess('server-ls', duration, {
         serverName,
       });
-      process.exit(0);
+      await shutdownAnalytics();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('server-ls', error as Error, duration, {
@@ -454,7 +463,7 @@ const serverLsCommand = new Command('ls')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 
@@ -487,7 +496,7 @@ const serverPsCommand = new Command('ps')
       trackCommandSuccess('server-ps', duration, {
         serverName,
       });
-      process.exit(0);
+      await shutdownAnalytics();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('server-ps', error as Error, duration, {
@@ -499,7 +508,7 @@ const serverPsCommand = new Command('ps')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 
@@ -540,7 +549,8 @@ const serverRmCommand = new Command('rm')
 
       if (!confirm) {
         console.log(chalk.yellow('Bundle deletion cancelled'));
-        process.exit(0);
+        await shutdownAnalytics();
+        return;
       }
 
       // Delete bundle
@@ -551,7 +561,7 @@ const serverRmCommand = new Command('rm')
         bundleName,
         serverName,
       });
-      process.exit(0);
+      await shutdownAnalytics();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('server-rm', error as Error, duration, {
@@ -564,7 +574,7 @@ const serverRmCommand = new Command('rm')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 

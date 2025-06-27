@@ -162,6 +162,6 @@ export const initCommand = new Command('init')
         error,
       );
       await shutdownAnalytics();
-      process.exit(1);
+      process.exitCode = 1;
     }
   });

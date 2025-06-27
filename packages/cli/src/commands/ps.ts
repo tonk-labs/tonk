@@ -5,6 +5,7 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../utils/analytics.js';
 import {getServerConfig} from '../config/environment.js';
 
@@ -20,7 +21,11 @@ interface ServerInfo {
 
 export const psCommand = new Command('ps')
   .description('List running bundles')
-  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
+  .option(
+    '-u, --url <url>',
+    'URL of the Tonk server',
+    getServerConfig().defaultUrl,
+  )
   .action(async options => {
     const startTime = Date.now();
     const serverUrl = options.url;
@@ -47,7 +52,7 @@ export const psCommand = new Command('ps')
           serverUrl,
           serverCount: 0,
         });
-        process.exit(0);
+        await shutdownAnalytics();
       }
 
       console.log(chalk.green(`Running bundles (${servers.length}):`));
@@ -74,7 +79,7 @@ export const psCommand = new Command('ps')
         serverCount: servers.length,
         bundleNames: servers.map(s => s.bundleName),
       });
-      process.exit(0);
+      await shutdownAnalytics();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('ps', error as Error, duration, {
@@ -86,6 +91,7 @@ export const psCommand = new Command('ps')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      await shutdownAnalytics();
+      process.exitCode = 1;
     }
   });

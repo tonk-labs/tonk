@@ -14,7 +14,7 @@ const cliRoot = path.resolve(__dirname, '..');
 
 // Try to load .env from the CLI package root
 const envPath = path.join(cliRoot, '.env');
-const result = loadDotenv({path: envPath});
+loadDotenv({path: envPath});
 
 export interface TonkConfig {
   deployment: {
@@ -62,6 +62,8 @@ export function loadConfig(): TonkConfig {
   // Validate environment on load
   validateEnvironment();
 
+  const analyticsApiKey = process.env.TONK_ANALYTICS_API_KEY;
+
   return {
     deployment: {
       serviceUrl:
@@ -72,7 +74,7 @@ export function loadConfig(): TonkConfig {
     },
     analytics: {
       enabled: process.env.TONK_ANALYTICS_ENABLED !== 'false',
-      apiKey: process.env.TONK_ANALYTICS_API_KEY,
+      ...(analyticsApiKey && {apiKey: analyticsApiKey}),
       host: process.env.TONK_ANALYTICS_HOST || 'https://eu.i.posthog.com',
     },
     server: {
@@ -114,9 +116,11 @@ export function getAnalyticsConfig(): {
   apiKey?: string;
   host: string;
 } {
+  const apiKey = config.analytics.apiKey;
+
   return {
     enabled: config.analytics.enabled && !!config.analytics.apiKey,
-    apiKey: config.analytics.apiKey,
+    ...(apiKey && {apiKey}),
     host: config.analytics.host,
   };
 }

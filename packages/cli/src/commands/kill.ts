@@ -1,12 +1,21 @@
 import {Command} from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
-import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+  shutdownAnalytics,
+} from '../utils/analytics.js';
 import {getServerConfig} from '../config/environment.js';
 
 export const killCommand = new Command('kill')
   .description('Stop a running bundle server')
-  .option('-u, --url <url>', 'URL of the Tonk server', getServerConfig().defaultUrl)
+  .option(
+    '-u, --url <url>',
+    'URL of the Tonk server',
+    getServerConfig().defaultUrl,
+  )
   .argument('<serverId>', 'ID of the server to stop')
   .action(async (serverId, options) => {
     const startTime = Date.now();
@@ -41,20 +50,20 @@ export const killCommand = new Command('kill')
       if (result.success) {
         console.log(chalk.green('Server stopped successfully!'));
         console.log(chalk.green(result.message));
-        
+
         const duration = Date.now() - startTime;
         trackCommandSuccess('kill', duration, {
           serverId,
           serverUrl,
           success: true,
         });
-        process.exit(0);
+        await shutdownAnalytics();
       } else {
         console.log(
           chalk.yellow('Server stop command sent, but with warnings:'),
         );
         console.log(chalk.yellow(result.message));
-        
+
         const duration = Date.now() - startTime;
         trackCommandSuccess('kill', duration, {
           serverId,
@@ -62,7 +71,7 @@ export const killCommand = new Command('kill')
           success: false,
           message: result.message,
         });
-        process.exit(0);
+        await shutdownAnalytics();
       }
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -76,6 +85,7 @@ export const killCommand = new Command('kill')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      await shutdownAnalytics();
+      process.exitCode = 1;
     }
   });

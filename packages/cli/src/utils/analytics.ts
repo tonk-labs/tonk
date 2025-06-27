@@ -80,13 +80,13 @@ let posthog: PostHog | null = null;
 export function initAnalytics(): PostHog | null {
   if (!posthog) {
     const analyticsConfig = getAnalyticsConfig();
-    
+
     // Only initialize if analytics is enabled and API key is provided
     if (!analyticsConfig.enabled || !analyticsConfig.apiKey) {
       console.debug('Analytics disabled or no API key provided');
       return null;
     }
-    
+
     posthog = new PostHog(analyticsConfig.apiKey, {
       host: analyticsConfig.host,
     });
@@ -121,7 +121,7 @@ export function trackCommand(
     if (!analytics) {
       return; // Analytics disabled
     }
-    
+
     const machineId = getMachineId();
 
     analytics.capture({
@@ -153,7 +153,7 @@ export function trackCommandSuccess(
     if (!analytics) {
       return; // Analytics disabled
     }
-    
+
     const machineId = getMachineId();
 
     analytics.capture({
@@ -185,7 +185,7 @@ export function trackCommandError(
     if (!analytics) {
       return; // Analytics disabled
     }
-    
+
     const machineId = getMachineId();
 
     analytics.capture({
