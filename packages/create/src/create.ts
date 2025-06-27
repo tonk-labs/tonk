@@ -8,6 +8,7 @@ import process from "process";
 import { fileURLToPath } from "url";
 import { createReactTemplate } from "./templates/react";
 import { createWorkerTemplate } from "./templates/worker";
+import { createWorkspaceTemplate } from "./templates/workspace";
 import { ProjectPlan, TemplateType } from "./types";
 
 /**
@@ -79,6 +80,10 @@ const projectQuestions = [
       {
         name: "Worker - retrieve data to use later",
         value: "worker",
+      },
+      {
+        name: "Workspace - organize multiple projects",
+        value: "workspace",
       },
     ],
     default: "react",
@@ -158,6 +163,15 @@ export async function createProject(
         );
         break;
       }
+      case "workspace": {
+        await createWorkspaceTemplate(
+          projectPath,
+          projectName,
+          templatePath,
+          plan,
+        );
+        break;
+      }
     }
   } catch (error) {
     spinner.fail("Failed to setup project");
@@ -167,16 +181,50 @@ export async function createProject(
   spinner.stop();
 }
 
-const createApp = async (options: { init: boolean }) => {
+const createApp = async (options: { 
+  init: boolean;
+  template?: TemplateType;
+  name?: string;
+  description?: string;
+}) => {
   try {
     console.log("Scaffolding tonk code...");
-    // Prepare questions, removing projectName question if provided as argument
-    const questions = options.init
-      ? [...projectQuestions.slice(1)]
-      : projectQuestions;
-
-    // Get project details
-    const answers = await inquirer.prompt(questions);
+    
+    let answers: any;
+    
+    // Check if all required options are provided for non-interactive mode
+    const isNonInteractive = options.template && (!options.init || options.name);
+    
+    if (isNonInteractive) {
+      // Non-interactive mode - use provided options
+      answers = {
+        platform: options.template,
+        projectName: options.name || "my-tonk-app",
+        description: options.description || ""
+      };
+    } else {
+      // Interactive mode - prompt for missing information
+      const questions = options.init
+        ? [...projectQuestions.slice(1)]
+        : projectQuestions;
+      
+      // Filter out questions for options that were already provided
+      const filteredQuestions = questions.filter(q => {
+        if (q.name === 'platform' && options.template) return false;
+        if (q.name === 'projectName' && options.name) return false;
+        if (q.name === 'description' && options.description) return false;
+        return true;
+      });
+      
+      const promptAnswers = await inquirer.prompt(filteredQuestions);
+      
+      // Merge provided options with prompted answers
+      answers = {
+        platform: options.template || promptAnswers.platform,
+        projectName: options.name || promptAnswers.projectName,
+        description: options.description || promptAnswers.description
+      };
+    }
 
     // Generate project plan
     const plan = answers;
@@ -200,9 +248,17 @@ program
   .description("Scaffold code for your Tonk projects")
   .version(packageJson.version, "-v, --version", "Output the current version")
   .option("-i, --init", "initialize in the folder")
+  .option("-t, --template <type>", "template type (react, worker, workspace)")
+  .option("-n, --name <name>", "project name")
+  .option("-d, --description <description>", "project description")
   .action(async (options) => {
     console.log(chalk.bold("\nWelcome to Tonk! 🚀\n"));
-    await createApp({ init: options.init ?? false });
+    await createApp({
+      init: options.init ?? false,
+      template: options.template,
+      name: options.name,
+      description: options.description
+    });
     return;
   });
 

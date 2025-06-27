@@ -4,242 +4,266 @@
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Initialize error tracking
-ERRORS=()
+# Tonk installation directory
+TONK_DIR="$HOME/.tonk"
+TONK_BIN_DIR="$TONK_DIR/bin"
+TONK_PACKAGES_DIR="$TONK_DIR/packages"
 
-echo -e "${GREEN}=== Tonk Installation Script ===${NC}"
-
-# Check if git is installed
-if ! command -v git &>/dev/null; then
-  echo -e "${YELLOW}Git is not installed. Please install Git first.${NC}"
-  exit 1
-fi
+echo -e "${GREEN}=== Tonk CLI Installation ===${NC}"
+echo -e "${BLUE}Installing Tonk CLI to $TONK_DIR${NC}"
 
 # Check if Node.js is installed
 if ! command -v node &>/dev/null; then
-  echo -e "${YELLOW}Node.js is not installed. Please install Node.js first.${NC}"
+  echo -e "${RED}❌ Node.js is not installed.${NC}"
+  echo -e "${YELLOW}Please install Node.js (version 18 or higher) first:${NC}"
+  echo -e "  • Visit: https://nodejs.org/"
+  echo -e "  • Or use a package manager like nvm, brew, or apt"
   exit 1
 fi
 
-# Check if pnpm is installed
-if ! command -v pnpm &>/dev/null; then
-  echo -e "${YELLOW}pnpm is not installed. Installing pnpm...${NC}"
-  npm install -g pnpm
-  if [ $? -ne 0 ]; then
-    ERRORS+=("Failed to install pnpm")
-  fi
-
-  # Verify installation
-  if ! command -v pnpm &>/dev/null; then
-    echo -e "${YELLOW}Failed to install pnpm. Please install it manually.${NC}"
-    exit 1
-  fi
-  echo -e "${GREEN}pnpm installed successfully!${NC}"
+# Check Node.js version
+NODE_VERSION=$(node -v | sed 's/v//')
+NODE_MAJOR_VERSION=$(echo $NODE_VERSION | cut -d. -f1)
+if [ "$NODE_MAJOR_VERSION" -lt 18 ]; then
+  echo -e "${RED}❌ Node.js version 18 or higher is required. Found: v$NODE_VERSION${NC}"
+  echo -e "${YELLOW}Please update Node.js to version 18 or higher.${NC}"
+  exit 1
 fi
 
-# Check if packages are already installed globally
-echo -e "\n${GREEN}Checking for existing global installations...${NC}"
+# Check if npm is available
+if ! command -v npm &>/dev/null; then
+  echo -e "${RED}❌ npm is not installed.${NC}"
+  echo -e "${YELLOW}npm usually comes with Node.js. Please reinstall Node.js.${NC}"
+  exit 1
+fi
 
-CLI_INSTALLED=$(npm list -g @tonk/cli 2>/dev/null | grep -c "@tonk/cli")
-CREATE_INSTALLED=$(npm list -g @tonk/create 2>/dev/null | grep -c "@tonk/create")
+echo -e "${GREEN}✅ Node.js v$NODE_VERSION detected${NC}"
 
-if [ $CLI_INSTALLED -gt 0 ] || [ $CREATE_INSTALLED -gt 0 ]; then
-  echo -e "${YELLOW}Warning: Found existing global installation of Tonk packages:${NC}"
+# Create installation directories
+echo -e "${BLUE}Creating installation directories...${NC}"
+mkdir -p "$TONK_BIN_DIR"
+mkdir -p "$TONK_PACKAGES_DIR"
 
-  if [ $CLI_INSTALLED -gt 0 ]; then
-    echo -e "- @tonk/cli"
+# Clean up any existing installation
+if [ -d "$TONK_PACKAGES_DIR/cli" ]; then
+  echo -e "${YELLOW}Removing existing installation...${NC}"
+  rm -rf "$TONK_PACKAGES_DIR/cli"
+fi
+
+# Download and install @tonk/cli package
+echo -e "${BLUE}Downloading and installing @tonk/cli...${NC}"
+cd "$TONK_PACKAGES_DIR"
+
+# Install the package locally (not globally)
+npm install @tonk/cli &>/dev/null
+if [ $? -ne 0 ]; then
+  echo -e "${RED}❌ Failed to install @tonk/cli${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}✅ @tonk/cli installed successfully${NC}"
+
+# Download and install @tonk/create package
+echo -e "${BLUE}Downloading and installing @tonk/create...${NC}"
+npm install @tonk/create &>/dev/null
+if [ $? -ne 0 ]; then
+  echo -e "${RED}❌ Failed to install @tonk/create${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}✅ @tonk/create installed successfully${NC}"
+
+# Create wrapper script
+echo -e "${BLUE}Creating tonk command wrapper...${NC}"
+cat >"$TONK_BIN_DIR/tonk" <<'EOF'
+#!/bin/bash
+# Tonk CLI wrapper script
+NODE_PATH="$HOME/.tonk/packages/node_modules" exec node "$HOME/.tonk/packages/node_modules/.bin/tonk" "$@"
+EOF
+
+# Make the wrapper executable
+chmod +x "$TONK_BIN_DIR/tonk"
+
+# Create tonk-create wrapper script
+echo -e "${BLUE}Creating tonk-create command wrapper...${NC}"
+cat >"$TONK_BIN_DIR/tonk-create" <<'EOF'
+#!/bin/bash
+# Tonk Create CLI wrapper script
+NODE_PATH="$HOME/.tonk/packages/node_modules" exec node "$HOME/.tonk/packages/node_modules/.bin/tonk-create" "$@"
+EOF
+
+# Make the wrapper executable
+chmod +x "$TONK_BIN_DIR/tonk-create"
+
+# Check if tonk bin directory is in PATH
+echo -e "${BLUE}Checking PATH configuration...${NC}"
+if [[ ":$PATH:" != *":$TONK_BIN_DIR:"* ]]; then
+  echo -e "${YELLOW}Adding $TONK_BIN_DIR to PATH...${NC}"
+
+  # Detect shell and add to appropriate config file
+  SHELL_NAME=$(basename "$SHELL")
+  case "$SHELL_NAME" in
+  bash)
+    SHELL_CONFIG="$HOME/.bashrc"
+    [ -f "$HOME/.bash_profile" ] && SHELL_CONFIG="$HOME/.bash_profile"
+    ;;
+  zsh)
+    SHELL_CONFIG="$HOME/.zshrc"
+    ;;
+  fish)
+    echo -e "${YELLOW}Fish shell detected. Please manually add to your config:${NC}"
+    echo -e "  set -gx PATH $TONK_BIN_DIR \$PATH"
+    SHELL_CONFIG=""
+    ;;
+  *)
+    echo -e "${YELLOW}Unknown shell: $SHELL_NAME${NC}"
+    SHELL_CONFIG="$HOME/.profile"
+    ;;
+  esac
+
+  if [ -n "$SHELL_CONFIG" ]; then
+    echo '' >>"$SHELL_CONFIG"
+    echo '# Added by Tonk installer' >>"$SHELL_CONFIG"
+    echo "export PATH=\"$TONK_BIN_DIR:\$PATH\"" >>"$SHELL_CONFIG"
+    echo -e "${GREEN}✅ Added to $SHELL_CONFIG${NC}"
+    echo -e "${YELLOW}Please run: source $SHELL_CONFIG${NC}"
+    echo -e "${YELLOW}Or restart your terminal to use the 'tonk' command${NC}"
   fi
+else
+  echo -e "${GREEN}✅ $TONK_BIN_DIR already in PATH${NC}"
+fi
 
-  if [ $CREATE_INSTALLED -gt 0 ]; then
-    echo -e "- @tonk/create"
-  fi
+# Test installation
+echo -e "${BLUE}Testing installation...${NC}"
+if "$TONK_BIN_DIR/tonk" --version &>/dev/null; then
+  echo -e "${GREEN}✅ Installation successful!${NC}"
+else
+  echo -e "${YELLOW}⚠️  Installation completed but tonk command test failed${NC}"
+  echo -e "${YELLOW}You may need to restart your terminal or run: source ~/.bashrc${NC}"
+fi
 
-  echo -e "\n${YELLOW}Do you want to remove these packages and continue with installation? (y/n)${NC}"
-  read -n 1 -r
-  echo
+# ASCII Art Display
+display_tonk_ascii() {
+  # Static TONK ASCII art (simplified version for bash)
+  echo -e "${GREEN}"
+  echo "       _____   U  ___ u  _   _       _  __"
+  echo "      |_ \" _|   \\/\"_ \\/ | \\ |\"|     |\"|/ /"
+  echo "        | |     | | | |<|  \\| |>    | ' /"
+  echo "       /| |\\.-,_| |_| |U| |\\  |u  U/| . \\\\u"
+  echo "      u |_|U \\_)-\\___/  |_| \\_|     |_|\\_\\"
+  echo "      _// \\\\_     \\\\    ||   \\\\,-.,-,>> \\\\,-."
+  echo "     (__) (__)   (__)   (_\")  (_/  \\.)   (_/"
+  echo -e "${NC}"
+  echo -e "${YELLOW}・。゜☆。・゜。・。゜☆。・゜★・。゜☆。・゜。・。゜☆。・゜☆。・゜☆。・゜☆。・゜${NC}"
+}
 
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo -e "${GREEN}Removing existing packages...${NC}"
+# Welcome message with workspace creation
+echo -e "\n${BLUE}===============================${NC}"
+echo -e "${GREEN}🎉 Tonk CLI installed successfully! 🎉${NC}"
+echo -e "${BLUE}===============================${NC}"
 
-    if [ $CLI_INSTALLED -gt 0 ]; then
-      npm rm -g @tonk/cli
-      if [ $? -ne 0 ]; then
-        ERRORS+=("Failed to remove @tonk/cli")
-      fi
-    fi
+# Display ASCII art
+display_tonk_ascii
 
-    if [ $CREATE_INSTALLED -gt 0 ]; then
-      npm rm -g @tonk/create
-      if [ $? -ne 0 ]; then
-        ERRORS+=("Failed to remove @tonk/create")
-      fi
-    fi
+echo -e "\n${GREEN}Hello Builder!${NC}"
+echo -e "\nThank you for choosing Tonk! We're thrilled to have you onboard and"
+echo -e "excited to see what we can build together."
 
-    echo -e "${GREEN}Existing packages removed. Continuing with installation...${NC}"
+# Start Tonk daemon with PM2
+echo -e "\n${BLUE}Starting Tonk daemon...${NC}"
+
+# Check if pm2 is installed
+PM2_EXISTS=false
+if command -v pm2 &>/dev/null; then
+  PM2_EXISTS=true
+else
+  echo -e "${BLUE}PM2 is required to run Tonk. Installing now...${NC}"
+  if npm install -g pm2 &>/dev/null; then
+    PM2_EXISTS=true
+    echo -e "${GREEN}PM2 installed successfully.${NC}"
   else
-    echo -e "${YELLOW}Installation aborted.${NC}"
-    exit 0
+    echo -e "${RED}❌ Failed to install PM2${NC}"
+    echo -e "${YELLOW}You can install it manually later with: npm install -g pm2${NC}"
   fi
 fi
 
-# Clone the repository if not already in it
-REPO_DIR="tonk"
-if [ ! -d ".git" ]; then
-  echo -e "\n${GREEN}Cloning Tonk repository...${NC}"
-  git clone https://github.com/tonk-labs/tonk.git $REPO_DIR
-  if [ $? -ne 0 ]; then
-    ERRORS+=("Failed to clone repository")
-  fi
-  cd $REPO_DIR
-  echo -e "${GREEN}Repository cloned successfully!${NC}"
-else
-  echo -e "\n${GREEN}Already in a git repository. Proceeding with installation...${NC}"
-fi
-
-# Install dependencies for each package in order
-PACKAGES=("server" "keepsync" "create" "hub" "cli")
-
-echo -e "\n${GREEN}Installing dependencies for all packages...${NC}"
-
-# Install dependencies for each package
-for package in "${PACKAGES[@]}"; do
-  if [ -d "packages/$package" ]; then
-    echo -e "\n${GREEN}Building package: $package${NC}"
-    cd "packages/$package"
-
-    # Special handling for hub package which requires native compilation
-    if [ "$package" = "hub" ]; then
-      echo -e "${GREEN}Installing and building hub package...${NC}"
-
-      # Check if we're on macOS and have Clang available
-      if [[ "$OSTYPE" == "darwin"* ]] && command -v clang++ &>/dev/null; then
-        echo -e "${GREEN}Using Clang for native module compilation on macOS...${NC}"
-        CXX=clang++ CC=clang npm install
-      # Check if we're on Linux with g++ available
-      elif [[ "$OSTYPE" == "linux"* ]] && command -v g++ &>/dev/null; then
-        echo -e "${GREEN}Using GCC for native module compilation on Linux...${NC}"
-        npm install
-      # Default case for other environments
-      else
-        echo -e "${GREEN}Using default compiler for native module compilation...${NC}"
-        npm install
-      fi
-
-      if [ $? -ne 0 ]; then
-        ERRORS+=("Failed to install dependencies for $package")
-      fi
-
-    else
-      # Install dependencies with pnpm for other packages
-      pnpm install
-      if [ $? -ne 0 ]; then
-        ERRORS+=("Failed to install dependencies for $package")
-      fi
-
-      # Build the package
-      if [ -f "package.json" ]; then
-        if grep -q "\"build\":" "package.json"; then
-          echo "Building $package..."
-          pnpm build
-          if [ $? -ne 0 ]; then
-            ERRORS+=("Failed to build $package")
-          fi
-        fi
-      fi
-    fi
-
-    cd - >/dev/null
+if [ "$PM2_EXISTS" = true ]; then
+  # Check if tonk process is already running in PM2
+  if pm2 list 2>/dev/null | grep -q "tonkserver"; then
+    echo -e "${YELLOW}Tonk daemon is already running. Restarting...${NC}"
+    pm2 restart tonkserver &>/dev/null
   else
-    echo -e "${YELLOW}Warning: Package directory 'packages/$package' not found.${NC}"
+    # Start the tonk daemon with PM2
+    pm2 start bash --name tonkserver -- "$TONK_BIN_DIR/tonk" -d &>/dev/null
   fi
-done
 
-# Install and build hub-ui
-if [ -d "packages/hub/hub-ui" ]; then
-  echo -e "${GREEN}Installing and building hub-ui...${NC}"
-  cd "packages/hub/hub-ui"
-
-  # Use the same pattern as the rest of the script - check OS and use appropriate commands
-  if [ "$OSTYPE" == "msys" ] || [ "$OSTYPE" == "win32" ] || [ "$OSTYPE" == "cygwin" ]; then
-    # Windows path handling
-    echo -e "${GREEN}Installing and building hub-ui on Windows...${NC}"
-    pnpm install
-    if [ $? -ne 0 ]; then
-      ERRORS+=("Failed to install dependencies for hub-ui")
-    fi
-
-    # Build the package if build script exists
-    if [ -f "package.json" ]; then
-      if grep -q "\"build\":" "package.json"; then
-        echo "Building hub-ui..."
-        pnpm build
-        if [ $? -ne 0 ]; then
-          ERRORS+=("Failed to build hub-ui")
-        fi
-      fi
-    fi
+  if pm2 list 2>/dev/null | grep -q "tonkserver"; then
+    echo -e "${GREEN}✅ Tonk daemon started successfully!${NC}"
   else
-    # Unix path handling
-    pnpm install
-    if [ $? -ne 0 ]; then
-      ERRORS+=("Failed to install dependencies for hub-ui")
-    fi
-
-    # Build the package if build script exists
-    if [ -f "package.json" ]; then
-      if grep -q "\"build\":" "package.json"; then
-        echo "Building hub-ui..."
-        pnpm build
-        if [ $? -ne 0 ]; then
-          ERRORS+=("Failed to build hub-ui")
-        fi
-      fi
-    fi
+    echo -e "${YELLOW}⚠️  Tonk daemon startup may have failed. You can start it manually with: tonk hello${NC}"
   fi
-
-  cd - >/dev/null
-  echo -e "${GREEN}hub-ui installed and built successfully.${NC}"
-else
-  echo -e "${YELLOW}Warning: hub-ui directory not found at packages/hub/hub-ui.${NC}"
 fi
 
-# Pack and install CLI and Create packages globally
-echo -e "\n${GREEN}Installing CLI and Create packages globally...${NC}"
+# Check if user wants to create a workspace
+echo -e "\n${YELLOW}Would you like to create a Tonk workspace in your home directory?${NC}"
+echo -e "${BLUE}A workspace provides a structured environment for organizing your Tonk projects,${NC}"
+echo -e "${BLUE}including apps, workers, and data processing pipelines.${NC}"
+echo -e "\n${YELLOW}Create workspace now? (y/n):${NC} "
+read -r CREATE_WORKSPACE
 
-if [ -d "packages/cli" ]; then
-  echo -e "${GREEN}Installing CLI package globally...${NC}"
-  npm install -g "./packages/cli"
-  if [ $? -ne 0 ]; then
-    ERRORS+=("Failed to install CLI package globally")
+WORKSPACE_CREATED=false
+WORKSPACE_PATH=""
+
+if [[ "$CREATE_WORKSPACE" =~ ^[Yy]$ ]]; then
+  echo -e "\n${BLUE}Creating Tonk workspace at $HOME/tonk-workspace...${NC}"
+
+  # Create workspace using tonk-create
+  if (cd "$HOME" && "$TONK_BIN_DIR/tonk-create" -t workspace -n tonk-workspace -d "My Tonk workspace" >/dev/null 2>&1); then
+    echo -e "${GREEN}✅ Workspace created successfully at $HOME/tonk-workspace!${NC}"
+    WORKSPACE_CREATED=true
+    WORKSPACE_PATH="$HOME/tonk-workspace"
+  else
+    echo -e "${RED}❌ Failed to create workspace${NC}"
+    echo -e "${YELLOW}You can create one manually later with:${NC}"
+    echo -e "  ${YELLOW}cd ~ && tonk-create -t workspace -n tonk-workspace${NC}"
   fi
-  echo -e "${GREEN}CLI package installed globally.${NC}"
-else
-  echo -e "${YELLOW}Warning: CLI package directory not found.${NC}"
 fi
 
-if [ -d "packages/create" ]; then
-  echo -e "${GREEN}Installing Create package globally...${NC}"
-  npm install -g "./packages/create"
-  if [ $? -ne 0 ]; then
-    ERRORS+=("Failed to install Create package globally")
-  fi
-  echo -e "${GREEN}Create package installed globally.${NC}"
+# Final welcome message with getting started instructions
+echo -e "\n${BLUE}${YELLOW}・。゜☆。・゜。・。゜☆。・゜★・。゜☆。・゜。・。゜☆。・゜☆。・゜☆。・゜☆。・゜${NC}"
+
+echo -e "\n${BLUE}Getting Started:${NC}"
+
+if [ "$WORKSPACE_CREATED" = true ]; then
+  echo -e "• Navigate to your new workspace: ${YELLOW}cd $WORKSPACE_PATH${NC}"
+  echo -e "• Start the console app: ${YELLOW}cd console && pnpm install && pnpm dev${NC}"
 else
-  echo -e "${YELLOW}Warning: Create package directory not found.${NC}"
+  echo -e "• Create a workspace: ${YELLOW}tonk-create -t workspace -n my-workspace${NC}"
+  echo -e "• Navigate to your workspace directory"
 fi
 
-# Print final status message
-echo -e "\n${GREEN}===============================${NC}"
-if [ ${#ERRORS[@]} -eq 0 ]; then
-  echo -e "${GREEN}🎉 Congratulations! Tonk has been successfully installed! 🎉${NC}"
-  echo -e "${GREEN}You can get started by running: ${YELLOW}tonk hello${NC}"
-else
-  echo -e "${RED}⚠️ Installation ran with errors: ⚠️${NC}"
-  for error in "${ERRORS[@]}"; do
-    echo -e "${RED}- $error${NC}"
-  done
-  echo -e "\n${YELLOW}Need help? Join our Telegram support group: ${NC}https://t.me/+9W-4wDR9RcM2NWZk"
+echo -e "• Open your favourite vibe coding editor and let the vibecode flow 😎"
+echo -e "• Talk to your LLM to create new projects and share them out"
+
+echo -e "\n${BLUE}Resources:${NC}"
+echo -e "• Documentation: ${BLUE}https://tonk-labs.github.io/tonk/${NC}"
+echo -e "• Join our Telegram: ${BLUE}https://t.me/+9W-4wDR9RcM2NWZk${NC}"
+
+echo -e "\nOur team would love to hear from you. If you need any assistance or"
+echo -e "have questions, please don't hesitate to reach out through our"
+echo -e "community channels."
+
+echo -e "\n${GREEN}Happy building with Tonk!${NC}"
+
+echo -e "\n${BLUE}Installation details:${NC}"
+echo -e "• Location: $TONK_DIR"
+echo -e "• To uninstall: rm -rf $TONK_DIR and remove from PATH"
+if [ "$WORKSPACE_CREATED" = true ]; then
+  echo -e "• Workspace: $WORKSPACE_PATH"
 fi
+
+echo -e "\n${YELLOW}Restart your terminal to start using tonk commands!${NC}"
 echo -e "${GREEN}===============================${NC}"
