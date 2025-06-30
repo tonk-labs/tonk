@@ -6,11 +6,9 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../utils/analytics.js';
-
-const DEPLOYMENT_SERVICE_URL =
-  process.env.TONK_DEPLOYMENT_SERVICE_URL ||
-  'http://ec2-51-20-65-254.eu-north-1.compute.amazonaws.com:4444';
+import {getDeploymentServiceUrl, config} from '../config/environment.js';
 
 interface ServerOptions {
   name?: string;
@@ -25,7 +23,7 @@ interface ServerOptions {
  */
 async function checkDeploymentService(): Promise<void> {
   try {
-    const response = await fetch(`${DEPLOYMENT_SERVICE_URL}/health`);
+    const response = await fetch(`${getDeploymentServiceUrl()}/health`);
     if (!response.ok) {
       throw new Error(`Service returned ${response.status}`);
     }
@@ -36,7 +34,9 @@ async function checkDeploymentService(): Promise<void> {
     console.log(
       chalk.yellow('Please reach out for support or try again later.'),
     );
-    process.exit(1);
+    await shutdownAnalytics();
+    process.exitCode = 1;
+    return;
   }
 }
 
@@ -161,7 +161,7 @@ async function createServer(
 
     // Send server creation request
     spinner.text = 'Creating server...';
-    const response = await fetch(`${DEPLOYMENT_SERVICE_URL}/create-server`, {
+    const response = await fetch(`${getDeploymentServiceUrl()}/create-server`, {
       method: 'POST',
       body: formData,
     });
@@ -206,7 +206,7 @@ async function listRemoteBundles(
     }),
   );
 
-  const response = await fetch(`${DEPLOYMENT_SERVICE_URL}/server-action`, {
+  const response = await fetch(`${getDeploymentServiceUrl()}/server-action`, {
     method: 'POST',
     body: formData,
   });
@@ -246,7 +246,7 @@ async function listRunningBundles(
     }),
   );
 
-  const response = await fetch(`${DEPLOYMENT_SERVICE_URL}/server-action`, {
+  const response = await fetch(`${getDeploymentServiceUrl()}/server-action`, {
     method: 'POST',
     body: formData,
   });
@@ -294,7 +294,7 @@ async function deleteRemoteBundle(
     }),
   );
 
-  const response = await fetch(`${DEPLOYMENT_SERVICE_URL}/delete-bundle`, {
+  const response = await fetch(`${getDeploymentServiceUrl()}/delete-bundle`, {
     method: 'POST',
     body: formData,
   });
@@ -368,6 +368,7 @@ async function handleServerCreateCommand(
 
     if (!confirm) {
       console.log(chalk.yellow('Server creation cancelled'));
+      await shutdownAnalytics();
       return;
     }
 
@@ -382,6 +383,7 @@ async function handleServerCreateCommand(
       cpus: options.cpus,
       remote: options.remote,
     });
+    await shutdownAnalytics();
   } catch (error) {
     const duration = Date.now() - startTime;
     trackCommandError('server-create', error as Error, duration, {
@@ -394,7 +396,8 @@ async function handleServerCreateCommand(
         `Error: ${error instanceof Error ? error.message : String(error)}`,
       ),
     );
-    process.exit(1);
+    await shutdownAnalytics();
+    process.exitCode = 1;
   }
 }
 
@@ -402,13 +405,17 @@ async function handleServerCreateCommand(
 const serverCreateCommand = new Command('create')
   .description('Create a new Tonk server')
   .option('-n, --name <name>', 'Name for the server')
-  .option('-r, --region <region>', 'Region to deploy to', 'ord')
+  .option(
+    '-r, --region <region>',
+    'Region to deploy to',
+    config.deployment.defaultRegion,
+  )
   .option(
     '-m, --memory <memory>',
     'Memory allocation (e.g., 256mb, 1gb)',
-    '1gb',
+    config.deployment.defaultMemory,
   )
-  .option('-c, --cpus <cpus>', 'Number of CPUs', '1')
+  .option('-c, --cpus <cpus>', 'Number of CPUs', config.deployment.defaultCpus)
   .option(
     '--remote',
     'Use remote Docker build (slower but works with limited local resources)',
@@ -444,6 +451,7 @@ const serverLsCommand = new Command('ls')
       trackCommandSuccess('server-ls', duration, {
         serverName,
       });
+      await shutdownAnalytics();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('server-ls', error as Error, duration, {
@@ -455,7 +463,7 @@ const serverLsCommand = new Command('ls')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 
@@ -488,6 +496,7 @@ const serverPsCommand = new Command('ps')
       trackCommandSuccess('server-ps', duration, {
         serverName,
       });
+      await shutdownAnalytics();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('server-ps', error as Error, duration, {
@@ -499,7 +508,7 @@ const serverPsCommand = new Command('ps')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 
@@ -540,6 +549,7 @@ const serverRmCommand = new Command('rm')
 
       if (!confirm) {
         console.log(chalk.yellow('Bundle deletion cancelled'));
+        await shutdownAnalytics();
         return;
       }
 
@@ -551,6 +561,7 @@ const serverRmCommand = new Command('rm')
         bundleName,
         serverName,
       });
+      await shutdownAnalytics();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('server-rm', error as Error, duration, {
@@ -563,7 +574,7 @@ const serverRmCommand = new Command('rm')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 

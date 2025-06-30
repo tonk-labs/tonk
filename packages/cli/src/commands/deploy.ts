@@ -10,8 +10,14 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../utils/analytics.js';
-import {authHook} from '../lib/tonkAuth.js';
+// Lazy-load authHook to prevent initialization on import
+async function getAuthHook() {
+  const {authHook} = await import('../lib/tonkAuth.js');
+  return authHook;
+}
+import {getDeploymentServiceUrl, config} from '../config/environment.js';
 
 interface DeployOptions {
   name?: string;
@@ -29,17 +35,13 @@ interface TonkConfig {
   [key: string]: any;
 }
 
-const DEPLOYMENT_SERVICE_URL =
-  process.env.TONK_DEPLOYMENT_SERVICE_URL ||
-  'http://ec2-51-20-65-254.eu-north-1.compute.amazonaws.com:4444';
-// 'http://localhost:4444';
-
 /**
  * Checks if the deployment service is reachable
  */
 async function checkDeploymentService(): Promise<void> {
   try {
-    const response = await fetch(`${DEPLOYMENT_SERVICE_URL}/health`);
+    const deploymentServiceUrl = getDeploymentServiceUrl();
+    const response = await fetch(`${deploymentServiceUrl}/health`);
     if (!response.ok) {
       throw new Error(`Service returned ${response.status}`);
     }
@@ -50,7 +52,9 @@ async function checkDeploymentService(): Promise<void> {
     console.log(
       chalk.yellow('Please reach out for support or try again later.'),
     );
-    process.exit(1);
+    await shutdownAnalytics();
+    process.exitCode = 1;
+    return;
   }
 }
 
@@ -261,7 +265,8 @@ async function deployBundle(
 
     // Send deployment request
     spinner.text = 'Uploading bundle to server...';
-    const response = await fetch(`${DEPLOYMENT_SERVICE_URL}/deploy-bundle`, {
+    const deploymentServiceUrl = getDeploymentServiceUrl();
+    const response = await fetch(`${deploymentServiceUrl}/deploy-bundle`, {
       method: 'POST',
       body: formData,
     });
@@ -292,6 +297,10 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
   const startTime = Date.now();
 
   try {
+    // Run auth check (replaces the preAction hook)
+    const authHook = await getAuthHook();
+    await authHook();
+
     trackCommand('deploy', {
       name: options.name,
       server: options.server,
@@ -306,7 +315,11 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
 
     // Check prerequisites
     console.log(chalk.blue('Checking prerequisites...'));
-    await checkDeploymentService();
+    try {
+      await checkDeploymentService();
+    } catch (error) {
+      return; // Early return after checkDeploymentService handles the error
+    }
 
     // Read project configuration
     const tonkConfig = readTonkConfig();
@@ -348,6 +361,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
 
       if (!confirm) {
         console.log(chalk.yellow('Deployment cancelled'));
+        await shutdownAnalytics();
         return;
       }
     }
@@ -367,6 +381,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       cpus: options.cpus,
       remote: options.remote,
     });
+    await shutdownAnalytics();
   } catch (error) {
     const duration = Date.now() - startTime;
     trackCommandError('deploy', error as Error, duration, {
@@ -380,7 +395,8 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
         `Error: ${error instanceof Error ? error.message : String(error)}`,
       ),
     );
-    process.exit(1);
+    await shutdownAnalytics();
+    process.exitCode = 1;
   }
 }
 
@@ -391,17 +407,20 @@ export const deployCommand = new Command('deploy')
     'Name for the deployed bundle (defaults to package.json name)',
   )
   .option('-s, --server <server>', 'Name of the Tonk server to deploy to')
-  .option('-r, --region <region>', 'Region to deploy to', 'ord')
+  .option(
+    '-r, --region <region>',
+    'Region to deploy to',
+    config.deployment.defaultRegion,
+  )
   .option(
     '-m, --memory <memory>',
     'Memory allocation (e.g., 256mb, 1gb)',
-    '1gb',
+    config.deployment.defaultMemory,
   )
-  .option('-c, --cpus <cpus>', 'Number of CPUs', '1')
+  .option('-c, --cpus <cpus>', 'Number of CPUs', config.deployment.defaultCpus)
   .option('--skip-build', 'Skip the build step')
   .option(
     '--remote',
     'Use remote Docker build (slower but works with limited local resources)',
   )
-  .hook('preAction', authHook)
   .action(handleDeployCommand);

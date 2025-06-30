@@ -2,7 +2,13 @@ import {Command} from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
 import {spawn} from 'child_process';
-import {trackCommand, trackCommandError, trackCommandSuccess} from '../utils/analytics.js';
+import {
+  trackCommand,
+  trackCommandError,
+  trackCommandSuccess,
+  shutdownAnalytics,
+} from '../utils/analytics.js';
+import {getServerConfig} from '../config/environment.js';
 
 interface BundleInfo {
   id: string;
@@ -13,7 +19,11 @@ interface BundleInfo {
 
 export const proxyCommand = new Command('proxy')
   .description('Create a reverse proxy to access a Tonk bundle')
-  .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
+  .option(
+    '-u, --url <url>',
+    'URL of the Tonk server',
+    getServerConfig().defaultUrl,
+  )
   .argument('<bundleName>', 'Name of the bundle to proxy')
   .action(async (bundleName, options) => {
     const startTime = Date.now();
@@ -26,7 +36,7 @@ export const proxyCommand = new Command('proxy')
       });
 
       console.log(chalk.blue(`Setting up proxy for bundle ${bundleName}...`));
-      
+
       // First, check if the bundle is running
       const response = await fetch(`${serverUrl}/ps`, {
         method: 'GET',
@@ -41,13 +51,19 @@ export const proxyCommand = new Command('proxy')
       }
 
       const runningBundles = (await response.json()) as BundleInfo[];
-      const targetBundle = runningBundles.find(bundle => bundle.bundleName === bundleName);
+      const targetBundle = runningBundles.find(
+        bundle => bundle.bundleName === bundleName,
+      );
 
       if (!targetBundle) {
-        throw new Error(`Bundle '${bundleName}' is not running. Start it first with 'tonk start ${bundleName}'`);
+        throw new Error(
+          `Bundle '${bundleName}' is not running. Start it first with 'tonk start ${bundleName}'`,
+        );
       }
 
-      console.log(chalk.green(`Found running bundle: ${targetBundle.bundleName}`));
+      console.log(
+        chalk.green(`Found running bundle: ${targetBundle.bundleName}`),
+      );
       console.log(chalk.green(`Bundle port: ${targetBundle.port}`));
       console.log(chalk.blue(`Creating SSH tunnel with Pinggy...`));
 
@@ -60,16 +76,21 @@ export const proxyCommand = new Command('proxy')
       });
 
       // Create SSH tunnel using Pinggy
-      const sshProcess = spawn('ssh', [
-        '-p', '443',
-        '-R0:localhost:' + targetBundle.port,
-        'qr@free.pinggy.io'
-      ], {
-        stdio: 'inherit' // This will show the QR code and URLs directly in the terminal
-      });
+      const sshProcess = spawn(
+        'ssh',
+        [
+          '-p',
+          '443',
+          '-R0:localhost:' + targetBundle.port,
+          'qr@free.pinggy.io',
+        ],
+        {
+          stdio: 'inherit', // This will show the QR code and URLs directly in the terminal
+        },
+      );
 
       // Handle process exit
-      sshProcess.on('close', (code) => {
+      sshProcess.on('close', code => {
         if (code !== 0) {
           console.log(chalk.yellow(`SSH tunnel closed with code ${code}`));
         }
@@ -77,8 +98,9 @@ export const proxyCommand = new Command('proxy')
       });
 
       // Handle errors
-      sshProcess.on('error', (err) => {
+      sshProcess.on('error', async err => {
         console.error(chalk.red(`Error creating SSH tunnel: ${err.message}`));
+        await shutdownAnalytics();
         process.exit(1);
       });
 
@@ -89,7 +111,6 @@ export const proxyCommand = new Command('proxy')
         console.log(chalk.yellow('\nShutting down proxy...'));
         sshProcess.kill();
       });
-
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('proxy', error as Error, duration, {
@@ -102,6 +123,7 @@ export const proxyCommand = new Command('proxy')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
+      await shutdownAnalytics();
       process.exit(1);
     }
   });

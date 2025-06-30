@@ -8,6 +8,7 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../utils/analytics.js';
 
 const execAsync = promisify(exec);
@@ -69,17 +70,20 @@ export const helloCommand = new Command('hello')
             pm2AlreadyInstalled: pm2Exists,
             tonkAlreadyRunning: stdout.includes('tonkserver'),
           });
+          await shutdownAnalytics();
         } catch (error) {
           const duration = Date.now() - startTime;
           trackCommandError('hello', error as Error, duration);
           console.error(chalk.red('Failed to start tonk daemon:'), error);
-          process.exit(1);
+          await shutdownAnalytics();
+          process.exitCode = 1;
         }
       }
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('hello', error as Error, duration);
       console.error(chalk.red('An error occurred:'), error);
-      process.exit(1);
+      await shutdownAnalytics();
+      process.exitCode = 1;
     }
   });

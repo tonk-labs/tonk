@@ -10,7 +10,7 @@ import {
 export const createCommand = new Command('create')
   .description('Create a new tonk application or component')
   .option('-i, --init', 'initialize in the folder')
-  .action(options => {
+  .action(async options => {
     const startTime = Date.now();
 
     try {
@@ -33,8 +33,7 @@ export const createCommand = new Command('create')
         command: createCommand,
       });
 
-      shutdownAnalytics();
-      process.exit(0);
+      await shutdownAnalytics();
     } catch (error: any) {
       const duration = Date.now() - startTime;
 
@@ -60,7 +59,7 @@ export const createCommand = new Command('create')
       });
 
       console.error('Failed to generate Tonk code:', error);
-      shutdownAnalytics();
-      process.exit(1);
+      await shutdownAnalytics();
+      process.exitCode = 1;
     }
   });

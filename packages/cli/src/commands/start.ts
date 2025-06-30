@@ -5,7 +5,9 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../utils/analytics.js';
+import {getServerConfig} from '../config/environment.js';
 
 interface StartResult {
   id: string;
@@ -18,7 +20,11 @@ interface StartResult {
 
 export const startCommand = new Command('start')
   .description('Start a bundle on a route')
-  .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
+  .option(
+    '-u, --url <url>',
+    'URL of the Tonk server',
+    getServerConfig().defaultUrl,
+  )
   .option(
     '-r, --route <route>',
     'Route path for the bundle (defaults to /bundleName)',
@@ -95,6 +101,7 @@ export const startCommand = new Command('start')
         port: result.port,
         serverId: result.id,
       });
+      await shutdownAnalytics();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('start', error as Error, duration, {
@@ -107,6 +114,7 @@ export const startCommand = new Command('start')
           `Error: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
-      process.exit(1);
+      await shutdownAnalytics();
+      process.exitCode = 1;
     }
   });

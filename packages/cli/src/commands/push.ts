@@ -13,7 +13,9 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
+  shutdownAnalytics,
 } from '../utils/analytics.js';
+import {getServerConfig} from '../config/environment.js';
 
 interface PushOptions {
   url: string;
@@ -43,13 +45,15 @@ interface StartResult {
 /**
  * Validates that the source directory exists
  */
-function validateSourceDirectory(sourcePath: string): void {
+async function validateSourceDirectory(sourcePath: string): Promise<void> {
   if (!fs.existsSync(sourcePath)) {
     console.error(chalk.red(`Error: Directory ${sourcePath} does not exist.`));
     console.log(
       chalk.yellow(`Run 'npm run build' to create the dist directory.`),
     );
-    process.exit(1);
+    await shutdownAnalytics();
+    process.exitCode = 1;
+    return;
   }
 }
 
@@ -283,7 +287,7 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
     }
 
     // Validate source directory
-    validateSourceDirectory(sourcePath);
+    await validateSourceDirectory(sourcePath);
 
     // Create tarball
     const tarballPath = await createTarball(
@@ -321,6 +325,7 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
       route: startResult?.route,
       port: startResult?.port,
     });
+    await shutdownAnalytics();
   } catch (error) {
     const duration = Date.now() - startTime;
     trackCommandError('push', error as Error, duration, {
@@ -337,13 +342,18 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
         `Error: ${error instanceof Error ? error.message : String(error)}`,
       ),
     );
-    process.exit(1);
+    await shutdownAnalytics();
+    process.exitCode = 1;
   }
 }
 
 export const pushCommand = new Command('push')
   .description('Package, upload, build and start a bundle on the Tonk server')
-  .option('-u, --url <url>', 'URL of the Tonk server', 'http://localhost:7777')
+  .option(
+    '-u, --url <url>',
+    'URL of the Tonk server',
+    getServerConfig().defaultUrl,
+  )
   .option(
     '-n, --name <name>',
     'Name for the bundle (defaults to directory name)',

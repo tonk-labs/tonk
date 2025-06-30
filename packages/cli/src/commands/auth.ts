@@ -1,5 +1,4 @@
 import {Command} from 'commander';
-import {tonkAuth} from '../lib/tonkAuth.js';
 import chalk from 'chalk';
 import {
   trackCommand,
@@ -8,18 +7,31 @@ import {
   shutdownAnalytics,
 } from '../utils/analytics.js';
 
-const getAuthDescription = () => {
-  if (!tonkAuth.isReady) return 'Log in to your Tonk account';
-  if (tonkAuth.isSignedIn && tonkAuth.activeSubscription)
-    return '🚀 You have an active subscription!';
-  if (tonkAuth.isSignedIn)
-    return `🌈 You're signed in to Tonk as ${tonkAuth.friendlyName}`;
-  return 'Log in to your Tonk account';
+// Lazy-load tonkAuth to prevent initialization on import
+async function getTonkAuth() {
+  const {tonkAuth} = await import('../lib/tonkAuth.js');
+  return tonkAuth;
+}
+
+const getAuthDescription = async () => {
+  try {
+    const tonkAuth = await getTonkAuth();
+    if (!tonkAuth.isReady) return 'Log in to your Tonk account';
+    if (tonkAuth.isSignedIn && tonkAuth.activeSubscription)
+      return '🚀 You have an active subscription!';
+    if (tonkAuth.isSignedIn)
+      return `🌈 You're signed in to Tonk as ${tonkAuth.friendlyName}`;
+    return 'Log in to your Tonk account';
+  } catch {
+    return 'Log in to your Tonk account';
+  }
 };
 
 export const authCommand = new Command('auth')
-  .description(getAuthDescription())
-  .action(() => {
+  .description('Manage your Tonk authentication')
+  .action(async () => {
+    // Update description dynamically when auth command is actually used
+    authCommand.description(await getAuthDescription());
     authCommand.help();
   });
 
@@ -32,6 +44,7 @@ authCommand
     try {
       trackCommand('auth-login', {});
 
+      const tonkAuth = await getTonkAuth();
       await tonkAuth.ensureReady();
 
       if (tonkAuth.isSignedIn) {
@@ -46,7 +59,6 @@ authCommand
           userName: tonkAuth.friendlyName,
         });
         await shutdownAnalytics();
-        process.exit(0);
       }
 
       console.log("\n🗺️ Great, let's sign you in using your browser!");
@@ -67,7 +79,7 @@ authCommand
           chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`),
         );
         await shutdownAnalytics();
-        process.exit(1);
+        process.exitCode = 1;
       }
 
       console.log(`💌 YAAY! Good to have you ${tonkAuth.friendlyName}!`);
@@ -79,7 +91,6 @@ authCommand
         userName: tonkAuth.friendlyName,
       });
       await shutdownAnalytics();
-      process.exit(0);
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('auth-login', error as Error, duration, {
@@ -90,7 +101,7 @@ authCommand
         error,
       );
       await shutdownAnalytics();
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 
@@ -103,6 +114,7 @@ authCommand
     try {
       trackCommand('auth-logout', {});
 
+      const tonkAuth = await getTonkAuth();
       await tonkAuth.ensureReady();
 
       if (!tonkAuth.isSignedIn) {
@@ -113,7 +125,6 @@ authCommand
           wasAlreadySignedOut: true,
         });
         await shutdownAnalytics();
-        process.exit(0);
       }
 
       const name = tonkAuth.friendlyName;
@@ -139,7 +150,7 @@ authCommand
           ),
         );
         await shutdownAnalytics();
-        process.exit(1);
+        process.exitCode = 1;
       }
 
       console.log(`👋❤️😮‍💨 Ciao ${name}`);
@@ -151,7 +162,6 @@ authCommand
         hadActiveSubscription,
       });
       await shutdownAnalytics();
-      process.exit(0);
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('auth-logout', error as Error, duration, {
@@ -162,7 +172,7 @@ authCommand
         error,
       );
       await shutdownAnalytics();
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 
@@ -175,6 +185,7 @@ authCommand
     try {
       trackCommand('auth-status', {});
 
+      const tonkAuth = await getTonkAuth();
       await tonkAuth.ensureReady();
 
       if (tonkAuth.isSignedIn) {
@@ -200,7 +211,6 @@ authCommand
       }
 
       await shutdownAnalytics();
-      process.exit(0);
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('auth-status', error as Error, duration, {
@@ -211,6 +221,6 @@ authCommand
         error,
       );
       await shutdownAnalytics();
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
