@@ -97,6 +97,104 @@ const fileListener = await createAndStartFileListener(
 
 **Instructions Reference**: Always check relevant `llms.txt` files for component-specific patterns and guidelines before vibecoding implementations.
 
+## Tonk CLI Commands
+
+The Tonk CLI provides essential commands for managing your workspace and applications:
+
+### Main CLI (`tonk`)
+- **`tonk -d`** — Run the Tonk daemon (background server for managing bundles and stores)
+- **`tonk hello`** — Say hello to start and launch the tonk daemon
+- **`tonk auth`** — Log in to your Tonk account
+- **`tonk create`** — Create a new tonk application or component
+- **`tonk deploy`** — Deploy a Tonk bundle to an existing server
+- **`tonk server`** — Manage Tonk servers
+
+### Bundle Management
+- **`tonk push`** — Package, upload, build and start a bundle on the Tonk server
+- **`tonk start <bundleName>`** — Start a bundle on a route
+- **`tonk ps`** — List running bundles
+- **`tonk ls`** — List available bundles on the Tonk server
+- **`tonk kill <serverId>`** — Stop a running bundle server
+- **`tonk delete <bundleName>`** — Delete a bundle from the server (alias: `rm`)
+- **`tonk proxy <bundleName>`** — Create a reverse proxy to access a Tonk bundle
+
+### Worker Management (`tonk worker`)
+- **`tonk worker ls`** — List all registered workers
+- **`tonk worker inspect <nameOrId>`** — Inspect a specific worker
+- **`tonk worker start <nameOrId>`** — Start a worker
+- **`tonk worker stop <nameOrId>`** — Stop a worker
+- **`tonk worker rm <nameOrId>`** — Remove a registered worker
+- **`tonk worker ping <nameOrId>`** — Ping a worker to check its status
+- **`tonk worker logs <nameOrId>`** — View logs for a worker
+- **`tonk worker register [dir]`** — Register a worker with Tonk
+- **`tonk worker install <package>`** — Install and start a worker from npm
+- **`tonk worker init`** — Initialize a new worker configuration file
+
+### Create Command (`tonk create`)
+
+The create command scaffolds code for your Tonk projects:
+
+**Usage**: `tonk create [options]`
+
+**Options**:
+- `-v, --version` — Output the current version
+- `-i, --init` — Initialize in the current folder (instead of creating new directory)
+- `-t, --template <type>` — Template type: `react`, `worker`, or `workspace`
+- `-n, --name <name>` — Project name
+- `-d, --description <description>` — Project description
+
+**Template Types**:
+- **`react`** — "Create apps with your data" - Interactive React applications for data visualization
+- **`worker`** — "Retrieve data to use later" - Background processing and data ingestion
+- **`workspace`** — "Organize multiple projects" - Complete development environment structure
+
+**Examples**:
+```bash
+# Interactive mode (prompts for choices)
+tonk create
+
+# Non-interactive mode
+tonk create -t react -n my-dashboard -d "Sales data visualization"
+tonk create --init -t workspace  # Initialize workspace in current directory
+```
+
+### Daemon Mode and Server Functionality
+
+The daemon (`tonk -d`) provides the core infrastructure:
+- **Bundle Storage**: Manages code bundles and their lifecycle
+- **Data Stores**: Maintains keepsync stores for data synchronization
+- **Process Coordination**: Handles running workers and serving React apps
+- **Worker Registry**: Manages registered workers and their states
+- **Server Infrastructure**: Runs TonkServer for handling requests
+
+## LLM Agent Workspace Navigation
+
+When working within a Tonk workspace, the LLM should understand these interaction patterns:
+
+### Project Creation Workflow
+1. **Understand Requirements**: Determine if user needs data ingestion (worker), visualization (react), or full environment (workspace)
+2. **Guide CLI Usage**: Use `tonk create` with appropriate template and meaningful names
+3. **Implement Logic**: Vibecode the functionality using established patterns and libraries
+4. **Register and Start**: For workers, use `tonk worker register` and `tonk worker start` to activate them
+
+### Worker Management Patterns
+- **Development Cycle**: Create with `tonk create -t worker`, register with `tonk worker register`, start with `tonk worker start`
+- **Debugging**: Use `tonk worker logs <worker>` to view output and `tonk worker ping <worker>` to check status
+- **Monitoring**: Check `tonk worker ls` to see all registered workers and their states
+- **Cleanup**: Use `tonk worker stop <worker>` and `tonk worker rm <worker>` to remove unused workers
+
+### Development Best Practices
+- **Check Existing Patterns**: Look at `/workers/` and `/views/` for similar implementations
+- **Follow Conventions**: Use established libraries and coding patterns from the workspace
+- **Reference Instructions**: Always check relevant `llms.txt` files for component-specific guidance
+- **Use FileListener Pattern**: For file watching, always use the existing FileListener from `src/listeners/fileListener.ts`
+
+### Troubleshooting and Debugging
+- **Daemon Status**: Ensure `tonk -d` is running for all workspace operations
+- **Worker Status**: Use `tonk worker ls` and `tonk worker ping <worker>` to monitor worker health
+- **Logs**: Check `tonk worker logs <worker>` for error messages and debugging information
+- **Data Flow**: Verify keepsync stores through the console app for data debugging
+
 ## Core Philosophy
 
 The workspace transforms traditional development from static code creation into a **conversational data platform**. Users don't need to understand keepsync APIs or worker patterns - they describe what they want in natural language, and the agent handles technical implementation through vibecoding. The boundary between user intent and technical execution becomes fluid, with the agent serving as both consultant and implementer.
