@@ -38,34 +38,14 @@ export interface TonkConfig {
 }
 
 /**
- * Validates that required environment variables are set
- */
-function validateEnvironment(): void {
-  const optionalVars = ['TONK_ANALYTICS_API_KEY'];
-  const missing = optionalVars.filter(varName => !process.env[varName]);
-
-  if (missing.length > 0) {
-    console.warn(
-      `Warning: Missing optional environment variables: ${missing.join(', ')}`,
-    );
-    console.warn(
-      'Analytics will be disabled. Set TONK_ANALYTICS_API_KEY to enable usage tracking.',
-    );
-    console.warn('See SECURITY.md for setup instructions.');
-  }
-}
-
-/**
  * Load and validate configuration from environment variables
  */
 export function loadConfig(): TonkConfig {
-  // Validate environment on load
-  validateEnvironment();
-
   return {
     deployment: {
       serviceUrl:
-        process.env.TONK_DEPLOYMENT_SERVICE_URL || 'http://localhost:4444',
+        process.env.TONK_DEPLOYMENT_SERVICE_URL ||
+        'http://ec2-51-20-65-254.eu-north-1.compute.amazonaws.com:4444',
       defaultRegion: process.env.TONK_DEFAULT_REGION || 'ord',
       defaultMemory: process.env.TONK_DEFAULT_MEMORY || '1gb',
       defaultCpus: process.env.TONK_DEFAULT_CPUS || '1',

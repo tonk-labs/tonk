@@ -8,6 +8,16 @@ import {
   trackCommandSuccess,
   shutdownAnalytics,
 } from '../utils/analytics.js';
+// Lazy-load authHook to prevent initialization on import
+async function getAuthHook() {
+  const {authHook} = await import('../lib/tonkAuth.js');
+  return authHook;
+}
+// Lazy-load tonkAuth to get auth token
+async function getTonkAuth() {
+  const {tonkAuth} = await import('../lib/tonkAuth.js');
+  return tonkAuth;
+}
 import {getDeploymentServiceUrl, config} from '../config/environment.js';
 
 interface ServerOptions {
@@ -41,11 +51,10 @@ async function checkDeploymentService(): Promise<void> {
 }
 
 /**
- * Gets server credentials from user
+ * Gets server credentials from user (no access code needed due to auth)
  */
 async function getServerCredentials(serverName?: string): Promise<{
   serverName: string;
-  accessCode: string;
   serverPin: string;
 }> {
   const questions: any[] = [];
@@ -64,37 +73,22 @@ async function getServerCredentials(serverName?: string): Promise<{
     });
   }
 
-  questions.push(
-    {
-      type: 'password',
-      name: 'accessCode',
-      message: 'Enter your access code:',
-      mask: '*',
-      validate: (input: string) => {
-        if (!input || input.trim().length === 0) {
-          return 'Access code is required';
-        }
-        return true;
-      },
+  questions.push({
+    type: 'password',
+    name: 'serverPin',
+    message: 'Enter the server PIN:',
+    mask: '*',
+    validate: (input: string) => {
+      if (!input || input.trim().length === 0) {
+        return 'Server PIN is required';
+      }
+      return true;
     },
-    {
-      type: 'password',
-      name: 'serverPin',
-      message: 'Enter the server PIN:',
-      mask: '*',
-      validate: (input: string) => {
-        if (!input || input.trim().length === 0) {
-          return 'Server PIN is required';
-        }
-        return true;
-      },
-    },
-  );
+  });
 
   const answers = await inquirer.prompt(questions);
   return {
     serverName: serverName || answers.serverName.trim(),
-    accessCode: answers.accessCode.trim(),
     serverPin: answers.serverPin.trim(),
   };
 }
@@ -109,23 +103,11 @@ async function createServer(
   const spinner = ora('Creating Tonk server...').start();
 
   try {
-    // Stop spinner before prompting for access code
+    // Stop spinner before prompting for server PIN
     spinner.stop();
 
-    // Prompt for access code and server PIN
-    const {accessCode, serverPin} = await inquirer.prompt([
-      {
-        type: 'password',
-        name: 'accessCode',
-        message: 'Enter your access code:',
-        mask: '*',
-        validate: (input: string) => {
-          if (!input || input.trim().length === 0) {
-            return 'Access code is required';
-          }
-          return true;
-        },
-      },
+    // Prompt for server PIN only (access code no longer needed due to auth)
+    const {serverPin} = await inquirer.prompt([
       {
         type: 'password',
         name: 'serverPin',
@@ -143,13 +125,19 @@ async function createServer(
     // Restart spinner for server creation
     spinner.start();
 
+    // Get auth token
+    const tonkAuth = await getTonkAuth();
+    const authToken = await tonkAuth.getAuthToken();
+    if (!authToken) {
+      throw new Error('Failed to get authentication token');
+    }
+
     // Prepare form data for server creation
     const formData = new FormData();
     formData.append(
       'serverData',
       JSON.stringify({
         serverName,
-        accessCode: accessCode.trim(),
         serverPin: serverPin.trim(),
         region: options.region || 'ord',
         memory: options.memory || '1gb',
@@ -163,6 +151,9 @@ async function createServer(
     spinner.text = 'Creating server...';
     const response = await fetch(`${getDeploymentServiceUrl()}/create-server`, {
       method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+      },
       body: formData,
     });
 
@@ -192,15 +183,20 @@ async function createServer(
  */
 async function listRemoteBundles(
   serverName: string,
-  accessCode: string,
   serverPin: string,
 ): Promise<void> {
+  // Get auth token
+  const tonkAuth = await getTonkAuth();
+  const authToken = await tonkAuth.getAuthToken();
+  if (!authToken) {
+    throw new Error('Failed to get authentication token');
+  }
+
   const formData = new FormData();
   formData.append(
     'requestData',
     JSON.stringify({
       serverName,
-      accessCode,
       serverPin,
       action: 'ls',
     }),
@@ -208,6 +204,9 @@ async function listRemoteBundles(
 
   const response = await fetch(`${getDeploymentServiceUrl()}/server-action`, {
     method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${authToken}`,
+    },
     body: formData,
   });
 
@@ -232,15 +231,20 @@ async function listRemoteBundles(
  */
 async function listRunningBundles(
   serverName: string,
-  accessCode: string,
   serverPin: string,
 ): Promise<void> {
+  // Get auth token
+  const tonkAuth = await getTonkAuth();
+  const authToken = await tonkAuth.getAuthToken();
+  if (!authToken) {
+    throw new Error('Failed to get authentication token');
+  }
+
   const formData = new FormData();
   formData.append(
     'requestData',
     JSON.stringify({
       serverName,
-      accessCode,
       serverPin,
       action: 'ps',
     }),
@@ -248,6 +252,9 @@ async function listRunningBundles(
 
   const response = await fetch(`${getDeploymentServiceUrl()}/server-action`, {
     method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${authToken}`,
+    },
     body: formData,
   });
 
@@ -279,16 +286,21 @@ async function listRunningBundles(
 async function deleteRemoteBundle(
   bundleName: string,
   serverName: string,
-  accessCode: string,
   serverPin: string,
 ): Promise<void> {
+  // Get auth token
+  const tonkAuth = await getTonkAuth();
+  const authToken = await tonkAuth.getAuthToken();
+  if (!authToken) {
+    throw new Error('Failed to get authentication token');
+  }
+
   const formData = new FormData();
   formData.append(
     'deleteData',
     JSON.stringify({
       bundleName,
       serverName,
-      accessCode,
       serverPin,
       deployType: 'delete',
     }),
@@ -296,6 +308,9 @@ async function deleteRemoteBundle(
 
   const response = await fetch(`${getDeploymentServiceUrl()}/delete-bundle`, {
     method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${authToken}`,
+    },
     body: formData,
   });
 
@@ -318,6 +333,10 @@ async function handleServerCreateCommand(
   const startTime = Date.now();
 
   try {
+    // Run auth check (replaces the preAction hook)
+    const authHook = await getAuthHook();
+    await authHook();
+
     trackCommand('server-create', {
       name: options.name,
       region: options.region,
@@ -430,6 +449,10 @@ const serverLsCommand = new Command('ls')
     const startTime = Date.now();
 
     try {
+      // Run auth check (replaces the preAction hook)
+      const authHook = await getAuthHook();
+      await authHook();
+
       trackCommand('server-ls', {
         server: options.server,
       });
@@ -440,12 +463,12 @@ const serverLsCommand = new Command('ls')
       await checkDeploymentService();
 
       // Get credentials
-      const {serverName, accessCode, serverPin} = await getServerCredentials(
+      const {serverName, serverPin} = await getServerCredentials(
         options.server,
       );
 
       // List bundles
-      await listRemoteBundles(serverName, accessCode, serverPin);
+      await listRemoteBundles(serverName, serverPin);
 
       const duration = Date.now() - startTime;
       trackCommandSuccess('server-ls', duration, {
@@ -475,6 +498,10 @@ const serverPsCommand = new Command('ps')
     const startTime = Date.now();
 
     try {
+      // Run auth check (replaces the preAction hook)
+      const authHook = await getAuthHook();
+      await authHook();
+
       trackCommand('server-ps', {
         server: options.server,
       });
@@ -485,12 +512,12 @@ const serverPsCommand = new Command('ps')
       await checkDeploymentService();
 
       // Get credentials
-      const {serverName, accessCode, serverPin} = await getServerCredentials(
+      const {serverName, serverPin} = await getServerCredentials(
         options.server,
       );
 
       // List running bundles
-      await listRunningBundles(serverName, accessCode, serverPin);
+      await listRunningBundles(serverName, serverPin);
 
       const duration = Date.now() - startTime;
       trackCommandSuccess('server-ps', duration, {
@@ -522,6 +549,10 @@ const serverRmCommand = new Command('rm')
     const startTime = Date.now();
 
     try {
+      // Run auth check (replaces the preAction hook)
+      const authHook = await getAuthHook();
+      await authHook();
+
       trackCommand('server-rm', {
         bundleName,
         server: options.server,
@@ -533,7 +564,7 @@ const serverRmCommand = new Command('rm')
       await checkDeploymentService();
 
       // Get credentials
-      const {serverName, accessCode, serverPin} = await getServerCredentials(
+      const {serverName, serverPin} = await getServerCredentials(
         options.server,
       );
 
@@ -554,7 +585,7 @@ const serverRmCommand = new Command('rm')
       }
 
       // Delete bundle
-      await deleteRemoteBundle(bundleName, serverName, accessCode, serverPin);
+      await deleteRemoteBundle(bundleName, serverName, serverPin);
 
       const duration = Date.now() - startTime;
       trackCommandSuccess('server-rm', duration, {

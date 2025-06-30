@@ -17,6 +17,11 @@ async function getAuthHook() {
   const {authHook} = await import('../lib/tonkAuth.js');
   return authHook;
 }
+// Lazy-load tonkAuth to get auth token
+async function getTonkAuth() {
+  const {tonkAuth} = await import('../lib/tonkAuth.js');
+  return tonkAuth;
+}
 import {getDeploymentServiceUrl, config} from '../config/environment.js';
 
 interface DeployOptions {
@@ -209,23 +214,11 @@ async function deployBundle(
     spinner.text = 'Creating app bundle...';
     const bundlePath = await createAppBundle();
 
-    // Stop spinner before prompting for access code
+    // Stop spinner before prompting for server PIN
     spinner.stop();
 
-    // Prompt for access code and server PIN
-    const {accessCode, serverPin} = await inquirer.prompt([
-      {
-        type: 'password',
-        name: 'accessCode',
-        message: 'Enter your access code:',
-        mask: '*',
-        validate: (input: string) => {
-          if (!input || input.trim().length === 0) {
-            return 'Access code is required';
-          }
-          return true;
-        },
-      },
+    // Prompt for server PIN only (access code no longer needed due to auth)
+    const {serverPin} = await inquirer.prompt([
       {
         type: 'password',
         name: 'serverPin',
@@ -243,6 +236,13 @@ async function deployBundle(
     // Restart spinner for upload
     spinner.start();
 
+    // Get auth token
+    const tonkAuth = await getTonkAuth();
+    const authToken = await tonkAuth.getAuthToken();
+    if (!authToken) {
+      throw new Error('Failed to get authentication token');
+    }
+
     // Prepare form data
     const formData = new FormData();
     const bundleBuffer = fs.readFileSync(bundlePath);
@@ -255,7 +255,6 @@ async function deployBundle(
       JSON.stringify({
         bundleName,
         serverName,
-        accessCode: accessCode.trim(),
         serverPin: serverPin.trim(),
         deployType: 'bundle',
         tonkConfig,
@@ -268,6 +267,9 @@ async function deployBundle(
     const deploymentServiceUrl = getDeploymentServiceUrl();
     const response = await fetch(`${deploymentServiceUrl}/deploy-bundle`, {
       method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+      },
       body: formData,
     });
 
