@@ -51,18 +51,17 @@ async function checkDeploymentService(): Promise<void> {
 }
 
 /**
- * Gets server credentials from user (no access code needed due to auth)
+ * Gets server name from user if not provided
  */
-async function getServerCredentials(serverName?: string): Promise<{
-  serverName: string;
-  serverPin: string;
-}> {
-  const questions: any[] = [];
+async function getServerName(serverName?: string): Promise<string> {
+  if (serverName) {
+    return serverName;
+  }
 
-  if (!serverName) {
-    questions.push({
+  const {inputName} = await inquirer.prompt([
+    {
       type: 'input',
-      name: 'serverName',
+      name: 'inputName',
       message: 'Enter your Tonk server name:',
       validate: (input: string) => {
         if (!input || input.trim().length === 0) {
@@ -70,27 +69,10 @@ async function getServerCredentials(serverName?: string): Promise<{
         }
         return true;
       },
-    });
-  }
-
-  questions.push({
-    type: 'password',
-    name: 'serverPin',
-    message: 'Enter the server PIN:',
-    mask: '*',
-    validate: (input: string) => {
-      if (!input || input.trim().length === 0) {
-        return 'Server PIN is required';
-      }
-      return true;
     },
-  });
+  ]);
 
-  const answers = await inquirer.prompt(questions);
-  return {
-    serverName: serverName || answers.serverName.trim(),
-    serverPin: answers.serverPin.trim(),
-  };
+  return inputName.trim();
 }
 
 /**
@@ -103,27 +85,6 @@ async function createServer(
   const spinner = ora('Creating Tonk server...').start();
 
   try {
-    // Stop spinner before prompting for server PIN
-    spinner.stop();
-
-    // Prompt for server PIN only (access code no longer needed due to auth)
-    const {serverPin} = await inquirer.prompt([
-      {
-        type: 'password',
-        name: 'serverPin',
-        message: 'Create a PIN for this server (minimum 4 characters):',
-        mask: '*',
-        validate: (input: string) => {
-          if (!input || input.trim().length < 4) {
-            return 'Server PIN must be at least 4 characters long';
-          }
-          return true;
-        },
-      },
-    ]);
-
-    // Restart spinner for server creation
-    spinner.start();
 
     // Get auth token
     const tonkAuth = await getTonkAuth();
@@ -138,7 +99,6 @@ async function createServer(
       'serverData',
       JSON.stringify({
         serverName,
-        serverPin: serverPin.trim(),
         region: options.region || 'ord',
         memory: options.memory || '1gb',
         cpus: options.cpus || '1',
@@ -183,7 +143,6 @@ async function createServer(
  */
 async function listRemoteBundles(
   serverName: string,
-  serverPin: string,
 ): Promise<void> {
   // Get auth token
   const tonkAuth = await getTonkAuth();
@@ -197,7 +156,6 @@ async function listRemoteBundles(
     'requestData',
     JSON.stringify({
       serverName,
-      serverPin,
       action: 'ls',
     }),
   );
@@ -231,7 +189,6 @@ async function listRemoteBundles(
  */
 async function listRunningBundles(
   serverName: string,
-  serverPin: string,
 ): Promise<void> {
   // Get auth token
   const tonkAuth = await getTonkAuth();
@@ -245,7 +202,6 @@ async function listRunningBundles(
     'requestData',
     JSON.stringify({
       serverName,
-      serverPin,
       action: 'ps',
     }),
   );
@@ -286,7 +242,6 @@ async function listRunningBundles(
 async function deleteRemoteBundle(
   bundleName: string,
   serverName: string,
-  serverPin: string,
 ): Promise<void> {
   // Get auth token
   const tonkAuth = await getTonkAuth();
@@ -301,7 +256,6 @@ async function deleteRemoteBundle(
     JSON.stringify({
       bundleName,
       serverName,
-      serverPin,
       deployType: 'delete',
     }),
   );
@@ -462,13 +416,11 @@ const serverLsCommand = new Command('ls')
       // Check prerequisites
       await checkDeploymentService();
 
-      // Get credentials
-      const {serverName, serverPin} = await getServerCredentials(
-        options.server,
-      );
+      // Get server name
+      const serverName = await getServerName(options.server);
 
       // List bundles
-      await listRemoteBundles(serverName, serverPin);
+      await listRemoteBundles(serverName);
 
       const duration = Date.now() - startTime;
       trackCommandSuccess('server-ls', duration, {
@@ -511,13 +463,11 @@ const serverPsCommand = new Command('ps')
       // Check prerequisites
       await checkDeploymentService();
 
-      // Get credentials
-      const {serverName, serverPin} = await getServerCredentials(
-        options.server,
-      );
+      // Get server name
+      const serverName = await getServerName(options.server);
 
       // List running bundles
-      await listRunningBundles(serverName, serverPin);
+      await listRunningBundles(serverName);
 
       const duration = Date.now() - startTime;
       trackCommandSuccess('server-ps', duration, {
@@ -563,10 +513,8 @@ const serverRmCommand = new Command('rm')
       // Check prerequisites
       await checkDeploymentService();
 
-      // Get credentials
-      const {serverName, serverPin} = await getServerCredentials(
-        options.server,
-      );
+      // Get server name
+      const serverName = await getServerName(options.server);
 
       // Confirm deletion
       const {confirm} = await inquirer.prompt([
@@ -585,7 +533,7 @@ const serverRmCommand = new Command('rm')
       }
 
       // Delete bundle
-      await deleteRemoteBundle(bundleName, serverName, serverPin);
+      await deleteRemoteBundle(bundleName, serverName);
 
       const duration = Date.now() - startTime;
       trackCommandSuccess('server-rm', duration, {

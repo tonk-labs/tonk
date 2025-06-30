@@ -56,7 +56,6 @@ export interface ServerOptions {
   persistencePath?: string;
   storesPath?: string;
   bundlesPath?: string;
-  serverPin?: string; // Server PIN for additional security
   verbose?: boolean;
   syncInterval?: number; // Optional interval to trigger storage sync in ms
 }
@@ -106,7 +105,6 @@ export class TonkServer {
       bundlesPath: options.bundlesPath || `${options.persistencePath}/bundles`,
       syncInterval: options.syncInterval || 0,
       verbose: options.verbose ?? true,
-      serverPin: options.serverPin || '',
     };
 
     // Initialize RootNode with configPath
@@ -311,16 +309,6 @@ export class TonkServer {
     }
   }
 
-  private validateServerPin(providedPin?: string): boolean {
-    // If no server PIN is configured, allow all requests (for backward compatibility)
-    if (!this.options.serverPin) {
-      return true;
-    }
-
-    // If server PIN is configured, it must be provided and match
-    return providedPin === this.options.serverPin;
-  }
-
   private setupExpressMiddleware() {
     // Parse JSON bodies
     this.app.use(express.json());
@@ -355,14 +343,6 @@ export class TonkServer {
 
           const bundleName =
             req.body.name || path.basename(req.file.originalname, '.tar.gz');
-          const serverPin = req.body.serverPin;
-
-          // Validate server PIN
-          if (!this.validateServerPin(serverPin)) {
-            return res
-              .status(403)
-              .send({error: 'Invalid or missing server PIN'});
-          }
 
           const bundlePath = path.join(this.options.bundlesPath!, bundleName);
 
@@ -444,15 +424,10 @@ export class TonkServer {
     // Bundle server management endpoints - now serves bundles on routes instead of separate ports
     this.app.post('/start', async (req, res) => {
       try {
-        const {bundleName, route, serverPin} = req.body;
+        const {bundleName, route} = req.body;
 
         if (!bundleName) {
           return res.status(400).send({error: 'Bundle name is required'});
-        }
-
-        // Validate server PIN
-        if (!this.validateServerPin(serverPin)) {
-          return res.status(403).send({error: 'Invalid or missing server PIN'});
         }
 
         const bundlePath = path.join(this.options.bundlesPath!, bundleName);
@@ -570,17 +545,8 @@ export class TonkServer {
       return;
     });
 
-    this.app.get('/ls', async (req, res) => {
+    this.app.get('/ls', async (_req, res) => {
       try {
-        const serverPin = req.query.serverPin as string;
-        
-        // Validate server PIN if configured
-        if (!this.validateServerPin(serverPin)) {
-          return res.status(403).send({
-            error: 'Invalid or missing server PIN',
-          });
-        }
-
         const bundlesPath = this.options.bundlesPath!;
 
         try {
@@ -612,20 +578,12 @@ export class TonkServer {
 
     this.app.post('/delete', async (req, res) => {
       try {
-        const {bundleName, serverPin} = req.body;
+        const {bundleName} = req.body;
 
         if (!bundleName) {
           return res.status(400).send({
             success: false,
             error: 'Bundle name is required',
-          });
-        }
-
-        // Validate server PIN if configured
-        if (!this.validateServerPin(serverPin)) {
-          return res.status(403).send({
-            success: false,
-            error: 'Invalid or missing server PIN',
           });
         }
 
@@ -652,12 +610,15 @@ export class TonkServer {
           if (bundle) {
             bundle.isRunning = false;
             this.bundleRoutes.delete(bundleId);
-            this.log('yellow', `Stopped running instance of bundle '${bundleName}' (ID: ${bundleId})`);
+            this.log(
+              'yellow',
+              `Stopped running instance of bundle '${bundleName}' (ID: ${bundleId})`,
+            );
           }
         }
 
         // Delete the bundle directory from filesystem
-        await fs.promises.rm(bundlePath, { recursive: true, force: true });
+        await fs.promises.rm(bundlePath, {recursive: true, force: true});
         this.log('green', `Deleted bundle directory: ${bundlePath}`);
 
         // Update persistence
@@ -679,17 +640,8 @@ export class TonkServer {
       return;
     });
 
-    this.app.get('/ps', (req, res) => {
+    this.app.get('/ps', (_req, res) => {
       try {
-        const serverPin = req.query.serverPin as string;
-        
-        // Validate server PIN if configured
-        if (!this.validateServerPin(serverPin)) {
-          return res.status(403).send({
-            error: 'Invalid or missing server PIN',
-          });
-        }
-
         const servers: BundleServerInfo[] = [];
 
         // Add route-based bundles

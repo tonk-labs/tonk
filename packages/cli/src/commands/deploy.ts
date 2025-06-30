@@ -214,28 +214,6 @@ async function deployBundle(
     spinner.text = 'Creating app bundle...';
     const bundlePath = await createAppBundle();
 
-    // Stop spinner before prompting for server PIN
-    spinner.stop();
-
-    // Prompt for server PIN only (access code no longer needed due to auth)
-    const {serverPin} = await inquirer.prompt([
-      {
-        type: 'password',
-        name: 'serverPin',
-        message: 'Enter the server PIN:',
-        mask: '*',
-        validate: (input: string) => {
-          if (!input || input.trim().length === 0) {
-            return 'Server PIN is required';
-          }
-          return true;
-        },
-      },
-    ]);
-
-    // Restart spinner for upload
-    spinner.start();
-
     // Get auth token
     const tonkAuth = await getTonkAuth();
     const authToken = await tonkAuth.getAuthToken();
@@ -255,7 +233,6 @@ async function deployBundle(
       JSON.stringify({
         bundleName,
         serverName,
-        serverPin: serverPin.trim(),
         deployType: 'bundle',
         tonkConfig,
         packageJson,
