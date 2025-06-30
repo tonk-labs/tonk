@@ -2,6 +2,7 @@ import {RESPONSES} from '../utils/messages.js';
 import {TonkAuth} from '@tonk/tonk-auth';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
+import {shutdownAnalytics} from '../utils/analytics.js';
 
 // TonkAuth wrapped in a Singleton class with (non-blocking) async initilization keeps the CLI load snappy 🐢
 class TonkAuthManager {
@@ -94,6 +95,13 @@ class TonkAuthManager {
       return null;
     }
   }
+
+  async destroy(): Promise<void> {
+    if (this.instance && typeof this.instance.destroy === 'function') {
+      this.instance.destroy();
+    }
+    await shutdownAnalytics();
+  }
 }
 
 export const tonkAuth = new TonkAuthManager();
@@ -112,6 +120,7 @@ export const authHook = async () => {
   if (tonkAuth.isSignedIn && !tonkAuth.activeSubscription) {
     console.log(chalk.yellow(RESPONSES.needSubscription));
     console.log(chalk.yellow('Please upgrade your subscription to use Tonk hosting features.'));
+    await tonkAuth.destroy();
     process.exit(1);
   }
 
@@ -129,6 +138,7 @@ export const authHook = async () => {
 
     if (!confirm) {
       console.log(chalk.yellow('Authentication required. Exiting.'));
+      await tonkAuth.destroy();
       process.exit(1);
     }
 
@@ -139,6 +149,7 @@ export const authHook = async () => {
       console.error(
         chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`),
       );
+      await tonkAuth.destroy();
       process.exit(1);
     }
 
@@ -151,6 +162,7 @@ export const authHook = async () => {
     // Check subscription status after login
     if (!tonkAuth.activeSubscription) {
       console.log(chalk.yellow('Please upgrade your subscription to use Tonk hosting features.'));
+      await tonkAuth.destroy();
       process.exit(1);
     }
   }

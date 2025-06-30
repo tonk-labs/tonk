@@ -23,6 +23,7 @@ async function getTonkAuth() {
   return tonkAuth;
 }
 import {getDeploymentServiceUrl, config} from '../config/environment.js';
+import {fetchUserServers} from '../utils/serverUtils.js';
 
 interface DeployOptions {
   name?: string;
@@ -58,40 +59,10 @@ async function checkDeploymentService(): Promise<void> {
     );
     await shutdownAnalytics();
     process.exitCode = 1;
-    return;
+    throw error; // Re-throw to be caught by the caller
   }
 }
 
-/**
- * Fetches the list of servers owned by the authenticated user
- */
-async function fetchUserServers(): Promise<string[]> {
-  try {
-    const tonkAuth = await getTonkAuth();
-    const authToken = await tonkAuth.getAuthToken();
-    if (!authToken) {
-      throw new Error('Failed to get authentication token');
-    }
-
-    const deploymentServiceUrl = getDeploymentServiceUrl();
-    const response = await fetch(`${deploymentServiceUrl}/list-user-servers`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${authToken}`,
-      },
-    });
-
-    const result: any = await response.json();
-
-    if (!response.ok || !result.success) {
-      throw new Error(result.error || 'Failed to fetch user servers');
-    }
-
-    return result.servers || [];
-  } catch (error) {
-    throw new Error(`Failed to fetch servers: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
 
 /**
  * Reads the tonk.config.json file to get project information
@@ -304,11 +275,15 @@ async function deployBundle(
  */
 async function handleDeployCommand(options: DeployOptions): Promise<void> {
   const startTime = Date.now();
+  let tonkAuth: any = null;
 
   try {
     // Run auth check (replaces the preAction hook)
     const authHook = await getAuthHook();
     await authHook();
+    
+    // Get TonkAuth instance for cleanup
+    tonkAuth = await getTonkAuth();
 
     trackCommand('deploy', {
       name: options.name,
@@ -326,6 +301,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     try {
       await checkDeploymentService();
     } catch (error) {
+      if (tonkAuth) tonkAuth.destroy();
       return; // Early return after checkDeploymentService handles the error
     }
 
@@ -344,6 +320,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
         chalk.red(`Error fetching servers: ${error instanceof Error ? error.message : String(error)}`),
       );
       await shutdownAnalytics();
+      if (tonkAuth) tonkAuth.destroy();
       process.exitCode = 1;
       return;
     }
@@ -353,6 +330,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       console.log(chalk.yellow('\nNo servers found in your account.'));
       console.log(chalk.blue('Create a server first using: tonk server create'));
       await shutdownAnalytics();
+      if (tonkAuth) tonkAuth.destroy();
       process.exitCode = 1;
       return;
     } else if (userServers.length === 1) {
@@ -387,6 +365,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       if (!confirm) {
         console.log(chalk.yellow('Deployment cancelled'));
         await shutdownAnalytics();
+        if (tonkAuth) tonkAuth.destroy();
         return;
       }
     }
@@ -407,6 +386,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       remote: options.remote,
     });
     await shutdownAnalytics();
+    if (tonkAuth) tonkAuth.destroy();
   } catch (error) {
     const duration = Date.now() - startTime;
     trackCommandError('deploy', error as Error, duration, {
@@ -420,6 +400,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       ),
     );
     await shutdownAnalytics();
+    if (tonkAuth) tonkAuth.destroy();
     process.exitCode = 1;
   }
 }
