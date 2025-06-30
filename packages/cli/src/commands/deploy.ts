@@ -26,7 +26,6 @@ import {getDeploymentServiceUrl, config} from '../config/environment.js';
 
 interface DeployOptions {
   name?: string;
-  server?: string;
   region?: string;
   memory?: string;
   cpus?: string;
@@ -60,6 +59,37 @@ async function checkDeploymentService(): Promise<void> {
     await shutdownAnalytics();
     process.exitCode = 1;
     return;
+  }
+}
+
+/**
+ * Fetches the list of servers owned by the authenticated user
+ */
+async function fetchUserServers(): Promise<string[]> {
+  try {
+    const tonkAuth = await getTonkAuth();
+    const authToken = await tonkAuth.getAuthToken();
+    if (!authToken) {
+      throw new Error('Failed to get authentication token');
+    }
+
+    const deploymentServiceUrl = getDeploymentServiceUrl();
+    const response = await fetch(`${deploymentServiceUrl}/list-user-servers`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+      },
+    });
+
+    const result: any = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || 'Failed to fetch user servers');
+    }
+
+    return result.servers || [];
+  } catch (error) {
+    throw new Error(`Failed to fetch servers: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -282,7 +312,6 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
 
     trackCommand('deploy', {
       name: options.name,
-      server: options.server,
       region: options.region,
       memory: options.memory,
       cpus: options.cpus,
@@ -305,23 +334,40 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     const packageJson = readPackageJson();
     const bundleName = determineAppName(options, tonkConfig, packageJson);
 
-    // Determine server name
-    let serverName = options.server;
-    if (!serverName) {
-      const {inputServer} = await inquirer.prompt([
+    // Fetch user's servers and let them select
+    console.log(chalk.blue('Fetching your servers...'));
+    let userServers: string[] = [];
+    try {
+      userServers = await fetchUserServers();
+    } catch (error) {
+      console.error(
+        chalk.red(`Error fetching servers: ${error instanceof Error ? error.message : String(error)}`),
+      );
+      await shutdownAnalytics();
+      process.exitCode = 1;
+      return;
+    }
+
+    let serverName: string;
+    if (userServers.length === 0) {
+      console.log(chalk.yellow('\nNo servers found in your account.'));
+      console.log(chalk.blue('Create a server first using: tonk server create'));
+      await shutdownAnalytics();
+      process.exitCode = 1;
+      return;
+    } else if (userServers.length === 1) {
+      serverName = userServers[0];
+      console.log(chalk.green(`✓ Using your server: ${serverName}`));
+    } else {
+      const {selectedServer} = await inquirer.prompt([
         {
-          type: 'input',
-          name: 'inputServer',
-          message: 'Enter your Tonk server name:',
-          validate: (input: string) => {
-            if (!input || input.trim().length === 0) {
-              return 'Server name is required';
-            }
-            return true;
-          },
+          type: 'list',
+          name: 'selectedServer',
+          message: `Select a server to deploy to (${userServers.length} available):`,
+          choices: userServers,
         },
       ]);
-      serverName = inputServer.trim();
+      serverName = selectedServer;
     }
 
     console.log(chalk.green(`✓ Bundle name: ${bundleName}`));
@@ -365,7 +411,6 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     const duration = Date.now() - startTime;
     trackCommandError('deploy', error as Error, duration, {
       name: options.name,
-      server: options.server,
       region: options.region,
     });
 
@@ -380,12 +425,11 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
 }
 
 export const deployCommand = new Command('deploy')
-  .description('Deploy a Tonk bundle to an existing server')
+  .description('Deploy a Tonk bundle to one of your servers')
   .option(
     '-n, --name <name>',
     'Name for the deployed bundle (defaults to package.json name)',
   )
-  .option('-s, --server <server>', 'Name of the Tonk server to deploy to')
   .option(
     '-r, --region <region>',
     'Region to deploy to',
