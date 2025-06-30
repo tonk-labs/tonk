@@ -62,8 +62,6 @@ export function loadConfig(): TonkConfig {
   // Validate environment on load
   validateEnvironment();
 
-  const analyticsApiKey = process.env.TONK_ANALYTICS_API_KEY;
-
   return {
     deployment: {
       serviceUrl:
@@ -74,7 +72,9 @@ export function loadConfig(): TonkConfig {
     },
     analytics: {
       enabled: process.env.TONK_ANALYTICS_ENABLED !== 'false',
-      ...(analyticsApiKey && {apiKey: analyticsApiKey}),
+      apiKey:
+        process.env.TONK_ANALYTICS_API_KEY ||
+        'phc_dPEh0Tb5GFMZtykYV6Yg8VEHqJeAutrL7frEMYKmRuW',
       host: process.env.TONK_ANALYTICS_HOST || 'https://eu.i.posthog.com',
     },
     server: {
