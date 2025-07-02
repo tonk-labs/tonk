@@ -1,0 +1,9 @@
+{
+  "name": "ai",
+  "plan": {
+    "platform": "worker",
+    "projectName": "ai",
+    "description": "Query the OpenAI API"
+  },
+  "template": "worker"
+}
