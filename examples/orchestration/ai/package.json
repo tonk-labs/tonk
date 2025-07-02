@@ -27,6 +27,7 @@
     "worker.config.js"
   ],
   "dependencies": {
+    "@anthropic-ai/claude-code": "^1.0.40",
     "@automerge/automerge-repo": "^1.2.1",
     "@automerge/automerge-repo-network-websocket": "^1.2.1",
     "@automerge/automerge-repo-storage-nodefs": "^1.2.1",
