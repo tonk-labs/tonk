@@ -8,7 +8,7 @@ import { startWorker } from "./index";
 
 const program = new Command();
 
-program.name("ai").description("Query the Claude Code").version("1.0.0");
+program.name("ai").description("Query Claude Code").version("1.0.0");
 
 program
   .command("start")
@@ -16,7 +16,7 @@ program
   .option(
     "-p, --port <port>",
     "Port to run the worker on",
-    process.env.WORKER_PORT || "5556"
+    process.env.WORKER_PORT || "5556",
   )
   .action(async (options) => {
     try {

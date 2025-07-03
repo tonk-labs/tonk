@@ -1,4 +1,4 @@
-import { query, type SDKMessage } from "@anthropic-ai/claude-code";
+import { query } from "@anthropic-ai/claude-code";
 
 /**
  * Claude Code native request interface
@@ -99,16 +99,16 @@ export class ClaudeCodeProvider {
 
       return {
         content: finalResult,
-        totalCostUsd,
-        sessionId,
+        ...(totalCostUsd !== undefined && { totalCostUsd }),
+        ...(sessionId !== undefined && { sessionId }),
         provider: this.name,
         success: true,
       };
     } catch (error) {
       return {
         content: "",
-        totalCostUsd,
-        sessionId,
+        ...(totalCostUsd !== undefined && { totalCostUsd }),
+        ...(sessionId !== undefined && { sessionId }),
         provider: this.name,
         success: false,
         error: `Claude Code query failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -136,7 +136,7 @@ export class ClaudeCodeProvider {
       }
     } catch (error) {
       throw new Error(
-        `Claude Code stream failed: ${error instanceof Error ? error.message : String(error)}`
+        `Claude Code stream failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

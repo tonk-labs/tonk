@@ -1,0 +1,3 @@
+ignoredBuiltDependencies:
+  - '@anthropic-ai/claude-code'
+  - esbuild

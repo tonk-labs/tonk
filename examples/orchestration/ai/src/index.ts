@@ -1,5 +1,4 @@
 import * as http from "http";
-import * as path from "path";
 import dotenv from "dotenv";
 import {
   ClaudeCodeProvider,
@@ -113,7 +112,7 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
               ? "configured"
               : "not configured",
           },
-        })
+        }),
       );
       return;
     }
@@ -181,6 +180,10 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
         return;
       }
     }
+
+    // 404 for unhandled routes
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Not found" }));
   });
 
   // Start the server
@@ -189,7 +192,7 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
       console.log(`🚀 AI worker listening on http://localhost:${port}`);
       console.log(`📋 Health check: http://localhost:${port}/health`);
       console.log(
-        `🧠 Completion endpoint: http://localhost:${port}/api/complete`
+        `🧠 Completion endpoint: http://localhost:${port}/api/complete`,
       );
       console.log(`🔗 Main endpoint: http://localhost:${port}/tonk`);
 

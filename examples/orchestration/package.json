@@ -1,0 +1,41 @@
+{
+  "name": "tonk-orchestration",
+  "version": "1.0.0",
+  "description": "Modular orchestration system for AI workflows using Tonk",
+  "main": "dist/orchestrator.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/orchestrator.js",
+    "dev": "tsx orchestrator.ts",
+    "setup": "tsx setup.ts",
+    "orchestrate": "tsx orchestrator.ts",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "ai",
+    "orchestration",
+    "workflow",
+    "claude",
+    "tonk"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^1.0.41",
+    "@automerge/automerge-repo": "^2.0.7",
+    "@automerge/automerge-repo-network-websocket": "^2.0.7",
+    "@automerge/automerge-repo-storage-nodefs": "^2.0.7",
+    "@tonk/keepsync": "^0.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
