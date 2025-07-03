@@ -2,6 +2,7 @@
 
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { createInterface } from "readline";
 import { WorkflowExecutor, WorkflowExecutorConfig } from "./WorkflowExecutor";
 import { Job } from "./JobRunner";
 import { configureSyncEngine } from "@tonk/keepsync";
@@ -20,13 +21,38 @@ interface OrchestratorConfig {
   maxConcurrentJobs?: number;
   continueOnFailure?: boolean;
   timeout?: number;
+  maxIterations?: number;
 }
 
 class Orchestrator {
   private config: OrchestratorConfig;
+  private readline?: ReturnType<typeof createInterface>;
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
+  }
+
+  /**
+   * Create user input handler for job interactions
+   */
+  private createUserInputHandler(): (prompt: string) => Promise<string> {
+    return async (prompt: string): Promise<string> => {
+      if (!this.readline) {
+        this.readline = createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+      }
+
+      console.log(`\n🤔 ${prompt}`);
+      console.log("📝 Please provide your input:");
+
+      return new Promise((resolve) => {
+        this.readline!.question("> ", (answer) => {
+          resolve(answer.trim());
+        });
+      });
+    };
   }
 
   /**
@@ -132,11 +158,18 @@ class Orchestrator {
         maxConcurrentJobs: this.config.maxConcurrentJobs || 3,
         continueOnFailure: this.config.continueOnFailure || false,
         timeout: this.config.timeout || 300000, // 5 minutes default
+        maxIterations: this.config.maxIterations || 1000,
+        onUserInput: this.createUserInputHandler(),
       };
 
       // Execute workflow
       const executor = new WorkflowExecutor(executorConfig);
       const result = await executor.executeWorkflow(jobs);
+
+      // Close readline interface
+      if (this.readline) {
+        this.readline.close();
+      }
 
       // Print results
       console.log("\\n" + "=".repeat(50));
@@ -155,8 +188,11 @@ class Orchestrator {
       console.log("\\n📝 JOB RESULTS:");
       for (const jobResult of result.results) {
         const status = jobResult.success ? "✅" : "❌";
+        const iterations = jobResult.metadata?.iterations
+          ? ` (${jobResult.metadata.iterations} iterations)`
+          : "";
         console.log(
-          `${status} Job ${jobResult.jobId}: ${jobResult.success ? "SUCCESS" : jobResult.error}`,
+          `${status} Job ${jobResult.jobId}: ${jobResult.success ? "SUCCESS" : jobResult.error}${iterations}`,
         );
 
         if (jobResult.success && jobResult.result && this.config.verbose) {
@@ -213,6 +249,11 @@ function parseArgs(): OrchestratorConfig {
       case "-t":
         const timeout = args[++i];
         if (timeout) config.timeout = parseInt(timeout) * 1000; // Convert seconds to milliseconds
+        break;
+      case "--max-iterations":
+      case "-i":
+        const maxIterations = args[++i];
+        if (maxIterations) config.maxIterations = parseInt(maxIterations);
         break;
       case "--help":
       case "-h":
@@ -275,6 +316,7 @@ Options:
   -c, --max-concurrent <num>   Maximum concurrent jobs (default: 3)
   --continue-on-failure        Continue execution even if jobs fail
   -t, --timeout <seconds>      Request timeout in seconds (default: 300)
+  -i, --max-iterations <num>   Maximum iterations per job (default: 10)
   -h, --help                   Show this help message
 
 Environment Variables:

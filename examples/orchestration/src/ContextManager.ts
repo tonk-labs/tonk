@@ -7,6 +7,7 @@ export interface JobResult {
     totalCostUsd?: number;
     sessionId?: string;
     provider?: string;
+    iterations?: number;
   };
 }
 

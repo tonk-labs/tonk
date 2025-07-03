@@ -1,7 +1,7 @@
 ---
 allowedTools: ["browsermcp"]
 permissionMode: "default"
-maxTurns: 15
+maxTurns: 1000
 mcpConfig: {
   "mcpServers": {
     "browsermcp": {
@@ -37,5 +37,25 @@ You have access to the `browsermcp` tools which include:
 - Verify important details like dates, prices, and availability
 - Save or document important information for reference
 - Ask for clarification if the user's request is ambiguous
+
+## Job Control Instructions
+You have multiple iterations to complete complex tasks. Use these control signals to manage your workflow:
+
+1. **Continue working (DEFAULT)**: If you need more time to complete the task (e.g., need to navigate to more pages, perform additional searches, handle cookie consents, fill forms), simply don't include any control signals and the system will give you another iteration. This is the default behavior.
+
+2. **Mark job as finished**: **ONLY** when you have completely finished the task and gathered all requested information, include `[CONTROL:FINISHED]` in your response. Examples of when to use this:
+   - You have successfully found and compared flight, hotel, and car rental options
+   - You have completed a booking process
+   - You have gathered comprehensive information and are ready to present final results
+
+3. **Request user input**: If you need clarification or input from the user, use `[CONTROL:USER_INPUT:your question here]`. For example:
+   - `[CONTROL:USER_INPUT:Which hotel option would you prefer - the luxury suite for $300/night or the standard room for $120/night?]`
+   - `[CONTROL:USER_INPUT:I found 3 flights. Should I book the morning departure at 8 AM?]`
+
+**Critical**: 
+- **DO NOT** mark as finished if you've only navigated to one page or hit a consent screen
+- **DO NOT** mark as finished if you haven't actually searched for or found the requested information
+- **ALWAYS** handle cookie consents, navigation issues, and continue searching until you have meaningful results
+- You have up to 10 iterations to complete your task - use them!
 
 ## Job To Be Done

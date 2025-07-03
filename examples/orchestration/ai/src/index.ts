@@ -130,13 +130,15 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
         const request: LLMRequest = {
           prompt: data.prompt,
           systemPrompt: data.systemPrompt,
-          maxTurns: 3,
+          maxTurns: data.maxTurns || 3,
           allowedTools: data.allowedTools,
           disallowedTools: data.disallowedTools,
           mcpConfig: data.mcpConfig,
-          permissionMode: "default",
-          verbose: true,
-          outputFormat: "text",
+          permissionMode: data.permissionMode || "default",
+          verbose: data.verbose || true,
+          outputFormat: data.outputFormat || "text",
+          conversationHistory: data.conversationHistory,
+          userInput: data.userInput,
         };
 
         // Handle streaming

@@ -80,12 +80,20 @@ export class McpClient {
     console.log(`🚀 Starting MCP server: ${name}`);
 
     // Create transport and client
-    const transport = new StdioClientTransport({
+    const transportParams: any = {
       command: config.command,
       args: config.args,
-      env: config.env,
-      cwd: config.cwd,
-    });
+    };
+
+    if (config.env) {
+      transportParams.env = config.env;
+    }
+
+    if (config.cwd) {
+      transportParams.cwd = config.cwd;
+    }
+
+    const transport = new StdioClientTransport(transportParams);
 
     const client = new Client(
       {
@@ -144,7 +152,7 @@ export class McpClient {
           input_schema:
             tool.inputSchema &&
             typeof tool.inputSchema === "object" &&
-            tool.inputSchema.type
+            (tool.inputSchema as any).type
               ? (tool.inputSchema as Anthropic.Tool.InputSchema)
               : {
                   type: "object" as const,
@@ -171,7 +179,7 @@ export class McpClient {
       );
     }
 
-    const serverName = parts[0];
+    const serverName = parts[0] || '';
     const actualToolName = parts.slice(1).join("_");
 
     const server = this.servers.get(serverName);
@@ -190,8 +198,23 @@ export class McpClient {
         arguments: input,
       });
 
+      console.log(`🔍 Tool response:`, JSON.stringify(response, null, 2));
+
       if (response.isError) {
-        throw new Error(`Tool call failed: ${response.error}`);
+        // Extract error message from response content if available
+        let errorMessage = response.error;
+        if (!errorMessage && response.content && Array.isArray(response.content)) {
+          const errorContent = response.content.find((c: any) => c.type === 'text');
+          if (errorContent) {
+            errorMessage = errorContent.text;
+          }
+        }
+        if (!errorMessage) {
+          errorMessage = JSON.stringify(response);
+        }
+        
+        console.warn(`⚠️ MCP tool ${actualToolName} returned error:`, errorMessage);
+        throw new Error(String(errorMessage));
       }
 
       // Format the result
