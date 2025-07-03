@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "permissions": {
+      "command": "node",
+      "args": ["index.js"],
+      "cwd": "./examples/orchestration/permissions_tool"
+    }
+  }
+} 

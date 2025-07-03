@@ -88,71 +88,6 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
     });
   };
 
-  const run = () => {
-    try {
-      const data = await parseJsonBody(req);
-
-      if (!data.prompt) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "prompt is required" }));
-        return;
-      }
-
-      const request: LLMRequest = {
-        prompt: data.prompt,
-        systemPrompt: data.systemPrompt,
-        maxTurns: data.maxTurns,
-        allowedTools: data.allowedTools,
-        disallowedTools: data.disallowedTools,
-        mcpConfig: data.mcpConfig,
-        permissionMode: data.permissionMode,
-        workingDirectory: data.workingDirectory,
-        verbose: data.verbose,
-        outputFormat: data.outputFormat,
-      };
-
-      // Handle streaming
-      if (data.stream) {
-        res.writeHead(200, {
-          "Content-Type": "text/plain",
-          "Transfer-Encoding": "chunked",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        });
-
-        try {
-          for await (const chunk of claudeProvider.stream(request)) {
-            res.write(chunk);
-          }
-          res.end();
-        } catch (error) {
-          res.write(
-            `\nError: ${error instanceof Error ? error.message : "Unknown error"}`
-          );
-          res.end();
-        }
-        return;
-      }
-
-      // Non-streaming response
-      const response = await claudeProvider.complete(request);
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(response));
-      return;
-    } catch (error) {
-      console.error("Completion Error:", error);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          error:
-            error instanceof Error ? error.message : "Internal server error",
-        })
-      );
-      return;
-    }
-  };
-
   // Create HTTP server
   const server = http.createServer(async (req, res) => {
     // Set CORS headers for all responses
@@ -183,12 +118,68 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
       return;
     }
 
-    // Simple completion endpoint for testing
-    if (req.method === "POST" && req.url === "/api/complete") {
-    }
+    if (req.method === "POST" && req.url === "/api/tonk") {
+      try {
+        const data = await parseJsonBody(req);
 
-    // Main worker endpoint
-    if (req.method === "POST" && req.url === "/tonk") {
+        if (!data.prompt) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "prompt is required" }));
+          return;
+        }
+
+        const request: LLMRequest = {
+          prompt: data.prompt,
+          systemPrompt: data.systemPrompt,
+          maxTurns: 3,
+          allowedTools: data.allowedTools,
+          disallowedTools: data.disallowedTools,
+          mcpConfig: data.mcpConfig,
+          permissionMode: "default",
+          verbose: true,
+          outputFormat: "text",
+        };
+
+        // Handle streaming
+        if (data.stream) {
+          res.writeHead(200, {
+            "Content-Type": "text/plain",
+            "Transfer-Encoding": "chunked",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          });
+
+          try {
+            for await (const chunk of claudeProvider.stream(request)) {
+              res.write(chunk);
+            }
+            res.end();
+          } catch (error) {
+            res.write(
+              `\nError: ${error instanceof Error ? error.message : "Unknown error"}`
+            );
+            res.end();
+          }
+          return;
+        }
+
+        // Non-streaming response
+        const response = await claudeProvider.complete(request);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(response));
+        return;
+      } catch (error) {
+        console.error("Completion Error:", error);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error:
+              error instanceof Error ? error.message : "Internal server error",
+          })
+        );
+        return;
+      }
     }
   });
 
