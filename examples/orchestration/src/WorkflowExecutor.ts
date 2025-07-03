@@ -30,9 +30,15 @@ export class WorkflowExecutor {
     }
 
     // Check worker health first
+    if (this.config.verbose) {
+      console.log(`🏥 Checking AI worker health...`);
+    }
     const isHealthy = await this.jobRunner.checkWorkerHealth();
     if (!isHealthy) {
       throw new Error('AI worker is not healthy. Please ensure it is running and accessible.');
+    }
+    if (this.config.verbose) {
+      console.log(`✅ AI worker is healthy`);
     }
 
     // Clear previous results

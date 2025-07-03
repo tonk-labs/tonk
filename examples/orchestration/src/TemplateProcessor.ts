@@ -1,6 +1,6 @@
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
-import { LLMRequest } from '../ai/src/services/claudeCodeProvider';
+import { readFileSync } from "fs";
+import { resolve } from "path";
+import { LLMRequest } from "../ai/src/services/claudeCodeProvider";
 
 export interface TemplateMetadata {
   allowedTools?: string[];
@@ -29,11 +29,11 @@ export class TemplateProcessor {
     }
 
     const resolvedPath = resolve(templatePath);
-    const content = readFileSync(resolvedPath, 'utf-8');
-    
+    const content = readFileSync(resolvedPath, "utf-8");
+
     const processed = this.parseTemplate(content);
     this.templateCache.set(templatePath, processed);
-    
+
     return processed;
   }
 
@@ -51,17 +51,10 @@ export class TemplateProcessor {
       if (templateContent !== undefined) {
         processedContent = templateContent;
       }
-      
+
       // Simple YAML parsing for our specific needs
       if (yamlContent) {
-        const yamlLines = yamlContent.split('\n');
-        for (const line of yamlLines) {
-          const [key, ...valueParts] = line.split(':');
-          if (key && valueParts.length > 0) {
-            const value = valueParts.join(':').trim();
-            this.parseMetadataField(key.trim(), value, metadata);
-          }
-        }
+        this.parseYamlContent(yamlContent, metadata);
       }
     } else {
       // Look for structured comments in markdown
@@ -71,42 +64,104 @@ export class TemplateProcessor {
 
     return {
       content: processedContent,
-      metadata
+      metadata,
     };
+  }
+
+  /**
+   * Parse YAML content with support for multi-line objects
+   */
+  private parseYamlContent(yamlContent: string, metadata: TemplateMetadata) {
+    const lines = yamlContent.split('\n');
+    let i = 0;
+    
+    while (i < lines.length) {
+      const line = lines[i].trim();
+      if (!line || line.startsWith('#')) {
+        i++;
+        continue;
+      }
+      
+      const colonIndex = line.indexOf(':');
+      if (colonIndex === -1) {
+        i++;
+        continue;
+      }
+      
+      const key = line.substring(0, colonIndex).trim();
+      const valueStart = line.substring(colonIndex + 1).trim();
+      
+      if (valueStart === '{') {
+        // Multi-line object - collect until closing brace
+        const objLines = ['{'];
+        i++;
+        let braceCount = 1;
+        
+        while (i < lines.length && braceCount > 0) {
+          const objLine = lines[i].trim();
+          objLines.push(objLine);
+          
+          // Count braces
+          for (const char of objLine) {
+            if (char === '{') braceCount++;
+            if (char === '}') braceCount--;
+          }
+          
+          i++;
+        }
+        
+        const objValue = objLines.join('\n');
+        this.parseMetadataField(key, objValue, metadata);
+      } else {
+        // Single line value
+        this.parseMetadataField(key, valueStart, metadata);
+        i++;
+      }
+    }
   }
 
   /**
    * Parse individual metadata fields
    */
-  private parseMetadataField(key: string, value: string, metadata: TemplateMetadata) {
+  private parseMetadataField(
+    key: string,
+    value: string,
+    metadata: TemplateMetadata,
+  ) {
     switch (key.toLowerCase()) {
-      case 'allowedtools':
+      case "allowedtools":
         metadata.allowedTools = this.parseArrayValue(value);
         break;
-      case 'disallowedtools':
+      case "disallowedtools":
         metadata.disallowedTools = this.parseArrayValue(value);
         break;
-      case 'systemprompt':
+      case "systemprompt":
         metadata.systemPrompt = this.parseStringValue(value);
         break;
-      case 'permissionmode':
+      case "permissionmode":
         metadata.permissionMode = this.parseStringValue(value) as any;
         break;
-      case 'maxturns':
+      case "maxturns":
         metadata.maxTurns = parseInt(this.parseStringValue(value));
         break;
-      case 'mcpconfig':
+      case "mcpconfig":
         try {
-          // Handle both JSON string and object notation
-          const cleanValue = this.parseStringValue(value);
-          if (cleanValue.startsWith('{')) {
-            metadata.mcpConfig = JSON.parse(cleanValue);
+          // Handle JSON object (multi-line from YAML)
+          if (value.trim().startsWith("{")) {
+            metadata.mcpConfig = JSON.parse(value);
           } else {
-            // Simple key-value pairs, convert to object
-            metadata.mcpConfig = {};
+            // Handle simple string value
+            const cleanValue = this.parseStringValue(value);
+            if (cleanValue.startsWith("{")) {
+              metadata.mcpConfig = JSON.parse(cleanValue);
+            } else {
+              metadata.mcpConfig = {};
+            }
           }
         } catch (e) {
           console.warn(`Failed to parse mcpConfig: ${e}`);
+          console.warn(`Value was: ${value}`);
+          metadata.mcpConfig = {};
         }
         break;
     }
@@ -116,17 +171,20 @@ export class TemplateProcessor {
    * Parse array values from YAML-like strings
    */
   private parseArrayValue(value: string): string[] {
-    if (value.startsWith('[') && value.endsWith(']')) {
-      return value.slice(1, -1).split(',').map(s => s.trim().replace(/["']/g, ''));
+    if (value.startsWith("[") && value.endsWith("]")) {
+      return value
+        .slice(1, -1)
+        .split(",")
+        .map((s) => s.trim().replace(/["']/g, ""));
     }
-    return value.split(',').map(s => s.trim());
+    return value.split(",").map((s) => s.trim());
   }
 
   /**
    * Parse string values and remove quotes
    */
   private parseStringValue(value: string): string {
-    return value.replace(/^["']|["']$/g, '');
+    return value.replace(/^["']|["']$/g, "");
   }
 
   /**
@@ -134,18 +192,22 @@ export class TemplateProcessor {
    */
   private extractToolsFromContent(content: string): string[] {
     const tools: string[] = [];
-    
+
     // Look for tool mentions in the content
-    if (content.includes('browsermcp') || content.includes('browser') || content.includes('web')) {
-      tools.push('browsermcp');
+    if (
+      content.includes("browsermcp") ||
+      content.includes("browser") ||
+      content.includes("web")
+    ) {
+      tools.push("browsermcp");
     }
-    
-    if (content.includes('gmail') || content.includes('email')) {
-      tools.push('gmail');
+
+    if (content.includes("gmail") || content.includes("email")) {
+      tools.push("gmail");
     }
-    
+
     // Add more tool detection logic as needed
-    
+
     return tools;
   }
 
@@ -155,7 +217,7 @@ export class TemplateProcessor {
   private extractSystemPromptFromContent(content: string): string {
     // Use the template content itself as the system prompt
     // Remove the "Job To Be Done" section as that will be filled by the user prompt
-    const sections = content.split('## Job To Be Done');
+    const sections = content.split("## Job To Be Done");
     return sections[0]?.trim() || content.trim();
   }
 
@@ -163,12 +225,12 @@ export class TemplateProcessor {
    * Create an LLMRequest from template and user prompt
    */
   async createLLMRequest(
-    templatePath: string, 
-    userPrompt: string, 
-    context?: string
+    templatePath: string,
+    userPrompt: string,
+    context?: string,
   ): Promise<LLMRequest> {
     const template = await this.processTemplate(templatePath);
-    
+
     let finalPrompt = userPrompt;
     if (context) {
       finalPrompt = `Context from previous jobs:\n${context}\n\nTask: ${userPrompt}`;
@@ -180,13 +242,24 @@ export class TemplateProcessor {
     const request: LLMRequest = {
       prompt: finalPrompt,
       systemPrompt: systemPrompt,
-      ...(template.metadata.allowedTools && { allowedTools: template.metadata.allowedTools }),
-      ...(template.metadata.disallowedTools && { disallowedTools: template.metadata.disallowedTools }),
-      ...(template.metadata.permissionMode && { permissionMode: template.metadata.permissionMode }),
-      ...(template.metadata.maxTurns && { maxTurns: template.metadata.maxTurns }),
-      ...(template.metadata.mcpConfig && { mcpConfig: template.metadata.mcpConfig }),
+      ...(template.metadata.allowedTools && {
+        allowedTools: template.metadata.allowedTools,
+      }),
+      ...(template.metadata.disallowedTools && {
+        disallowedTools: template.metadata.disallowedTools,
+      }),
+      ...(template.metadata.permissionMode && {
+        permissionMode: template.metadata.permissionMode,
+      }),
+      ...(template.metadata.maxTurns && {
+        maxTurns: template.metadata.maxTurns,
+      }),
+      ...(template.metadata.mcpConfig && {
+        mcpConfig: template.metadata.mcpConfig,
+      }),
     };
 
     return request;
   }
 }
+

@@ -40,15 +40,23 @@ export class JobRunner {
     try {
       if (this.config.verbose) {
         console.log(`🚀 Starting job ${job.jobId}`);
+        console.log(`📄 Template: ${job.context.template.path}`);
+        console.log(`💬 Prompt: ${job.context.prompt}`);
       }
 
       // Create LLM request from template and prompt
-      const contextToUse = job.context.dependencyContext ? contextFromDependencies : undefined;
+      const contextToUse = job.context.dependencyContext
+        ? contextFromDependencies
+        : undefined;
       const llmRequest = await this.templateProcessor.createLLMRequest(
         job.context.template.path,
         job.context.prompt,
         contextToUse,
       );
+
+      if (this.config.verbose) {
+        console.log(`🔧 LLM Request:`, JSON.stringify(llmRequest, null, 2));
+      }
 
       // Make request to AI worker
       const response = await this.makeWorkerRequest(llmRequest);
@@ -66,9 +74,15 @@ export class JobRunner {
           success: true,
           result: response.content,
           metadata: {
-            ...(response.totalCostUsd !== undefined && { totalCostUsd: response.totalCostUsd }),
-            ...(response.sessionId !== undefined && { sessionId: response.sessionId }),
-            ...(response.provider !== undefined && { provider: response.provider }),
+            ...(response.totalCostUsd !== undefined && {
+              totalCostUsd: response.totalCostUsd,
+            }),
+            ...(response.sessionId !== undefined && {
+              sessionId: response.sessionId,
+            }),
+            ...(response.provider !== undefined && {
+              provider: response.provider,
+            }),
           },
         };
       } else {
@@ -79,11 +93,17 @@ export class JobRunner {
         return {
           jobId: job.jobId,
           success: false,
-          error: response.error || 'Unknown error',
+          error: response.error || "Unknown error",
           metadata: {
-            ...(response.totalCostUsd !== undefined && { totalCostUsd: response.totalCostUsd }),
-            ...(response.sessionId !== undefined && { sessionId: response.sessionId }),
-            ...(response.provider !== undefined && { provider: response.provider }),
+            ...(response.totalCostUsd !== undefined && {
+              totalCostUsd: response.totalCostUsd,
+            }),
+            ...(response.sessionId !== undefined && {
+              sessionId: response.sessionId,
+            }),
+            ...(response.provider !== undefined && {
+              provider: response.provider,
+            }),
           },
         };
       }
@@ -131,7 +151,12 @@ export class JobRunner {
         outputFormat: "text",
       };
 
-      const response = await fetch(`${this.config.workerUrl}/tonk`, {
+      if (this.config.verbose) {
+        console.log(`📡 Sending to AI worker:`, JSON.stringify(requestData, null, 2));
+        console.log(`🌐 URL: ${this.config.workerUrl}/api/tonk`);
+      }
+
+      const response = await fetch(`${this.config.workerUrl}/api/tonk`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -142,11 +167,23 @@ export class JobRunner {
 
       clearTimeout(timeoutId);
 
+      if (this.config.verbose) {
+        console.log(`📥 Response status: ${response.status} ${response.statusText}`);
+      }
+
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        const errorText = await response.text();
+        if (this.config.verbose) {
+          console.log(`❌ Error response body:`, errorText);
+        }
+        throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
       }
 
       const result = await response.json();
+
+      if (this.config.verbose) {
+        console.log(`📥 Response:`, JSON.stringify(result, null, 2));
+      }
 
       // The AI worker returns the LLMResponse directly
       return result as LLMResponse;
@@ -171,7 +208,7 @@ export class JobRunner {
       });
 
       if (response.ok) {
-        const health = await response.json();
+        const health: any = await response.json();
         return health.status === "ok";
       }
 
@@ -181,4 +218,3 @@ export class JobRunner {
     }
   }
 }
-

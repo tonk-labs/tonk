@@ -2,11 +2,8 @@
 
 import { readFileSync } from "fs";
 import { resolve } from "path";
-import {
-  WorkflowExecutor,
-  WorkflowExecutorConfig,
-} from "./src/WorkflowExecutor";
-import { Job } from "./src/JobRunner";
+import { WorkflowExecutor, WorkflowExecutorConfig } from "./WorkflowExecutor";
+import { Job } from "./JobRunner";
 import { configureSyncEngine } from "@tonk/keepsync";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { NetworkAdapterInterface } from "@automerge/automerge-repo";
@@ -35,7 +32,7 @@ class Orchestrator {
   /**
    * Load workflow from file
    */
-  private loadWorkflow(): Job[] {
+  private async loadWorkflow(): Promise<Job[]> {
     try {
       const workflowPath = resolve(this.config.workflowFile);
 
@@ -43,10 +40,11 @@ class Orchestrator {
         console.log(`📖 Loading workflow from: ${workflowPath}`);
       }
 
-      // For TypeScript files, we need to require them
+      // For TypeScript files, we need to import them dynamically
       if (workflowPath.endsWith(".ts") || workflowPath.endsWith(".js")) {
-        delete require.cache[workflowPath];
-        const workflowModule = require(workflowPath);
+        const workflowModule = await import(
+          `file://${workflowPath}?t=${Date.now()}`
+        );
 
         // Handle both default export and named export
         const workflow =
@@ -124,7 +122,7 @@ class Orchestrator {
   async execute(): Promise<void> {
     try {
       // Load and validate workflow
-      const jobs = this.loadWorkflow();
+      const jobs = await this.loadWorkflow();
       this.validateWorkflow(jobs);
 
       // Create executor configuration
@@ -229,7 +227,7 @@ function parseArgs(): OrchestratorConfig {
 
   // Set defaults
   if (!config.workflowFile) {
-    config.workflowFile = "./workflow.ts";
+    config.workflowFile = "./src/workflow.ts";
   }
 
   if (!config.workerUrl) {
@@ -240,20 +238,29 @@ function parseArgs(): OrchestratorConfig {
 }
 
 // keepsync
-async function startKeepsync() {
-  const SYNC_WS_URL = process.env.SYNC_WS_URL || "ws://localhost:7777/sync";
-  const SYNC_URL = process.env.SYNC_URL || "http://localhost:7777";
-
-  const wsAdapter = new BrowserWebSocketClientAdapter(SYNC_WS_URL);
-  const engine = configureSyncEngine({
-    url: SYNC_URL,
-    network: [wsAdapter as any as NetworkAdapterInterface],
-    storage: new NodeFSStorageAdapter(),
-  });
-
-  await engine.whenReady();
-  console.log("✅ Keepsync engine is ready");
-}
+// async function startKeepsync() {
+//   try {
+//     const SYNC_WS_URL = process.env.SYNC_WS_URL || "ws://localhost:7777/sync";
+//     const SYNC_URL = process.env.SYNC_URL || "http://localhost:7777";
+//
+//     const wsAdapter = new BrowserWebSocketClientAdapter(SYNC_WS_URL);
+//     const engine = configureSyncEngine({
+//       url: SYNC_URL,
+//       network: [wsAdapter as any as NetworkAdapterInterface],
+//       storage: new NodeFSStorageAdapter(),
+//     });
+//
+//     // Add timeout to prevent hanging
+//     const timeout = new Promise((_, reject) =>
+//       setTimeout(() => reject(new Error("Keepsync timeout")), 5000),
+//     );
+//
+//     await Promise.race([engine.whenReady(), timeout]);
+//     console.log("✅ Keepsync engine is ready");
+//   } catch (error) {
+//     console.log("⚠️  Keepsync not available, continuing without it...");
+//   }
+// }
 
 function printHelp(): void {
   console.log(`
@@ -279,13 +286,11 @@ Examples:
   `);
 }
 
-// Main execution
-if (require.main === module) {
+// Main execution - ES module equivalent of require.main === module
+if (import.meta.url.includes("orchestrator.ts")) {
   const config = parseArgs();
   const orchestrator = new Orchestrator(config);
-  await startKeepsync();
   orchestrator.execute().catch(console.error);
 }
 
 export { Orchestrator, OrchestratorConfig };
-

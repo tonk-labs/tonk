@@ -3,7 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "node",
-    "lib": ["ES2022", "DOM"],
+    "lib": ["ES2022"],
     "outDir": "./dist",
     "rootDir": "./",
     "strict": true,
@@ -32,9 +32,6 @@
   },
   "include": [
     "src/**/*",
-    "orchestrator.ts",
-    "setup.ts",
-    "workflow.ts"
   ],
   "exclude": [
     "node_modules",

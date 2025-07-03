@@ -1,9 +1,9 @@
 import * as http from "http";
 import dotenv from "dotenv";
 import {
-  ClaudeCodeProvider,
+  ClaudeApiProvider,
   type LLMRequest,
-} from "./services/claudeCodeProvider";
+} from "./services/claudeApiProvider";
 import { configureSyncEngine } from "@tonk/keepsync";
 import { NetworkAdapterInterface } from "@automerge/automerge-repo";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
@@ -35,8 +35,8 @@ interface WorkerConfig {
   port: number;
 }
 
-// Initialize Claude Code provider
-const claudeProvider = new ClaudeCodeProvider({
+// Initialize Claude API provider
+const claudeProvider = new ClaudeApiProvider({
   workingDirectory: process.cwd(),
   maxTurns: 10,
   verbose: false,
@@ -199,6 +199,7 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
       // Handle graceful shutdown
       const cleanup = async () => {
         console.log("Shutting down...");
+        await claudeProvider.cleanup();
         process.exit(0);
       };
 

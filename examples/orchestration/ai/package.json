@@ -27,11 +27,12 @@
     "worker.config.js"
   ],
   "dependencies": {
-    "@anthropic-ai/claude-code": "^1.0.40",
+    "@anthropic-ai/sdk": "^0.33.1",
     "@automerge/automerge-repo": "^1.2.1",
     "@automerge/automerge-repo-network-websocket": "^1.2.1",
     "@automerge/automerge-repo-storage-nodefs": "^1.2.1",
     "@chroma-core/default-embed": "^0.1.8",
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "@tonk/keepsync": "^0.4.8",
     "child_process": "^1.0.2",
     "chromadb": "^3.0.3",

@@ -77,12 +77,16 @@ export class ClaudeCodeProvider {
 
     const queryOptions = this.buildQueryOptions(request);
 
+    console.log("🔍 Claude Code query options:", JSON.stringify(queryOptions, null, 2));
+    console.log("🔍 Claude Code prompt:", request.prompt);
+
     try {
       for await (const message of query({
         prompt: request.prompt,
         abortController: request.abortController || new AbortController(),
         options: queryOptions,
       })) {
+        console.log("📨 Claude Code message:", JSON.stringify(message, null, 2));
         // Extract text content from assistant messages
         if (message.type === "assistant" && message.message?.content) {
           for (const block of message.message.content) {
@@ -105,6 +109,10 @@ export class ClaudeCodeProvider {
         success: true,
       };
     } catch (error) {
+      console.error("❌ Claude Code query error:", error);
+      if (error instanceof Error) {
+        console.error("❌ Error stack:", error.stack);
+      }
       return {
         content: "",
         ...(totalCostUsd !== undefined && { totalCostUsd }),

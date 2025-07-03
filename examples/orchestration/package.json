@@ -7,9 +7,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/orchestrator.js",
-    "dev": "tsx orchestrator.ts",
+    "dev": "tsx src/orchestrator.ts",
     "setup": "tsx setup.ts",
-    "orchestrate": "tsx orchestrator.ts",
+    "orchestrate": "tsx src/orchestrator.ts",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"

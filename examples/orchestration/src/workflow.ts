@@ -21,7 +21,7 @@ type Job = {
 
 type Workflow = Job[];
 
-const workflow: Workflow = [
+export const workflow: Workflow = [
   {
     jobId: 0,
     context: {
