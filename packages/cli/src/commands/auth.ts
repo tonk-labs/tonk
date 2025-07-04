@@ -4,7 +4,6 @@ import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
-  shutdownAnalytics,
 } from '../utils/analytics.js';
 
 // Lazy-load tonkAuth to prevent initialization on import
@@ -40,11 +39,12 @@ authCommand
   .description('Login to your Tonk account')
   .action(async () => {
     const startTime = Date.now();
+    let tonkAuth: any = null;
 
     try {
       trackCommand('auth-login', {});
 
-      const tonkAuth = await getTonkAuth();
+      tonkAuth = await getTonkAuth();
       await tonkAuth.ensureReady();
 
       if (tonkAuth.isSignedIn) {
@@ -58,7 +58,8 @@ authCommand
           hasActiveSubscription: tonkAuth.activeSubscription,
           userName: tonkAuth.friendlyName,
         });
-        await shutdownAnalytics();
+        await tonkAuth.destroy();
+        return;
       }
 
       console.log("\n🗺️ Great, let's sign you in using your browser!");
@@ -78,8 +79,9 @@ authCommand
         console.error(
           chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`),
         );
-        await shutdownAnalytics();
+        await tonkAuth.destroy();
         process.exitCode = 1;
+        return;
       }
 
       console.log(`💌 YAAY! Good to have you ${tonkAuth.friendlyName}!`);
@@ -90,7 +92,7 @@ authCommand
         hasActiveSubscription: tonkAuth.activeSubscription,
         userName: tonkAuth.friendlyName,
       });
-      await shutdownAnalytics();
+      await tonkAuth.destroy();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('auth-login', error as Error, duration, {
@@ -100,7 +102,9 @@ authCommand
         chalk.red('An unexpected error occurred during login:'),
         error,
       );
-      await shutdownAnalytics();
+      if (tonkAuth) {
+        await tonkAuth.destroy();
+      }
       process.exitCode = 1;
     }
   });
@@ -110,11 +114,12 @@ authCommand
   .description('Logout from your Tonk account')
   .action(async () => {
     const startTime = Date.now();
+    let tonkAuth: any = null;
 
     try {
       trackCommand('auth-logout', {});
 
-      const tonkAuth = await getTonkAuth();
+      tonkAuth = await getTonkAuth();
       await tonkAuth.ensureReady();
 
       if (!tonkAuth.isSignedIn) {
@@ -124,7 +129,8 @@ authCommand
         trackCommandSuccess('auth-logout', duration, {
           wasAlreadySignedOut: true,
         });
-        await shutdownAnalytics();
+        await tonkAuth.destroy();
+        return;
       }
 
       const name = tonkAuth.friendlyName;
@@ -149,8 +155,9 @@ authCommand
             `Failed to logout from Tonk: ${res.error || 'Unknown error'}`,
           ),
         );
-        await shutdownAnalytics();
+        await tonkAuth.destroy();
         process.exitCode = 1;
+        return;
       }
 
       console.log(`👋❤️😮‍💨 Ciao ${name}`);
@@ -161,7 +168,7 @@ authCommand
         userName: name,
         hadActiveSubscription,
       });
-      await shutdownAnalytics();
+      await tonkAuth.destroy();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('auth-logout', error as Error, duration, {
@@ -171,7 +178,9 @@ authCommand
         chalk.red('An unexpected error occurred during logout:'),
         error,
       );
-      await shutdownAnalytics();
+      if (tonkAuth) {
+        await tonkAuth.destroy();
+      }
       process.exitCode = 1;
     }
   });
@@ -181,11 +190,12 @@ authCommand
   .description('Show your authentication status')
   .action(async () => {
     const startTime = Date.now();
+    let tonkAuth: any = null;
 
     try {
       trackCommand('auth-status', {});
 
-      const tonkAuth = await getTonkAuth();
+      tonkAuth = await getTonkAuth();
       await tonkAuth.ensureReady();
 
       if (tonkAuth.isSignedIn) {
@@ -210,7 +220,7 @@ authCommand
         });
       }
 
-      await shutdownAnalytics();
+      await tonkAuth.destroy();
     } catch (error) {
       const duration = Date.now() - startTime;
       trackCommandError('auth-status', error as Error, duration, {
@@ -220,7 +230,9 @@ authCommand
         chalk.red('An unexpected error occurred while checking status:'),
         error,
       );
-      await shutdownAnalytics();
+      if (tonkAuth) {
+        await tonkAuth.destroy();
+      }
       process.exitCode = 1;
     }
   });

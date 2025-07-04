@@ -17,11 +17,16 @@ async function getAuthHook() {
   const {authHook} = await import('../lib/tonkAuth.js');
   return authHook;
 }
+// Lazy-load tonkAuth to get auth token
+async function getTonkAuth() {
+  const {tonkAuth} = await import('../lib/tonkAuth.js');
+  return tonkAuth;
+}
 import {getDeploymentServiceUrl, config} from '../config/environment.js';
+import {fetchUserServers} from '../utils/serverUtils.js';
 
 interface DeployOptions {
   name?: string;
-  server?: string;
   region?: string;
   memory?: string;
   cpus?: string;
@@ -54,9 +59,10 @@ async function checkDeploymentService(): Promise<void> {
     );
     await shutdownAnalytics();
     process.exitCode = 1;
-    return;
+    throw error; // Re-throw to be caught by the caller
   }
 }
+
 
 /**
  * Reads the tonk.config.json file to get project information
@@ -209,39 +215,12 @@ async function deployBundle(
     spinner.text = 'Creating app bundle...';
     const bundlePath = await createAppBundle();
 
-    // Stop spinner before prompting for access code
-    spinner.stop();
-
-    // Prompt for access code and server PIN
-    const {accessCode, serverPin} = await inquirer.prompt([
-      {
-        type: 'password',
-        name: 'accessCode',
-        message: 'Enter your access code:',
-        mask: '*',
-        validate: (input: string) => {
-          if (!input || input.trim().length === 0) {
-            return 'Access code is required';
-          }
-          return true;
-        },
-      },
-      {
-        type: 'password',
-        name: 'serverPin',
-        message: 'Enter the server PIN:',
-        mask: '*',
-        validate: (input: string) => {
-          if (!input || input.trim().length === 0) {
-            return 'Server PIN is required';
-          }
-          return true;
-        },
-      },
-    ]);
-
-    // Restart spinner for upload
-    spinner.start();
+    // Get auth token
+    const tonkAuth = await getTonkAuth();
+    const authToken = await tonkAuth.getAuthToken();
+    if (!authToken) {
+      throw new Error('Failed to get authentication token');
+    }
 
     // Prepare form data
     const formData = new FormData();
@@ -255,8 +234,6 @@ async function deployBundle(
       JSON.stringify({
         bundleName,
         serverName,
-        accessCode: accessCode.trim(),
-        serverPin: serverPin.trim(),
         deployType: 'bundle',
         tonkConfig,
         packageJson,
@@ -268,6 +245,9 @@ async function deployBundle(
     const deploymentServiceUrl = getDeploymentServiceUrl();
     const response = await fetch(`${deploymentServiceUrl}/deploy-bundle`, {
       method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+      },
       body: formData,
     });
 
@@ -295,15 +275,18 @@ async function deployBundle(
  */
 async function handleDeployCommand(options: DeployOptions): Promise<void> {
   const startTime = Date.now();
+  let tonkAuth: any = null;
 
   try {
     // Run auth check (replaces the preAction hook)
     const authHook = await getAuthHook();
     await authHook();
+    
+    // Get TonkAuth instance for cleanup
+    tonkAuth = await getTonkAuth();
 
     trackCommand('deploy', {
       name: options.name,
-      server: options.server,
       region: options.region,
       memory: options.memory,
       cpus: options.cpus,
@@ -318,6 +301,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     try {
       await checkDeploymentService();
     } catch (error) {
+      if (tonkAuth) tonkAuth.destroy();
       return; // Early return after checkDeploymentService handles the error
     }
 
@@ -326,23 +310,42 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     const packageJson = readPackageJson();
     const bundleName = determineAppName(options, tonkConfig, packageJson);
 
-    // Determine server name
-    let serverName = options.server;
-    if (!serverName) {
-      const {inputServer} = await inquirer.prompt([
+    // Fetch user's servers and let them select
+    console.log(chalk.blue('Fetching your servers...'));
+    let userServers: string[] = [];
+    try {
+      userServers = await fetchUserServers();
+    } catch (error) {
+      console.error(
+        chalk.red(`Error fetching servers: ${error instanceof Error ? error.message : String(error)}`),
+      );
+      await shutdownAnalytics();
+      if (tonkAuth) tonkAuth.destroy();
+      process.exitCode = 1;
+      return;
+    }
+
+    let serverName: string;
+    if (userServers.length === 0) {
+      console.log(chalk.yellow('\nNo servers found in your account.'));
+      console.log(chalk.blue('Create a server first using: tonk server create'));
+      await shutdownAnalytics();
+      if (tonkAuth) tonkAuth.destroy();
+      process.exitCode = 1;
+      return;
+    } else if (userServers.length === 1) {
+      serverName = userServers[0];
+      console.log(chalk.green(`✓ Using your server: ${serverName}`));
+    } else {
+      const {selectedServer} = await inquirer.prompt([
         {
-          type: 'input',
-          name: 'inputServer',
-          message: 'Enter your Tonk server name:',
-          validate: (input: string) => {
-            if (!input || input.trim().length === 0) {
-              return 'Server name is required';
-            }
-            return true;
-          },
+          type: 'list',
+          name: 'selectedServer',
+          message: `Select a server to deploy to (${userServers.length} available):`,
+          choices: userServers,
         },
       ]);
-      serverName = inputServer.trim();
+      serverName = selectedServer;
     }
 
     console.log(chalk.green(`✓ Bundle name: ${bundleName}`));
@@ -362,6 +365,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       if (!confirm) {
         console.log(chalk.yellow('Deployment cancelled'));
         await shutdownAnalytics();
+        if (tonkAuth) tonkAuth.destroy();
         return;
       }
     }
@@ -382,11 +386,11 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       remote: options.remote,
     });
     await shutdownAnalytics();
+    if (tonkAuth) tonkAuth.destroy();
   } catch (error) {
     const duration = Date.now() - startTime;
     trackCommandError('deploy', error as Error, duration, {
       name: options.name,
-      server: options.server,
       region: options.region,
     });
 
@@ -396,17 +400,17 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       ),
     );
     await shutdownAnalytics();
+    if (tonkAuth) tonkAuth.destroy();
     process.exitCode = 1;
   }
 }
 
 export const deployCommand = new Command('deploy')
-  .description('Deploy a Tonk bundle to an existing server')
+  .description('Deploy a Tonk bundle to one of your servers')
   .option(
     '-n, --name <name>',
     'Name for the deployed bundle (defaults to package.json name)',
   )
-  .option('-s, --server <server>', 'Name of the Tonk server to deploy to')
   .option(
     '-r, --region <region>',
     'Region to deploy to',

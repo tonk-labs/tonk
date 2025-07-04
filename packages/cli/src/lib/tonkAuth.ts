@@ -2,6 +2,7 @@ import {RESPONSES} from '../utils/messages.js';
 import {TonkAuth} from '@tonk/tonk-auth';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
+import {shutdownAnalytics} from '../utils/analytics.js';
 
 // TonkAuth wrapped in a Singleton class with (non-blocking) async initilization keeps the CLI load snappy 🐢
 class TonkAuthManager {
@@ -82,6 +83,25 @@ class TonkAuthManager {
       return {ok: false, error: String(error)};
     }
   }
+
+  async getAuthToken(): Promise<string | null> {
+    await this.ensureReady();
+    if (!this.instance?.__session) return null;
+    
+    try {
+      return await this.instance.__session.getToken();
+    } catch (error) {
+      console.error('Failed to get auth token:', error);
+      return null;
+    }
+  }
+
+  async destroy(): Promise<void> {
+    if (this.instance && typeof this.instance.destroy === 'function') {
+      this.instance.destroy();
+    }
+    await shutdownAnalytics();
+  }
 }
 
 export const tonkAuth = new TonkAuthManager();
@@ -96,35 +116,55 @@ export const authHook = async () => {
 
   if (checkAuth()) return;
 
-  console.log(chalk.yellow(RESPONSES.needSubscription));
-  const {confirm} = await inquirer.prompt([
-    {
-      type: 'confirm',
-      name: 'confirm',
-      message: 'Do you want to login?',
-      default: true,
-    },
-  ]);
-
-  if (!confirm) {
-    console.log(chalk.yellow('Authentication required. Exiting.'));
+  // Check if user is signed in but doesn't have active subscription
+  if (tonkAuth.isSignedIn && !tonkAuth.activeSubscription) {
+    console.log(chalk.yellow(RESPONSES.needSubscription));
+    console.log(chalk.yellow('Please upgrade your subscription to use Tonk hosting features.'));
+    await tonkAuth.destroy();
     process.exit(1);
   }
 
-  console.log("\n🗺️ Great, let's sign you in using your browser!");
-  const res = await tonkAuth.login();
+  // User is not signed in at all
+  if (!tonkAuth.isSignedIn) {
+    console.log(chalk.yellow('You need to be signed in to use Tonk hosting features.'));
+    const {confirm} = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'confirm',
+        message: 'Do you want to login?',
+        default: true,
+      },
+    ]);
 
-  if (!res.ok) {
-    console.error(
-      chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`),
+    if (!confirm) {
+      console.log(chalk.yellow('Authentication required. Exiting.'));
+      await tonkAuth.destroy();
+      process.exit(1);
+    }
+
+    console.log("\n🗺️ Great, let's sign you in using your browser!");
+    const res = await tonkAuth.login();
+
+    if (!res.ok) {
+      console.error(
+        chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`),
+      );
+      await tonkAuth.destroy();
+      process.exit(1);
+    }
+
+    console.log(
+      chalk.green(
+        `🎉 Welcome back to Tonk ${tonkAuth.friendlyName || 'user'}!\n`,
+      ),
     );
-    process.exit(1);
-  }
 
-  console.log(
-    chalk.green(
-      `🎉 Welcome back to Tonk ${tonkAuth.friendlyName || 'user'}!\n`,
-    ),
-  );
+    // Check subscription status after login
+    if (!tonkAuth.activeSubscription) {
+      console.log(chalk.yellow('Please upgrade your subscription to use Tonk hosting features.'));
+      await tonkAuth.destroy();
+      process.exit(1);
+    }
+  }
 };
 

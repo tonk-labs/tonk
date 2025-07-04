@@ -12,7 +12,6 @@ const startDockerizedServer = async (): Promise<void> => {
     const bundlesPath = `${persistencePath}/bundles`;
     const storesPath = `${persistencePath}/stores`;
     const configPath = `${persistencePath}/root.json`;
-    const serverPin = process.env.SERVER_PIN;
 
     // Ensure the persistence directory exists
     if (!fs.existsSync(persistencePath)) {
@@ -39,15 +38,10 @@ const startDockerizedServer = async (): Promise<void> => {
       chalk.bold.green(persistencePath),
     );
     console.log(chalk.cyan('   Config path:'), chalk.bold.green(configPath));
-    console.log(
-      chalk.cyan('   Server PIN:'),
-      serverPin ? chalk.bold.green('✓ Configured') : chalk.yellow('⚠ Not set'),
-    );
 
     // Create server configuration
     const serverConfig: ServerOptions = {
       persistencePath,
-      ...(serverPin && {serverPin}),
     };
 
     console.log(chalk.blue('Starting TonkServer in Docker...'));
