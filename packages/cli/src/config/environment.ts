@@ -4,6 +4,7 @@
  */
 
 import {config as loadDotenv} from 'dotenv';
+import {existsSync} from 'fs';
 import path from 'path';
 import {fileURLToPath} from 'url';
 
@@ -12,9 +13,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const cliRoot = path.resolve(__dirname, '..');
 
-// Try to load .env from the CLI package root
+// Try to load .env from the CLI package root only if it exists
 const envPath = path.join(cliRoot, '.env');
-loadDotenv({path: envPath});
+if (existsSync(envPath)) {
+  loadDotenv({path: envPath});
+}
 
 export interface TonkConfig {
   deployment: {
