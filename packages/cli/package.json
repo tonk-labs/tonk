@@ -1,6 +1,6 @@
 {
   "name": "@tonk/cli",
-  "version": "0.2.23",
+  "version": "0.2.26",
   "description": "The Tonk stack command line utility",
   "type": "module",
   "bin": {
@@ -37,11 +37,11 @@
   },
   "dependencies": {
     "@tonk/server": "^0.2.15",
-    "@tonk/tonk-auth": "^0.2.0",
+    "@tonk/tonk-auth": "^0.2.1",
     "chalk": "^5.3.0",
     "cli-table3": "^0.6.5",
     "commander": "^11.1.0",
-    "dotenv": "^16.4.7",
+    "dotenv": "^17.0.1",
     "env-paths": "^3.0.0",
     "fastmcp": "^1.20.2",
     "form-data-encoder": "^4.0.2",
