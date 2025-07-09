@@ -41,15 +41,16 @@ program.addCommand(authCommand);
 program.addCommand(createCommand);
 program.addCommand(deployCommand);
 program.addCommand(serverCommand);
-// Add bundle management commands
+program.addCommand(workerCommand);
+program.addCommand(proxyCommand);
+
+// Bundle management commands
 program.addCommand(pushCommand);
 program.addCommand(startCommand);
 program.addCommand(psCommand);
 program.addCommand(lsCommand);
 program.addCommand(killCommand);
 program.addCommand(deleteCommand);
-program.addCommand(proxyCommand);
-program.addCommand(workerCommand);
 
 const startServer = async () => {
   const startTime = Date.now();

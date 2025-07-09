@@ -159,7 +159,18 @@ async function createServer(
     const result: any = await response.json();
 
     if (!response.ok || !result.success) {
-      throw new Error(result.error || 'Server creation failed');
+      const errorMessage = result.error || 'Server creation failed';
+      
+      // Check for name conflict errors
+      if (errorMessage.toLowerCase().includes('already exists') || 
+          errorMessage.toLowerCase().includes('name is taken') ||
+          errorMessage.toLowerCase().includes('name already taken') ||
+          errorMessage.toLowerCase().includes('already in use') ||
+          errorMessage.toLowerCase().includes('conflict')) {
+        throw new Error(`Server name "${serverName}" is already taken. Please choose a different server name and try again.`);
+      }
+      
+      throw new Error(errorMessage);
     }
 
     spinner.succeed('Server created successfully!');
