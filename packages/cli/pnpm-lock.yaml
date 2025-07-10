@@ -12,8 +12,8 @@ importers:
         specifier: ^0.2.15
         version: 0.2.15(@types/node@22.15.32)(typescript@5.8.3)
       '@tonk/tonk-auth':
-        specifier: ^0.2.1
-        version: 0.2.1(@types/react@18.3.23)(react-dom@19.1.0(react@18.3.1))(react@18.3.1)(typescript@5.8.3)
+        specifier: ^0.2.2
+        version: 0.2.2(@types/react@18.3.23)(react-dom@19.1.0(react@18.3.1))(react@18.3.1)(typescript@5.8.3)
       chalk:
         specifier: ^5.3.0
         version: 5.4.1
@@ -1243,8 +1243,8 @@ packages:
   '@tonk/server@0.2.15':
     resolution: {integrity: sha512-uGBXP0LztSqrTQ3JMuPesxXPZFBcXPZJggy0R1DhGXtKRhY7n+Y5jfCYRt2L6Oki0DzNwLef5QRfPqZzDmmhuw==}
 
-  '@tonk/tonk-auth@0.2.1':
-    resolution: {integrity: sha512-P2rdry1nkQWrox0S+wtgLQL5jNl8fkw9kvDx+Vzq64YvGNaGPXQPrd9ImIbQS9Wr45b0pRTW6HVlKH+8bYONug==}
+  '@tonk/tonk-auth@0.2.2':
+    resolution: {integrity: sha512-9ZcbNm81yZsxlAYz/H/TwWbFcGVeMK+oem0xGFtsLjJtXpWNXcJThxXEd0G98w2i9i1ol74mLkGqqrODKwkdnw==}
     engines: {node: '>=22'}
     peerDependencies:
       typescript: ^5
@@ -5681,7 +5681,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@tonk/tonk-auth@0.2.1(@types/react@18.3.23)(react-dom@19.1.0(react@18.3.1))(react@18.3.1)(typescript@5.8.3)':
+  '@tonk/tonk-auth@0.2.2(@types/react@18.3.23)(react-dom@19.1.0(react@18.3.1))(react@18.3.1)(typescript@5.8.3)':
     dependencies:
       '@clack/prompts': 0.11.0
       '@clerk/clerk-js': 5.70.0(@types/react@18.3.23)(react-dom@19.1.0(react@18.3.1))(react@18.3.1)
