@@ -1,6 +1,6 @@
 {
   "name": "@tonk/create",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Bootstrap apps on the Tonk stack",
   "type": "module",
   "bin": {
@@ -27,8 +27,7 @@
     "!templates/**/yarn.lock",
     "!templates/**/dist/**",
     "!templates/**/dev-dist/**",
-    "!templates/**/.DS_Store",
-    "!templates/workspace"
+    "!templates/**/.DS_Store"
   ],
   "scripts": {
     "build": "tsup && chmod +x ./dist/create.js",
