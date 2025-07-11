@@ -21,6 +21,15 @@ async function getTonkAuth() {
 import {getDeploymentServiceUrl, config} from '../config/environment.js';
 import {fetchUserServers} from '../utils/serverUtils.js';
 
+// Privileged subdomain names that cannot be used as server names
+const PRIVILEGED_SUBDOMAINS = [
+  'accounts',
+  'clerk',
+  'clkmail',
+  'dashboard',
+  'tinyfoot',
+];
+
 interface ServerOptions {
   name?: string;
   region?: string;
@@ -52,6 +61,21 @@ async function checkDeploymentService(): Promise<void> {
 }
 
 /**
+ * Validates that a server name is not a privileged subdomain
+ */
+function validateServerName(serverName: string): string | boolean {
+  if (!serverName || serverName.trim().length === 0) {
+    return 'Server name is required';
+  }
+
+  if (PRIVILEGED_SUBDOMAINS.includes(serverName.toLowerCase())) {
+    return `Server name "${serverName}" is reserved and cannot be used. Please choose a different name.`;
+  }
+
+  return true;
+}
+
+/**
  * Gets server name from user if not provided
  */
 async function getServerName(serverName?: string): Promise<string> {
@@ -64,18 +88,12 @@ async function getServerName(serverName?: string): Promise<string> {
       type: 'input',
       name: 'inputName',
       message: 'Enter your Tonk server name:',
-      validate: (input: string) => {
-        if (!input || input.trim().length === 0) {
-          return 'Server name is required';
-        }
-        return true;
-      },
+      validate: validateServerName,
     },
   ]);
 
   return inputName.trim();
 }
-
 
 /**
  * Deletes a server
@@ -99,7 +117,7 @@ async function deleteServer(serverName: string): Promise<void> {
   const response = await fetch(`${getDeploymentServiceUrl()}/delete-server`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${authToken}`,
+      Authorization: `Bearer ${authToken}`,
     },
     body: formData,
   });
@@ -124,7 +142,6 @@ async function createServer(
   const spinner = ora('Creating Tonk server...').start();
 
   try {
-
     // Get auth token
     const tonkAuth = await getTonkAuth();
     const authToken = await tonkAuth.getAuthToken();
@@ -151,7 +168,7 @@ async function createServer(
     const response = await fetch(`${getDeploymentServiceUrl()}/create-server`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${authToken}`,
+        Authorization: `Bearer ${authToken}`,
       },
       body: formData,
     });
@@ -160,16 +177,20 @@ async function createServer(
 
     if (!response.ok || !result.success) {
       const errorMessage = result.error || 'Server creation failed';
-      
+
       // Check for name conflict errors
-      if (errorMessage.toLowerCase().includes('already exists') || 
-          errorMessage.toLowerCase().includes('name is taken') ||
-          errorMessage.toLowerCase().includes('name already taken') ||
-          errorMessage.toLowerCase().includes('already in use') ||
-          errorMessage.toLowerCase().includes('conflict')) {
-        throw new Error(`Server name "${serverName}" is already taken. Please choose a different server name and try again.`);
+      if (
+        errorMessage.toLowerCase().includes('already exists') ||
+        errorMessage.toLowerCase().includes('name is taken') ||
+        errorMessage.toLowerCase().includes('name already taken') ||
+        errorMessage.toLowerCase().includes('already in use') ||
+        errorMessage.toLowerCase().includes('conflict')
+      ) {
+        throw new Error(
+          `Server name "${serverName}" is already taken. Please choose a different server name and try again.`,
+        );
       }
-      
+
       throw new Error(errorMessage);
     }
 
@@ -191,9 +212,7 @@ async function createServer(
 /**
  * Lists bundles on a remote server
  */
-async function listRemoteBundles(
-  serverName: string,
-): Promise<void> {
+async function listRemoteBundles(serverName: string): Promise<void> {
   // Get auth token
   const tonkAuth = await getTonkAuth();
   const authToken = await tonkAuth.getAuthToken();
@@ -213,7 +232,7 @@ async function listRemoteBundles(
   const response = await fetch(`${getDeploymentServiceUrl()}/server-action`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${authToken}`,
+      Authorization: `Bearer ${authToken}`,
     },
     body: formData,
   });
@@ -237,9 +256,7 @@ async function listRemoteBundles(
 /**
  * Lists running bundles on a remote server
  */
-async function listRunningBundles(
-  serverName: string,
-): Promise<void> {
+async function listRunningBundles(serverName: string): Promise<void> {
   // Get auth token
   const tonkAuth = await getTonkAuth();
   const authToken = await tonkAuth.getAuthToken();
@@ -259,7 +276,7 @@ async function listRunningBundles(
   const response = await fetch(`${getDeploymentServiceUrl()}/server-action`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${authToken}`,
+      Authorization: `Bearer ${authToken}`,
     },
     body: formData,
   });
@@ -313,7 +330,7 @@ async function deleteRemoteBundle(
   const response = await fetch(`${getDeploymentServiceUrl()}/delete-bundle`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${authToken}`,
+      Authorization: `Bearer ${authToken}`,
     },
     body: formData,
   });
@@ -341,7 +358,7 @@ async function handleServerCreateCommand(
     // Run auth check (replaces the preAction hook)
     const authHook = await getAuthHook();
     await authHook();
-    
+
     // Get TonkAuth instance for cleanup
     tonkAuth = await getTonkAuth();
 
@@ -367,18 +384,19 @@ async function handleServerCreateCommand(
           type: 'input',
           name: 'inputName',
           message: 'Enter server name:',
-          validate: (input: string) => {
-            if (!input || input.trim().length === 0) {
-              return 'Server name is required';
-            }
-            return true;
-          },
+          validate: validateServerName,
         },
       ]);
       serverName = inputName
         .trim()
         .replace(/[^a-zA-Z0-9-]/g, '-')
         .toLowerCase();
+    } else {
+      // Validate provided server name
+      const validation = validateServerName(serverName);
+      if (validation !== true) {
+        throw new Error(validation as string);
+      }
     }
 
     console.log(chalk.green(`✓ Server name: ${serverName}`));
@@ -463,7 +481,7 @@ const serverLsCommand = new Command('ls')
       // Run auth check (replaces the preAction hook)
       const authHook = await getAuthHook();
       await authHook();
-      
+
       // Get TonkAuth instance for cleanup
       tonkAuth = await getTonkAuth();
 
@@ -517,7 +535,7 @@ const serverPsCommand = new Command('ps')
       // Run auth check (replaces the preAction hook)
       const authHook = await getAuthHook();
       await authHook();
-      
+
       // Get TonkAuth instance for cleanup
       tonkAuth = await getTonkAuth();
 
@@ -570,14 +588,18 @@ const serverDestroyCommand = new Command('destroy')
       // Run auth check
       const authHook = await getAuthHook();
       await authHook();
-      
+
       // Get TonkAuth instance for cleanup
       tonkAuth = await getTonkAuth();
 
       trackCommand('server-destroy', {});
 
       console.log(chalk.red('⚠️  Server Destruction\n'));
-      console.log(chalk.yellow('WARNING: This will permanently delete your server and all data!'));
+      console.log(
+        chalk.yellow(
+          'WARNING: This will permanently delete your server and all data!',
+        ),
+      );
       console.log(chalk.yellow('This action cannot be undone.\n'));
 
       // Check prerequisites
@@ -590,7 +612,9 @@ const serverDestroyCommand = new Command('destroy')
         userServers = await fetchUserServers();
       } catch (error) {
         console.error(
-          chalk.red(`Error fetching servers: ${error instanceof Error ? error.message : String(error)}`),
+          chalk.red(
+            `Error fetching servers: ${error instanceof Error ? error.message : String(error)}`,
+          ),
         );
         await shutdownAnalytics();
         process.exitCode = 1;
@@ -614,13 +638,13 @@ const serverDestroyCommand = new Command('destroy')
             default: false,
           },
         ]);
-        
+
         if (!confirmSingle) {
           console.log(chalk.yellow('Server deletion cancelled'));
           await shutdownAnalytics();
           return;
         }
-        
+
         serverName = userServers[0];
       } else {
         const {selectedServer} = await inquirer.prompt([
@@ -694,7 +718,7 @@ const serverRmCommand = new Command('rm')
       // Run auth check (replaces the preAction hook)
       const authHook = await getAuthHook();
       await authHook();
-      
+
       // Get TonkAuth instance for cleanup
       tonkAuth = await getTonkAuth();
 

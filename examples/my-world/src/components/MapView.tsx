@@ -32,7 +32,7 @@ declare global {
 
 const getMapKitToken = async (): Promise<string> => {
   const token =
-    "eyJraWQiOiI3VDU0M0RUWjIyIiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzQ5MTE4NjQzLCJleHAiOjE3NDk3OTc5OTl9.DVld6WskUrlqbm2Cxqba_kbAzkezOihjhQT_RSc3fBGtNvovwxwIVGLnk0N3IPcpmXBTgEpoBZ5zi4y3omcI5A";
+    "eyJraWQiOiI3RlFUWllLS1k1IiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzUyMTY0OTk2LCJvcmlnaW4iOiIqLnRvbmsueHl6In0.T2u2q3OGBXg1staBZZpmC9TISjH0G-G_-fvIDdfTUksz3S9kLrHFczwNIQEWD7igH_vz50MjpgizVV0TJF0Ljg";
 
   if (!token) {
     console.error("MapKit token not found in environment variables");
