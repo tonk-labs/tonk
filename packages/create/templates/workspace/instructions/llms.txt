@@ -27,12 +27,10 @@ When users ask what this workspace is for or what you can help them with, explai
 - If the user is experiencing issues with syncing, it might be because the Tonk daemon is not running
 - Starts the local Tonk daemon
 
-### 2. `tonk create`
+### 2. `tonk-create`
 Use this when users need functionality or data that doesn't already exist in the workspace.
-- Launches an interactive CLI form to guide setup
-  - Gives the user an option to create a new **view** (React applications for user interfaces)
-  - Gives the user an option to create a new **worker** (background processes for data fetching/storage)
-- Choose this when users request new features, data sources, or UI components
+- Ask the user for the name and escription of the worker they are creating
+- Choose this when users request data sources (tonk-create -t workers -n <name> -d <description>), or UI components (tonk-create -t react -n <name> -d <description>)
 
 ### 3. `tonk push`
 Use to prepare a view bundle for sharing (primarily for use with `tonk proxy`).
@@ -70,7 +68,7 @@ Creates a temporary reverse proxy for sharing (60-minute limit).
 ## Worker Management
 
 ### Worker Lifecycle Options
-After creating a worker with `tonk create`, you have two approaches:
+After creating a worker with `tonk-create`, you have two approaches:
 
 **Option A: Manual Development**
 - Run the worker manually using `pnpm dev` in the project directory
@@ -102,7 +100,7 @@ After creating a worker with `tonk create`, you have two approaches:
 
 When a user requests something, ask yourself:
 
-1. **Do they need new functionality?** → Use `tonk create`
+1. **Do they need new functionality?** → Use `tonk-create`
 2. **Do they want to share something temporarily?** → Use `tonk push`, then `tonk start`, then `tonk proxy`
 3. **Do they need to manage running services?** → You can use typical react commands for local development or for shareable bundles use `tonk ps`, `tonk start`, `tonk kill`
 4. **Do they need background data processing?** → Create and register workers
@@ -133,7 +131,7 @@ This workflow is ideal for:
 ## Common Workflows
 
 **New Feature Development:**
-2. `tonk create` → Create view/worker as needed
+2. `tonk-create` → Create view/worker as needed
 3. Develop and test locally
 4. Optionally use `tonk proxy` for mobile testing
 
@@ -143,7 +141,7 @@ This workflow is ideal for:
 3. `tonk proxy <bundle-name>` → Create 60-minute shareable link
 
 **Background Data Processing:**
-1. `tonk create` → Create worker
+1. `tonk-create` → Create worker
 2. `tonk worker register` → Register for background running
 3. `tonk worker start <nameOrId>` → Start the service
 

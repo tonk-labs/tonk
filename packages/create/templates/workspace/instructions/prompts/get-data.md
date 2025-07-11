@@ -8,8 +8,8 @@ This is a collaborative process. Ask questions before making assumptions. Always
 
 ## Before You Start
 
-1. **Location**: ALWAYS run `tonk create` from inside the `workers/` directory
-2. **Creation**: Workers are created using `tonk create` - this scaffolds the complete structure
+1. **Location**: ALWAYS run `tonk-create` from inside the `workers/` directory
+2. **Creation**: Workers are created using `tonk-create` - this scaffolds the complete structure
 3. **Directory**: Ensure the new worker is created as a subdirectory within `workers/`
 
 ## Key Architecture Patterns
@@ -34,7 +34,7 @@ A Tonk worker includes:
 
 ```bash
 cd workers/  # CRITICAL: Must be in workers directory
-tonk create  # Select "worker" when prompted
+tonk-create  # Select "worker" when prompted
 cd worker-name/
 pnpm install
 ```
@@ -136,9 +136,8 @@ if (!complete) {
 const googleCreds = await credentialsManager.getCredentialByName(
   "Google Service Account"
 );
-const openaiKey = await credentialsManager.getCredentialByName(
-  "OpenAI API Key"
-);
+const openaiKey =
+  await credentialsManager.getCredentialByName("OpenAI API Key");
 ```
 
 ### Credential Types Supported

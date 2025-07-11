@@ -8,8 +8,8 @@ This is a collaborative process. Ask questions before making assumptions. Always
 
 ## Before You Start
 
-1. **Location**: ALWAYS run `tonk create` from inside the `views/` directory
-2. **Creation**: Views are created using `tonk create` - this scaffolds the complete structure
+1. **Location**: ALWAYS run `tonk-create` from inside the `views/` directory
+2. **Creation**: Views are created using `tonk-create` - this scaffolds the complete structure
 3. **Directory**: Ensure the new view is created as a subdirectory within `views/`
 
 ## Key Architecture Patterns
@@ -43,7 +43,7 @@ A Tonk view includes:
 
 ```bash
 cd views/  # CRITICAL: Must be in views directory
-tonk create  # Select "react" when prompted
+tonk-create  # Select "react" when prompted
 cd view-name/
 pnpm install
 ```
@@ -177,6 +177,7 @@ I'm helping you set up a new Tonk View. To scaffold it properly, I need a few de
 
 After collecting this information, I'll:
 
-- Run tonk create in /views
+- Make sure I know the name and description of the view
+- Run tonk-create -t react -n <name> -d <description> in /views
 - Begin coding the view structure
 - Create the implementation checklist at root of workspace project /checklist.md

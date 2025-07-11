@@ -10,7 +10,6 @@ const __dirname = path.dirname(__filename);
 // Define project subdirectories that should get their own .cursor/rules
 const PROJECT_SUBDIRS = [
   'packages/create/templates/react',
-  'packages/create/templates/node',
   'packages/create/templates/worker'
 ];
 
