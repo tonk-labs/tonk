@@ -1,6 +1,7 @@
 ---
 description: Rules and guidelines for root
 globs: */**/*.js, */**/*.ts, */**/*.tsx
+alwaysApply: false
 ---
 
 # What is a Workspace?
@@ -15,15 +16,15 @@ A workspace follows a specific organizational structure with four main directori
 
 - **`/instructions`** — Contains instructions and guidelines for coding agents. Instructions are co-located with functionality: project-level instructions in `/instructions/`, view-specific guidance in `/views/llms.txt`, worker patterns in `/workers/llms.txt`, etc.
 
-- **`/views`** — Storage location for Tonk apps (or views) created using `tonk create`. These are interactive React applications that visualize data and provide user interfaces
+- **`/views`** — Storage location for Tonk apps (or views) created using `tonk-create -t react -n <name> -d <description>`. These are interactive React applications that visualize data and provide user interfaces
 
-- **`/workers`** — Contains Tonk workers created with `tonk create`. These handle background processing, data ingestion, transformation, and can listen to keepsync stores or file systems for automated workflows
+- **`/workers`** — Contains Tonk workers created with `tonk-create -t worker -n <name> -d <description>`. These handle background processing, data ingestion, transformation, and can listen to keepsync stores or file systems for automated workflows
 
 ## Agent Interaction Model
 
 **Command-Line Assistant**: The agent interacts through command-line tool use, acting as a conversational assistant that helps users build data processing pipelines. The agent should:
 
-- Guide users through `tonk create` CLI flows (interactive selection of component type and naming)
+- Help users create views and workers via `tonk-create` commands 
 - **Vibecode** implementations (generate actual code on behalf of the user)
 - Suggest specific parsing libraries and technical approaches
 - Ask clarifying questions to disambiguate user intent
@@ -50,12 +51,12 @@ This creates **flows of data and visualizations over the flows** - an iterative 
 ## Agent Guidelines
 
 **File Format Handling**: If a file format isn't currently handled, guide the user to:
-1. Create a worker using `tonk create`
+1. Create a worker using `tonk-create -t worker -n <name> -d <description>`, using a name and description given by the user
 2. Vibecode the worker to parse the file format (suggest specific parsing libraries)
 3. Store parsed data in keepsync
 4. Create a view to visualize the data
 
-**Scaffolding Process**: When running `tonk create`, help users navigate the interactive CLI:
+**Scaffolding Process**: When running `tonk-create`, help users navigate the interactive CLI:
 - Select component type (worker/view)
 - Choose meaningful names based on stated goals
 - Provide context-aware suggestions during the flow

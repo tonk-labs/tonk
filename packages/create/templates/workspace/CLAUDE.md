@@ -10,15 +10,15 @@ A workspace follows a specific organizational structure with four main directori
 
 - **`/instructions`** — Contains instructions and guidelines for coding agents. Instructions are co-located with functionality: project-level instructions in `/instructions/`, view-specific guidance in `/views/llms.txt`, worker patterns in `/workers/llms.txt`, etc.
 
-- **`/views`** — Storage location for Tonk apps (or views) created using `tonk create`. These are interactive React applications that visualize data and provide user interfaces
+- **`/views`** — Storage location for Tonk apps (or views) created using `tonk-create`. These are interactive React applications that visualize data and provide user interfaces
 
-- **`/workers`** — Contains Tonk workers created with `tonk create`. These handle background processing, data ingestion, transformation, and can listen to keepsync stores or file systems for automated workflows
+- **`/workers`** — Contains Tonk workers created with `tonk-create`. These handle background processing, data ingestion, transformation, and can listen to keepsync stores or file systems for automated workflows
 
 ## Agent Interaction Model
 
 **Command-Line Assistant**: The agent interacts through command-line tool use, acting as a conversational assistant that helps users build data processing pipelines. The agent should:
 
-- Guide users through `tonk create` CLI flows (interactive selection of component type and naming)
+- Guide users through the process of creating views and workers
 - **Vibecode** implementations (generate actual code on behalf of the user)
 - Suggest specific parsing libraries and technical approaches
 - Ask clarifying questions to disambiguate user intent
@@ -45,15 +45,10 @@ This creates **flows of data and visualizations over the flows** - an iterative 
 ## Agent Guidelines
 
 **File Format Handling**: If a file format isn't currently handled, guide the user to:
-1. Create a worker using `tonk create`
+1. Create a worker using `tonk-create -t worker -n <name> -d <description of the worker>`
 2. Vibecode the worker to parse the file format (suggest specific parsing libraries)
 3. Store parsed data in keepsync
 4. Create a view to visualize the data
-
-**Scaffolding Process**: When running `tonk create`, help users navigate the interactive CLI:
-- Select component type (worker/view)
-- Choose meaningful names based on stated goals
-- Provide context-aware suggestions during the flow
 
 ## File Listening Pattern - IMPORTANT
 
@@ -105,7 +100,6 @@ The Tonk CLI provides essential commands for managing your workspace and applica
 - **`tonk -d`** — Run the Tonk daemon (background server for managing bundles and stores)
 - **`tonk hello`** — Say hello to start and launch the tonk daemon
 - **`tonk auth`** — Log in to your Tonk account
-- **`tonk create`** — Create a new tonk application or component
 - **`tonk deploy`** — Deploy a Tonk bundle to an existing server
 - **`tonk server`** — Manage Tonk servers
 
@@ -130,11 +124,11 @@ The Tonk CLI provides essential commands for managing your workspace and applica
 - **`tonk worker install <package>`** — Install and start a worker from npm
 - **`tonk worker init`** — Initialize a new worker configuration file
 
-### Create Command (`tonk create`)
+### Create Command (`tonk-create`)
 
 The create command scaffolds code for your Tonk projects:
 
-**Usage**: `tonk create [options]`
+**Usage**: `tonk-create [options]`
 
 **Options**:
 - `-v, --version` — Output the current version
@@ -150,12 +144,9 @@ The create command scaffolds code for your Tonk projects:
 
 **Examples**:
 ```bash
-# Interactive mode (prompts for choices)
-tonk create
-
 # Non-interactive mode
-tonk create -t react -n my-dashboard -d "Sales data visualization"
-tonk create --init -t workspace  # Initialize workspace in current directory
+tonk-create -t react -n my-dashboard -d "Sales data visualization"
+tonk-create --init -t workspace  # Initialize workspace in current directory
 ```
 
 ### Daemon Mode and Server Functionality
@@ -173,12 +164,12 @@ When working within a Tonk workspace, the LLM should understand these interactio
 
 ### Project Creation Workflow
 1. **Understand Requirements**: Determine if user needs data ingestion (worker), visualization (react), or full environment (workspace)
-2. **Guide CLI Usage**: Use `tonk create` with appropriate template and meaningful names
+2. **Guide CLI Usage**: Use `tonk-create` with appropriate template and meaningful names
 3. **Implement Logic**: Vibecode the functionality using established patterns and libraries
 4. **Register and Start**: For workers, use `tonk worker register` and `tonk worker start` to activate them
 
 ### Worker Management Patterns
-- **Development Cycle**: Create with `tonk create -t worker`, register with `tonk worker register`, start with `tonk worker start`
+- **Development Cycle**: Create with `tonk-create -t worker -n <name> -d <description>`, register with `tonk worker register`, start with `tonk worker start`
 - **Debugging**: Use `tonk worker logs <worker>` to view output and `tonk worker ping <worker>` to check status
 - **Monitoring**: Check `tonk worker ls` to see all registered workers and their states
 - **Cleanup**: Use `tonk worker stop <worker>` and `tonk worker rm <worker>` to remove unused workers

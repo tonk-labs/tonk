@@ -4,14 +4,14 @@
 Tonk workers are Node.js-based services that integrate with the Tonk ecosystem for building local-first applications. They provide HTTP API endpoints and integrate with KeepSync for distributed data synchronization using Automerge CRDTs.
 
 ## Getting Started
-The worker structure described in this guide is automatically created when you run `tonk create`. This command will guide you through the process of creating a new worker and scaffold a complete worker template folder with all the necessary files and configurations.
+The worker structure described in this guide is automatically created when you run `tonk-create`. This command will guide you through the process of creating a new worker and scaffold a complete worker template folder with all the necessary files and configurations.
 
-**IMPORTANT: Always run `tonk create` from inside the `workers/` directory to ensure the new worker is created in the correct location.**
+**IMPORTANT: Always run `tonk-create` from inside the `workers/` directory to ensure the new worker is created in the correct location.**
 
 To create a new worker:
 ```bash
 cd workers/
-tonk create
+tonk-create
 ```
 
 The CLI will prompt you to select "worker" as the project type and guide you through the setup process, generating the folder structure and files detailed below. The worker will be created as a subdirectory within `workers/`.

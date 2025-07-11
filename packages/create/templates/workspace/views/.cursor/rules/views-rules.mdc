@@ -1,6 +1,7 @@
 ---
 description: Rules and guidelines for root
 globs: */**/*.js, */**/*.ts, */**/*.tsx
+alwaysApply: false
 ---
 
 # Tonk View Architecture and Usage Guide
@@ -9,11 +10,11 @@ globs: */**/*.js, */**/*.ts, */**/*.tsx
 Tonk views are React-based frontend applications that integrate with the Tonk ecosystem for building local-first applications. They provide modern web UI/UX with real-time data synchronization using KeepSync and Automerge CRDTs, supporting offline-first collaborative experiences.
 
 ## Getting Started
-The view structure described in this guide is automatically created when you run `tonk create`. This command will guide you through the process of creating a new view and scaffold a complete React application template folder with all the necessary files and configurations.
+The view structure described in this guide is automatically created when you run `tonk-create`. This command will guide you through the process of creating a new view and scaffold a complete React application template folder with all the necessary files and configurations.
 
 To create a new view:
 ```bash
-tonk create
+tonk-create -t worker -n <name> -d <description>
 ```
 
 The CLI will prompt you to select "react" as the project type and guide you through the setup process, generating the folder structure and files detailed below.
