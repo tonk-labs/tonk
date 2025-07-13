@@ -69,7 +69,8 @@ When implementing file watching functionality, **ALWAYS use the existing FileLis
 ### Example Implementation:
 ```typescript
 import { createAndStartFileListener } from "./listeners/fileListener";
-import { TopicsDocument, Topic } from "./services/obsidianParser";
+// Note: Instead of creating services/ directory, add API routes to the /server proxy in the react template
+// The server is located at server/src/index.ts and handles API endpoints
 
 // In your main initialization:
 const fileListener = await createAndStartFileListener(

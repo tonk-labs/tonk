@@ -25,7 +25,8 @@ view/
 │   ├── views/             # Page-level view components
 │   ├── components/        # Reusable UI components
 │   ├── stores/            # Zustand state management stores
-│   └── services/          # API services and data fetchers
+│   └── # Note: Instead of services/ directory, add API routes to the /server proxy
+│   └── # The server is located at server/src/index.ts and handles API endpoints
 ├── server/                # Express.js backend server
 │   ├── src/
 │   │   └── index.ts       # Server entry point with API routes

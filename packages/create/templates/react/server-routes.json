@@ -1,0 +1,17 @@
+[
+  {
+    "path": "/ping",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/debug/routes/:id",
+    "methods": [
+      "GET"
+    ],
+    "params": [
+      "id"
+    ]
+  }
+]

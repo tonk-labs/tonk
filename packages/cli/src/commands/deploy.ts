@@ -63,7 +63,6 @@ async function checkDeploymentService(): Promise<void> {
   }
 }
 
-
 /**
  * Reads the tonk.config.json file to get project information
  */
@@ -246,7 +245,7 @@ async function deployBundle(
     const response = await fetch(`${deploymentServiceUrl}/deploy-bundle`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${authToken}`,
+        Authorization: `Bearer ${authToken}`,
       },
       body: formData,
     });
@@ -281,7 +280,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     // Run auth check (replaces the preAction hook)
     const authHook = await getAuthHook();
     await authHook();
-    
+
     // Get TonkAuth instance for cleanup
     tonkAuth = await getTonkAuth();
 
@@ -317,7 +316,9 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       userServers = await fetchUserServers();
     } catch (error) {
       console.error(
-        chalk.red(`Error fetching servers: ${error instanceof Error ? error.message : String(error)}`),
+        chalk.red(
+          `Error fetching servers: ${error instanceof Error ? error.message : String(error)}`,
+        ),
       );
       await shutdownAnalytics();
       if (tonkAuth) tonkAuth.destroy();
@@ -328,7 +329,9 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     let serverName: string;
     if (userServers.length === 0) {
       console.log(chalk.yellow('\nNo servers found in your account.'));
-      console.log(chalk.blue('Create a server first using: tonk server create'));
+      console.log(
+        chalk.blue('Create a server first using: tonk server create'),
+      );
       await shutdownAnalytics();
       if (tonkAuth) tonkAuth.destroy();
       process.exitCode = 1;

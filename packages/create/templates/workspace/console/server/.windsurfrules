@@ -1,8 +1,3 @@
----
-description: Rules and guidelines for server
-globs: server/**/*.js, server/**/*.ts, server/**/*.tsx
----
-
 # How to create server endpoints
 - Use the server to handle operations that cannot be performed in the browser due to security restrictions
 - All endpoints should be explicitly typed with TypeScript interfaces for request/response

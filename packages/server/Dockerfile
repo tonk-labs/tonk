@@ -1,7 +1,7 @@
 FROM node:18-alpine
 
-# Install build dependencies and pnpm
-RUN apk add --no-cache python3 make g++ git && \
+# Install build dependencies, nginx, and pnpm
+RUN apk add --no-cache python3 make g++ git nginx && \
     npm install -g pnpm tsx
 
 # Create app directory
