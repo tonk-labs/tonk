@@ -1,6 +1,6 @@
 {
   "name": "@tonk/cli",
-  "version": "0.2.30",
+  "version": "0.3.0",
   "description": "The Tonk stack command line utility",
   "type": "module",
   "bin": {

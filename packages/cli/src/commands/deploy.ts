@@ -137,7 +137,7 @@ async function createAppBundle(): Promise<string> {
 
   try {
     const bundlePath = path.join('/tmp', `tonk-app-${Date.now()}.tar.gz`);
-    const cwd = process.cwd();
+    const cwd = path.join(process.cwd(), 'bundle');
 
     // Create tar archive excluding node_modules, .git, etc.
     await tar.create(
