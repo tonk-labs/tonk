@@ -29,13 +29,6 @@ export class ServerManager {
   }
 
   /**
-   * Allocate a port for a custom server
-   */
-  async allocatePort(): Promise<number> {
-    return this.portAllocator.allocate();
-  }
-
-  /**
    * Start a custom server process for a bundle
    */
   async startServer(config: ServerConfig): Promise<void> {

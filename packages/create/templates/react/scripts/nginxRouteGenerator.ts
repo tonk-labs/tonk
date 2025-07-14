@@ -27,49 +27,78 @@ export function loadRoutesFromFile(filePath: string): Route[] {
 /**
  * Generate nginx location blocks from route definitions
  */
-export function generateNginxRoutes(routes: Route[], port: number): string {
+export function generateNginxRoutes(routes: Route[]): string {
   const locationBlocks: string[] = [];
+  // Group routes by path to avoid overlapping location blocks
+  const routesByPath = new Map<string, Set<string>>();
 
   routes.forEach((route) => {
     const { path, methods } = route;
 
+    if (!routesByPath.has(path)) {
+      routesByPath.set(path, new Set());
+    }
+
+    // Add all methods for this path
+    methods.forEach((method) => {
+      routesByPath.get(path)!.add(method.toUpperCase());
+    });
+  });
+  // Generate location blocks for each unique path
+  routesByPath.forEach((methods, path) => {
+    const methodsArray = Array.from(methods);
+
     // Convert Express-style parameters (:id) to nginx regex format
     const nginxPath = convertExpressPathToNginx(path);
 
-    // Generate method restriction
+    // Determine if we should use exact match or regex
+    const hasParameters = path.includes(":");
+    const locationDirective = hasParameters
+      ? `location ~ ^${nginxPath}$`
+      : `location = ${path}`;
+    // Generate method restriction using if statement (compatible with included location blocks)
     const methodRestriction =
-      methods.length > 0
-        ? `        # Only allow specific HTTP methods
-        if ($request_method !~ ^(${methods.join("|")})$) {
-            return 405;
-        }
-        `
+      methodsArray.length > 0
+        ? `    # Only allow specific HTTP methods
+    if ($request_method !~ ^(${methodsArray.join("|")})$) {
+        add_header Allow "${methodsArray.join(", ")}" always;
+        return 405;
+    }
+    `
         : "";
-
-    const locationBlock = `    # Route: ${methods.join(", ")} ${path}
-    location ~ ^${nginxPath}$ {
+    const locationBlock = `# Route: ${methodsArray.join(", ")} ${path}
+${locationDirective} {
 ${methodRestriction}
-        # Proxy to the custom server
-        proxy_pass http://127.0.0.1:${port}$request_uri;
-        
-        # Standard proxy headers
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        
-        # Preserve original request path structure
-        proxy_set_header X-Original-URI $request_uri;
-        proxy_set_header X-Original-Path $uri;
-        
-        # Handle potential errors gracefully
-        proxy_intercept_errors on;
-        error_page 502 503 504 /50x.html;
-    }`;
-
+    # Proxy to the custom server
+    proxy_pass http://127.0.0.1:\${port}$request_uri;
+    
+    # Standard proxy headers
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    
+    # Preserve original request path structure
+    proxy_set_header X-Original-URI $request_uri;
+    proxy_set_header X-Original-Path $uri;
+    
+    # Essential settings for POST requests and request body handling
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    
+    # Timeout settings to prevent hanging
+    proxy_connect_timeout 30s;
+    proxy_send_timeout 30s;
+    proxy_read_timeout 30s;
+    
+    # Handle potential errors gracefully
+    proxy_intercept_errors on;
+    error_page 502 503 504 /50x.html;
+}`;
     locationBlocks.push(locationBlock);
   });
-
   return locationBlocks.join("\n\n");
 }
 
@@ -81,7 +110,7 @@ export function generateNginxConfigFromFile(
   outputPath: string,
   port: number,
   bundleName: string,
-  bundlePath: string
+  bundlePath: string,
 ): void {
   const routes = loadRoutesFromFile(routesFilePath);
 
@@ -90,7 +119,7 @@ export function generateNginxConfigFromFile(
     return;
   }
 
-  const nginxLocationBlocks = generateNginxRoutes(routes, port);
+  const nginxLocationBlocks = generateNginxRoutes(routes);
 
   // Create a complete nginx server block with the generated location blocks
   const nginxConfig = `# Nginx configuration template for custom bundle servers
@@ -98,14 +127,9 @@ export function generateNginxConfigFromFile(
 # Bundle: ${bundleName}
 # Port: ${port}
 # Path: ${bundlePath}
-
-server {
-    listen 8080;
-    server_name _;
-    
-    # Generated API routes from server-routes.json
+# Generated API routes from server-routes.json
 ${nginxLocationBlocks}
-}`;
+`;
 
   // Ensure output directory exists
   const outputDir = path.dirname(outputPath);

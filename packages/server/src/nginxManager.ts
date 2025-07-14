@@ -109,40 +109,24 @@ export class NginxManager {
   }
 
   /**
-   * Deploy app-specific nginx configuration
+   * Deploy app-specific nginx configuration with processed content
    */
   async deployAppConfig(
     bundleName: string,
-    bundlePath: string,
-    customServerPort: number,
+    processedConfigContent: string,
   ): Promise<void> {
-    const sourceConfigPath = path.join(
-      bundlePath,
-      'server',
-      `app-${bundleName}.conf`,
-    );
     const targetConfigPath = path.join(
       this.configDir,
       `app-${bundleName}.conf`,
     );
 
-    if (!fs.existsSync(sourceConfigPath)) {
-      throw new Error(`nginx config not found: ${sourceConfigPath}`);
-    }
+    this.log(
+      'blue',
+      `Deploying nginx config for bundle "${bundleName}" with processed content`,
+    );
 
-    this.log('blue', `Deploying nginx config for bundle "${bundleName}"`);
-
-    // Read the config template
-    let configContent = fs.readFileSync(sourceConfigPath, 'utf8');
-
-    // Replace placeholders
-    configContent = configContent
-      .replace(/\$\{port\}/g, customServerPort.toString())
-      .replace(/\$\{bundleName\}/g, bundleName)
-      .replace(/\$\{bundlePath\}/g, bundlePath);
-
-    // Write to nginx config directory
-    fs.writeFileSync(targetConfigPath, configContent);
+    // Write the processed config content to nginx config directory
+    fs.writeFileSync(targetConfigPath, processedConfigContent);
 
     // Validate and reload nginx
     await this.validateAndReload();
@@ -275,9 +259,9 @@ http {
     access_log /var/log/nginx/access.log;
     error_log /var/log/nginx/error.log;
     
-    # Default server that returns 404 for unmatched requests
+    # Default server that handles all requests
     server {
-        listen ${this.nginxPort} default_server;
+        listen localhost:${this.nginxPort} default_server;
         server_name _;
         
         # Health check endpoint
@@ -287,16 +271,14 @@ http {
             add_header Content-Type application/json;
         }
         
+        # Include all app configurations (location blocks)
+        include ${this.configDir}/*.conf;
+        
         # All other requests return 404
         location / {
             return 404;
         }
     }
-
-    
-    
-    # Include all app configurations
-    include ${this.configDir}/*.conf;
 }
 `;
 
@@ -307,7 +289,7 @@ http {
    * Get path to main nginx configuration file
    */
   private getMainConfigPath(): string {
-    return '/etc/nginx/nginx-tonk-main.conf';
+    return '/etc/nginx/nginx.conf';
   }
 
   /**

@@ -4,7 +4,6 @@ import path from 'node:path';
 import chalk from 'chalk';
 import fs from 'node:fs';
 import os from 'node:os';
-import net from 'node:net';
 import {WebSocketServer} from 'ws';
 import {NodeWSServerAdapter} from '@automerge/automerge-repo-network-websocket';
 import {NodeFSStorageAdapter} from '@automerge/automerge-repo-storage-nodefs';
@@ -874,26 +873,44 @@ export class TonkServer {
     if (fs.existsSync(configPath)) {
       this.log('blue', `Loading nginx config for bundle ${bundleName}`);
 
-      if (this.nginxManager) {
-        try {
-          await this.nginxManager.deployAppConfig(
-            bundleName,
-            bundlePath,
-            serverPort,
-          );
-          this.log(
-            'green',
-            `Nginx config deployed for bundle ${bundleName} on port ${serverPort}`,
-          );
-        } catch (error) {
-          this.log(
-            'red',
-            `Failed to deploy nginx config for ${bundleName}: ${error}`,
-          );
-          // Deallocate the port if nginx config fails
-          await this.portAllocator.deallocate(serverPort);
-          return undefined;
+      // Read the nginx config file and replace ${port} with allocated port
+      try {
+        let configContent = await fs.promises.readFile(configPath, 'utf8');
+        configContent = configContent
+          .replace(/\$\{port\}/g, serverPort.toString())
+          .replace(/\$\{bundleName\}/g, bundleName)
+          .replace(/\$\{bundlePath\}/g, bundlePath);
+
+        this.log(
+          'blue',
+          `Processed nginx config for bundle ${bundleName}, replaced placeholders with port ${serverPort}`,
+        );
+
+        if (this.nginxManager) {
+          try {
+            await this.nginxManager.deployAppConfig(bundleName, configContent);
+            this.log(
+              'green',
+              `Nginx config deployed for bundle ${bundleName} on port ${serverPort}`,
+            );
+          } catch (error) {
+            this.log(
+              'red',
+              `Failed to deploy nginx config for ${bundleName}: ${error}`,
+            );
+            // Deallocate the port if nginx config fails
+            await this.portAllocator.deallocate(serverPort);
+            return undefined;
+          }
         }
+      } catch (error) {
+        this.log(
+          'red',
+          `Failed to read nginx config for ${bundleName}: ${error}`,
+        );
+        // Deallocate the port if config reading fails
+        await this.portAllocator.deallocate(serverPort);
+        return undefined;
       }
     }
 
