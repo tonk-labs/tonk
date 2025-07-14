@@ -11,21 +11,9 @@ pnpm dev
 
 This will start both the frontend development server and the API proxy server.
 
-## API Proxy
+## Development Server
 
-The application includes an API proxy server that handles requests to external APIs. In development mode, the proxy server runs locally and forwards requests to the appropriate API endpoints, adding any required authentication.
-
-API services are configured in `src/services/apiServices.ts`. Each service has the following properties:
-
-- `prefix`: The route prefix (e.g., "weather")
-- `baseUrl`: The actual API base URL
-- `requiresAuth`: Whether authentication is needed
-- `authType`: Authentication type ("bearer", "apikey", "basic", or "query")
-- `authHeaderName`: Header name for auth (e.g., "Authorization" or "X-API-Key")
-- `authEnvVar`: API key or auth secret
-- `authQueryParamName`: If using query auth type, the corresponding query param
-
-For more information about the API proxy server, see the [services README](./src/services/README.md) and the [server README](./server/README.md).
+The application includes a development server that runs alongside the frontend development server.
 
 ## Building for Production
 
@@ -33,7 +21,7 @@ For more information about the API proxy server, see the [services README](./src
 pnpm build
 ```
 
-This will build the frontend application and export the API configuration for production.
+This will build the frontend application for production.
 
 ## Deployment Options
 
@@ -46,6 +34,7 @@ tonk push
 ```
 
 This will:
+
 1. Build your application
 2. Upload the bundle to your Tonk server
 
@@ -80,6 +69,7 @@ docker-compose down
 ```
 
 The Docker setup:
+
 - Uses the official Tonk server container
 - Automatically deploys your built application as a bundle
 - Starts your application on port 8000
@@ -91,6 +81,7 @@ Edit the `docker-compose.yml` file to add any required API keys or environment v
 #### Volumes
 
 The Docker setup creates two persistent volumes:
+
 - `tonk-data`: Stores the Tonk server's data
 - `tonk-bundles`: Stores application bundles
 

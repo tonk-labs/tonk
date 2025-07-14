@@ -1,16 +1,6 @@
 import {RootNode} from './rootNode.js';
 export type DocumentId = string;
 
-export interface ApiService {
-  prefix: string;
-  baseUrl: string;
-  requiresAuth?: boolean;
-  authType?: 'apikey' | 'bearer' | 'basic' | 'query';
-  authHeaderName?: string;
-  authEnvVar?: string;
-  authQueryParamName?: string;
-}
-
 export interface BundleServerConfig {
   bundleName: string;
   port: number;

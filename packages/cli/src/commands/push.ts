@@ -261,7 +261,7 @@ async function startBundle(
 async function handlePushCommand(options: PushOptions): Promise<void> {
   const startTime = Date.now();
   const serverUrl = options.url;
-  const sourceDir = options.dir || './dist';
+  const sourceDir = options.dir || './bundle';
   const projectRoot = process.cwd();
   const sourcePath = path.isAbsolute(sourceDir)
     ? sourceDir
@@ -270,7 +270,7 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
   try {
     trackCommand('push', {
       serverUrl,
-      sourceDir,
+      projectRoot,
       name: options.name,
       noBuild: options.noBuild,
       noStart: options.noStart,
@@ -330,7 +330,7 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
     const duration = Date.now() - startTime;
     trackCommandError('push', error as Error, duration, {
       serverUrl,
-      sourceDir,
+      projectRoot,
       name: options.name,
       noBuild: options.noBuild,
       noStart: options.noStart,

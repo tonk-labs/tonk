@@ -1,7 +1,8 @@
-import path from 'path';
-import fs from 'fs';
+import path from 'node:path';
+import fs from 'node:fs';
 import envPaths from 'env-paths';
-import {DocumentId} from '@automerge/automerge-repo';
+
+import type {DocumentId} from '@automerge/automerge-repo';
 
 export class RootNode {
   private configPath: string;
