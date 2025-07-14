@@ -8,6 +8,7 @@
 ## Server Architecture
 - **CRITICAL**: You MUST use `ExpressWithRouteTracking` class instead of standard Express for automatic route discovery
 - **WARNING**: If you use standard Express instead of `ExpressWithRouteTracking`, the API proxy functionality will break and your endpoints will not work properly
+- **WARNING**: ALL SERVERS MUST INCLUDE A /ping ENDPOINT FOR HEALTH CHECKS, OTHERWISE THEY WILL FAIL, this should be there by default, so DO NOT DELETE
 - Place all endpoint handlers in the `src/index.ts` file for simplicity
 - Use middleware for common functionality like authentication, logging, and validation
 - Implement proper CORS handling for cross-origin requests

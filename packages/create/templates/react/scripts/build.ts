@@ -27,8 +27,6 @@ console.log("Building frontend...");
 // Build frontend with Vite
 execSync("vite build", { cwd: projectRoot, stdio: "inherit" });
 
-console.log("API configuration export has been removed from this system.");
-
 console.log("Generating server routes...");
 // Generate server routes for nginx configuration
 execSync("tsx server/src/index.ts --routes", {
