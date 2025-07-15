@@ -1,6 +1,6 @@
 {
   "name": "@tonk/create",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Bootstrap apps on the Tonk stack",
   "type": "module",
   "bin": {
