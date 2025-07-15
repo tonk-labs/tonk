@@ -1,0 +1,9 @@
+{
+  "name": "podium",
+  "plan": {
+    "platform": "react",
+    "projectName": "podium",
+    "description": "One-way broadcasting to friends and family."
+  },
+  "template": "react"
+}
