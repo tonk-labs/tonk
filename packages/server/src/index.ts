@@ -18,6 +18,7 @@ import {NginxManager} from './nginxManager.js';
 import {PortAllocator} from './portAllocator.js';
 import {ServerManager} from './serverManager.js';
 import {Repo} from '@automerge/automerge-repo';
+import {logger} from './logger.js';
 
 import type {PeerId, RepoConfig, DocumentId} from '@automerge/automerge-repo';
 import type {BundleServerInfo} from './types.js';
@@ -346,8 +347,7 @@ export class TonkServer {
   }
 
   private setupExpressMiddleware() {
-    // Parse JSON bodies
-    this.app.use(express.json());
+    // Note: JSON body parsing moved after proxy setup to avoid consuming streams
 
     // Note: Global nginx proxy setup moved to start() method after nginx starts
 
@@ -793,6 +793,43 @@ export class TonkServer {
         changeOrigin: true,
         pathRewrite: {'^/api': ''}, // Strip /api prefix before forwarding to nginx
         on: {
+          proxyReq: (proxyReq, req, res) => {
+            // Log every request that comes through the proxy
+            const timestamp = new Date().toISOString();
+            const method = req.method;
+            const originalUrl = req.url;
+            const userAgent = req.headers['user-agent'] || 'Unknown';
+            const contentType = req.headers['content-type'] || 'None';
+            const contentLength = req.headers['content-length'] || '0';
+
+            logger.debug(
+              `[${timestamp}] PROXY REQUEST: ${method} ${originalUrl}`,
+            );
+            logger.debug(`  User-Agent: ${userAgent}`);
+            logger.debug(`  Content-Type: ${contentType}`);
+            logger.debug(`  Content-Length: ${contentLength}`);
+
+            // Log request body for POST/PUT requests if it exists
+            // Note: req.body might not be available in proxy context, so we'll log what we can
+            if (method === 'POST' || method === 'PUT') {
+              logger.debug(`  Body: [Body will be forwarded to target]`);
+            }
+          },
+          proxyRes: (proxyRes, req, res) => {
+            // Log response details
+            const timestamp = new Date().toISOString();
+            const method = req.method;
+            const originalUrl = req.url;
+            const statusCode = proxyRes.statusCode;
+            const responseHeaders = proxyRes.headers;
+
+            logger.debug(
+              `[${timestamp}] PROXY RESPONSE: ${method} ${originalUrl} -> ${statusCode}`,
+            );
+            logger.debug(
+              `  Response Headers: ${JSON.stringify(responseHeaders)}`,
+            );
+          },
           error: (err, _req, res) => {
             this.log('red', `Nginx proxy error: ${err.message}`);
             if (res && 'writeHead' in res && 'headersSent' in res) {
@@ -810,6 +847,9 @@ export class TonkServer {
         },
       }),
     );
+
+    // Add JSON body parsing for all NON-/api routes (after proxy is set up)
+    this.app.use(express.json());
   }
 
   private async startBundleServer(

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import chalk from 'chalk';
+import {logger} from './logger.js';
 
 import type {ChildProcess} from 'node:child_process';
 
@@ -22,7 +23,11 @@ export class NginxManager {
   }
 
   private log(color: 'green' | 'red' | 'blue' | 'yellow', message: string) {
-    console.log(chalk[color](message));
+    if (color === 'blue') {
+      logger.debug(chalk[color](message));
+    } else {
+      console.log(chalk[color](message));
+    }
   }
 
   /**
