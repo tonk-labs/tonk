@@ -1,0 +1,41 @@
+[
+  {
+    "path": "/ping",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/users",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/users/:id",
+    "methods": [
+      "GET"
+    ],
+    "params": [
+      "id"
+    ]
+  },
+  {
+    "path": "/api/users",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/stats",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/health",
+    "methods": [
+      "GET"
+    ]
+  }
+]
