@@ -35,27 +35,32 @@ export function generateNginxRoutes(routes: Route[]): string {
   routes.forEach((route) => {
     const { path, methods } = route;
 
-    if (!routesByPath.has(path)) {
-      routesByPath.set(path, new Set());
+    // Remove /api prefix for nginx location blocks since main server strips it
+    const nginxPath = path.startsWith("/api") ? path.substring(4) : path;
+
+    if (!routesByPath.has(nginxPath)) {
+      routesByPath.set(nginxPath, new Set());
     }
 
     // Add all methods for this path
     methods.forEach((method) => {
-      routesByPath.get(path)!.add(method.toUpperCase());
+      routesByPath.get(nginxPath)!.add(method.toUpperCase());
     });
   });
+
   // Generate location blocks for each unique path
-  routesByPath.forEach((methods, path) => {
+  routesByPath.forEach((methods, nginxPath) => {
     const methodsArray = Array.from(methods);
 
     // Convert Express-style parameters (:id) to nginx regex format
-    const nginxPath = convertExpressPathToNginx(path);
+    const nginxPathRegex = convertExpressPathToNginx(nginxPath);
 
     // Determine if we should use exact match or regex
-    const hasParameters = path.includes(":");
+    const hasParameters = nginxPath.includes(":");
     const locationDirective = hasParameters
-      ? `location ~ ^${nginxPath}$`
-      : `location = ${path}`;
+      ? `location ~ ^${nginxPathRegex}$`
+      : `location = ${nginxPath}`;
+
     // Generate method restriction using if statement (compatible with included location blocks)
     const methodRestriction =
       methodsArray.length > 0
@@ -66,11 +71,12 @@ export function generateNginxRoutes(routes: Route[]): string {
     }
     `
         : "";
-    const locationBlock = `# Route: ${methodsArray.join(", ")} ${path}
+
+    const locationBlock = `# Route: ${methodsArray.join(", ")} /api${nginxPath}
 ${locationDirective} {
 ${methodRestriction}
-    # Proxy to the custom server
-    proxy_pass http://127.0.0.1:\${port}$request_uri;
+    # Proxy to the custom server - add /api prefix back since Express strips it
+    proxy_pass http://127.0.0.1:\${port}/api$request_uri;
     
     # Standard proxy headers
     proxy_set_header Host $host;
@@ -145,9 +151,9 @@ ${nginxLocationBlocks}
 /**
  * Convert Express-style path to nginx regex pattern
  * Examples:
- * - /api/users -> /api/users
- * - /api/users/:id -> /api/users/([^/]+)
- * - /api/users/:id/posts/:postId -> /api/users/([^/]+)/posts/([^/]+)
+ * - /users -> /users
+ * - /users/:id -> /users/([^/]+)
+ * - /users/:id/posts/:postId -> /users/([^/]+)/posts/([^/]+)
  */
 function convertExpressPathToNginx(expressPath: string): string {
   return expressPath

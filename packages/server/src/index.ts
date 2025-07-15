@@ -791,6 +791,7 @@ export class TonkServer {
       createProxyMiddleware({
         target: 'http://localhost:8080', // Dedicated nginx server
         changeOrigin: true,
+        pathRewrite: {'^/api': ''}, // Strip /api prefix before forwarding to nginx
         on: {
           error: (err, _req, res) => {
             this.log('red', `Nginx proxy error: ${err.message}`);

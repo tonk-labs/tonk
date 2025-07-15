@@ -237,11 +237,9 @@ http {
     client_header_timeout 60s;
     
     # Proxy settings for request preservation
-    proxy_buffering off;
     proxy_connect_timeout 60s;
     proxy_send_timeout 60s;
     proxy_read_timeout 60s;
-    proxy_max_temp_file_size 0;
     
     # Preserve original request headers
     proxy_set_header Host $host;
