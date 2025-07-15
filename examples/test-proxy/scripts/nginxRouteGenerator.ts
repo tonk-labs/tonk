@@ -76,7 +76,7 @@ export function generateNginxRoutes(routes: Route[]): string {
 ${locationDirective} {
 ${methodRestriction}
     # Proxy to the custom server - add /api prefix back since Express strips it
-    proxy_pass http://127.0.0.1:\${port}/api$request_uri;
+    proxy_pass http://127.0.0.1:\${port}/api$uri;
     
     # Standard proxy headers
     proxy_set_header Host $host;
@@ -89,15 +89,21 @@ ${methodRestriction}
     proxy_set_header X-Original-Path $uri;
     
     # Essential settings for POST requests and request body handling
-    proxy_buffering off;
-    proxy_request_buffering off;
+    proxy_buffering on;
+    proxy_request_buffering on;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
     
-    # Timeout settings to prevent hanging
-    proxy_connect_timeout 30s;
-    proxy_send_timeout 30s;
-    proxy_read_timeout 30s;
+    # Increased timeout settings for POST requests
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+    
+    # Buffer settings for handling request bodies
+    client_max_body_size 10m;
+    proxy_buffer_size 4k;
+    proxy_buffers 8 4k;
+    proxy_busy_buffers_size 8k;
     
     # Handle potential errors gracefully
     proxy_intercept_errors on;

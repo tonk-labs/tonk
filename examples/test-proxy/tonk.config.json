@@ -1,0 +1,9 @@
+{
+  "name": "test-proxy",
+  "plan": {
+    "platform": "react",
+    "projectName": "test-proxy",
+    "description": ""
+  },
+  "template": "react"
+}

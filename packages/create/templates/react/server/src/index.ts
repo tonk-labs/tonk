@@ -13,7 +13,7 @@ const projectRoot = join(__dirname, "..", "..");
 // Load environment variables from .env file in project root
 dotenv.config({ path: join(projectRoot, ".env") });
 
-//NOTE: if you do not use ExpressWithRouteTracking, the endpoints will break. This is very important.
+// NOTE: if you do not use ExpressWithRouteTracking, the endpoints will break. This is very important.
 // You MUST use ExpressWithRouteTracking!
 const app = new ExpressWithRouteTracking();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 6080;
