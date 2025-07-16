@@ -3,7 +3,7 @@ export type PostType = "text" | "image" | "link";
 export interface BasePost {
   id: string;
   type: PostType;
-  author: string;
+  authorId: string; // User ID instead of author name
   timestamp: number;
   contentRef: string; // Reference to keepsync content file
 }

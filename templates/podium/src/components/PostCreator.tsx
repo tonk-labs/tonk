@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { usePostsStore } from "../stores/postsStore";
+import { useSyncedUsersStore, useLocalAuthStore } from "../stores/userStore";
 import { PostType } from "../types/posts";
 import { ContentStorage } from "../utils/contentStorage";
 
@@ -8,10 +9,11 @@ export const PostCreator: React.FC = () => {
   const [content, setContent] = useState("");
   const [url, setUrl] = useState("");
   const [caption, setCaption] = useState("");
-  const [author, setAuthor] = useState("Anonymous");
   const [imageFile, setImageFile] = useState<File | null>(null);
 
   const { addPost } = usePostsStore();
+  const { currentUser, isAuthenticated } = useLocalAuthStore();
+  const { isUserOwner } = useSyncedUsersStore();
 
   const extractDomainFromUrl = (url: string): string => {
     try {
@@ -49,8 +51,13 @@ export const PostCreator: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!author.trim()) {
-      alert("Please enter your name");
+    if (!isAuthenticated || !currentUser) {
+      alert("Please log in to create posts");
+      return;
+    }
+
+    if (!isUserOwner(currentUser.id)) {
+      alert("Only the owner can create posts");
       return;
     }
 
@@ -71,7 +78,7 @@ export const PostCreator: React.FC = () => {
           
           addPost({
             type: "text",
-            author: author.trim(),
+            authorId: currentUser.id,
             contentRef: contentId,
           });
           break;
@@ -92,7 +99,7 @@ export const PostCreator: React.FC = () => {
           
           addPost({
             type: "image",
-            author: author.trim(),
+            authorId: currentUser.id,
             contentRef: contentId,
           });
           break;
@@ -112,7 +119,7 @@ export const PostCreator: React.FC = () => {
           
           addPost({
             type: "link",
-            author: author.trim(),
+            authorId: currentUser.id,
             contentRef: contentId,
           });
           break;
@@ -129,24 +136,27 @@ export const PostCreator: React.FC = () => {
     }
   };
 
+  if (!isAuthenticated || !currentUser) {
+    return (
+      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+        <p className="text-gray-600">Please log in to create posts.</p>
+      </div>
+    );
+  }
+
+  if (!isUserOwner(currentUser.id)) {
+    return (
+      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+        <p className="text-gray-600">Only the owner can create posts. You can comment on existing posts!</p>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-white rounded-lg shadow-md p-6 mb-6">
       <h2 className="text-xl font-semibold mb-4">Create a Post</h2>
 
       <form onSubmit={handleSubmit}>
-        {/* Author input */}
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Your Name
-          </label>
-          <input
-            type="text"
-            value={author}
-            onChange={(e) => setAuthor(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Enter your name"
-          />
-        </div>
 
         {/* Post type selector */}
         <div className="mb-4">

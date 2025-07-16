@@ -23,12 +23,12 @@ export const usePostsStore = create<PostsState>(
       },
 
       deletePost: async (id) => {
-        const post = get().posts.find(p => p.id === id);
+        const post = get().posts.find((p) => p.id === id);
         if (post) {
           // Delete the content file
           await ContentStorage.deleteContent(post.contentRef);
         }
-        
+
         set((state) => ({
           posts: state.posts.filter((post) => post.id !== id),
         }));
@@ -39,11 +39,10 @@ export const usePostsStore = create<PostsState>(
       },
     }),
     {
-      docId: "media-posts" as DocumentId,
+      docId: "podium/media-posts" as DocumentId,
       initTimeout: 30000,
       onInitError: (error) =>
         console.error("Posts sync initialization error:", error),
     },
   ),
 );
-
