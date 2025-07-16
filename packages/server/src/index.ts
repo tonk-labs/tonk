@@ -194,9 +194,24 @@ export class TonkServer {
     };
 
     this.repo = new Repo(config);
-    this.setupExpressMiddleware();
-    this.initRoot();
-    this.restorePersistedBundles();
+    this.initializeServer();
+  }
+
+  private async initializeServer() {
+    try {
+      // Start nginx server first (skip in development)
+      if (this.nginxManager) {
+        await this.nginxManager.start();
+      }
+
+      this.setupGlobalNginxProxy();
+      this.setupExpressMiddleware();
+      await this.initRoot();
+      await this.restorePersistedBundles();
+    } catch (error) {
+      this.log('red', `Failed to initialize server: ${error}`);
+      throw error;
+    }
   }
 
   private async initRoot() {
@@ -347,9 +362,8 @@ export class TonkServer {
   }
 
   private setupExpressMiddleware() {
-    // Note: JSON body parsing moved after proxy setup to avoid consuming streams
-
-    // Note: Global nginx proxy setup moved to start() method after nginx starts
+    // Add JSON body parsing for all NON-/api routes
+    this.app.use(express.json());
 
     // Health check endpoint
     this.app.get('/ping', (_req, res) => {
@@ -793,7 +807,7 @@ export class TonkServer {
         changeOrigin: true,
         pathRewrite: {'^/api': ''}, // Strip /api prefix before forwarding to nginx
         on: {
-          proxyReq: (proxyReq, req, res) => {
+          proxyReq: (_proxyReq, req, _res) => {
             // Log every request that comes through the proxy
             const timestamp = new Date().toISOString();
             const method = req.method;
@@ -815,7 +829,7 @@ export class TonkServer {
               logger.debug(`  Body: [Body will be forwarded to target]`);
             }
           },
-          proxyRes: (proxyRes, req, res) => {
+          proxyRes: (proxyRes, req, _res) => {
             // Log response details
             const timestamp = new Date().toISOString();
             const method = req.method;
@@ -847,9 +861,6 @@ export class TonkServer {
         },
       }),
     );
-
-    // Add JSON body parsing for all NON-/api routes (after proxy is set up)
-    this.app.use(express.json());
   }
 
   private async startBundleServer(
@@ -1053,33 +1064,20 @@ export class TonkServer {
   }
 
   public start(): Promise<void> {
-    return new Promise(async resolve => {
-      try {
-        // Start nginx server first (skip in development)
-        if (this.nginxManager) {
-          await this.nginxManager.start();
+    return new Promise(resolve => {
+      this.server.listen(this.options.port, () => {
+        this.log('green', `Server running on port ${this.options.port}`);
 
-          // Set up global nginx proxy for all /api requests after nginx starts
-          await this.setupGlobalNginxProxy();
-        }
+        this.readyResolvers.forEach((resolve: any) => resolve(true));
 
-        this.server.listen(this.options.port, () => {
-          this.log('green', `Server running on port ${this.options.port}`);
+        resolve();
+      });
 
-          this.readyResolvers.forEach((resolve: any) => resolve(true));
-
-          resolve();
+      this.server.on('upgrade', (request, socket, head) => {
+        this.socket.handleUpgrade(request, socket, head, socket => {
+          this.socket.emit('connection', socket, request);
         });
-
-        this.server.on('upgrade', (request, socket, head) => {
-          this.socket.handleUpgrade(request, socket, head, socket => {
-            this.socket.emit('connection', socket, request);
-          });
-        });
-      } catch (error) {
-        this.log('red', `Failed to start nginx server: ${error}`);
-        throw error;
-      }
+      });
     });
   }
 
