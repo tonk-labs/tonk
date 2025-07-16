@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { Post, TextContent, ImageContent, LinkContent } from "../types/posts";
 import { usePostsStore } from "../stores/postsStore";
+import { useSyncedUsersStore, useLocalAuthStore } from "../stores/userStore";
 import { ContentStorage } from "../utils/contentStorage";
+import { CommentSection } from "./CommentSection";
 
 interface PostItemProps {
   post: Post;
@@ -9,10 +11,14 @@ interface PostItemProps {
 
 export const PostItem: React.FC<PostItemProps> = ({ post }) => {
   const { deletePost } = usePostsStore();
+  const { getUser, isUserOwner } = useSyncedUsersStore();
+  const { currentUser } = useLocalAuthStore();
   const [textContent, setTextContent] = useState<TextContent | null>(null);
   const [imageContent, setImageContent] = useState<ImageContent | null>(null);
   const [linkContent, setLinkContent] = useState<LinkContent | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const author = getUser(post.authorId);
 
   useEffect(() => {
     const loadContent = async () => {
@@ -63,6 +69,8 @@ export const PostItem: React.FC<PostItemProps> = ({ post }) => {
     }
   };
 
+  const canDelete = currentUser && (currentUser.id === post.authorId || isUserOwner(currentUser.id));
+
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow-md p-6 mb-4">
@@ -83,18 +91,38 @@ export const PostItem: React.FC<PostItemProps> = ({ post }) => {
     <div className="bg-white rounded-lg shadow-md p-6 mb-4">
       {/* Post header */}
       <div className="flex justify-between items-start mb-4">
-        <div>
-          <h3 className="font-semibold text-gray-900">{post.author}</h3>
-          <p className="text-sm text-gray-500">
-            {formatTimestamp(post.timestamp)}
-          </p>
+        <div className="flex items-center space-x-3">
+          {author?.profilePicture && (
+            <img 
+              src={author.profilePicture} 
+              alt={author.name}
+              className="w-10 h-10 rounded-full object-cover"
+            />
+          )}
+          <div>
+            <div className="flex items-center space-x-2">
+              <h3 className="font-semibold text-gray-900">
+                {author?.name || 'Unknown User'}
+              </h3>
+              {author?.isOwner && (
+                <span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded">
+                  Owner
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-gray-500">
+              {formatTimestamp(post.timestamp)}
+            </p>
+          </div>
         </div>
-        <button
-          onClick={handleDelete}
-          className="text-gray-400 hover:text-red-500 text-sm"
-        >
-          Delete
-        </button>
+        {canDelete && (
+          <button
+            onClick={handleDelete}
+            className="text-gray-400 hover:text-red-500 text-sm"
+          >
+            Delete
+          </button>
+        )}
       </div>
 
       {/* Post content based on type */}
@@ -179,6 +207,9 @@ export const PostItem: React.FC<PostItemProps> = ({ post }) => {
           {post.type === "link" && "🔗 Link"}
         </span>
       </div>
+
+      {/* Comments section */}
+      <CommentSection postId={post.id} />
     </div>
   );
 };
