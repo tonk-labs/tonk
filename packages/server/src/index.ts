@@ -807,7 +807,7 @@ export class TonkServer {
         changeOrigin: true,
         pathRewrite: {'^/api': ''}, // Strip /api prefix before forwarding to nginx
         on: {
-          proxyReq: (proxyReq, req, res) => {
+          proxyReq: (_proxyReq, req, _res) => {
             // Log every request that comes through the proxy
             const timestamp = new Date().toISOString();
             const method = req.method;
@@ -829,7 +829,7 @@ export class TonkServer {
               logger.debug(`  Body: [Body will be forwarded to target]`);
             }
           },
-          proxyRes: (proxyRes, req, res) => {
+          proxyRes: (proxyRes, req, _res) => {
             // Log response details
             const timestamp = new Date().toISOString();
             const method = req.method;
@@ -861,8 +861,6 @@ export class TonkServer {
         },
       }),
     );
-
-
   }
 
   private async startBundleServer(
