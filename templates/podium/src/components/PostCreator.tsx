@@ -70,12 +70,12 @@ export const PostCreator: React.FC = () => {
             alert("Please enter some text");
             return;
           }
-          
+
           // Save text content to keepsync
           await ContentStorage.saveTextContent(contentId, {
             text: content.trim(),
           });
-          
+
           addPost({
             type: "text",
             authorId: currentUser.id,
@@ -88,15 +88,15 @@ export const PostCreator: React.FC = () => {
             alert("Please select an image");
             return;
           }
-          
+
           const imageData = await convertImageToBase64(imageFile);
-          
+
           // Save image content to keepsync
           await ContentStorage.saveImageContent(contentId, {
             imageData,
             caption: caption.trim(),
           });
-          
+
           addPost({
             type: "image",
             authorId: currentUser.id,
@@ -109,14 +109,14 @@ export const PostCreator: React.FC = () => {
             alert("Please enter a URL");
             return;
           }
-          
+
           // Save link content to keepsync
           await ContentStorage.saveLinkContent(contentId, {
             url: url.trim(),
             title: content.trim(),
             description: content.trim(),
           });
-          
+
           addPost({
             type: "link",
             authorId: currentUser.id,
@@ -147,7 +147,9 @@ export const PostCreator: React.FC = () => {
   if (!isUserOwner(currentUser.id)) {
     return (
       <div className="card">
-        <p>Only the owner can create posts. You can comment on existing posts!</p>
+        <p>
+          Only the owner can create posts. You can comment on existing posts!
+        </p>
       </div>
     );
   }
@@ -157,12 +159,9 @@ export const PostCreator: React.FC = () => {
       <h2>Create a Post</h2>
 
       <form onSubmit={handleSubmit}>
-
         {/* Post type selector */}
         <div className="form-group">
-          <label className="form-label">
-            Post Type
-          </label>
+          <label className="form-label">Post Type</label>
           <div className="btn-group">
             <button
               type="button"
@@ -191,9 +190,7 @@ export const PostCreator: React.FC = () => {
         {/* Content based on post type */}
         {postType === "text" && (
           <div className="form-group">
-            <label className="form-label">
-              Message
-            </label>
+            <label className="form-label">Message</label>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
@@ -207,9 +204,7 @@ export const PostCreator: React.FC = () => {
         {postType === "image" && (
           <>
             <div className="form-group">
-              <label className="form-label">
-                Image
-              </label>
+              <label className="form-label">Image</label>
               <input
                 type="file"
                 accept="image/*"
@@ -218,9 +213,7 @@ export const PostCreator: React.FC = () => {
               />
             </div>
             <div className="form-group">
-              <label className="form-label">
-                Caption (optional)
-              </label>
+              <label className="form-label">Caption (optional)</label>
               <textarea
                 value={caption}
                 onChange={(e) => setCaption(e.target.value)}
@@ -235,9 +228,7 @@ export const PostCreator: React.FC = () => {
         {postType === "link" && (
           <>
             <div className="form-group">
-              <label className="form-label">
-                URL
-              </label>
+              <label className="form-label">URL</label>
               <input
                 type="url"
                 value={url}
@@ -247,9 +238,7 @@ export const PostCreator: React.FC = () => {
               />
             </div>
             <div className="form-group">
-              <label className="form-label">
-                Title/Description (optional)
-              </label>
+              <label className="form-label">Title/Description (optional)</label>
               <textarea
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
@@ -264,7 +253,7 @@ export const PostCreator: React.FC = () => {
         <button
           type="submit"
           className="btn btn-primary"
-          style={{ width: '100%' }}
+          style={{ width: "100%" }}
         >
           Post
         </button>
@@ -272,4 +261,3 @@ export const PostCreator: React.FC = () => {
     </div>
   );
 };
-

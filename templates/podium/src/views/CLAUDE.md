@@ -1,4 +1,5 @@
 # How to create views
+
 - Do not define new components, only use ones that already exist in the `src/components/` directory
 - Use `div`s and `tailwind` to appropriately display components
 - Always use semantic HTML elements (e.g., `main`, `section`, `article`, `nav`) for better accessibility
@@ -7,12 +8,14 @@
 - Use descriptive prop names that indicate both type and purpose (e.g., `isVisible` not `flag`)
 
 ## Tailwind Usage
+
 - Use only core Tailwind utility classes, no custom values
 - Follow mobile-first responsive design using sm:, md:, lg: breakpoints
 - Use semantic color classes (e.g., text-primary, bg-secondary) over literal colors
 - Maintain consistent spacing scale using Tailwind's default spacing units
 
 ## State Management
+
 - Use proper React hooks for lifecycle management (useEffect, useMemo, useCallback)
 - All state that needs to be synchronized across clients should use keepsync stores
 - All state that is relevant to the view and doesn't need to synchronize may simply call on useState
@@ -20,40 +23,44 @@
 - Document all logic with explicit comments
 
 ## Accessibility
+
 - Include ARIA labels and roles where appropriate
 - Maintain proper heading hierarchy (h1 -> h6)
 - Ensure sufficient color contrast using Tailwind's built-in colors
 - Add keyboard navigation support for interactive elements
 
 ## Code Style
+
 - Use explicit return statements for complex render logic
 - Add JSDoc comments for component props and important functions
 - Include example usage in comments for non-obvious implementations
 
 ## Examples
+
 ### Profile View
+
 ```tsx
 /**
  * ProfileSettings view component
- * 
+ *
  * A view for managing user profile settings including personal information,
  * account preferences, and notification settings.
- * 
+ *
  * @example
  * <ProfileSettings userId="user-123" isEditable={true} />
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
-import { useProfileStore } from '../stores/profileStore';
-import { Avatar } from '../components/Avatar';
-import { TextField } from '../components/TextField';
-import { Button } from '../components/Button';
-import { Toggle } from '../components/Toggle';
-import { Card } from '../components/Card';
-import { Heading } from '../components/Heading';
-import { Divider } from '../components/Divider';
-import { Alert } from '../components/Alert';
-import { profileModule } from '../modules/profile';
+import React, { useState, useEffect, useMemo } from "react";
+import { useProfileStore } from "../stores/profileStore";
+import { Avatar } from "../components/Avatar";
+import { TextField } from "../components/TextField";
+import { Button } from "../components/Button";
+import { Toggle } from "../components/Toggle";
+import { Card } from "../components/Card";
+import { Heading } from "../components/Heading";
+import { Divider } from "../components/Divider";
+import { Alert } from "../components/Alert";
+import { profileModule } from "../modules/profile";
 
 interface ProfileSettingsProps {
   /** Unique identifier for the user */
@@ -66,7 +73,7 @@ interface ProfileSettingsProps {
 
 /**
  * ProfileSettings component that manages user profile data
- * 
+ *
  * Architecture:
  * - useProfileStore: Manages state stored in database (synchronized across clients)
  * - profileModule: Handles external API calls to third-party services (e.g., avatar storage, email verification)
@@ -75,18 +82,18 @@ interface ProfileSettingsProps {
 export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
   userId,
   isEditable = true,
-  onSaved
+  onSaved,
 }) => {
   // Use store for synchronized state across clients
   // This data is automatically synced with the database by the store
   const { profile, updateProfile } = useProfileStore();
-  
+
   // Use local state for form data (unsaved changes)
   const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    bio: '',
-    avatarUrl: ''
+    name: "",
+    email: "",
+    bio: "",
+    avatarUrl: "",
   });
 
   // UI-specific state that doesn't need to be synced
@@ -95,7 +102,7 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
   const [notifications, setNotifications] = useState({
     email: true,
     push: false,
-    sms: false
+    sms: false,
   });
 
   // Load profile data on component mount or when userId changes
@@ -105,37 +112,41 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
       setFormData({
         name: profile.name,
         email: profile.email,
-        bio: profile.bio || '',
-        avatarUrl: profile.avatarUrl || ''
+        bio: profile.bio || "",
+        avatarUrl: profile.avatarUrl || "",
       });
-      
+
       setNotifications({
         email: profile.notificationPreferences?.email || false,
         push: profile.notificationPreferences?.push || false,
-        sms: profile.notificationPreferences?.sms || false
+        sms: profile.notificationPreferences?.sms || false,
       });
     }
-    
+
     // Check if email verification is needed via external service
     const checkEmailVerification = async () => {
       try {
         // Use module to check email verification status with third-party service
-        const isVerified = await profileModule.checkEmailVerification(profile?.email || '');
-        
+        const isVerified = await profileModule.checkEmailVerification(
+          profile?.email || "",
+        );
+
         if (!isVerified && profile?.email) {
           // Example of module handling external service interaction
           // This doesn't update the database directly - it calls an external API
-          setErrorMessage('Your email is not verified. Please check your inbox.');
+          setErrorMessage(
+            "Your email is not verified. Please check your inbox.",
+          );
         }
       } catch (error) {
         // Module transforms external API errors into application-specific errors
         if (error instanceof profileModule.errors.EmailServiceError) {
-          console.error('Email service unavailable:', error);
+          console.error("Email service unavailable:", error);
           // Don't show this error to the user - just log it
         }
       }
     };
-    
+
     if (profile?.email) {
       checkEmailVerification();
     }
@@ -155,24 +166,29 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
   const handleSave = async () => {
     setIsSaving(true);
     setErrorMessage(null);
-    
+
     try {
       // Before saving to database, use module to process avatar with third-party service
       if (formData.avatarUrl !== profile?.avatarUrl) {
         try {
           // The module handles an external image processing API
-          const processedAvatarUrl = await profileModule.processAvatar(formData.avatarUrl);
+          const processedAvatarUrl = await profileModule.processAvatar(
+            formData.avatarUrl,
+          );
           // Update with the processed version
           formData.avatarUrl = processedAvatarUrl;
         } catch (error) {
           // Module transforms external API errors into application-specific errors
           if (error instanceof profileModule.errors.ImageProcessingError) {
-            console.warn('Using original avatar - processing failed:', error.message);
+            console.warn(
+              "Using original avatar - processing failed:",
+              error.message,
+            );
             // Continue with original avatar, just log the warning
           }
         }
       }
-      
+
       // If email changed, use module to request verification from external email service
       if (formData.email !== profile?.email) {
         try {
@@ -180,27 +196,29 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
           await profileModule.requestEmailVerification(formData.email);
         } catch (error) {
           if (error instanceof profileModule.errors.EmailServiceError) {
-            setErrorMessage('Unable to verify new email. Please try again later.');
+            setErrorMessage(
+              "Unable to verify new email. Please try again later.",
+            );
             setIsSaving(false);
             return; // Don't proceed with save if email verification fails
           }
         }
       }
-      
+
       // Now update the profile in the database via the store
       // The store handles database synchronization
       updateProfile({
         ...formData,
-        notificationPreferences: notifications
+        notificationPreferences: notifications,
       });
-      
+
       if (onSaved) {
         onSaved();
       }
     } catch (error) {
       // Handle any unexpected errors
-      setErrorMessage('Failed to save profile changes');
-      console.error('Error saving profile:', error);
+      setErrorMessage("Failed to save profile changes");
+      console.error("Error saving profile:", error);
     } finally {
       setIsSaving(false);
     }
@@ -209,7 +227,7 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
   // Memoize whether form has been modified compared to store data
   const hasChanges = useMemo(() => {
     if (!profile) return false;
-    
+
     return (
       formData.name !== profile.name ||
       formData.email !== profile.email ||
@@ -224,51 +242,57 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
   // Rest of the component remains the same...
   return (
     <main className="w-full max-w-4xl mx-auto p-4 md:p-6">
-      <Heading level={1} className="text-2xl font-bold mb-6">Profile Settings</Heading>
-      
+      <Heading level={1} className="text-2xl font-bold mb-6">
+        Profile Settings
+      </Heading>
+
       {errorMessage && (
-        <Alert 
-          type="error" 
-          message={errorMessage} 
+        <Alert
+          type="error"
+          message={errorMessage}
           onClose={() => setErrorMessage(null)}
           className="mb-4"
         />
       )}
-      
+
       <section aria-labelledby="personal-info-heading" className="mb-8">
-        <Heading id="personal-info-heading" level={2} className="text-xl font-semibold mb-4">
+        <Heading
+          id="personal-info-heading"
+          level={2}
+          className="text-xl font-semibold mb-4"
+        >
           Personal Information
         </Heading>
-        
+
         <Card className="p-4 md:p-6">
           <div className="flex flex-col md:flex-row items-start md:items-center mb-6">
             <div className="mb-4 md:mb-0 md:mr-6">
-              <Avatar 
-                src={formData.avatarUrl} 
-                alt={formData.name} 
-                size="lg" 
+              <Avatar
+                src={formData.avatarUrl}
+                alt={formData.name}
+                size="lg"
                 className="border-2 border-primary"
               />
             </div>
-            
+
             <div className="flex-1">
               <TextField
                 id="name-field"
                 label="Full Name"
                 value={formData.name}
-                onChange={(e) => handleInputChange('name', e.target.value)}
+                onChange={(e) => handleInputChange("name", e.target.value)}
                 placeholder="Enter your full name"
                 disabled={!isEditable}
                 required
                 className="mb-4"
                 aria-required="true"
               />
-              
+
               <TextField
                 id="email-field"
                 label="Email Address"
                 value={formData.email}
-                onChange={(e) => handleInputChange('email', e.target.value)}
+                onChange={(e) => handleInputChange("email", e.target.value)}
                 placeholder="Enter your email address"
                 type="email"
                 disabled={!isEditable}
@@ -278,12 +302,12 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
               />
             </div>
           </div>
-          
+
           <TextField
             id="bio-field"
             label="Bio"
             value={formData.bio}
-            onChange={(e) => handleInputChange('bio', e.target.value)}
+            onChange={(e) => handleInputChange("bio", e.target.value)}
             placeholder="Tell us about yourself"
             multiline
             rows={4}
@@ -292,9 +316,9 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
           />
         </Card>
       </section>
-      
+
       {/* ... existing notification preferences section remains unchanged ... */}
-      
+
       <div className="flex justify-end space-x-4">
         <Button
           variant="secondary"
@@ -304,14 +328,14 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
               setFormData({
                 name: profile.name,
                 email: profile.email,
-                bio: profile.bio || '',
-                avatarUrl: profile.avatarUrl || ''
+                bio: profile.bio || "",
+                avatarUrl: profile.avatarUrl || "",
               });
-              
+
               setNotifications({
                 email: profile.notificationPreferences?.email || false,
                 push: profile.notificationPreferences?.push || false,
-                sms: profile.notificationPreferences?.sms || false
+                sms: profile.notificationPreferences?.sms || false,
               });
             }
           }}
@@ -320,7 +344,7 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({
         >
           Cancel
         </Button>
-        
+
         <Button
           variant="primary"
           onClick={handleSave}

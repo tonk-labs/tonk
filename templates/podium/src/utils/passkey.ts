@@ -204,4 +204,3 @@ export class PasskeyManager {
     return bytes.buffer;
   }
 }
-
