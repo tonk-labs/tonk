@@ -1,13 +1,13 @@
-import React, { useState } from 'react';
-import { useCommentsStore } from '../stores/commentsStore';
-import { useSyncedUsersStore, useLocalAuthStore } from '../stores/userStore';
+import React, { useState } from "react";
+import { useCommentsStore } from "../stores/commentsStore";
+import { useSyncedUsersStore, useLocalAuthStore } from "../stores/userStore";
 
 interface CommentSectionProps {
   postId: string;
 }
 
 export const CommentSection: React.FC<CommentSectionProps> = ({ postId }) => {
-  const [newComment, setNewComment] = useState('');
+  const [newComment, setNewComment] = useState("");
   const { addComment, getCommentsForPost } = useCommentsStore();
   const { currentUser, isAuthenticated } = useLocalAuthStore();
   const { getUser } = useSyncedUsersStore();
@@ -16,9 +16,9 @@ export const CommentSection: React.FC<CommentSectionProps> = ({ postId }) => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!isAuthenticated || !currentUser) {
-      alert('Please log in to comment');
+      alert("Please log in to comment");
       return;
     }
 
@@ -27,7 +27,7 @@ export const CommentSection: React.FC<CommentSectionProps> = ({ postId }) => {
     }
 
     addComment(postId, currentUser.id, newComment.trim());
-    setNewComment('');
+    setNewComment("");
   };
 
   return (
@@ -42,10 +42,7 @@ export const CommentSection: React.FC<CommentSectionProps> = ({ postId }) => {
             placeholder="Add a comment..."
             className="form-input comment-input"
           />
-          <button
-            type="submit"
-            className="btn btn-primary"
-          >
+          <button type="submit" className="btn btn-primary">
             Comment
           </button>
         </form>
@@ -58,8 +55,8 @@ export const CommentSection: React.FC<CommentSectionProps> = ({ postId }) => {
           return (
             <div key={comment.id} className="comment-item">
               {author?.profilePicture && (
-                <img 
-                  src={author.profilePicture} 
+                <img
+                  src={author.profilePicture}
                   alt={author.name}
                   className="comment-avatar"
                 />
@@ -68,7 +65,7 @@ export const CommentSection: React.FC<CommentSectionProps> = ({ postId }) => {
                 <div className="comment-bubble">
                   <div className="comment-author">
                     <span className="comment-author-name">
-                      {author?.name || 'Unknown User'}
+                      {author?.name || "Unknown User"}
                     </span>
                     {author && !author.isOwner && (
                       <span className="comment-relation">
@@ -76,9 +73,7 @@ export const CommentSection: React.FC<CommentSectionProps> = ({ postId }) => {
                       </span>
                     )}
                     {author?.isOwner && (
-                      <span className="owner-badge">
-                        Owner
-                      </span>
+                      <span className="owner-badge">Owner</span>
                     )}
                   </div>
                   <p className="comment-text">{comment.content}</p>
@@ -90,9 +85,11 @@ export const CommentSection: React.FC<CommentSectionProps> = ({ postId }) => {
             </div>
           );
         })}
-        
+
         {postComments.length === 0 && (
-          <p style={{ opacity: 0.6, fontSize: '0.85rem' }}>No comments yet. Be the first to comment!</p>
+          <p style={{ opacity: 0.6, fontSize: "0.85rem" }}>
+            No comments yet. Be the first!
+          </p>
         )}
       </div>
     </div>

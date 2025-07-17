@@ -44,4 +44,3 @@ export interface PostsState {
   deletePost: (id: string) => void;
   getPosts: () => Post[];
 }
-

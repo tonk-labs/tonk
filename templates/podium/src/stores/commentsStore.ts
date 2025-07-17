@@ -38,11 +38,10 @@ export const useCommentsStore = create<CommentsState>(
       },
     }),
     {
-      docId: "podium/comments" as DocumentId,
+      docId: "comments" as DocumentId,
       initTimeout: 30000,
       onInitError: (error) =>
         console.error("Comments sync initialization error:", error),
     },
   ),
 );
-
