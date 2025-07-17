@@ -54,7 +54,7 @@ const mutateDocument = (doc: any, newState: any) => {
     if (newValue === undefined) {
       continue;
     }
-    
+
     // For primitive values or null, directly assign
     if (newValue == null || typeof newValue !== 'object') {
       doc[key] = newValue;
