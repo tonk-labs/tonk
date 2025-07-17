@@ -138,62 +138,50 @@ export const PostCreator: React.FC = () => {
 
   if (!isAuthenticated || !currentUser) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-        <p className="text-gray-600">Please log in to create posts.</p>
+      <div className="card">
+        <p>Please log in to create posts.</p>
       </div>
     );
   }
 
   if (!isUserOwner(currentUser.id)) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-        <p className="text-gray-600">Only the owner can create posts. You can comment on existing posts!</p>
+      <div className="card">
+        <p>Only the owner can create posts. You can comment on existing posts!</p>
       </div>
     );
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-      <h2 className="text-xl font-semibold mb-4">Create a Post</h2>
+    <div className="card">
+      <h2>Create a Post</h2>
 
       <form onSubmit={handleSubmit}>
 
         {/* Post type selector */}
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
+        <div className="form-group">
+          <label className="form-label">
             Post Type
           </label>
-          <div className="flex space-x-4">
+          <div className="btn-group">
             <button
               type="button"
               onClick={() => setPostType("text")}
-              className={`px-4 py-2 rounded-md ${
-                postType === "text"
-                  ? "bg-blue-500 text-white"
-                  : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-              }`}
+              className={`btn btn-secondary ${postType === "text" ? "active" : ""}`}
             >
               Text
             </button>
             <button
               type="button"
               onClick={() => setPostType("image")}
-              className={`px-4 py-2 rounded-md ${
-                postType === "image"
-                  ? "bg-blue-500 text-white"
-                  : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-              }`}
+              className={`btn btn-secondary ${postType === "image" ? "active" : ""}`}
             >
               Image
             </button>
             <button
               type="button"
               onClick={() => setPostType("link")}
-              className={`px-4 py-2 rounded-md ${
-                postType === "link"
-                  ? "bg-blue-500 text-white"
-                  : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-              }`}
+              className={`btn btn-secondary ${postType === "link" ? "active" : ""}`}
             >
               Link
             </button>
@@ -202,15 +190,15 @@ export const PostCreator: React.FC = () => {
 
         {/* Content based on post type */}
         {postType === "text" && (
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+          <div className="form-group">
+            <label className="form-label">
               Message
             </label>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
               rows={4}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="form-textarea"
               placeholder="What's on your mind?"
             />
           </div>
@@ -218,26 +206,26 @@ export const PostCreator: React.FC = () => {
 
         {postType === "image" && (
           <>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+            <div className="form-group">
+              <label className="form-label">
                 Image
               </label>
               <input
                 type="file"
                 accept="image/*"
                 onChange={handleImageUpload}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="form-input"
               />
             </div>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+            <div className="form-group">
+              <label className="form-label">
                 Caption (optional)
               </label>
               <textarea
                 value={caption}
                 onChange={(e) => setCaption(e.target.value)}
                 rows={2}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="form-textarea"
                 placeholder="Add a caption..."
               />
             </div>
@@ -246,27 +234,27 @@ export const PostCreator: React.FC = () => {
 
         {postType === "link" && (
           <>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+            <div className="form-group">
+              <label className="form-label">
                 URL
               </label>
               <input
                 type="url"
                 value={url}
                 onChange={(e) => handleUrlChange(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="form-input"
                 placeholder="https://example.com"
               />
             </div>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+            <div className="form-group">
+              <label className="form-label">
                 Title/Description (optional)
               </label>
               <textarea
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 rows={2}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="form-textarea"
                 placeholder="Add a title or description..."
               />
             </div>
@@ -275,7 +263,8 @@ export const PostCreator: React.FC = () => {
 
         <button
           type="submit"
-          className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="btn btn-primary"
+          style={{ width: '100%' }}
         >
           Post
         </button>

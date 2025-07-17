@@ -1,5 +1,5 @@
-const PASSKEY_STORAGE_KEY = 'podium_passkey_credential';
-const USER_ID_STORAGE_KEY = 'podium_user_id';
+const PASSKEY_STORAGE_KEY = "podium_passkey_credential";
+const USER_ID_STORAGE_KEY = "podium_user_id";
 
 export interface PasskeyCredential {
   id: string;
@@ -15,9 +15,12 @@ export class PasskeyManager {
   }
 
   // Create a new passkey for registration
-  static async createPasskey(userId: string, userName: string): Promise<PasskeyCredential> {
+  static async createPasskey(
+    userId: string,
+    userName: string,
+  ): Promise<PasskeyCredential> {
     if (!this.isSupported()) {
-      throw new Error('Passkeys are not supported in this browser');
+      throw new Error("Passkeys are not supported in this browser");
     }
 
     const challenge = new Uint8Array(32);
@@ -26,15 +29,13 @@ export class PasskeyManager {
     try {
       // Fix RP ID for localhost
       const hostname = window.location.hostname;
-      const rpId = hostname === 'localhost' ? 'localhost' : hostname;
-      
-      console.log('🔧 Using RP ID:', rpId, 'for hostname:', hostname);
+      const rpId = hostname === "localhost" ? "localhost" : hostname;
 
-      const credential = await navigator.credentials.create({
+      const credential = (await navigator.credentials.create({
         publicKey: {
           challenge,
           rp: {
-            name: 'Podium Family App',
+            name: "Podium Family App",
             id: rpId,
           },
           user: {
@@ -43,35 +44,35 @@ export class PasskeyManager {
             displayName: userName,
           },
           pubKeyCredParams: [
-            { alg: -7, type: 'public-key' }, // ES256
-            { alg: -257, type: 'public-key' } // RS256 fallback
+            { alg: -7, type: "public-key" }, // ES256
+            { alg: -257, type: "public-key" }, // RS256 fallback
           ],
           authenticatorSelection: {
-            authenticatorAttachment: 'platform',
-            userVerification: 'preferred',
+            authenticatorAttachment: "platform",
+            userVerification: "preferred",
             requireResidentKey: false,
           },
           timeout: 60000,
-          attestation: 'none', // Don't require attestation
+          attestation: "none", // Don't require attestation
         },
-      }) as PublicKeyCredential;
+      })) as PublicKeyCredential;
 
       if (!credential) {
-        throw new Error('Failed to create passkey');
+        throw new Error("Failed to create passkey");
       }
 
       const response = credential.response as AuthenticatorAttestationResponse;
-      
+
       // Try to get public key, but don't fail if we can't access it
-      let publicKey = 'unavailable';
+      let publicKey = "unavailable";
       try {
         if (response.getPublicKey) {
           publicKey = this.arrayBufferToBase64(response.getPublicKey()!);
         }
       } catch (error) {
-        console.warn('Could not access public key:', error);
+        console.warn("Could not access public key:", error);
       }
-      
+
       const passkeyCredential: PasskeyCredential = {
         id: this.arrayBufferToBase64(credential.rawId),
         userId,
@@ -79,50 +80,39 @@ export class PasskeyManager {
         createdAt: Date.now(),
       };
 
-      console.log('✅ Created passkey credential:', passkeyCredential);
-
       // Store the credential locally
       try {
-        localStorage.setItem(PASSKEY_STORAGE_KEY, JSON.stringify(passkeyCredential));
+        localStorage.setItem(
+          PASSKEY_STORAGE_KEY,
+          JSON.stringify(passkeyCredential),
+        );
         localStorage.setItem(USER_ID_STORAGE_KEY, userId);
-        console.log('✅ Credential stored in localStorage');
-        
-        // Verify storage worked
-        const stored = localStorage.getItem(PASSKEY_STORAGE_KEY);
-        console.log('✅ Verification - stored credential:', stored ? JSON.parse(stored) : null);
       } catch (storageError) {
-        console.error('❌ Failed to store credential:', storageError);
-        throw new Error('Failed to store passkey credential');
+        console.error("❌ Failed to store credential:", storageError);
+        throw new Error("Failed to store passkey credential");
       }
 
       return passkeyCredential;
     } catch (error) {
-      console.error('WebAuthn creation failed:', error);
+      console.error("WebAuthn creation failed:", error);
       throw error;
     }
   }
 
   // Authenticate with existing passkey
   static async authenticateWithPasskey(): Promise<string | null> {
-    console.log('🔐 Starting passkey authentication...');
-    
     const storedCredential = this.getStoredCredential();
     if (!storedCredential) {
-      console.log('❌ No stored credential found');
       return null;
     }
 
-    console.log('✅ Found stored credential:', storedCredential);
-
     // If it's a fallback credential, just return the userId
-    if (storedCredential.publicKey === 'fallback') {
-      console.log('✅ Using fallback authentication for userId:', storedCredential.userId);
+    if (storedCredential.publicKey === "fallback") {
       return storedCredential.userId;
     }
 
     // Try WebAuthn authentication for real passkeys
     if (!this.isSupported()) {
-      console.log('❌ WebAuthn not supported, but have real passkey credential');
       return null;
     }
 
@@ -132,31 +122,28 @@ export class PasskeyManager {
 
       // Use same RP ID logic as creation
       const hostname = window.location.hostname;
-      const rpId = hostname === 'localhost' ? 'localhost' : hostname;
-      
-      console.log('🔄 Requesting WebAuthn authentication with RP ID:', rpId);
-      
+      const rpId = hostname === "localhost" ? "localhost" : hostname;
+
       const assertion = await navigator.credentials.get({
         publicKey: {
           challenge,
           rpId,
-          allowCredentials: [{
-            id: this.base64ToArrayBuffer(storedCredential.id),
-            type: 'public-key',
-          }],
-          userVerification: 'preferred',
+          allowCredentials: [
+            {
+              id: this.base64ToArrayBuffer(storedCredential.id),
+              type: "public-key",
+            },
+          ],
+          userVerification: "preferred",
           timeout: 60000,
         },
       });
 
       if (assertion) {
-        console.log('✅ WebAuthn authentication successful, returning userId:', storedCredential.userId);
         return storedCredential.userId;
-      } else {
-        console.log('❌ No assertion returned');
       }
     } catch (error) {
-      console.error('❌ WebAuthn authentication failed:', error);
+      console.error("❌ WebAuthn authentication failed:", error);
       // Don't clear credential immediately, might be temporary issue
     }
 
@@ -190,16 +177,7 @@ export class PasskeyManager {
   // Check if user has a stored passkey
   static hasStoredPasskey(): boolean {
     const hasCredential = !!this.getStoredCredential();
-    console.log('🔍 hasStoredPasskey:', hasCredential);
     return hasCredential;
-  }
-
-  // Debug method to inspect stored data
-  static debugStoredData(): void {
-    console.log('🔍 Debug stored passkey data:');
-    console.log('- Credential:', this.getStoredCredential());
-    console.log('- User ID:', this.getStoredUserId());
-    console.log('- WebAuthn supported:', this.isSupported());
   }
 
   // Fallback: Generate simple ID for browsers without passkey support
@@ -210,7 +188,7 @@ export class PasskeyManager {
   // Helper methods
   private static arrayBufferToBase64(buffer: ArrayBuffer): string {
     const bytes = new Uint8Array(buffer);
-    let binary = '';
+    let binary = "";
     for (let i = 0; i < bytes.byteLength; i++) {
       binary += String.fromCharCode(bytes[i]);
     }
@@ -226,3 +204,4 @@ export class PasskeyManager {
     return bytes.buffer;
   }
 }
+
