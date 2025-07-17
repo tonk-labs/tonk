@@ -5,6 +5,7 @@
   },
   "scripts": {
     "prepare": "husky",
-    "update-docs": "node utils/distribute-from-docs.js"
+    "docs:distribute": "node utils/distribute-from-docs.js",
+    "docs:dev": "mdbook serve docs --open --port 4069"
   }
 }
