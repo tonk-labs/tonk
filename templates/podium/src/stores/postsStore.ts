@@ -39,7 +39,7 @@ export const usePostsStore = create<PostsState>(
       },
     }),
     {
-      docId: "podium/media-posts" as DocumentId,
+      docId: "media-posts" as DocumentId,
       initTimeout: 30000,
       onInitError: (error) =>
         console.error("Posts sync initialization error:", error),

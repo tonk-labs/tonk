@@ -44,7 +44,7 @@ export const useSyncedUsersStore = create<SyncedUsersState>(
       },
     }),
     {
-      docId: "podium/users" as DocumentId,
+      docId: "users" as DocumentId,
       initTimeout: 30000,
       onInitError: (error) =>
         console.error("User sync initialization error:", error),
