@@ -1,0 +1,279 @@
+# Tonk Worker Architecture and Usage Guide
+
+## Overview
+Tonk workers are Node.js-based services that integrate with the Tonk ecosystem for building local-first applications. They provide HTTP API endpoints and integrate with KeepSync for distributed data synchronization using Automerge CRDTs.
+
+## Getting Started
+The worker structure described in this guide is automatically created when you run `tonk-create`. This command will guide you through the process of creating a new worker and scaffold a complete worker template folder with all the necessary files and configurations.
+
+**IMPORTANT: Always run `tonk-create` from inside the `workers/` directory to ensure the new worker is created in the correct location.**
+
+To create a new worker:
+```bash
+cd workers/
+tonk-create
+```
+
+The CLI will prompt you to select "worker" as the project type and guide you through the setup process, generating the folder structure and files detailed below. The worker will be created as a subdirectory within `workers/`.
+
+## Worker Structure
+
+### Core Files and Directories
+```
+worker/
+├── src/
+│   ├── index.ts           # Main entry point with HTTP server
+│   ├── cli.ts             # CLI interface for worker control
+│   ├── utils/             # Utility modules
+│   ├── listeners/         # Event listeners (file, keepsync)
+│   └── io/                # I/O handlers and types
+├── instructions/          # LLM-readable documentation
+├── creds/                 # Credential storage
+├── package.json           # Node.js package configuration
+├── worker.config.js       # Worker-specific configuration
+├── tonk.config.json       # Tonk platform configuration
+└── tsconfig.json          # TypeScript configuration
+```
+
+### Key Dependencies
+- `@tonk/keepsync`: Core data synchronization
+- `@automerge/automerge-repo`: CRDT document management
+- `@automerge/automerge-repo-network-websocket`: WebSocket networking
+- `@automerge/automerge-repo-storage-nodefs`: File system storage
+- `express` or native `http`: HTTP server functionality
+- `commander`: CLI argument parsing
+- `chokidar`: File system watching
+- `dotenv`: Environment variable management
+
+## Configuration Files
+
+### worker.config.js
+Primary worker configuration defining:
+- **Runtime**: Port, health check endpoints, intervals
+- **Process**: File execution, instances, auto-restart, memory limits
+- **CLI**: Script paths and command arguments
+- **Schemas**: Data validation schemas for KeepSync documents
+- **Environment**: Production/development settings
+
+### tonk.config.json
+Tonk platform integration:
+- Worker name and description
+- Platform type ("worker")
+- Template reference
+- Project metadata
+
+### Environment Variables
+- `SYNC_WS_URL`: WebSocket URL for KeepSync (default: ws://localhost:7777/sync)
+- `SYNC_URL`: HTTP URL for KeepSync (default: http://localhost:7777)
+- `WORKER_PORT`: Port for HTTP server (default: 5555)
+- `NODE_ENV`: Runtime environment (production/development)
+
+## Worker Architecture Patterns
+
+### HTTP Server Setup
+Workers create HTTP servers with:
+- CORS support for cross-origin requests
+- Health check endpoints (`/health`)
+- Main processing endpoints (`/tonk`)
+- Custom business logic endpoints
+- Error handling and logging
+- Graceful shutdown handling
+
+### KeepSync Integration
+Workers configure KeepSync engines with:
+- WebSocket network adapters for real-time sync
+- File system storage adapters
+- Document read/write operations
+- Schema validation
+- Connection management
+
+### Data Flow Patterns
+1. HTTP requests received at worker endpoints
+2. Data validation and processing
+3. KeepSync document operations (read/write)
+4. Response formatting and delivery
+5. Error handling and logging
+
+## Utility Modules
+
+### BaseCredentialsManager ⭐ CRITICAL FOR EXTERNAL API INTEGRATION
+**ALWAYS use BaseCredentialsManager for any external service authentication (Google APIs, OpenAI, etc.)**
+
+Handles secure credential storage and management:
+- Interactive credential setup via CLI prompts
+- File-based credential storage in `creds/` directory
+- Validation functions for credential format
+- Multiple credential types (API keys, OAuth tokens, certificates, JSON service accounts)
+- Automatic headers and URL parameter injection
+- Supports both simple API keys and complex JSON credentials (like Google service accounts)
+
+**Key Usage Pattern:**
+```typescript
+// 1. Define credential configurations
+const credentialsManager = new BaseCredentialsManager([
+  {
+    name: "Google Service Account",
+    filename: "google_service_account.json",
+    description: "Google Cloud service account for Gmail API access",
+    instructions: "Download from Google Cloud Console > IAM & Admin > Service Accounts",
+    validationFn: (content) => {
+      try {
+        const parsed = JSON.parse(content);
+        return { valid: !!parsed.client_email, message: "Must be valid service account JSON" };
+      } catch { return { valid: false, message: "Must be valid JSON" }; }
+    }
+  },
+  {
+    name: "OpenAI API Key", 
+    filename: "openai_api_key.txt",
+    description: "OpenAI API key for topic analysis",
+    instructions: "Get from https://platform.openai.com/api-keys",
+    header: "Authorization" // Will add as "Authorization: Bearer <key>"
+  }
+]);
+
+// 2. Initialize and check credentials
+await credentialsManager.init();
+const { complete, missing } = await credentialsManager.checkCredentials();
+if (!complete) await credentialsManager.setupCredentials();
+
+// 3. Load credentials in your code
+const googleCreds = await credentialsManager.getCredentialByName("Google Service Account");
+const openaiKey = await credentialsManager.getCredentialByName("OpenAI API Key");
+```
+
+### I/O System
+Modular I/O handling with:
+- **IOHandler Interface**: Generic read operations
+- **IOManager**: Multi-scheme URL handling (fs:, http:, keepsync:)
+- **IOResult**: Standardized result wrapper
+- **DataMapper**: Schema transformation
+- **IOResultMapper**: KeepSync document integration
+
+### Event Listeners
+- **File Listeners**: File system change monitoring
+- **KeepSync Listeners**: Document change notifications
+- **Custom Listeners**: Business logic event handling
+
+## CLI Interface
+Workers provide command-line interfaces:
+- `start`: Launch the worker service
+- Port configuration via `--port` flag
+- Environment variable override support
+- Error handling and process management
+
+## Development Workflow
+
+### Local Development
+**⚠️  CRITICAL: Always run worker commands from within the specific worker directory, NOT from the workspace root!**
+
+```bash
+# CORRECT - Run from within the worker directory:
+cd workers/your-worker-name/
+pnpm install      # Install dependencies
+pnpm dev         # Start with hot reload  
+pnpm build       # Compile TypeScript
+pnpm start       # Run production build
+
+# INCORRECT - Do NOT run from workspace root:
+# npm run dev     # ❌ This will fail - no dev script in workspace root
+```
+
+1. `cd workers/your-worker-name/` - **Always navigate to the worker directory first**
+2. `pnpm install` - Install dependencies
+3. `pnpm dev` - Start with hot reload
+4. `pnpm build` - Compile TypeScript
+5. `pnpm start` - Run production build
+
+### Production Deployment
+1. `pnpm build` - Compile for production
+2. `tonk worker register` - Register with Tonk platform
+3. Process manager handles lifecycle
+4. Health checks monitor status
+
+## Best Practices
+
+### Error Handling
+- Global uncaught exception handlers
+- Unhandled promise rejection logging
+- Graceful HTTP error responses
+- Structured error messages
+
+### Security
+- Credential isolation in separate directory
+- Environment variable configuration
+- CORS policy management
+- Input validation and sanitization
+
+### Performance
+- Configurable process instances
+- Memory limit enforcement
+- Auto-restart capabilities
+- Connection pooling for external services
+
+### Data Management
+- Schema-based validation
+- Atomic document operations
+- Conflict-free data structures (CRDTs)
+- Offline-first design principles
+
+## Integration Points
+
+### With Tonk Platform
+- Worker registration and discovery
+- Health monitoring and reporting
+- Configuration management
+- Deployment coordination
+
+### With KeepSync
+- Document synchronization
+- Real-time collaboration
+- Offline capability
+- Conflict resolution
+
+### With External Services
+- API integration via credentials
+- Webhook handling
+- File system operations
+- Database connections
+
+## Example Usage Patterns
+
+### Basic HTTP Endpoint
+```typescript
+// Handle POST requests with JSON processing
+if (req.method === "POST" && req.url === "/tonk") {
+  // Parse JSON body
+  // Process business logic
+  // Update KeepSync documents
+  // Return structured response
+}
+```
+
+### KeepSync Document Operations
+```typescript
+// Configure sync engine
+const engine = configureSyncEngine({
+  url: SYNC_URL,
+  network: [wsAdapter],
+  storage: new NodeFSStorageAdapter(),
+});
+
+// Read/write documents
+const data = await readDoc(documentPath);
+await writeDoc(documentPath, updatedData);
+```
+
+### Credential Management
+```typescript
+const credentialsManager = new BaseCredentialsManager([
+  {
+    name: "API Key",
+    filename: "api_key.txt",
+    description: "External service API key",
+    instructions: "Obtain from service provider dashboard"
+  }
+]);
+```
+
+This architecture enables workers to serve as integration points between external services and the Tonk ecosystem, providing real-time data synchronization and collaborative capabilities.
