@@ -25,21 +25,27 @@ export const PostItem: React.FC<PostItemProps> = ({ post }) => {
       try {
         setLoading(true);
         switch (post.type) {
-          case 'text':
-            const textData = await ContentStorage.loadTextContent(post.contentRef);
+          case "text":
+            const textData = await ContentStorage.loadTextContent(
+              post.contentRef,
+            );
             setTextContent(textData);
             break;
-          case 'image':
-            const imageData = await ContentStorage.loadImageContent(post.contentRef);
+          case "image":
+            const imageData = await ContentStorage.loadImageContent(
+              post.contentRef,
+            );
             setImageContent(imageData);
             break;
-          case 'link':
-            const linkData = await ContentStorage.loadLinkContent(post.contentRef);
+          case "link":
+            const linkData = await ContentStorage.loadLinkContent(
+              post.contentRef,
+            );
             setLinkContent(linkData);
             break;
         }
       } catch (error) {
-        console.error('Error loading content:', error);
+        console.error("Error loading content:", error);
       } finally {
         setLoading(false);
       }
@@ -69,57 +75,48 @@ export const PostItem: React.FC<PostItemProps> = ({ post }) => {
     }
   };
 
-  const canDelete = currentUser && (currentUser.id === post.authorId || isUserOwner(currentUser.id));
+  const canDelete =
+    currentUser &&
+    (currentUser.id === post.authorId || isUserOwner(currentUser.id));
 
   if (loading) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-6 mb-4">
-        <div className="animate-pulse">
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <div className="h-4 bg-gray-200 rounded w-24 mb-2"></div>
-              <div className="h-3 bg-gray-200 rounded w-16"></div>
-            </div>
+      <div className="card">
+        <div className="post-header">
+          <div>
+            <div className="loading-skeleton loading-title"></div>
+            <div className="loading-skeleton loading-subtitle"></div>
           </div>
-          <div className="h-20 bg-gray-200 rounded"></div>
         </div>
+        <div className="loading-skeleton loading-content"></div>
       </div>
     );
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-6 mb-4">
+    <div className="card post-item">
       {/* Post header */}
-      <div className="flex justify-between items-start mb-4">
-        <div className="flex items-center space-x-3">
+      <div className="post-header">
+        <div className="post-author">
           {author?.profilePicture && (
-            <img 
-              src={author.profilePicture} 
+            <img
+              src={author.profilePicture}
               alt={author.name}
-              className="w-10 h-10 rounded-full object-cover"
+              className="post-avatar"
             />
           )}
-          <div>
-            <div className="flex items-center space-x-2">
-              <h3 className="font-semibold text-gray-900">
-                {author?.name || 'Unknown User'}
-              </h3>
-              {author?.isOwner && (
-                <span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded">
-                  Owner
-                </span>
-              )}
+          <div className="post-author-info">
+            <div
+              style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
+            >
+              <h3>{author?.name || "Unknown User"}</h3>
+              {author?.isOwner && <span className="owner-badge">Owner</span>}
             </div>
-            <p className="text-sm text-gray-500">
-              {formatTimestamp(post.timestamp)}
-            </p>
+            <p className="post-timestamp">{formatTimestamp(post.timestamp)}</p>
           </div>
         </div>
         {canDelete && (
-          <button
-            onClick={handleDelete}
-            className="text-gray-400 hover:text-red-500 text-sm"
-          >
+          <button onClick={handleDelete} className="btn-danger">
             Delete
           </button>
         )}
@@ -127,61 +124,53 @@ export const PostItem: React.FC<PostItemProps> = ({ post }) => {
 
       {/* Post content based on type */}
       {post.type === "text" && textContent && (
-        <div className="text-gray-800">
-          <p className="whitespace-pre-wrap">{textContent.text}</p>
+        <div className="post-content">
+          <p style={{ whiteSpace: "pre-wrap" }}>{textContent.text}</p>
         </div>
       )}
 
       {post.type === "image" && imageContent && (
-        <div>
+        <div className="post-content">
           <img
             src={imageContent.imageData}
             alt="Posted image"
-            className="w-full max-w-lg rounded-lg mb-2"
+            className="post-image"
           />
-          {imageContent.caption && (
-            <p className="text-gray-700">{imageContent.caption}</p>
-          )}
+          {imageContent.caption && <p>{imageContent.caption}</p>}
         </div>
       )}
 
       {post.type === "link" && linkContent && (
-        <div className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50">
+        <div className="post-content">
           <a
             href={linkContent.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="block"
+            className="post-link"
           >
-            <div className="flex items-start space-x-3">
-              <div className="flex-shrink-0">
-                <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
-                  <svg
-                    className="w-6 h-6 text-blue-600"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
-                    />
-                  </svg>
-                </div>
+            <div className="post-link-content">
+              <div className="post-link-icon">
+                <svg
+                  width="24"
+                  height="24"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  style={{ opacity: 0.6 }}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
+                  />
+                </svg>
               </div>
-              <div className="flex-1 min-w-0">
-                {linkContent.title && (
-                  <h4 className="text-lg font-medium text-gray-900 mb-1">
-                    {linkContent.title}
-                  </h4>
-                )}
-                <p className="text-sm text-blue-600 hover:text-blue-800 truncate">
-                  {linkContent.url}
-                </p>
+              <div className="post-link-info">
+                {linkContent.title && <h4>{linkContent.title}</h4>}
+                <p className="post-link-url">{linkContent.url}</p>
                 {linkContent.description && (
-                  <p className="text-sm text-gray-600 mt-1">
+                  <p className="post-link-description">
                     {linkContent.description}
                   </p>
                 )}
@@ -191,26 +180,8 @@ export const PostItem: React.FC<PostItemProps> = ({ post }) => {
         </div>
       )}
 
-      {/* Post type indicator */}
-      <div className="mt-4 flex items-center justify-between">
-        <span
-          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-            post.type === "text"
-              ? "bg-green-100 text-green-800"
-              : post.type === "image"
-                ? "bg-purple-100 text-purple-800"
-                : "bg-blue-100 text-blue-800"
-          }`}
-        >
-          {post.type === "text" && "📝 Text"}
-          {post.type === "image" && "🖼️ Image"}
-          {post.type === "link" && "🔗 Link"}
-        </span>
-      </div>
-
       {/* Comments section */}
       <CommentSection postId={post.id} />
     </div>
   );
 };
-

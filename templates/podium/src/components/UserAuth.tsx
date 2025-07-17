@@ -1,16 +1,22 @@
-import React, { useState, useEffect } from 'react';
-import { useSyncedUsersStore, useLocalAuthStore } from '../stores/userStore';
-import { PasskeyManager } from '../utils/passkey';
-import { UserProfile } from './UserProfile';
+import React, { useState, useEffect } from "react";
+import { useSyncedUsersStore, useLocalAuthStore } from "../stores/userStore";
+import { PasskeyManager } from "../utils/passkey";
+import { UserProfile } from "./UserProfile";
 
 export const UserAuth: React.FC = () => {
   const { users } = useSyncedUsersStore();
-  const { currentUser, isAuthenticated, registerUser, authenticateWithPasskey, tryAutoLogin } = useLocalAuthStore();
+  const {
+    currentUser,
+    isAuthenticated,
+    registerUser,
+    authenticateWithPasskey,
+    tryAutoLogin,
+  } = useLocalAuthStore();
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [formData, setFormData] = useState({
-    name: '',
-    relationToOwner: '',
-    profilePicture: '',
+    name: "",
+    relationToOwner: "",
+    profilePicture: "",
   });
 
   useEffect(() => {
@@ -23,12 +29,11 @@ export const UserAuth: React.FC = () => {
 
     try {
       setIsAuthenticating(true);
-      const user = await registerUser(formData);
-      console.log('User registered:', user);
-      setFormData({ name: '', relationToOwner: '', profilePicture: '' });
+      await registerUser(formData);
+      setFormData({ name: "", relationToOwner: "", profilePicture: "" });
     } catch (error) {
-      console.error('Registration failed:', error);
-      alert('Failed to create account. Please try again.');
+      console.error("Registration failed:", error);
+      alert("Failed to create account. Please try again.");
     } finally {
       setIsAuthenticating(false);
     }
@@ -37,17 +42,16 @@ export const UserAuth: React.FC = () => {
   const handlePasskeyLogin = async () => {
     try {
       setIsAuthenticating(true);
-      
-      // Debug stored data
-      PasskeyManager.debugStoredData();
-      
+
       const user = await authenticateWithPasskey();
       if (!user) {
-        alert('Authentication failed. Please try again or create a new account.');
+        alert(
+          "Authentication failed. Please try again or create a new account.",
+        );
       }
     } catch (error) {
-      console.error('Passkey authentication failed:', error);
-      alert('Authentication failed. Please try again.');
+      console.error("Passkey authentication failed:", error);
+      alert("Authentication failed. Please try again.");
     } finally {
       setIsAuthenticating(false);
     }
@@ -59,7 +63,7 @@ export const UserAuth: React.FC = () => {
       const reader = new FileReader();
       reader.onload = (event) => {
         const result = event.target?.result as string;
-        setFormData(prev => ({ ...prev, profilePicture: result }));
+        setFormData((prev) => ({ ...prev, profilePicture: result }));
       };
       reader.readAsDataURL(file);
     }
@@ -73,142 +77,169 @@ export const UserAuth: React.FC = () => {
   const isPasskeySupported = PasskeyManager.isSupported();
 
   return (
-    <div className="bg-white rounded-lg shadow p-6 mb-6">
-      <h2 className="text-xl font-bold mb-4">
-        {users.length === 0 ? 'Welcome! Create Your Account (You\'ll be the owner!)' : 'Join the Family'}
+    <div className="card">
+      <h2>
+        {users.length === 0
+          ? "Welcome! Let's set up your Podium."
+          : "Join the Family"}
       </h2>
 
       {/* Show different UI based on whether user has a stored passkey */}
       {hasStoredPasskey ? (
-        <div className="text-center space-y-4">
-          <p className="text-gray-600">
+        <div style={{ textAlign: "center" }}>
+          <p style={{ marginBottom: "1.5rem" }}>
             Welcome back! Use your passkey to sign in.
           </p>
           <button
             onClick={handlePasskeyLogin}
             disabled={isAuthenticating}
-            className="w-full bg-blue-500 text-white py-3 px-4 rounded-md hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn btn-primary"
+            style={{ width: "100%", marginBottom: "1rem" }}
           >
-            {isAuthenticating ? 'Authenticating...' : '🔐 Sign in with Passkey'}
+            {isAuthenticating ? "Authenticating..." : "🔐 Sign in with Passkey"}
           </button>
-          <p className="text-xs text-gray-500">
+          <p style={{ fontSize: "0.8rem", opacity: 0.6 }}>
             You'll be prompted to use your fingerprint, face, or device PIN
           </p>
         </div>
       ) : (
-        <div className="space-y-4">
+        <div>
           {/* Simple create account form */}
-          <form onSubmit={handleRegister} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Your Name *
-              </label>
-              <input
-                type="text"
-                value={formData.name}
-                onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                placeholder="Enter your name"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-                disabled={isAuthenticating}
-              />
+          <form onSubmit={handleRegister}>
+            <div className="form-group">
+              <label className="form-label">Your Details</label>
+              <div className="name-profile-row">
+                <div className="profile-picture-upload">
+                  <div
+                    className={`profile-picture-preview ${formData.profilePicture ? "has-image" : ""}`}
+                  >
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImageUpload}
+                      className="profile-picture-input"
+                      disabled={isAuthenticating}
+                    />
+                    {formData.profilePicture ? (
+                      <>
+                        <img
+                          src={formData.profilePicture}
+                          alt="Profile preview"
+                        />
+                        <div className="profile-picture-change-overlay">
+                          Change
+                        </div>
+                      </>
+                    ) : (
+                      <div className="profile-picture-placeholder">
+                        <div className="profile-picture-icon">📷</div>
+                        <div className="profile-picture-text">Add Photo</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="name-input-container">
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, name: e.target.value }))
+                    }
+                    placeholder="Enter your name"
+                    className="form-input"
+                    required
+                    disabled={isAuthenticating}
+                  />
+                </div>
+              </div>
             </div>
 
             {users.length > 0 && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Relation to Owner
-                </label>
+              <div className="form-group">
+                <label className="form-label">Relation to Owner</label>
                 <input
                   type="text"
                   value={formData.relationToOwner}
-                  onChange={(e) => setFormData(prev => ({ ...prev, relationToOwner: e.target.value }))}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      relationToOwner: e.target.value,
+                    }))
+                  }
                   placeholder="e.g., Friend, Family, Cousin, etc."
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="form-input"
                   disabled={isAuthenticating}
                 />
               </div>
             )}
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Profile Picture (optional)
-              </label>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={handleImageUpload}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                disabled={isAuthenticating}
-              />
-              {formData.profilePicture && (
-                <img 
-                  src={formData.profilePicture} 
-                  alt="Preview"
-                  className="mt-2 w-16 h-16 rounded-full object-cover"
-                />
-              )}
-            </div>
-
             <button
               type="submit"
               disabled={isAuthenticating}
-              className="w-full bg-green-500 text-white py-3 px-4 rounded-md hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="btn btn-primary"
+              style={{ width: "100%" }}
             >
-              {isAuthenticating ? 'Creating Account...' : 
-                users.length === 0 ? '🔐 Create Account & Become Owner' : '🔐 Join Family'}
+              {isAuthenticating
+                ? "Creating Account..."
+                : users.length === 0
+                  ? "Create Account & Become Owner"
+                  : "Join Family"}
             </button>
           </form>
 
           {isPasskeySupported && (
-            <div className="text-center">
-              <p className="text-xs text-gray-500 mb-2">
-                {users.length === 0 
-                  ? 'A secure passkey will be created using your device\'s biometrics'
-                  : 'You\'ll be prompted to use your fingerprint, face, or device PIN'
-                }
+            <div style={{ textAlign: "center", marginTop: "1rem" }}>
+              <p style={{ fontSize: "0.8rem", opacity: 0.6 }}>
+                {users.length === 0
+                  ? "A secure passkey will be created using your device's biometrics"
+                  : "You'll be prompted to use your fingerprint, face, or device PIN"}
               </p>
             </div>
           )}
 
           {!isPasskeySupported && (
-            <div className="text-center">
-              <p className="text-xs text-yellow-600 bg-yellow-50 p-2 rounded">
-                ⚠️ Passkeys not supported. A fallback ID will be used.
-              </p>
-            </div>
-          )}
-
-          {window.location.hostname === 'localhost' && (
-            <div className="text-center">
-              <p className="text-xs text-blue-600 bg-blue-50 p-2 rounded">
-                💡 For better passkey support, try accessing via 127.0.0.1 instead of localhost
+            <div style={{ textAlign: "center", marginTop: "1rem" }}>
+              <p
+                style={{
+                  fontSize: "0.8rem",
+                  padding: "0.5rem",
+                  background: "rgba(255, 193, 7, 0.1)",
+                  borderRadius: "6px",
+                  opacity: 0.8,
+                }}
+              >
+                Passkeys not supported. A fallback ID will be used.
               </p>
             </div>
           )}
 
           {/* Existing user login */}
           {users.length > 0 && (
-            <div className="text-center border-t pt-4">
-              <p className="text-sm text-gray-600 mb-2">Already have an account?</p>
+            <div
+              style={{
+                textAlign: "center",
+                marginTop: "1.5rem",
+                paddingTop: "1.5rem",
+                borderTop: "1px solid rgba(0, 0, 0, 0.05)",
+              }}
+            >
+              <p
+                style={{
+                  fontSize: "0.9rem",
+                  marginBottom: "0.5rem",
+                  opacity: 0.7,
+                }}
+              >
+                Already have an account?
+              </p>
               <button
                 onClick={handlePasskeyLogin}
                 disabled={isAuthenticating}
-                className="text-blue-600 hover:text-blue-800 text-sm font-medium disabled:opacity-50"
+                className="btn btn-secondary"
+                style={{ fontSize: "0.85rem" }}
               >
-                🔐 Sign in with your passkey
+                Sign in with your passkey
               </button>
-              <div className="mt-2">
-                <button
-                  onClick={() => {
-                    PasskeyManager.debugStoredData();
-                    console.log('Users in store:', users);
-                  }}
-                  className="text-xs text-gray-400 hover:text-gray-600"
-                >
-                  Debug Info
-                </button>
-              </div>
             </div>
           )}
         </div>

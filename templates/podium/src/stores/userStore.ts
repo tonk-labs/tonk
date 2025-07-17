@@ -75,57 +75,58 @@ export const useLocalAuthStore = create<LocalAuthState>((set, get) => ({
 
   registerUser: async (userData) => {
     const syncedStore = useSyncedUsersStore.getState();
-    
+
     // First user becomes owner
     const isOwner = syncedStore.users.length === 0;
-    
+
     // Generate user ID
     const userId = crypto.randomUUID();
-    
+
     let credentialStored = false;
-    
+
     // Try to create a passkey if supported
     if (PasskeyManager.isSupported()) {
       try {
         await PasskeyManager.createPasskey(userId, userData.name);
         credentialStored = true;
-        console.log('✅ Passkey created and stored for userId:', userId);
       } catch (error) {
-        console.warn('Failed to create passkey, using fallback:', error);
+        console.warn("Failed to create passkey, using fallback:", error);
         // Store fallback credential manually
         const fallbackCredential = {
           id: userId,
           userId: userId,
-          publicKey: 'fallback',
+          publicKey: "fallback",
           createdAt: Date.now(),
         };
-        localStorage.setItem('podium_passkey_credential', JSON.stringify(fallbackCredential));
-        localStorage.setItem('podium_user_id', userId);
+        localStorage.setItem(
+          "podium_passkey_credential",
+          JSON.stringify(fallbackCredential),
+        );
+        localStorage.setItem("podium_user_id", userId);
         credentialStored = true;
-        console.log('✅ Fallback credential stored for userId:', userId);
       }
     } else {
       // Store fallback credential for unsupported browsers
       const fallbackCredential = {
         id: userId,
         userId: userId,
-        publicKey: 'fallback',
+        publicKey: "fallback",
         createdAt: Date.now(),
       };
-      localStorage.setItem('podium_passkey_credential', JSON.stringify(fallbackCredential));
-      localStorage.setItem('podium_user_id', userId);
+      localStorage.setItem(
+        "podium_passkey_credential",
+        JSON.stringify(fallbackCredential),
+      );
+      localStorage.setItem("podium_user_id", userId);
       credentialStored = true;
-      console.log('✅ Fallback credential stored (WebAuthn not supported) for userId:', userId);
     }
-    
+
     const newUser: User = {
       ...userData,
       id: userId, // Always use the userId, not the credential id
       isOwner,
       createdAt: Date.now(),
     };
-
-    console.log('✅ Creating user with ID:', userId, 'credential stored:', credentialStored);
 
     // Add to synced store
     syncedStore.addUser(newUser);
@@ -141,37 +142,28 @@ export const useLocalAuthStore = create<LocalAuthState>((set, get) => ({
 
   authenticateWithPasskey: async () => {
     try {
-      console.log('🔄 Manual passkey authentication requested...');
       const userId = await PasskeyManager.authenticateWithPasskey();
       if (userId) {
-        console.log('✅ Manual auth got userId:', userId);
         const syncedStore = useSyncedUsersStore.getState();
         const user = syncedStore.getUser(userId);
-        
+
         if (user) {
-          console.log('✅ Manual auth successful for user:', user.name);
           set({
             currentUser: user,
             isAuthenticated: true,
           });
           return user;
         } else {
-          console.log('❌ User not found in synced store for userId:', userId);
-          console.log('Available users:', syncedStore.users.map(u => ({ id: u.id, name: u.name })));
         }
-      } else {
-        console.log('❌ No userId returned from passkey authentication');
       }
     } catch (error) {
-      console.error('❌ Manual passkey authentication failed:', error);
+      console.error("❌ Manual passkey authentication failed:", error);
     }
     return null;
   },
 
   logoutUser: () => {
     // Don't clear credentials on logout - passkeys should persist!
-    // PasskeyManager.clearCredentials(); // Removed this line
-    console.log('🚪 Logging out user, but keeping passkey for future logins');
     set({
       currentUser: null,
       isAuthenticated: false,
@@ -180,7 +172,6 @@ export const useLocalAuthStore = create<LocalAuthState>((set, get) => ({
 
   removePasskey: () => {
     // This completely removes the passkey - use with caution!
-    console.log('🗑️ Completely removing passkey credentials');
     PasskeyManager.clearCredentials();
     set({
       currentUser: null,
@@ -206,30 +197,22 @@ export const useLocalAuthStore = create<LocalAuthState>((set, get) => ({
   tryAutoLogin: async () => {
     if (!get().isAuthenticated) {
       try {
-        console.log('🔄 Trying auto-login...');
         // Try passkey authentication first
         const userId = await PasskeyManager.authenticateWithPasskey();
         if (userId) {
-          console.log('✅ Auto-login got userId:', userId);
           const syncedStore = useSyncedUsersStore.getState();
           const user = syncedStore.getUser(userId);
-          
+
           if (user) {
-            console.log('✅ Auto-login successful for user:', user.name);
             set({
               currentUser: user,
               isAuthenticated: true,
             });
-          } else {
-            console.log('❌ User not found in synced store for userId:', userId);
           }
-        } else {
-          console.log('ℹ️ No auto-login available');
         }
       } catch (error) {
-        console.error('❌ Auto-login failed:', error);
+        console.error("❌ Auto-login failed:", error);
       }
     }
   },
 }));
-

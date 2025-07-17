@@ -40,19 +40,28 @@ export const UserProfile: React.FC = () => {
   };
 
   return (
-    <div className="bg-white rounded-lg shadow p-4 mb-6">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">Your Profile</h3>
-        <div className="flex space-x-2">
+    <div className="card">
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "1rem",
+        }}
+      >
+        <h3>Your Profile</h3>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
           <button
             onClick={() => setIsEditing(!isEditing)}
-            className="text-sm text-blue-600 hover:text-blue-800"
+            className="btn btn-secondary"
+            style={{ fontSize: "0.8rem", padding: "0.25rem 0.75rem" }}
           >
             {isEditing ? "Cancel" : "Edit"}
           </button>
           <button
             onClick={handleLogout}
-            className="text-sm text-orange-600 hover:text-orange-800"
+            className="btn btn-danger"
+            style={{ fontSize: "0.8rem", padding: "0.25rem 0.75rem" }}
           >
             Logout
           </button>
@@ -60,55 +69,110 @@ export const UserProfile: React.FC = () => {
       </div>
 
       {!isEditing ? (
-        <div className="flex items-center space-x-4">
+        <div style={{ display: "flex", alignItems: "flex-start", gap: "1rem" }}>
           {currentUser.profilePicture && (
             <img
               src={currentUser.profilePicture}
               alt={currentUser.name}
-              className="w-16 h-16 rounded-full object-cover"
+              style={{
+                width: "64px",
+                height: "64px",
+                borderRadius: "50%",
+                objectFit: "cover",
+                flexShrink: 0,
+              }}
             />
           )}
-          <div className="flex-1">
-            <h4 className="font-semibold text-lg">{currentUser.name}</h4>
-            <p className="text-gray-600">
+          <div style={{ flex: 1 }}>
+            <h4
+              style={{
+                fontSize: "1.1rem",
+                fontWeight: 500,
+                marginBottom: "0.25rem",
+              }}
+            >
+              {currentUser.name}
+            </h4>
+            <p style={{ opacity: 0.7, fontSize: "0.9rem" }}>
               {currentUser.isOwner ? "Owner" : currentUser.relationToOwner}
             </p>
             {currentUser.isOwner && (
-              <div className="mt-2 p-3 bg-blue-50 rounded text-sm">
-                <p className="text-blue-800 font-medium mb-1">
-                  👑 You're the owner of this Podium!
+              <div
+                style={{
+                  marginTop: "0.75rem",
+                  borderRadius: "8px",
+                  fontSize: "0.85rem",
+                }}
+              >
+                <p
+                  style={{
+                    fontWeight: 500,
+                    marginBottom: "0.25rem",
+                    opacity: 0.8,
+                  }}
+                >
+                  You're the owner of this Podium
                 </p>
-                <p className="text-blue-700 text-xs">
-                  Family members can join by visiting this app and creating
-                  their own accounts. They'll automatically be added to your
-                  family circle.
+                <p
+                  style={{ fontSize: "0.75rem", opacity: 0.6, lineHeight: 1.4 }}
+                >
+                  Others can join by visiting this app and creating their own
+                  accounts.{" "}
                 </p>
               </div>
             )}
           </div>
         </div>
       ) : (
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Name
-            </label>
-            <input
-              type="text"
-              value={formData.name}
-              onChange={(e) =>
-                setFormData((prev) => ({ ...prev, name: e.target.value }))
-              }
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              required
-            />
+        <form onSubmit={handleSubmit}>
+          <div className="form-group">
+            <label className="form-label">Your Details</label>
+            <div className="name-profile-row">
+              <div className="profile-picture-upload">
+                <div
+                  className={`profile-picture-preview ${formData.profilePicture ? "has-image" : ""}`}
+                >
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    className="profile-picture-input"
+                  />
+                  {formData.profilePicture ? (
+                    <>
+                      <img
+                        src={formData.profilePicture}
+                        alt="Profile preview"
+                      />
+                      <div className="profile-picture-change-overlay">
+                        Change
+                      </div>
+                    </>
+                  ) : (
+                    <div className="profile-picture-placeholder">
+                      <div className="profile-picture-icon">📷</div>
+                      <div className="profile-picture-text">Add Photo</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="name-input-container">
+                <input
+                  type="text"
+                  value={formData.name}
+                  onChange={(e) =>
+                    setFormData((prev) => ({ ...prev, name: e.target.value }))
+                  }
+                  className="form-input"
+                  required
+                />
+              </div>
+            </div>
           </div>
 
           {!currentUser.isOwner && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Relation to Owner
-              </label>
+            <div className="form-group">
+              <label className="form-label">Relation to Owner</label>
               <input
                 type="text"
                 value={formData.relationToOwner}
@@ -119,34 +183,16 @@ export const UserProfile: React.FC = () => {
                   }))
                 }
                 placeholder="e.g., Friend, Family, Cousin, etc."
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="form-input"
               />
             </div>
           )}
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Profile Picture
-            </label>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={handleImageUpload}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            {formData.profilePicture && (
-              <img
-                src={formData.profilePicture}
-                alt="Preview"
-                className="mt-2 w-16 h-16 rounded-full object-cover"
-              />
-            )}
-          </div>
-
-          <div className="flex space-x-3">
+          <div style={{ display: "flex", gap: "0.75rem" }}>
             <button
               type="submit"
-              className="flex-1 bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition-colors"
+              className="btn btn-primary"
+              style={{ flex: 1 }}
             >
               Save Changes
             </button>
@@ -160,7 +206,8 @@ export const UserProfile: React.FC = () => {
                   profilePicture: currentUser.profilePicture || "",
                 });
               }}
-              className="flex-1 bg-gray-500 text-white py-2 px-4 rounded-md hover:bg-gray-600 transition-colors"
+              className="btn btn-secondary"
+              style={{ flex: 1 }}
             >
               Cancel
             </button>
