@@ -8,37 +8,10 @@ import {
   GENERATED_FILES,
   generateHeader,
   getTargetsForSource,
-  getAllGeneratedFiles,
 } from "./file-mapping.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-/**
- * Convert markdown content to plain text for llms.txt files
- */
-function convertMarkdownToPlainText(markdownContent) {
-  // Remove markdown headers (convert ## Header to just Header)
-  let content = markdownContent.replace(/^#+\s+/gm, "");
-
-  // Remove markdown code fences but keep the content
-  content = content.replace(/```[\s\S]*?\n([\s\S]*?)```/g, "```\n$1```");
-
-  // Remove markdown links but keep the text
-  content = content.replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1");
-
-  // Remove markdown bold/italic
-  content = content.replace(/\*\*([^*]+)\*\*/g, "$1");
-  content = content.replace(/\*([^*]+)\*/g, "$1");
-
-  // Remove markdown include directives (mdBook specific)
-  content = content.replace(/\{\{#include\s+[^}]+\}\}/g, "");
-
-  // Clean up excessive whitespace
-  content = content.replace(/\n\s*\n\s*\n/g, "\n\n");
-
-  return content.trim();
-}
 
 /**
  * Read and process a docs source file
@@ -48,9 +21,26 @@ async function readDocsSource(sourceFile) {
 
   try {
     const content = await fs.readFile(fullPath, "utf8");
-    return convertMarkdownToPlainText(content);
+    return content;
   } catch (error) {
     console.error(`Error reading source file ${sourceFile}:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Read custom content from llms-custom.txt if it exists
+ */
+async function readCustomContent(targetFile) {
+  const dir = path.dirname(targetFile);
+  const customFile = path.join(dir, "llms-custom.txt");
+  const fullCustomPath = path.join(__dirname, "..", customFile);
+
+  try {
+    const customContent = await fs.readFile(fullCustomPath, "utf8");
+    return customContent.trim();
+  } catch (_error) {
+    // Custom file doesn't exist, which is fine
     return null;
   }
 }
@@ -68,7 +58,14 @@ async function writeTargetFile(targetFile, content, sourceFile) {
 
     // Add header and write content
     const header = generateHeader(sourceFile);
-    const fullContent = header + content;
+    let fullContent = header + content;
+
+    // Check for custom content and inject it
+    const customContent = await readCustomContent(targetFile);
+    if (customContent) {
+      fullContent +=
+        "\n\n---\n\n# Project-Specific Instructions\n\n" + customContent;
+    }
 
     await fs.writeFile(fullPath, fullContent, "utf8");
     console.log(`✓ Distributed to: ${targetFile}`);
@@ -83,7 +80,14 @@ async function writeTargetFile(targetFile, content, sourceFile) {
 async function generateAdditionalFiles(targetFile, content, sourceFile) {
   const dir = path.dirname(targetFile);
   const header = generateHeader(sourceFile);
-  const fullContent = header + content;
+  let fullContent = header + content;
+
+  // Check for custom content and inject it
+  const customContent = await readCustomContent(targetFile);
+  if (customContent) {
+    fullContent +=
+      "\n\n---\n\n# Project-Specific Instructions\n\n" + customContent;
+  }
 
   for (const genFile of GENERATED_FILES) {
     const genPath = path.join(dir, genFile);
@@ -98,13 +102,108 @@ async function generateAdditionalFiles(targetFile, content, sourceFile) {
   }
 }
 
+// Define project subdirectories that should get their own .cursor/rules
+const PROJECT_SUBDIRS = [
+  "packages/create/templates/react",
+  "packages/create/templates/worker",
+];
+
+function generateMDCName(dirPath) {
+  // Convert the directory path to a kebab-case name, removing special characters
+  const name = dirPath
+    .split(path.sep)
+    .filter(Boolean)
+    .slice(-2) // Take last two parts of the path
+    .join("-")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return `${name}-rules.mdc`;
+}
+
+function generateMDCContent(content, dirPath, projectRoot) {
+  // Convert the dirPath to be relative to the project root
+  const relativePath = path.relative(projectRoot, dirPath);
+
+  // Generate globs based on the relative directory path
+  // If we're at the root, use *, otherwise use the relative path
+  const globPrefix = relativePath === "" ? "*" : relativePath;
+  const globs = `${globPrefix}/**/*.js, ${globPrefix}/**/*.ts, ${globPrefix}/**/*.tsx`;
+
+  // Create metadata header
+  const metadata = `---
+description: Rules and guidelines for ${relativePath || "root"}
+globs: ${globs}
+---
+
+`;
+
+  return metadata + content;
+}
+
+async function ensureCursorRulesDir(basePath) {
+  const cursorRulesPath = path.join(basePath, ".cursor", "rules");
+  await fs.mkdir(cursorRulesPath, { recursive: true });
+  return cursorRulesPath;
+}
+
+function findProjectRoot(currentPath) {
+  // Normalize the path to handle different OS path separators
+  const normalizedPath = currentPath.replace(/\\/g, "/");
+
+  // Find if this path is within any of our project subdirs
+  const matchedSubdir = PROJECT_SUBDIRS.find((subdir) =>
+    normalizedPath.includes(subdir)
+  );
+
+  if (!matchedSubdir) return null;
+
+  // Get the project root by finding the index of the subdir and slicing up to it
+  const subdirIndex = normalizedPath.indexOf(matchedSubdir);
+  return normalizedPath.slice(0, subdirIndex + matchedSubdir.length);
+}
+
 /**
  * Handle cursor rules generation (using existing logic)
  */
 async function generateCursorRules(targetFile, content, sourceFile) {
-  // This will integrate with the existing copy-llms.js logic for PROJECT_SUBDIRS
-  // For now, we'll skip this and let the existing script handle it
-  return;
+  const dirPath = path.dirname(targetFile);
+  const fullDirPath = path.join(__dirname, "..", dirPath);
+
+  // Handle Cursor rules for project subdirs
+  const projectRoot = findProjectRoot(fullDirPath);
+  if (projectRoot) {
+    const cursorRulesPath = await ensureCursorRulesDir(projectRoot);
+    const mdcName = generateMDCName(fullDirPath);
+
+    // Add header to content for cursor rules
+    const header = generateHeader(sourceFile);
+    const fullContent = header + content;
+
+    // Check for custom content
+    const customContent = await readCustomContent(targetFile);
+    let mdcContent = generateMDCContent(fullContent, fullDirPath, projectRoot);
+
+    // Inject custom content if it exists
+    if (customContent) {
+      mdcContent = generateMDCContent(
+        fullContent +
+          "\n\n---\n\n# Project-Specific Instructions\n\n" +
+          customContent,
+        fullDirPath,
+        projectRoot
+      );
+    }
+
+    await fs.writeFile(path.join(cursorRulesPath, mdcName), mdcContent, "utf8");
+    console.log(
+      `✓ Generated cursor rule: ${path.relative(
+        `${__dirname}/..`,
+        projectRoot
+      )}/.cursor/rules/${mdcName}`
+    );
+  }
 }
 
 /**
@@ -182,7 +281,7 @@ async function validateSources() {
     try {
       await fs.access(fullPath);
       console.log(`✓ ${sourceFile}`);
-    } catch (error) {
+    } catch (_error) {
       console.log(`❌ ${sourceFile} - NOT FOUND`);
       missingFiles.push(sourceFile);
     }

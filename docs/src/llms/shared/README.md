@@ -25,6 +25,6 @@ These shared instructions are used as the foundation for all Tonk templates. The
 
 ### Template Integration
 
-These shared instructions are automatically distributed to the appropriate template locations. When you edit these files, the changes are propagated to all relevant templates using the `copy-llms-from-docs.js` utility.
+These shared instructions are automatically distributed to the appropriate template locations. When you edit these files, the changes are propagated to all relevant templates using the `distribute-from-docs.js` utility.
 
 Each template may have additional specific instructions in the [Template-Specific](../templates/README.md) section for unique requirements or variations. 

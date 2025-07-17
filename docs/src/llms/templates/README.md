@@ -43,4 +43,4 @@ Template-specific instructions are combined with shared instructions to provide 
 
 ## Maintenance
 
-Template-specific instructions are automatically distributed to the appropriate template locations. Changes to these files are propagated using the `copy-llms-from-docs.js` utility, ensuring consistency across all AI coding tools. 
+Template-specific instructions are automatically distributed to the appropriate template locations. Changes to these files are propagated using the `distribute-from-docs.js` utility, ensuring consistency across all AI coding tools. 

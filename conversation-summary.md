@@ -99,7 +99,7 @@ docs/src/llms/
 - **Maintenance**: Single source of truth for LLM instructions
 
 ### 🔄 Distribution Strategy (Next Phase)
-**Plan**: Create reverse distribution script (`copy-llms-from-docs.js`) that:
+**Plan**: Create reverse distribution script (`distribute-from-docs.js`) that:
 - Reads from centralized docs (single source of truth)
 - Generates appropriate `llms.txt` files for each template location
 - Potentially integrates with git hooks for automatic synchronization
