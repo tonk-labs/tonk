@@ -178,10 +178,17 @@ export async function traverseDocTree(
         doc.children = [];
       });
 
-      // Add the new node to the parent's children
+      // Add the new node to the parent's children with duplicate prevention
       currentHandle.change((doc: DirNode) => {
         if (!doc.children) {
           doc.children = [];
+        }
+
+        // Check if a directory with this name already exists (prevents race condition duplicates)
+        const existingChild = doc.children.find(child => child.name === segment);
+        if (existingChild) {
+          // Another concurrent operation already created this directory, skip adding duplicate
+          return;
         }
 
         // Create a reference node that points to the actual directory node
@@ -202,11 +209,23 @@ export async function traverseDocTree(
         }
       });
 
-      // Update for next iteration
+      // After the change operation, check what actually exists in the parent
+      const updatedParentDoc = await currentHandle.doc();
+      if (!updatedParentDoc) {
+        return undefined;
+      }
+
+      // Find the actual child that exists (either ours or one created concurrently)
+      const actualChild = updatedParentDoc.children?.find(child => child.name === segment);
+      if (!actualChild || !actualChild.pointer) {
+        return undefined;
+      }
+
+      // Update for next iteration - use the actual child that exists
       parentHandle = currentHandle;
-      parentDoc = currentDoc;
-      currentNodeId = newNodeId;
-      currentHandle = newNodeHandle;
+      parentDoc = updatedParentDoc as DirNode;
+      currentNodeId = actualChild.pointer;
+      currentHandle = repo.find<DirNode>(currentNodeId);
       const newDoc = await currentHandle.doc();
 
       if (!newDoc) {
