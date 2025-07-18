@@ -1,0 +1,36 @@
+# #!/usr/bin/env sh
+
+# # Tonk LLM Instructions Distribution Hook
+# # This hook ensures that all llms.txt files are kept in sync with the docs
+
+# echo "🚀 Running LLM instructions distribution..."
+
+# # Run the distribution script
+# node utils/distribute-from-docs.js
+
+# # Check if distribution was successful
+# if [ $? -eq 0 ]; then
+#     echo "✅ LLM instructions distribution completed successfully"
+    
+#     # Stage any files that were updated by the distribution
+#     echo "📄 Staging updated files..."
+    
+#     # Stage all llms.txt files
+#     git add "**/llms.txt"
+    
+#     # Stage all generated files
+#     git add "**/CLAUDE.md"
+#     git add "**/.cursorrules"
+#     git add "**/.windsurfrules"
+    
+#     # Stage cursor rules files
+#     git add "**/.cursor/rules/*.mdc"
+    
+#     echo "✅ Files staged successfully"
+# else
+#     echo "❌ LLM instructions distribution failed"
+#     echo "Please fix the issues before committing"
+#     exit 1
+# fi
+
+# echo "🎯 Pre-commit hook completed"

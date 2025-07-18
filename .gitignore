@@ -1,4 +1,42 @@
-.DS_Store
 .vscode
 automerge-repo-data
 .direnv
+
+# Node dependencies
+node_modules
+
+# Logs
+logs
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Test reports
+coverage
+*.lcov
+test-results/
+report.*.json
+
+# Cache
+.cache
+.eslintcache
+
+# Env files
+.env
+.env.*.local
+.env.local
+.direnv
+
+# Act secrets (local GitHub Actions)
+.secrets
+
+# Personal files
+*.local.*
+.idea
+*.swp
+*.swo
+
+# macOS system files
+.DS_Store
+**/.DS_Store
