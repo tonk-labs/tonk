@@ -51,10 +51,21 @@ export const helloCommand = new Command('hello')
             // Start the tonk daemon with PM2
             const {stdout: whichTonk} = await execAsync('which tonk');
             const tonkPath = whichTonk.trim();
+            
+            // Check if tonk executable is a bash script or Node.js file
+            const {stdout: fileHead} = await execAsync(`head -1 ${tonkPath}`);
+            const isBashScript = fileHead.includes('#!/bin/bash');
+            
             //development is for when running locally, we don't use an NGINX instance in local development mode
-            await execAsync(
-              `NODE_ENV=development pm2 start ${tonkPath} --name tonkserver -- -d`,
-            );
+            if (isBashScript) {
+              await execAsync(
+                `NODE_ENV=development pm2 start bash --name tonkserver -- ${tonkPath} -d`,
+              );
+            } else {
+              await execAsync(
+                `NODE_ENV=development pm2 start ${tonkPath} --name tonkserver -- -d`,
+              );
+            }
           }
 
           console.log(chalk.green('Tonk daemon started successfully!'));
