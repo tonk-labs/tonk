@@ -6,6 +6,7 @@ import ora from "ora";
 import path from "path";
 import process from "process";
 import { fileURLToPath } from "url";
+import { createReactTemplate } from "./templates/react";
 import { createFeedTemplate } from "./templates/feed";
 import { ProjectPlan, TemplateType } from "./types";
 
@@ -72,11 +73,15 @@ const projectQuestions = [
     message: "What type of project would you like to create?",
     choices: [
       {
+        name: "React - blank Tonk app",
+        value: "react",
+      },
+      {
         name: "Social Feed - share and comment on posts",
         value: "social-feed",
       },
     ],
-    default: "social-feed",
+    default: "react",
   },
   {
     type: "input",
@@ -140,6 +145,10 @@ export async function createProject(
 
     // Switch on template type and call appropriate template creator
     switch (templateName) {
+      case "react": {
+        await createReactTemplate(projectPath, projectName, templatePath, plan);
+        break;
+      }
       case "social-feed": {
         await createFeedTemplate(projectPath, projectName, templatePath, plan);
         break;
