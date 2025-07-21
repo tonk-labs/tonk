@@ -7,7 +7,7 @@ export interface ProjectPlan {
   workerDependencies?: string[];
 }
 
-export type TemplateType = "react" | "worker" | "workspace";
+export type TemplateType = "social-feed";
 
 export interface TemplateConfig {
   name: string;

@@ -11,7 +11,7 @@ interface PostItemProps {
 
 export const PostItem: React.FC<PostItemProps> = ({ post }) => {
   const { deletePost } = usePostsStore();
-  const { getUser, isUserOwner } = useSyncedUsersStore();
+  const { getUser } = useSyncedUsersStore();
   const { currentUser } = useLocalAuthStore();
   const [textContent, setTextContent] = useState<TextContent | null>(null);
   const [imageContent, setImageContent] = useState<ImageContent | null>(null);
@@ -75,9 +75,7 @@ export const PostItem: React.FC<PostItemProps> = ({ post }) => {
     }
   };
 
-  const canDelete =
-    currentUser &&
-    (currentUser.id === post.authorId || isUserOwner(currentUser.id));
+  const canDelete = currentUser && currentUser.id === post.authorId;
 
   if (loading) {
     return (

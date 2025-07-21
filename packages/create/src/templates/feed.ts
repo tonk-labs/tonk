@@ -1,16 +1,16 @@
 import { ProjectPlan } from "../types";
 import { createTemplate, TemplateConfig } from "./base";
 
-export async function createReactTemplate(
+export async function createFeedTemplate(
   projectPath: string,
   projectName: string,
   templatePath: string,
   plan: ProjectPlan,
 ) {
   const config: TemplateConfig = {
-    type: "react",
-    displayName: "React",
-    successMessage: "🎉 Your Tonk react app is ready for vibe coding! 🎉",
+    type: "social-feed",
+    displayName: "Social Feed",
+    successMessage: "🎉 Your social feed is ready for vibe coding! 🎉",
     nextSteps: [
       {
         command: "pnpm dev",

@@ -32,7 +32,7 @@ export async function createTemplate(
 
   try {
     // List template contents before copying
-    const templateContents = await fs.readdir(templatePath);
+    await fs.readdir(templatePath);
 
     await fs.copy(templatePath, projectPath, {
       filter: (src: string) => {
@@ -52,7 +52,7 @@ export async function createTemplate(
     });
 
     // Verify project contents after copying
-    const projectContents = await fs.readdir(projectPath);
+    await fs.readdir(projectPath);
 
     // Update package.json name
     const packageJsonPath = path.join(projectPath, "package.json");
@@ -115,4 +115,3 @@ export async function createTemplate(
     throw error;
   }
 }
-
