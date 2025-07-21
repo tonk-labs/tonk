@@ -27,9 +27,16 @@ export class PasskeyManager {
     crypto.getRandomValues(challenge);
 
     try {
-      // Fix RP ID for localhost
+      // Fix RP ID for localhost and tonk domains
       const hostname = window.location.hostname;
-      const rpId = hostname === "localhost" ? "localhost" : hostname;
+      let rpId = hostname;
+      
+      if (hostname === "localhost") {
+        rpId = "localhost";
+      } else if (hostname.endsWith(".tonk.xyz")) {
+        // For tonk.xyz subdomains, use the parent domain for passkey compatibility
+        rpId = "tonk.xyz";
+      }
 
       const credential = (await navigator.credentials.create({
         publicKey: {
@@ -122,7 +129,14 @@ export class PasskeyManager {
 
       // Use same RP ID logic as creation
       const hostname = window.location.hostname;
-      const rpId = hostname === "localhost" ? "localhost" : hostname;
+      let rpId = hostname;
+      
+      if (hostname === "localhost") {
+        rpId = "localhost";
+      } else if (hostname.endsWith(".tonk.xyz")) {
+        // For tonk.xyz subdomains, use the parent domain for passkey compatibility
+        rpId = "tonk.xyz";
+      }
 
       const assertion = await navigator.credentials.get({
         publicKey: {

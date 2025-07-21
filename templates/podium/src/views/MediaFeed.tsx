@@ -11,7 +11,7 @@ export const MediaFeed: React.FC = () => {
         <div className="header">
           <h1>Podium</h1>
           <p className="header-subtitle">
-            Share moments with your intimate circle
+            Share moments with friends and family
           </p>
         </div>
 
