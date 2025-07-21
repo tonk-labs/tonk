@@ -5,7 +5,7 @@ import chalk from 'chalk';
 const startDockerizedServer = async (): Promise<void> => {
   try {
     // Read configuration from environment variables
-    const port = 7777;
+    const port = parseInt(process.env.PORT || '7777', 10);
     const persistencePath = process.env.PERSISTENCE_PATH || '/data/tonk';
 
     // Derive all paths from the persistence path
@@ -41,6 +41,7 @@ const startDockerizedServer = async (): Promise<void> => {
 
     // Create server configuration
     const serverConfig: ServerOptions = {
+      port,
       persistencePath,
     };
 

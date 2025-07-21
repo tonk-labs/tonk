@@ -789,6 +789,186 @@ export class TonkServer {
       }
       return;
     });
+
+    // Keepsync API endpoints for document transfer
+    this.app.put(
+      '/keepsync/docs/:path(*)',
+      express.json(),
+      async (req, res) => {
+        try {
+          const docPath = req.params.path;
+          const content = req.body;
+
+          if (!docPath) {
+            return res.status(400).json({error: 'Document path is required'});
+          }
+
+          if (content === undefined || content === null) {
+            return res
+              .status(400)
+              .json({error: 'Document content is required'});
+          }
+
+          this.log('blue', `Uploading document: ${docPath}`);
+
+          // Get the root document ID
+          const rootId = await this.rootNode.getRootId();
+          if (!rootId) {
+            return res.status(500).json({error: 'Root document not found'});
+          }
+
+          // Find or create the document in the automerge repo
+          const rootHandle = this.repo.find(rootId as DocumentId);
+          const rootDoc = await rootHandle.doc();
+
+          if (!rootDoc) {
+            return res
+              .status(500)
+              .json({error: 'Root document could not be loaded'});
+          }
+
+          // Create a new document for the uploaded content
+          const docHandle = this.repo.create();
+          docHandle.change((doc: any) => {
+            Object.assign(doc, content);
+          });
+
+          // Update the root document to include this new document
+          // This is a simplified approach - in a real implementation you'd want to
+          // properly handle the directory structure and path navigation
+          rootHandle.change((root: any) => {
+            if (!root.children) {
+              root.children = [];
+            }
+
+            // Check if document already exists
+            const existingIndex = root.children.findIndex(
+              (child: any) => child.name === docPath,
+            );
+
+            if (existingIndex >= 0) {
+              // Update existing document
+              root.children[existingIndex] = {
+                name: docPath,
+                type: 'doc',
+                timestamps: {
+                  create:
+                    root.children[existingIndex].timestamps?.create ||
+                    Date.now(),
+                  modified: Date.now(),
+                },
+                pointer: docHandle.documentId,
+              };
+            } else {
+              // Add new document
+              root.children.push({
+                name: docPath,
+                type: 'doc',
+                timestamps: {
+                  create: Date.now(),
+                  modified: Date.now(),
+                },
+                pointer: docHandle.documentId,
+              });
+            }
+          });
+
+          this.log('green', `Successfully uploaded document: ${docPath}`);
+          res
+            .status(200)
+            .json({success: true, message: 'Document uploaded successfully'});
+        } catch (error: any) {
+          this.log('red', `Error uploading document: ${error.message}`);
+          res.status(500).json({error: error.message});
+        }
+        return;
+      },
+    );
+
+    this.app.get('/keepsync/docs/:path(*)', async (req, res) => {
+      try {
+        const docPath = req.params.path;
+
+        if (!docPath) {
+          return res.status(400).json({error: 'Document path is required'});
+        }
+
+        this.log('blue', `Retrieving document: ${docPath}`);
+
+        // Get the root document ID
+        const rootId = await this.rootNode.getRootId();
+        if (!rootId) {
+          return res.status(404).json({error: 'Root document not found'});
+        }
+
+        const rootHandle = this.repo.find(rootId as DocumentId);
+        const rootDoc = await rootHandle.doc();
+
+        if (!rootDoc) {
+          return res
+            .status(500)
+            .json({error: 'Root document could not be loaded'});
+        }
+
+        // Find the document in the root's children
+        const docEntry = (rootDoc as any).children?.find(
+          (child: any) => child.name === docPath,
+        );
+
+        if (!docEntry || !docEntry.pointer) {
+          return res.status(404).json({error: 'Document not found'});
+        }
+
+        // Load the actual document content
+        const docHandle = this.repo.find(docEntry.pointer as DocumentId);
+        const doc = await docHandle.doc();
+
+        if (!doc) {
+          return res.status(404).json({error: 'Document content not found'});
+        }
+
+        this.log('green', `Successfully retrieved document: ${docPath}`);
+        res.status(200).json(doc);
+      } catch (error: any) {
+        this.log('red', `Error retrieving document: ${error.message}`);
+        res.status(500).json({error: error.message});
+      }
+      return;
+    });
+
+    this.app.get('/keepsync/docs', async (_req, res) => {
+      try {
+        this.log('blue', 'Listing all documents');
+
+        // Get the root document ID
+        const rootId = await this.rootNode.getRootId();
+        if (!rootId) {
+          return res.status(404).json({error: 'Root document not found'});
+        }
+
+        const rootHandle = this.repo.find(rootId as DocumentId);
+        const rootDoc = await rootHandle.doc();
+
+        if (!rootDoc) {
+          return res
+            .status(500)
+            .json({error: 'Root document could not be loaded'});
+        }
+
+        // Extract document paths from the root's children
+        const documents =
+          (rootDoc as any).children
+            ?.filter((child: any) => child.type === 'doc')
+            ?.map((child: any) => child.name) || [];
+
+        this.log('green', `Successfully listed ${documents.length} documents`);
+        res.status(200).json(documents);
+      } catch (error: any) {
+        this.log('red', `Error listing documents: ${error.message}`);
+        res.status(500).json({error: error.message});
+      }
+      return;
+    });
   }
 
   private async setupGlobalNginxProxy() {

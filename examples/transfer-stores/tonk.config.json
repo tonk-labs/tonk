@@ -1,0 +1,9 @@
+{
+  "name": "transfer-stores",
+  "plan": {
+    "platform": "react",
+    "projectName": "transfer-stores",
+    "description": "It connects to your local keepsync store and transfers it to a remote store."
+  },
+  "template": "react"
+}
