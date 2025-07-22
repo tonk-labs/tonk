@@ -3,10 +3,10 @@
  * Manages all sensitive configuration values through environment variables
  */
 
-import {config as loadDotenv} from 'dotenv';
-import {existsSync} from 'fs';
+import { config as loadDotenv } from 'dotenv';
+import { existsSync } from 'fs';
 import path from 'path';
-import {fileURLToPath} from 'url';
+import { fileURLToPath } from 'url';
 
 // Load .env file if it exists
 const __filename = fileURLToPath(import.meta.url);
@@ -16,7 +16,7 @@ const cliRoot = path.resolve(__dirname, '..');
 // Try to load .env from the CLI package root only if it exists
 const envPath = path.join(cliRoot, '.env');
 if (existsSync(envPath)) {
-  loadDotenv({path: envPath});
+  loadDotenv({ path: envPath });
 }
 
 export interface TonkConfig {
@@ -103,7 +103,7 @@ export function getAnalyticsConfig(): {
 
   return {
     enabled: config.analytics.enabled && !!config.analytics.apiKey,
-    ...(apiKey && {apiKey}),
+    ...(apiKey && { apiKey }),
     host: config.analytics.host,
   };
 }
@@ -111,7 +111,7 @@ export function getAnalyticsConfig(): {
 /**
  * Get server configuration
  */
-export function getServerConfig(): {defaultUrl: string; defaultPort: number} {
+export function getServerConfig(): { defaultUrl: string; defaultPort: number } {
   return {
     defaultUrl: config.server.defaultUrl,
     defaultPort: config.server.defaultPort,

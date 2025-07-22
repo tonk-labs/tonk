@@ -2,19 +2,19 @@
  * Zustand state creator type
  * Represents the function that creates the initial state and actions for a Zustand store
  */
-import {StateCreator} from 'zustand';
+import { StateCreator } from 'zustand';
 
 /**
  * Import Repo and related types from automerge-repo
  */
-import {Repo, DocHandle, DocumentId} from '@automerge/automerge-repo';
+import { Repo, DocHandle, DocumentId } from '@automerge/automerge-repo';
 
 /**
  * Utility functions for state management:
  * - patchStore: Updates Zustand store with changes from Automerge
  * - removeNonSerializable: Prepares state for serialization by removing functions and non-serializable values
  */
-import {patchStore, removeNonSerializable} from './patching.js';
+import { patchStore, removeNonSerializable } from './patching.js';
 
 import {
   findDocument,
@@ -28,7 +28,7 @@ import {
 /**
  * Logger utility for consistent logging throughout the application
  */
-import {logger} from '../utils/logger.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Efficiently mutates an Automerge document by directly setting properties.
@@ -91,7 +91,7 @@ const mutateDocument = (doc: any, newState: any) => {
 /**
  * Function to get the Repo instance
  */
-import {getRepo, getRootId} from '../core/syncConfig.js';
+import { getRepo, getRootId } from '../core/syncConfig.js';
 
 /**
  * Configuration options for the sync middleware
@@ -146,7 +146,7 @@ export interface SyncOptions {
 export const sync =
   <T extends object>(
     config: StateCreator<T>,
-    options: SyncOptions,
+    options: SyncOptions
   ): StateCreator<T> =>
   (set, get, api) => {
     // Reference to the DocHandle
@@ -185,7 +185,7 @@ export const sync =
       },
       // Pass through the original get and api functions
       get,
-      api,
+      api
     );
 
     /**
@@ -208,7 +208,7 @@ export const sync =
         logger.debugWithContext(
           'sync-middleware',
           'Received doc change, updating Zustand store:',
-          updatedDoc,
+          updatedDoc
         );
 
         // Update the Zustand store with the new data
@@ -219,7 +219,7 @@ export const sync =
         // Log any errors that occur during the update process
         logger.error(
           `Error handling document change for ${options.docId}:`,
-          error,
+          error
         );
       }
     };
@@ -243,14 +243,14 @@ export const sync =
       // If the repo is not available, log a warning and exit
       if (!repo) {
         logger.warn(
-          `Cannot initialize sync for ${options.docId}: repo not available`,
+          `Cannot initialize sync for ${options.docId}: repo not available`
         );
         return;
       }
 
       try {
         // Get the document handle from the repo or create a new one if it doesn't exist
-        let docNode = await findDocument<T>(repo, root, options.docId);
+        const docNode = await findDocument<T>(repo, root, options.docId);
         if (!docNode) {
           docHandle = repo.create<T>();
           createDocument(repo, root, options.docId, docHandle);
@@ -260,7 +260,7 @@ export const sync =
         }
 
         // Set up the change callback to handle document updates
-        docHandle?.on('change', ({doc}) => {
+        docHandle?.on('change', ({ doc }) => {
           if (doc) {
             handleDocChange(doc);
           }
@@ -294,7 +294,7 @@ export const sync =
         if (options.onInitError) {
           // Ensure we always pass an Error object
           options.onInitError(
-            err instanceof Error ? err : new Error(String(err)),
+            err instanceof Error ? err : new Error(String(err))
           );
         }
       }
@@ -308,7 +308,7 @@ export const sync =
     let initTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Track when we started trying to initialize
-    let initStartTime = Date.now();
+    const initStartTime = Date.now();
 
     /**
      * Global Registry Setup
@@ -365,7 +365,7 @@ export const sync =
 
         // Create and log a timeout error
         const timeoutError = new Error(
-          `Sync initialization timed out after ${MAX_INIT_TIME}ms for document ${options.docId}`,
+          `Sync initialization timed out after ${MAX_INIT_TIME}ms for document ${options.docId}`
         );
         logger.error(timeoutError.message);
 
@@ -400,7 +400,7 @@ export const sync =
           window.__REPO_REGISTRY__.callbacks.push(async () => {
             if (!isSyncInit) {
               logger.debug(
-                `Repo became available, initializing store for ${options.docId}`,
+                `Repo became available, initializing store for ${options.docId}`
               );
               await initializeSync();
             }
@@ -445,7 +445,7 @@ const addressingParams = () => {
 };
 
 export const ls = async (path: string): Promise<DocNode | undefined> => {
-  const {repo, root} = addressingParams();
+  const { repo, root } = addressingParams();
 
   const result = await traverseDocTree(repo, root, path);
   if (!result) {
@@ -467,12 +467,12 @@ export const ls = async (path: string): Promise<DocNode | undefined> => {
 };
 
 export const rm = async (path: string): Promise<boolean> => {
-  const {repo, root} = addressingParams();
+  const { repo, root } = addressingParams();
   return await removeDocument(repo, root, path);
 };
 
 export const mkDir = async (path: string): Promise<DirNode | undefined> => {
-  const {repo, root} = addressingParams();
+  const { repo, root } = addressingParams();
   const result = await traverseDocTree(repo, root, path, true);
   if (!result) {
     return undefined;
@@ -491,7 +491,7 @@ export const mkDir = async (path: string): Promise<DirNode | undefined> => {
  * @throws Error if the SyncEngine is not properly initialized
  */
 export const readDoc = async <T>(path: string): Promise<T | undefined> => {
-  const {repo, root} = addressingParams();
+  const { repo, root } = addressingParams();
 
   const docNode = await findDocument<T>(repo, root, path);
   if (!docNode) {
@@ -513,9 +513,9 @@ export const readDoc = async <T>(path: string): Promise<T | undefined> => {
  * @throws Error if the SyncEngine is not properly initialized
  */
 export const writeDoc = async <T>(path: string, content: T) => {
-  const {repo, root} = addressingParams();
+  const { repo, root } = addressingParams();
 
-  let docNode = await findDocument<T>(repo, root, path);
+  const docNode = await findDocument<T>(repo, root, path);
   let newHandle;
   if (!docNode) {
     newHandle = repo.create<T>();
@@ -574,7 +574,7 @@ export type DocChangeListener<T> = (payload: {
  */
 export const listenToDoc = async <T>(
   path: string,
-  listener: DocChangeListener<T>,
+  listener: DocChangeListener<T>
 ): Promise<() => void> => {
   const repo = getRepo();
   const root = getRootId();
@@ -591,9 +591,9 @@ export const listenToDoc = async <T>(
 
   // Create a wrapper function that will call the listener with the full payload
   const handleChange = (payload: any) => {
-    const {doc, patches, patchInfo, handle} = payload;
+    const { doc, patches, patchInfo, handle } = payload;
     if (doc) {
-      listener({doc, patches, patchInfo, handle});
+      listener({ doc, patches, patchInfo, handle });
     }
   };
 
@@ -607,7 +607,7 @@ export const listenToDoc = async <T>(
     listener({
       doc: currentDoc,
       patches: [],
-      patchInfo: {before: null, after: currentDoc, source: 'initial'},
+      patchInfo: { before: null, after: currentDoc, source: 'initial' },
       handle: docHandle,
     });
   }

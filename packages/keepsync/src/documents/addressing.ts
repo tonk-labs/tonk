@@ -1,4 +1,4 @@
-import {DocumentId, Repo, DocHandle, Doc} from '@automerge/automerge-repo';
+import { DocumentId, Repo, DocHandle, Doc } from '@automerge/automerge-repo';
 
 // Reference to a node stored in a parent's children array
 export type RefNode = {
@@ -56,7 +56,7 @@ export async function traverseDocTree(
   repo: Repo,
   rootId: DocumentId,
   path: string,
-  createMissing: boolean = false,
+  createMissing: boolean = false
 ): Promise<TraverseResult | undefined> {
   // Normalize the path and split it into segments
   const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
@@ -160,7 +160,7 @@ export async function traverseDocTree(
     const children = currentDoc.children || [];
 
     // Find the child with the matching name
-    let childRef = children.find(child => child.name === segment);
+    const childRef = children.find(child => child.name === segment);
 
     if (!childRef && createMissing) {
       // Create a new directory document with repo.create()
@@ -185,7 +185,9 @@ export async function traverseDocTree(
         }
 
         // Check if a directory with this name already exists (prevents race condition duplicates)
-        const existingChild = doc.children.find(child => child.name === segment);
+        const existingChild = doc.children.find(
+          child => child.name === segment
+        );
         if (existingChild) {
           // Another concurrent operation already created this directory, skip adding duplicate
           return;
@@ -216,7 +218,9 @@ export async function traverseDocTree(
       }
 
       // Find the actual child that exists (either ours or one created concurrently)
-      const actualChild = updatedParentDoc.children?.find(child => child.name === segment);
+      const actualChild = updatedParentDoc.children?.find(
+        child => child.name === segment
+      );
       if (!actualChild || !actualChild.pointer) {
         return undefined;
       }
@@ -303,7 +307,7 @@ export async function traverseDocTree(
 export async function findDocument<T>(
   repo: Repo,
   rootId: DocumentId,
-  path: string,
+  path: string
 ): Promise<DocHandle<T> | undefined> {
   const result = await traverseDocTree(repo, rootId, path);
 
@@ -331,7 +335,7 @@ export async function createDocument<T>(
   repo: Repo,
   rootId: DocumentId,
   path: string,
-  docHandle: DocHandle<T>,
+  docHandle: DocHandle<T>
 ): Promise<void> {
   const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
   const segments = normalizedPath.split('/');
@@ -366,7 +370,7 @@ export async function createDocument<T>(
 
     // Check if document already exists
     const existingIndex = doc.children.findIndex(
-      (child: RefNode) => child.name === fileName,
+      (child: RefNode) => child.name === fileName
     );
 
     const docRef: RefNode = {
@@ -403,7 +407,7 @@ export async function createDocument<T>(
 export async function removeDocument(
   repo: Repo,
   rootId: DocumentId,
-  path: string,
+  path: string
 ): Promise<boolean> {
   // Find the document and its parent
   const result = await traverseDocTree(repo, rootId, path);
@@ -440,7 +444,7 @@ export async function removeDocument(
     const index = doc.children.findIndex(
       child =>
         child.name === result.targetRef!.name &&
-        child.pointer === result.targetRef!.pointer,
+        child.pointer === result.targetRef!.pointer
     );
 
     if (index >= 0) {

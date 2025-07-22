@@ -1,0 +1,152 @@
+name: Publish NPM Packages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/*/package.json"
+  workflow_dispatch:
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.changes.outputs.packages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect package changes
+        id: changes
+        run: |
+          # Get changed package.json files
+          changed_files=$(git diff --name-only HEAD~1 HEAD | grep 'packages/.*/package.json' || true)
+
+          if [ -z "$changed_files" ]; then
+            echo "No package.json files changed"
+            echo "packages=[]" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Extract package directories and check for version changes
+          packages_to_publish=()
+
+          for file in $changed_files; do
+            package_dir=$(dirname "$file")
+            package_name=$(basename "$package_dir")
+            
+            # Check if version changed in this package.json
+            version_changed=$(git diff HEAD~1 HEAD "$file" | grep -E '^\+.*"version":|^\-.*"version":' || true)
+            
+            if [ -n "$version_changed" ]; then
+              echo "Version changed in $package_name"
+              packages_to_publish+=("$package_name")
+            fi
+          done
+
+          if [ ${#packages_to_publish[@]} -eq 0 ]; then
+            echo "No version changes detected"
+            echo "packages=[]" >> $GITHUB_OUTPUT
+          else
+            # Convert array to JSON format
+            packages_json=$(printf '%s\n' "${packages_to_publish[@]}" | jq -R . | jq -s .)
+            echo "packages=$packages_json" >> $GITHUB_OUTPUT
+            echo "Packages to publish: $packages_json"
+          fi
+
+  publish:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.packages != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: ${{ fromJson(needs.detect-changes.outputs.packages) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Install root dependencies
+        run: pnpm install
+
+      - name: Install package dependencies
+        run: |
+          cd packages/${{ matrix.package }}
+          pnpm install
+
+      - name: Build package
+        run: |
+          cd packages/${{ matrix.package }}
+          pnpm run build
+
+      - name: Run tests
+        run: |
+          cd packages/${{ matrix.package }}
+          if npm run | grep -q "test"; then
+            pnpm run test
+          else
+            echo "No test script found, skipping tests"
+          fi
+
+      - name: Run linting
+        run: |
+          cd packages/${{ matrix.package }}
+          pnpm run lint
+
+      - name: Check if package exists on npm
+        id: check-npm
+        run: |
+          cd packages/${{ matrix.package }}
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Package $PACKAGE_NAME@$PACKAGE_VERSION already exists on npm"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Package $PACKAGE_NAME@$PACKAGE_VERSION does not exist on npm"
+          fi
+
+      - name: Publish to npm
+        if: steps.check-npm.outputs.exists == 'false'
+        run: |
+          cd packages/${{ matrix.package }}
+          pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.check-npm.outputs.exists == 'false'
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ matrix.package }}-v${{ steps.get-version.outputs.version }}
+          release_name: ${{ matrix.package }} v${{ steps.get-version.outputs.version }}
+          body: |
+            Release of ${{ matrix.package }} version ${{ steps.get-version.outputs.version }}
+
+            Published to npm: https://www.npmjs.com/package/@tonk/${{ matrix.package }}
+          draft: false
+          prerelease: false
+
+      - name: Get package version
+        id: get-version
+        run: |
+          cd packages/${{ matrix.package }}
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+

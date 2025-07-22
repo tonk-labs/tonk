@@ -1,4 +1,4 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import {
   trackCommand,
@@ -8,7 +8,7 @@ import {
 
 // Lazy-load tonkAuth to prevent initialization on import
 async function getTonkAuth() {
-  const {tonkAuth} = await import('../lib/tonkAuth.js');
+  const { tonkAuth } = await import('../lib/tonkAuth.js');
   return tonkAuth;
 }
 
@@ -49,7 +49,7 @@ authCommand
 
       if (tonkAuth.isSignedIn) {
         console.log(
-          `💌 Welcome back ${tonkAuth.friendlyName}, you're ready to Tonk!`,
+          `💌 Welcome back ${tonkAuth.friendlyName}, you're ready to Tonk!`
         );
 
         const duration = Date.now() - startTime;
@@ -74,10 +74,10 @@ authCommand
           {
             wasAlreadySignedIn: false,
             errorType: 'login_failed',
-          },
+          }
         );
         console.error(
-          chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`),
+          chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`)
         );
         await tonkAuth.destroy();
         process.exitCode = 1;
@@ -100,7 +100,7 @@ authCommand
       });
       console.error(
         chalk.red('An unexpected error occurred during login:'),
-        error,
+        error
       );
       if (tonkAuth) {
         await tonkAuth.destroy();
@@ -148,12 +148,12 @@ authCommand
             userName: name,
             hadActiveSubscription,
             errorType: 'logout_failed',
-          },
+          }
         );
         console.error(
           chalk.red(
-            `Failed to logout from Tonk: ${res.error || 'Unknown error'}`,
-          ),
+            `Failed to logout from Tonk: ${res.error || 'Unknown error'}`
+          )
         );
         await tonkAuth.destroy();
         process.exitCode = 1;
@@ -176,7 +176,7 @@ authCommand
       });
       console.error(
         chalk.red('An unexpected error occurred during logout:'),
-        error,
+        error
       );
       if (tonkAuth) {
         await tonkAuth.destroy();
@@ -201,7 +201,7 @@ authCommand
       if (tonkAuth.isSignedIn) {
         console.log(`✅ Signed in as ${tonkAuth.friendlyName}`);
         console.log(
-          `📦 Subscription: ${tonkAuth.activeSubscription ? 'Active' : 'Inactive'}`,
+          `📦 Subscription: ${tonkAuth.activeSubscription ? 'Active' : 'Inactive'}`
         );
 
         const duration = Date.now() - startTime;
@@ -228,7 +228,7 @@ authCommand
       });
       console.error(
         chalk.red('An unexpected error occurred while checking status:'),
-        error,
+        error
       );
       if (tonkAuth) {
         await tonkAuth.destroy();

@@ -1,9 +1,9 @@
-import {PostHog} from 'posthog-node';
+import { PostHog } from 'posthog-node';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
-import {CLI_VERSION} from '../utils/version.js';
-import {getAnalyticsConfig} from '../config/environment.js';
+import { CLI_VERSION } from '../utils/version.js';
+import { getAnalyticsConfig } from '../config/environment.js';
 
 // Fallback machine ID generation if node-machine-id is not available
 function generateFallbackMachineId(): string {
@@ -100,7 +100,7 @@ export function initAnalytics(): PostHog | null {
 function getMachineId(): string {
   try {
     // Try to use node-machine-id if available
-    const {machineIdSync} = require('node-machine-id');
+    const { machineIdSync } = require('node-machine-id');
     return machineIdSync();
   } catch (error) {
     // Fallback to system-based ID
@@ -114,7 +114,7 @@ function getMachineId(): string {
 export function trackCommand(
   commandName: string,
   options: Record<string, any> = {},
-  additionalProps: Record<string, any> = {},
+  additionalProps: Record<string, any> = {}
 ): void {
   try {
     const analytics = initAnalytics();
@@ -146,7 +146,7 @@ export function trackCommand(
 export function trackCommandSuccess(
   commandName: string,
   duration?: number,
-  additionalProps: Record<string, any> = {},
+  additionalProps: Record<string, any> = {}
 ): void {
   try {
     const analytics = initAnalytics();
@@ -178,7 +178,7 @@ export function trackCommandError(
   commandName: string,
   error: Error | string,
   duration?: number,
-  additionalProps: Record<string, any> = {},
+  additionalProps: Record<string, any> = {}
 ): void {
   try {
     const analytics = initAnalytics();
@@ -225,7 +225,7 @@ export async function shutdownAnalytics(): Promise<void> {
 export function withAnalytics<T extends any[], R>(
   commandName: string,
   fn: (...args: T) => R | Promise<R>,
-  optionsExtractor?: (...args: T) => Record<string, any>,
+  optionsExtractor?: (...args: T) => Record<string, any>
 ): (...args: T) => Promise<R> {
   return async (...args: T): Promise<R> => {
     const startTime = Date.now();

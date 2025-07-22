@@ -10,9 +10,10 @@
     "dev": "tsc --watch",
     "test": "bun test",
     "clean": "rimraf dist",
-    "lint": "biome check src",
-    "lint:fix": "biome check --write src",
-    "format": "biome format --write src"
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "format": "prettier --write src/**/*.ts",
+    "format:check": "prettier --check src/**/*.ts"
   },
   "dependencies": {
     "@automerge/automerge-repo": "^1.2.1",

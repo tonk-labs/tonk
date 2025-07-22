@@ -1,8 +1,8 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
-import {execSync} from 'child_process';
+import { execSync } from 'child_process';
 import inquirer from 'inquirer';
 import ora from 'ora';
 import tar from 'tar';
@@ -14,16 +14,16 @@ import {
 } from '../utils/analytics.js';
 // Lazy-load authHook to prevent initialization on import
 async function getAuthHook() {
-  const {authHook} = await import('../lib/tonkAuth.js');
+  const { authHook } = await import('../lib/tonkAuth.js');
   return authHook;
 }
 // Lazy-load tonkAuth to get auth token
 async function getTonkAuth() {
-  const {tonkAuth} = await import('../lib/tonkAuth.js');
+  const { tonkAuth } = await import('../lib/tonkAuth.js');
   return tonkAuth;
 }
-import {getDeploymentServiceUrl, config} from '../config/environment.js';
-import {fetchUserServers} from '../utils/serverUtils.js';
+import { getDeploymentServiceUrl, config } from '../config/environment.js';
+import { fetchUserServers } from '../utils/serverUtils.js';
 
 interface DeployOptions {
   name?: string;
@@ -52,10 +52,10 @@ async function checkDeploymentService(): Promise<void> {
     }
   } catch (error) {
     console.error(
-      chalk.red('Error: Tonk deployment service is not available.'),
+      chalk.red('Error: Tonk deployment service is not available.')
     );
     console.log(
-      chalk.yellow('Please reach out for support or try again later.'),
+      chalk.yellow('Please reach out for support or try again later.')
     );
     await shutdownAnalytics();
     process.exitCode = 1;
@@ -89,7 +89,7 @@ function readPackageJson(): any {
 
   if (!fs.existsSync(packagePath)) {
     throw new Error(
-      'package.json not found. Are you in a Tonk project directory?',
+      'package.json not found. Are you in a Tonk project directory?'
     );
   }
 
@@ -106,7 +106,7 @@ function readPackageJson(): any {
 function determineAppName(
   options: DeployOptions,
   tonkConfig: TonkConfig | null,
-  packageJson: any,
+  packageJson: any
 ): string {
   if (options.name) {
     return options.name;
@@ -159,7 +159,7 @@ async function createAppBundle(): Promise<string> {
           return !exclude.some(pattern => filePath.includes(pattern));
         },
       },
-      ['.'],
+      ['.']
     );
 
     spinner.succeed('App bundle created');
@@ -188,12 +188,12 @@ async function buildApp(skipBuild: boolean, bundleName: string): Promise<void> {
       VITE_BASE_PATH: `/${bundleName}/`,
     };
 
-    execSync('npm run build', {stdio: 'pipe', env});
+    execSync('npm run build', { stdio: 'pipe', env });
     spinner.succeed('App built successfully');
   } catch (error) {
     spinner.fail('Build failed');
     throw new Error(
-      'Failed to build app. Make sure you have a build script in package.json',
+      'Failed to build app. Make sure you have a build script in package.json'
     );
   }
 }
@@ -205,7 +205,7 @@ async function deployBundle(
   bundleName: string,
   serverName: string,
   tonkConfig: TonkConfig | null,
-  packageJson: any,
+  packageJson: any
 ): Promise<void> {
   const spinner = ora('Deploying...').start();
 
@@ -224,7 +224,7 @@ async function deployBundle(
     // Prepare form data
     const formData = new FormData();
     const bundleBuffer = fs.readFileSync(bundlePath);
-    const bundleBlob = new Blob([bundleBuffer], {type: 'application/gzip'});
+    const bundleBlob = new Blob([bundleBuffer], { type: 'application/gzip' });
 
     formData.append('appBundle', bundleBlob, 'app-bundle.tar.gz');
 
@@ -236,7 +236,7 @@ async function deployBundle(
         deployType: 'bundle',
         tonkConfig,
         packageJson,
-      }),
+      })
     );
 
     // Send deployment request
@@ -317,8 +317,8 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     } catch (error) {
       console.error(
         chalk.red(
-          `Error fetching servers: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error fetching servers: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       if (tonkAuth) tonkAuth.destroy();
@@ -330,7 +330,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     if (userServers.length === 0) {
       console.log(chalk.yellow('\nNo servers found in your account.'));
       console.log(
-        chalk.blue('Create a server first using: tonk server create'),
+        chalk.blue('Create a server first using: tonk server create')
       );
       await shutdownAnalytics();
       if (tonkAuth) tonkAuth.destroy();
@@ -340,7 +340,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
       serverName = userServers[0];
       console.log(chalk.green(`✓ Using your server: ${serverName}`));
     } else {
-      const {selectedServer} = await inquirer.prompt([
+      const { selectedServer } = await inquirer.prompt([
         {
           type: 'list',
           name: 'selectedServer',
@@ -356,7 +356,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
 
     // Confirm deployment
     if (!options.name) {
-      const {confirm} = await inquirer.prompt([
+      const { confirm } = await inquirer.prompt([
         {
           type: 'confirm',
           name: 'confirm',
@@ -399,8 +399,8 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
 
     console.error(
       chalk.red(
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-      ),
+        `Error: ${error instanceof Error ? error.message : String(error)}`
+      )
     );
     await shutdownAnalytics();
     if (tonkAuth) tonkAuth.destroy();
@@ -412,22 +412,22 @@ export const deployCommand = new Command('deploy')
   .description('Deploy a Tonk bundle to one of your servers')
   .option(
     '-n, --name <name>',
-    'Name for the deployed bundle (defaults to package.json name)',
+    'Name for the deployed bundle (defaults to package.json name)'
   )
   .option(
     '-r, --region <region>',
     'Region to deploy to',
-    config.deployment.defaultRegion,
+    config.deployment.defaultRegion
   )
   .option(
     '-m, --memory <memory>',
     'Memory allocation (e.g., 256mb, 1gb)',
-    config.deployment.defaultMemory,
+    config.deployment.defaultMemory
   )
   .option('-c, --cpus <cpus>', 'Number of CPUs', config.deployment.defaultCpus)
   .option('--skip-build', 'Skip the build step')
   .option(
     '--remote',
-    'Use remote Docker build (slower but works with limited local resources)',
+    'Use remote Docker build (slower but works with limited local resources)'
   )
   .action(handleDeployCommand);

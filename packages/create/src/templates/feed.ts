@@ -1,24 +1,24 @@
-import { ProjectPlan } from "../types";
-import { createTemplate, TemplateConfig } from "./base";
+import { ProjectPlan } from '../types';
+import { createTemplate, TemplateConfig } from './base';
 
 export async function createFeedTemplate(
   projectPath: string,
   projectName: string,
   templatePath: string,
-  plan: ProjectPlan,
+  plan: ProjectPlan
 ) {
   const config: TemplateConfig = {
-    type: "social-feed",
-    displayName: "Social Feed",
-    successMessage: "🎉 Your social feed is ready for vibe coding! 🎉",
+    type: 'social-feed',
+    displayName: 'Social Feed',
+    successMessage: '🎉 Your social feed is ready for vibe coding! 🎉',
     nextSteps: [
       {
-        command: "pnpm dev",
-        description: "Start the development server",
+        command: 'pnpm dev',
+        description: 'Start the development server',
       },
       {
-        command: "pnpm build",
-        description: "Build your project for production",
+        command: 'pnpm build',
+        description: 'Build your project for production',
       },
     ],
   };

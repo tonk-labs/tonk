@@ -1,24 +1,24 @@
-import { ProjectPlan } from "../types";
-import { createTemplate, TemplateConfig } from "./base";
+import { ProjectPlan } from '../types';
+import { createTemplate, TemplateConfig } from './base';
 
 export async function createReactTemplate(
   projectPath: string,
   projectName: string,
   templatePath: string,
-  plan: ProjectPlan,
+  plan: ProjectPlan
 ) {
   const config: TemplateConfig = {
-    type: "react",
-    displayName: "React",
-    successMessage: "🎉 Your Tonk react app is ready for vibe coding! 🎉",
+    type: 'react',
+    displayName: 'React',
+    successMessage: '🎉 Your Tonk react app is ready for vibe coding! 🎉',
     nextSteps: [
       {
-        command: "pnpm dev",
-        description: "Start the development server",
+        command: 'pnpm dev',
+        description: 'Start the development server',
       },
       {
-        command: "pnpm build",
-        description: "Build your project for production",
+        command: 'pnpm build',
+        description: 'Build your project for production',
       },
     ],
   };

@@ -1,14 +1,14 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
-import {spawn} from 'child_process';
+import { spawn } from 'child_process';
 import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
   shutdownAnalytics,
 } from '../utils/analytics.js';
-import {getServerConfig} from '../config/environment.js';
+import { getServerConfig } from '../config/environment.js';
 
 interface BundleInfo {
   id: string;
@@ -22,7 +22,7 @@ export const proxyCommand = new Command('proxy')
   .option(
     '-u, --url <url>',
     'URL of the Tonk server',
-    getServerConfig().defaultUrl,
+    getServerConfig().defaultUrl
   )
   .argument('<bundleName>', 'Name of the bundle to proxy')
   .action(async (bundleName, options) => {
@@ -52,17 +52,17 @@ export const proxyCommand = new Command('proxy')
 
       const runningBundles = (await response.json()) as BundleInfo[];
       const targetBundle = runningBundles.find(
-        bundle => bundle.bundleName === bundleName,
+        bundle => bundle.bundleName === bundleName
       );
 
       if (!targetBundle) {
         throw new Error(
-          `Bundle '${bundleName}' is not running. Start it first with 'tonk start ${bundleName}'`,
+          `Bundle '${bundleName}' is not running. Start it first with 'tonk start ${bundleName}'`
         );
       }
 
       console.log(
-        chalk.green(`Found running bundle: ${targetBundle.bundleName}`),
+        chalk.green(`Found running bundle: ${targetBundle.bundleName}`)
       );
       console.log(chalk.green(`Bundle port: ${targetBundle.port}`));
       console.log(chalk.blue(`Creating SSH tunnel with Pinggy...`));
@@ -86,7 +86,7 @@ export const proxyCommand = new Command('proxy')
         ],
         {
           stdio: 'inherit', // This will show the QR code and URLs directly in the terminal
-        },
+        }
       );
 
       // Handle process exit
@@ -120,8 +120,8 @@ export const proxyCommand = new Command('proxy')
 
       console.error(
         chalk.red(
-          `Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       process.exit(1);

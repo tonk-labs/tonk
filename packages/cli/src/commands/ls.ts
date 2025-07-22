@@ -1,4 +1,4 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
 import {
@@ -7,21 +7,21 @@ import {
   trackCommandSuccess,
   shutdownAnalytics,
 } from '../utils/analytics.js';
-import {getServerConfig} from '../config/environment.js';
+import { getServerConfig } from '../config/environment.js';
 
 export const lsCommand = new Command('ls')
   .description('List available bundles on the Tonk server')
   .option(
     '-u, --url <url>',
     'URL of the Tonk server',
-    getServerConfig().defaultUrl,
+    getServerConfig().defaultUrl
   )
   .action(async options => {
     const startTime = Date.now();
     const serverUrl = options.url;
 
     try {
-      trackCommand('ls', {serverUrl});
+      trackCommand('ls', { serverUrl });
 
       console.log(chalk.blue(`Fetching bundle list from ${serverUrl}...`));
 
@@ -65,8 +65,8 @@ export const lsCommand = new Command('ls')
 
       console.error(
         chalk.red(
-          `Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       process.exitCode = 1;

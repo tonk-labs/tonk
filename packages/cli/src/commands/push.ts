@@ -1,21 +1,21 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
 import fetch from 'node-fetch';
-import {FormData} from 'formdata-node';
-import {fileFromPath} from 'formdata-node/file-from-path';
-import {FormDataEncoder} from 'form-data-encoder';
-import {Readable} from 'stream';
+import { FormData } from 'formdata-node';
+import { fileFromPath } from 'formdata-node/file-from-path';
+import { FormDataEncoder } from 'form-data-encoder';
+import { Readable } from 'stream';
 import * as tar from 'tar';
-import {spawn} from 'child_process';
+import { spawn } from 'child_process';
 import {
   trackCommand,
   trackCommandError,
   trackCommandSuccess,
   shutdownAnalytics,
 } from '../utils/analytics.js';
-import {getServerConfig} from '../config/environment.js';
+import { getServerConfig } from '../config/environment.js';
 
 interface PushOptions {
   url: string;
@@ -49,7 +49,7 @@ async function validateSourceDirectory(sourcePath: string): Promise<void> {
   if (!fs.existsSync(sourcePath)) {
     console.error(chalk.red(`Error: Directory ${sourcePath} does not exist.`));
     console.log(
-      chalk.yellow(`Run 'npm run build' to create the dist directory.`),
+      chalk.yellow(`Run 'npm run build' to create the dist directory.`)
     );
     await shutdownAnalytics();
     process.exitCode = 1;
@@ -62,7 +62,7 @@ async function validateSourceDirectory(sourcePath: string): Promise<void> {
  */
 function determineBundleName(
   projectRoot: string,
-  providedName?: string,
+  providedName?: string
 ): string {
   let defaultName;
   try {
@@ -90,7 +90,7 @@ function determineBundleName(
  */
 async function buildWithBasePath(
   projectRoot: string,
-  route: string,
+  route: string
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     console.log(chalk.blue(`Building project with base path ${route}/...`));
@@ -129,17 +129,17 @@ async function buildWithBasePath(
 async function createTarball(
   sourcePath: string,
   projectRoot: string,
-  bundleName: string,
+  bundleName: string
 ): Promise<string> {
   console.log(
     chalk.blue(
-      `Packaging contents of directory ${sourcePath} as bundle '${bundleName}'...`,
-    ),
+      `Packaging contents of directory ${sourcePath} as bundle '${bundleName}'...`
+    )
   );
 
   const tempTarPath = path.join(
     projectRoot,
-    `${bundleName}-${Date.now()}.tar.gz`,
+    `${bundleName}-${Date.now()}.tar.gz`
   );
 
   // Get all directories and files in the source directory
@@ -156,7 +156,7 @@ async function createTarball(
       file: tempTarPath,
       cwd: sourcePath,
     },
-    children,
+    children
   );
 
   return tempTarPath;
@@ -168,7 +168,7 @@ async function createTarball(
 async function uploadBundle(
   serverUrl: string,
   bundleName: string,
-  tarballPath: string,
+  tarballPath: string
 ): Promise<UploadResult> {
   console.log(chalk.blue(`Uploading bundle to ${serverUrl}...`));
 
@@ -194,7 +194,7 @@ async function uploadBundle(
 
   const result = (await response.json()) as UploadResult;
   console.log(
-    chalk.green(`Bundle '${result.bundleName}' uploaded successfully!`),
+    chalk.green(`Bundle '${result.bundleName}' uploaded successfully!`)
   );
 
   return result;
@@ -206,11 +206,11 @@ async function uploadBundle(
 async function startBundle(
   serverUrl: string,
   bundleName: string,
-  route?: string,
+  route?: string
 ): Promise<StartResult> {
   console.log(chalk.blue(`Starting bundle '${bundleName}'...`));
 
-  const requestBody: {bundleName: string; route?: string} = {bundleName};
+  const requestBody: { bundleName: string; route?: string } = { bundleName };
 
   // Use provided route or default to bundle name
   if (route) {
@@ -242,8 +242,8 @@ async function startBundle(
     console.log(chalk.green(`Route: ${startResult.route}`));
     console.log(
       chalk.green(
-        `URL: ${startResult.url || `${serverUrl}${startResult.route}`}`,
-      ),
+        `URL: ${startResult.url || `${serverUrl}${startResult.route}`}`
+      )
     );
   } else if (startResult.port) {
     // Fallback for old port-based deployments
@@ -293,7 +293,7 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
     const tarballPath = await createTarball(
       sourcePath,
       projectRoot,
-      bundleName,
+      bundleName
     );
 
     // Upload bundle
@@ -306,13 +306,13 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
       startResult = await startBundle(
         serverUrl,
         uploadResult.bundleName,
-        route,
+        route
       );
     } else {
       console.log(
         chalk.blue(
-          `Use 'tonk start ${uploadResult.bundleName} --route ${route}' to start the bundle.`,
-        ),
+          `Use 'tonk start ${uploadResult.bundleName} --route ${route}' to start the bundle.`
+        )
       );
     }
 
@@ -339,8 +339,8 @@ async function handlePushCommand(options: PushOptions): Promise<void> {
 
     console.error(
       chalk.red(
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-      ),
+        `Error: ${error instanceof Error ? error.message : String(error)}`
+      )
     );
     await shutdownAnalytics();
     process.exitCode = 1;
@@ -352,16 +352,16 @@ export const pushCommand = new Command('push')
   .option(
     '-u, --url <url>',
     'URL of the Tonk server',
-    getServerConfig().defaultUrl,
+    getServerConfig().defaultUrl
   )
   .option(
     '-n, --name <name>',
-    'Name for the bundle (defaults to directory name)',
+    'Name for the bundle (defaults to directory name)'
   )
   .option('-d, --dir <dir>', 'Directory to bundle (defaults to ./dist)')
   .option(
     '-r, --route <route>',
-    'Route path for the bundle (defaults to /bundleName)',
+    'Route path for the bundle (defaults to /bundleName)'
   )
   .option('--no-build', 'Skip building the project before pushing')
   .option('--no-start', 'Skip starting the bundle after upload')

@@ -1,9 +1,9 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import displayTonkAnimation from './hello/index.js';
 import chalk from 'chalk';
 import envPaths from 'env-paths';
-import {exec} from 'child_process';
-import {promisify} from 'util';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import {
   trackCommand,
   trackCommandError,
@@ -29,7 +29,7 @@ export const helloCommand = new Command('hello')
       } catch (error) {
         // pm2 is not installed or not in PATH
         console.log(
-          chalk.blue('PM2 is required to run Tonk. Installing now...'),
+          chalk.blue('PM2 is required to run Tonk. Installing now...')
         );
         await execAsync('npm install -g pm2');
         pm2Exists = true;
@@ -40,37 +40,37 @@ export const helloCommand = new Command('hello')
         console.log(chalk.blue('Starting Tonk daemon...'));
         try {
           // Check if tonk process is already running in PM2
-          const {stdout} = await execAsync('pm2 list');
+          const { stdout } = await execAsync('pm2 list');
 
           if (stdout.includes('tonkserver')) {
             console.log(
-              chalk.yellow('Tonk daemon is already running. Restarting...'),
+              chalk.yellow('Tonk daemon is already running. Restarting...')
             );
             await execAsync('pm2 restart tonkserver');
           } else {
             // Start the tonk daemon with PM2
-            const {stdout: whichTonk} = await execAsync('which tonk');
+            const { stdout: whichTonk } = await execAsync('which tonk');
             const tonkPath = whichTonk.trim();
-            
+
             // Check if tonk executable is a bash script or Node.js file
-            const {stdout: fileHead} = await execAsync(`head -1 ${tonkPath}`);
+            const { stdout: fileHead } = await execAsync(`head -1 ${tonkPath}`);
             const isBashScript = fileHead.includes('#!/bin/bash');
-            
+
             //development is for when running locally, we don't use an NGINX instance in local development mode
             if (isBashScript) {
               await execAsync(
-                `NODE_ENV=development pm2 start bash --name tonkserver -- ${tonkPath} -d`,
+                `NODE_ENV=development pm2 start bash --name tonkserver -- ${tonkPath} -d`
               );
             } else {
               await execAsync(
-                `NODE_ENV=development pm2 start ${tonkPath} --name tonkserver -- -d`,
+                `NODE_ENV=development pm2 start ${tonkPath} --name tonkserver -- -d`
               );
             }
           }
 
           console.log(chalk.green('Tonk daemon started successfully!'));
 
-          const paths = envPaths('tonk', {suffix: ''});
+          const paths = envPaths('tonk', { suffix: '' });
           const tonkHome = paths.data;
 
           // Pretty print the Tonk home location

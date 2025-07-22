@@ -34,6 +34,9 @@
     "dev": "tsup --watch",
     "clean": "rimraf dist",
     "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "format": "prettier --write src/**/*.ts",
+    "format:check": "prettier --check src/**/*.ts",
     "test": "vitest run",
     "prepublishOnly": "npm run clean && npm run build"
   },
@@ -80,5 +83,8 @@
   "bugs": {
     "url": "https://github.com/tonk-labs/tonk/issues"
   },
-  "homepage": "https://github.com/tonk-labs/tonk#readme"
+  "homepage": "https://github.com/tonk-labs/tonk#readme",
+  "publishConfig": {
+    "access": "public"
+  }
 }

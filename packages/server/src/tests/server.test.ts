@@ -1,11 +1,11 @@
-import {TonkServer, ServerOptions} from '../index.js';
+import { TonkServer, ServerOptions } from '../index.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import supertest from 'supertest';
 import * as tar from 'tar';
 import rimraf from 'rimraf';
-import {v4 as uuidv4} from 'uuid';
+import { v4 as uuidv4 } from 'uuid';
 
 describe('TonkServer', () => {
   let server: TonkServer;
@@ -21,7 +21,7 @@ describe('TonkServer', () => {
     testBundleDir = path.join(tempDir, 'test-bundle-files');
 
     // Create directory for test files
-    fs.mkdirSync(testBundleDir, {recursive: true});
+    fs.mkdirSync(testBundleDir, { recursive: true });
 
     const options: ServerOptions = {
       bundlesPath: bundlesDir,
@@ -58,11 +58,11 @@ describe('TonkServer', () => {
       // Create test files
       fs.writeFileSync(
         path.join(testBundleDir, 'index.html'),
-        '<html><body>Test bundle</body></html>',
+        '<html><body>Test bundle</body></html>'
       );
       fs.writeFileSync(
         path.join(testBundleDir, 'app.js'),
-        'console.log("Test bundle");',
+        'console.log("Test bundle");'
       );
 
       // Create a test tar.gz file
@@ -73,7 +73,7 @@ describe('TonkServer', () => {
           file: testTarPath,
           cwd: tempDir,
         },
-        ['test-bundle-files'],
+        ['test-bundle-files']
       );
     });
 
@@ -95,14 +95,14 @@ describe('TonkServer', () => {
             bundlesDir,
             'test-bundle',
             'test-bundle-files',
-            'index.html',
-          ),
-        ),
+            'index.html'
+          )
+        )
       ).toBe(true);
       expect(
         fs.existsSync(
-          path.join(bundlesDir, 'test-bundle', 'test-bundle-files', 'app.js'),
-        ),
+          path.join(bundlesDir, 'test-bundle', 'test-bundle-files', 'app.js')
+        )
       ).toBe(true);
     });
 
@@ -126,16 +126,16 @@ describe('TonkServer', () => {
     it('should handle race conditions with same bundle name', async () => {
       // Create second test directory
       const testBundleDir2 = path.join(tempDir, 'test-bundle-files-2');
-      fs.mkdirSync(testBundleDir2, {recursive: true});
+      fs.mkdirSync(testBundleDir2, { recursive: true });
 
       // Create second test files
       fs.writeFileSync(
         path.join(testBundleDir2, 'index.html'),
-        '<html><body>Second bundle</body></html>',
+        '<html><body>Second bundle</body></html>'
       );
       fs.writeFileSync(
         path.join(testBundleDir2, 'app.js'),
-        'console.log("Second bundle");',
+        'console.log("Second bundle");'
       );
 
       // Create a second test tar.gz file
@@ -146,7 +146,7 @@ describe('TonkServer', () => {
           file: testTarPath2,
           cwd: tempDir,
         },
-        ['test-bundle-files-2'],
+        ['test-bundle-files-2']
       );
 
       // Send both requests almost simultaneously
@@ -171,10 +171,10 @@ describe('TonkServer', () => {
       // check if both extracted directories exist - one of them should have "won"
       const extractedDir = path.join(bundlesDir, 'same-name-bundle');
       const hasFiles1 = fs.existsSync(
-        path.join(extractedDir, 'test-bundle-files'),
+        path.join(extractedDir, 'test-bundle-files')
       );
       const hasFiles2 = fs.existsSync(
-        path.join(extractedDir, 'test-bundle-files-2'),
+        path.join(extractedDir, 'test-bundle-files-2')
       );
 
       // One of the directories should exist
@@ -191,16 +191,16 @@ describe('TonkServer', () => {
 
             // Create a unique test directory
             const testDir = path.join(tempDir, `test-dir-${uid}`);
-            fs.mkdirSync(testDir, {recursive: true});
+            fs.mkdirSync(testDir, { recursive: true });
 
             // Create test files
             fs.writeFileSync(
               path.join(testDir, 'index.html'),
-              `<html><body>Bundle ${uid}</body></html>`,
+              `<html><body>Bundle ${uid}</body></html>`
             );
             fs.writeFileSync(
               path.join(testDir, 'app.js'),
-              `console.log("Bundle ${uid}");`,
+              `console.log("Bundle ${uid}");`
             );
 
             // Create a tar.gz archive
@@ -211,23 +211,23 @@ describe('TonkServer', () => {
                 file: tarPath,
                 cwd: tempDir,
               },
-              [`test-dir-${uid}`],
+              [`test-dir-${uid}`]
             );
 
             return {
               uid,
               tarPath,
             };
-          }),
+          })
       );
 
       // Upload all bundles simultaneously
-      const promises = testUploads.map(({tarPath}) =>
+      const promises = testUploads.map(({ tarPath }) =>
         request
           .post('/upload-bundle')
           .attach('bundle', tarPath)
           // Use a shared bundle name but with the UUID to avoid conflicts
-          .field('name', `shared-bundle-${uuidv4().substring(0, 8)}`),
+          .field('name', `shared-bundle-${uuidv4().substring(0, 8)}`)
       );
 
       const responses = await Promise.all(promises);
@@ -250,17 +250,17 @@ describe('TonkServer', () => {
     beforeEach(async () => {
       // Create a test bundle
       testBundlePath = path.join(bundlesDir, 'test-server-bundle');
-      fs.mkdirSync(testBundlePath, {recursive: true});
+      fs.mkdirSync(testBundlePath, { recursive: true });
       fs.writeFileSync(
         path.join(testBundlePath, 'index.html'),
-        '<html><body>Test server</body></html>',
+        '<html><body>Test server</body></html>'
       );
     });
 
     it('should start a bundle server', async () => {
       const response = await request
         .post('/start')
-        .send({bundleName: 'test-server-bundle'});
+        .send({ bundleName: 'test-server-bundle' });
 
       expect(response.status).toBe(200);
       expect(response.body.bundleName).toBe('test-server-bundle');
@@ -272,7 +272,7 @@ describe('TonkServer', () => {
     it('should return 404 for non-existent bundle', async () => {
       const response = await request
         .post('/start')
-        .send({bundleName: 'non-existent-bundle'});
+        .send({ bundleName: 'non-existent-bundle' });
 
       expect(response.status).toBe(404);
     });
@@ -288,12 +288,12 @@ describe('TonkServer', () => {
       // First start a server
       const startResponse = await request
         .post('/start')
-        .send({bundleName: 'test-server-bundle'});
+        .send({ bundleName: 'test-server-bundle' });
 
       const serverId = startResponse.body.id;
 
       // Then stop it
-      const killResponse = await request.post('/kill').send({id: serverId});
+      const killResponse = await request.post('/kill').send({ id: serverId });
 
       expect(killResponse.status).toBe(200);
       expect(killResponse.body.success).toBe(true);
@@ -302,7 +302,7 @@ describe('TonkServer', () => {
     it('should return 404 when killing non-existent server', async () => {
       const response = await request
         .post('/kill')
-        .send({id: 'non-existent-id'});
+        .send({ id: 'non-existent-id' });
 
       expect(response.status).toBe(404);
     });
@@ -311,7 +311,7 @@ describe('TonkServer', () => {
       // Start a server first
       const startResponse = await request
         .post('/start')
-        .send({bundleName: 'test-server-bundle'});
+        .send({ bundleName: 'test-server-bundle' });
 
       const serverId = startResponse.body.id;
 

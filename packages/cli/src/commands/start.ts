@@ -1,4 +1,4 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
 import {
@@ -7,7 +7,7 @@ import {
   trackCommandSuccess,
   shutdownAnalytics,
 } from '../utils/analytics.js';
-import {getServerConfig} from '../config/environment.js';
+import { getServerConfig } from '../config/environment.js';
 
 interface StartResult {
   id: string;
@@ -23,15 +23,15 @@ export const startCommand = new Command('start')
   .option(
     '-u, --url <url>',
     'URL of the Tonk server',
-    getServerConfig().defaultUrl,
+    getServerConfig().defaultUrl
   )
   .option(
     '-r, --route <route>',
-    'Route path for the bundle (defaults to /bundleName)',
+    'Route path for the bundle (defaults to /bundleName)'
   )
   .option(
     '-p, --port <port>',
-    'Port for the bundle server (legacy option, prefer --route)',
+    'Port for the bundle server (legacy option, prefer --route)'
   )
   .argument('<bundleName>', 'Name of the bundle to start')
   .action(async (bundleName, options) => {
@@ -48,9 +48,10 @@ export const startCommand = new Command('start')
 
       console.log(chalk.blue(`Starting bundle ${bundleName}...`));
 
-      const requestBody: {bundleName: string; route?: string; port?: number} = {
-        bundleName,
-      };
+      const requestBody: { bundleName: string; route?: string; port?: number } =
+        {
+          bundleName,
+        };
 
       // Prefer route over port
       if (options.route) {
@@ -83,7 +84,7 @@ export const startCommand = new Command('start')
       if (result.route) {
         console.log(chalk.green(`Route: ${result.route}`));
         console.log(
-          chalk.green(`URL: ${result.url || `${serverUrl}${result.route}`}`),
+          chalk.green(`URL: ${result.url || `${serverUrl}${result.route}`}`)
         );
       } else if (result.port) {
         // Fallback for legacy port-based deployments
@@ -111,8 +112,8 @@ export const startCommand = new Command('start')
 
       console.error(
         chalk.red(
-          `Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       process.exitCode = 1;
