@@ -8,6 +8,7 @@ interface TripState {
   
   // Trip management
   createTrip: (name: string, description: string, startDate: Date, endDate: Date, createdBy: string) => void;
+  loadTrip: () => void;
   updateTrip: (updates: Partial<Trip>) => void;
   
   // Member management
@@ -42,26 +43,34 @@ export const useTripStore = create<TripState>(
   sync(
     (set) => ({
       currentTrip: null,
-      isLoading: false,
+      isLoading: true,
+      
+      loadTrip: () => {
+        // The sync middleware should automatically load the persisted state
+        // Set loading to false after a brief delay to allow sync to restore data
+        setTimeout(() => {
+          set({ isLoading: false });
+        }, 2000);
+      },
       
       createTrip: (name, description, startDate, endDate, createdBy) => {
         const newTrip: Trip = {
           id: generateId(),
           name,
           description,
-          startDate,
-          endDate,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString(),
           members: [{
             id: generateId(),
             name: createdBy,
-            joinedAt: new Date()
+            joinedAt: new Date().toISOString()
           }],
           locations: [],
           events: [],
           suggestions: [],
           notes: [],
           createdBy,
-          createdAt: new Date()
+          createdAt: new Date().toISOString()
         };
         set({ currentTrip: newTrip });
       },
@@ -76,7 +85,7 @@ export const useTripStore = create<TripState>(
         set((state) => ({
           currentTrip: state.currentTrip ? {
             ...state.currentTrip,
-            members: [...state.currentTrip.members, { ...member, joinedAt: new Date() }]
+            members: [...state.currentTrip.members, { ...member, joinedAt: new Date().toISOString() }]
           } : null
         }));
       },
@@ -99,7 +108,7 @@ export const useTripStore = create<TripState>(
             locations: [...state.currentTrip.locations, {
               ...location,
               id: generateId(),
-              addedAt: new Date()
+              addedAt: new Date().toISOString()
             }]
           } : null
         }));
@@ -132,7 +141,7 @@ export const useTripStore = create<TripState>(
             events: [...state.currentTrip.events, {
               ...event,
               id: generateId(),
-              createdAt: new Date()
+              createdAt: new Date().toISOString()
             }]
           } : null
         }));
@@ -165,7 +174,7 @@ export const useTripStore = create<TripState>(
             suggestions: [...state.currentTrip.suggestions, {
               ...suggestion,
               id: generateId(),
-              suggestedAt: new Date(),
+              suggestedAt: new Date().toISOString(),
               votes: [],
               status: 'pending' as const
             }]
@@ -218,8 +227,8 @@ export const useTripStore = create<TripState>(
             notes: [...state.currentTrip.notes, {
               ...note,
               id: generateId(),
-              createdAt: new Date(),
-              lastModifiedAt: new Date()
+              createdAt: new Date().toISOString(),
+              lastModifiedAt: new Date().toISOString()
             }]
           } : null
         }));
@@ -233,7 +242,7 @@ export const useTripStore = create<TripState>(
               n.id === noteId ? { 
                 ...n, 
                 ...updates, 
-                lastModifiedAt: new Date() 
+                lastModifiedAt: new Date().toISOString() 
               } : n
             )
           } : null

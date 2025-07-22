@@ -90,7 +90,7 @@ export function SharedNotes({ currentUser }: SharedNotesProps) {
     return member?.name || memberId;
   };
 
-  const formatDate = (date: Date) => {
+  const formatDate = (date: string) => {
     return new Date(date).toLocaleDateString("en-US", {
       year: "numeric",
       month: "short",

@@ -63,9 +63,10 @@ export function PlaceSuggestions({ currentUser }: PlaceSuggestionsProps) {
       latitude: suggestionForm.locationLatitude,
       longitude: suggestionForm.locationLongitude,
       category: suggestionForm.locationCategory,
-      placeId: suggestionForm.locationPlaceId,
+      placeId: suggestionForm.locationPlaceId || null,
+      description: null,
       addedBy: currentUser,
-      addedAt: new Date(),
+      addedAt: new Date().toISOString(),
     };
 
     addSuggestion({
@@ -101,8 +102,8 @@ export function PlaceSuggestions({ currentUser }: PlaceSuggestionsProps) {
       latitude: suggestion.location.latitude,
       longitude: suggestion.location.longitude,
       category: suggestion.location.category,
-      placeId: suggestion.location.placeId,
-      description: suggestion.description,
+      placeId: suggestion.location.placeId || null,
+      description: suggestion.description || null,
       addedBy: currentUser,
     });
   };

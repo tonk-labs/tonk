@@ -390,12 +390,12 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
 
     addLocation({
       name: newLocation.name,
-      description: newLocation.description,
+      description: newLocation.description || null,
       address: newLocation.address,
       latitude: newLocation.latitude,
       longitude: newLocation.longitude,
       category: newLocation.category,
-      placeId: newLocation.placeId,
+      placeId: newLocation.placeId || null,
       addedBy: currentUser,
     });
 

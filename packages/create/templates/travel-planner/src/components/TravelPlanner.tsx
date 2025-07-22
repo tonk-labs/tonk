@@ -18,7 +18,7 @@ import {
 type TabType = "calendar" | "suggestions" | "notes" | "members" | "map";
 
 export function TravelPlanner() {
-  const { currentTrip, createTrip, addMember } = useTripStore();
+  const { currentTrip, createTrip, addMember, loadTrip, isLoading } = useTripStore();
   const [activeTab, setActiveTab] = useState<TabType>("calendar");
   const [currentUser, setCurrentUser] = useState<string>("");
   const [showTripForm, setShowTripForm] = useState(false);
@@ -39,17 +39,22 @@ export function TravelPlanner() {
     if (savedUser) {
       setCurrentUser(savedUser);
     }
-  }, []);
+    
+    // Try to load existing trip data
+    loadTrip();
+  }, [loadTrip]);
 
   useEffect(() => {
-    // If no trip exists, show the trip creation form
-    if (!currentTrip) {
-      setShowTripForm(true);
-    } else if (!currentUser) {
-      // If we have a trip but no current user, show user selection
-      setShowUserSelection(true);
+    // Show appropriate modal based on state
+    if (!isLoading) {
+      if (!currentTrip) {
+        setShowTripForm(true);
+      } else if (!currentUser) {
+        // If we have a trip but no current user, show user selection
+        setShowUserSelection(true);
+      }
     }
-  }, [currentTrip, currentUser]);
+  }, [currentTrip, currentUser, isLoading]);
 
   const handleCreateTrip = (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,6 +130,27 @@ export function TravelPlanner() {
         return null;
     }
   };
+
+  // Show loading screen while sync is initializing
+  if (isLoading) {
+    return (
+      <div className="app-container">
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          height: '100vh',
+          flexDirection: 'column',
+          gap: '1rem'
+        }}>
+          <div>Loading travel planner...</div>
+          <div style={{ fontSize: '0.875rem', opacity: 0.7 }}>
+            Syncing your data...
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">

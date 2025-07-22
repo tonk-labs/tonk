@@ -52,7 +52,7 @@ export function Calendar({ currentUser }: CalendarProps) {
         latitude: eventForm.newLocationLatitude,
         longitude: eventForm.newLocationLongitude,
         category: "other",
-        placeId: eventForm.newLocationPlaceId,
+        placeId: eventForm.newLocationPlaceId || null,
         addedBy: currentUser,
       });
       locationId = newLocationId;
@@ -61,18 +61,18 @@ export function Calendar({ currentUser }: CalendarProps) {
     if (editingEvent) {
       updateEvent(editingEvent.id, {
         title: eventForm.title,
-        description: eventForm.description,
-        startDate: new Date(eventForm.startDate),
-        endDate: new Date(eventForm.endDate),
-        locationId: locationId || undefined,
+        description: eventForm.description || null,
+        startDate: new Date(eventForm.startDate).toISOString(),
+        endDate: new Date(eventForm.endDate).toISOString(),
+        locationId: locationId || null,
       });
     } else {
       addEvent({
         title: eventForm.title,
-        description: eventForm.description,
-        startDate: new Date(eventForm.startDate),
-        endDate: new Date(eventForm.endDate),
-        locationId: locationId || undefined,
+        description: eventForm.description || null,
+        startDate: new Date(eventForm.startDate).toISOString(),
+        endDate: new Date(eventForm.endDate).toISOString(),
+        locationId: locationId || null,
         createdBy: currentUser,
       });
     }
@@ -99,8 +99,8 @@ export function Calendar({ currentUser }: CalendarProps) {
     setEventForm({
       title: event.title,
       description: event.description || "",
-      startDate: event.startDate.toISOString().slice(0, 16),
-      endDate: event.endDate.toISOString().slice(0, 16),
+      startDate: new Date(event.startDate).toISOString().slice(0, 16),
+      endDate: new Date(event.endDate).toISOString().slice(0, 16),
       locationId: event.locationId || "",
       newLocationName: "",
       newLocationAddress: "",
@@ -154,23 +154,22 @@ export function Calendar({ currentUser }: CalendarProps) {
           (l) => l.id === suggestion.location.id,
         );
         if (!existingLocation) {
-          addLocation({
-            name: suggestion.location.name,
-            address: suggestion.location.address,
-            latitude: suggestion.location.latitude,
-            longitude: suggestion.location.longitude,
-            category: suggestion.location.category,
-            placeId: suggestion.location.placeId,
-            description: suggestion.location.description,
-            addedBy: currentUser,
-          });
-        }
+        addLocation({
+          name: suggestion.location.name,
+          address: suggestion.location.address,
+          latitude: suggestion.location.latitude,
+          longitude: suggestion.location.longitude,
+          category: suggestion.location.category,
+          placeId: suggestion.location.placeId || null,
+          description: suggestion.location.description || null,
+          addedBy: currentUser,
+        });        }
 
         addEvent({
           title: suggestion.name,
-          description: suggestion.description,
-          startDate,
-          endDate,
+          description: suggestion.description || null,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString(),
           locationId: suggestion.location.id,
           createdBy: currentUser,
         });
@@ -188,8 +187,8 @@ export function Calendar({ currentUser }: CalendarProps) {
         const newEndDate = new Date(newStartDate.getTime() + timeDiff);
 
         updateEvent(event.id, {
-          startDate: newStartDate,
-          endDate: newEndDate,
+          startDate: newStartDate.toISOString(),
+          endDate: newEndDate.toISOString(),
         });
       }
     } catch (error) {
