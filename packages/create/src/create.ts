@@ -81,6 +81,10 @@ const projectQuestions = [
         name: "Social Feed - share and comment on posts",
         value: "social-feed",
       },
+      {
+        name: "Travel Planner - plan trips with friends",
+        value: "travel-planner",
+      },
     ],
     default: "react",
   },
@@ -240,7 +244,10 @@ program
   .description("Scaffold code for your Tonk projects")
   .version(packageJson.version, "-v, --version", "Output the current version")
   .option("-i, --init", "initialize in the folder")
-  .option("-t, --template <type>", "template type (react, worker, workspace)")
+  .option(
+    "-t, --template <type>",
+    "template type (react, social feed, travel planner)",
+  )
   .option("-n, --name <name>", "project name")
   .option("-d, --description <description>", "project description")
   .action(async (options) => {
