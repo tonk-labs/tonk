@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useTripStore } from "../stores/tripStore";
 import { SharedNote } from "../types/travel";
 import { Plus, Edit, Trash2, Save, X, Tag, User, Clock } from "lucide-react";
+import styles from "./SharedNotes.module.css";
 
 interface SharedNotesProps {
   currentUser: string;
@@ -121,9 +122,9 @@ export function SharedNotes({ currentUser }: SharedNotesProps) {
       </div>
 
       {/* Search and Filter */}
-      <div style={{ marginBottom: "1.5rem" }}>
-        <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem" }}>
-          <div style={{ flex: 1 }}>
+      <div className={styles.searchAndFilter}>
+        <div className={styles.searchFilterRow}>
+          <div className={styles.searchInput}>
             <input
               type="text"
               placeholder="Search notes..."
@@ -132,7 +133,7 @@ export function SharedNotes({ currentUser }: SharedNotesProps) {
               className="form-input"
             />
           </div>
-          <div style={{ width: "12rem" }}>
+          <div className={styles.tagSelect}>
             <select
               value={selectedTag}
               onChange={(e) => setSelectedTag(e.target.value)}
@@ -149,15 +150,8 @@ export function SharedNotes({ currentUser }: SharedNotesProps) {
         </div>
 
         {allTags.length > 0 && (
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: "0.5rem",
-              alignItems: "center",
-            }}
-          >
-            <span style={{ fontSize: "0.875rem", opacity: 0.7 }}>Tags:</span>
+          <div className={styles.tagButtons}>
+            <span className={styles.tagButtonsLabel}>Tags:</span>
             {allTags.map((tag) => (
               <button
                 key={tag}
@@ -270,8 +264,8 @@ export function SharedNotes({ currentUser }: SharedNotesProps) {
       {/* Notes List */}
       <div>
         {filteredNotes.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-state-icon">📝</div>
+          <div className={styles.emptyState}>
+            <div className={styles.emptyStateIcon}>📝</div>
             {searchTerm || selectedTag ? (
               <h3>No notes match your search criteria</h3>
             ) : (
@@ -289,56 +283,16 @@ export function SharedNotes({ currentUser }: SharedNotesProps) {
                 new Date(a.lastModifiedAt).getTime(),
             )
             .map((note) => (
-              <div
-                key={note.id}
-                className="card"
-                style={{ background: "rgba(0, 0, 0, 0.02)" }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "flex-start",
-                    marginBottom: "1rem",
-                  }}
-                >
+              <div key={note.id} className={`card ${styles.noteCard}`}>
+                <div className={styles.noteHeader}>
                   <div style={{ flex: 1 }}>
-                    <h3
-                      style={{
-                        fontWeight: "600",
-                        fontSize: "1.125rem",
-                        marginBottom: "0.5rem",
-                      }}
-                    >
-                      {note.title}
-                    </h3>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "1rem",
-                        fontSize: "0.875rem",
-                        opacity: 0.7,
-                        marginBottom: "0.5rem",
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "0.25rem",
-                        }}
-                      >
+                    <h3 className={styles.noteTitle}>{note.title}</h3>
+                    <div className={styles.noteMeta}>
+                      <div className={styles.noteMetaItem}>
                         <User size={14} />
                         <span>Created by {getMemberName(note.createdBy)}</span>
                       </div>
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "0.25rem",
-                        }}
-                      >
+                      <div className={styles.noteMetaItem}>
                         <Clock size={14} />
                         <span>Modified {formatDate(note.lastModifiedAt)}</span>
                       </div>
@@ -349,7 +303,7 @@ export function SharedNotes({ currentUser }: SharedNotesProps) {
                       )}
                     </div>
                   </div>
-                  <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <div className={styles.noteActions}>
                     <button
                       onClick={() => handleEditNote(note)}
                       className="icon-btn"
@@ -369,49 +323,18 @@ export function SharedNotes({ currentUser }: SharedNotesProps) {
                   </div>
                 </div>
 
-                <div style={{ marginBottom: "1rem" }}>
-                  <div
-                    style={{
-                      whiteSpace: "pre-wrap",
-                      opacity: 0.8,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    {note.content}
-                  </div>
+                <div className={styles.noteContent}>
+                  <div className={styles.noteText}>{note.content}</div>
                 </div>
 
                 {note.tags.length > 0 && (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "0.5rem",
-                      flexWrap: "wrap",
-                    }}
-                  >
+                  <div className={styles.noteTags}>
                     <Tag size={14} style={{ opacity: 0.5 }} />
                     {note.tags.map((tag) => (
                       <span
                         key={tag}
                         onClick={() => setSelectedTag(tag)}
-                        style={{
-                          padding: "0.25rem 0.5rem",
-                          background: "rgba(44, 44, 44, 0.1)",
-                          color: "#2c2c2c",
-                          borderRadius: "20px",
-                          fontSize: "0.75rem",
-                          cursor: "pointer",
-                          transition: "all 0.3s ease",
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.background =
-                            "rgba(44, 44, 44, 0.15)";
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background =
-                            "rgba(44, 44, 44, 0.1)";
-                        }}
+                        className={styles.noteTag}
                       >
                         {tag}
                       </span>
@@ -425,21 +348,8 @@ export function SharedNotes({ currentUser }: SharedNotesProps) {
 
       {/* Notes Summary */}
       {notes.length > 0 && (
-        <div
-          style={{
-            marginTop: "1.5rem",
-            paddingTop: "1rem",
-            borderTop: "1px solid rgba(0, 0, 0, 0.1)",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: "0.875rem",
-              opacity: 0.7,
-            }}
-          >
+        <div className={styles.notesSummary}>
+          <div className={styles.notesSummaryContent}>
             <span>
               {filteredNotes.length} of {notes.length} notes
               {searchTerm && ` matching "${searchTerm}"`}
@@ -452,4 +362,3 @@ export function SharedNotes({ currentUser }: SharedNotesProps) {
     </div>
   );
 }
-

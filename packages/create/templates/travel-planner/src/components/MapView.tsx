@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { useTripStore } from "../stores/tripStore";
 import { MapPin, X } from "lucide-react";
 import PlaceSearch from "./PlaceSearch";
+import styles from "./MapView.module.css";
 
 // Declare MapKit JS types
 declare global {
@@ -451,9 +452,22 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
     >
       <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
         {/* Header */}
-        <div style={{ padding: "1rem", borderBottom: "1px solid rgba(0, 0, 0, 0.1)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <h2 style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+        <div
+          style={{
+            padding: "1rem",
+            borderBottom: "1px solid rgba(0, 0, 0, 0.1)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <h2
+              style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
+            >
               <MapPin size={24} />
               Trip Map
             </h2>
@@ -477,11 +491,19 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
           <div
             ref={mapRef}
             style={{ height: "100%", width: "100%" }}
-            className="map-container"
+            className={styles.mapContainer}
           />
 
           {/* Search bar overlay */}
-          <div style={{ position: "absolute", top: "1rem", left: "1rem", zIndex: 10, width: "20rem" }}>
+          <div
+            style={{
+              position: "absolute",
+              top: "1rem",
+              left: "1rem",
+              zIndex: 10,
+              width: "20rem",
+            }}
+          >
             <PlaceSearch
               onPlaceSelect={(latitude, longitude, name, address, placeId) => {
                 handlePlaceSelect(latitude, longitude, name, address, placeId);
@@ -493,15 +515,15 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
 
           {/* Add Location Panel */}
           {isAddingLocation && (
-            <div className="add-location-panel">
-              <div className="add-location-panel-content">
-                <div className="add-location-panel-header">
-                  <h3 className="add-location-panel-title">
+            <div className={styles.addLocationPanel}>
+              <div className={styles.addLocationPanelContent}>
+                <div className={styles.addLocationPanelHeader}>
+                  <h3 className={styles.addLocationPanelTitle}>
                     Add Location to Trip
                   </h3>
                   <button
                     onClick={cancelAddLocation}
-                    className="add-location-panel-close"
+                    className={styles.addLocationPanelClose}
                   >
                     <X size={20} />
                   </button>
@@ -509,12 +531,10 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
 
                 <form
                   onSubmit={handleSubmit}
-                  className="add-location-form"
+                  className={styles.addLocationForm}
                 >
-                  <div className="add-location-form-group">
-                    <label className="add-location-form-label">
-                      Name
-                    </label>
+                  <div className={styles.addLocationFormGroup}>
+                    <label className={styles.addLocationFormLabel}>Name</label>
                     <input
                       type="text"
                       value={newLocation.name}
@@ -524,14 +544,14 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
                           name: e.target.value,
                         }))
                       }
-                      className="add-location-form-input"
+                      className={styles.addLocationFormInput}
                       placeholder="Location name"
                       required
                     />
                   </div>
 
-                  <div className="add-location-form-group">
-                    <label className="add-location-form-label">
+                  <div className={styles.addLocationFormGroup}>
+                    <label className={styles.addLocationFormLabel}>
                       Category
                     </label>
                     <select
@@ -542,7 +562,7 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
                           category: e.target.value as any,
                         }))
                       }
-                      className="add-location-form-select"
+                      className={styles.addLocationFormSelect}
                     >
                       <option value="attraction">Attraction</option>
                       <option value="restaurant">Restaurant</option>
@@ -553,8 +573,10 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
                     </select>
                   </div>
 
-                  <div className="add-location-form-group add-location-form-group-full">
-                    <label className="add-location-form-label">
+                  <div
+                    className={`${styles.addLocationFormGroup} ${styles.addLocationFormGroupFull}`}
+                  >
+                    <label className={styles.addLocationFormLabel}>
                       Description (optional)
                     </label>
                     <textarea
@@ -565,17 +587,17 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
                           description: e.target.value,
                         }))
                       }
-                      className="add-location-form-textarea"
+                      className={styles.addLocationFormTextarea}
                       rows={2}
                       placeholder="What's special about this place?"
                     />
                   </div>
 
-                  <div className="add-location-form-actions">
+                  <div className={styles.addLocationFormActions}>
                     <button
                       type="button"
                       onClick={cancelAddLocation}
-                      className="add-location-form-cancel"
+                      className={styles.addLocationFormCancel}
                     >
                       Cancel
                     </button>
@@ -584,7 +606,7 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
                       disabled={
                         newLocation.latitude === 0 || !newLocation.name.trim()
                       }
-                      className="add-location-form-submit"
+                      className={styles.addLocationFormSubmit}
                     >
                       Add Location
                     </button>

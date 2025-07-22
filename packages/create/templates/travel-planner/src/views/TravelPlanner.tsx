@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { useTripStore } from "../stores/tripStore";
-import { Calendar } from "./Calendar";
-import { PlaceSuggestions } from "./PlaceSuggestions";
-import { SharedNotes } from "./SharedNotes";
-import { PlansEventsList } from "./PlansEventsList";
-import MapView from "./MapView";
+import { Calendar } from "../components/Calendar";
+import { PlaceSuggestions } from "../components/PlaceSuggestions";
+import { SharedNotes } from "../components/SharedNotes";
+import { PlansEventsList } from "../components/PlansEventsList";
+import MapView from "../components/MapView";
 import {
   Calendar as CalendarIcon,
   Lightbulb,
@@ -17,8 +17,9 @@ import {
 
 type TabType = "calendar" | "suggestions" | "notes" | "members" | "map";
 
-export function TravelPlanner() {
-  const { currentTrip, createTrip, addMember, loadTrip, isLoading } = useTripStore();
+export default function TravelPlanner() {
+  const { currentTrip, createTrip, addMember, loadTrip, isLoading } =
+    useTripStore();
   const [activeTab, setActiveTab] = useState<TabType>("calendar");
   const [currentUser, setCurrentUser] = useState<string>("");
   const [showTripForm, setShowTripForm] = useState(false);
@@ -35,11 +36,11 @@ export function TravelPlanner() {
 
   useEffect(() => {
     // Load current user from localStorage
-    const savedUser = localStorage.getItem('travel-planner-current-user');
+    const savedUser = localStorage.getItem("travel-planner-current-user");
     if (savedUser) {
       setCurrentUser(savedUser);
     }
-    
+
     // Try to load existing trip data
     loadTrip();
   }, [loadTrip]);
@@ -48,9 +49,9 @@ export function TravelPlanner() {
     // Show appropriate modal based on state
     if (!isLoading) {
       // Check localStorage again to ensure we have the most current user state
-      const savedUser = localStorage.getItem('travel-planner-current-user');
+      const savedUser = localStorage.getItem("travel-planner-current-user");
       const userToCheck = currentUser || savedUser;
-      
+
       if (!currentTrip) {
         setShowTripForm(true);
       } else if (!userToCheck) {
@@ -78,11 +79,9 @@ export function TravelPlanner() {
     });
   };
 
-
-
   const handleUserSelection = () => {
     let userName = "";
-    
+
     if (selectedExistingUser) {
       userName = selectedExistingUser;
     } else if (newUserName.trim()) {
@@ -93,10 +92,10 @@ export function TravelPlanner() {
         name: userName,
       });
     }
-    
+
     if (userName) {
       setCurrentUser(userName);
-      localStorage.setItem('travel-planner-current-user', userName);
+      localStorage.setItem("travel-planner-current-user", userName);
       setShowUserSelection(false);
       setNewUserName("");
       setSelectedExistingUser("");
@@ -139,16 +138,18 @@ export function TravelPlanner() {
   if (isLoading) {
     return (
       <div className="app-container">
-        <div style={{ 
-          display: 'flex', 
-          justifyContent: 'center', 
-          alignItems: 'center', 
-          height: '100vh',
-          flexDirection: 'column',
-          gap: '1rem'
-        }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            height: "100vh",
+            flexDirection: "column",
+            gap: "1rem",
+          }}
+        >
           <div>Loading travel planner...</div>
-          <div style={{ fontSize: '0.875rem', opacity: 0.7 }}>
+          <div style={{ fontSize: "0.875rem", opacity: 0.7 }}>
             Syncing your data...
           </div>
         </div>
@@ -241,7 +242,10 @@ export function TravelPlanner() {
                 value={currentUser}
                 onChange={(e) => {
                   setCurrentUser(e.target.value);
-                  localStorage.setItem('travel-planner-current-user', e.target.value);
+                  localStorage.setItem(
+                    "travel-planner-current-user",
+                    e.target.value,
+                  );
                 }}
                 className="form-select"
               >
@@ -436,8 +440,6 @@ function MembersTab({}: { currentUser: string }) {
                   required
                 />
               </div>
-
-
 
               <div className="modal-actions">
                 <button

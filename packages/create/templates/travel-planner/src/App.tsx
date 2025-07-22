@@ -1,6 +1,6 @@
 import React from "react";
 import { Route, Routes } from "react-router-dom";
-import { TravelPlanner } from "./components/TravelPlanner";
+import { TravelPlanner } from "./views";
 
 const App: React.FC = () => {
   return (

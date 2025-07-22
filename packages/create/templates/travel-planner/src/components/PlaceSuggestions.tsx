@@ -3,6 +3,7 @@ import { useTripStore } from "../stores/tripStore";
 import { PlaceSuggestion } from "../types/travel";
 import { Plus, ThumbsUp, Check, X, MapPin, User } from "lucide-react";
 import PlaceSearch from "./PlaceSearch";
+import styles from "./PlaceSuggestions.module.css";
 
 interface PlaceSuggestionsProps {
   currentUser: string;
@@ -120,25 +121,25 @@ export function PlaceSuggestions({ currentUser }: PlaceSuggestionsProps) {
     const voteCount = suggestion.votes.length;
 
     return (
-      <div className="suggestion-card">
-        <div className="suggestion-header">
+      <div className={styles.suggestionCard}>
+        <div className={styles.suggestionHeader}>
           <div>
-            <h3 className="suggestion-title">{suggestion.name}</h3>
-            <div className="suggestion-meta">
+            <h3 className={styles.suggestionTitle}>{suggestion.name}</h3>
+            <div className={styles.suggestionMeta}>
               <User size={14} />
               <span>Suggested by {getMemberName(suggestion.suggestedBy)}</span>
-              <span className="suggestion-meta-separator">•</span>
+              <span className={styles.suggestionMetaSeparator}>•</span>
               <span>
                 {new Date(suggestion.suggestedAt).toLocaleDateString()}
               </span>
             </div>
           </div>
-          <div className="suggestion-actions">
+          <div className={styles.suggestionActions}>
             {suggestion.status === "pending" && (
               <>
                 <button
                   onClick={() => handleVote(suggestion.id)}
-                  className={`suggestion-vote-btn ${hasVoted ? "voted" : ""}`}
+                  className={`${styles.suggestionVoteBtn} ${hasVoted ? styles.voted : ""}`}
                 >
                   <ThumbsUp size={14} />
                   <span>{voteCount}</span>
@@ -162,26 +163,34 @@ export function PlaceSuggestions({ currentUser }: PlaceSuggestionsProps) {
               </>
             )}
             {suggestion.status === "approved" && (
-              <span className="suggestion-status-badge approved">Approved</span>
+              <span
+                className={`${styles.suggestionStatusBadge} ${styles.approved}`}
+              >
+                Approved
+              </span>
             )}
             {suggestion.status === "rejected" && (
-              <span className="suggestion-status-badge rejected">Rejected</span>
+              <span
+                className={`${styles.suggestionStatusBadge} ${styles.rejected}`}
+              >
+                Rejected
+              </span>
             )}
           </div>
         </div>
 
-        <p className="suggestion-description">{suggestion.description}</p>
+        <p className={styles.suggestionDescription}>{suggestion.description}</p>
 
-        <div className="suggestion-location">
+        <div className={styles.suggestionLocation}>
           <MapPin size={14} />
-          <div className="suggestion-location-details">
-            <div className="suggestion-location-name">
+          <div className={styles.suggestionLocationDetails}>
+            <div className={styles.suggestionLocationName}>
               {suggestion.location.name}
             </div>
-            <div className="suggestion-location-address">
+            <div className={styles.suggestionLocationAddress}>
               {suggestion.location.address}
             </div>
-            <div className="suggestion-location-category">
+            <div className={styles.suggestionLocationCategory}>
               {suggestion.location.category}
             </div>
           </div>
@@ -389,18 +398,18 @@ export function PlaceSuggestions({ currentUser }: PlaceSuggestionsProps) {
       )}
 
       {/* Suggestions Tabs */}
-      <div className="suggestions-tabs">
-        <nav className="suggestions-tabs-nav">
+      <div className={styles.suggestionsTabs}>
+        <nav className={styles.suggestionsTabsNav}>
           <button
             onClick={() => setActiveTab("pending")}
-            className={`suggestions-tab ${activeTab === "pending" ? "active" : ""}`}
+            className={`${styles.suggestionsTab} ${activeTab === "pending" ? styles.active : ""}`}
           >
             Pending ({pendingSuggestions.length})
           </button>
           {approvedSuggestions.length > 0 && (
             <button
               onClick={() => setActiveTab("approved")}
-              className={`suggestions-tab ${activeTab === "approved" ? "active" : ""}`}
+              className={`${styles.suggestionsTab} ${activeTab === "approved" ? styles.active : ""}`}
             >
               Approved ({approvedSuggestions.length})
             </button>
@@ -408,7 +417,7 @@ export function PlaceSuggestions({ currentUser }: PlaceSuggestionsProps) {
           {rejectedSuggestions.length > 0 && (
             <button
               onClick={() => setActiveTab("rejected")}
-              className={`suggestions-tab ${activeTab === "rejected" ? "active" : ""}`}
+              className={`${styles.suggestionsTab} ${activeTab === "rejected" ? styles.active : ""}`}
             >
               Rejected ({rejectedSuggestions.length})
             </button>
@@ -417,10 +426,10 @@ export function PlaceSuggestions({ currentUser }: PlaceSuggestionsProps) {
       </div>
 
       {/* Current Tab Content */}
-      <div className="suggestions-section">
+      <div className={styles.suggestionsSection}>
         {getCurrentSuggestions().length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-state-icon">
+          <div className={styles.emptyState}>
+            <div className={styles.emptyStateIcon}>
               {getEmptyStateContent().icon}
             </div>
             <h3>{getEmptyStateContent().title}</h3>
@@ -435,4 +444,3 @@ export function PlaceSuggestions({ currentUser }: PlaceSuggestionsProps) {
     </div>
   );
 }
-

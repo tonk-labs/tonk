@@ -1,27 +1,31 @@
 # How to create components
+
 Components should be...
+
 - Pure and have only internal UI state. All other state is external.
 - Always use inline styling with tailwind
 - Each component should have its own folder, with `index.tsx` as the entry point
 - Export typed definitions of props
 
 ## Examples
+
 ### Task Card Component
+
 ```tsx
-import React, { useState } from 'react';
-import { CheckCircle, Clock, AlertCircle } from 'lucide-react';
+import React, { useState } from "react";
+import { CheckCircle, Clock, AlertCircle } from "lucide-react";
 
 /**
  * Represents the priority level of a task
  * @readonly
  */
-export type TaskPriority = 'low' | 'medium' | 'high';
+export type TaskPriority = "low" | "medium" | "high";
 
 /**
  * Represents the current status of a task
  * @readonly
  */
-export type TaskStatus = 'pending' | 'in-progress' | 'completed';
+export type TaskStatus = "pending" | "in-progress" | "completed";
 
 /**
  * Configuration options for the TaskCard component
@@ -32,29 +36,29 @@ export interface TaskCardProps {
    * The unique identifier for the task
    */
   id: string;
-  
+
   /**
    * The main title/description of the task
    */
   title: string;
-  
+
   /**
    * The priority level of the task
    * @default 'medium'
    */
   priority?: TaskPriority;
-  
+
   /**
    * The initial status of the task
    * @default 'pending'
    */
   initialStatus?: TaskStatus;
-  
+
   /**
    * Optional due date for the task
    */
   dueDate?: Date;
-  
+
   /**
    * Callback function triggered when task status changes
    * @param newStatus - The new status value
@@ -65,12 +69,12 @@ export interface TaskCardProps {
 
 /**
  * A rich task card component that displays task information and allows status updates
- * 
+ *
  * @description
  * TaskCard is a self-contained component that manages its own state while still  (ONLY UI STATE, all other state should be external)
  * allowing parent components to track status changes. It includes visual indicators
  * for priority levels and status, with a clean, accessible design.
- * 
+ *
  * @example
  * <TaskCard
  *   id="task-1"
@@ -83,25 +87,25 @@ export interface TaskCardProps {
 const TaskCard: React.FC<TaskCardProps> = ({
   id,
   title,
-  priority = 'medium',
-  initialStatus = 'pending',
+  priority = "medium",
+  initialStatus = "pending",
   dueDate,
-  onStatusChange
+  onStatusChange,
 }) => {
   const [status, setStatus] = useState<TaskStatus>(initialStatus);
 
   // Map priority levels to Tailwind classes
   const priorityClasses = {
-    low: 'bg-blue-100 text-blue-800',
-    medium: 'bg-yellow-100 text-yellow-800',
-    high: 'bg-red-100 text-red-800'
+    low: "bg-blue-100 text-blue-800",
+    medium: "bg-yellow-100 text-yellow-800",
+    high: "bg-red-100 text-red-800",
   };
 
   // Map status to icons
   const statusIcons = {
     pending: <Clock className="w-5 h-5 text-gray-500" />,
-    'in-progress': <AlertCircle className="w-5 h-5 text-yellow-500" />,
-    completed: <CheckCircle className="w-5 h-5 text-green-500" />
+    "in-progress": <AlertCircle className="w-5 h-5 text-yellow-500" />,
+    completed: <CheckCircle className="w-5 h-5 text-green-500" />,
   };
 
   /**
@@ -117,12 +121,14 @@ const TaskCard: React.FC<TaskCardProps> = ({
       <div className="flex items-start justify-between">
         <div className="flex-1">
           <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
-          
+
           <div className="mt-2 flex items-center gap-2">
-            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${priorityClasses[priority]}`}>
+            <span
+              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${priorityClasses[priority]}`}
+            >
               {priority}
             </span>
-            
+
             {dueDate && (
               <span className="text-sm text-gray-500">
                 Due: {dueDate.toLocaleDateString()}
@@ -130,7 +136,7 @@ const TaskCard: React.FC<TaskCardProps> = ({
             )}
           </div>
         </div>
-        
+
         <div className="flex items-center gap-2">
           {statusIcons[status]}
           <select
@@ -152,9 +158,10 @@ export default TaskCard;
 ```
 
 ### Counter Component
+
 ```tsx
-import React, { useState } from 'react';
-import { Plus, Minus } from 'lucide-react';
+import React, { useState } from "react";
+import { Plus, Minus } from "lucide-react";
 
 /**
  * Props for the CounterButton component
@@ -175,7 +182,7 @@ export interface CounterButtonProps {
 const CounterButton: React.FC<CounterButtonProps> = ({
   initialValue = 0,
   max = 10,
-  min = 0
+  min = 0,
 }) => {
   const [count, setCount] = useState(initialValue);
 
@@ -200,11 +207,9 @@ const CounterButton: React.FC<CounterButtonProps> = ({
       >
         <Minus size={20} />
       </button>
-      
-      <span className="flex-1 text-center font-medium">
-        {count}
-      </span>
-      
+
+      <span className="flex-1 text-center font-medium">{count}</span>
+
       <button
         onClick={increment}
         disabled={count >= max}

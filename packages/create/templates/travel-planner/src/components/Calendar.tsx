@@ -3,6 +3,7 @@ import { useTripStore } from "../stores/tripStore";
 import { CalendarEvent, PlaceSuggestion } from "../types/travel";
 import { Plus, Edit, Trash2 } from "lucide-react";
 import PlaceSearch from "./PlaceSearch";
+import styles from "./Calendar.module.css";
 
 interface CalendarProps {
   currentUser: string;
@@ -154,16 +155,17 @@ export function Calendar({ currentUser }: CalendarProps) {
           (l) => l.id === suggestion.location.id,
         );
         if (!existingLocation) {
-        addLocation({
-          name: suggestion.location.name,
-          address: suggestion.location.address,
-          latitude: suggestion.location.latitude,
-          longitude: suggestion.location.longitude,
-          category: suggestion.location.category,
-          placeId: suggestion.location.placeId || null,
-          description: suggestion.location.description || null,
-          addedBy: currentUser,
-        });        }
+          addLocation({
+            name: suggestion.location.name,
+            address: suggestion.location.address,
+            latitude: suggestion.location.latitude,
+            longitude: suggestion.location.longitude,
+            category: suggestion.location.category,
+            placeId: suggestion.location.placeId || null,
+            description: suggestion.location.description || null,
+            addedBy: currentUser,
+          });
+        }
 
         addEvent({
           title: suggestion.name,
@@ -248,7 +250,7 @@ export function Calendar({ currentUser }: CalendarProps) {
       </div>
 
       {/* Calendar Navigation */}
-      <div className="calendar-navigation">
+      <div className={styles.calendarNavigation}>
         <button
           onClick={() => {
             const newDate = new Date(selectedDate);
@@ -259,7 +261,7 @@ export function Calendar({ currentUser }: CalendarProps) {
         >
           ← Previous Week
         </button>
-        <h3 className="calendar-week-title">
+        <h3 className={styles.calendarWeekTitle}>
           {formatWeekRange(getWeekDays(selectedDate)[0])}
         </h3>
         <button
@@ -275,9 +277,9 @@ export function Calendar({ currentUser }: CalendarProps) {
       </div>
 
       {/* Calendar Grid */}
-      <div className="calendar-grid">
+      <div className={styles.calendarGrid}>
         {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
-          <div key={day} className="calendar-header-cell">
+          <div key={day} className={styles.calendarHeaderCell}>
             {day}
           </div>
         ))}
@@ -285,9 +287,9 @@ export function Calendar({ currentUser }: CalendarProps) {
         {days.map((day: Date, index: number) => (
           <div
             key={index}
-            className={`calendar-day-cell ${
+            className={`${styles.calendarDayCell} ${
               dragOverDate && dragOverDate.toDateString() === day.toDateString()
-                ? "drag-over"
+                ? styles.dragOver
                 : ""
             }`}
             onDrop={(e) => {
@@ -301,19 +303,22 @@ export function Calendar({ currentUser }: CalendarProps) {
             }}
             onDragLeave={handleDragLeave}
           >
-            <div className="calendar-day-header">
+            <div className={styles.calendarDayHeader}>
               {day.getDate()}
-              <span className="calendar-day-header-weekday">
+              <span className={styles.calendarDayHeaderWeekday}>
                 {day.toLocaleDateString("en-US", { weekday: "short" })}
               </span>
             </div>
             {getEventsForDate(day).map((event) => (
               <div
                 key={event.id}
-                className="calendar-event"
+                className={styles.calendarEvent}
                 draggable
                 onDragStart={(e) => {
-                  e.dataTransfer.setData("application/json", JSON.stringify({ item: event, type: "event" }));
+                  e.dataTransfer.setData(
+                    "application/json",
+                    JSON.stringify({ item: event, type: "event" }),
+                  );
                   e.dataTransfer.effectAllowed = "move";
                   e.stopPropagation();
                 }}
@@ -325,7 +330,9 @@ export function Calendar({ currentUser }: CalendarProps) {
             ))}
             {dragOverDate &&
               dragOverDate.toDateString() === day.toDateString() && (
-                <div className="calendar-drop-zone">Drop here to schedule</div>
+                <div className={styles.calendarDropZone}>
+                  Drop here to schedule
+                </div>
               )}
           </div>
         ))}
@@ -549,9 +556,9 @@ export function Calendar({ currentUser }: CalendarProps) {
       )}
 
       {/* Events List */}
-      <div className="upcoming-events">
-        <h3 className="upcoming-events-title">Upcoming Events</h3>
-        <div className="upcoming-events-list">
+      <div className={styles.upcomingEvents}>
+        <h3 className={styles.upcomingEventsTitle}>Upcoming Events</h3>
+        <div className={styles.upcomingEventsList}>
           {events
             .filter((event) => new Date(event.startDate) >= new Date())
             .sort(
@@ -571,16 +578,18 @@ export function Calendar({ currentUser }: CalendarProps) {
                   (l) => l.id === event.locationId,
                 );
                 return (
-                  <div key={event.id} className="upcoming-event-item">
-                    <div className="upcoming-event-content">
-                      <div className="upcoming-event-details">
-                        <h4 className="upcoming-event-title">{event.title}</h4>
+                  <div key={event.id} className={styles.upcomingEventItem}>
+                    <div className={styles.upcomingEventContent}>
+                      <div className={styles.upcomingEventDetails}>
+                        <h4 className={styles.upcomingEventTitle}>
+                          {event.title}
+                        </h4>
                         {event.description && (
-                          <p className="upcoming-event-description">
+                          <p className={styles.upcomingEventDescription}>
                             {event.description}
                           </p>
                         )}
-                        <p className="upcoming-event-date">
+                        <p className={styles.upcomingEventDate}>
                           {new Date(event.startDate).toLocaleDateString(
                             "en-US",
                             {
@@ -599,22 +608,22 @@ export function Calendar({ currentUser }: CalendarProps) {
                           })}
                         </p>
                         {location && (
-                          <p className="upcoming-event-location">
+                          <p className={styles.upcomingEventLocation}>
                             📍 {location.name}
                           </p>
                         )}
                       </div>
-                      <div className="upcoming-event-actions">
+                      <div className={styles.upcomingEventActions}>
                         <button
                           onClick={() => handleEditEvent(event)}
-                          className="upcoming-event-action-btn edit"
+                          className={`${styles.upcomingEventActionBtn} ${styles.edit}`}
                           title="Edit event"
                         >
                           <Edit size={16} />
                         </button>
                         <button
                           onClick={() => removeEvent(event.id)}
-                          className="upcoming-event-action-btn delete"
+                          className={`${styles.upcomingEventActionBtn} ${styles.delete}`}
                           title="Delete event"
                         >
                           <Trash2 size={16} />
@@ -625,7 +634,7 @@ export function Calendar({ currentUser }: CalendarProps) {
                 );
               })
           ) : (
-            <div className="no-upcoming-events">
+            <div className={styles.noUpcomingEvents}>
               No upcoming events scheduled
             </div>
           )}
@@ -634,4 +643,3 @@ export function Calendar({ currentUser }: CalendarProps) {
     </div>
   );
 }
-

@@ -5,7 +5,13 @@ export interface Location {
   latitude: number;
   longitude: number;
   description?: string;
-  category: 'restaurant' | 'hotel' | 'attraction' | 'activity' | 'transport' | 'other';
+  category:
+    | "restaurant"
+    | "hotel"
+    | "attraction"
+    | "activity"
+    | "transport"
+    | "other";
   placeId?: string;
   addedBy: string;
   addedAt: string; // ISO string
@@ -30,7 +36,7 @@ export interface PlaceSuggestion {
   suggestedBy: string;
   suggestedAt: string; // ISO string
   votes: string[]; // user IDs who voted for this suggestion
-  status: 'pending' | 'approved' | 'rejected';
+  status: "pending" | "approved" | "rejected";
 }
 
 export interface SharedNote {

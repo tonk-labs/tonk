@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Search, X, Loader } from "lucide-react";
+import styles from "./PlaceSearch.module.css";
 
 // Declare MapKit JS types
 declare global {
@@ -35,10 +36,10 @@ interface PlaceSearchProps {
   className?: string;
 }
 
-const PlaceSearch: React.FC<PlaceSearchProps> = ({ 
-  onPlaceSelect, 
+const PlaceSearch: React.FC<PlaceSearchProps> = ({
+  onPlaceSelect,
   placeholder = "Search for a place",
-  className = ""
+  className = "",
 }) => {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<AppleSearchResult[]>([]);
@@ -167,9 +168,11 @@ const PlaceSearch: React.FC<PlaceSearchProps> = ({
   };
 
   return (
-    <div ref={searchRef} className={`place-search ${className}`}>
-      <div className={`place-search-input-container ${isFocused ? 'focused' : ''}`}>
-        <div className="place-search-icon">
+    <div ref={searchRef} className={`${styles.placeSearch} ${className}`}>
+      <div
+        className={`${styles.placeSearchInputContainer} ${isFocused ? styles.focused : ""}`}
+      >
+        <div className={styles.placeSearchIcon}>
           <Search size={16} />
         </div>
         <input
@@ -178,17 +181,17 @@ const PlaceSearch: React.FC<PlaceSearchProps> = ({
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => setIsFocused(true)}
           placeholder={placeholder}
-          className="place-search-input"
+          className={styles.placeSearchInput}
           aria-label="Search for a place"
         />
         {isLoading ? (
-          <div className="place-search-loading">
-            <Loader size={16} className="place-search-spinner" />
+          <div className={styles.placeSearchLoading}>
+            <Loader size={16} className={styles.placeSearchSpinner} />
           </div>
         ) : (
           query && (
             <button
-              className="place-search-clear"
+              className={styles.placeSearchClear}
               onClick={() => {
                 setQuery("");
                 setResults([]);
@@ -203,19 +206,21 @@ const PlaceSearch: React.FC<PlaceSearchProps> = ({
 
       {/* Search Results Dropdown */}
       {results.length > 0 && isFocused && (
-        <div className="place-search-results">
+        <div className={styles.placeSearchResults}>
           {results.map((result, index) => (
             <div
               key={index}
-              className={`place-search-result-item ${index < results.length - 1 ? 'with-border' : ''}`}
+              className={`${styles.placeSearchResultItem} ${index < results.length - 1 ? styles.withBorder : ""}`}
               onClick={() => handleResultSelect(result)}
             >
-              <div className="place-search-result-icon">
+              <div className={styles.placeSearchResultIcon}>
                 {getCategoryIcon(result.category || "")}
               </div>
-              <div className="place-search-result-content">
-                <div className="place-search-result-name">{result.name}</div>
-                <div className="place-search-result-address">
+              <div className={styles.placeSearchResultContent}>
+                <div className={styles.placeSearchResultName}>
+                  {result.name}
+                </div>
+                <div className={styles.placeSearchResultAddress}>
                   {result.formattedAddress || result.displayLines.join(", ")}
                 </div>
               </div>

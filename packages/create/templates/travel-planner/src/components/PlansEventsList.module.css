@@ -1,0 +1,97 @@
+/* PlansEventsList specific styles */
+.plansSection {
+  margin-bottom: 2rem;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.eventItem {
+  cursor: move;
+}
+
+.eventMeta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  opacity: 0.7;
+}
+
+.eventMetaItem {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.suggestionItem {
+  cursor: move;
+}
+
+.suggestionMeta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  opacity: 0.7;
+}
+
+.suggestionMetaItem {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.dragHint {
+  margin-top: 0.5rem;
+}
+
+.dragHintBadge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.emptyState {
+  text-align: center;
+  padding: 3rem 2rem;
+  opacity: 0.6;
+}
+
+.emptyStateIcon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+}
+
+.emptyState h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  opacity: 0.8;
+}
+
+.emptyState p {
+  font-size: 0.875rem;
+  opacity: 0.7;
+}
+
+/* Dark mode styles */
+@media (prefers-color-scheme: dark) {
+  .dragHintBadge {
+    background: rgba(255, 255, 255, 0.1);
+    color: #e0e0e0;
+  }
+
+  .emptyState {
+    color: #e0e0e0;
+  }
+}
