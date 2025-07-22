@@ -1,0 +1,176 @@
+/* Place Search */
+.placeSearch {
+  position: relative;
+  width: 100%;
+}
+
+.placeSearchInputContainer {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.placeSearchInputContainer.focused {
+  border-color: rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.placeSearchIcon {
+  padding-left: 0.75rem;
+  padding-right: 0.5rem;
+  opacity: 0.6;
+}
+
+.placeSearchInput {
+  padding: 0.5rem 0.25rem;
+  width: 100%;
+  outline: none;
+  font-size: 0.875rem;
+  background: transparent;
+  border: none;
+  color: inherit;
+}
+
+.placeSearchInput::placeholder {
+  color: rgba(44, 44, 44, 0.5);
+}
+
+.placeSearchLoading {
+  padding: 0 0.75rem;
+  opacity: 0.5;
+}
+
+.placeSearchSpinner {
+  animation: spin 1s linear infinite;
+}
+
+.placeSearchClear {
+  padding: 0 0.75rem;
+  opacity: 0.5;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.3s ease;
+  color: inherit;
+}
+
+.placeSearchClear:hover {
+  opacity: 0.8;
+}
+
+.placeSearchResults {
+  position: absolute;
+  width: 100%;
+  margin-top: 0.25rem;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  max-height: 15rem;
+  overflow-y: auto;
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+  z-index: 50;
+  backdrop-filter: blur(10px);
+}
+
+.placeSearchResultItem {
+  padding: 0.75rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: flex-start;
+}
+
+.placeSearchResultItem.withBorder {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.placeSearchResultItem:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.placeSearchResultIcon {
+  margin-right: 0.75rem;
+  margin-top: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.placeSearchResultContent {
+  flex: 1;
+}
+
+.placeSearchResultName {
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: inherit;
+}
+
+.placeSearchResultAddress {
+  font-size: 0.75rem;
+  opacity: 0.6;
+  margin-top: 0.125rem;
+}
+
+/* Dark mode place search */
+@media (prefers-color-scheme: dark) {
+  .placeSearchInputContainer {
+    background: rgba(60, 60, 60, 0.8);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  }
+
+  .placeSearchInputContainer.focused {
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .placeSearchInput {
+    color: #e0e0e0;
+  }
+
+  .placeSearchInput::placeholder {
+    color: rgba(224, 224, 224, 0.5);
+  }
+
+  .placeSearchIcon {
+    color: rgba(224, 224, 224, 0.6);
+  }
+
+  .placeSearchLoading {
+    color: rgba(224, 224, 224, 0.5);
+  }
+
+  .placeSearchClear {
+    color: rgba(224, 224, 224, 0.5);
+  }
+
+  .placeSearchClear:hover {
+    color: rgba(224, 224, 224, 0.8);
+  }
+
+  .placeSearchResults {
+    background: rgba(50, 50, 50, 0.95);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+  }
+
+  .placeSearchResultItem.withBorder {
+    border-bottom-color: rgba(255, 255, 255, 0.05);
+  }
+
+  .placeSearchResultItem:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .placeSearchResultName {
+    color: #e0e0e0;
+  }
+
+  .placeSearchResultAddress {
+    color: rgba(224, 224, 224, 0.6);
+  }
+}

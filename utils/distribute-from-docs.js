@@ -105,7 +105,8 @@ async function generateAdditionalFiles(targetFile, content, sourceFile) {
 // Define project subdirectories that should get their own .cursor/rules
 const PROJECT_SUBDIRS = [
   "packages/create/templates/react",
-  "packages/create/templates/worker",
+  "packages/create/templates/social-feed",
+  "packages/create/templates/travel-planner",
 ];
 
 function generateMDCName(dirPath) {
@@ -154,7 +155,7 @@ function findProjectRoot(currentPath) {
 
   // Find if this path is within any of our project subdirs
   const matchedSubdir = PROJECT_SUBDIRS.find((subdir) =>
-    normalizedPath.includes(subdir)
+    normalizedPath.includes(subdir),
   );
 
   if (!matchedSubdir) return null;
@@ -192,7 +193,7 @@ async function generateCursorRules(targetFile, content, sourceFile) {
           "\n\n---\n\n# Project-Specific Instructions\n\n" +
           customContent,
         fullDirPath,
-        projectRoot
+        projectRoot,
       );
     }
 
@@ -200,8 +201,8 @@ async function generateCursorRules(targetFile, content, sourceFile) {
     console.log(
       `✓ Generated cursor rule: ${path.relative(
         `${__dirname}/..`,
-        projectRoot
-      )}/.cursor/rules/${mdcName}`
+        projectRoot,
+      )}/.cursor/rules/${mdcName}`,
     );
   }
 }
@@ -260,10 +261,10 @@ async function distributeAll() {
   console.log("\n✅ Distribution complete!");
   console.log(`📄 Generated ${totalTargets} llms.txt files`);
   console.log(
-    `📄 Generated ${totalTargets * GENERATED_FILES.length} additional files`
+    `📄 Generated ${totalTargets * GENERATED_FILES.length} additional files`,
   );
   console.log(
-    `📄 Total files created: ${totalTargets * (1 + GENERATED_FILES.length)}`
+    `📄 Total files created: ${totalTargets * (1 + GENERATED_FILES.length)}`,
   );
 }
 
@@ -327,7 +328,7 @@ Examples:
   const isValid = await validateSources();
   if (!isValid) {
     console.error(
-      "\n❌ Validation failed. Fix missing files before distribution."
+      "\n❌ Validation failed. Fix missing files before distribution.",
     );
     process.exit(1);
   }

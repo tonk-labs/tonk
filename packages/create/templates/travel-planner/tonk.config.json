@@ -1,0 +1,9 @@
+{
+  "name": "travel-planner",
+  "plan": {
+    "platform": "react",
+    "projectName": "travel-planner",
+    "description": "Plan trips with your friends"
+  },
+  "template": "react"
+}

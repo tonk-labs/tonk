@@ -26,7 +26,7 @@ const root = createRoot(container);
 
 const basename =
   import.meta.env.VITE_BASE_PATH !== "/"
-    ? import.meta.env.VITE_BASE_PATH.replace(/\/$/, "")
+    ? import.meta.env.VITE_BASE_PATH?.replace(/\/$/, "")
     : "";
 
 root.render(
