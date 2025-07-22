@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import { createReactTemplate } from "./templates/react";
 import { createFeedTemplate } from "./templates/feed";
 import { ProjectPlan, TemplateType } from "./types";
+import { createTravelTemplate } from "./templates/travel";
 
 /**
  * Resolves a package path by checking both local development and global installation paths
@@ -151,6 +152,15 @@ export async function createProject(
       }
       case "social-feed": {
         await createFeedTemplate(projectPath, projectName, templatePath, plan);
+        break;
+      }
+      case "travel-planner": {
+        await createTravelTemplate(
+          projectPath,
+          projectName,
+          templatePath,
+          plan,
+        );
         break;
       }
     }
