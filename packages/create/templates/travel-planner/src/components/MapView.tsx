@@ -493,25 +493,15 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
 
           {/* Add Location Panel */}
           {isAddingLocation && (
-            <div style={{ 
-              position: "absolute", 
-              left: 0, 
-              right: 0, 
-              bottom: 0, 
-              background: "rgba(255, 255, 255, 0.95)", 
-              borderTop: "1px solid rgba(0, 0, 0, 0.1)", 
-              padding: "1rem", 
-              zIndex: 20,
-              backdropFilter: "blur(10px)"
-            }}>
-              <div style={{ maxWidth: "48rem", margin: "0 auto" }}>
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-semibold">
+            <div className="add-location-panel">
+              <div className="add-location-panel-content">
+                <div className="add-location-panel-header">
+                  <h3 className="add-location-panel-title">
                     Add Location to Trip
                   </h3>
                   <button
                     onClick={cancelAddLocation}
-                    className="text-gray-400 hover:text-gray-600"
+                    className="add-location-panel-close"
                   >
                     <X size={20} />
                   </button>
@@ -519,10 +509,10 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
 
                 <form
                   onSubmit={handleSubmit}
-                  className="grid grid-cols-1 md:grid-cols-2 gap-4"
+                  className="add-location-form"
                 >
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <div className="add-location-form-group">
+                    <label className="add-location-form-label">
                       Name
                     </label>
                     <input
@@ -534,14 +524,14 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
                           name: e.target.value,
                         }))
                       }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="add-location-form-input"
                       placeholder="Location name"
                       required
                     />
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <div className="add-location-form-group">
+                    <label className="add-location-form-label">
                       Category
                     </label>
                     <select
@@ -552,7 +542,7 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
                           category: e.target.value as any,
                         }))
                       }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="add-location-form-select"
                     >
                       <option value="attraction">Attraction</option>
                       <option value="restaurant">Restaurant</option>
@@ -563,8 +553,8 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
                     </select>
                   </div>
 
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <div className="add-location-form-group add-location-form-group-full">
+                    <label className="add-location-form-label">
                       Description (optional)
                     </label>
                     <textarea
@@ -575,17 +565,17 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
                           description: e.target.value,
                         }))
                       }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="add-location-form-textarea"
                       rows={2}
                       placeholder="What's special about this place?"
                     />
                   </div>
 
-                  <div className="md:col-span-2 flex justify-end gap-3">
+                  <div className="add-location-form-actions">
                     <button
                       type="button"
                       onClick={cancelAddLocation}
-                      className="px-4 py-2 text-gray-600 hover:text-gray-800"
+                      className="add-location-form-cancel"
                     >
                       Cancel
                     </button>
@@ -594,7 +584,7 @@ const MapView: React.FC<MapViewProps> = ({ currentUser }) => {
                       disabled={
                         newLocation.latitude === 0 || !newLocation.name.trim()
                       }
-                      className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="add-location-form-submit"
                     >
                       Add Location
                     </button>

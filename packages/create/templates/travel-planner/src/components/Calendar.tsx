@@ -311,7 +311,14 @@ export function Calendar({ currentUser }: CalendarProps) {
               <div
                 key={event.id}
                 className="calendar-event"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData("application/json", JSON.stringify({ item: event, type: "event" }));
+                  e.dataTransfer.effectAllowed = "move";
+                  e.stopPropagation();
+                }}
                 onClick={() => handleEditEvent(event)}
+                style={{ cursor: "move" }}
               >
                 {event.title}
               </div>

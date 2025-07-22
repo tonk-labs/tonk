@@ -167,20 +167,9 @@ const PlaceSearch: React.FC<PlaceSearchProps> = ({
   };
 
   return (
-    <div ref={searchRef} style={{ position: "relative", width: "100%" }} className={className}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          background: "rgba(255, 255, 255, 0.95)",
-          border: `1px solid ${isFocused ? "rgba(0, 0, 0, 0.2)" : "rgba(0, 0, 0, 0.1)"}`,
-          borderRadius: "8px",
-          transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
-          backdropFilter: "blur(10px)",
-          boxShadow: isFocused ? "0 4px 12px rgba(0, 0, 0, 0.05)" : "0 2px 4px rgba(0, 0, 0, 0.1)"
-        }}
-      >
-        <div style={{ paddingLeft: "0.75rem", paddingRight: "0.5rem", opacity: 0.6 }}>
+    <div ref={searchRef} className={`place-search ${className}`}>
+      <div className={`place-search-input-container ${isFocused ? 'focused' : ''}`}>
+        <div className="place-search-icon">
           <Search size={16} />
         </div>
         <input
@@ -189,40 +178,20 @@ const PlaceSearch: React.FC<PlaceSearchProps> = ({
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => setIsFocused(true)}
           placeholder={placeholder}
-          style={{
-            padding: "0.5rem 0.25rem",
-            width: "100%",
-            outline: "none",
-            fontSize: "0.875rem",
-            background: "transparent",
-            border: "none"
-          }}
+          className="place-search-input"
           aria-label="Search for a place"
         />
         {isLoading ? (
-          <div style={{ padding: "0 0.75rem", opacity: 0.5 }}>
-            <Loader size={16} style={{ animation: "spin 1s linear infinite" }} />
+          <div className="place-search-loading">
+            <Loader size={16} className="place-search-spinner" />
           </div>
         ) : (
           query && (
             <button
-              style={{
-                padding: "0 0.75rem",
-                opacity: 0.5,
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                transition: "opacity 0.3s ease"
-              }}
+              className="place-search-clear"
               onClick={() => {
                 setQuery("");
                 setResults([]);
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.opacity = "0.8";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.opacity = "0.5";
               }}
               aria-label="Clear search"
             >
@@ -234,46 +203,19 @@ const PlaceSearch: React.FC<PlaceSearchProps> = ({
 
       {/* Search Results Dropdown */}
       {results.length > 0 && isFocused && (
-        <div
-          style={{
-            position: "absolute",
-            width: "100%",
-            marginTop: "0.25rem",
-            background: "rgba(255, 255, 255, 0.95)",
-            borderRadius: "8px",
-            border: "1px solid rgba(0, 0, 0, 0.1)",
-            maxHeight: "15rem",
-            overflowY: "auto",
-            boxShadow: "0 8px 25px rgba(0, 0, 0, 0.1)",
-            zIndex: 50,
-            backdropFilter: "blur(10px)"
-          }}
-        >
+        <div className="place-search-results">
           {results.map((result, index) => (
             <div
               key={index}
-              style={{
-                padding: "0.75rem",
-                cursor: "pointer",
-                transition: "all 0.3s ease",
-                borderBottom: index < results.length - 1 ? "1px solid rgba(0, 0, 0, 0.05)" : "none",
-                display: "flex",
-                alignItems: "flex-start"
-              }}
+              className={`place-search-result-item ${index < results.length - 1 ? 'with-border' : ''}`}
               onClick={() => handleResultSelect(result)}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "rgba(0, 0, 0, 0.03)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "transparent";
-              }}
             >
-              <div style={{ marginRight: "0.75rem", marginTop: "0.25rem", fontSize: "0.875rem" }}>
+              <div className="place-search-result-icon">
                 {getCategoryIcon(result.category || "")}
               </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: "500", fontSize: "0.875rem" }}>{result.name}</div>
-                <div style={{ fontSize: "0.75rem", opacity: 0.6, marginTop: "0.125rem" }}>
+              <div className="place-search-result-content">
+                <div className="place-search-result-name">{result.name}</div>
+                <div className="place-search-result-address">
                   {result.formattedAddress || result.displayLines.join(", ")}
                 </div>
               </div>

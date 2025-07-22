@@ -927,6 +927,311 @@ html {
   }
 }
 
+/* Place Search */
+.place-search {
+  position: relative;
+  width: 100%;
+}
+
+.place-search-input-container {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.place-search-input-container.focused {
+  border-color: rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.place-search-icon {
+  padding-left: 0.75rem;
+  padding-right: 0.5rem;
+  opacity: 0.6;
+}
+
+.place-search-input {
+  padding: 0.5rem 0.25rem;
+  width: 100%;
+  outline: none;
+  font-size: 0.875rem;
+  background: transparent;
+  border: none;
+  color: inherit;
+}
+
+.place-search-input::placeholder {
+  color: rgba(44, 44, 44, 0.5);
+}
+
+.place-search-loading {
+  padding: 0 0.75rem;
+  opacity: 0.5;
+}
+
+.place-search-spinner {
+  animation: spin 1s linear infinite;
+}
+
+.place-search-clear {
+  padding: 0 0.75rem;
+  opacity: 0.5;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.3s ease;
+  color: inherit;
+}
+
+.place-search-clear:hover {
+  opacity: 0.8;
+}
+
+.place-search-results {
+  position: absolute;
+  width: 100%;
+  margin-top: 0.25rem;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  max-height: 15rem;
+  overflow-y: auto;
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+  z-index: 50;
+  backdrop-filter: blur(10px);
+}
+
+.place-search-result-item {
+  padding: 0.75rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: flex-start;
+}
+
+.place-search-result-item.with-border {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.place-search-result-item:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.place-search-result-icon {
+  margin-right: 0.75rem;
+  margin-top: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.place-search-result-content {
+  flex: 1;
+}
+
+.place-search-result-name {
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: inherit;
+}
+
+.place-search-result-address {
+  font-size: 0.75rem;
+  opacity: 0.6;
+  margin-top: 0.125rem;
+}
+
+/* Add Location Panel */
+.add-location-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.8);
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  padding: 1.5rem;
+  z-index: 20;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.05);
+}
+
+.add-location-panel-content {
+  max-width: 48rem;
+  margin: 0 auto;
+}
+
+.add-location-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.add-location-panel-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: inherit;
+  opacity: 0.9;
+}
+
+.add-location-panel-close {
+  padding: 0.5rem;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  color: rgba(44, 44, 44, 0.6);
+  outline: none;
+}
+
+.add-location-panel-close:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: rgba(44, 44, 44, 0.8);
+}
+
+.add-location-form {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.5rem;
+}
+
+.add-location-form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.add-location-form-group-full {
+  grid-column: span 2;
+}
+
+.add-location-form-label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+  opacity: 0.7;
+  transition: opacity 0.3s ease;
+}
+
+.add-location-form-input,
+.add-location-form-select,
+.add-location-form-textarea {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  background: rgba(255, 255, 255, 0.9);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  outline: none;
+  color: inherit;
+}
+
+.add-location-form-input:focus,
+.add-location-form-select:focus,
+.add-location-form-textarea:focus {
+  border-color: rgba(0, 0, 0, 0.2);
+  background: rgba(255, 255, 255, 1);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.add-location-form-textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.add-location-form-actions {
+  grid-column: span 2;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.add-location-form-cancel {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  outline: none;
+  position: relative;
+  background: rgba(0, 0, 0, 0.05);
+  color: #2c2c2c;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.add-location-form-cancel:hover {
+  background: rgba(0, 0, 0, 0.08);
+  transform: translateY(1px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.add-location-form-cancel:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 1px rgba(0, 0, 0, 0.15);
+}
+
+.add-location-form-submit {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  outline: none;
+  position: relative;
+  background: linear-gradient(135deg, #2c2c2c 0%, #1a1a1a 100%);
+  color: white;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.add-location-form-submit:hover:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  background: linear-gradient(135deg, #1a1a1a 0%, #0f0f0f 100%);
+}
+
+.add-location-form-submit:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow: 0 0 1px rgba(0, 0, 0, 0.2);
+}
+
+.add-location-form-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.add-location-form-submit:disabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* Responsive design for add location panel */
+@media (max-width: 768px) {
+  .add-location-form {
+    grid-template-columns: 1fr;
+  }
+  
+  .add-location-form-group-full {
+    grid-column: span 1;
+  }
+  
+  .add-location-form-actions {
+    grid-column: span 1;
+  }
+}
+
 /* Place Suggestions */
 .suggestions-tabs {
   margin-bottom: 1.5rem;
@@ -1224,5 +1529,132 @@ html {
 
   .empty-state {
     color: #e0e0e0;
+  }
+
+  /* Dark mode place search */
+  .place-search-input-container {
+    background: rgba(60, 60, 60, 0.8);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  }
+
+  .place-search-input-container.focused {
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .place-search-input {
+    color: #e0e0e0;
+  }
+
+  .place-search-input::placeholder {
+    color: rgba(224, 224, 224, 0.5);
+  }
+
+  .place-search-icon {
+    color: rgba(224, 224, 224, 0.6);
+  }
+
+  .place-search-loading {
+    color: rgba(224, 224, 224, 0.5);
+  }
+
+  .place-search-clear {
+    color: rgba(224, 224, 224, 0.5);
+  }
+
+  .place-search-clear:hover {
+    color: rgba(224, 224, 224, 0.8);
+  }
+
+  .place-search-results {
+    background: rgba(50, 50, 50, 0.95);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+  }
+
+  .place-search-result-item.with-border {
+    border-bottom-color: rgba(255, 255, 255, 0.05);
+  }
+
+  .place-search-result-item:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .place-search-result-name {
+    color: #e0e0e0;
+  }
+
+  .place-search-result-address {
+    color: rgba(224, 224, 224, 0.6);
+  }
+
+  /* Dark mode add location panel */
+  .add-location-panel {
+    background: rgba(40, 40, 40, 0.8);
+    border-top-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.2);
+  }
+
+  .add-location-panel-title {
+    color: #e0e0e0;
+  }
+
+  .add-location-panel-close {
+    color: rgba(224, 224, 224, 0.6);
+  }
+
+  .add-location-panel-close:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: rgba(224, 224, 224, 0.9);
+  }
+
+  .add-location-form-label {
+    color: rgba(224, 224, 224, 0.7);
+  }
+
+  .add-location-form-input,
+  .add-location-form-select,
+  .add-location-form-textarea {
+    background: rgba(60, 60, 60, 0.5);
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #e0e0e0;
+  }
+
+  .add-location-form-input::placeholder,
+  .add-location-form-textarea::placeholder {
+    color: rgba(224, 224, 224, 0.5);
+  }
+
+  .add-location-form-input:focus,
+  .add-location-form-select:focus,
+  .add-location-form-textarea:focus {
+    background: rgba(70, 70, 70, 0.8);
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  }
+
+  .add-location-form-select option {
+    background: #3a3a3a;
+    color: #e0e0e0;
+  }
+
+  .add-location-form-cancel {
+    background: rgba(255, 255, 255, 0.1);
+    color: #e0e0e0;
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .add-location-form-cancel:hover {
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  .add-location-form-submit {
+    background: linear-gradient(135deg, #e0e0e0 0%, #c0c0c0 100%);
+    color: #1a1a1a;
+  }
+
+  .add-location-form-submit:hover:not(:disabled) {
+    background: linear-gradient(135deg, #c0c0c0 0%, #a0a0a0 100%);
   }
 }

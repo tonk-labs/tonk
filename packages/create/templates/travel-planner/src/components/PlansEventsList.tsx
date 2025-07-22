@@ -13,9 +13,18 @@ export function PlansEventsList({}: PlansEventsListProps) {
   if (!currentTrip) return <div>No trip selected</div>;
 
   const events = currentTrip.events || [];
-  const approvedSuggestions = (currentTrip.suggestions || []).filter(
+  const allApprovedSuggestions = (currentTrip.suggestions || []).filter(
     (s) => s.status === "approved",
   );
+  
+  // Filter out suggestions that have already been scheduled as events
+  const approvedSuggestions = allApprovedSuggestions.filter(suggestion => {
+    return !events.some(event => 
+      event.title === suggestion.name && 
+      event.locationId === suggestion.location.id
+    );
+  });
+  
   const locations = currentTrip.locations || [];
 
   const getLocationName = (locationId?: string) => {

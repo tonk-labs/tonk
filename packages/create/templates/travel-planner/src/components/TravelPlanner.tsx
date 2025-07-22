@@ -47,9 +47,13 @@ export function TravelPlanner() {
   useEffect(() => {
     // Show appropriate modal based on state
     if (!isLoading) {
+      // Check localStorage again to ensure we have the most current user state
+      const savedUser = localStorage.getItem('travel-planner-current-user');
+      const userToCheck = currentUser || savedUser;
+      
       if (!currentTrip) {
         setShowTripForm(true);
-      } else if (!currentUser) {
+      } else if (!userToCheck) {
         // If we have a trip but no current user, show user selection
         setShowUserSelection(true);
       }
