@@ -84,7 +84,7 @@ export function getDeploymentServiceUrl(): string {
   // Validate URL format
   try {
     new URL(url);
-  } catch (error) {
+  } catch {
     throw new Error(`Invalid deployment service URL: ${url}`);
   }
 

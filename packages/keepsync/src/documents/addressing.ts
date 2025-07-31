@@ -1,4 +1,4 @@
-import { DocumentId, Repo, DocHandle, Doc } from '@automerge/automerge-repo';
+import { DocumentId, Repo, DocHandle } from '@automerge/automerge-repo';
 
 // Reference to a node stored in a parent's children array
 export type RefNode = {
@@ -130,8 +130,6 @@ export async function traverseDocTree(
   }
 
   // Track parent for document creation
-  let parentHandle = currentHandle;
-  let parentDoc = currentDoc;
   let lastSegmentRef: RefNode | undefined;
 
   // Process each path segment
@@ -226,8 +224,6 @@ export async function traverseDocTree(
       }
 
       // Update for next iteration - use the actual child that exists
-      parentHandle = currentHandle;
-      parentDoc = updatedParentDoc as DirNode;
       currentNodeId = actualChild.pointer;
       currentHandle = repo.find<DirNode>(currentNodeId);
       const newDoc = await currentHandle.doc();
@@ -251,8 +247,6 @@ export async function traverseDocTree(
       return undefined;
     } else if (childRef.pointer) {
       // Navigate to existing node (whether document or directory)
-      parentHandle = currentHandle;
-      parentDoc = currentDoc;
       lastSegmentRef = childRef;
 
       // If this is the last segment, we can return without further navigation

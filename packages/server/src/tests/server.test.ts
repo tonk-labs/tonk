@@ -33,7 +33,7 @@ describe('TonkServer', () => {
     await server.start();
 
     // Get the express app for testing with supertest
-    // @ts-ignore - accessing private property for testing
+    // @ts-expect-error - accessing private property for testing
     request = supertest(server.app);
   });
 

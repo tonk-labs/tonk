@@ -75,7 +75,7 @@ function readTonkConfig(): TonkConfig | null {
 
   try {
     return JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  } catch (error) {
+  } catch {
     console.warn(chalk.yellow('Warning: Could not parse tonk.config.json'));
     return null;
   }
@@ -95,7 +95,7 @@ function readPackageJson(): any {
 
   try {
     return JSON.parse(fs.readFileSync(packagePath, 'utf8'));
-  } catch (error) {
+  } catch {
     throw new Error('Could not parse package.json');
   }
 }
@@ -190,7 +190,7 @@ async function buildApp(skipBuild: boolean, bundleName: string): Promise<void> {
 
     execSync('npm run build', { stdio: 'pipe', env });
     spinner.succeed('App built successfully');
-  } catch (error) {
+  } catch {
     spinner.fail('Build failed');
     throw new Error(
       'Failed to build app. Make sure you have a build script in package.json'
@@ -299,7 +299,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     console.log(chalk.blue('Checking prerequisites...'));
     try {
       await checkDeploymentService();
-    } catch (error) {
+    } catch {
       if (tonkAuth) tonkAuth.destroy();
       return; // Early return after checkDeploymentService handles the error
     }
@@ -377,7 +377,7 @@ async function handleDeployCommand(options: DeployOptions): Promise<void> {
     await buildApp(options.skipBuild || false, bundleName);
 
     // Deploy bundle to the Tonk server
-    await deployBundle(bundleName, serverName!, tonkConfig, packageJson);
+    await deployBundle(bundleName, serverName, tonkConfig, packageJson);
 
     const duration = Date.now() - startTime;
     trackCommandSuccess('deploy', duration, {

@@ -40,7 +40,7 @@ function detectWorkspaceType(): string {
     if (fs.existsSync(path.join(cwd, 'yarn.lock'))) return 'yarn';
     if (fs.existsSync(path.join(cwd, 'package-lock.json'))) return 'npm';
     return 'unknown';
-  } catch (error) {
+  } catch {
     return 'unknown';
   }
 }
@@ -51,7 +51,7 @@ function detectWorkspaceType(): string {
 function hasTonkConfig(): boolean {
   try {
     return fs.existsSync(path.join(process.cwd(), 'tonk.config.json'));
-  } catch (error) {
+  } catch {
     return false;
   }
 }
@@ -102,7 +102,7 @@ function getMachineId(): string {
     // Try to use node-machine-id if available
     const { machineIdSync } = require('node-machine-id');
     return machineIdSync();
-  } catch (error) {
+  } catch {
     // Fallback to system-based ID
     return generateFallbackMachineId();
   }

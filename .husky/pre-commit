@@ -1,18 +1,18 @@
 #!/usr/bin/env sh
 
-# echo "🚀 Running pre-commit hooks..."
-#
-# # Run lint-staged for auto-fixing and formatting
-# npx lint-staged
-# LINT_EXIT_CODE=$?
-#
-# # Check if lint-staged was successful
-# if [ $LINT_EXIT_CODE -eq 0 ]; then
-#   echo "✅ Linting and formatting completed successfully"
-# else
-#   echo "⚠️ Linting or formatting failed, but allowing commit to continue"
-#   echo "Consider fixing the issues in a follow-up commit"
-# fi
-#
-# echo "🎯 Pre-commit hook completed"
-# exit 0
+echo "🚀 Running pre-commit hooks..."
+
+# Run lint-staged for auto-fixing and formatting
+npx lint-staged
+LINT_EXIT_CODE=$?
+
+# Check if lint-staged was successful
+if [ $LINT_EXIT_CODE -eq 0 ]; then
+  echo "✅ Linting and formatting completed successfully"
+else
+  echo "⚠️ Linting or formatting failed, but allowing commit to continue"
+  echo "Consider fixing the issues in a follow-up commit"
+fi
+
+echo "🎯 Pre-commit hook completed"
+exit 0

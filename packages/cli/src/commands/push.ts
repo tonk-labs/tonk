@@ -73,7 +73,7 @@ function determineBundleName(
         ? packageJson.name.replace(/^@.*\//, '')
         : undefined;
     }
-  } catch (err) {
+  } catch {
     // Ignore error, will fall back to directory name
   }
 

@@ -26,7 +26,7 @@ export const helloCommand = new Command('hello')
       try {
         await execAsync('pm2 --version');
         pm2Exists = true;
-      } catch (error) {
+      } catch {
         // pm2 is not installed or not in PATH
         console.log(
           chalk.blue('PM2 is required to run Tonk. Installing now...')

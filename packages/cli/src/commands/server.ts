@@ -47,7 +47,7 @@ async function checkDeploymentService(): Promise<void> {
     if (!response.ok) {
       throw new Error(`Service returned ${response.status}`);
     }
-  } catch (error) {
+  } catch {
     console.error(
       chalk.red('Error: Tonk deployment service is not available.')
     );
