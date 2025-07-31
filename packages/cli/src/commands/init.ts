@@ -1,8 +1,8 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import path from 'path';
 import chalk from 'chalk';
 import fs from 'fs-extra';
-import {fileURLToPath} from 'url';
+import { fileURLToPath } from 'url';
 import {
   trackCommand,
   trackCommandError,
@@ -28,21 +28,21 @@ async function resolvePackagePath(relativePath: string): Promise<string> {
       return localPath;
     } else {
       // If local path doesn't exist, try global node_modules
-      const {execSync} = await import('child_process');
+      const { execSync } = await import('child_process');
       const globalNodeModules = execSync('npm root -g').toString().trim();
 
       // Look for the package in global node_modules
       const globalPath = path.join(
         globalNodeModules,
         '@tonk/create',
-        relativePath,
+        relativePath
       );
 
       if (await fs.pathExists(globalPath)) {
         return globalPath;
       } else {
         throw new Error(
-          `Could not locate ${relativePath} in local or global paths`,
+          `Could not locate ${relativePath} in local or global paths`
         );
       }
     }
@@ -56,7 +56,7 @@ export const initCommand = new Command('init')
   .description('Create a new Tonk repo')
   .argument(
     '[<directory>]',
-    'optionally creates a directory and initializes the tonk repo in that directory',
+    'optionally creates a directory and initializes the tonk repo in that directory'
   )
   .action(async dirPath => {
     const startTime = Date.now();
@@ -159,7 +159,7 @@ export const initCommand = new Command('init')
 
       console.error(
         chalk.red('❌ Failed to initialize Tonk repository:'),
-        error,
+        error
       );
       await shutdownAnalytics();
       process.exitCode = 1;

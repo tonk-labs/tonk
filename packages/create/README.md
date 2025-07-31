@@ -1,6 +1,7 @@
 # create
 
-Bootstraps your Tonk app; Tonk apps are local-first personal software built to be maximally interoperable.
+Bootstraps your Tonk app; Tonk apps are local-first personal software built to be maximally
+interoperable.
 
 ## Structure of a Tonk application
 
@@ -28,6 +29,7 @@ npx @tonk/create [app name]
 ```
 
 The CLI will guide you through the project creation process with interactive prompts for:
+
 - Project name
 - Project type
 - Platform selection

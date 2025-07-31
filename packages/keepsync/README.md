@@ -36,8 +36,8 @@ import { initializeSyncEngine } from '@tonk/keepsync';
 initializeSyncEngine({
   url: 'ws://localhost:4080',
   name: 'MySyncEngine',
-  onSync: (docId) => console.log(`Document ${docId} synced`),
-  onError: (error) => console.error('Sync error:', error),
+  onSync: docId => console.log(`Document ${docId} synced`),
+  onError: error => console.error('Sync error:', error),
 });
 ```
 
@@ -60,17 +60,17 @@ interface CounterState {
 export const useCounterStore = create<CounterState>(
   sync(
     // The store implementation
-    (set) => ({
+    set => ({
       count: 0,
 
       // Increment the counter
       increment: () => {
-        set((state) => ({ count: state.count + 1 }));
+        set(state => ({ count: state.count + 1 }));
       },
 
       // Decrement the counter
       decrement: () => {
-        set((state) => ({ count: Math.max(0, state.count - 1) }));
+        set(state => ({ count: Math.max(0, state.count - 1) }));
       },
 
       // Reset the counter
@@ -79,12 +79,12 @@ export const useCounterStore = create<CounterState>(
       },
     }),
     // Sync configuration
-    { 
+    {
       docId: 'counter',
       // Optional: configure initialization timeout
       initTimeout: 30000,
       // Optional: handle initialization errors
-      onInitError: (error) => console.error('Sync initialization error:', error) 
+      onInitError: error => console.error('Sync initialization error:', error),
     }
   )
 );
@@ -128,13 +128,13 @@ import { getSyncInstance } from '@tonk/keepsync';
 
 function syncDocument() {
   const syncEngine = getSyncInstance();
-  
+
   if (syncEngine) {
     // Manually update a document
-    syncEngine.updateDocument('my-document', (doc) => {
+    syncEngine.updateDocument('my-document', doc => {
       doc.someProperty = 'new value';
     });
-    
+
     // Get a document
     syncEngine.getDocument('my-document').then(doc => {
       console.log('Document content:', doc);
@@ -150,19 +150,19 @@ function syncDocument() {
 KeepSync also provides a file system API for collaborative file management:
 
 ```typescript
-import { 
-  configureSyncedFileSystem, 
-  addFile, 
-  getAllFiles, 
-  getFile, 
-  removeFile 
+import {
+  configureSyncedFileSystem,
+  addFile,
+  getAllFiles,
+  getFile,
+  removeFile,
 } from '@tonk/keepsync';
 
 // Configure the synced file system
 configureSyncedFileSystem({
   docId: 'my-files',
   dbName: 'my-app-files',
-  storeName: 'file-blobs'
+  storeName: 'file-blobs',
 });
 
 // Add a file
@@ -179,7 +179,7 @@ fileInput.addEventListener('change', async () => {
 async function displayAllFiles() {
   const files = await getAllFiles();
   console.log('All files:', files);
-  
+
   // Display files in UI
   const fileList = document.getElementById('fileList');
   if (fileList) {
@@ -187,7 +187,7 @@ async function displayAllFiles() {
     files.forEach(file => {
       const item = document.createElement('div');
       item.textContent = `${file.name} (${file.size} bytes)`;
-      
+
       // Add download button
       const downloadBtn = document.createElement('button');
       downloadBtn.textContent = 'Download';
@@ -202,7 +202,7 @@ async function displayAllFiles() {
           URL.revokeObjectURL(url);
         }
       };
-      
+
       // Add delete button
       const deleteBtn = document.createElement('button');
       deleteBtn.textContent = 'Delete';
@@ -210,7 +210,7 @@ async function displayAllFiles() {
         await removeFile(file.hash);
         displayAllFiles(); // Refresh the list
       };
-      
+
       item.appendChild(downloadBtn);
       item.appendChild(deleteBtn);
       fileList.appendChild(item);
@@ -231,14 +231,14 @@ import { createServer } from 'http';
 const server = createServer();
 const wss = new WebSocketServer({
   server,
-  path: '/sync'
+  path: '/sync',
 });
 
 // Store connected clients
 const connections = new Set();
 
 // Handle WebSocket connections
-wss.on('connection', (ws) => {
+wss.on('connection', ws => {
   console.log('Client connected');
   connections.add(ws);
 

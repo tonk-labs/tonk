@@ -1,4 +1,4 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
 import {
@@ -7,14 +7,14 @@ import {
   trackCommandSuccess,
   shutdownAnalytics,
 } from '../utils/analytics.js';
-import {getServerConfig} from '../config/environment.js';
+import { getServerConfig } from '../config/environment.js';
 
 export const killCommand = new Command('kill')
   .description('Stop a running bundle server')
   .option(
     '-u, --url <url>',
     'URL of the Tonk server',
-    getServerConfig().defaultUrl,
+    getServerConfig().defaultUrl
   )
   .argument('<serverId>', 'ID of the server to stop')
   .action(async (serverId, options) => {
@@ -34,7 +34,7 @@ export const killCommand = new Command('kill')
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({id: serverId}),
+        body: JSON.stringify({ id: serverId }),
       });
 
       if (!response.ok) {
@@ -60,7 +60,7 @@ export const killCommand = new Command('kill')
         await shutdownAnalytics();
       } else {
         console.log(
-          chalk.yellow('Server stop command sent, but with warnings:'),
+          chalk.yellow('Server stop command sent, but with warnings:')
         );
         console.log(chalk.yellow(result.message));
 
@@ -82,8 +82,8 @@ export const killCommand = new Command('kill')
 
       console.error(
         chalk.red(
-          `Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       process.exitCode = 1;

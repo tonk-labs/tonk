@@ -3,7 +3,7 @@
  *
  * This file defines the standard format for worker configuration YAML files in Tonk.
  */
-import {z} from 'zod';
+import { z } from 'zod';
 
 /**
  * Zod schema for worker health check configuration

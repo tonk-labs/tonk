@@ -1,8 +1,8 @@
-import {RESPONSES} from '../utils/messages.js';
-import {TonkAuth} from '@tonk/tonk-auth';
+import { RESPONSES } from '../utils/messages.js';
+import { TonkAuth } from '@tonk/tonk-auth';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
-import {shutdownAnalytics} from '../utils/analytics.js';
+import { shutdownAnalytics } from '../utils/analytics.js';
 
 // TonkAuth wrapped in a Singleton class with (non-blocking) async initilization keeps the CLI load snappy 🐢
 class TonkAuthManager {
@@ -21,8 +21,8 @@ class TonkAuthManager {
       onSubscriptionDisabled: () => {
         console.log(
           chalk.red(
-            '🚨 Your subscription is inactive, upgrade your subscription to Deploy to Tonk',
-          ),
+            '🚨 Your subscription is inactive, upgrade your subscription to Deploy to Tonk'
+          )
         );
       },
     })
@@ -64,30 +64,30 @@ class TonkAuthManager {
 
   async login() {
     await this.ensureReady();
-    if (!this.instance) return {ok: false, error: 'Auth not initialized'};
+    if (!this.instance) return { ok: false, error: 'Auth not initialized' };
 
     try {
       return await this.instance.login();
     } catch (error) {
-      return {ok: false, error: String(error)};
+      return { ok: false, error: String(error) };
     }
   }
 
   async logout() {
     await this.ensureReady();
-    if (!this.instance) return {ok: false, error: 'Auth not initialized'};
+    if (!this.instance) return { ok: false, error: 'Auth not initialized' };
 
     try {
       return await this.instance.logout();
     } catch (error) {
-      return {ok: false, error: String(error)};
+      return { ok: false, error: String(error) };
     }
   }
 
   async getAuthToken(): Promise<string | null> {
     await this.ensureReady();
     if (!this.instance?.__session) return null;
-    
+
     try {
       return await this.instance.__session.getToken();
     } catch (error) {
@@ -119,15 +119,21 @@ export const authHook = async () => {
   // Check if user is signed in but doesn't have active subscription
   if (tonkAuth.isSignedIn && !tonkAuth.activeSubscription) {
     console.log(chalk.yellow(RESPONSES.needSubscription));
-    console.log(chalk.yellow('Please upgrade your subscription to use Tonk hosting features.'));
+    console.log(
+      chalk.yellow(
+        'Please upgrade your subscription to use Tonk hosting features.'
+      )
+    );
     await tonkAuth.destroy();
     process.exit(1);
   }
 
   // User is not signed in at all
   if (!tonkAuth.isSignedIn) {
-    console.log(chalk.yellow('You need to be signed in to use Tonk hosting features.'));
-    const {confirm} = await inquirer.prompt([
+    console.log(
+      chalk.yellow('You need to be signed in to use Tonk hosting features.')
+    );
+    const { confirm } = await inquirer.prompt([
       {
         type: 'confirm',
         name: 'confirm',
@@ -147,7 +153,7 @@ export const authHook = async () => {
 
     if (!res.ok) {
       console.error(
-        chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`),
+        chalk.red(`Failed to login to Tonk: ${res.error || 'Unknown error'}`)
       );
       await tonkAuth.destroy();
       process.exit(1);
@@ -155,16 +161,19 @@ export const authHook = async () => {
 
     console.log(
       chalk.green(
-        `🎉 Welcome back to Tonk ${tonkAuth.friendlyName || 'user'}!\n`,
-      ),
+        `🎉 Welcome back to Tonk ${tonkAuth.friendlyName || 'user'}!\n`
+      )
     );
 
     // Check subscription status after login
     if (!tonkAuth.activeSubscription) {
-      console.log(chalk.yellow('Please upgrade your subscription to use Tonk hosting features.'));
+      console.log(
+        chalk.yellow(
+          'Please upgrade your subscription to use Tonk hosting features.'
+        )
+      );
       await tonkAuth.destroy();
       process.exit(1);
     }
   }
 };
-

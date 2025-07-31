@@ -1,4 +1,4 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import ora from 'ora';
@@ -10,16 +10,16 @@ import {
 } from '../utils/analytics.js';
 // Lazy-load authHook to prevent initialization on import
 async function getAuthHook() {
-  const {authHook} = await import('../lib/tonkAuth.js');
+  const { authHook } = await import('../lib/tonkAuth.js');
   return authHook;
 }
 // Lazy-load tonkAuth to get auth token
 async function getTonkAuth() {
-  const {tonkAuth} = await import('../lib/tonkAuth.js');
+  const { tonkAuth } = await import('../lib/tonkAuth.js');
   return tonkAuth;
 }
-import {getDeploymentServiceUrl, config} from '../config/environment.js';
-import {fetchUserServers} from '../utils/serverUtils.js';
+import { getDeploymentServiceUrl, config } from '../config/environment.js';
+import { fetchUserServers } from '../utils/serverUtils.js';
 
 // Privileged subdomain names that cannot be used as server names
 const PRIVILEGED_SUBDOMAINS = [
@@ -47,12 +47,12 @@ async function checkDeploymentService(): Promise<void> {
     if (!response.ok) {
       throw new Error(`Service returned ${response.status}`);
     }
-  } catch (error) {
+  } catch {
     console.error(
-      chalk.red('Error: Tonk deployment service is not available.'),
+      chalk.red('Error: Tonk deployment service is not available.')
     );
     console.log(
-      chalk.yellow('Please reach out for support or try again later.'),
+      chalk.yellow('Please reach out for support or try again later.')
     );
     await shutdownAnalytics();
     process.exitCode = 1;
@@ -83,7 +83,7 @@ async function getServerName(serverName?: string): Promise<string> {
     return serverName;
   }
 
-  const {inputName} = await inquirer.prompt([
+  const { inputName } = await inquirer.prompt([
     {
       type: 'input',
       name: 'inputName',
@@ -111,7 +111,7 @@ async function deleteServer(serverName: string): Promise<void> {
     'serverData',
     JSON.stringify({
       serverName,
-    }),
+    })
   );
 
   const response = await fetch(`${getDeploymentServiceUrl()}/delete-server`, {
@@ -137,7 +137,7 @@ async function deleteServer(serverName: string): Promise<void> {
  */
 async function createServer(
   serverName: string,
-  options: ServerOptions,
+  options: ServerOptions
 ): Promise<void> {
   const spinner = ora('Creating Tonk server...').start();
 
@@ -160,7 +160,7 @@ async function createServer(
         cpus: options.cpus || '1',
         remote: options.remote || false,
         deployType: 'server',
-      }),
+      })
     );
 
     // Send server creation request
@@ -187,7 +187,7 @@ async function createServer(
         errorMessage.toLowerCase().includes('conflict')
       ) {
         throw new Error(
-          `Server name "${serverName}" is already taken. Please choose a different server name and try again.`,
+          `Server name "${serverName}" is already taken. Please choose a different server name and try again.`
         );
       }
 
@@ -200,8 +200,8 @@ async function createServer(
     console.log(chalk.blue(`   URL: ${result.serverUrl}`));
     console.log(
       chalk.yellow(
-        `   Use this server name for future bundle deployments: ${serverName}`,
-      ),
+        `   Use this server name for future bundle deployments: ${serverName}`
+      )
     );
   } catch (error) {
     spinner.fail('Server creation failed');
@@ -226,7 +226,7 @@ async function listRemoteBundles(serverName: string): Promise<void> {
     JSON.stringify({
       serverName,
       action: 'ls',
-    }),
+    })
   );
 
   const response = await fetch(`${getDeploymentServiceUrl()}/server-action`, {
@@ -270,7 +270,7 @@ async function listRunningBundles(serverName: string): Promise<void> {
     JSON.stringify({
       serverName,
       action: 'ps',
-    }),
+    })
   );
 
   const response = await fetch(`${getDeploymentServiceUrl()}/server-action`, {
@@ -308,7 +308,7 @@ async function listRunningBundles(serverName: string): Promise<void> {
  */
 async function deleteRemoteBundle(
   bundleName: string,
-  serverName: string,
+  serverName: string
 ): Promise<void> {
   // Get auth token
   const tonkAuth = await getTonkAuth();
@@ -324,7 +324,7 @@ async function deleteRemoteBundle(
       bundleName,
       serverName,
       deployType: 'delete',
-    }),
+    })
   );
 
   const response = await fetch(`${getDeploymentServiceUrl()}/delete-bundle`, {
@@ -349,7 +349,7 @@ async function deleteRemoteBundle(
  * Server create command handler
  */
 async function handleServerCreateCommand(
-  options: ServerOptions,
+  options: ServerOptions
 ): Promise<void> {
   const startTime = Date.now();
   let tonkAuth: any = null;
@@ -379,7 +379,7 @@ async function handleServerCreateCommand(
     // Determine server name
     let serverName = options.name;
     if (!serverName) {
-      const {inputName} = await inquirer.prompt([
+      const { inputName } = await inquirer.prompt([
         {
           type: 'input',
           name: 'inputName',
@@ -402,7 +402,7 @@ async function handleServerCreateCommand(
     console.log(chalk.green(`✓ Server name: ${serverName}`));
 
     // Confirm server creation
-    const {confirm} = await inquirer.prompt([
+    const { confirm } = await inquirer.prompt([
       {
         type: 'confirm',
         name: 'confirm',
@@ -439,8 +439,8 @@ async function handleServerCreateCommand(
 
     console.error(
       chalk.red(
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-      ),
+        `Error: ${error instanceof Error ? error.message : String(error)}`
+      )
     );
     await shutdownAnalytics();
     if (tonkAuth) tonkAuth.destroy();
@@ -455,17 +455,17 @@ const serverCreateCommand = new Command('create')
   .option(
     '-r, --region <region>',
     'Region to deploy to',
-    config.deployment.defaultRegion,
+    config.deployment.defaultRegion
   )
   .option(
     '-m, --memory <memory>',
     'Memory allocation (e.g., 256mb, 1gb)',
-    config.deployment.defaultMemory,
+    config.deployment.defaultMemory
   )
   .option('-c, --cpus <cpus>', 'Number of CPUs', config.deployment.defaultCpus)
   .option(
     '--remote',
-    'Use remote Docker build (slower but works with limited local resources)',
+    'Use remote Docker build (slower but works with limited local resources)'
   )
   .action(handleServerCreateCommand);
 
@@ -514,8 +514,8 @@ const serverLsCommand = new Command('ls')
 
       console.error(
         chalk.red(
-          `Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       if (tonkAuth) tonkAuth.destroy();
@@ -568,8 +568,8 @@ const serverPsCommand = new Command('ps')
 
       console.error(
         chalk.red(
-          `Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       if (tonkAuth) tonkAuth.destroy();
@@ -597,8 +597,8 @@ const serverDestroyCommand = new Command('destroy')
       console.log(chalk.red('⚠️  Server Destruction\n'));
       console.log(
         chalk.yellow(
-          'WARNING: This will permanently delete your server and all data!',
-        ),
+          'WARNING: This will permanently delete your server and all data!'
+        )
       );
       console.log(chalk.yellow('This action cannot be undone.\n'));
 
@@ -613,8 +613,8 @@ const serverDestroyCommand = new Command('destroy')
       } catch (error) {
         console.error(
           chalk.red(
-            `Error fetching servers: ${error instanceof Error ? error.message : String(error)}`,
-          ),
+            `Error fetching servers: ${error instanceof Error ? error.message : String(error)}`
+          )
         );
         await shutdownAnalytics();
         process.exitCode = 1;
@@ -630,7 +630,7 @@ const serverDestroyCommand = new Command('destroy')
       // Server selection
       let serverName: string;
       if (userServers.length === 1) {
-        const {confirmSingle} = await inquirer.prompt([
+        const { confirmSingle } = await inquirer.prompt([
           {
             type: 'confirm',
             name: 'confirmSingle',
@@ -647,7 +647,7 @@ const serverDestroyCommand = new Command('destroy')
 
         serverName = userServers[0];
       } else {
-        const {selectedServer} = await inquirer.prompt([
+        const { selectedServer } = await inquirer.prompt([
           {
             type: 'list',
             name: 'selectedServer',
@@ -659,7 +659,7 @@ const serverDestroyCommand = new Command('destroy')
       }
 
       // Final confirmation - require typing server name
-      const {confirmName} = await inquirer.prompt([
+      const { confirmName } = await inquirer.prompt([
         {
           type: 'input',
           name: 'confirmName',
@@ -695,8 +695,8 @@ const serverDestroyCommand = new Command('destroy')
 
       console.error(
         chalk.red(
-          `Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       if (tonkAuth) tonkAuth.destroy();
@@ -736,7 +736,7 @@ const serverRmCommand = new Command('rm')
       const serverName = await getServerName(options.server);
 
       // Confirm deletion
-      const {confirm} = await inquirer.prompt([
+      const { confirm } = await inquirer.prompt([
         {
           type: 'confirm',
           name: 'confirm',
@@ -770,8 +770,8 @@ const serverRmCommand = new Command('rm')
 
       console.error(
         chalk.red(
-          `Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       if (tonkAuth) tonkAuth.destroy();
@@ -781,7 +781,7 @@ const serverRmCommand = new Command('rm')
 
 // Main server command
 export const serverCommand = new Command('server').description(
-  'Manage Tonk servers',
+  'Manage Tonk servers'
 );
 
 serverCommand.addCommand(serverCreateCommand);

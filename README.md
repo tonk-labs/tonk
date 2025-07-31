@@ -1,13 +1,17 @@
 # Vibe code over your own data with Tonk
 
-Tonk is a stack designed to simplify the process of building custom dashboards, tools, and AI agents using your own data.
+Tonk is a stack designed to simplify the process of building custom dashboards, tools, and AI agents
+using your own data.
 
 Tonk follows a simple two-mode workflow:
 
-1. **Workers stream data in** - Background services connect to external APIs and stream data into your local Tonk store
-2. **Apps visualise data** - Frontend applications provide interfaces to explore and interact with that data
+1. **Workers stream data in** - Background services connect to external APIs and stream data into
+   your local Tonk store
+2. **Apps visualise data** - Frontend applications provide interfaces to explore and interact with
+   that data
 
-This architecture separates data ingestion from visualisation, making applications more maintainable and data reusable across different interfaces.
+This architecture separates data ingestion from visualisation, making applications more maintainable
+and data reusable across different interfaces.
 
 ## Quick Start
 
@@ -19,7 +23,7 @@ npm install -g @tonk/cli && tonk hello
 tonk create  # choose 'worker'
 cd my-worker && pnpm dev
 
-# Create an app for visualisation  
+# Create an app for visualisation
 tonk create  # choose 'react'
 cd my-app && pnpm dev
 ```
@@ -39,7 +43,8 @@ You can use the Tonk toolchain to:
 - Manage complex state interoperable across people and apps
 - Publish and share your apps
 
-As an early stage project we are very open to feedback and keen to help builders - so please reach out to the team and we will endeavour to support your usecase.
+As an early stage project we are very open to feedback and keen to help builders - so please reach
+out to the team and we will endeavour to support your usecase.
 
 ## Links
 

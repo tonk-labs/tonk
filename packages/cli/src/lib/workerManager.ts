@@ -8,8 +8,8 @@ import {
 } from '../types/worker.js';
 import http from 'node:http';
 import https from 'node:https';
-import {exec} from 'node:child_process';
-import {promisify} from 'node:util';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
 
 /**
  * Implementation of the WorkerManager interface
@@ -19,13 +19,13 @@ export class TonkWorkerManager implements WorkerManager {
 
   constructor() {
     // Create paths for Tonk daemon home
-    const paths = envPaths('tonk', {suffix: ''});
+    const paths = envPaths('tonk', { suffix: '' });
     const tonkHome = paths.data;
     this.workersPath = path.join(tonkHome, 'workers');
 
     // Ensure workers directory exists
     if (!fs.existsSync(this.workersPath)) {
-      fs.mkdirSync(this.workersPath, {recursive: true});
+      fs.mkdirSync(this.workersPath, { recursive: true });
     }
   }
 
@@ -47,7 +47,7 @@ export class TonkWorkerManager implements WorkerManager {
       });
     }
 
-    let workerConfig = {
+    const workerConfig = {
       ...(options.config && typeof options.config === 'object'
         ? options.config
         : {}),
@@ -143,7 +143,7 @@ export class TonkWorkerManager implements WorkerManager {
     // If not found by ID, try to find by name
     const workers = await this.list();
     const matchingWorker = workers.find(
-      worker => worker.name.toLowerCase() === identifier.toLowerCase(),
+      worker => worker.name.toLowerCase() === identifier.toLowerCase()
     );
 
     return matchingWorker || null;
@@ -212,7 +212,7 @@ export class TonkWorkerManager implements WorkerManager {
     const execAsync = promisify(exec);
     try {
       // Check if worker is running in PM2
-      const {stdout} = await execAsync('pm2 list');
+      const { stdout } = await execAsync('pm2 list');
 
       if (stdout.includes(`${worker.id}`)) {
         // Stop the worker with PM2 first
@@ -246,11 +246,11 @@ export class TonkWorkerManager implements WorkerManager {
 
     try {
       // Check if worker is already running in PM2
-      const {stdout} = await execAsync('pm2 list');
+      const { stdout } = await execAsync('pm2 list');
 
       if (stdout.includes(`${worker.id}`)) {
         console.log(
-          `Worker '${worker.name}' is already running. Restarting...`,
+          `Worker '${worker.name}' is already running. Restarting...`
         );
         await execAsync(`pm2 restart ${worker.id}`);
       } else {
@@ -260,9 +260,9 @@ export class TonkWorkerManager implements WorkerManager {
           .join(' ');
 
         // Ensure log directory exists
-        const logDir = envPaths('tonk', {suffix: ''}).log;
+        const logDir = envPaths('tonk', { suffix: '' }).log;
         if (!fs.existsSync(logDir)) {
-          fs.mkdirSync(logDir, {recursive: true});
+          fs.mkdirSync(logDir, { recursive: true });
         }
 
         // Add log configuration
@@ -283,7 +283,7 @@ export class TonkWorkerManager implements WorkerManager {
             await execAsync(startCmd);
 
             console.log(
-              `Started npm worker '${packageName}' with command: ${commandName} start`,
+              `Started npm worker '${packageName}' with command: ${commandName} start`
             );
           } catch (error) {
             console.error(`Error starting npm worker:`, error);
@@ -293,7 +293,7 @@ export class TonkWorkerManager implements WorkerManager {
           // For traditional workers with process configuration
           if (!worker.config.process || !worker.config.process.file) {
             throw new Error(
-              `Worker '${worker.name}' does not have a valid process configuration.`,
+              `Worker '${worker.name}' does not have a valid process configuration.`
             );
           }
 
@@ -370,7 +370,7 @@ export class TonkWorkerManager implements WorkerManager {
       console.log(`Stopping worker '${worker.name}'...`);
 
       // Check if worker is running in PM2
-      const {stdout} = await execAsync('pm2 list');
+      const { stdout } = await execAsync('pm2 list');
 
       if (stdout.includes(`${worker.id}`)) {
         // Stop the worker with PM2
@@ -426,7 +426,7 @@ export class TonkWorkerManager implements WorkerManager {
         const isHealthy = await this.httpHealthCheck(
           healthCheckEndpoint,
           worker.protocol,
-          healthCheckTimeout,
+          healthCheckTimeout
         );
 
         // Update worker status
@@ -443,7 +443,7 @@ export class TonkWorkerManager implements WorkerManager {
       // For other protocols, we'll need to implement specific health checks
       // For now, just return false for unsupported protocols
       console.log(
-        `Health check for protocol '${worker.protocol}' not implemented.`,
+        `Health check for protocol '${worker.protocol}' not implemented.`
       );
       return false;
     } catch (error) {
@@ -486,7 +486,7 @@ export class TonkWorkerManager implements WorkerManager {
   private httpHealthCheck(
     endpoint: string,
     protocol: string,
-    timeout: number,
+    timeout: number
   ): Promise<boolean> {
     return new Promise(resolve => {
       const client = protocol === 'https' ? https : http;

@@ -1,4 +1,4 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import child_process from 'child_process';
 import {
   trackCommand,
@@ -14,7 +14,7 @@ export const createCommand = new Command('create')
     const startTime = Date.now();
 
     try {
-      trackCommand('create', {init: options.init});
+      trackCommand('create', { init: options.init });
 
       // Build the command with any passed options
       const createCommand = `npx @tonk/create ${options.init ? '-i' : ''}`;
@@ -24,7 +24,7 @@ export const createCommand = new Command('create')
       // Execute the create package
       child_process.execSync(createCommand, {
         stdio: 'inherit',
-        env: {...process.env},
+        env: { ...process.env },
       });
 
       const duration = Date.now() - startTime;

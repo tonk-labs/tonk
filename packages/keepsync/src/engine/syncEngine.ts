@@ -6,7 +6,7 @@ import {
   NetworkAdapterInterface,
   DocumentId,
 } from '@automerge/automerge-repo';
-import {logger} from '../utils/logger';
+import { logger } from '../utils/logger';
 import axios from 'axios';
 
 /**
@@ -39,7 +39,7 @@ export class SyncEngine {
    * Create a new SyncEngine instance
    * @param options Configuration options for the Repo
    */
-  constructor(options: SyncEngineOptions = {url: ''}) {
+  constructor(options: SyncEngineOptions = { url: '' }) {
     // Generate a default peerId if not provided
     const peerId =
       options.peerId ||
@@ -144,7 +144,7 @@ export class SyncEngine {
   getRepo(): Repo {
     if (!this.#ready) {
       logger.warn(
-        'getRepo() should not be called yet. Please await on SyncEngine.whenReady() to make sure initialization is complete.',
+        'getRepo() should not be called yet. Please await on SyncEngine.whenReady() to make sure initialization is complete.'
       );
     }
     return this.#repo;
@@ -153,7 +153,7 @@ export class SyncEngine {
   getRootId(): DocumentId | undefined {
     if (!this.#ready) {
       logger.warn(
-        'getRootId() should not be called yet. Please await on SyncEngine.whenReady() to make sure initialization is complete.',
+        'getRootId() should not be called yet. Please await on SyncEngine.whenReady() to make sure initialization is complete.'
       );
     }
     return this.#root;

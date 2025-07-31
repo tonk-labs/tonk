@@ -1,4 +1,4 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
 import {
@@ -7,7 +7,7 @@ import {
   trackCommandSuccess,
   shutdownAnalytics,
 } from '../utils/analytics.js';
-import {getServerConfig} from '../config/environment.js';
+import { getServerConfig } from '../config/environment.js';
 
 export const deleteCommand = new Command('delete')
   .alias('rm')
@@ -15,7 +15,7 @@ export const deleteCommand = new Command('delete')
   .option(
     '-u, --url <url>',
     'URL of the Tonk server',
-    getServerConfig().defaultUrl,
+    getServerConfig().defaultUrl
   )
   .argument('<bundleName>', 'Name of the bundle to delete')
   .action(async (bundleName, options) => {
@@ -35,7 +35,7 @@ export const deleteCommand = new Command('delete')
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({bundleName}),
+        body: JSON.stringify({ bundleName }),
       });
 
       if (!response.ok) {
@@ -61,7 +61,7 @@ export const deleteCommand = new Command('delete')
         await shutdownAnalytics();
       } else {
         console.log(
-          chalk.yellow('Bundle deletion command sent, but with warnings:'),
+          chalk.yellow('Bundle deletion command sent, but with warnings:')
         );
         console.log(chalk.yellow(result.message));
 
@@ -83,8 +83,8 @@ export const deleteCommand = new Command('delete')
 
       console.error(
         chalk.red(
-          `Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       process.exitCode = 1;

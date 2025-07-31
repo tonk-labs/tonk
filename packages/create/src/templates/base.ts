@@ -1,8 +1,8 @@
-import fs from "fs-extra";
-import path from "path";
-import ora from "ora";
-import chalk from "chalk";
-import { ProjectPlan, TemplateType } from "../types";
+import fs from 'fs-extra';
+import path from 'path';
+import ora from 'ora';
+import chalk from 'chalk';
+import { ProjectPlan, TemplateType } from '../types';
 
 export interface TemplateConfig {
   type: TemplateType;
@@ -15,7 +15,7 @@ export interface TemplateConfig {
   customizeProject?: (
     projectPath: string,
     projectName: string,
-    plan: ProjectPlan,
+    plan: ProjectPlan
   ) => Promise<void>;
 }
 
@@ -24,10 +24,10 @@ export async function createTemplate(
   projectName: string,
   templatePath: string,
   plan: ProjectPlan,
-  config: TemplateConfig,
+  config: TemplateConfig
 ) {
   const spinner = ora(
-    `Creating ${config.displayName} project structure...\n`,
+    `Creating ${config.displayName} project structure...\n`
   ).start();
 
   try {
@@ -41,7 +41,7 @@ export async function createTemplate(
         // Only filter out node_modules and .git within the template
         const shouldCopy = !relativePath
           .split(path.sep)
-          .some((part) => part === "node_modules" || part === ".git");
+          .some(part => part === 'node_modules' || part === '.git');
         if (!shouldCopy) {
           console.log(`Skipping: ${relativePath}`);
         }
@@ -55,7 +55,7 @@ export async function createTemplate(
     await fs.readdir(projectPath);
 
     // Update package.json name
-    const packageJsonPath = path.join(projectPath, "package.json");
+    const packageJsonPath = path.join(projectPath, 'package.json');
     if (await fs.pathExists(packageJsonPath)) {
       const packageJson = await fs.readJson(packageJsonPath);
       packageJson.name = projectName;
@@ -64,7 +64,7 @@ export async function createTemplate(
 
     // Run custom project setup if provided
     if (config.customizeProject) {
-      spinner.text = "Customizing project...";
+      spinner.text = 'Customizing project...';
       await config.customizeProject(projectPath, projectName, plan);
     }
 
@@ -79,36 +79,36 @@ export async function createTemplate(
       template: config.type,
     };
 
-    await fs.writeJSON(path.join(projectPath, "tonk.config.json"), tonkConfig, {
+    await fs.writeJSON(path.join(projectPath, 'tonk.config.json'), tonkConfig, {
       spaces: 2,
     });
 
     spinner.succeed(`${config.displayName} project created successfully!`);
 
     // Install dependencies
-    spinner.start("Installing dependencies...");
-    const { execSync } = await import("child_process");
+    spinner.start('Installing dependencies...');
+    const { execSync } = await import('child_process');
     process.chdir(projectPath);
-    execSync("pnpm install", { stdio: "inherit" });
-    spinner.succeed("Dependencies installed successfully!");
+    execSync('pnpm install', { stdio: 'inherit' });
+    spinner.succeed('Dependencies installed successfully!');
 
     // Print next steps instructions
-    console.log("\n" + chalk.bold(config.successMessage));
-    console.log("\n" + chalk.bold("Next:"));
+    console.log('\n' + chalk.bold(config.successMessage));
+    console.log('\n' + chalk.bold('Next:'));
 
     // Add navigation step
     console.log(
-      "  • " +
+      '  • ' +
         chalk.cyan(`cd ${projectName}`) +
-        " - Navigate to your new project",
+        ' - Navigate to your new project'
     );
 
     // Add custom next steps
-    config.nextSteps.forEach((step) => {
-      console.log("  • " + chalk.cyan(step.command) + " - " + step.description);
+    config.nextSteps.forEach(step => {
+      console.log('  • ' + chalk.cyan(step.command) + ' - ' + step.description);
     });
 
-    console.log("  • Open your favourite vibe coding editor to get started.\n");
+    console.log('  • Open your favourite vibe coding editor to get started.\n');
   } catch (error) {
     spinner.fail(`Failed to create ${config.displayName} project`);
     console.error(error);

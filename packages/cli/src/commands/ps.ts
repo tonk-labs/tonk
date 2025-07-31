@@ -1,4 +1,4 @@
-import {Command} from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
 import {
@@ -7,7 +7,7 @@ import {
   trackCommandSuccess,
   shutdownAnalytics,
 } from '../utils/analytics.js';
-import {getServerConfig} from '../config/environment.js';
+import { getServerConfig } from '../config/environment.js';
 
 interface ServerInfo {
   id: string;
@@ -24,14 +24,14 @@ export const psCommand = new Command('ps')
   .option(
     '-u, --url <url>',
     'URL of the Tonk server',
-    getServerConfig().defaultUrl,
+    getServerConfig().defaultUrl
   )
   .action(async options => {
     const startTime = Date.now();
     const serverUrl = options.url;
 
     try {
-      trackCommand('ps', {serverUrl});
+      trackCommand('ps', { serverUrl });
 
       console.log(chalk.blue(`Fetching running servers from ${serverUrl}...`));
 
@@ -60,8 +60,8 @@ export const psCommand = new Command('ps')
       // Format the output as a table
       console.log(
         `${chalk.bold('ID'.padEnd(36))} | ${chalk.bold(
-          'Bundle'.padEnd(20),
-        )} | ${chalk.bold('Route/Port'.padEnd(15))} | ${chalk.bold('Status')}`,
+          'Bundle'.padEnd(20)
+        )} | ${chalk.bold('Route/Port'.padEnd(15))} | ${chalk.bold('Status')}`
       );
       console.log('-'.repeat(85));
 
@@ -69,7 +69,7 @@ export const psCommand = new Command('ps')
         const routeOrPort =
           server.route || (server.port ? `:${server.port}` : 'N/A');
         console.log(
-          `${server.id.padEnd(36)} | ${server.bundleName.padEnd(20)} | ${routeOrPort.padEnd(15)} | ${server.status}`,
+          `${server.id.padEnd(36)} | ${server.bundleName.padEnd(20)} | ${routeOrPort.padEnd(15)} | ${server.status}`
         );
       });
 
@@ -88,8 +88,8 @@ export const psCommand = new Command('ps')
 
       console.error(
         chalk.red(
-          `Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
       await shutdownAnalytics();
       process.exitCode = 1;

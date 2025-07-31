@@ -33,7 +33,7 @@ class Logger {
       console.log(
         chalk.gray(`[${this.getTimestamp()}] DEBUG:`),
         message,
-        ...args,
+        ...args
       );
     }
   }
@@ -43,7 +43,7 @@ class Logger {
       console.log(
         chalk.blue(`[${this.getTimestamp()}] INFO:`),
         message,
-        ...args,
+        ...args
       );
     }
   }
@@ -53,7 +53,7 @@ class Logger {
       console.log(
         chalk.yellow(`[${this.getTimestamp()}] WARN:`),
         message,
-        ...args,
+        ...args
       );
     }
   }
@@ -65,7 +65,7 @@ class Logger {
       console.error(
         chalk.red(`[${this.getTimestamp()}] ERROR:`),
         errorMessage,
-        ...args,
+        ...args
       );
     }
   }
@@ -84,7 +84,7 @@ class Logger {
       console.log(
         chalk.gray(`[${this.getTimestamp()}] DEBUG [${context}]:`),
         message,
-        ...formattedArgs,
+        ...formattedArgs
       );
     }
   }

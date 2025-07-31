@@ -4,7 +4,7 @@ export const patchStore = <T>(
     setState: (fn: (state: T) => T) => void;
     getState: () => T;
   },
-  docData: T,
+  docData: T
 ) => {
   const currentState = api.getState();
   const currentStateJson = JSON.stringify(removeNonSerializable(currentState));
@@ -18,7 +18,7 @@ export const patchStore = <T>(
   // Only update the state with properties from docData, preserving other state
   api.setState(state => {
     // Create a new state object to avoid mutating the current state
-    const newState = {...state};
+    const newState = { ...state };
 
     // Only copy properties that exist in docData
     // This preserves any non-synced properties in the Zustand store

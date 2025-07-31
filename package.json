@@ -1,11 +1,39 @@
 {
   "type": "module",
   "devDependencies": {
-    "husky": "^9.1.7"
+    "@eslint/js": "^9.31.0",
+    "@typescript-eslint/eslint-plugin": "^8.38.0",
+    "@typescript-eslint/parser": "^8.38.0",
+    "eslint": "^9.31.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.3.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.2",
+    "prettier": "^3.6.2",
+    "typescript": "^5.3.3"
   },
   "scripts": {
     "prepare": "husky",
     "docs:distribute": "node utils/distribute-from-docs.js",
-    "docs:dev": "mdbook serve docs --open --port 4069"
+    "docs:dev": "mdbook serve docs --open --port 4069",
+    "lint": "eslint packages/*/src/**/*.ts scripts/**/*.js",
+    "lint:fix": "eslint packages/*/src/**/*.ts scripts/**/*.js --fix",
+    "format": "prettier --write packages/*/src/**/*.ts scripts/**/*.js *.md packages/*/README.md",
+    "format:check": "prettier --check packages/*/src/**/*.ts scripts/**/*.js *.md packages/*/README.md",
+    "lint:all": "npm run lint && npm run format:check",
+    "fix:all": "npm run lint:fix && npm run format"
+  },
+  "lint-staged": {
+    "packages/*/src/**/*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "scripts/**/*.js": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{md,json}": [
+      "prettier --write"
+    ]
   }
 }

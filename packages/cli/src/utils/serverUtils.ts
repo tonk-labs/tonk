@@ -1,8 +1,8 @@
-import {getDeploymentServiceUrl} from '../config/environment.js';
+import { getDeploymentServiceUrl } from '../config/environment.js';
 
 // Lazy-load tonkAuth to get auth token
 async function getTonkAuth() {
-  const {tonkAuth} = await import('../lib/tonkAuth.js');
+  const { tonkAuth } = await import('../lib/tonkAuth.js');
   return tonkAuth;
 }
 
@@ -21,7 +21,7 @@ export async function fetchUserServers(): Promise<string[]> {
     const response = await fetch(`${deploymentServiceUrl}/list-user-servers`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${authToken}`,
+        Authorization: `Bearer ${authToken}`,
       },
     });
 
@@ -33,6 +33,8 @@ export async function fetchUserServers(): Promise<string[]> {
 
     return result.servers || [];
   } catch (error) {
-    throw new Error(`Failed to fetch servers: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Failed to fetch servers: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }

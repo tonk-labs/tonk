@@ -21,7 +21,7 @@ npm install @tonk/server
 ### Basic Server Setup
 
 ```typescript
-import {createServer} from '@tonk/server';
+import { createServer } from '@tonk/server';
 
 // Create and start a server in production mode
 const server = await createServer({
@@ -37,7 +37,7 @@ await server.stop();
 ### Development Mode
 
 ```typescript
-import {createServer} from '@tonk/server';
+import { createServer } from '@tonk/server';
 
 // Create a development server for WebSocket sync
 const server = await createServer({
@@ -73,7 +73,8 @@ This script will:
 
 ## WebSocket Sync Protocol
 
-The server establishes a WebSocket endpoint at `/sync` that allows connected clients to synchronize data. Any message sent by a client is broadcast to all other connected clients.
+The server establishes a WebSocket endpoint at `/sync` that allows connected clients to synchronize
+data. Any message sent by a client is broadcast to all other connected clients.
 
 ## Testing
 

@@ -152,13 +152,11 @@ Options:
 Tonk supports multiple options for persisting your documents:
 
 1. **Backblaze B2 Storage**: Cloud-based backup for your documents
-
    - Secure, scalable cloud storage
    - Automatic synchronization at configurable intervals
    - Requires a Backblaze B2 account with bucket and application keys
 
 2. **Filesystem Storage**: Local file-based storage on your server
-
    - Store documents directly on the server's filesystem
    - Configurable storage path and sync intervals
    - Automatic directory creation
@@ -167,7 +165,8 @@ Tonk supports multiple options for persisting your documents:
    - Configure a primary storage option
    - Automatic fallback to secondary storage
 
-During deployment, you'll be guided through setting up your preferred storage options interactively if not specified via command-line options.
+During deployment, you'll be guided through setting up your preferred storage options interactively
+if not specified via command-line options.
 
 ## Development
 
@@ -176,6 +175,7 @@ During deployment, you'll be guided through setting up your preferred storage op
 3. Run the dev mode: `npm run dev`
 
 ## Troubleshooting
+
 ### Permission Denied Error During Installation
 
 If you encounter a permission denied error when installing the Tonk CLI globally:
@@ -188,11 +188,13 @@ npm install -g @tonk/cli
 This is a common npm issue on Unix systems. Here are several solutions:
 
 #### Option 1: Fix npm permissions
+
 ```bash
 sudo chown -R $(whoami) $(npm config get prefix)/{lib/node_modules,bin,share}
 ```
 
 #### Option 2: Configure npm to use a different directory
+
 ```bash
 mkdir ~/.npm-global
 npm config set prefix '~/.npm-global'
