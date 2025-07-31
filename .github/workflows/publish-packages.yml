@@ -6,6 +6,12 @@ on:
     paths:
       - "packages/*/package.json"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publishing)'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   detect-changes:
@@ -51,7 +57,7 @@ jobs:
             echo "packages=[]" >> $GITHUB_OUTPUT
           else
             # Convert array to JSON format
-            packages_json=$(printf '%s\n' "${packages_to_publish[@]}" | jq -R . | jq -s .)
+            packages_json=$(printf '%s\n' "${packages_to_publish[@]}" | jq -R . | jq -s -c .)
             echo "packages=$packages_json" >> $GITHUB_OUTPUT
             echo "Packages to publish: $packages_json"
           fi
@@ -105,6 +111,13 @@ jobs:
           cd packages/${{ matrix.package }}
           pnpm run lint
 
+      - name: Get package version
+        id: get-version
+        run: |
+          cd packages/${{ matrix.package }}
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Check if package exists on npm
         id: check-npm
         run: |
@@ -121,21 +134,28 @@ jobs:
           fi
 
       - name: Publish to npm
-        if: steps.check-npm.outputs.exists == 'false'
+        if: steps.check-npm.outputs.exists == 'false' && inputs.dry_run != 'true'
         run: |
           cd packages/${{ matrix.package }}
           pnpm publish --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Dry run - Show publish command
+        if: steps.check-npm.outputs.exists == 'false' && inputs.dry_run == 'true'
+        run: |
+          cd packages/${{ matrix.package }}
+          echo "DRY RUN: Would publish package with command:"
+          echo "pnpm publish --access public --no-git-checks"
+          echo "Package: $(node -p "require('./package.json').name")"
+          echo "Version: $(node -p "require('./package.json').version")"
+
       - name: Create GitHub Release
-        if: steps.check-npm.outputs.exists == 'false'
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: steps.check-npm.outputs.exists == 'false' && inputs.dry_run != 'true'
+        uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ matrix.package }}-v${{ steps.get-version.outputs.version }}
-          release_name: ${{ matrix.package }} v${{ steps.get-version.outputs.version }}
+          name: ${{ matrix.package }} v${{ steps.get-version.outputs.version }}
           body: |
             Release of ${{ matrix.package }} version ${{ steps.get-version.outputs.version }}
 
@@ -143,10 +163,10 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Get package version
-        id: get-version
+      - name: Dry run - Show release info
+        if: steps.check-npm.outputs.exists == 'false' && inputs.dry_run == 'true'
         run: |
-          cd packages/${{ matrix.package }}
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "DRY RUN: Would create GitHub release:"
+          echo "Tag: ${{ matrix.package }}-v${{ steps.get-version.outputs.version }}"
+          echo "Name: ${{ matrix.package }} v${{ steps.get-version.outputs.version }}"
 
