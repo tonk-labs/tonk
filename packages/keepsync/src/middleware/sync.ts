@@ -12,9 +12,10 @@ import { Repo, DocHandle, DocumentId } from '@automerge/automerge-repo';
 /**
  * Utility functions for state management:
  * - patchStore: Updates Zustand store with changes from Automerge
- * - removeNonSerializable: Prepares state for serialization by removing functions and non-serializable values
+ * - serializeForSync: Prepares state for serialization by removing functions and non-serializable values
  */
-import { patchStore, removeNonSerializable } from './patching.js';
+import { patchStore } from './patching.js';
+import { serializeForSync } from '../utils/serialization.js';
 
 import {
   findDocument,
@@ -172,7 +173,7 @@ export const sync =
         try {
           // Remove functions and non-serializable values before syncing
           // This is important because Automerge can only store serializable data
-          const serializableState = removeNonSerializable(currentState);
+          const serializableState = serializeForSync(currentState);
 
           // Step 4: Update the Automerge document through the docHandle
           docHandle.change((doc: any) => {
@@ -275,7 +276,7 @@ export const sync =
         } else {
           // CASE 2: Document doesn't exist yet - initialize it with current Zustand state
           const initialState = get();
-          const serializableState = removeNonSerializable(initialState);
+          const serializableState = serializeForSync(initialState);
 
           // Create the initial document with the current state
           docHandle?.change((doc: any) => {
