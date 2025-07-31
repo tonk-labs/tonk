@@ -53,11 +53,15 @@ describe('patching utilities', () => {
 
       const result = removeNonSerializable(input);
 
-      expect(result).toEqual({
-        nullValue: null,
-        undefinedValue: undefined,
-        validValue: 'test',
-      });
+      // With SuperJSON, the result includes metadata for special values like undefined
+      // When deserialized, it should restore the original values
+      expect(result).toHaveProperty('json');
+      expect(result).toHaveProperty('meta');
+      expect(result.json.nullValue).toBe(null);
+      expect(result.json.validValue).toBe('test');
+      
+      // The undefined value is preserved in metadata and will be restored during deserialization
+      expect(result.meta.values).toHaveProperty('undefinedValue');
     });
 
     it('returns non-object values as is', () => {
