@@ -114,7 +114,7 @@ export class SyncEngine {
       }
 
       // Check if document exists in the repo
-      const rootDoc = await repo.find(rootId).doc();
+      const rootDoc = (await repo.find(rootId)).doc();
       if (!rootDoc) {
         logger.warn('Creating new root document (url did not return a rootId)');
         const docHandle = repo.create();

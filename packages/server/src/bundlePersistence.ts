@@ -27,7 +27,7 @@ export class BundlePersistence {
     // Ensure the persistence directory exists
     const dir = path.dirname(this.persistenceFile);
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, {recursive: true});
+      fs.mkdirSync(dir, { recursive: true });
     }
   }
 
@@ -51,12 +51,12 @@ export class BundlePersistence {
         startTime: Date;
         isRunning: boolean;
       }
-    >,
+    >
   ): Promise<void> {
     try {
       // Convert Map to array and serialize dates
       const serializedRoutes: PersistedBundleRoute[] = Array.from(
-        bundleRoutes.entries(),
+        bundleRoutes.entries()
       ).map(([, bundle]) => ({
         bundleName: bundle.bundleName,
         bundlePath: bundle.bundlePath,
@@ -69,17 +69,17 @@ export class BundlePersistence {
       await fs.promises.writeFile(
         this.persistenceFile,
         JSON.stringify(serializedRoutes, null, 2),
-        'utf8',
+        'utf8'
       );
 
       this.log(
         'blue',
-        `Saved ${serializedRoutes.length} bundle routes to persistence`,
+        `Saved ${serializedRoutes.length} bundle routes to persistence`
       );
     } catch (error) {
       this.log(
         'red',
-        `Failed to save bundle routes: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to save bundle routes: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
       throw error;
     }
@@ -118,7 +118,7 @@ export class BundlePersistence {
       if (!fs.existsSync(this.persistenceFile)) {
         this.log(
           'yellow',
-          'No persistence file found, starting with empty bundle routes',
+          'No persistence file found, starting with empty bundle routes'
         );
         return bundleRoutes;
       }
@@ -140,13 +140,13 @@ export class BundlePersistence {
 
       this.log(
         'green',
-        `Loaded ${bundleRoutes.size} bundle routes from persistence`,
+        `Loaded ${bundleRoutes.size} bundle routes from persistence`
       );
       return bundleRoutes;
     } catch (error) {
       this.log(
         'red',
-        `Failed to load bundle routes: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to load bundle routes: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
       // Return empty map on error rather than failing
       return bundleRoutes;
@@ -165,7 +165,7 @@ export class BundlePersistence {
     } catch (error) {
       this.log(
         'red',
-        `Failed to clear bundle routes: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to clear bundle routes: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
       throw error;
     }
@@ -196,7 +196,7 @@ export class BundlePersistence {
         startTime: Date;
         isRunning: boolean;
       }
-    >,
+    >
   ): Promise<{
     valid: Map<
       string,
@@ -231,7 +231,7 @@ export class BundlePersistence {
         removedBundles.push(bundle.bundleName);
         this.log(
           'yellow',
-          `Bundle ${bundle.bundleName} no longer exists at ${bundle.bundlePath}, removing from persistence`,
+          `Bundle ${bundle.bundleName} no longer exists at ${bundle.bundlePath}, removing from persistence`
         );
       }
     }
@@ -241,6 +241,6 @@ export class BundlePersistence {
       await this.saveBundleRoutes(validRoutes);
     }
 
-    return {valid: validRoutes, removed: removedBundles};
+    return { valid: validRoutes, removed: removedBundles };
   }
 }

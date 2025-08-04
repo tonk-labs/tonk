@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import envPaths from 'env-paths';
 
-import type {DocumentId} from '@automerge/automerge-repo';
+import type { DocumentId } from '@automerge/automerge-repo';
 
 export class RootNode {
   private configPath: string;
@@ -24,11 +24,11 @@ export class RootNode {
       // Attempt to read the rootId from file
       const content = await fs.promises.readFile(
         this.getRootIdFilePath(),
-        'utf8',
+        'utf8'
       );
       const data = JSON.parse(content);
       return data.rootId as DocumentId;
-    } catch (error) {
+    } catch {
       // If file doesn't exist or is invalid, generate a new rootId
       return undefined;
     }
@@ -36,14 +36,14 @@ export class RootNode {
 
   async setRootId(rootId: DocumentId): Promise<void> {
     // Write rootId to file atomically
-    const content = JSON.stringify({rootId: rootId, timestamp: Date.now()});
+    const content = JSON.stringify({ rootId: rootId, timestamp: Date.now() });
     const filePath = this.getRootIdFilePath();
     const tmpPath = `${filePath}.tmp`;
 
     try {
       // Ensure directory exists
       await fs.promises
-        .mkdir(path.dirname(filePath), {recursive: true})
+        .mkdir(path.dirname(filePath), { recursive: true })
         .catch(() => {});
 
       // Write to temp file first

@@ -1,7 +1,7 @@
-import { TonkServer, ServerOptions } from '../index.js';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import { TonkServer, type ServerOptions } from '../index.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import supertest from 'supertest';
 import * as tar from 'tar';
 import rimraf from 'rimraf';
