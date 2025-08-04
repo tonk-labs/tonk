@@ -270,11 +270,11 @@ export const sync =
         // Get the current document
         const currentDoc = docHandle?.docSync();
 
-        if (currentDoc) {
-          // CASE 1: Document already exists - update the Zustand store with its contents
+        if (currentDoc && Object.keys(currentDoc).length > 0) {
+          // CASE 1: Document already exists and has some contents - update the Zustand store with its contents
           handleDocChange(currentDoc);
         } else {
-          // CASE 2: Document doesn't exist yet - initialize it with current Zustand state
+          // CASE 2: Document doesn't exist yet or exists but empty - initialize it with current Zustand state
           const initialState = get();
           const serializableState = serializeForSync(initialState);
 
