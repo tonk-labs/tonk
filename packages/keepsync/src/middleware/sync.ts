@@ -8,6 +8,7 @@ import { StateCreator } from 'zustand';
  * Import Repo and related types from automerge-repo
  */
 import { Repo, DocHandle, DocumentId } from '@automerge/automerge-repo/slim';
+import { next as A } from "@automerge/automerge/slim"
 
 /**
  * Utility functions for state management:
@@ -270,7 +271,7 @@ export const sync =
         // Get the current document
         const currentDoc = docHandle?.doc();
 
-        if (currentDoc && Object.keys(currentDoc).length > 0) {
+        if (currentDoc && A.stats(currentDoc).numOps > 0) {
           // CASE 1: Document already exists and has some contents - update the Zustand store with its contents
           handleDocChange(currentDoc);
         } else {
