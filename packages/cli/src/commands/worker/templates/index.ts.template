@@ -42,7 +42,7 @@ export async function startWorker(config: WorkerConfig): Promise<http.Server> {
   const SYNC_URL = process.env.SYNC_URL || "http://localhost:7777";
 
   const wsAdapter = new BrowserWebSocketClientAdapter(SYNC_WS_URL);
-  const engine = configureSyncEngine({
+  const engine = await configureSyncEngine({
     url: SYNC_URL,
     network: [wsAdapter as any as NetworkAdapterInterface],
     storage: new NodeFSStorageAdapter(),

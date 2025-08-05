@@ -9,23 +9,23 @@ importers:
   .:
     dependencies:
       '@automerge/automerge':
-        specifier: ^2.2.8
-        version: 2.2.8
+        specifier: ^3.1.1
+        version: 3.1.1
       '@automerge/automerge-repo':
-        specifier: ^1.2.1
-        version: 1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)
+        specifier: ^2.2.0
+        version: 2.2.0
       '@automerge/automerge-repo-network-websocket':
-        specifier: ^1.2.1
-        version: 1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)
+        specifier: ^2.2.0
+        version: 2.2.0
       '@automerge/automerge-repo-storage-indexeddb':
-        specifier: ^1.2.1
-        version: 1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)
+        specifier: ^2.2.0
+        version: 2.2.0
       '@tonk/cli':
         specifier: ^0.2.6
         version: 0.2.28(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(@types/react@19.0.12)(react-dom@19.0.0(react@19.0.0))(typescript@5.8.2)
       '@tonk/keepsync':
-        specifier: ^0.5.1
-        version: 0.5.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@swc/helpers@0.5.17)(@types/node@22.13.14)(react@19.0.0)(rollup@2.79.2)(typescript@5.8.2)(vite@5.4.19(@types/node@22.13.14)(terser@5.39.0))(zustand@5.0.3(@types/react@19.0.12)(react@19.0.0)(use-sync-external-store@1.5.0(react@19.0.0)))
+        specifier: ^0.6.1
+        version: 0.6.1(@swc/helpers@0.5.17)(react@19.0.0)(rollup@2.79.2)(vite@5.4.19(@types/node@22.13.14)(terser@5.39.0))(zustand@5.0.3(@types/react@19.0.12)(react@19.0.0)(use-sync-external-store@1.5.0(react@19.0.0)))
       lucide-react:
         specifier: ^0.475.0
         version: 0.475.0(react@19.0.0)
@@ -148,17 +148,29 @@ packages:
   '@automerge/automerge-repo-network-websocket@1.2.1':
     resolution: {integrity: sha512-n4sI6l51iBf0edWtX+vhk+sc8wJL72IVZl682SvzRHakA5CzyNZiC8sVzc142zRT3RDN12jCWGpwA2Voq6EXsQ==}
 
-  '@automerge/automerge-repo-storage-indexeddb@1.2.1':
-    resolution: {integrity: sha512-u+9eZZJK7DAr541buF4ut1ipkuiKRoaAtoFYo/ilq7zOLO7JX+GQOFx/8eKKRDlGt/AHTcDaFktkcaX0vKahQQ==}
+  '@automerge/automerge-repo-network-websocket@2.2.0':
+    resolution: {integrity: sha512-/WQrEVHEzLYlowDasXu/a34F3vTuLx+XmhLN3JKvPGl8GUs1nPn0ePl1nGXtfMgDsqwo8UgeM5T//oqYtKeQxQ==}
+
+  '@automerge/automerge-repo-storage-indexeddb@2.2.0':
+    resolution: {integrity: sha512-fob5ITgZs36m9ZqCflGsHYjrHUUC1HWCGe0LejLokAfXAk66ia3Pjbpe8IRz99H/Maeny5GpqwQv4/ykAzpMaA==}
 
   '@automerge/automerge-repo-storage-nodefs@1.2.1':
     resolution: {integrity: sha512-MEbz4vul3frdl+zWDQE3ELBNjiC78QSOEb4reeEgCiGcoimLKxUmHvlQLxpiR209tw72Tf6RRFtvwoqV1I8TKw==}
 
+  '@automerge/automerge-repo-storage-nodefs@2.2.0':
+    resolution: {integrity: sha512-lhE/qFboqLJgWPDkSc1JvRLhHc7NnLVBnBh2i2+P51vp6t8hu7q4Zt17018sDzFf5KpzJDOhN+cvOsfCJzBzKQ==}
+
   '@automerge/automerge-repo@1.2.1':
     resolution: {integrity: sha512-uEBr4bM01aSWkEt2tDKQxfW0Pahz2zbTTn4sRJfeKJlAg2SLr4QepFJ+3Tp4CNEkkU485olfnKYf6gt7uilMZQ==}
 
+  '@automerge/automerge-repo@2.2.0':
+    resolution: {integrity: sha512-/4cAxnUDPykqdSMJJiJvPlR2VY0JHJnvEoM7fO8qVXwQors34S0VkJEScXRJZExcVhWGhFTwCTWvUbb6hhWQIQ==}
+
   '@automerge/automerge@2.2.8':
     resolution: {integrity: sha512-kP6Z9lIkNeIGe/jhF8SUQAgUMwVjtXCBL0eZEgQGCoWvPNTPcg8fnQco28XkYBrfkkuqiEUAbdHhJmSp0y79ug==}
+
+  '@automerge/automerge@3.1.1':
+    resolution: {integrity: sha512-x7tZiMBLk4/SKYimVEVl1/wPntT9buGvLOWCey9ZcH8JUsB0dgm49C0S7Ojzgvflcs2hc/YjiXRPcFeFkinIgw==}
 
   '@aws-crypto/crc32@5.2.0':
     resolution: {integrity: sha512-nLbCWqQNgUiwwtFsen1AdzAtvuLRsQS8rYgMuxCrdKf9kOssamGLuPwyTY9wyYblNr9+1XM8v6zoDTPPSIeANg==}
@@ -2015,8 +2027,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@tonk/keepsync@0.5.1':
-    resolution: {integrity: sha512-FNwmO1sjk1CLoYrhEzmCBORXxsy6VZDN8sPGdPk9NX3STcJljZl7zigP/aJcOZ+wcnr6gAEldtd9gEpOipaSPA==}
+  '@tonk/keepsync@0.6.1':
+    resolution: {integrity: sha512-9THJ4vs/DZKQ7YIMGUOb1Bj20fnhvrUwoctr/mFaEaPoQQzioZxaADzTJTgiuwvCkU+/EasLGadlC/MNZxkKaw==}
     peerDependencies:
       react: ^19.0.0
       zustand: ^5.0.3
@@ -2728,6 +2740,10 @@ packages:
   cookie@0.7.2:
     resolution: {integrity: sha512-yki5XnKuf750l50uGTllt6kKILY4nQ1eNIQatoXEByZ5dWgnKqbnqmTrBE5B4N7lrMJKQ2ytWMiTO2o0v6Ew/w==}
     engines: {node: '>= 0.6'}
+
+  copy-anything@3.0.5:
+    resolution: {integrity: sha512-yCEafptTtb4bk7GLEQoM8KVJpxAfdBJYaXyzQEgQQQgYrZiDp8SJmGKlYza6CYjEDNstAdNdKA3UuoULlEbS6w==}
+    engines: {node: '>=12.13'}
 
   copy-to-clipboard@3.3.3:
     resolution: {integrity: sha512-2KV8NhB5JqC3ky0r9PMCAZKbUHSwtEo4CwCs0KXgruG43gX5PMqDEBbVU4OUzw2MuAWUfsuFmWvEKG5QRfSnJA==}
@@ -3808,6 +3824,10 @@ packages:
   is-weakset@2.0.4:
     resolution: {integrity: sha512-mfcwb6IzQyOKTs84CQMrOwW4gQcaTOAWJ0zzJCl2WSPDrWk/OzDaImWFH3djXhb24g4eudZfLRozAvPGw4d9hQ==}
     engines: {node: '>= 0.4'}
+
+  is-what@4.1.16:
+    resolution: {integrity: sha512-ZhMwEosbFJkA0YhFnNDgTM4ZxDRsS6HqTo7qsZM08fehyRYIYa0yHu5R6mgo1n/8MgaPBXiPimPD77baVFYg+A==}
+    engines: {node: '>=12.13'}
 
   is-wsl@3.1.0:
     resolution: {integrity: sha512-UcVfVfaK4Sc4m7X3dUSoHoozQGBEFeDC+zVo06t98xe8CzHSZZBekNXH+tu0NalHolcJ/QAGqS46Hef7QXBIMw==}
@@ -5066,6 +5086,7 @@ packages:
   source-map@0.8.0-beta.0:
     resolution: {integrity: sha512-2ymg6oRBpebeZi9UUNsgQ89bhx01TcTkmNTGnNO88imTmbSgy4nfujrgVEFKWpMTEGA11EDkTt7mqObTPdigIA==}
     engines: {node: '>= 8'}
+    deprecated: The work that was done in this beta branch won't be included in future versions
 
   sourcemap-codec@1.4.8:
     resolution: {integrity: sha512-9NykojV5Uih4lgo5So5dtw+f0JgJX30KCNI8gwhz2J9A15wD0Ml6tjHKwf6fTSa6fAdVBdZeNOs9eJ71qCk8vA==}
@@ -5211,6 +5232,10 @@ packages:
     resolution: {integrity: sha512-8EbVDiu9iN/nESwxeSxDKe0dunta1GOlHufmSSXxMD2z2/tMZpDMpvXQGsc+ajGo8y2uYUmixaSRUc/QPoQ0GA==}
     engines: {node: '>=16 || 14 >=14.17'}
     hasBin: true
+
+  superjson@2.2.2:
+    resolution: {integrity: sha512-5JRxVqC8I8NuOUjzBbvVJAKNM8qoVuH0O77h4WInc/qC2q5IreqKxYwgkga3PfA22OayK2ikceb/B26dztPl+Q==}
+    engines: {node: '>=16'}
 
   supports-color@7.2.0:
     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
@@ -5878,15 +5903,24 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@automerge/automerge-repo-storage-indexeddb@1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)':
+  '@automerge/automerge-repo-network-websocket@2.2.0':
     dependencies:
-      '@automerge/automerge-repo': 1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)
+      '@automerge/automerge-repo': 2.2.0
+      cbor-x: 1.6.0
+      debug: 4.4.0
+      eventemitter3: 5.0.1
+      isomorphic-ws: 5.0.0(ws@8.18.1)
+      ws: 8.18.1
     transitivePeerDependencies:
-      - '@swc/core'
-      - '@swc/wasm'
-      - '@types/node'
+      - bufferutil
       - supports-color
-      - typescript
+      - utf-8-validate
+
+  '@automerge/automerge-repo-storage-indexeddb@2.2.0':
+    dependencies:
+      '@automerge/automerge-repo': 2.2.0
+    transitivePeerDependencies:
+      - supports-color
 
   '@automerge/automerge-repo-storage-nodefs@1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)':
     dependencies:
@@ -5898,6 +5932,13 @@ snapshots:
       - '@types/node'
       - supports-color
       - typescript
+
+  '@automerge/automerge-repo-storage-nodefs@2.2.0':
+    dependencies:
+      '@automerge/automerge-repo': 2.2.0
+      rimraf: 5.0.10
+    transitivePeerDependencies:
+      - supports-color
 
   '@automerge/automerge-repo@1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)':
     dependencies:
@@ -5918,9 +5959,24 @@ snapshots:
       - supports-color
       - typescript
 
+  '@automerge/automerge-repo@2.2.0':
+    dependencies:
+      '@automerge/automerge': 3.1.1
+      bs58check: 3.0.1
+      cbor-x: 1.6.0
+      debug: 4.4.0
+      eventemitter3: 5.0.1
+      fast-sha256: 1.3.0
+      uuid: 9.0.1
+      xstate: 5.19.2
+    transitivePeerDependencies:
+      - supports-color
+
   '@automerge/automerge@2.2.8':
     dependencies:
       uuid: 9.0.1
+
+  '@automerge/automerge@3.1.1': {}
 
   '@aws-crypto/crc32@5.2.0':
     dependencies:
@@ -8381,32 +8437,30 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@tonk/keepsync@0.5.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@swc/helpers@0.5.17)(@types/node@22.13.14)(react@19.0.0)(rollup@2.79.2)(typescript@5.8.2)(vite@5.4.19(@types/node@22.13.14)(terser@5.39.0))(zustand@5.0.3(@types/react@19.0.12)(react@19.0.0)(use-sync-external-store@1.5.0(react@19.0.0)))':
+  '@tonk/keepsync@0.6.1(@swc/helpers@0.5.17)(react@19.0.0)(rollup@2.79.2)(vite@5.4.19(@types/node@22.13.14)(terser@5.39.0))(zustand@5.0.3(@types/react@19.0.12)(react@19.0.0)(use-sync-external-store@1.5.0(react@19.0.0)))':
     dependencies:
-      '@automerge/automerge-repo': 1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)
-      '@automerge/automerge-repo-network-websocket': 1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)
-      '@automerge/automerge-repo-storage-indexeddb': 1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)
-      '@automerge/automerge-repo-storage-nodefs': 1.2.1(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)
+      '@automerge/automerge': 3.1.1
+      '@automerge/automerge-repo': 2.2.0
+      '@automerge/automerge-repo-network-websocket': 2.2.0
+      '@automerge/automerge-repo-storage-indexeddb': 2.2.0
+      '@automerge/automerge-repo-storage-nodefs': 2.2.0
       axios: 1.9.0
       bs58check: 4.0.0
       chalk: 5.4.1
       crypto-js: 4.2.0
       react: 19.0.0
+      superjson: 2.2.2
       uuid: 11.1.0
       vite-plugin-top-level-await: 1.5.0(@swc/helpers@0.5.17)(rollup@2.79.2)(vite@5.4.19(@types/node@22.13.14)(terser@5.39.0))
       vite-plugin-wasm: 3.4.1(vite@5.4.19(@types/node@22.13.14)(terser@5.39.0))
       ws: 8.18.1
       zustand: 5.0.3(@types/react@19.0.12)(react@19.0.0)(use-sync-external-store@1.5.0(react@19.0.0))
     transitivePeerDependencies:
-      - '@swc/core'
       - '@swc/helpers'
-      - '@swc/wasm'
-      - '@types/node'
       - bufferutil
       - debug
       - rollup
       - supports-color
-      - typescript
       - utf-8-validate
       - vite
 
@@ -9259,6 +9313,10 @@ snapshots:
   cookie@0.7.1: {}
 
   cookie@0.7.2: {}
+
+  copy-anything@3.0.5:
+    dependencies:
+      is-what: 4.1.16
 
   copy-to-clipboard@3.3.3:
     dependencies:
@@ -10536,6 +10594,8 @@ snapshots:
     dependencies:
       call-bound: 1.0.4
       get-intrinsic: 1.3.0
+
+  is-what@4.1.16: {}
 
   is-wsl@3.1.0:
     dependencies:
@@ -12173,6 +12233,10 @@ snapshots:
       mz: 2.7.0
       pirates: 4.0.6
       ts-interface-checker: 0.1.13
+
+  superjson@2.2.2:
+    dependencies:
+      copy-anything: 3.0.5
 
   supports-color@7.2.0:
     dependencies:

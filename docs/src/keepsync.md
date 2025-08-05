@@ -1,35 +1,41 @@
 # Keepsync
 
-Keepsync is our local-first sync engine that provides real-time collaboration and local-first data management for Tonk applications. It uses Automerge CRDTs under the hood to enable automatic conflict resolution when multiple users edit the same data, and when working offline.
+Keepsync is our local-first sync engine that provides real-time collaboration and local-first data
+management for Tonk applications. It uses Automerge CRDTs under the hood to enable automatic
+conflict resolution when multiple users edit the same data, and when working offline.
 
 ## Documents and Stores
 
 Keepsync supports two main ways to work with data:
 
-1. **Synced Stores**: Zustand stores enhanced with real-time synchronisation using the `sync` middleware
-2. **Direct Document Access**: File-system-like access to individual documents using path-based addressing
+1. **Synced Stores**: Zustand stores enhanced with real-time synchronisation using the `sync`
+   middleware
+2. **Direct Document Access**: File-system-like access to individual documents using path-based
+   addressing
 
-Documents are uniquely identified by a `docId` and automatically reconcile state between all clients connected to the same server.
+Documents are uniquely identified by a `docId` and automatically reconcile state between all clients
+connected to the same server.
 
 ## Basic Usage
 
 ### 1. Set Up the Sync Engine
 
-Initialise the sync engine in your application entry point (this is automatically included when you create a Tonk app):
+Initialise the sync engine in your application entry point (this is automatically included when you
+create a Tonk app):
 
 ```typescript
 // index.tsx
-import { configureSyncEngine } from "@tonk/keepsync";
-import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
-import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
+import { configureSyncEngine } from '@tonk/keepsync';
+import { BrowserWebSocketClientAdapter } from '@automerge/automerge-repo-network-websocket';
+import { IndexedDBStorageAdapter } from '@automerge/automerge-repo-storage-indexeddb';
 
-const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-const httpProtocol = window.location.protocol === "https:" ? "https://" : "http://";
+const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const httpProtocol = window.location.protocol === 'https:' ? 'https://' : 'http://';
 const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
 const storage = new IndexedDBStorageAdapter();
 
-configureSyncEngine({
+await configureSyncEngine({
   url: `${httpProtocol}//${window.location.host}`,
   network: [wsAdapter as any],
   storage,
@@ -42,8 +48,8 @@ Use the `sync` middleware to create stores that automatically synchronise with o
 
 ```typescript
 // stores/counterStore.ts
-import { create } from "zustand";
-import { sync } from "@tonk/keepsync";
+import { create } from 'zustand';
+import { sync } from '@tonk/keepsync';
 
 interface CounterState {
   count: number;
@@ -55,17 +61,17 @@ interface CounterState {
 export const useCounterStore = create<CounterState>(
   sync(
     // The store implementation
-    (set) => ({
+    set => ({
       count: 0,
 
       // Increment the counter
       increment: () => {
-        set((state) => ({ count: state.count + 1 }));
+        set(state => ({ count: state.count + 1 }));
       },
 
       // Decrement the counter
       decrement: () => {
-        set((state) => ({ count: Math.max(0, state.count - 1) }));
+        set(state => ({ count: Math.max(0, state.count - 1) }));
       },
 
       // Reset the counter
@@ -75,12 +81,11 @@ export const useCounterStore = create<CounterState>(
     }),
     // Sync configuration
     {
-      docId: "counter",
+      docId: 'counter',
       // Optional: configure initialisation timeout (default: 30000ms)
       initTimeout: 30000,
       // Optional: handle initialisation errors
-      onInitError: (error) =>
-        console.error("Sync initialisation error:", error),
+      onInitError: error => console.error('Sync initialisation error:', error),
     }
   )
 );
@@ -118,12 +123,14 @@ export function Counter() {
 
 ## Direct Document Access
 
-For scenarios where you need more fine-grained control over document access, when working outside of React, or when a Zustand store is too heavyweight, you can work directly with documents using filesystem-like paths.
+For scenarios where you need more fine-grained control over document access, when working outside of
+React, or when a Zustand store is too heavyweight, you can work directly with documents using
+filesystem-like paths.
 
 ### Reading and Writing Documents
 
 ```typescript
-import { readDoc, writeDoc } from "@tonk/keepsync";
+import { readDoc, writeDoc } from '@tonk/keepsync';
 
 // Read a document
 const userData = await readDoc<{ name: string; email: string }>('users/john');
@@ -131,9 +138,9 @@ console.log(userData); // { name: "John Doe", email: "john@example.com" } or und
 
 // Write a document
 await writeDoc('users/john', {
-  name: "John Doe",
-  email: "john@example.com",
-  lastLogin: new Date().toISOString()
+  name: 'John Doe',
+  email: 'john@example.com',
+  lastLogin: new Date().toISOString(),
 });
 
 // Update an existing document
@@ -141,7 +148,7 @@ const currentData = await readDoc('users/john');
 if (currentData) {
   await writeDoc('users/john', {
     ...currentData,
-    lastLogin: new Date().toISOString()
+    lastLogin: new Date().toISOString(),
   });
 }
 ```
@@ -151,10 +158,10 @@ if (currentData) {
 You can listen for changes to specific documents without using the full sync middleware:
 
 ```typescript
-import { listenToDoc } from "@tonk/keepsync";
+import { listenToDoc } from '@tonk/keepsync';
 
 // Attach a listener to a document
-const removeListener = await listenToDoc('users/john', (doc) => {
+const removeListener = await listenToDoc('users/john', doc => {
   console.log('User document changed:', doc);
   // Update UI or trigger other side effects
 });
@@ -168,7 +175,7 @@ removeListener();
 Keepsync provides filesystem-like operations for organising your documents:
 
 ```typescript
-import { ls, mkDir, rm } from "@tonk/keepsync";
+import { ls, mkDir, rm } from '@tonk/keepsync';
 
 // List contents of a directory
 const contents = await ls('users');
@@ -189,7 +196,7 @@ console.log(success); // true if removed successfully
 Keepsync organises documents in a hierarchical structure similar to a filesystem:
 
 ```typescript
-import type { DocNode, DirNode, RefNode } from "@tonk/keepsync";
+import type { DocNode, DirNode, RefNode } from '@tonk/keepsync';
 
 // DocNode: Represents a document or directory
 interface DocNode {
@@ -229,7 +236,7 @@ interface RefNode {
 ### Error Handling
 
 ```typescript
-import { readDoc, writeDoc } from "@tonk/keepsync";
+import { readDoc, writeDoc } from '@tonk/keepsync';
 
 try {
   const data = await readDoc('some/path');
@@ -243,14 +250,16 @@ try {
 // Handle sync initialisation errors in stores
 const useMyStore = create(
   sync(
-    (set) => ({ /* store definition */ }),
+    set => ({
+      /* store definition */
+    }),
     {
-      docId: "my-store",
-      onInitError: (error) => {
+      docId: 'my-store',
+      onInitError: error => {
         // Handle initialisation failures
         console.error('Failed to initialise sync:', error);
         // Could show user notification, retry logic, etc.
-      }
+      },
     }
   )
 );
@@ -258,27 +267,35 @@ const useMyStore = create(
 
 ## Best Practices
 
-1. **Use meaningful document paths**: Organise your data logically using clear, hierarchical paths like `users/profiles/john` or `projects/my-app/settings`.
+1. **Use meaningful document paths**: Organise your data logically using clear, hierarchical paths
+   like `users/profiles/john` or `projects/my-app/settings`.
 
-2. **Handle initialisation gracefully**: Always provide `onInitError` callbacks for sync middleware to handle network or initialisation issues.
+2. **Handle initialisation gracefully**: Always provide `onInitError` callbacks for sync middleware
+   to handle network or initialisation issues.
 
-3. **Choose the right tool**: Use synced stores for application state that needs real-time collaboration, and direct document access for more structured data or when you need filesystem-like operations.
+3. **Choose the right tool**: Use synced stores for application state that needs real-time
+   collaboration, and direct document access for more structured data or when you need
+   filesystem-like operations.
 
-4. **Clean up listeners**: Always call the cleanup function returned by `listenToDoc` when components unmount or when listeners are no longer needed.
+4. **Clean up listeners**: Always call the cleanup function returned by `listenToDoc` when
+   components unmount or when listeners are no longer needed.
 
-5. **Path conventions**: Use forward slashes (`/`) for path separators and avoid starting paths with `/` (they will be normalised automatically).
+5. **Path conventions**: Use forward slashes (`/`) for path separators and avoid starting paths with
+   `/` (they will be normalised automatically).
 
 ## API Reference
 
 ### Sync Middleware
 
-- `sync<T>(config: StateCreator<T>, options: SyncOptions): StateCreator<T>` - Creates a synced Zustand store
+- `sync<T>(config: StateCreator<T>, options: SyncOptions): StateCreator<T>` - Creates a synced
+  Zustand store
 
 ### Document Operations
 
 - `readDoc<T>(path: string): Promise<T | undefined>` - Read a document
 - `writeDoc<T>(path: string, content: T): Promise<void>` - Write/update a document
-- `listenToDoc<T>(path: string, listener: (doc: T) => void): Promise<() => void>` - Listen for document changes
+- `listenToDoc<T>(path: string, listener: (doc: T) => void): Promise<() => void>` - Listen for
+  document changes
 
 ### Filesystem Operations
 

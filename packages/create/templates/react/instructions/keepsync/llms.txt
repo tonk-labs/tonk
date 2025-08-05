@@ -27,11 +27,7 @@ const url =
     ? "http://localhost:7777"
     : `${window.location.protocol}//${window.location.host}`;
 
-configureSyncEngine({
-  url,
-  network: [wsAdapter as any],
-  storage,
-});
+await configureSyncEngine({ url, network: [wsAdapter as any], storage, });
 ```
 
 ### 2. Create a Synced Store with the Middleware

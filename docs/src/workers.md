@@ -1,10 +1,13 @@
 # Tonk Workers
 
-Tonk Workers are background services that extend your Tonk applications with additional functionality. They run as separate processes and integrate seamlessly with the Tonk ecosystem through a standardized API.
+Tonk Workers are background services that extend your Tonk applications with additional
+functionality. They run as separate processes and integrate seamlessly with the Tonk ecosystem
+through a standardized API.
 
 ## Overview
 
 Workers provide specialized functionality like:
+
 - Data synchronisation with external services
 - Scheduled background tasks
 - API integrations
@@ -13,6 +16,7 @@ Workers provide specialized functionality like:
 ## Architecture
 
 Workers are standalone Node.js applications that:
+
 - Run on their own ports
 - Communicate via HTTP/WebSocket
 - Integrate with Tonk's sync system (`keepsync`)
@@ -71,19 +75,19 @@ module.exports = {
   runtime: {
     port: 5555,
     healthCheck: {
-      endpoint: "/health",
-      method: "GET",
+      endpoint: '/health',
+      method: 'GET',
       interval: 30000,
       timeout: 5000,
     },
   },
   process: {
-    file: "index.js",
-    cwd: "./dist",
+    file: 'index.js',
+    cwd: './dist',
     instances: 1,
     autorestart: true,
     env: {
-      NODE_ENV: "production",
+      NODE_ENV: 'production',
     },
   },
   schemas: {
@@ -136,7 +140,7 @@ Workers can read and write to Tonk's sync system:
 import { configureSyncEngine, readDoc, writeDoc } from './sync.js';
 
 // Configure sync engine
-const engine = configureSyncEngine({
+const engine = await configureSyncEngine({
   url: SYNC_URL,
   network: [wsAdapter as any as NetworkAdapterInterface],
   storage: new NodeFSStorageAdapter(),
@@ -155,12 +159,14 @@ await writeDoc('my-collection/document-id', {
 ## Example: Google Maps Locations Worker
 
 The codebase includes a complete example worker that:
+
 - Connects to Google Maps API
 - Exports saved locations daily
 - Stores data in `keepsync`
 - Provides CLI commands for setup
 
 Key features:
+
 - OAuth 2.0 authentication
 - Scheduled exports (cron-like)
 
@@ -179,12 +185,12 @@ Workers should implement these standard endpoints:
 
 ```typescript
 // Global error handlers
-process.on('uncaughtException', (error) => {
+process.on('uncaughtException', error => {
   console.error('Uncaught Exception:', error);
   process.exit(1);
 });
 
-process.on('unhandledRejection', (reason) => {
+process.on('unhandledRejection', reason => {
   console.error('Unhandled Rejection:', reason);
   process.exit(1);
 });
@@ -211,12 +217,14 @@ const config = {
 
 ```typescript
 // Structured logging
-console.log(JSON.stringify({
-  timestamp: new Date().toISOString(),
-  level: 'info',
-  message: 'Worker started',
-  port: PORT,
-}));
+console.log(
+  JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: 'info',
+    message: 'Worker started',
+    port: PORT,
+  })
+);
 ```
 
 ## Deployment
@@ -244,8 +252,9 @@ lsof -i :5555
 ### Health Check Failures
 
 Ensure your worker responds to `GET /health` with:
+
 ```json
-{"status": "ok"}
+{ "status": "ok" }
 ```
 
 ### Sync Issues
