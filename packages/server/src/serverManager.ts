@@ -1,8 +1,8 @@
-import {spawn} from 'node:child_process';
-import {PortAllocator} from './portAllocator.js';
+import { spawn } from 'node:child_process';
+import { PortAllocator } from './portAllocator.js';
 import chalk from 'chalk';
 
-import type {ChildProcess} from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 
 interface ServerConfig {
   bundleName: string;
@@ -32,20 +32,20 @@ export class ServerManager {
    * Start a custom server process for a bundle
    */
   async startServer(config: ServerConfig): Promise<void> {
-    const {bundleName, serverPath, port} = config;
+    const { bundleName, serverPath, port } = config;
 
     // Check if server is already running
     if (this.runningServers.has(bundleName)) {
       this.log(
         'yellow',
-        `Server for bundle "${bundleName}" is already running`,
+        `Server for bundle "${bundleName}" is already running`
       );
       return;
     }
 
     this.log(
       'blue',
-      `Starting server for bundle "${bundleName}" on port ${port}`,
+      `Starting server for bundle "${bundleName}" on port ${port}`
     );
 
     // Start the Node.js server process
@@ -72,7 +72,7 @@ export class ServerManager {
     serverProcess.on('exit', async (code, signal) => {
       this.log(
         'yellow',
-        `[${bundleName}] Server process exited with code ${code}, signal ${signal}`,
+        `[${bundleName}] Server process exited with code ${code}, signal ${signal}`
       );
       const serverProcess = this.runningServers.get(bundleName);
       if (serverProcess) {
@@ -103,12 +103,12 @@ export class ServerManager {
       await this.waitForServer(port, bundleName);
       this.log(
         'green',
-        `✅ Server for bundle "${bundleName}" started successfully on port ${port}`,
+        `✅ Server for bundle "${bundleName}" started successfully on port ${port}`
       );
     } catch (error) {
       this.log(
         'red',
-        `❌ Failed to start server for bundle "${bundleName}": ${error}`,
+        `❌ Failed to start server for bundle "${bundleName}": ${error}`
       );
       const serverProcess = this.runningServers.get(bundleName);
       if (serverProcess) {
@@ -169,7 +169,7 @@ export class ServerManager {
    */
   async stopAllServers(): Promise<void> {
     const stopPromises = Array.from(this.runningServers.keys()).map(
-      bundleName => this.stopServer(bundleName),
+      bundleName => this.stopServer(bundleName)
     );
     await Promise.all(stopPromises);
   }
@@ -187,11 +187,11 @@ export class ServerManager {
         if (response.ok) {
           return;
         }
-      } catch (error) {
+      } catch {
         // Server not ready yet, wait and retry
         this.log(
           'yellow',
-          `[${bundleName}] Waiting for server to be ready... (attempt ${attempt + 1}/${maxAttempts})`,
+          `[${bundleName}] Waiting for server to be ready... (attempt ${attempt + 1}/${maxAttempts})`
         );
       }
 
@@ -199,7 +199,7 @@ export class ServerManager {
     }
 
     throw new Error(
-      `Server failed to start on port ${port} after ${maxAttempts} attempts`,
+      `Server failed to start on port ${port} after ${maxAttempts} attempts`
     );
   }
 }

@@ -1,12 +1,12 @@
-import {describe, it, expect, beforeEach, afterEach, vi} from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import {create} from 'zustand';
+import { create } from 'zustand';
 import {
   configureSyncEngine,
   resetSyncEngine,
 } from '../../src/core/syncConfig.js';
-import {IndexedDBStorageAdapter} from '@automerge/automerge-repo-storage-indexeddb';
-import {DummyNetworkAdapter} from '../dummy/DummyNetworkAdapter.js';
+import { IndexedDBStorageAdapter } from '@automerge/automerge-repo-storage-indexeddb';
+import { DummyNetworkAdapter } from '../dummy/DummyNetworkAdapter.js';
 import {
   sync,
   writeDoc,
@@ -60,7 +60,7 @@ interface LargeTestDoc {
 describe('Differential Patching Integration Tests', () => {
   beforeEach(async () => {
     resetSyncEngine();
-    const syncEngine = configureSyncEngine({
+    const syncEngine = await configureSyncEngine({
       url: '',
       storage: new IndexedDBStorageAdapter(TEST_DB),
       network: new DummyNetworkAdapter(),
@@ -97,7 +97,7 @@ describe('Differential Patching Integration Tests', () => {
       // Listen to changes to verify patch behavior
       const removeListener = await listenToDoc<SimpleTestDoc>(
         docId,
-        ({patches}) => {
+        ({ patches }) => {
           changesSpy(patches);
         },
       );
@@ -139,7 +139,7 @@ describe('Differential Patching Integration Tests', () => {
         content: {
           title: 'Test Title',
           body: 'Test Body',
-          sections: [{id: '1', title: 'Section 1', content: 'Content 1'}],
+          sections: [{ id: '1', title: 'Section 1', content: 'Content 1' }],
         },
         stats: {
           views: 0,
@@ -158,7 +158,7 @@ describe('Differential Patching Integration Tests', () => {
       // Listen to changes
       const removeListener = await listenToDoc<ComplexTestDoc>(
         docId,
-        ({patches}) => {
+        ({ patches }) => {
           changesSpy(patches);
         },
       );
@@ -280,10 +280,10 @@ describe('Differential Patching Integration Tests', () => {
           set => ({
             count: 0,
             name: 'initial',
-            increment: () => set(state => ({...state, count: state.count + 1})),
-            setName: (name: string) => set(state => ({...state, name})),
+            increment: () => set(state => ({ ...state, count: state.count + 1 })),
+            setName: (name: string) => set(state => ({ ...state, name })),
           }),
-          {docId},
+          { docId },
         ),
       );
 
@@ -293,8 +293,8 @@ describe('Differential Patching Integration Tests', () => {
       // Listen to document changes to verify our differential patching
       const removeListener = await listenToDoc<SimpleTestDoc>(
         docId,
-        ({doc, patches}) => {
-          changesSpy({doc, patches});
+        ({ doc, patches }) => {
+          changesSpy({ doc, patches });
         },
       );
 
@@ -366,7 +366,7 @@ describe('Differential Patching Integration Tests', () => {
                 },
               })),
           }),
-          {docId},
+          { docId },
         ),
       );
 
@@ -413,7 +413,7 @@ describe('Differential Patching Integration Tests', () => {
       const docId = 'large-doc-test';
 
       // Create a large document
-      const largeItems = Array.from({length: 1000}, (_, i) => ({
+      const largeItems = Array.from({ length: 1000 }, (_, i) => ({
         id: `item-${i}`,
         data: {
           name: `Item ${i}`,
@@ -430,7 +430,7 @@ describe('Differential Patching Integration Tests', () => {
       }));
 
       const bulkData = Object.fromEntries(
-        Array.from({length: 500}, (_, i) => [`key-${i}`, `value-${i}`]),
+        Array.from({ length: 500 }, (_, i) => [`key-${i}`, `value-${i}`]),
       );
 
       const largeDoc: LargeTestDoc = {
@@ -530,12 +530,12 @@ describe('Differential Patching Integration Tests', () => {
 
       // Test that serialization handles potential circular references
       const store = create(
-        sync<{data: any}>(
+        sync<{ data: any }>(
           set => ({
             data: {},
-            updateData: (newData: any) => set({data: newData}),
+            updateData: (newData: any) => set({ data: newData }),
           }),
-          {docId},
+          { docId },
         ),
       );
 

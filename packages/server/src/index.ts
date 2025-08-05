@@ -4,24 +4,24 @@ import path from 'node:path';
 import chalk from 'chalk';
 import fs from 'node:fs';
 import os from 'node:os';
-import {WebSocketServer} from 'ws';
-import {NodeWSServerAdapter} from '@automerge/automerge-repo-network-websocket';
-import {NodeFSStorageAdapter} from '@automerge/automerge-repo-storage-nodefs';
+import { WebSocketServer } from 'ws';
+import { NodeWSServerAdapter } from '@automerge/automerge-repo-network-websocket';
+import { NodeFSStorageAdapter } from '@automerge/automerge-repo-storage-nodefs';
 import multer from 'multer';
 import * as tar from 'tar';
 import cors from 'cors';
-import {v4 as uuidv4} from 'uuid';
-import {createProxyMiddleware} from 'http-proxy-middleware';
-import {RootNode} from './rootNode.js';
-import {BundlePersistence} from './bundlePersistence.js';
-import {NginxManager} from './nginxManager.js';
-import {PortAllocator} from './portAllocator.js';
-import {ServerManager} from './serverManager.js';
-import {Repo} from '@automerge/automerge-repo';
-import {logger} from './logger.js';
+import { v4 as uuidv4 } from 'uuid';
+import { createProxyMiddleware } from 'http-proxy-middleware';
+import { RootNode } from './rootNode.js';
+import { BundlePersistence } from './bundlePersistence.js';
+import { NginxManager } from './nginxManager.js';
+import { PortAllocator } from './portAllocator.js';
+import { ServerManager } from './serverManager.js';
+import { Repo } from '@automerge/automerge-repo';
+import { logger } from './logger.js';
 
-import type {PeerId, RepoConfig, DocumentId} from '@automerge/automerge-repo';
-import type {BundleServerInfo} from './types.js';
+import type { PeerId, RepoConfig, DocumentId } from '@automerge/automerge-repo';
+import type { BundleServerInfo } from './types.js';
 
 // A simple mutex implementation for bundle extraction
 class Mutex {
@@ -81,9 +81,6 @@ export class TonkServer {
   private server: http.Server;
   private readyResolvers: ((value: any) => void)[] = [];
   private options: ServerOptions;
-  // Repo is essential for the server to work but not directly referenced after initialization
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  //@ts-ignore
   private repo: Repo;
   private fsSyncTimer: NodeJS.Timeout | null = null;
 
@@ -120,7 +117,7 @@ export class TonkServer {
     this.rootNode = new RootNode(
       this.options.persistencePath
         ? `${this.options.persistencePath}/root.json`
-        : '',
+        : ''
     );
 
     // Initialize bundle persistence
@@ -151,7 +148,7 @@ export class TonkServer {
     }
 
     const hostname = os.hostname();
-    this.socket = new WebSocketServer({path: '/sync', noServer: true});
+    this.socket = new WebSocketServer({ path: '/sync', noServer: true });
 
     // Configure multer for file uploads
     this.upload = multer({
@@ -179,7 +176,7 @@ export class TonkServer {
           cb(new Error('Only .tar.gz or .tgz files are allowed'));
         }
       },
-      limits: {fileSize: 500 * 1024 * 1024}, // 500MB limit
+      limits: { fileSize: 500 * 1024 * 1024 }, // 500MB limit
     });
 
     // Create Express app and HTTP server
@@ -234,8 +231,8 @@ export class TonkServer {
 
       const rootId = await this.rootNode.getRootId();
       if (rootId) {
-        const rootHandle = this.repo.find(rootId as DocumentId);
-        const doc = await rootHandle.doc();
+        const rootHandle = await this.repo.find(rootId as DocumentId);
+        const doc = rootHandle.doc();
         if (!doc) {
           await createRoot();
         }
@@ -245,7 +242,7 @@ export class TonkServer {
     } catch (err) {
       console.error('Error initializing root:', err);
       throw new Error(
-        'Failed to initialize the root, this error is fatal. Shutting down server.',
+        'Failed to initialize the root, this error is fatal. Shutting down server.'
       );
     }
   }
@@ -263,13 +260,13 @@ export class TonkServer {
       }
 
       // Validate that the bundles still exist and filter out missing ones
-      const {valid: validRoutes, removed: removedBundles} =
+      const { valid: validRoutes, removed: removedBundles } =
         await this.bundlePersistence.validateAndFilterBundles(persistedRoutes);
 
       if (removedBundles.length > 0) {
         this.log(
           'yellow',
-          `Removed ${removedBundles.length} missing bundles: ${removedBundles.join(', ')}`,
+          `Removed ${removedBundles.length} missing bundles: ${removedBundles.join(', ')}`
         );
       }
 
@@ -278,12 +275,12 @@ export class TonkServer {
         try {
           // Check if route is already in use (shouldn't happen, but safety check)
           const existingRoute = Array.from(this.bundleRoutes.values()).find(
-            r => r.route === bundle.route,
+            r => r.route === bundle.route
           );
           if (existingRoute) {
             this.log(
               'yellow',
-              `Route ${bundle.route} is already in use, skipping bundle ${bundle.bundleName}`,
+              `Route ${bundle.route} is already in use, skipping bundle ${bundle.bundleName}`
             );
             continue;
           }
@@ -293,7 +290,7 @@ export class TonkServer {
             bundle.bundleName,
             bundle.bundlePath,
             bundle.route,
-            bundle.id,
+            bundle.id
           );
 
           // Create updated bundle info with server port
@@ -318,24 +315,24 @@ export class TonkServer {
 
           this.log(
             'green',
-            `Restored bundle ${bundle.bundleName} on route ${bundle.route}`,
+            `Restored bundle ${bundle.bundleName} on route ${bundle.route}`
           );
         } catch (error) {
           this.log(
             'red',
-            `Failed to restore bundle ${bundle.bundleName}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            `Failed to restore bundle ${bundle.bundleName}: ${error instanceof Error ? error.message : 'Unknown error'}`
           );
         }
       }
 
       this.log(
         'green',
-        `Successfully restored ${this.bundleRoutes.size} bundles`,
+        `Successfully restored ${this.bundleRoutes.size} bundles`
       );
     } catch (error) {
       this.log(
         'red',
-        `Error restoring persisted bundles: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Error restoring persisted bundles: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
       // Don't throw here - we want the server to start even if bundle restoration fails
     }
@@ -348,7 +345,7 @@ export class TonkServer {
       });
 
       await fs.promises.access(this.options.bundlesPath!).catch(async () => {
-        await fs.promises.mkdir(this.options.bundlesPath!, {recursive: true});
+        await fs.promises.mkdir(this.options.bundlesPath!, { recursive: true });
       });
     } catch (error) {
       console.error('Error setting up directories:', error);
@@ -390,7 +387,7 @@ export class TonkServer {
       async (req, res) => {
         try {
           if (!req.file) {
-            return res.status(400).send({error: 'No bundle file uploaded'});
+            return res.status(400).send({ error: 'No bundle file uploaded' });
           }
 
           const bundleName =
@@ -426,7 +423,7 @@ export class TonkServer {
                 await Promise.all(deletePromises);
               }
             } catch {
-              await fs.promises.mkdir(bundlePath, {recursive: true});
+              await fs.promises.mkdir(bundlePath, { recursive: true });
             }
 
             // Extract the tar.gz file
@@ -445,22 +442,17 @@ export class TonkServer {
               await fs.promises.access(serverPath);
               this.log(
                 'blue',
-                `Server folder found for bundle ${bundleName}, running npm install...`,
+                `Server folder found for bundle ${bundleName}, running npm install...`
               );
 
               // Run npm install in the server directory
-              const {spawn} = await import('node:child_process');
+              const { spawn } = await import('node:child_process');
               const npmInstall = spawn('npm', ['install'], {
                 cwd: serverPath,
                 stdio: 'pipe',
               });
 
-              let output = '';
               let errorOutput = '';
-
-              npmInstall.stdout?.on('data', data => {
-                output += data.toString();
-              });
 
               npmInstall.stderr?.on('data', data => {
                 errorOutput += data.toString();
@@ -471,19 +463,19 @@ export class TonkServer {
                   if (code === 0) {
                     this.log(
                       'green',
-                      `npm install completed successfully for bundle ${bundleName}`,
+                      `npm install completed successfully for bundle ${bundleName}`
                     );
                     resolve();
                   } else {
                     this.log(
                       'red',
-                      `npm install failed for bundle ${bundleName} with code ${code}`,
+                      `npm install failed for bundle ${bundleName} with code ${code}`
                     );
                     this.log('red', `Error output: ${errorOutput}`);
                     reject(
                       new Error(
-                        `npm install failed with code ${code}: ${errorOutput}`,
-                      ),
+                        `npm install failed with code ${code}: ${errorOutput}`
+                      )
                     );
                   }
                 });
@@ -491,22 +483,22 @@ export class TonkServer {
                 npmInstall.on('error', err => {
                   this.log(
                     'red',
-                    `Failed to start npm install for bundle ${bundleName}: ${err.message}`,
+                    `Failed to start npm install for bundle ${bundleName}: ${err.message}`
                   );
                   reject(err);
                 });
               });
-            } catch (serverAccessError) {
+            } catch {
               // Server folder doesn't exist, skip npm install
               this.log(
                 'yellow',
-                `No server folder found for bundle ${bundleName}, skipping npm install`,
+                `No server folder found for bundle ${bundleName}, skipping npm install`
               );
             }
 
             this.log(
               'green',
-              `Bundle ${bundleName} uploaded and extracted to ${bundlePath}`,
+              `Bundle ${bundleName} uploaded and extracted to ${bundlePath}`
             );
 
             res.status(200).send({
@@ -525,19 +517,19 @@ export class TonkServer {
           }
         } catch (error: any) {
           this.log('red', `Error uploading bundle: ${error.message}`);
-          res.status(500).send({error: error.message});
+          res.status(500).send({ error: error.message });
         }
         return;
-      },
+      }
     );
 
     // Bundle server management endpoints - now serves bundles on routes instead of separate ports
     this.app.post('/start', async (req, res) => {
       try {
-        const {bundleName, route} = req.body;
+        const { bundleName, route } = req.body;
 
         if (!bundleName) {
-          return res.status(400).send({error: 'Bundle name is required'});
+          return res.status(400).send({ error: 'Bundle name is required' });
         }
 
         const bundlePath = path.join(this.options.bundlesPath!, bundleName);
@@ -547,7 +539,7 @@ export class TonkServer {
         } catch {
           return res
             .status(404)
-            .send({error: `Bundle ${bundleName} not found`});
+            .send({ error: `Bundle ${bundleName} not found` });
         }
 
         const appRoute = route || `/${bundleName}`;
@@ -555,7 +547,7 @@ export class TonkServer {
 
         // Check if route is already in use
         const existingRoute = Array.from(this.bundleRoutes.values()).find(
-          r => r.route === appRoute,
+          r => r.route === appRoute
         );
         if (existingRoute) {
           return res.status(400).send({
@@ -568,7 +560,7 @@ export class TonkServer {
           bundleName,
           bundlePath,
           appRoute,
-          serverId,
+          serverId
         );
 
         // Store bundle route info
@@ -611,17 +603,17 @@ export class TonkServer {
         });
       } catch (error: any) {
         this.log('red', `Error starting bundle: ${error.message}`);
-        res.status(500).send({error: error.message});
+        res.status(500).send({ error: error.message });
       }
       return;
     });
 
     this.app.post('/kill', async (req, res) => {
       try {
-        const {id} = req.body;
+        const { id } = req.body;
 
         if (!id) {
-          return res.status(400).send({error: 'Server ID is required'});
+          return res.status(400).send({ error: 'Server ID is required' });
         }
 
         // Try to find in route-based bundles first
@@ -630,7 +622,7 @@ export class TonkServer {
           // Stop the bundle server if it's running
           await this.stopBundleServer(
             bundleRoute.bundleName,
-            bundleRoute.serverPort,
+            bundleRoute.serverPort
           );
 
           // Remove the route from Express (Note: Express doesn't provide a direct way to remove routes,
@@ -644,13 +636,13 @@ export class TonkServer {
             .catch(err => {
               this.log(
                 'red',
-                `Failed to persist bundle routes after removal: ${err.message}`,
+                `Failed to persist bundle routes after removal: ${err.message}`
               );
             });
 
           this.log(
             'yellow',
-            `Bundle route ${bundleRoute.route} for ${bundleRoute.bundleName} stopped`,
+            `Bundle route ${bundleRoute.route} for ${bundleRoute.bundleName} stopped`
           );
 
           res.status(200).send({
@@ -660,10 +652,12 @@ export class TonkServer {
           return;
         }
 
-        return res.status(404).send({error: `Bundle with ID ${id} not found`});
+        return res
+          .status(404)
+          .send({ error: `Bundle with ID ${id} not found` });
       } catch (error: any) {
         this.log('red', `Error stopping bundle: ${error.message}`);
-        res.status(500).send({error: error.message});
+        res.status(500).send({ error: error.message });
       }
       return;
     });
@@ -674,16 +668,16 @@ export class TonkServer {
 
         try {
           await fs.promises.access(bundlesPath);
-        } catch (err) {
+        } catch {
           return res
             .status(404)
-            .send({error: `Bundles directory ${bundlesPath} not found`});
+            .send({ error: `Bundles directory ${bundlesPath} not found` });
         }
 
         const files = await fs.promises.readdir(bundlesPath);
         const statPromises = files.map(async file => {
           const stats = await fs.promises.stat(path.join(bundlesPath, file));
-          return {file, isDirectory: stats.isDirectory()};
+          return { file, isDirectory: stats.isDirectory() };
         });
 
         const fileStats = await Promise.all(statPromises);
@@ -694,14 +688,14 @@ export class TonkServer {
         res.status(200).send(bundleNames);
       } catch (error: any) {
         this.log('red', `Error listing bundles: ${error.message}`);
-        res.status(500).send({error: error.message});
+        res.status(500).send({ error: error.message });
       }
       return;
     });
 
     this.app.post('/delete', async (req, res) => {
       try {
-        const {bundleName} = req.body;
+        const { bundleName } = req.body;
 
         if (!bundleName) {
           return res.status(400).send({
@@ -738,13 +732,13 @@ export class TonkServer {
             this.bundleRoutes.delete(bundleId);
             this.log(
               'yellow',
-              `Stopped running instance of bundle '${bundleName}' (ID: ${bundleId})`,
+              `Stopped running instance of bundle '${bundleName}' (ID: ${bundleId})`
             );
           }
         }
 
         // Delete the bundle directory from filesystem
-        await fs.promises.rm(bundlePath, {recursive: true, force: true});
+        await fs.promises.rm(bundlePath, { recursive: true, force: true });
         this.log('green', `Deleted bundle directory: ${bundlePath}`);
 
         // Update persistence
@@ -785,7 +779,7 @@ export class TonkServer {
         res.status(200).send(servers);
       } catch (error: any) {
         this.log('red', `Error listing processes: ${error.message}`);
-        res.status(500).send({error: error.message});
+        res.status(500).send({ error: error.message });
       }
       return;
     });
@@ -805,7 +799,7 @@ export class TonkServer {
       createProxyMiddleware({
         target: 'http://localhost:8080', // Dedicated nginx server
         changeOrigin: true,
-        pathRewrite: {'^/api': ''}, // Strip /api prefix before forwarding to nginx
+        pathRewrite: { '^/api': '' }, // Strip /api prefix before forwarding to nginx
         on: {
           proxyReq: (_proxyReq, req, _res) => {
             // Log every request that comes through the proxy
@@ -817,7 +811,7 @@ export class TonkServer {
             const contentLength = req.headers['content-length'] || '0';
 
             logger.debug(
-              `[${timestamp}] PROXY REQUEST: ${method} ${originalUrl}`,
+              `[${timestamp}] PROXY REQUEST: ${method} ${originalUrl}`
             );
             logger.debug(`  User-Agent: ${userAgent}`);
             logger.debug(`  Content-Type: ${contentType}`);
@@ -838,10 +832,10 @@ export class TonkServer {
             const responseHeaders = proxyRes.headers;
 
             logger.debug(
-              `[${timestamp}] PROXY RESPONSE: ${method} ${originalUrl} -> ${statusCode}`,
+              `[${timestamp}] PROXY RESPONSE: ${method} ${originalUrl} -> ${statusCode}`
             );
             logger.debug(
-              `  Response Headers: ${JSON.stringify(responseHeaders)}`,
+              `  Response Headers: ${JSON.stringify(responseHeaders)}`
             );
           },
           error: (err, _req, res) => {
@@ -853,19 +847,19 @@ export class TonkServer {
                   JSON.stringify({
                     error: 'Nginx proxy error',
                     message: err.message,
-                  }),
+                  })
                 );
               }
             }
           },
         },
-      }),
+      })
     );
   }
 
   private async startBundleServer(
     bundleName: string,
-    bundlePath: string,
+    bundlePath: string
   ): Promise<number | undefined> {
     const serverPath = path.join(bundlePath, 'server');
 
@@ -884,7 +878,7 @@ export class TonkServer {
       if (routes.length === 1) {
         this.log(
           'yellow',
-          `No server routes to proxy detected for this bundle ${bundleName}.`,
+          `No server routes to proxy detected for this bundle ${bundleName}.`
         );
         return;
       }
@@ -908,12 +902,12 @@ export class TonkServer {
       });
       this.log(
         'green',
-        `Bundle server started for ${bundleName} on port ${serverPort}`,
+        `Bundle server started for ${bundleName} on port ${serverPort}`
       );
     } catch (error) {
       this.log(
         'red',
-        `Failed to start bundle server for ${bundleName}: ${error}`,
+        `Failed to start bundle server for ${bundleName}: ${error}`
       );
       // Deallocate the port if server startup fails
       await this.portAllocator.deallocate(serverPort);
@@ -935,7 +929,7 @@ export class TonkServer {
 
         this.log(
           'blue',
-          `Processed nginx config for bundle ${bundleName}, replaced placeholders with port ${serverPort}`,
+          `Processed nginx config for bundle ${bundleName}, replaced placeholders with port ${serverPort}`
         );
 
         if (this.nginxManager) {
@@ -943,12 +937,12 @@ export class TonkServer {
             await this.nginxManager.deployAppConfig(bundleName, configContent);
             this.log(
               'green',
-              `Nginx config deployed for bundle ${bundleName} on port ${serverPort}`,
+              `Nginx config deployed for bundle ${bundleName} on port ${serverPort}`
             );
           } catch (error) {
             this.log(
               'red',
-              `Failed to deploy nginx config for ${bundleName}: ${error}`,
+              `Failed to deploy nginx config for ${bundleName}: ${error}`
             );
             // Deallocate the port if nginx config fails
             await this.portAllocator.deallocate(serverPort);
@@ -958,7 +952,7 @@ export class TonkServer {
       } catch (error) {
         this.log(
           'red',
-          `Failed to read nginx config for ${bundleName}: ${error}`,
+          `Failed to read nginx config for ${bundleName}: ${error}`
         );
         // Deallocate the port if config reading fails
         await this.portAllocator.deallocate(serverPort);
@@ -971,7 +965,7 @@ export class TonkServer {
 
   private async stopBundleServer(
     bundleName: string,
-    serverPort?: number,
+    serverPort?: number
   ): Promise<void> {
     this.log('blue', `Stopping server for bundle ${bundleName}`);
 
@@ -982,7 +976,7 @@ export class TonkServer {
     } catch (error) {
       this.log(
         'red',
-        `Failed to stop bundle server for ${bundleName}: ${error}`,
+        `Failed to stop bundle server for ${bundleName}: ${error}`
       );
     }
 
@@ -994,7 +988,7 @@ export class TonkServer {
       } catch (error) {
         this.log(
           'red',
-          `Failed to remove nginx config for ${bundleName}: ${error}`,
+          `Failed to remove nginx config for ${bundleName}: ${error}`
         );
       }
     }
@@ -1004,7 +998,7 @@ export class TonkServer {
       await this.portAllocator.deallocate(serverPort);
       this.log(
         'blue',
-        `Deallocated port ${serverPort} for bundle ${bundleName}`,
+        `Deallocated port ${serverPort} for bundle ${bundleName}`
       );
     }
   }
@@ -1013,7 +1007,7 @@ export class TonkServer {
     bundleName: string,
     bundlePath: string,
     route: string,
-    _serverId: string,
+    _serverId: string
   ): Promise<number | undefined> {
     this.log('blue', `Setting up bundle route: ${route} -> ${bundlePath}`);
 
@@ -1035,7 +1029,7 @@ export class TonkServer {
     if (serverPort) {
       this.log(
         'blue',
-        `Bundle ${bundleName} server started on port ${serverPort}`,
+        `Bundle ${bundleName} server started on port ${serverPort}`
       );
     }
 
@@ -1045,19 +1039,19 @@ export class TonkServer {
     // Client-side routing - for SPA, send index.html for all non-api paths under this route
     this.app.get(
       new RegExp(
-        `^${route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\/api|\\/services)(?!\\.\\w+$).*$`,
+        `^${route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\/api|\\/services)(?!\\.\\w+$).*$`
       ),
       (req, res) => {
         if (req.path === `${route}/.well-known/root.json`) {
           return res.sendFile(this.rootNode.getRootIdFilePath());
         }
         res.sendFile(path.join(distPath, 'index.html'));
-      },
+      }
     );
 
     this.log(
       'green',
-      `Bundle route setup complete: ${route} serving ${bundleName}`,
+      `Bundle route setup complete: ${route} serving ${bundleName}`
     );
 
     return serverPort;
@@ -1113,7 +1107,7 @@ export class TonkServer {
 
 // Convenience function to create and start a server
 export async function createServer(
-  options: ServerOptions,
+  options: ServerOptions
 ): Promise<TonkServer> {
   const server = new TonkServer(options);
   await server.start();

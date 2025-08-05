@@ -1,5 +1,5 @@
 import { sync, ls, mkDir, rm, readDoc, writeDoc, listenToDoc } from './sync.js';
-import { DocumentId } from '@automerge/automerge-repo';
+import { DocumentId } from '@automerge/automerge-repo/slim';
 export type { DocumentId };
 
 export { ls, sync, mkDir, rm, readDoc, writeDoc, listenToDoc };

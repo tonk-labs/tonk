@@ -37,12 +37,12 @@
     "vite-plugin-wasm": "^3.4.1"
   },
   "dependencies": {
-    "@automerge/automerge": "^2.2.8",
-    "@automerge/automerge-repo": "^1.2.1",
-    "@automerge/automerge-repo-network-websocket": "^1.2.1",
-    "@automerge/automerge-repo-storage-indexeddb": "^1.2.1",
+    "@automerge/automerge": "^3.1.1",
+    "@automerge/automerge-repo": "^2.2.0",
+    "@automerge/automerge-repo-network-websocket": "^2.2.0",
+    "@automerge/automerge-repo-storage-indexeddb": "^2.2.0",
     "@tonk/cli": "^0.2.6",
-    "@tonk/keepsync": "^0.5.2",
+    "@tonk/keepsync": "^0.5.4",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

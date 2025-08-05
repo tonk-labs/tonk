@@ -53,7 +53,7 @@
         "noArrayIndexKey": "off",
         "noExplicitAny": "off",
         "noAsyncPromiseExecutor": "off",
-        "noAssignInExpressions": "off",
+        "noAssignInExpressions": "off"
       },
       "nursery": {
         "useSortedClasses": {
@@ -67,4 +67,4 @@
       }
     }
   }
-} 
+}

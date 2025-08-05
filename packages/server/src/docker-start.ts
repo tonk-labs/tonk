@@ -1,5 +1,5 @@
-import {createServer, ServerOptions, TonkServer} from './index.js';
-import fs from 'fs';
+import { createServer, type ServerOptions, type TonkServer } from './index.js';
+import fs from 'node:fs';
 import chalk from 'chalk';
 
 const startDockerizedServer = async (): Promise<void> => {
@@ -15,16 +15,16 @@ const startDockerizedServer = async (): Promise<void> => {
 
     // Ensure the persistence directory exists
     if (!fs.existsSync(persistencePath)) {
-      fs.mkdirSync(persistencePath, {recursive: true});
+      fs.mkdirSync(persistencePath, { recursive: true });
       console.log(
-        chalk.blue(`Created persistence directory: ${persistencePath}`),
+        chalk.blue(`Created persistence directory: ${persistencePath}`)
       );
     }
 
     // Ensure subdirectories exist
     for (const dir of [bundlesPath, storesPath]) {
       if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, {recursive: true});
+        fs.mkdirSync(dir, { recursive: true });
         console.log(chalk.blue(`Created directory: ${dir}`));
       }
     }
@@ -35,7 +35,7 @@ const startDockerizedServer = async (): Promise<void> => {
     console.log(chalk.cyan('   Stores path:'), chalk.bold.green(storesPath));
     console.log(
       chalk.cyan('   Persistence path:'),
-      chalk.bold.green(persistencePath),
+      chalk.bold.green(persistencePath)
     );
     console.log(chalk.cyan('   Config path:'), chalk.bold.green(configPath));
 

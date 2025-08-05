@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
+import { spawn } from 'node:child_process';
 import chalk from 'chalk';
-import {logger} from './logger.js';
+import { logger } from './logger.js';
 
-import type {ChildProcess} from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 
 interface CommandResult {
   code: number;
@@ -51,7 +51,7 @@ export class NginxManager {
         ['-g', 'daemon off;', '-c', this.getMainConfigPath()],
         {
           stdio: 'pipe',
-        },
+        }
       );
 
       this.nginxProcess.stdout?.on('data', data => {
@@ -70,7 +70,7 @@ export class NginxManager {
       this.nginxProcess.on('exit', (code, signal) => {
         this.log(
           'yellow',
-          `Nginx process exited with code ${code}, signal ${signal}`,
+          `Nginx process exited with code ${code}, signal ${signal}`
         );
         this.isRunning = false;
       });
@@ -118,16 +118,16 @@ export class NginxManager {
    */
   async deployAppConfig(
     bundleName: string,
-    processedConfigContent: string,
+    processedConfigContent: string
   ): Promise<void> {
     const targetConfigPath = path.join(
       this.configDir,
-      `app-${bundleName}.conf`,
+      `app-${bundleName}.conf`
     );
 
     this.log(
       'blue',
-      `Deploying nginx config for bundle "${bundleName}" with processed content`,
+      `Deploying nginx config for bundle "${bundleName}" with processed content`
     );
 
     // Write the processed config content to nginx config directory
@@ -156,7 +156,7 @@ export class NginxManager {
   /**
    * Get nginx server status
    */
-  getStatus(): {isRunning: boolean; port: number; configDir: string} {
+  getStatus(): { isRunning: boolean; port: number; configDir: string } {
     return {
       isRunning: this.isRunning,
       port: this.nginxPort,
@@ -184,7 +184,7 @@ export class NginxManager {
 
     if (validateResult.code !== 0) {
       throw new Error(
-        `Nginx config validation failed: ${validateResult.stderr}`,
+        `Nginx config validation failed: ${validateResult.stderr}`
       );
     }
 
@@ -210,7 +210,7 @@ export class NginxManager {
    */
   private ensureConfigDirectory(): void {
     if (!fs.existsSync(this.configDir)) {
-      fs.mkdirSync(this.configDir, {recursive: true});
+      fs.mkdirSync(this.configDir, { recursive: true });
       this.log('green', `Created nginx config directory: ${this.configDir}`);
     }
   }
@@ -308,7 +308,7 @@ http {
       process.stderr?.on('data', data => (stderr += data.toString()));
 
       process.on('close', code => {
-        resolve({code: code || 0, stdout, stderr});
+        resolve({ code: code || 0, stdout, stderr });
       });
     });
   }

@@ -1,4 +1,4 @@
-import {RootNode} from './rootNode.js';
+import type { RootNode } from './rootNode.js';
 export type DocumentId = string;
 
 export interface BundleServerConfig {

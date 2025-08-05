@@ -1,4 +1,4 @@
-import { DocumentId, Repo, DocHandle } from '@automerge/automerge-repo';
+import { DocumentId, Repo, DocHandle } from '@automerge/automerge-repo/slim';
 
 // Reference to a node stored in a parent's children array
 export type RefNode = {
@@ -64,8 +64,8 @@ export async function traverseDocTree(
 
   // No segments means root path
   if (segments.length === 0) {
-    const rootHandle = repo.find<DirNode>(rootId);
-    const rootDoc = await rootHandle.doc();
+    const rootHandle = await repo.find<DirNode>(rootId);
+    const rootDoc = rootHandle.doc();
 
     // Initialize root if it doesn't exist and we're creating missing nodes
     if (!rootDoc && createMissing) {
@@ -79,7 +79,7 @@ export async function traverseDocTree(
         doc.children = [];
       });
 
-      const newDoc = await rootHandle.doc();
+      const newDoc = rootHandle.doc();
       if (!newDoc) {
         return undefined;
       }
@@ -102,8 +102,8 @@ export async function traverseDocTree(
 
   // Navigate through the tree
   let currentNodeId = rootId;
-  let currentHandle = repo.find<DirNode>(currentNodeId);
-  let currentDoc = await currentHandle.doc();
+  let currentHandle = await repo.find<DirNode>(currentNodeId);
+  let currentDoc = currentHandle.doc();
   let currentPath = '';
 
   // Initialize root if needed and we're creating missing directories
@@ -118,7 +118,7 @@ export async function traverseDocTree(
       doc.children = [];
     });
 
-    const updatedDoc = await currentHandle.doc();
+    const updatedDoc = currentHandle.doc();
     if (!updatedDoc) {
       return undefined;
     }
@@ -145,7 +145,7 @@ export async function traverseDocTree(
       currentHandle.change((doc: DirNode) => {
         doc.children = [];
       });
-      const updatedDoc = await currentHandle.doc();
+      const updatedDoc = currentHandle.doc();
       if (!updatedDoc) {
         return undefined;
       }
@@ -210,7 +210,7 @@ export async function traverseDocTree(
       });
 
       // After the change operation, check what actually exists in the parent
-      const updatedParentDoc = await currentHandle.doc();
+      const updatedParentDoc = currentHandle.doc();
       if (!updatedParentDoc) {
         return undefined;
       }
@@ -225,8 +225,8 @@ export async function traverseDocTree(
 
       // Update for next iteration - use the actual child that exists
       currentNodeId = actualChild.pointer;
-      currentHandle = repo.find<DirNode>(currentNodeId);
-      const newDoc = await currentHandle.doc();
+      currentHandle = await repo.find<DirNode>(currentNodeId);
+      const newDoc = currentHandle.doc();
 
       if (!newDoc) {
         return undefined;
@@ -262,8 +262,8 @@ export async function traverseDocTree(
       // Only try to navigate further if it's a directory
       if (childRef.type === 'dir') {
         currentNodeId = childRef.pointer;
-        currentHandle = repo.find<DirNode>(currentNodeId);
-        const nextDoc = await currentHandle.doc();
+        currentHandle = await repo.find<DirNode>(currentNodeId);
+        const nextDoc = currentHandle.doc();
 
         if (!nextDoc) {
           return undefined;
@@ -314,7 +314,7 @@ export async function findDocument<T>(
     return undefined;
   }
   // Otherwise, return the node itself (for root or created nodes)
-  return repo.find(result.targetRef!.pointer);
+  return await repo.find(result.targetRef!.pointer);
 }
 
 /**
@@ -351,7 +351,7 @@ export async function createDocument<T>(
 
   let parentHandle;
   if (result.targetRef) {
-    parentHandle = repo.find<DirNode>(result.targetRef.pointer);
+    parentHandle = await repo.find<DirNode>(result.targetRef.pointer);
   } else {
     parentHandle = result.nodeHandle;
   }
@@ -418,8 +418,8 @@ export async function removeDocument(
 
   // Handle directory: recursively remove all children first
   if (result.targetRef.type === 'dir') {
-    const dirHandle = repo.find<DirNode>(docId);
-    const dirDoc = await dirHandle.doc();
+    const dirHandle = await repo.find<DirNode>(docId);
+    const dirDoc = dirHandle.doc();
 
     if (dirDoc && dirDoc.children && dirDoc.children.length > 0) {
       // Process all children recursively

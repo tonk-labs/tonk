@@ -32,7 +32,7 @@ declare global {
 
 const getMapKitToken = async (): Promise<string> => {
   const token =
-    "eyJraWQiOiI3RlFUWllLS1k1IiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzUyMTY0OTk2LCJvcmlnaW4iOiIqLnRvbmsueHl6In0.T2u2q3OGBXg1staBZZpmC9TISjH0G-G_-fvIDdfTUksz3S9kLrHFczwNIQEWD7igH_vz50MjpgizVV0TJF0Ljg";
+    "eyJraWQiOiI0QVA3N1laNTI5IiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzUzOTc4MTk4LCJleHAiOjE3NTQ2MzYzOTl9.xwD8BKEoqf5j1-OhaOLxT8E4w_o02Q5AmEsj3GsJ0ryPFkqg9kb0UncNqQFs-QmW4YF_b9QcUCsrdLNB6Q70cA";
 
   if (!token) {
     console.error("MapKit token not found in environment variables");
@@ -49,7 +49,7 @@ interface MapKitInitializerProps {
   onMapReady: (map: any) => void;
 }
 
-const MapKitInitializer: React.FC<MapKitInitializerProps> = ({}) => {
+const MapKitInitializer: React.FC<MapKitInitializerProps> = ({ }) => {
   useEffect(() => {
     const loadMapKit = async () => {
       try {
@@ -385,8 +385,8 @@ const MapView: React.FC = () => {
     // Filter locations by category if a category is selected
     const filteredLocations = selectedCategory
       ? Object.values(locations).filter(
-          (loc) => loc.category === selectedCategory,
-        )
+        (loc) => loc.category === selectedCategory,
+      )
       : Object.values(locations);
 
     // Add markers for all locations
@@ -457,30 +457,27 @@ const MapView: React.FC = () => {
                 <div style="display: flex; align-items: center; margin-bottom: 4px;">
                   <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: ${categoryColor}; margin-right: 6px;"></span>
                   <span style="font-size: 13px; color: #8E8E93;">${categoryName}</span>
-                  ${
-                    location.isOpen !== undefined && location.isOpen !== null
-                      ? `<span style="font-size: 12px; margin-left: 8px; padding: 2px 6px; border-radius: 10px; background-color: ${location.isOpen ? "rgba(52, 199, 89, 0.1)" : "rgba(255, 59, 48, 0.1)"}; color: ${location.isOpen ? "#34C759" : "#FF3B30"};">
+                  ${location.isOpen !== undefined && location.isOpen !== null
+              ? `<span style="font-size: 12px; margin-left: 8px; padding: 2px 6px; border-radius: 10px; background-color: ${location.isOpen ? "rgba(52, 199, 89, 0.1)" : "rgba(255, 59, 48, 0.1)"}; color: ${location.isOpen ? "#34C759" : "#FF3B30"};">
                       ${location.isOpen ? "Open" : "Closed"}
                     </span>`
-                      : ""
-                  }
+              : ""
+            }
                 </div>
                 <p style="font-size: 13px; color: #8E8E93; margin-bottom: 4px;">
                   Added by: ${activeProfileId === location.addedBy ? "You" : userNames[location.addedBy] || "Anonymous"}
                 </p>
-                ${
-                  commonLocationIds.includes(location.id)
-                    ? '<p style="font-size: 13px; color: #FF9500; font-weight: 500; margin-top: 4px; display: flex; align-items: center;"><span style="margin-right: 4px;">⭐</span> Common place</p>'
-                    : ""
-                }
+                ${commonLocationIds.includes(location.id)
+              ? '<p style="font-size: 13px; color: #FF9500; font-weight: 500; margin-top: 4px; display: flex; align-items: center;"><span style="margin-right: 4px;">⭐</span> Common place</p>'
+              : ""
+            }
                 <div style="display: flex; gap: 12px; margin-top: 12px;">
                   <button id="info-${location.id}" style="font-size: 15px; color: #007AFF; border: none; background: none; cursor: pointer; padding: 8px 12px; border-radius: 8px; font-weight: 500; transition: background-color 0.2s;">Show Details</button>
                   <button id="review-${location.id}" style="font-size: 15px; color: #FF9500; border: none; background: none; cursor: pointer; padding: 8px 12px; border-radius: 8px; font-weight: 500; transition: background-color 0.2s;">Add Review</button>
-                  ${
-                    activeProfileId === location.addedBy
-                      ? `<button id="remove-${location.id}" style="font-size: 15px; color: #FF3B30; border: none; background: none; cursor: pointer; padding: 8px 12px; border-radius: 8px; font-weight: 500; transition: background-color 0.2s;">Remove</button>`
-                      : ""
-                  }
+                  ${activeProfileId === location.addedBy
+              ? `<button id="remove-${location.id}" style="font-size: 15px; color: #FF3B30; border: none; background: none; cursor: pointer; padding: 8px 12px; border-radius: 8px; font-weight: 500; transition: background-color 0.2s;">Remove</button>`
+              : ""
+            }
                 </div>
               `;
 
@@ -776,11 +773,10 @@ const MapView: React.FC = () => {
                   <div className="flex flex-wrap gap-2">
                     <button
                       onClick={() => setSelectedCategory(null)}
-                      className={`px-2 py-1 rounded-full text-xs font-medium transition-colors ${
-                        selectedCategory === null
+                      className={`px-2 py-1 rounded-full text-xs font-medium transition-colors ${selectedCategory === null
                           ? "bg-gray-200"
                           : "bg-gray-100"
-                      }`}
+                        }`}
                       style={{ color: appleColors.text.primary }}
                     >
                       All
@@ -789,11 +785,10 @@ const MapView: React.FC = () => {
                       <button
                         key={category.id}
                         onClick={() => setSelectedCategory(category.id)}
-                        className={`px-2 py-1 rounded-full text-xs font-medium transition-colors ${
-                          selectedCategory === category.id
+                        className={`px-2 py-1 rounded-full text-xs font-medium transition-colors ${selectedCategory === category.id
                             ? "bg-opacity-20"
                             : "bg-opacity-10"
-                        }`}
+                          }`}
                         style={{
                           backgroundColor: `${category.color}${selectedCategory === category.id ? "33" : "1A"}`,
                           color: category.color,
@@ -864,11 +859,10 @@ const MapView: React.FC = () => {
                               {location.isOpen !== undefined &&
                                 location.isOpen !== null && (
                                   <span
-                                    className={`text-xs px-1.5 py-0.5 rounded-full ml-1 ${
-                                      location.isOpen
+                                    className={`text-xs px-1.5 py-0.5 rounded-full ml-1 ${location.isOpen
                                         ? "bg-green-100 text-green-700"
                                         : "bg-red-100 text-red-700"
-                                    }`}
+                                      }`}
                                   >
                                     {location.isOpen ? "Open" : "Closed"}
                                   </span>
@@ -1116,7 +1110,7 @@ const MapView: React.FC = () => {
                         {activeProfileId === locations[selectedLocation].addedBy
                           ? "You"
                           : userNames[locations[selectedLocation].addedBy] ||
-                            "Anonymous"}
+                          "Anonymous"}
                       </div>
 
                       {/* Coordinates */}
@@ -1178,7 +1172,7 @@ const MapView: React.FC = () => {
                         </h3>
 
                         {!locations[selectedLocation].reviews ||
-                        locations[selectedLocation].reviews.length === 0 ? (
+                          locations[selectedLocation].reviews.length === 0 ? (
                           <div className="text-gray-500 text-sm">
                             No reviews yet. Be the first to add a review!
                           </div>
@@ -1551,11 +1545,10 @@ const MapView: React.FC = () => {
                         <button
                           key={category.id}
                           type="button"
-                          className={`p-2 rounded-lg flex items-center gap-2 transition-colors ${
-                            newLocation.category === category.id
+                          className={`p-2 rounded-lg flex items-center gap-2 transition-colors ${newLocation.category === category.id
                               ? "ring-2"
                               : "hover:bg-gray-50"
-                          }`}
+                            }`}
                           style={{
                             backgroundColor:
                               newLocation.category === category.id

@@ -7,7 +7,7 @@ import { StateCreator } from 'zustand';
 /**
  * Import Repo and related types from automerge-repo
  */
-import { Repo, DocHandle, DocumentId } from '@automerge/automerge-repo';
+import { Repo, DocHandle, DocumentId } from '@automerge/automerge-repo/slim';
 
 /**
  * Utility functions for state management:
@@ -257,7 +257,7 @@ export const sync =
           createDocument(repo, root, options.docId, docHandle);
         } else {
           docHandle = docNode;
-          await docNode.doc();
+          docNode.doc();
         }
 
         // Set up the change callback to handle document updates
@@ -268,7 +268,7 @@ export const sync =
         });
 
         // Get the current document
-        const currentDoc = docHandle?.docSync();
+        const currentDoc = docHandle?.doc();
 
         if (currentDoc) {
           // CASE 1: Document already exists - update the Zustand store with its contents
@@ -462,9 +462,9 @@ export const ls = async (path: string): Promise<DocNode | undefined> => {
     throw new Error('You cannot ls a document');
   }
 
-  const dir = repo.find<DirNode>(result.targetRef!.pointer);
+  const dir = await repo.find<DirNode>(result.targetRef!.pointer);
 
-  return await dir.doc();
+  return dir.doc();
 };
 
 export const rm = async (path: string): Promise<boolean> => {
@@ -499,7 +499,7 @@ export const readDoc = async <T>(path: string): Promise<T | undefined> => {
     return undefined;
   }
 
-  return await docNode.doc();
+  return docNode.doc();
 };
 
 /**
@@ -520,16 +520,16 @@ export const writeDoc = async <T>(path: string, content: T) => {
   let newHandle;
   if (!docNode) {
     newHandle = repo.create<T>();
-    await newHandle.doc();
+    newHandle.doc();
     await createDocument(repo, root, path, newHandle);
   } else {
     newHandle = docNode;
-    await newHandle.doc();
+    newHandle.doc();
   }
   newHandle.change((doc: any) => {
     mutateDocument(doc, content);
   });
-  newHandle.docSync();
+  newHandle.doc();
 };
 
 export type DocChangeListener<T> = (payload: {
@@ -603,7 +603,7 @@ export const listenToDoc = async <T>(
 
   // Get the current document state and call the listener immediately
   // For the initial call, we don't have patch information, so we provide empty defaults
-  const currentDoc = await docHandle.doc();
+  const currentDoc = docHandle.doc();
   if (currentDoc) {
     listener({
       doc: currentDoc,

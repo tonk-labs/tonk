@@ -1,6 +1,6 @@
 {
   "name": "@tonk/keepsync",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "A reactive sync engine framework for use with Tonk apps",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,6 +11,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./slim": {
+      "types": "./dist/slim.d.ts",
+      "import": "./dist/slim.js",
+      "default": "./dist/slim.js"
     }
   },
   "files": [
@@ -19,10 +24,12 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "npm run clean && vite build",
+    "build": "npm run clean && npm run build:main && npm run build:slim && cp dist-slim/slim.js dist-slim/slim.js.map dist-slim/slim.d.ts dist/ && rm -rf dist-slim",
+    "build:main": "vite build",
+    "build:slim": "BUILD_SLIM=true vite build",
     "dev": "vite build --watch --mode development",
     "type-check": "tsc --noEmit",
-    "clean": "rimraf dist",
+    "clean": "rimraf dist dist-slim",
     "test": "vitest",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
@@ -57,10 +64,11 @@
     "vitest": "^3.0.7"
   },
   "dependencies": {
-    "@automerge/automerge-repo": "^1.2.1",
-    "@automerge/automerge-repo-network-websocket": "^1.2.1",
-    "@automerge/automerge-repo-storage-indexeddb": "^1.2.1",
-    "@automerge/automerge-repo-storage-nodefs": "^1.2.1",
+    "@automerge/automerge": "^3.1.1",
+    "@automerge/automerge-repo": "^2.2.0",
+    "@automerge/automerge-repo-network-websocket": "^2.2.0",
+    "@automerge/automerge-repo-storage-indexeddb": "^2.2.0",
+    "@automerge/automerge-repo-storage-nodefs": "^2.2.0",
     "axios": "^1.9.0",
     "bs58check": "^4.0.0",
     "chalk": "^5.4.1",
