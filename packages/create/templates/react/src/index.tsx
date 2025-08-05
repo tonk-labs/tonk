@@ -13,7 +13,7 @@ const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 const wsAdapter = new BrowserWebSocketClientAdapter(wsUrl);
 const storage = new IndexedDBStorageAdapter();
 
-const engine = configureSyncEngine({
+const engine = await configureSyncEngine({
   url: `${window.location.protocol}//${window.location.host}`,
   network: [wsAdapter as any],
   storage,

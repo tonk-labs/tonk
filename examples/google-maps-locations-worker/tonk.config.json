@@ -1,9 +1,0 @@
-{
-  "name": "google-maps-locations-worker",
-  "plan": {
-    "platform": "worker",
-    "projectName": "google-maps-locations-worker",
-    "description": "Retrieves user's saved Google Maps locations"
-  },
-  "template": "worker"
-}

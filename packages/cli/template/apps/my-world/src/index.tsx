@@ -22,7 +22,7 @@ if (process.env.NODE_ENV === "production") {
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const wsUrl = `${wsProtocol}//${window.location.host}/sync`;
 
-configureSyncEngine({
+await configureSyncEngine({
   url: wsUrl,
   onSync: (docId) => console.log(`Document ${docId} synced`),
   onError: (error) => console.error("Sync error:", error),

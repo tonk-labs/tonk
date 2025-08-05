@@ -13,6 +13,8 @@ import {
   readDoc,
   listenToDoc,
 } from '../../src/middleware/sync.js';
+import { setIsSlim } from '../../src/utils/wasmState.js';
+import * as Automerge from '@automerge/automerge';
 
 const TEST_DB = 'test-differential-patching';
 
@@ -59,6 +61,9 @@ interface LargeTestDoc {
 
 describe('Differential Patching Integration Tests', () => {
   beforeEach(async () => {
+    setIsSlim();
+    Automerge.init();
+
     resetSyncEngine();
     const syncEngine = await configureSyncEngine({
       url: '',

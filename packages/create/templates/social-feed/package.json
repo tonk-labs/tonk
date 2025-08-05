@@ -42,7 +42,7 @@
     "@automerge/automerge-repo-network-websocket": "^2.2.0",
     "@automerge/automerge-repo-storage-indexeddb": "^2.2.0",
     "@tonk/cli": "^0.2.6",
-    "@tonk/keepsync": "^0.5.4",
+    "@tonk/keepsync": "^0.6.1",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

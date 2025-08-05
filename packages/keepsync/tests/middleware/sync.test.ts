@@ -3,6 +3,8 @@ import { IndexedDBStorageAdapter } from '@automerge/automerge-repo-storage-index
 import { listenToDoc, writeDoc } from '../../src/middleware/sync';
 import { configureSyncEngine, resetSyncEngine } from '../../src/core/syncConfig';
 import 'fake-indexeddb/auto';
+import { setIsSlim } from '../../src/utils/wasmState';
+import * as Automerge from '@automerge/automerge';
 
 describe('listenToDoc patch behavior', () => {
   const TEST_DB = 'test_listen_doc_db';
@@ -19,6 +21,9 @@ describe('listenToDoc patch behavior', () => {
   }
 
   beforeEach(async () => {
+    setIsSlim();
+    Automerge.init();
+
     // Reset the singleton instance to ensure clean test state
     resetSyncEngine();
 

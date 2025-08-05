@@ -1,5 +1,0 @@
-{
-  "ignore": ["token.json", "*.zip", "exported_locations/*", "extracted_*/*"],
-  "watch": ["src"],
-  "ext": "ts,json"
-}

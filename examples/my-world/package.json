@@ -42,7 +42,7 @@
     "@automerge/automerge-repo-network-websocket": "^2.2.0",
     "@automerge/automerge-repo-storage-indexeddb": "^2.2.0",
     "@tonk/cli": "^0.2.6",
-    "@tonk/keepsync": "^0.4.8",
+    "@tonk/keepsync": "^0.6.1",
     "@vitejs/plugin-react": "^4.4.0",
     "body-parser": "^1.20.3",
     "chalk": "^5.4.1",
