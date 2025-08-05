@@ -1,7 +1,8 @@
 import { SyncEngine } from '../engine/index.js';
-import { Repo, DocumentId } from '@automerge/automerge-repo';
+import { Repo, DocumentId } from '@automerge/automerge-repo/slim';
 import { logger } from '../utils/logger.js';
 import { SyncEngineOptions } from '../engine/syncEngine.js';
+import { waitForWasm } from '../utils/wasmState.js';
 
 // Singleton instance of the SyncEngine
 let syncEngineInstance: SyncEngine | null = null;
@@ -12,7 +13,13 @@ let syncEngineInstance: SyncEngine | null = null;
  * @param options Configuration options for the SyncEngine
  * @returns The configured SyncEngine instance
  */
-export function configureSyncEngine(options: SyncEngineOptions): SyncEngine {
+export async function configureSyncEngine(
+  options: SyncEngineOptions
+): Promise<SyncEngine> {
+  // Ensure WASM is ready before creating SyncEngine
+  // HACK: the way we initialize WASM for the main entrypoint needs serious attention
+  await waitForWasm();
+
   if (!syncEngineInstance) {
     logger.info('Creating new SyncEngine instance');
     syncEngineInstance = new SyncEngine(options);

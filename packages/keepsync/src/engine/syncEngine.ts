@@ -5,7 +5,7 @@ import {
   PeerId,
   NetworkAdapterInterface,
   DocumentId,
-} from '@automerge/automerge-repo';
+} from '@automerge/automerge-repo/slim';
 import { logger } from '../utils/logger';
 import axios from 'axios';
 

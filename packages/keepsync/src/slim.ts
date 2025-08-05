@@ -1,3 +1,5 @@
+import { setIsSlim } from './utils/wasmState.js';
+
 // Export the engine
 export * from './engine/index.js';
 
@@ -20,6 +22,8 @@ export type { DocNode, DirNode, RefNode } from './documents/addressing.js';
 export * from './core/index.js';
 
 // Re-export specific functions for easier access
-export { configureSyncEngine, getSyncEngine } from './core/syncConfig.js';
+export { configureSyncEngine, getSyncEngine } from './core/index.js';
 
+// Export WASM initialization for slim entry point users
 export { initializeWasm } from '@automerge/automerge-repo/slim';
+setIsSlim();

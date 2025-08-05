@@ -1,7 +1,7 @@
-import {describe, it, expect, beforeEach, afterEach, vi} from 'vitest';
-import {IndexedDBStorageAdapter} from '@automerge/automerge-repo-storage-indexeddb';
-import {listenToDoc, writeDoc, readDoc} from '../../src/middleware/sync';
-import {configureSyncEngine, resetSyncEngine} from '../../src/core/syncConfig';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { IndexedDBStorageAdapter } from '@automerge/automerge-repo-storage-indexeddb';
+import { listenToDoc, writeDoc } from '../../src/middleware/sync';
+import { configureSyncEngine, resetSyncEngine } from '../../src/core/syncConfig';
 import 'fake-indexeddb/auto';
 
 describe('listenToDoc patch behavior', () => {
@@ -24,7 +24,7 @@ describe('listenToDoc patch behavior', () => {
 
     // Configure the sync engine with a test database
     // Use empty URL to create a local root document instead of fetching from server
-    const syncEngine = configureSyncEngine({
+    const syncEngine = await configureSyncEngine({
       url: '', // Empty URL forces creation of local root document
       storage: new IndexedDBStorageAdapter(TEST_DB),
     });
@@ -166,9 +166,9 @@ describe('listenToDoc patch behavior', () => {
 
     // Act: Make several sequential changes
     const changes = [
-      {count: 2, items: ['initial', 'second']},
-      {count: 3, items: ['initial', 'second', 'third']},
-      {count: 3, items: ['updated', 'second', 'third']},
+      { count: 2, items: ['initial', 'second'] },
+      { count: 3, items: ['initial', 'second', 'third'] },
+      { count: 3, items: ['updated', 'second', 'third'] },
     ];
 
     for (const change of changes) {
@@ -226,7 +226,7 @@ describe('listenToDoc patch behavior', () => {
     removeListener();
 
     // Make a change after removing listener
-    await writeDoc(TEST_DOC_PATH, {count: 2, items: ['test', 'updated']});
+    await writeDoc(TEST_DOC_PATH, { count: 2, items: ['test', 'updated'] });
 
     // Wait for potential propagation
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -249,7 +249,7 @@ describe('listenToDoc patch behavior', () => {
         };
       };
       data: {
-        items: Array<{id: number; name: string; active: boolean}>;
+        items: Array<{ id: number; name: string; active: boolean }>;
         counters: Record<string, number>;
       };
     }
@@ -267,8 +267,8 @@ describe('listenToDoc patch behavior', () => {
       },
       data: {
         items: [
-          {id: 1, name: 'Item 1', active: true},
-          {id: 2, name: 'Item 2', active: false},
+          { id: 1, name: 'Item 1', active: true },
+          { id: 2, name: 'Item 2', active: false },
         ],
         counters: {
           views: 10,
@@ -331,7 +331,7 @@ describe('listenToDoc patch behavior', () => {
 
   it('should throw error when trying to listen to non-existent document', async () => {
     // Act & Assert: Should throw when document doesn't exist
-    await expect(listenToDoc('non/existent/path', () => {})).rejects.toThrow(
+    await expect(listenToDoc('non/existent/path', () => { })).rejects.toThrow(
       'Document not found at path: non/existent/path',
     );
   });
@@ -353,7 +353,7 @@ describe('listenToDoc patch behavior', () => {
     const removeListener = await listenToDoc(TEST_DOC_PATH, listener);
 
     // Act: Make changes to trigger multiple calls
-    await writeDoc(TEST_DOC_PATH, {count: 2, items: ['test', 'change1']});
+    await writeDoc(TEST_DOC_PATH, { count: 2, items: ['test', 'change1'] });
     await new Promise(resolve => setTimeout(resolve, 50));
     await writeDoc(TEST_DOC_PATH, {
       count: 3,

@@ -11,6 +11,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./slim": {
+      "types": "./dist/slim.d.ts",
+      "import": "./dist/slim.js",
+      "default": "./dist/slim.js"
     }
   },
   "files": [
@@ -19,10 +24,12 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "npm run clean && vite build",
+    "build": "npm run clean && npm run build:main && npm run build:slim && cp dist-slim/slim.js dist-slim/slim.js.map dist-slim/slim.d.ts dist/ && rm -rf dist-slim",
+    "build:main": "vite build",
+    "build:slim": "BUILD_SLIM=true vite build",
     "dev": "vite build --watch --mode development",
     "type-check": "tsc --noEmit",
-    "clean": "rimraf dist",
+    "clean": "rimraf dist dist-slim",
     "test": "vitest",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",

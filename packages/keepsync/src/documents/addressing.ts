@@ -1,4 +1,4 @@
-import { DocumentId, Repo, DocHandle } from '@automerge/automerge-repo';
+import { DocumentId, Repo, DocHandle } from '@automerge/automerge-repo/slim';
 
 // Reference to a node stored in a parent's children array
 export type RefNode = {

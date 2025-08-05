@@ -7,7 +7,7 @@ import { StateCreator } from 'zustand';
 /**
  * Import Repo and related types from automerge-repo
  */
-import { Repo, DocHandle, DocumentId } from '@automerge/automerge-repo';
+import { Repo, DocHandle, DocumentId } from '@automerge/automerge-repo/slim';
 
 /**
  * Utility functions for state management:
