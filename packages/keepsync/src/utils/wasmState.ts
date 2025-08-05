@@ -1,12 +1,11 @@
 import { initializeWasm } from '@automerge/automerge-repo/slim';
+import wasmUrl from '@automerge/automerge/automerge.wasm?url';
 
 let isSlim = false;
 
 export async function waitForWasm(): Promise<void> {
   if (isSlim) return;
-  await initializeWasm(
-    'https://esm.sh/@automerge/automerge@3.1.1/dist/automerge.wasm'
-  );
+  await initializeWasm(wasmUrl);
 }
 
 export function setIsSlim() {

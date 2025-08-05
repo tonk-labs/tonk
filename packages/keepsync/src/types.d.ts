@@ -1,4 +1,6 @@
-import {DocumentId} from './engine';
+/// <reference types="vite/client" />
+
+import { DocumentId } from './engine';
 
 // Type definitions for global sync engine registry
 interface SyncEngineRegistry {
@@ -21,7 +23,7 @@ declare global {
       init: (homePath: string) => Promise<void>;
       clearConfig: () => Promise<void>;
       copyHubTemplate: () => Promise<void>;
-      fetchRegistry: () => Promise<{success: boolean; data: Registry}>;
+      fetchRegistry: () => Promise<{ success: boolean; data: Registry }>;
       readBinary: (filePath: string) => Promise<Uint8Array>;
       readFile: (filePath: string) => Promise<string>;
       writeFile: (filePath: string, content: string) => Promise<void>;
@@ -29,15 +31,15 @@ declare global {
       platformSensitiveJoin: (paths: string[]) => Promise<string>;
       showOpenDialog: (options: {
         properties: string[];
-      }) => Promise<{canceled: boolean; filePaths: string[]}>;
+      }) => Promise<{ canceled: boolean; filePaths: string[] }>;
       startFileWatching: () => Promise<boolean>;
       stopFileWatching: () => Promise<boolean>;
       runServer: (restart: boolean) => Promise<void>;
 
       getDocumentsPath: () => string;
       installIntegration: (
-        integrationLink: string,
-      ) => Promise<{success: boolean; data?: string; error?: string}>;
+        integrationLink: string
+      ) => Promise<{ success: boolean; data?: string; error?: string }>;
       getInstalledIntegrations: () => Promise<{
         success: boolean;
         data?: InstalledIntegration[];
