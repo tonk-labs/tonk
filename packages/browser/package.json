@@ -1,0 +1,26 @@
+{
+  "name": "browser",
+  "version": "1.0.0",
+  "description": "A way to browse and run Tonks",
+  "main": "main.js",
+  "devDependencies": {
+    "@types/node": "^24.2.0",
+    "electron": "^37.2.6",
+    "typescript": "^5.9.2",
+    "vite": "^7.0.6",
+    "vite-plugin-wasm": "^3.5.0"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "start": "npm run build && electron .",
+    "start:dev": "npm run dev & electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@tonk/keepsync": "^0.6.1",
+    "express": "^5.1.0"
+  }
+}

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Automerge Service Worker Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #6c757d; cursor: not-allowed; }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Automerge Service Worker Compatibility Test</h1>
+    
+    <div id="status" class="status info">
+        Initializing...
+    </div>
+    
+    <button id="testBtn" onclick="testAutomerge()" disabled>
+        Test Automerge in Service Worker
+    </button>
+    
+    <div id="results"></div>
+
+    <script>
+        let serviceWorker = null;
+
+        async function registerServiceWorker() {
+            if ('serviceWorker' in navigator) {
+                try {
+                    const registration = await navigator.serviceWorker.register('./service-worker.js', { type: 'module' });
+                    console.log('Service Worker registered:', registration);
+                    
+                    // Wait for the service worker to be ready and get the correct reference
+                    const swRegistration = await navigator.serviceWorker.ready;
+                    serviceWorker = swRegistration.active || navigator.serviceWorker.controller;
+                    
+                    // If still no service worker, wait for it to activate
+                    if (!serviceWorker) {
+                        serviceWorker = await new Promise((resolve) => {
+                            navigator.serviceWorker.addEventListener('controllerchange', () => {
+                                resolve(navigator.serviceWorker.controller);
+                            });
+                        });
+                    }
+                    
+                    updateStatus('Service Worker registered and ready!', 'success');
+                    document.getElementById('testBtn').disabled = false;
+                    
+                } catch (error) {
+                    console.error('Service Worker registration failed:', error);
+                    updateStatus(`Service Worker registration failed: ${error.message}`, 'error');
+                }
+            } else {
+                updateStatus('Service Workers are not supported in this browser', 'error');
+            }
+        }
+
+        function updateStatus(message, type = 'info') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        async function testAutomerge() {
+            if (!serviceWorker) {
+                updateStatus('Service Worker not ready', 'error');
+                return;
+            }
+
+            updateStatus('Testing Automerge in Service Worker...', 'info');
+            document.getElementById('testBtn').disabled = true;
+
+            try {
+                const messageChannel = new MessageChannel();
+                
+                const response = await new Promise((resolve, reject) => {
+                    messageChannel.port1.onmessage = (event) => {
+                        resolve(event.data);
+                    };
+                    
+                    setTimeout(() => {
+                        reject(new Error('Test timeout after 10 seconds'));
+                    }, 10000);
+                    
+                    serviceWorker.postMessage(
+                        { type: 'TEST_AUTOMERGE' },
+                        [messageChannel.port2]
+                    );
+                });
+
+                displayResults(response);
+                
+            } catch (error) {
+                console.error('Test failed:', error);
+                updateStatus(`Test failed: ${error.message}`, 'error');
+            } finally {
+                document.getElementById('testBtn').disabled = false;
+            }
+        }
+
+        function displayResults(response) {
+            const resultsEl = document.getElementById('results');
+            
+            if (response.success) {
+                updateStatus('✅ Automerge works in Service Worker!', 'success');
+                resultsEl.innerHTML = `
+                    <h3>Test Results</h3>
+                    <div class="status success">
+                        <strong>Success!</strong> ${response.message}
+                    </div>
+                    <p><strong>Document ID:</strong> ${response.docId}</p>
+                    <p><strong>Document Content:</strong></p>
+                    <pre>${JSON.stringify(response.docContent, null, 2)}</pre>
+                `;
+            } else {
+                updateStatus('❌ Automerge failed in Service Worker', 'error');
+                resultsEl.innerHTML = `
+                    <h3>Test Results</h3>
+                    <div class="status error">
+                        <strong>Error:</strong> ${response.error}
+                    </div>
+                    <p><strong>Stack trace:</strong></p>
+                    <pre>${response.stack}</pre>
+                `;
+            }
+        }
+
+        // Initialize when page loads
+        window.addEventListener('load', registerServiceWorker);
+    </script>
+</body>
+</html>
