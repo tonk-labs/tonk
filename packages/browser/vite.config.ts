@@ -13,6 +13,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "src/index.html"),
         "service-worker": resolve(__dirname, "src/service-worker.js"),
+        "load-in": resolve(__dirname, "src/load-in.js"),
       },
       output: {
         entryFileNames: `[name].js`,

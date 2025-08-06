@@ -20,7 +20,11 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@automerge/automerge-repo-network-websocket": "^2.2.0",
+    "@automerge/automerge-repo-storage-indexeddb": "^2.2.0",
     "@tonk/keepsync": "^0.6.1",
+    "@tonk/spec": "file:../spec",
+    "@tonk/server": "file:../server",
     "express": "^5.1.0"
   }
 }

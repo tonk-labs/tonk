@@ -36,6 +36,37 @@
             border-radius: 4px;
             overflow-x: auto;
         }
+        .drop-zone {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            transition: all 0.3s ease;
+        }
+        .drop-zone.drag-over {
+            border-color: #007bff;
+            background-color: #f0f8ff;
+        }
+        .file-content {
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .file-info {
+            background-color: #e9ecef;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        .file-buttons {
+            margin: 20px 0;
+        }
     </style>
 </head>
 <body>
@@ -45,9 +76,23 @@
         Initializing...
     </div>
     
-    <button id="testBtn" onclick="testAutomerge()" disabled>
-        Test Automerge in Service Worker
-    </button>
+    <div class="file-buttons">
+        <button id="testBtn" onclick="testAutomerge()" disabled>
+            Test Automerge in Service Worker
+        </button>
+        
+        <button id="openFileBtn" onclick="openFileDialog()">
+            📁 Open File
+        </button>
+    </div>
+    
+
+    
+    <div id="fileDisplay" style="display: none;">
+        <h3>File Content</h3>
+        <div id="fileInfo" class="file-info"></div>
+        <div id="fileContent" class="file-content"></div>
+    </div>
     
     <div id="results"></div>
 
@@ -155,8 +200,49 @@
             }
         }
 
+        // File opening functionality
+        async function openFileDialog() {
+            try {
+                updateStatus('Opening file dialog...', 'info');
+                
+                const fileData = await window.electronAPI.openFileDialog();
+                
+                if (fileData) {
+                    if (fileData.error) {
+                        updateStatus(`Error reading file: ${fileData.error}`, 'error');
+                        return;
+                    }
+                    
+                    // Display file info
+                    document.getElementById('fileInfo').innerHTML = `
+                        <strong>File:</strong> ${fileData.name}<br>
+                        <strong>Path:</strong> ${fileData.path}<br>
+                        <strong>Size:</strong> ${fileData.size} bytes<br>
+                        <strong>Last Modified:</strong> ${new Date(fileData.lastModified).toLocaleString()}
+                    `;
+                    
+                    // Display file content
+                    document.getElementById('fileContent').textContent = fileData.content;
+                    
+                    // Show the file display area
+                    document.getElementById('fileDisplay').style.display = 'block';
+                    
+                    updateStatus(`✅ File opened: ${fileData.name}`, 'success');
+                } else {
+                    updateStatus('File selection cancelled', 'info');
+                }
+                
+            } catch (error) {
+                console.error('Error opening file:', error);
+                updateStatus(`Error opening file: ${error.message}`, 'error');
+            }
+        }
+
         // Initialize when page loads
         window.addEventListener('load', registerServiceWorker);
     </script>
+    
+    <!-- Load the file content handler -->
+    <script type="module" src="./load-in.js"></script>
 </body>
 </html>
