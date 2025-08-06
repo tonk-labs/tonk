@@ -1,0 +1,59 @@
+{
+  "name": "@tonk/spec",
+  "version": "0.1.0",
+  "description": "TypeScript specification library for Tonk",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run clean && vite build",
+    "dev": "vite build --watch --mode development",
+    "type-check": "tsc --noEmit",
+    "clean": "rimraf dist",
+    "test": "vitest",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "format": "prettier --write src/**/*.ts",
+    "format:check": "prettier --check src/**/*.ts",
+    "compile": "tsc --noEmit",
+    "prepare": "npm run build",
+    "pretest": "npm run compile",
+    "posttest": "npm run lint"
+  },
+  "keywords": [
+    "tonk",
+    "typescript",
+    "specification",
+    "library"
+  ],
+  "author": "Tonk",
+  "license": "MIT",
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "zod": "^4.0.15"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.3.3",
+    "vite": "^5.2.6",
+    "vite-plugin-dts": "^3.8.0",
+    "vitest": "^3.0.7"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "pnpm@10.7.1"
+}

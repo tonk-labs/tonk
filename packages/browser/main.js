@@ -13,8 +13,7 @@ const createWindow = () => {
     console.log(`Local server started on port ${port}`)
     
     const win = new BrowserWindow({
-      width: 800,
-      height: 600,
+      fullscreen: true,
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true

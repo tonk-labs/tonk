@@ -14,6 +14,7 @@ export default [
       'packages/cli/src/**/*.ts',
       'packages/create/src/**/*.ts',
       'packages/server/src/**/*.ts',
+      'packages/spec/src/**/*.ts',
     ],
     languageOptions: {
       parser: tsparser,

@@ -1,0 +1,16 @@
+{
+  "name": "bundle-analyzer-examples",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "analyze": "npx tsx bundle-analyzer.ts --viewer --keep",
+    "analyze:basic": "npx tsx bundle-analyzer.ts",
+    "analyze:extract": "npx tsx bundle-analyzer.ts --extract --viewer --keep",
+    "analyze:simple": "npx tsx simple-example.ts",
+    "viewer": "npx tsx bundle-analyzer.ts --viewer --keep"
+  },
+  "dependencies": {
+    "@tonk/spec": "file:../",
+    "tsx": "^4.7.0"
+  }
+}
