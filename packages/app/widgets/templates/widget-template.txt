@@ -1,0 +1,53 @@
+import React, { useState, useEffect } from 'react';
+import { WidgetProps } from '../../index';
+import BaseWidget from '../../templates/BaseWidget';
+
+interface MyWidgetProps extends WidgetProps {
+  // Add custom props here
+  customProp?: string;
+}
+
+const MyWidget: React.FC<MyWidgetProps> = ({
+  id,
+  x,
+  y,
+  width = 300,
+  height = 200,
+  selected,
+  onMove,
+  data,
+  customProp = 'default',
+}) => {
+  const [state, setState] = useState('initial');
+
+  useEffect(() => {
+    // Component initialization logic
+  }, []);
+
+  return (
+    <BaseWidget
+      id={id}
+      x={x}
+      y={y}
+      width={width}
+      height={height}
+      selected={selected}
+      onMove={onMove}
+      title="My Widget"
+      backgroundColor="bg-white"
+      borderColor="border-gray-200"
+    >
+      <div className="p-4 flex flex-col items-center justify-center h-full">
+        {/* Widget content goes here */}
+        <div className="text-lg font-medium text-gray-800">
+          Widget Content
+        </div>
+        <div className="text-sm text-gray-600 mt-2">
+          State: {state}
+        </div>
+      </div>
+    </BaseWidget>
+  );
+};
+
+export default MyWidget;

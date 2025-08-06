@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { WidgetProps } from '../index';
-import BaseWidget from '../BaseWidget';
+import { WidgetProps } from '../../index';
+import BaseWidget from '../../templates/BaseWidget';
 
 interface HelloGreetingProps extends WidgetProps {
   // Custom props for this widget

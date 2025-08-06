@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import BaseWidget from '../BaseWidget';
-import { WidgetProps } from '../index';
+import BaseWidget from '../../templates/BaseWidget';
+import { WidgetProps } from '../../index';
 
 interface CountdownTimerProps extends WidgetProps {}
 

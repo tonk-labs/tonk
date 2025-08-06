@@ -1,5 +1,6 @@
 import React, { useRef, useCallback, useEffect } from 'react';
 import { useChatStore } from '../stores/chatStore';
+import { useAvailableWidgetsStore } from '../stores/availableWidgetsStore';
 import ChatHistory from './ChatHistory';
 import ChatInput from './ChatInput';
 
@@ -35,6 +36,8 @@ const TonkAgent: React.FC<TonkAgentProps> = ({
     setLoading,
     sessions,
   } = useChatStore();
+
+  const { refreshWidgets } = useAvailableWidgetsStore();
 
   // Initialize session if it doesn't exist
   useEffect(() => {
@@ -159,6 +162,20 @@ const TonkAgent: React.FC<TonkAgentProps> = ({
                       case 'tool':
                         // You could show tool execution status in the UI here
                         console.log(`Tool: ${event.tool} - ${event.status}`);
+
+                        // Check if a widget was successfully generated
+                        if (
+                          event.tool === 'generate_widget' &&
+                          event.status === 'completed'
+                        ) {
+                          console.log(
+                            'Widget generation completed, refreshing available widgets...'
+                          );
+                          // Refresh the available widgets after a short delay to ensure files are written
+                          setTimeout(() => {
+                            refreshWidgets();
+                          }, 1000);
+                        }
                         break;
                       case 'error':
                         console.error('Stream error:', event.error);
@@ -176,6 +193,19 @@ const TonkAgent: React.FC<TonkAgentProps> = ({
         }
 
         setMessageStreaming(id, assistantMessage.id, false);
+
+        // Check if the final message indicates successful widget generation
+        if (
+          fullContent.toLowerCase().includes('successfully generated widget') ||
+          fullContent.toLowerCase().includes('widget generated successfully')
+        ) {
+          console.log(
+            'Widget generation detected in message, refreshing available widgets...'
+          );
+          setTimeout(() => {
+            refreshWidgets();
+          }, 1500);
+        }
       } catch (error) {
         console.error('Error sending message:', error);
         addMessage(id, {

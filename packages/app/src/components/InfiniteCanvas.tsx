@@ -30,7 +30,7 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
     screenToCanvasCoords,
   } = useCanvasStore();
 
-  const { widgets, removeWidget } = useWidgetStore();
+  const { widgets, addWidget, removeWidget } = useWidgetStore();
 
   const [selectedWidgets, setSelectedWidgets] = useState<Set<string>>(
     new Set()
@@ -142,18 +142,28 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
-      const data = e.dataTransfer.getData('application/tonk-agent');
-      if (data === 'tonk') {
+
+      // Check for widget data
+      const widgetId = e.dataTransfer.getData('application/widget');
+
+      if (widgetId) {
         const rect = containerRef.current?.getBoundingClientRect();
         if (rect) {
           const screenX = e.clientX - rect.left;
           const screenY = e.clientY - rect.top;
           const canvasCoords = screenToCanvasCoords(screenX, screenY);
-          addAgent(canvasCoords.x, canvasCoords.y);
+
+          if (widgetId === 'tonk-agent') {
+            // Handle Tonk Agent specifically
+            addAgent(canvasCoords.x, canvasCoords.y);
+          } else {
+            // Handle other widget types
+            addWidget(canvasCoords.x, canvasCoords.y, widgetId);
+          }
         }
       }
     },
-    [addAgent, screenToCanvasCoords]
+    [addAgent, addWidget, screenToCanvasCoords]
   );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {

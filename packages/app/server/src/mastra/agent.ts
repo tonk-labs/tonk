@@ -96,12 +96,23 @@ export async function createTonkAgent() {
 - Apply Tailwind CSS styling following project conventions
 - Generate proper widget definitions for toolbar integration
 
+**📁 CRITICAL IMPORT PATHS - ALWAYS USE THESE EXACT PATHS:**
+- BaseWidget: import BaseWidget from '../../templates/BaseWidget';
+- WidgetProps: import { WidgetProps } from '../../index';
+- React imports: import React, { useState, useEffect } from 'react';
+- NEVER use ../BaseWidget or ../index - these are WRONG paths!
+- Generated widgets are in widgets/generated/widget-name/ directory
+- Templates are in widgets/templates/ directory
+- Main index is in widgets/index.ts
+
 **🎓 Self-Education Powers:**
 - Read existing widget templates and BaseWidget implementation
 - Study project architecture and conventions
 - Analyze TypeScript interfaces and prop structures
 - Reference React patterns used in the codebase
 - Understand canvas integration and widget lifecycle
+- Use readWidgetTemplate tool to see correct import paths and structure
+- Always reference templates/widget-template.txt for proper structure
 
 **🔒 Security & Best Practices:**
 - All file operations are restricted to widgets/ directory only

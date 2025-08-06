@@ -26,13 +26,20 @@ export async function createWidgetTools(mcpServer: WidgetMCPServer) {
           // Create widget directory
           const widgetDir = `generated/${widgetId}`;
           
+          // Validate and fix import paths in component code
+          const fixedComponentCode = componentCode
+            .replace(/import BaseWidget from ['"]\.\.\/BaseWidget['"];?/g, "import BaseWidget from '../../templates/BaseWidget';")
+            .replace(/import BaseWidget from ['"]\.\.\/\.\.\/BaseWidget['"];?/g, "import BaseWidget from '../../templates/BaseWidget';")
+            .replace(/import \{ WidgetProps \} from ['"]\.\.\/index['"];?/g, "import { WidgetProps } from '../../index';")
+            .replace(/import \{ WidgetProps \} from ['"]\.\.\/\.\.\/index['"];?/g, "import { WidgetProps } from '../../index';");
+          
           // Write the main component file
           const componentPath = `${widgetDir}/component.tsx`;
           await mcpServer.executeTool('write_widget_file', {
             path: componentPath,
-            content: componentCode
+            content: fixedComponentCode
           });
-          
+
           // Create the widget definition index file
           const indexContent = `import React from 'react';
 import { WidgetDefinition } from '../../index';
@@ -78,7 +85,7 @@ export default widgetDefinition;`;
     // Tool to read the widget template
     readWidgetTemplate: createTool({
       id: 'read_widget_template',
-      description: 'Read the widget template file to understand the structure',
+      description: 'Read the widget template file to understand the correct structure and import paths',
       inputSchema: z.object({}),
       execute: async () => {
         try {
@@ -91,7 +98,12 @@ export default widgetDefinition;`;
           return {
             success: true,
             template: templateData.content,
-            message: 'Successfully read widget template'
+            message: 'Successfully read widget template with correct import paths',
+            importPaths: {
+              BaseWidget: "import BaseWidget from '../../templates/BaseWidget';",
+              WidgetProps: "import { WidgetProps } from '../../index';",
+              React: "import React, { useState, useEffect } from 'react';"
+            }
           };
         } catch (error) {
           return {
