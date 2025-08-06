@@ -12,6 +12,12 @@
     - Each action should only update the state it needs to, using immutable patterns
 - Include TypeScript interfaces and JSDoc comments that explain the purpose of each part of the store
 
+## When to use a store
+
+- Stores hold data that will be accessed by any user of the app
+- All clients have access to the data in stores
+- Any data which would never need to be accessed outside of an immediate local context should not be held in a store, should not use the keepsync framework, and should not be placed inside the store directory
+
 ## Examples
 
 ### Counter Store - Basic Pattern
