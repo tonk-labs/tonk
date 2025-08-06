@@ -1,0 +1,6 @@
+[
+  {
+    "path": "/ping",
+    "methods": ["GET"]
+  }
+]

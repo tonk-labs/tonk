@@ -1,0 +1,9 @@
+{
+  "name": "app",
+  "plan": {
+    "platform": "react",
+    "projectName": "app",
+    "description": ""
+  },
+  "template": "react"
+}
