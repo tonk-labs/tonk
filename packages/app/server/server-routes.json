@@ -2,5 +2,13 @@
   {
     "path": "/ping",
     "methods": ["GET"]
+  },
+  {
+    "path": "/api/chat/stream",
+    "methods": ["POST"]
+  },
+  {
+    "path": "/api/widgets/list",
+    "methods": ["GET"]
   }
 ]

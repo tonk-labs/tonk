@@ -5,7 +5,8 @@ export interface Widget {
   id: string;
   x: number;
   y: number;
-  type: 'tonk-agent';
+  type: string; // Can be 'tonk-agent' or any generated widget ID
+  data?: Record<string, any>; // Optional data for dynamic widgets
 }
 
 interface WidgetData {
@@ -14,7 +15,12 @@ interface WidgetData {
 
 interface WidgetState extends WidgetData {
   // Widget management
-  addWidget: (x: number, y: number, type: Widget['type']) => string;
+  addWidget: (
+    x: number,
+    y: number,
+    type: string,
+    data?: Record<string, any>
+  ) => string;
   updateWidgetPosition: (id: string, x: number, y: number) => void;
   removeWidget: (id: string) => void;
   getWidget: (id: string) => Widget | undefined;
@@ -28,13 +34,19 @@ export const useWidgetStore = create<WidgetState>(
     (set, get) => ({
       widgets: [],
 
-      addWidget: (x: number, y: number, type: Widget['type']) => {
+      addWidget: (
+        x: number,
+        y: number,
+        type: string,
+        data?: Record<string, any>
+      ) => {
         const widgetId = crypto.randomUUID();
         const newWidget: Widget = {
           id: widgetId,
           x,
           y,
           type,
+          data,
         };
 
         set(state => ({

@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useCanvasStore } from '../stores/canvasStore';
 import { useWidgetStore } from '../stores/widgetStore';
 import TonkAgent from './TonkAgent';
+import DynamicWidget from './DynamicWidget';
 
 interface InfiniteCanvasProps {
   children?: React.ReactNode;
@@ -248,18 +249,34 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
         <div className="relative">
           <GridBackground />
           {children}
-          {widgets
-            .filter(w => w.type === 'tonk-agent')
-            .map(widget => (
-              <TonkAgent
-                key={widget.id}
-                id={widget.id}
-                x={widget.x}
-                y={widget.y}
-                onMove={handleAgentMove}
-                selected={selectedWidgets.has(widget.id)}
-              />
-            ))}
+          {widgets.map(widget => {
+            if (widget.type === 'tonk-agent') {
+              return (
+                <TonkAgent
+                  key={widget.id}
+                  id={widget.id}
+                  x={widget.x}
+                  y={widget.y}
+                  onMove={handleAgentMove}
+                  selected={selectedWidgets.has(widget.id)}
+                />
+              );
+            } else {
+              // Render dynamic widgets (AI-generated)
+              return (
+                <DynamicWidget
+                  key={widget.id}
+                  widgetId={widget.type}
+                  id={widget.id}
+                  x={widget.x}
+                  y={widget.y}
+                  onMove={handleAgentMove}
+                  selected={selectedWidgets.has(widget.id)}
+                  data={widget.data}
+                />
+              );
+            }
+          })}
           {isSelecting && selectionStart && selectionEnd && (
             <div
               className="absolute border-2 border-blue-500 bg-blue-200 bg-opacity-20 pointer-events-none"

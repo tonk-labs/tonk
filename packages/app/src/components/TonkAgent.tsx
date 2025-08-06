@@ -1,6 +1,5 @@
 import React, { useRef, useCallback, useEffect } from 'react';
 import { useChatStore } from '../stores/chatStore';
-import { aiService } from '../services/aiService';
 import ChatHistory from './ChatHistory';
 import ChatInput from './ChatInput';
 
@@ -102,22 +101,7 @@ const TonkAgent: React.FC<TonkAgentProps> = ({
       setLoading(id, true);
 
       try {
-        const messages = session.messages.concat([
-          {
-            id: 'temp',
-            role: 'user' as const,
-            content: message,
-            timestamp: Date.now(),
-          },
-        ]);
-
-        const conversationHistory = messages.map(msg => ({
-          role: msg.role,
-          content: msg.content,
-        }));
-
-        const response = await aiService.streamChat(conversationHistory);
-
+        // Add assistant message for streaming
         addMessage(id, {
           role: 'assistant',
           content: '',
@@ -128,16 +112,70 @@ const TonkAgent: React.FC<TonkAgentProps> = ({
         const assistantMessage =
           currentSession?.messages[currentSession.messages.length - 1];
 
-        if (assistantMessage) {
-          let fullContent = '';
+        if (!assistantMessage) return;
 
-          for await (const chunk of response.textStream) {
-            fullContent += chunk;
-            updateMessage(id, assistantMessage.id, fullContent);
-          }
+        // Call the new Mastra streaming API
+        const response = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            message,
+            conversationId: id,
+            maxSteps: 25,
+            userName: 'Developer',
+          }),
+        });
 
-          setMessageStreaming(id, assistantMessage.id, false);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
         }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let fullContent = '';
+
+        if (reader) {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              const lines = decoder.decode(value).split('\n');
+
+              for (const line of lines) {
+                if (line.trim()) {
+                  try {
+                    const event = JSON.parse(line);
+
+                    switch (event.type) {
+                      case 'content':
+                        if (event.data) {
+                          fullContent += event.data;
+                          updateMessage(id, assistantMessage.id, fullContent);
+                        }
+                        break;
+                      case 'tool':
+                        // You could show tool execution status in the UI here
+                        console.log(`Tool: ${event.tool} - ${event.status}`);
+                        break;
+                      case 'error':
+                        console.error('Stream error:', event.error);
+                        break;
+                    }
+                  } catch (parseError) {
+                    console.warn('Failed to parse stream event:', line);
+                  }
+                }
+              }
+            }
+          } finally {
+            reader.releaseLock();
+          }
+        }
+
+        setMessageStreaming(id, assistantMessage.id, false);
       } catch (error) {
         console.error('Error sending message:', error);
         addMessage(id, {
@@ -180,7 +218,7 @@ const TonkAgent: React.FC<TonkAgentProps> = ({
         className="bg-purple-500 text-white px-4 py-2 rounded-t-lg cursor-grab active:cursor-grabbing flex items-center justify-between"
         onMouseDown={handleMouseDown}
       >
-        <span className="font-medium">Tonk Agent</span>
+        <span className="font-medium">Tonk Coding Agent</span>
         <div className="w-2 h-2 bg-green-400 rounded-full"></div>
       </div>
 
@@ -192,7 +230,7 @@ const TonkAgent: React.FC<TonkAgentProps> = ({
         <ChatInput
           onSendMessage={handleSendMessage}
           disabled={session.isLoading}
-          placeholder="Ask me anything..."
+          placeholder="Ask me to create a widget..."
         />
       </div>
     </div>
