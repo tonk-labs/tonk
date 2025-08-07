@@ -117,7 +117,16 @@ const TonkAgent: React.FC<TonkAgentProps> = ({
 
         if (!assistantMessage) return;
 
-        // Call the new Mastra streaming API
+        // Prepare conversation history
+        const messageHistory =
+          currentSession?.messages
+            .slice(0, -1) // Exclude the empty assistant message
+            .map(msg => ({
+              role: msg.role,
+              content: msg.content,
+            })) || [];
+
+        // Call the Mastra streaming API
         const response = await fetch('/api/chat/stream', {
           method: 'POST',
           headers: {
@@ -126,6 +135,7 @@ const TonkAgent: React.FC<TonkAgentProps> = ({
           body: JSON.stringify({
             message,
             conversationId: id,
+            messageHistory,
             maxSteps: 25,
             userName: 'Developer',
           }),

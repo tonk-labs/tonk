@@ -1,8 +1,14 @@
 import { createTonkAgent } from './mastra/agent.js';
 
+interface ChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
 interface ChatStreamRequest {
   message: string;
   conversationId: string;
+  messageHistory?: ChatMessage[];
   maxSteps?: number;
   userName?: string;
 }
@@ -51,8 +57,12 @@ export class UnifiedStreamManager {
         timestamp: Date.now()
       });
 
-      // Prepare messages for agent
+      // Prepare messages for agent - include conversation history
       const messages = [
+        ...(request.messageHistory || []).map(msg => ({
+          role: msg.role as 'user' | 'assistant' | 'system',
+          content: msg.content
+        })),
         {
           role: 'user' as const,
           content: request.message

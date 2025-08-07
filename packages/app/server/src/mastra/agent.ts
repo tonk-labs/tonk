@@ -1,6 +1,6 @@
 import { Agent } from '@mastra/core/agent';
-// import { Memory } from '@mastra/memory';
-// import { LibSQLStore } from '@mastra/libsql';
+import { Memory } from '@mastra/memory';
+import { LibSQLStore } from '@mastra/libsql';
 import { createGroq } from '@ai-sdk/groq';
 import { WidgetMCPServer } from '../mcpServer.js';
 import { createWidgetTools } from './tools/widgetTools.js';
@@ -10,32 +10,32 @@ const kimiModel = createGroq({
   apiKey: process.env.VITE_GROQ_API_KEY || '',
 })('moonshotai/kimi-k2-instruct');
 
-// Initialize persistent memory (temporarily disabled)
-// const memory = new Memory({
-//   storage: new LibSQLStore({
-//     url: 'file:./tonk-agent-memory.db',
-//   }),
-//   options: {
-//     lastMessages: 15,
-//     semanticRecall: false, // Disabled pending vector store setup
-//     workingMemory: {
-//       enabled: true,
-//       template: `🤖 # Tonk Agent Session Context
+// Initialize persistent memory
+const memory = new Memory({
+  storage: new LibSQLStore({
+    url: 'file:./tonk-agent-memory.db',
+  }),
+  options: {
+    lastMessages: 15,
+    semanticRecall: false,
+    workingMemory: {
+      enabled: true,
+      template: `🤖 # Tonk Agent Session Context
 
-// ## Current Session
-// - Agent Type: Agentic Coding Assistant
-// - Capabilities: Widget Generation, File Operations, Canvas Integration
-// - Security: Restricted to widgets/ directory only
+## Current Session
+- Agent Type: Agentic Coding Assistant
+- Capabilities: Widget Generation, File Operations, Canvas Integration
+- Security: Restricted to widgets/ directory only
 
-// ## Recent Context
-// {recentMessages}
+## Recent Context
+{recentMessages}
 
-// ## Working Memory
-// {workingMemory}
-// `
-//     }
-//   }
-// });
+## Working Memory
+{workingMemory}
+`
+    }
+  }
+});
 
 // Initialize MCP server for file operations
 const mcpServer = new WidgetMCPServer();
@@ -130,7 +130,7 @@ Ready to build amazing widgets for your infinite canvas! What would you like me 
       ...widgetTools,
     },
 
-    // memory, // Temporarily disabled to resolve configuration issue
+    memory,
 
     defaultStreamOptions: {
       maxSteps: 25, // Allow multi-tool orchestration for complex widgets

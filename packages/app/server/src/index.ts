@@ -39,7 +39,7 @@ app.get("/ping", (_req, res) => {
 // Add streaming chat endpoint for Tonk Agent
 app.post("/api/chat/stream", async (req, res) => {
   try {
-    const { message, conversationId, maxSteps, userName } = req.body;
+    const { message, conversationId, messageHistory, maxSteps, userName } = req.body;
 
     if (!message || !conversationId) {
       return res.status(400).json({ 
@@ -57,6 +57,7 @@ app.post("/api/chat/stream", async (req, res) => {
     const stream = await streamManager.createUnifiedStream({
       message,
       conversationId,
+      messageHistory: messageHistory || [],
       maxSteps,
       userName
     });
