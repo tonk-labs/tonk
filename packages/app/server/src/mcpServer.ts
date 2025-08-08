@@ -138,6 +138,71 @@ export class WidgetMCPServer {
         }
       }
     });
+
+    // Tool to read comprehensive widget templates
+    this.addTool({
+      name: 'read_widget_templates',
+      description: 'Read all widget templates including component and index templates with guidelines',
+      inputSchema: z.object({
+        templateType: z.enum(['component', 'index', 'all']).default('all').describe('Type of template to read'),
+      }),
+      handler: async (args: { templateType: 'component' | 'index' | 'all' }) => {
+        const { templateType } = args;
+        
+        try {
+          const templates: any = {};
+          
+          if (templateType === 'component' || templateType === 'all') {
+            const componentDoc = await readDoc<{ content: string; encoding: string; timestamp: number }>('/widgets/templates/component-template.tsx');
+            if (componentDoc) {
+              templates.component = componentDoc.content;
+            }
+          }
+          
+          if (templateType === 'index' || templateType === 'all') {
+            const indexDoc = await readDoc<{ content: string; encoding: string; timestamp: number }>('/widgets/templates/index-template.ts');
+            if (indexDoc) {
+              templates.index = indexDoc.content;
+            }
+          }
+          
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                templates,
+                importPaths: {
+                  BaseWidget: "import BaseWidget from '../../templates/BaseWidget';",
+                  WidgetProps: "import { WidgetProps } from '../../index';",
+                  React: "import React, { useState, useEffect } from 'react';"
+                },
+                guidelines: [
+                  "Always use the exact import paths shown above",
+                  "Extend WidgetProps interface for custom props", 
+                  "Use BaseWidget as the root component",
+                  "Follow the component structure in the template",
+                  "Include proper TypeScript typing",
+                  "Use Tailwind CSS for styling",
+                  "Replace MyWidget with your actual widget name",
+                  "Update the widget ID, name, and description in index.ts",
+                  "Set appropriate default width and height",
+                  "Include proper state management with useState",
+                  "Add useEffect for initialization and cleanup",
+                  "Use theme and size props for customization",
+                  "CRITICAL: Always provide unique 'key' props when rendering arrays or lists",
+                  "CRITICAL: Use map() with proper keys: items.map((item, index) => <div key={item.id || index}>...)",
+                  "CRITICAL: Avoid creating implicit JSX arrays - use single elements or proper keyed arrays",
+                  "CRITICAL: When using conditional rendering with multiple elements, wrap in fragments or single containers",
+                  "CRITICAL: For dynamic lists, use stable unique identifiers as keys, not just array indices when possible"
+                ]
+              })
+            }]
+          };
+        } catch (error) {
+          throw new Error(`Failed to read widget templates: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+    });
   }
 
   async executeTool(name: string, args: any): Promise<{ content: Array<{ type: 'text'; text: string }> }> {

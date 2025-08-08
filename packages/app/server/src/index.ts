@@ -11,6 +11,7 @@ import { configureSyncEngine, ls, readDoc } from '@tonk/keepsync';
 import { NetworkAdapterInterface } from "@automerge/automerge-repo";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { NodeFSStorageAdapter } from "@automerge/automerge-repo-storage-nodefs";
+import { WidgetMCPServer } from "./mcpServer.js";
 
 // Import configuration
 const __filename = fileURLToPath(import.meta.url);
@@ -52,6 +53,9 @@ async function initializeKeepsync() {
     await engine.whenReady();
     keepsyncReady = true;
     console.log('Keepsync initialized successfully');
+    
+    // Initialize widget templates after keepsync is ready
+    await initializeWidgetTemplates();
   } catch (error) {
     console.error('Failed to initialize keepsync:', error);
   }
@@ -59,6 +63,188 @@ async function initializeKeepsync() {
 
 // Initialize keepsync on startup
 initializeKeepsync();
+
+// Initialize widget templates in keepsync
+async function initializeWidgetTemplates() {
+  if (!keepsyncReady) return;
+  
+  try {
+    const mcpServer = new WidgetMCPServer();
+    await mcpServer.start();
+    
+    // Component template with comprehensive structure and React key best practices
+    const componentTemplate = `import React, { useState, useEffect } from 'react';
+import { WidgetProps } from '../../index';
+import BaseWidget from '../../templates/BaseWidget';
+
+// Define custom props interface extending WidgetProps
+interface MyWidgetProps extends WidgetProps {
+  // Add custom props specific to your widget
+  customProp?: string;
+  theme?: 'light' | 'dark';
+  size?: 'small' | 'medium' | 'large';
+}
+
+// Main widget component - replace MyWidget with your widget name
+const MyWidget: React.FC<MyWidgetProps> = ({
+  id,
+  x,
+  y,
+  width = 300,  // Default width
+  height = 200, // Default height
+  selected,
+  onMove,
+  data,
+  // Custom props with defaults
+  customProp = 'default',
+  theme = 'light',
+  size = 'medium',
+}) => {
+  // State management
+  const [state, setState] = useState('initial');
+  const [loading, setLoading] = useState(false);
+
+  // Effects for initialization and cleanup
+  useEffect(() => {
+    // Component initialization logic
+    console.log('Widget initialized:', id);
+    
+    // Cleanup function
+    return () => {
+      console.log('Widget cleanup:', id);
+    };
+  }, [id]);
+
+  // Event handlers
+  const handleAction = () => {
+    setLoading(true);
+    // Perform action
+    setTimeout(() => {
+      setState('updated');
+      setLoading(false);
+    }, 1000);
+  };
+
+  // Computed values
+  const themeClasses = theme === 'dark' 
+    ? 'bg-gray-800 text-white' 
+    : 'bg-white text-gray-800';
+
+  const sizeClasses = {
+    small: 'text-sm',
+    medium: 'text-base',
+    large: 'text-lg'
+  }[size];
+
+  // IMPORTANT: When rendering lists, always provide unique keys
+  // Example of correct list rendering:
+  const renderItems = () => {
+    const items = ['item1', 'item2', 'item3'];
+    return items.map((item, index) => (
+      <div key={\`item-\${index}\`} className="list-item">
+        {item}
+      </div>
+    ));
+  };
+
+  return (
+    <BaseWidget
+      id={id}
+      x={x}
+      y={y}
+      width={width}
+      height={height}
+      selected={selected}
+      onMove={onMove}
+      title="My Widget"  // Replace with your widget title
+      backgroundColor={theme === 'dark' ? 'bg-gray-800' : 'bg-white'}
+      borderColor={theme === 'dark' ? 'border-gray-600' : 'border-gray-200'}
+    >
+      <div className={\`p-4 flex flex-col h-full \${themeClasses}\`}>
+        {/* Header section - single element, no key needed */}
+        <div className="flex items-center justify-between mb-4">
+          <h3 className={\`font-medium \${sizeClasses}\`}>
+            Widget Title
+          </h3>
+          {loading && (
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current"></div>
+          )}
+        </div>
+
+        {/* Main content area - single element, no key needed */}
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <div className={\`font-bold \${sizeClasses} mb-2\`}>
+              {customProp}
+            </div>
+            <div className="text-sm opacity-75 mb-4">
+              State: {state}
+            </div>
+            
+            {/* Interactive elements */}
+            <button
+              onClick={handleAction}
+              disabled={loading}
+              className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {loading ? 'Loading...' : 'Action'}
+            </button>
+          </div>
+        </div>
+
+        {/* Footer section - single element, no key needed */}
+        <div className="text-xs opacity-50 text-center mt-4">
+          Widget ID: {id}
+        </div>
+      </div>
+    </BaseWidget>
+  );
+};
+
+export default MyWidget;`;
+
+    // Index template
+    const indexTemplate = `import React from 'react';
+import { WidgetDefinition } from '../../index';
+import MyWidgetComponent from './component';
+
+const widgetDefinition: WidgetDefinition = {
+  id: 'my-widget',
+  name: 'My Widget',
+  description: 'A customizable widget template with theme support and interactive elements',
+  component: MyWidgetComponent,
+  defaultProps: {
+    width: 300,
+    height: 200,
+  },
+  icon: '🔧',
+  category: 'custom',
+};
+
+export default widgetDefinition;`;
+
+    // Write templates to keepsync
+    await mcpServer.executeTool('write_widget_file', {
+      path: 'templates/component-template.tsx',
+      content: componentTemplate
+    });
+
+    await mcpServer.executeTool('write_widget_file', {
+      path: 'templates/index-template.ts', 
+      content: indexTemplate
+    });
+
+    // Also ensure the existing widget-template.txt is in keepsync
+    await mcpServer.executeTool('write_widget_file', {
+      path: 'templates/widget-template.txt',
+      content: componentTemplate
+    });
+
+    console.log('Widget templates initialized in keepsync');
+  } catch (error) {
+    console.error('Failed to initialize widget templates:', error);
+  }
+}
 
 // Add ping endpoint for health checks
 // WARNING: ALL SERVERS MUST INCLUDE A /ping ENDPOINT FOR HEALTH CHECKS, OTHERWISE THEY WILL FAIL
@@ -279,28 +465,89 @@ app.get("/api/widgets/compiled/:widgetId", async (req, res) => {
     const compiledModule = `
 // Get React from the global scope (same instance as main app)
 const React = window.React;
-const { useState, useEffect, useRef, createElement: jsx, Fragment } = React;
+const { useState, useEffect, useRef, useCallback, createElement: jsx, Fragment } = React;
 
 // Helper for JSX
 const jsxs = jsx;
 
-// Inline BaseWidget component
-function BaseWidget({ children, widget, isSelected, onUpdate }) {
-  return jsx('div', {
-    className: \`widget \${isSelected ? 'selected' : ''}\`,
-    style: {
-      position: 'absolute',
-      left: widget.x,
-      top: widget.y,
-      width: widget.width,
-      height: widget.height,
-      border: isSelected ? '2px solid blue' : '1px solid #ccc',
-      borderRadius: '4px',
-      backgroundColor: 'white',
-      boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-      overflow: 'hidden'
+// Inline BaseWidget component matching the actual BaseWidget interface
+function BaseWidget({ 
+  id, x, y, width = 200, height = 150, onMove, selected = false, 
+  children, className = '', title, backgroundColor = 'bg-white', borderColor = 'border-gray-200' 
+}) {
+  // Create drag state using useRef
+  const dragRef = useRef({ isDragging: false, lastX: 0, lastY: 0 });
+
+  // Handle mouse down on title bar
+  const handleMouseDown = useCallback((e) => {
+    // Only allow dragging from title bar, not content
+    if (e.target.closest('.widget-content')) {
+      return;
     }
+    
+    e.stopPropagation();
+    dragRef.current = {
+      isDragging: true,
+      lastX: e.clientX,
+      lastY: e.clientY,
+    };
+  }, []);
+
+  // Handle mouse move for dragging
+  const handleMouseMove = useCallback((e) => {
+    if (!dragRef.current.isDragging || !onMove) return;
+
+    const deltaX = e.clientX - dragRef.current.lastX;
+    const deltaY = e.clientY - dragRef.current.lastY;
+
+    onMove(id, deltaX, deltaY);
+
+    dragRef.current.lastX = e.clientX;
+    dragRef.current.lastY = e.clientY;
+  }, [id, onMove]);
+
+  // Handle mouse up to stop dragging
+  const handleMouseUp = useCallback(() => {
+    dragRef.current.isDragging = false;
+  }, []);
+
+  // Set up and clean up event listeners
+  useEffect(() => {
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [handleMouseMove, handleMouseUp]);
+
+  const titleElement = title ? jsx('div', {
+    className: 'bg-gray-100 text-gray-800 px-4 py-2 rounded-t-lg cursor-grab active:cursor-grabbing flex items-center justify-between border-b',
+    onMouseDown: handleMouseDown,
+    key: 'title'
+  }, jsx('span', { className: 'font-medium text-sm' }, title)) : null;
+
+  const contentElement = jsx('div', {
+    className: 'widget-content flex flex-col h-full',
+    style: { height: title ? 'calc(100% - 40px)' : '100%' },
+    onWheel: (e) => e.stopPropagation(),
+    key: 'content'
   }, children);
+
+  return jsx('div', {
+    className: \`absolute \${backgroundColor} rounded-lg shadow-xl border select-none \${
+      selected ? 'border-blue-500 border-2' : borderColor
+    } \${className}\`,
+    style: {
+      left: x,
+      top: y,
+      transform: 'translate(-50%, -50%)',
+      width: \`\${width}px\`,
+      height: \`\${height}px\`,
+      zIndex: 20,
+    }
+  }, title ? [titleElement, contentElement] : contentElement);
 }
 
 // Define types inline for runtime

@@ -30,7 +30,8 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
     screenToCanvasCoords,
   } = useCanvasStore();
 
-  const { widgets, addWidget, removeWidget } = useWidgetStore();
+  const { widgets, addWidget, removeWidget, updateWidgetPosition } =
+    useWidgetStore();
 
   const [selectedWidgets, setSelectedWidgets] = useState<Set<string>>(
     new Set()
@@ -180,6 +181,23 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
     [moveAgent, zoom]
   );
 
+  const handleWidgetMove = useCallback(
+    (id: string, deltaX: number, deltaY: number) => {
+      const scaledDeltaX = deltaX / zoom;
+      const scaledDeltaY = deltaY / zoom;
+
+      const widget = widgets.find(w => w.id === id);
+      if (widget) {
+        updateWidgetPosition(
+          id,
+          widget.x + scaledDeltaX,
+          widget.y + scaledDeltaY
+        );
+      }
+    },
+    [widgets, updateWidgetPosition, zoom]
+  );
+
   useEffect(() => {
     const handleGlobalMouseUp = () => {
       if (isSelecting) {
@@ -280,7 +298,7 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
                   id={widget.id}
                   x={widget.x}
                   y={widget.y}
-                  onMove={handleAgentMove}
+                  onMove={handleWidgetMove}
                   selected={selectedWidgets.has(widget.id)}
                   data={widget.data}
                 />
