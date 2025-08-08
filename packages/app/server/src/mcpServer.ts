@@ -1,9 +1,6 @@
 import { z } from 'zod';
 import path from 'path';
-import { configureSyncEngine, ls, mkDir, readDoc, writeDoc } from '@tonk/keepsync';
-import { NetworkAdapterInterface } from "@automerge/automerge-repo";
-import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
-import { NodeFSStorageAdapter } from "@automerge/automerge-repo-storage-nodefs";
+import { ls, mkDir, readDoc, writeDoc } from '@tonk/keepsync';
 
 interface MCPTool {
   name: string;
@@ -43,15 +40,11 @@ export class WidgetMCPServer {
 
         try {
           // Write file
-          // await fs.writeFile(absolutePath, content, encoding as BufferEncoding);
           writeDoc(`/widgets/${normalizedPath}`, {
             content,
             encoding,
             timestamp: Date.now(),
           });
-
-          // Get file stats for response
-          // const stats = await fs.stat(absolutePath);
 
           return {
             content: [{
@@ -86,10 +79,8 @@ export class WidgetMCPServer {
         const fullPath = `${this.widgetsBasePath}/${normalizedPath}`;
 
         try {
-          // const content = await fs.readFile(absolutePath, encoding as BufferEncoding);
           const doc = await readDoc<{ content: string; encoding: string; timestamp: number }>(fullPath);
           if (!doc) throw new Error(`File not found: ${filePath}`);
-          // const stats = await fs.stat(absolutePath);
 
           return {
             content: [{
@@ -123,7 +114,6 @@ export class WidgetMCPServer {
         const fullPath = normalizedPath ? `${this.widgetsBasePath}/${normalizedPath}` : this.widgetsBasePath;
 
         try {
-          // const entries = await fs.readdir(absolutePath, { withFileTypes: true });
           const docNode = await ls(fullPath);
 
           if (!docNode) throw new Error(`Directory not found: ${normalizedPath}`);
@@ -176,26 +166,9 @@ export class WidgetMCPServer {
     return result;
   }
 
-  async configureKeepsync() {
-    // Configure sync engine
-    const SYNC_WS_URL = process.env.SYNC_WS_URL || "ws://localhost:7777/sync";
-    const SYNC_URL = process.env.SYNC_URL || "http://localhost:7777";
-
-    const wsAdapter = new BrowserWebSocketClientAdapter(SYNC_WS_URL);
-    const engine = await configureSyncEngine({
-      url: SYNC_URL,
-      network: [wsAdapter as any as NetworkAdapterInterface],
-      storage: new NodeFSStorageAdapter(),
-    });
-
-    await engine.whenReady();
-  }
-
   async start() {
     // Ensure widgets directory exists
     try {
-      await this.configureKeepsync();
-      // await fs.mkdir(widgetsDir, { recursive: true });
       await mkDir(this.widgetsBasePath);
       console.log(`Widget MCP Server initialized.`);
     } catch (error) {

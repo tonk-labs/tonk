@@ -10,5 +10,23 @@
   {
     "path": "/api/widgets/list",
     "methods": ["GET"]
+  },
+  {
+    "path": "/api/widgets/types",
+    "methods": ["GET"]
+  },
+  {
+    "path": "/api/widgets/base-widget",
+    "methods": ["GET"]
+  },
+  {
+    "path": "/api/widgets/compiled/:widgetId",
+    "methods": ["GET"],
+    "params": ["widgetId"]
+  },
+  {
+    "path": "/api/widgets/file/:widgetId/:filename",
+    "methods": ["GET"],
+    "params": ["widgetId", "filename"]
   }
 ]

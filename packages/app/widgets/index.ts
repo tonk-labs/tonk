@@ -40,8 +40,28 @@ export function getAllWidgets(): WidgetDefinition[] {
 
 export async function loadGeneratedWidget(widgetId: string): Promise<WidgetDefinition | null> {
   try {
-    const module = await import(`./generated/${widgetId}/index.ts`);
-    return module.default as WidgetDefinition;
+    // Fetch the compiled widget code
+    const response = await fetch(`/api/widgets/compiled/${widgetId}`);
+    
+    if (!response.ok) {
+      console.error(`Widget ${widgetId} not found or compilation failed`);
+      return null;
+    }
+
+    const code = await response.text();
+    
+    // Create a blob URL for the compiled module
+    const blob = new Blob([code], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    
+    try {
+      // Import the module from the blob URL
+      const module = await import(url);
+      return module.default as WidgetDefinition;
+    } finally {
+      // Clean up the blob URL
+      URL.revokeObjectURL(url);
+    }
   } catch (error) {
     console.error(`Failed to load widget ${widgetId}:`, error);
     return null;

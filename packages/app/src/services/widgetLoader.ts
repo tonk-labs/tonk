@@ -47,26 +47,43 @@ class WidgetLoaderService {
     widgetId: string
   ): Promise<WidgetDefinition | null> {
     try {
-      // Dynamic import of the generated widget
-      const module = await import(
-        `../../widgets/generated/${widgetId}/index.ts`
-      );
+      // Fetch the compiled widget code
+      const response = await fetch(`/api/widgets/compiled/${widgetId}`);
 
-      if (!module.default) {
-        console.error(`Widget ${widgetId} does not have a default export`);
+      if (!response.ok) {
+        console.error(`Widget ${widgetId} not found or compilation failed`);
         return null;
       }
 
-      const definition = module.default as WidgetDefinition;
+      const code = await response.text();
 
-      // Validate the widget definition
-      if (!this.validateWidgetDefinition(definition)) {
-        console.error(`Widget ${widgetId} has invalid definition`);
-        return null;
+      // Create a blob URL for the compiled module
+      const blob = new Blob([code], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+
+      try {
+        // Import the module from the blob URL
+        const module = await import(url);
+
+        if (!module.default) {
+          console.error(`Widget ${widgetId} does not have a default export`);
+          return null;
+        }
+
+        const definition = module.default as WidgetDefinition;
+
+        // Validate the widget definition
+        if (!this.validateWidgetDefinition(definition)) {
+          console.error(`Widget ${widgetId} has invalid definition`);
+          return null;
+        }
+
+        console.log(`Successfully loaded widget: ${definition.name}`);
+        return definition;
+      } finally {
+        // Clean up the blob URL
+        URL.revokeObjectURL(url);
       }
-
-      console.log(`Successfully loaded widget: ${definition.name}`);
-      return definition;
     } catch (error) {
       console.error(`Failed to load widget ${widgetId}:`, error);
       return null;
