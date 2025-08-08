@@ -308,7 +308,7 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
 
 const GridBackground: React.FC = () => {
   return (
-    <div className="absolute inset-0 pointer-events-none">
+    <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
       <svg
         width="100%"
         height="100%"

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { WidgetDefinition } from '../../widgets/index';
 import { widgetLoader } from '../services/widgetLoader';
 
@@ -17,7 +17,7 @@ const DynamicWidget: React.FC<DynamicWidgetProps> = ({
   id,
   x,
   y,
-  onMove: _onMove, // Rename to indicate it's intentionally unused
+  onMove,
   selected = false,
   data = {},
 }) => {
@@ -25,6 +25,52 @@ const DynamicWidget: React.FC<DynamicWidgetProps> = ({
     useState<WidgetDefinition | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const dragRef = useRef<{ isDragging: boolean; lastX: number; lastY: number }>(
+    {
+      isDragging: false,
+      lastX: 0,
+      lastY: 0,
+    }
+  );
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    dragRef.current = {
+      isDragging: true,
+      lastX: e.clientX,
+      lastY: e.clientY,
+    };
+  }, []);
+
+  const handleMouseMove = useCallback(
+    (e: MouseEvent) => {
+      if (!dragRef.current.isDragging) return;
+
+      const deltaX = e.clientX - dragRef.current.lastX;
+      const deltaY = e.clientY - dragRef.current.lastY;
+
+      onMove(id, deltaX, deltaY);
+
+      dragRef.current.lastX = e.clientX;
+      dragRef.current.lastY = e.clientY;
+    },
+    [id, onMove]
+  );
+
+  const handleMouseUp = useCallback(() => {
+    dragRef.current.isDragging = false;
+  }, []);
+
+  useEffect(() => {
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [handleMouseMove, handleMouseUp]);
 
   useEffect(() => {
     let mounted = true;
@@ -66,14 +112,18 @@ const DynamicWidget: React.FC<DynamicWidgetProps> = ({
   if (loading) {
     return (
       <div
-        className="absolute bg-white rounded-lg shadow-xl border border-gray-200 select-none flex items-center justify-center"
+        className={`absolute bg-white rounded-lg shadow-xl border select-none flex items-center justify-center cursor-grab active:cursor-grabbing ${
+          selected ? 'border-blue-500 border-2' : 'border-gray-200'
+        }`}
         style={{
           left: x,
           top: y,
           transform: 'translate(-50%, -50%)',
           width: '200px',
           height: '150px',
+          zIndex: 10,
         }}
+        onMouseDown={handleMouseDown}
       >
         <div className="text-gray-500 text-sm">Loading widget...</div>
       </div>
@@ -83,14 +133,18 @@ const DynamicWidget: React.FC<DynamicWidgetProps> = ({
   if (error || !widgetDefinition) {
     return (
       <div
-        className="absolute bg-red-50 rounded-lg shadow-xl border border-red-200 select-none flex items-center justify-center"
+        className={`absolute bg-red-50 rounded-lg shadow-xl border select-none flex items-center justify-center cursor-grab active:cursor-grabbing ${
+          selected ? 'border-blue-500 border-2' : 'border-red-200'
+        }`}
         style={{
           left: x,
           top: y,
           transform: 'translate(-50%, -50%)',
           width: '200px',
           height: '150px',
+          zIndex: 10,
         }}
+        onMouseDown={handleMouseDown}
       >
         <div className="text-red-600 text-sm text-center p-4">
           <div className="font-medium">Widget Error</div>
@@ -122,11 +176,24 @@ const DynamicWidget: React.FC<DynamicWidgetProps> = ({
   const WidgetComponentAny = WidgetComponent as any;
 
   return (
-    <WidgetComponentAny
-      widget={widget}
-      isSelected={selected}
-      onUpdate={handleUpdate}
-    />
+    <div
+      className={`absolute select-none cursor-grab active:cursor-grabbing ${
+        selected ? 'ring-2 ring-blue-500' : ''
+      }`}
+      style={{
+        left: x,
+        top: y,
+        transform: 'translate(-50%, -50%)',
+        zIndex: 10,
+      }}
+      onMouseDown={handleMouseDown}
+    >
+      <WidgetComponentAny
+        widget={widget}
+        isSelected={selected}
+        onUpdate={handleUpdate}
+      />
+    </div>
   );
 };
 

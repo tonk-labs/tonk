@@ -252,6 +252,7 @@ const TonkAgent: React.FC<TonkAgentProps> = ({
         transform: 'translate(-50%, -50%)',
         width: '320px',
         height: '400px',
+        zIndex: 10,
       }}
     >
       <div
