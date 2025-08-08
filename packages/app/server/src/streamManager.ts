@@ -35,7 +35,7 @@ export class UnifiedStreamManager {
 
   async createUnifiedStream(request: ChatStreamRequest): Promise<ReadableStream<Uint8Array>> {
     await this.initialize();
-    
+
     return new ReadableStream({
       start: (controller) => {
         this.processMessageStream(controller, request);
@@ -48,7 +48,7 @@ export class UnifiedStreamManager {
     request: ChatStreamRequest
   ) {
     this.currentMessageId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
-    
+
     try {
       // Emit start event
       this.emitEvent(controller, {
@@ -126,7 +126,7 @@ export class UnifiedStreamManager {
 
     } catch (error) {
       console.error('Stream processing error:', error);
-      
+
       this.emitEvent(controller, {
         type: 'error',
         id: this.currentMessageId,

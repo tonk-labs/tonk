@@ -42,8 +42,8 @@ app.post("/api/chat/stream", async (req, res) => {
     const { message, conversationId, messageHistory, maxSteps, userName } = req.body;
 
     if (!message || !conversationId) {
-      return res.status(400).json({ 
-        error: "Missing required fields: message and conversationId" 
+      return res.status(400).json({
+        error: "Missing required fields: message and conversationId"
       });
     }
 
@@ -63,12 +63,12 @@ app.post("/api/chat/stream", async (req, res) => {
     });
 
     const reader = stream.getReader();
-    
+
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        
+
         res.write(value);
       }
     } finally {
@@ -78,8 +78,8 @@ app.post("/api/chat/stream", async (req, res) => {
 
   } catch (error) {
     console.error('Streaming error:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Internal server error' 
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Internal server error'
     });
   }
 });
@@ -88,14 +88,14 @@ app.post("/api/chat/stream", async (req, res) => {
 app.get("/api/widgets/list", async (_req, res) => {
   try {
     const widgetsPath = join(projectRoot, 'widgets', 'generated');
-    
+
     // Check if generated directory exists
     try {
       const entries = await fsPromises.readdir(widgetsPath, { withFileTypes: true });
       const widgets = entries
         .filter((entry: any) => entry.isDirectory())
         .map((entry: any) => entry.name);
-      
+
       res.json({ widgets });
     } catch (error) {
       // Directory doesn't exist yet
@@ -103,8 +103,8 @@ app.get("/api/widgets/list", async (_req, res) => {
     }
   } catch (error) {
     console.error('Error listing widgets:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Failed to list widgets' 
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to list widgets'
     });
   }
 });

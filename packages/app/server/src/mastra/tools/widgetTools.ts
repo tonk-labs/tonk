@@ -21,18 +21,18 @@ export async function createWidgetTools(mcpServer: WidgetMCPServer) {
       }),
       execute: async ({ context }) => {
         const { widgetId, name, description, category, icon, width, height, componentCode } = context;
-        
+
         try {
           // Create widget directory
           const widgetDir = `generated/${widgetId}`;
-          
+
           // Validate and fix import paths in component code
           const fixedComponentCode = componentCode
             .replace(/import BaseWidget from ['"]\.\.\/BaseWidget['"];?/g, "import BaseWidget from '../../templates/BaseWidget';")
             .replace(/import BaseWidget from ['"]\.\.\/\.\.\/BaseWidget['"];?/g, "import BaseWidget from '../../templates/BaseWidget';")
             .replace(/import \{ WidgetProps \} from ['"]\.\.\/index['"];?/g, "import { WidgetProps } from '../../index';")
             .replace(/import \{ WidgetProps \} from ['"]\.\.\/\.\.\/index['"];?/g, "import { WidgetProps } from '../../index';");
-          
+
           // Write the main component file
           const componentPath = `${widgetDir}/component.tsx`;
           await mcpServer.executeTool('write_widget_file', {
@@ -65,7 +65,7 @@ export default widgetDefinition;`;
             path: indexPath,
             content: indexContent
           });
-          
+
           return {
             success: true,
             widgetId,
@@ -92,9 +92,9 @@ export default widgetDefinition;`;
           const templateResult = await mcpServer.executeTool('read_widget_file', {
             path: 'templates/widget-template.txt'
           });
-          
+
           const templateData = JSON.parse(templateResult.content[0].text);
-          
+
           return {
             success: true,
             template: templateData.content,
@@ -125,9 +125,9 @@ export default widgetDefinition;`;
           const baseWidgetResult = await mcpServer.executeTool('read_widget_file', {
             path: 'templates/BaseWidget.tsx'
           });
-          
+
           const baseWidgetData = JSON.parse(baseWidgetResult.content[0].text);
-          
+
           return {
             success: true,
             baseWidgetCode: baseWidgetData.content,
@@ -152,14 +152,14 @@ export default widgetDefinition;`;
       }),
       execute: async ({ context }) => {
         const { directory } = context;
-        
+
         try {
           const listResult = await mcpServer.executeTool('list_widget_directory', {
             path: directory
           });
-          
+
           const listData = JSON.parse(listResult.content[0].text);
-          
+
           return {
             success: true,
             directory,
@@ -186,9 +186,9 @@ export default widgetDefinition;`;
           const indexResult = await mcpServer.executeTool('read_widget_file', {
             path: 'index.ts'
           });
-          
+
           const indexData = JSON.parse(indexResult.content[0].text);
-          
+
           return {
             success: true,
             indexCode: indexData.content,
