@@ -4,11 +4,7 @@
 
 # Edit the source file instead: docs/src/llms/shared/keepsync/react-browser.md
 
-#
-
-# Generated on: 2025-07-22T12:58:35.194Z
-
-#
+# DocVersion: e4a56ca (2025-08-11)
 
 ## Basic Usage
 
