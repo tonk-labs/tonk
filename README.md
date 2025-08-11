@@ -58,7 +58,3 @@ out to the team and we will endeavour to support your usecase.
 Simplicity and freedom.
 
 MIT © Tonk
-
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/43586bd7-189e-4f4f-8196-ebe006beb115" />
-</p>
