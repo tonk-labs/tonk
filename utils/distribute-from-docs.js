@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
-import fs from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   DISTRIBUTION_MAP,
   GENERATED_FILES,
   generateHeader,
+  HEADER_PREFIX,
   getTargetsForSource,
-} from "./file-mapping.js";
+} from './file-mapping.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,10 +18,10 @@ const __dirname = path.dirname(__filename);
  * Read and process a docs source file
  */
 async function readDocsSource(sourceFile) {
-  const fullPath = path.join(__dirname, "..", sourceFile);
+  const fullPath = path.join(__dirname, '..', sourceFile);
 
   try {
-    const content = await fs.readFile(fullPath, "utf8");
+    const content = await fs.readFile(fullPath, 'utf8');
     return content;
   } catch (error) {
     console.error(`Error reading source file ${sourceFile}:`, error.message);
@@ -33,12 +34,13 @@ async function readDocsSource(sourceFile) {
  */
 async function readCustomContent(targetFile) {
   const dir = path.dirname(targetFile);
-  const customFile = path.join(dir, "llms-custom.txt");
-  const fullCustomPath = path.join(__dirname, "..", customFile);
+  const customFile = path.join(dir, 'llms-custom.txt');
+  const fullCustomPath = path.join(__dirname, '..', customFile);
 
   try {
-    const customContent = await fs.readFile(fullCustomPath, "utf8");
+    const customContent = await fs.readFile(fullCustomPath, 'utf8');
     return customContent.trim();
+    // oxlint-disable-next-line no-unused-vars
   } catch (_error) {
     // Custom file doesn't exist, which is fine
     return null;
@@ -46,29 +48,84 @@ async function readCustomContent(targetFile) {
 }
 
 /**
+ * Extract content from a file (removing the header)
+ */
+function extractContentWithoutHeader(fileContent) {
+  // Find the Doc-Version marker which indicates the end of the header
+  const lines = fileContent.split('\n');
+  let headerEnd = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith(HEADER_PREFIX)) {
+      // Found the version marker, content starts after the next line (empty line)
+      headerEnd = i + 2; // Skip version line and empty line
+      break;
+    }
+  }
+
+  // If no Doc-Version marker found, fall back to looking for first non-comment line
+  if (headerEnd === 0) {
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].startsWith('#') && lines[i].trim() !== '') {
+        headerEnd = i;
+        break;
+      } else if (
+        lines[i].trim() === '' &&
+        i > 0 &&
+        !lines[i - 1].startsWith('#')
+      ) {
+        headerEnd = i;
+        break;
+      }
+    }
+  }
+
+  return lines.slice(headerEnd).join('\n');
+}
+
+/**
  * Write content to a target file
  */
 async function writeTargetFile(targetFile, content, sourceFile) {
-  const fullPath = path.join(__dirname, "..", targetFile);
+  const fullPath = path.join(__dirname, '..', targetFile);
   const dir = path.dirname(fullPath);
 
   try {
     // Ensure directory exists
     await fs.mkdir(dir, { recursive: true });
 
-    // Add header and write content
-    const header = generateHeader(sourceFile);
-    let fullContent = header + content;
-
-    // Check for custom content and inject it
+    // Check for custom content and build new content
     const customContent = await readCustomContent(targetFile);
+    let newContentBody = content;
     if (customContent) {
-      fullContent +=
-        "\n\n---\n\n# Project-Specific Instructions\n\n" + customContent;
+      newContentBody += `\n\n---\n\n# Project-Specific Instructions\n\n${customContent}`;
     }
 
-    await fs.writeFile(fullPath, fullContent, "utf8");
-    console.log(`✓ Distributed to: ${targetFile}`);
+    // Check if file exists and compare content (without headers)
+    let shouldUpdate = true;
+
+    try {
+      const existingContent = await fs.readFile(fullPath, 'utf8');
+      const existingBody = extractContentWithoutHeader(existingContent);
+      const newBody = extractContentWithoutHeader(newContentBody);
+
+      // If content hasn't changed, keep the existing file (with its header)
+      if (existingBody.trim() === newBody.trim()) {
+        shouldUpdate = false;
+        console.log(`○ Unchanged: ${targetFile}`);
+      }
+    } catch {
+      // File doesn't exist, so we need to create it
+      shouldUpdate = true;
+    }
+
+    if (shouldUpdate) {
+      // Add new header and write content
+      const header = generateHeader(sourceFile);
+      const fullContent = header + newContentBody;
+      await fs.writeFile(fullPath, fullContent, 'utf8');
+      console.log(`✓ Updated: ${targetFile}`);
+    }
   } catch (error) {
     console.error(`✗ Error writing to ${targetFile}:`, error.message);
   }
@@ -79,23 +136,44 @@ async function writeTargetFile(targetFile, content, sourceFile) {
  */
 async function generateAdditionalFiles(targetFile, content, sourceFile) {
   const dir = path.dirname(targetFile);
-  const header = generateHeader(sourceFile);
-  let fullContent = header + content;
 
-  // Check for custom content and inject it
+  // Check for custom content and build new content
   const customContent = await readCustomContent(targetFile);
+  let newContentBody = content;
   if (customContent) {
-    fullContent +=
-      "\n\n---\n\n# Project-Specific Instructions\n\n" + customContent;
+    newContentBody += `\n\n---\n\n# Project-Specific Instructions\n\n${customContent}`;
   }
 
   for (const genFile of GENERATED_FILES) {
     const genPath = path.join(dir, genFile);
-    const fullGenPath = path.join(__dirname, "..", genPath);
+    const fullGenPath = path.join(__dirname, '..', genPath);
 
     try {
-      await fs.writeFile(fullGenPath, fullContent, "utf8");
-      console.log(`✓ Generated: ${genPath}`);
+      // Check if file exists and compare content (without headers)
+      let shouldUpdate = true;
+
+      try {
+        const existingContent = await fs.readFile(fullGenPath, 'utf8');
+        const existingBody = extractContentWithoutHeader(existingContent);
+        const newBody = extractContentWithoutHeader(newContentBody);
+
+        // If content hasn't changed, keep the existing file (with its header)
+        if (existingBody.trim() === newBody.trim()) {
+          shouldUpdate = false;
+          console.log(`○ Unchanged: ${genPath}`);
+        }
+      } catch {
+        // File doesn't exist, so we need to create it
+        shouldUpdate = true;
+      }
+
+      if (shouldUpdate) {
+        // Add new header and write content
+        const header = generateHeader(sourceFile);
+        const fullContent = header + newContentBody;
+        await fs.writeFile(fullGenPath, fullContent, 'utf8');
+        console.log(`✓ Updated: ${genPath}`);
+      }
     } catch (error) {
       console.error(`✗ Error generating ${genPath}:`, error.message);
     }
@@ -104,9 +182,9 @@ async function generateAdditionalFiles(targetFile, content, sourceFile) {
 
 // Define project subdirectories that should get their own .cursor/rules
 const PROJECT_SUBDIRS = [
-  "packages/create/templates/react",
-  "packages/create/templates/social-feed",
-  "packages/create/templates/travel-planner",
+  'packages/create/templates/react',
+  'packages/create/templates/social-feed',
+  'packages/create/templates/travel-planner',
 ];
 
 function generateMDCName(dirPath) {
@@ -115,10 +193,10 @@ function generateMDCName(dirPath) {
     .split(path.sep)
     .filter(Boolean)
     .slice(-2) // Take last two parts of the path
-    .join("-")
+    .join('-')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 
   return `${name}-rules.mdc`;
 }
@@ -129,12 +207,12 @@ function generateMDCContent(content, dirPath, projectRoot) {
 
   // Generate globs based on the relative directory path
   // If we're at the root, use *, otherwise use the relative path
-  const globPrefix = relativePath === "" ? "*" : relativePath;
+  const globPrefix = relativePath === '' ? '*' : relativePath;
   const globs = `${globPrefix}/**/*.js, ${globPrefix}/**/*.ts, ${globPrefix}/**/*.tsx`;
 
   // Create metadata header
   const metadata = `---
-description: Rules and guidelines for ${relativePath || "root"}
+description: Rules and guidelines for ${relativePath || 'root'}
 globs: ${globs}
 ---
 
@@ -144,18 +222,18 @@ globs: ${globs}
 }
 
 async function ensureCursorRulesDir(basePath) {
-  const cursorRulesPath = path.join(basePath, ".cursor", "rules");
+  const cursorRulesPath = path.join(basePath, '.cursor', 'rules');
   await fs.mkdir(cursorRulesPath, { recursive: true });
   return cursorRulesPath;
 }
 
 function findProjectRoot(currentPath) {
   // Normalize the path to handle different OS path separators
-  const normalizedPath = currentPath.replace(/\\/g, "/");
+  const normalizedPath = currentPath.replace(/\\/g, '/');
 
   // Find if this path is within any of our project subdirs
-  const matchedSubdir = PROJECT_SUBDIRS.find((subdir) =>
-    normalizedPath.includes(subdir),
+  const matchedSubdir = PROJECT_SUBDIRS.find(subdir =>
+    normalizedPath.includes(subdir)
   );
 
   if (!matchedSubdir) return null;
@@ -170,7 +248,7 @@ function findProjectRoot(currentPath) {
  */
 async function generateCursorRules(targetFile, content, sourceFile) {
   const dirPath = path.dirname(targetFile);
-  const fullDirPath = path.join(__dirname, "..", dirPath);
+  const fullDirPath = path.join(__dirname, '..', dirPath);
 
   // Handle Cursor rules for project subdirs
   const projectRoot = findProjectRoot(fullDirPath);
@@ -190,19 +268,19 @@ async function generateCursorRules(targetFile, content, sourceFile) {
     if (customContent) {
       mdcContent = generateMDCContent(
         fullContent +
-          "\n\n---\n\n# Project-Specific Instructions\n\n" +
+          '\n\n---\n\n# Project-Specific Instructions\n\n' +
           customContent,
         fullDirPath,
-        projectRoot,
+        projectRoot
       );
     }
 
-    await fs.writeFile(path.join(cursorRulesPath, mdcName), mdcContent, "utf8");
+    await fs.writeFile(path.join(cursorRulesPath, mdcName), mdcContent, 'utf8');
     console.log(
       `✓ Generated cursor rule: ${path.relative(
         `${__dirname}/..`,
-        projectRoot,
-      )}/.cursor/rules/${mdcName}`,
+        projectRoot
+      )}/.cursor/rules/${mdcName}`
     );
   }
 }
@@ -243,7 +321,7 @@ async function distributeSingleSource(sourceFile) {
  * Main distribution function
  */
 async function distributeAll() {
-  console.log("🚀 Starting distribution from docs to all targets...\n");
+  console.log('🚀 Starting distribution from docs to all targets...\n');
 
   const sources = Object.keys(DISTRIBUTION_MAP);
   console.log(`📚 Found ${sources.length} source files to distribute`);
@@ -258,13 +336,13 @@ async function distributeAll() {
     await distributeSingleSource(sourceFile);
   }
 
-  console.log("\n✅ Distribution complete!");
+  console.log('\n✅ Distribution complete!');
   console.log(`📄 Generated ${totalTargets} llms.txt files`);
   console.log(
-    `📄 Generated ${totalTargets * GENERATED_FILES.length} additional files`,
+    `📄 Generated ${totalTargets * GENERATED_FILES.length} additional files`
   );
   console.log(
-    `📄 Total files created: ${totalTargets * (1 + GENERATED_FILES.length)}`,
+    `📄 Total files created: ${totalTargets * (1 + GENERATED_FILES.length)}`
   );
 }
 
@@ -272,16 +350,17 @@ async function distributeAll() {
  * Validate that all source files exist
  */
 async function validateSources() {
-  console.log("🔍 Validating source files...");
+  console.log('🔍 Validating source files...');
 
   const sources = Object.keys(DISTRIBUTION_MAP);
   const missingFiles = [];
 
   for (const sourceFile of sources) {
-    const fullPath = path.join(__dirname, "..", sourceFile);
+    const fullPath = path.join(__dirname, '..', sourceFile);
     try {
       await fs.access(fullPath);
       console.log(`✓ ${sourceFile}`);
+      // oxlint-disable-next-line no-unused-vars
     } catch (_error) {
       console.log(`❌ ${sourceFile} - NOT FOUND`);
       missingFiles.push(sourceFile);
@@ -290,7 +369,7 @@ async function validateSources() {
 
   if (missingFiles.length > 0) {
     console.error(`\n❌ Missing source files: ${missingFiles.length}`);
-    missingFiles.forEach((file) => console.error(`  - ${file}`));
+    missingFiles.forEach(file => console.error(`  - ${file}`));
     return false;
   }
 
@@ -304,7 +383,7 @@ async function validateSources() {
 async function main() {
   const args = process.argv.slice(2);
 
-  if (args.includes("--help") || args.includes("-h")) {
+  if (args.includes('--help') || args.includes('-h')) {
     console.log(`
 Usage: node distribute-from-docs.js [options]
 
@@ -319,7 +398,7 @@ Examples:
     return;
   }
 
-  if (args.includes("--validate") || args.includes("-v")) {
+  if (args.includes('--validate') || args.includes('-v')) {
     await validateSources();
     return;
   }
@@ -328,7 +407,7 @@ Examples:
   const isValid = await validateSources();
   if (!isValid) {
     console.error(
-      "\n❌ Validation failed. Fix missing files before distribution.",
+      '\n❌ Validation failed. Fix missing files before distribution.'
     );
     process.exit(1);
   }
@@ -339,8 +418,8 @@ Examples:
 
 // Only run if called directly
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((error) => {
-    console.error("Fatal error:", error);
+  main().catch(error => {
+    console.error('Fatal error:', error);
     process.exit(1);
   });
 }

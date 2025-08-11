@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import fs from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import fs from 'fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,28 +13,28 @@ const __dirname = path.dirname(__filename);
  * Using this as both runtime config and TypeScript type definition
  */
 export const CONTENT_TYPES = {
-  root: "llms.txt",
-  components: "src/components/llms.txt",
-  stores: "src/stores/llms.txt",
-  views: "src/views/llms.txt",
-  modules: "src/modules/llms.txt",
-  server: "server/llms.txt",
-  instructions: "instructions/llms.txt",
-  keepsync: "instructions/keepsync/llms.txt",
-  workers: "workers/llms.txt",
+  root: 'llms.txt',
+  components: 'src/components/llms.txt',
+  stores: 'src/stores/llms.txt',
+  views: 'src/views/llms.txt',
+  modules: 'src/modules/llms.txt',
+  server: 'server/llms.txt',
+  instructions: 'instructions/llms.txt',
+  keepsync: 'instructions/keepsync/llms.txt',
+  workers: 'workers/llms.txt',
 };
 
 /**
  * Special path overrides for locations that don't follow the standard pattern
  */
 const PATH_OVERRIDES = {
-  "examples/store-viewer": {
-    instructions: "src/instructions/llms.txt",
-    keepsync: "src/instructions/keepsync/llms.txt",
+  'examples/store-viewer': {
+    instructions: 'src/instructions/llms.txt',
+    keepsync: 'src/instructions/keepsync/llms.txt',
   },
-  "packages/cli/template/apps/my-world": {
-    instructions: "src/instructions/llms.txt",
-    keepsync: "src/instructions/keepsync/llms.txt",
+  'packages/cli/template/apps/my-world': {
+    instructions: 'src/instructions/llms.txt',
+    keepsync: 'src/instructions/keepsync/llms.txt',
   },
 };
 
@@ -42,27 +43,27 @@ const PATH_OVERRIDES = {
  */
 const SOURCE_MAPPINGS = {
   // Shared
-  "docs/src/llms/shared/instructions.md": {
-    contentTypes: ["root", "instructions"],
+  'docs/src/llms/shared/instructions.md': {
+    contentTypes: ['root', 'instructions'],
   },
-  "docs/src/llms/shared/components.md": {
-    contentTypes: ["components"],
+  'docs/src/llms/shared/components.md': {
+    contentTypes: ['components'],
   },
-  "docs/src/llms/shared/stores.md": {
-    contentTypes: ["stores"],
+  'docs/src/llms/shared/stores.md': {
+    contentTypes: ['stores'],
   },
-  "docs/src/llms/shared/views.md": {
-    contentTypes: ["views"],
+  'docs/src/llms/shared/views.md': {
+    contentTypes: ['views'],
   },
-  "docs/src/llms/shared/modules.md": {
-    contentTypes: ["modules"],
+  'docs/src/llms/shared/modules.md': {
+    contentTypes: ['modules'],
   },
-  "docs/src/llms/shared/server.md": {
-    contentTypes: ["server"],
+  'docs/src/llms/shared/server.md': {
+    contentTypes: ['server'],
   },
   // Keepsync-specific
-  "docs/src/llms/shared/keepsync/react-browser.md": {
-    contentTypes: ["keepsync"],
+  'docs/src/llms/shared/keepsync/react-browser.md': {
+    contentTypes: ['keepsync'],
   },
 };
 
@@ -71,11 +72,11 @@ const SOURCE_MAPPINGS = {
  */
 async function discoverBaseLocations() {
   const baseLocations = [];
-  const projectRoot = path.join(__dirname, "..");
+  const projectRoot = path.join(__dirname, '..');
 
   // Scan packages/create/templates/
   try {
-    const templatesDir = path.join(projectRoot, "packages/create/templates");
+    const templatesDir = path.join(projectRoot, 'packages/create/templates');
     const templates = await fs.readdir(templatesDir, { withFileTypes: true });
 
     for (const template of templates) {
@@ -91,7 +92,7 @@ async function discoverBaseLocations() {
   try {
     const cliTemplatesDir = path.join(
       projectRoot,
-      "packages/cli/template/apps",
+      'packages/cli/template/apps'
     );
     const cliTemplates = await fs.readdir(cliTemplatesDir, {
       withFileTypes: true,
@@ -108,7 +109,7 @@ async function discoverBaseLocations() {
 
   // Scan examples/
   try {
-    const examplesDir = path.join(projectRoot, "examples");
+    const examplesDir = path.join(projectRoot, 'examples');
     const examples = await fs.readdir(examplesDir, { withFileTypes: true });
 
     for (const example of examples) {
@@ -121,18 +122,6 @@ async function discoverBaseLocations() {
   }
 
   return baseLocations.sort();
-}
-
-/**
- * Check if a file exists
- */
-async function fileExists(filePath) {
-  try {
-    await fs.access(path.join(__dirname, "..", filePath));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -160,15 +149,13 @@ function generateTargetPath(baseLocation, contentType) {
 function shouldIncludeLocation(baseLocation, sourceConfig) {
   // If include list exists, location must be in it
   if (sourceConfig.include) {
-    return sourceConfig.include.some((pattern) =>
-      baseLocation.includes(pattern),
-    );
+    return sourceConfig.include.some(pattern => baseLocation.includes(pattern));
   }
 
   // If exclude list exists, location must not be in it
   if (sourceConfig.exclude) {
-    return !sourceConfig.exclude.some((pattern) =>
-      baseLocation.includes(pattern),
+    return !sourceConfig.exclude.some(pattern =>
+      baseLocation.includes(pattern)
     );
   }
 
@@ -177,16 +164,16 @@ function shouldIncludeLocation(baseLocation, sourceConfig) {
 }
 
 /**
- * Auto-discover what content types exist in a base location
+ * Auto-discover what content types should exist in a base location
+ * Now returns all valid content types for the location, not just existing ones
  */
-async function discoverContentTypes(baseLocation) {
+async function discoverContentTypes() {
   const availableTypes = [];
 
-  for (const [contentType, _] of Object.entries(CONTENT_TYPES)) {
-    const targetPath = generateTargetPath(baseLocation, contentType);
-    if (await fileExists(targetPath)) {
-      availableTypes.push(contentType);
-    }
+  // Always include all content types that are valid for this location
+  // The distributor will create them if they don't exist
+  for (const [contentType] of Object.entries(CONTENT_TYPES)) {
+    availableTypes.push(contentType);
   }
 
   return availableTypes;
@@ -232,7 +219,7 @@ async function generateDistributionMap() {
   const map = {};
 
   console.log(`📍 Discovered ${baseLocations.length} base locations:`);
-  baseLocations.forEach((loc) => console.log(`  - ${loc}`));
+  baseLocations.forEach(loc => console.log(`  - ${loc}`));
 
   for (const sourceFile of Object.keys(SOURCE_MAPPINGS)) {
     map[sourceFile] = await generateTargetsForSource(sourceFile, baseLocations);
@@ -260,18 +247,56 @@ export const DISTRIBUTION_MAP = await generateDistributionMap();
 /**
  * Files that should be generated from each llms.txt
  */
-export const GENERATED_FILES = ["CLAUDE.md", ".cursorrules", ".windsurfrules"];
+export const GENERATED_FILES = ['CLAUDE.md', '.cursorrules', '.windsurfrules'];
+
+// Cache the docs version to avoid repeated git calls
+let _docsVersion = null;
+
+/**
+ * Get version info from git for documentation files
+ * Returns the short commit hash of the last change to docs/src/llms/
+ * Cached to avoid multiple git calls during a single distribution run
+ */
+function getDocsVersion() {
+  if (_docsVersion !== null) {
+    return _docsVersion;
+  }
+
+  try {
+    // Get the last commit that modified any file in docs/src/llms/
+    const projectRoot = path.join(__dirname, '..');
+    const commitHash = execSync('git log -1 --format="%h" -- docs/src/llms/', {
+      cwd: projectRoot,
+      encoding: 'utf8',
+    }).trim();
+
+    // Get the commit date for human readability
+    const commitDate = execSync(
+      `git log -1 --format="%cd" --date=short -- docs/src/llms/`,
+      { cwd: projectRoot, encoding: 'utf8' }
+    ).trim();
+
+    _docsVersion = `${commitHash} (${commitDate})`;
+  } catch (error) {
+    // Fallback if git is not available or we're not in a git repo
+    console.warn('Could not get git version info:', error.message);
+    _docsVersion = 'unknown';
+  }
+
+  return _docsVersion;
+}
+
+export const HEADER_PREFIX = '# DocVersion:';
 
 /**
  * Generate the header for distributed files
  */
 export function generateHeader(sourceFile) {
+  const version = getDocsVersion();
   return `# DO NOT EDIT - AUTO-GENERATED FROM ${sourceFile}
 # This file is automatically generated from the documentation.
 # Edit the source file instead: ${sourceFile}
-# 
-# Generated on: ${new Date().toISOString()}
-# 
+${HEADER_PREFIX} ${version}
 
 `;
 }
@@ -295,7 +320,7 @@ export function getAllGeneratedFiles() {
       allFiles.push(target);
 
       // Add the generated files
-      const dir = target.replace("/llms.txt", "");
+      const dir = target.replace('/llms.txt', '');
       for (const genFile of GENERATED_FILES) {
         allFiles.push(`${dir}/${genFile}`);
       }
@@ -351,7 +376,7 @@ export function validateMapping() {
     }
 
     for (const target of targets) {
-      if (!target.endsWith("/llms.txt")) {
+      if (!target.endsWith('/llms.txt')) {
         issues.push(`Target ${target} doesn't end with /llms.txt`);
       }
     }
