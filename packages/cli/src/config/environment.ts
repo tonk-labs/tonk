@@ -48,7 +48,7 @@ export function loadConfig(): TonkConfig {
     deployment: {
       serviceUrl:
         process.env.TONK_DEPLOYMENT_SERVICE_URL ||
-        'http://ec2-51-20-65-254.eu-north-1.compute.amazonaws.com:4444',
+        'https://tonk-deploy-production.up.railway.app',
       defaultRegion: process.env.TONK_DEFAULT_REGION || 'ord',
       defaultMemory: process.env.TONK_DEFAULT_MEMORY || '1gb',
       defaultCpus: process.env.TONK_DEFAULT_CPUS || '1',

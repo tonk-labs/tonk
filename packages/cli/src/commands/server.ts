@@ -122,7 +122,20 @@ async function deleteServer(serverName: string): Promise<void> {
     body: formData,
   });
 
-  const result: any = await response.json();
+  // Get response text first to check if it's HTML
+  const responseText = await response.text();
+
+  // Try to parse as JSON
+  let result: any;
+  try {
+    result = JSON.parse(responseText);
+  } catch {
+    console.error('Failed to parse response as JSON');
+    console.error('Full response:', responseText);
+    throw new Error(
+      'Server returned HTML instead of JSON. This usually means authentication failed or wrong URL.'
+    );
+  }
 
   if (!response.ok || !result.success) {
     throw new Error(result.error || 'Failed to delete server');
@@ -151,21 +164,22 @@ async function createServer(
 
     // Prepare form data for server creation
     const formData = new FormData();
-    formData.append(
-      'serverData',
-      JSON.stringify({
-        serverName,
-        region: options.region || 'ord',
-        memory: options.memory || '1gb',
-        cpus: options.cpus || '1',
-        remote: options.remote || false,
-        deployType: 'server',
-      })
-    );
+    const serverData = {
+      serverName,
+      region: options.region || 'ord',
+      memory: options.memory || '1gb',
+      cpus: options.cpus || '1',
+      remote: options.remote || false,
+      deployType: 'server',
+    };
+
+    formData.append('serverData', JSON.stringify(serverData));
+
+    const url = `${getDeploymentServiceUrl()}/create-server`;
 
     // Send server creation request
     spinner.text = 'Creating server...';
-    const response = await fetch(`${getDeploymentServiceUrl()}/create-server`, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${authToken}`,
@@ -173,7 +187,20 @@ async function createServer(
       body: formData,
     });
 
-    const result: any = await response.json();
+    // Get response text first to check if it's HTML
+    const responseText = await response.text();
+
+    // Try to parse as JSON
+    let result: any;
+    try {
+      result = JSON.parse(responseText);
+    } catch {
+      console.error('Failed to parse response as JSON');
+      console.error('Full response:', responseText);
+      throw new Error(
+        'Server returned HTML instead of JSON. This usually means authentication failed or wrong URL.'
+      );
+    }
 
     if (!response.ok || !result.success) {
       const errorMessage = result.error || 'Server creation failed';
@@ -237,7 +264,20 @@ async function listRemoteBundles(serverName: string): Promise<void> {
     body: formData,
   });
 
-  const result: any = await response.json();
+  // Get response text first to check if it's HTML
+  const responseText = await response.text();
+
+  // Try to parse as JSON
+  let result: any;
+  try {
+    result = JSON.parse(responseText);
+  } catch {
+    console.error('Failed to parse response as JSON');
+    console.error('Full response:', responseText);
+    throw new Error(
+      'Server returned HTML instead of JSON. This usually means authentication failed or wrong URL.'
+    );
+  }
 
   if (!response.ok || !result.success) {
     throw new Error(result.error || 'Failed to list bundles');
@@ -281,7 +321,20 @@ async function listRunningBundles(serverName: string): Promise<void> {
     body: formData,
   });
 
-  const result: any = await response.json();
+  // Get response text first to check if it's HTML
+  const responseText = await response.text();
+
+  // Try to parse as JSON
+  let result: any;
+  try {
+    result = JSON.parse(responseText);
+  } catch {
+    console.error('Failed to parse response as JSON');
+    console.error('Full response:', responseText);
+    throw new Error(
+      'Server returned HTML instead of JSON. This usually means authentication failed or wrong URL.'
+    );
+  }
 
   if (!response.ok || !result.success) {
     throw new Error(result.error || 'Failed to list running bundles');
@@ -335,7 +388,20 @@ async function deleteRemoteBundle(
     body: formData,
   });
 
-  const result: any = await response.json();
+  // Get response text first to check if it's HTML
+  const responseText = await response.text();
+
+  // Try to parse as JSON
+  let result: any;
+  try {
+    result = JSON.parse(responseText);
+  } catch {
+    console.error('Failed to parse response as JSON');
+    console.error('Full response:', responseText);
+    throw new Error(
+      'Server returned HTML instead of JSON. This usually means authentication failed or wrong URL.'
+    );
+  }
 
   if (!response.ok || !result.success) {
     throw new Error(result.error || 'Failed to delete bundle');
