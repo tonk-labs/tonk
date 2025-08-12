@@ -8,6 +8,7 @@ import { StateCreator } from 'zustand';
  * Import Repo and related types from automerge-repo
  */
 import { Repo, DocHandle, DocumentId } from '@automerge/automerge-repo/slim';
+import { next as A } from "@automerge/automerge/slim"
 
 /**
  * Utility functions for state management:
@@ -270,11 +271,11 @@ export const sync =
         // Get the current document
         const currentDoc = docHandle?.doc();
 
-        if (currentDoc) {
-          // CASE 1: Document already exists - update the Zustand store with its contents
+        if (currentDoc && A.stats(currentDoc).numOps > 0) {
+          // CASE 1: Document already exists and has some contents - update the Zustand store with its contents
           handleDocChange(currentDoc);
         } else {
-          // CASE 2: Document doesn't exist yet - initialize it with current Zustand state
+          // CASE 2: Document doesn't exist yet or exists but empty - initialize it with current Zustand state
           const initialState = get();
           const serializableState = serializeForSync(initialState);
 
