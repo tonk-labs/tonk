@@ -108,6 +108,12 @@ cd packages/cli && pnpm run build
 
 ## Testing
 
+There are two scripts - `setup-production.js` and `setup-staging.js` - that will configure the
+`tonk` and `knot` monorepo environments for end-to-end testing against staging and production.
+
+IMPORTANT: Though the scripts exist in `tonk`, they expect both `tonk` and `knot` to exist in the
+same directory. The scripts will not work without this condition met.
+
 ```bash
 # Run tests for all packages
 pnpm run test

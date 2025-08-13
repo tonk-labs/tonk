@@ -24,6 +24,8 @@ report.*.json
 
 # Env files
 .env
+.env.production
+.env.staging
 .env.*.local
 .env.local
 .direnv
