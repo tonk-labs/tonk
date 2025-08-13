@@ -13,10 +13,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const cliRoot = path.resolve(__dirname, '..');
 
-// Try to load .env from the CLI package root only if it exists
-const envPath = path.join(cliRoot, '.env');
+// Determine which environment file to load
+const tonkEnv = process.env.TONK_ENV || 'production';
+const envFile = `.env.${tonkEnv}`;
+const envPath = path.join(cliRoot, envFile);
+
+// Try to load environment-specific .env file, fallback to .env
 if (existsSync(envPath)) {
   loadDotenv({ path: envPath });
+} else {
+  const fallbackPath = path.join(cliRoot, '.env');
+  if (existsSync(fallbackPath)) {
+    loadDotenv({ path: fallbackPath });
+  }
 }
 
 export interface TonkConfig {
@@ -47,8 +56,7 @@ export function loadConfig(): TonkConfig {
   return {
     deployment: {
       serviceUrl:
-        process.env.TONK_DEPLOYMENT_SERVICE_URL ||
-        'http://ec2-51-20-65-254.eu-north-1.compute.amazonaws.com:4444',
+        process.env.TONK_DEPLOYMENT_SERVICE_URL || 'https://deploy.tonk.xyz',
       defaultRegion: process.env.TONK_DEFAULT_REGION || 'ord',
       defaultMemory: process.env.TONK_DEFAULT_MEMORY || '1gb',
       defaultCpus: process.env.TONK_DEFAULT_CPUS || '1',
