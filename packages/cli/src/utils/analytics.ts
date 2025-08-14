@@ -74,6 +74,11 @@ function getSystemContext(): Record<string, any> {
 // Singleton PostHog instance
 let posthog: PostHog | null = null;
 
+// Test helper to reset singleton state
+export function __resetAnalyticsForTesting(): void {
+  posthog = null;
+}
+
 /**
  * Initialize PostHog analytics
  */
