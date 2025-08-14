@@ -1,0 +1,110 @@
+name: Test CLI Package
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'packages/cli/**'
+      - '.github/workflows/test-cli.yml'
+      - 'pnpm-lock.yaml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'packages/cli/**'
+      - '.github/workflows/test-cli.yml'
+      - 'pnpm-lock.yaml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test on macOS / Node ${{ matrix.node-version }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20', '22']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+
+      - name: Install CLI package dependencies
+        working-directory: packages/cli
+        run: |
+          pnpm install --frozen-lockfile
+
+      - name: Build CLI package
+        working-directory: packages/cli
+        run: |
+          pnpm run build
+
+      - name: Run unit tests
+        working-directory: packages/cli
+        run: |
+          pnpm run test:unit
+
+      - name: Run integration tests
+        working-directory: packages/cli
+        run: |
+          pnpm run test:integration
+
+      - name: Run all tests
+        working-directory: packages/cli
+        run: |
+          pnpm run test
+
+      - name: Run linting
+        if: matrix.node-version == '20'
+        working-directory: packages/cli
+        run: |
+          pnpm run lint
+
+      - name: Check TypeScript compilation
+        working-directory: packages/cli
+        run: |
+          pnpm run compile
+
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.test.result }}" == "success" ]; then
+            echo "✅ All tests passed successfully!"
+          else
+            echo "❌ Some tests failed. Please check the logs."
+            exit 1
+          fi
