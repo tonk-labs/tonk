@@ -1,3 +1,23 @@
+// Polyfill crypto
+if (typeof globalThis.crypto === 'undefined') {
+  const { webcrypto } = require('crypto');
+  globalThis.crypto = webcrypto;
+}
+
+// Additional fallback for macOS
+if (!globalThis.crypto?.getRandomValues) {
+  const crypto = require('crypto');
+  globalThis.crypto = {
+    ...globalThis.crypto,
+    getRandomValues: function (buffer) {
+      return crypto.randomFillSync(buffer);
+    },
+    randomUUID: function () {
+      return crypto.randomUUID();
+    },
+  };
+}
+
 import { vi, beforeAll, afterEach, afterAll } from 'vitest';
 
 // Global test setup
