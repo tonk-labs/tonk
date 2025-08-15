@@ -1,248 +1,584 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Automerge Service Worker Test</title>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tonk App Browser</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .status {
-            padding: 10px;
-            margin: 10px 0;
-            border-radius: 4px;
-        }
-        .success { background-color: #d4edda; color: #155724; }
-        .error { background-color: #f8d7da; color: #721c24; }
-        .info { background-color: #d1ecf1; color: #0c5460; }
-        button {
-            background-color: #007bff;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 4px;
-            cursor: pointer;
-            margin: 5px;
-        }
-        button:hover { background-color: #0056b3; }
-        button:disabled { background-color: #6c757d; cursor: not-allowed; }
-        pre {
-            background-color: #f8f9fa;
-            padding: 10px;
-            border-radius: 4px;
-            overflow-x: auto;
-        }
-        .drop-zone {
-            border: 2px dashed #ccc;
-            border-radius: 8px;
-            padding: 40px;
-            text-align: center;
-            margin: 20px 0;
-            transition: all 0.3s ease;
-        }
-        .drop-zone.drag-over {
-            border-color: #007bff;
-            background-color: #f0f8ff;
-        }
-        .file-content {
-            background-color: #f8f9fa;
-            border: 1px solid #e9ecef;
-            border-radius: 4px;
-            padding: 15px;
-            margin-top: 20px;
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        .file-info {
-            background-color: #e9ecef;
-            padding: 10px;
-            border-radius: 4px;
-            margin-bottom: 10px;
-            font-size: 14px;
-        }
-        .file-buttons {
-            margin: 20px 0;
-        }
-    </style>
-</head>
-<body>
-    <h1>Automerge Service Worker Compatibility Test</h1>
-    
-    <div id="status" class="status info">
-        Initializing...
-    </div>
-    
-    <div class="file-buttons">
-        <button id="testBtn" onclick="testAutomerge()" disabled>
-            Test Automerge in Service Worker
-        </button>
-        
-        <button id="openFileBtn" onclick="openFileDialog()">
-            📁 Open File
-        </button>
-    </div>
-    
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
 
-    
-    <div id="fileDisplay" style="display: none;">
-        <h3>File Content</h3>
-        <div id="fileInfo" class="file-info"></div>
-        <div id="fileContent" class="file-content"></div>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Icons',
+          'Helvetica Neue', Helvetica, Arial, sans-serif;
+        background: #f5f5f7;
+        min-height: 100vh;
+        color: #1d1d1f;
+        font-size: 17px;
+        line-height: 1.47;
+      }
+
+      .header {
+        background: #ffffff;
+        padding: 16px 20px;
+        border-bottom: 1px solid #e5e5e7;
+      }
+
+      .header h1 {
+        color: #1d1d1f;
+        font-size: 22px;
+        font-weight: 600;
+        text-align: center;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 32px 20px;
+      }
+
+      .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 32px;
+      }
+
+      .load-app-btn {
+        background: #007aff;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 10px;
+        cursor: pointer;
+        font-size: 15px;
+        font-weight: 600;
+        color: white;
+        transition: opacity 0.2s ease;
+        font-family: inherit;
+      }
+
+      .load-app-btn:hover {
+        opacity: 0.8;
+      }
+
+      .sync-status {
+        color: #86868b;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 500;
+      }
+
+      .sync-indicator {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #30d158;
+      }
+
+      .apps-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 20px;
+        margin-bottom: 32px;
+      }
+
+      .app-card {
+        background: #ffffff;
+        border-radius: 10px;
+        padding: 20px;
+        cursor: pointer;
+        transition: opacity 0.2s ease;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        border: 1px solid #e5e5e7;
+      }
+
+      .app-card:hover {
+        opacity: 0.8;
+      }
+
+      .app-icon {
+        width: 60px;
+        height: 60px;
+        border-radius: 10px;
+        background: #f2f2f7;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 22px;
+        font-weight: 600;
+        color: #8e8e93;
+        margin-bottom: 12px;
+      }
+
+      .app-name {
+        font-size: 17px;
+        font-weight: 600;
+        margin-bottom: 6px;
+        color: #1d1d1f;
+      }
+
+      .app-meta {
+        font-size: 13px;
+        color: #86868b;
+        margin-bottom: 12px;
+        font-weight: 500;
+      }
+
+      .app-actions {
+        display: flex;
+        gap: 8px;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+      }
+
+      .app-card:hover .app-actions {
+        opacity: 1;
+      }
+
+      .app-action-btn {
+        background: none;
+        border: 1px solid #d2d2d7;
+        border-radius: 6px;
+        padding: 4px 10px;
+        font-size: 13px;
+        cursor: pointer;
+        color: #86868b;
+        transition: opacity 0.2s ease;
+        font-weight: 500;
+        font-family: inherit;
+      }
+
+      .app-action-btn:hover {
+        opacity: 0.7;
+      }
+
+      .empty-state {
+        text-align: center;
+        padding: 80px 20px;
+        color: #86868b;
+      }
+
+      .empty-state h2 {
+        font-size: 22px;
+        margin-bottom: 8px;
+        color: #1d1d1f;
+        font-weight: 600;
+      }
+
+      .empty-state p {
+        font-size: 15px;
+        line-height: 1.5;
+        color: #86868b;
+      }
+
+      .notification {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: #ffffff;
+        color: #1d1d1f;
+        padding: 12px 16px;
+        border-radius: 10px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+        transform: translateX(400px);
+        transition: transform 0.3s ease;
+        border: 1px solid #e5e5e7;
+        font-size: 15px;
+        font-weight: 500;
+      }
+
+      .notification.show {
+        transform: translateX(0);
+      }
+
+      .notification.success {
+        border-left: 3px solid #30d158;
+      }
+
+      .notification.error {
+        border-left: 3px solid #ff3b30;
+      }
+
+      .progress-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+      }
+
+      .progress-container {
+        background: white;
+        padding: 32px;
+        border-radius: 12px;
+        width: 400px;
+        text-align: center;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      }
+
+      .progress-title {
+        font-size: 18px;
+        font-weight: 600;
+        color: #1d1d1f;
+        margin-bottom: 8px;
+      }
+
+      .progress-message {
+        font-size: 14px;
+        color: #86868b;
+        margin-bottom: 24px;
+        min-height: 20px;
+      }
+
+      .progress-bar {
+        width: 100%;
+        height: 8px;
+        background: #f0f0f0;
+        border-radius: 4px;
+        overflow: hidden;
+        margin-bottom: 16px;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: #007aff;
+        width: 0%;
+        transition: width 0.3s ease;
+        border-radius: 4px;
+      }
+
+      .progress-percentage {
+        font-size: 13px;
+        color: #86868b;
+        font-weight: 500;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>Tonk App Browser</h1>
     </div>
-    
-    <div id="results"></div>
+
+    <div class="container">
+      <div class="toolbar">
+        <button class="load-app-btn" onclick="loadNewApp()">
+          Load New App
+        </button>
+      </div>
+
+      <div id="appsGrid" class="apps-grid">
+        <!-- Apps will be populated here -->
+      </div>
+
+      <div id="emptyState" class="empty-state">
+        <h2>No Apps Loaded</h2>
+        <p>
+          Load your first Tonk app to get started.<br />Click "Load New App" to
+          browse for a .tonk bundle file.
+        </p>
+      </div>
+    </div>
+
+    <div id="notification" class="notification">
+      <span id="notificationText"></span>
+    </div>
+
+    <div id="progressOverlay" class="progress-overlay">
+      <div class="progress-container">
+        <div class="progress-title">Loading App</div>
+        <div id="progressMessage" class="progress-message">Preparing...</div>
+        <div class="progress-bar">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+        <div id="progressPercentage" class="progress-percentage">0%</div>
+      </div>
+    </div>
 
     <script>
-        let serviceWorker = null;
+      let serviceWorker = null;
+      let loadedApps = [];
 
-        async function registerServiceWorker() {
-            if ('serviceWorker' in navigator) {
-                try {
-                    const registration = await navigator.serviceWorker.register('./service-worker.js', { type: 'module' });
-                    console.log('Service Worker registered:', registration);
-                    
-                    // Wait for the service worker to be ready and get the correct reference
-                    const swRegistration = await navigator.serviceWorker.ready;
-                    serviceWorker = swRegistration.active || navigator.serviceWorker.controller;
-                    
-                    // If still no service worker, wait for it to activate
-                    if (!serviceWorker) {
-                        serviceWorker = await new Promise((resolve) => {
-                            navigator.serviceWorker.addEventListener('controllerchange', () => {
-                                resolve(navigator.serviceWorker.controller);
-                            });
-                        });
-                    }
-                    
-                    updateStatus('Service Worker registered and ready!', 'success');
-                    document.getElementById('testBtn').disabled = false;
-                    
-                } catch (error) {
-                    console.error('Service Worker registration failed:', error);
-                    updateStatus(`Service Worker registration failed: ${error.message}`, 'error');
-                }
-            } else {
-                updateStatus('Service Workers are not supported in this browser', 'error');
-            }
+      // App metadata storage using IndexedDB
+      class AppStorage {
+        constructor() {
+          this.dbName = 'TonkAppStorage';
+          this.version = 1;
+          this.db = null;
         }
 
-        function updateStatus(message, type = 'info') {
-            const statusEl = document.getElementById('status');
-            statusEl.textContent = message;
-            statusEl.className = `status ${type}`;
-        }
+        async init() {
+          return new Promise((resolve, reject) => {
+            const request = indexedDB.open(this.dbName, this.version);
 
-        async function testAutomerge() {
-            if (!serviceWorker) {
-                updateStatus('Service Worker not ready', 'error');
-                return;
-            }
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              this.db = request.result;
+              resolve();
+            };
 
-            updateStatus('Testing Automerge in Service Worker...', 'info');
-            document.getElementById('testBtn').disabled = true;
-
-            try {
-                const messageChannel = new MessageChannel();
-                
-                const response = await new Promise((resolve, reject) => {
-                    messageChannel.port1.onmessage = (event) => {
-                        resolve(event.data);
-                    };
-                    
-                    setTimeout(() => {
-                        reject(new Error('Test timeout after 10 seconds'));
-                    }, 10000);
-                    
-                    serviceWorker.postMessage(
-                        { type: 'TEST_AUTOMERGE' },
-                        [messageChannel.port2]
-                    );
+            request.onupgradeneeded = () => {
+              const db = request.result;
+              if (!db.objectStoreNames.contains('apps')) {
+                const store = db.createObjectStore('apps', { keyPath: 'id' });
+                store.createIndex('name', 'name', { unique: false });
+                store.createIndex('lastAccessed', 'lastAccessed', {
+                  unique: false,
                 });
-
-                displayResults(response);
-                
-            } catch (error) {
-                console.error('Test failed:', error);
-                updateStatus(`Test failed: ${error.message}`, 'error');
-            } finally {
-                document.getElementById('testBtn').disabled = false;
-            }
+              }
+            };
+          });
         }
 
-        function displayResults(response) {
-            const resultsEl = document.getElementById('results');
-            
-            if (response.success) {
-                updateStatus('✅ Automerge works in Service Worker!', 'success');
-                resultsEl.innerHTML = `
-                    <h3>Test Results</h3>
-                    <div class="status success">
-                        <strong>Success!</strong> ${response.message}
-                    </div>
-                    <p><strong>Document ID:</strong> ${response.docId}</p>
-                    <p><strong>Document Content:</strong></p>
-                    <pre>${JSON.stringify(response.docContent, null, 2)}</pre>
-                `;
-            } else {
-                updateStatus('❌ Automerge failed in Service Worker', 'error');
-                resultsEl.innerHTML = `
-                    <h3>Test Results</h3>
-                    <div class="status error">
-                        <strong>Error:</strong> ${response.error}
-                    </div>
-                    <p><strong>Stack trace:</strong></p>
-                    <pre>${response.stack}</pre>
-                `;
-            }
+        async saveApp(app) {
+          const transaction = this.db.transaction(['apps'], 'readwrite');
+          const store = transaction.objectStore('apps');
+          await store.put(app);
         }
 
-        // File opening functionality
-        async function openFileDialog() {
-            try {
-                updateStatus('Opening file dialog...', 'info');
-                
-                const fileData = await window.electronAPI.openFileDialog();
-                
-                if (fileData) {
-                    if (fileData.error) {
-                        updateStatus(`Error reading file: ${fileData.error}`, 'error');
-                        return;
-                    }
-                    
-                    // Display file info
-                    document.getElementById('fileInfo').innerHTML = `
-                        <strong>File:</strong> ${fileData.name}<br>
-                        <strong>Path:</strong> ${fileData.path}<br>
-                        <strong>Size:</strong> ${fileData.size} bytes<br>
-                        <strong>Last Modified:</strong> ${new Date(fileData.lastModified).toLocaleString()}
-                    `;
-                    
-                    // Display file content
-                    document.getElementById('fileContent').textContent = fileData.content;
-                    
-                    // Show the file display area
-                    document.getElementById('fileDisplay').style.display = 'block';
-                    
-                    updateStatus(`✅ File opened: ${fileData.name}`, 'success');
-                } else {
-                    updateStatus('File selection cancelled', 'info');
+        async getApps() {
+          const transaction = this.db.transaction(['apps'], 'readonly');
+          const store = transaction.objectStore('apps');
+          return new Promise((resolve, reject) => {
+            const request = store.getAll();
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+        }
+
+        async deleteApp(id) {
+          const transaction = this.db.transaction(['apps'], 'readwrite');
+          const store = transaction.objectStore('apps');
+          await store.delete(id);
+        }
+      }
+
+      const appStorage = new AppStorage();
+
+      async function registerServiceWorker() {
+        if ('serviceWorker' in navigator) {
+          try {
+            const registration = await navigator.serviceWorker.register(
+              './service-worker.js',
+              { type: 'module' }
+            );
+            console.log('Service Worker registered:', registration);
+
+            const swRegistration = await navigator.serviceWorker.ready;
+            serviceWorker =
+              swRegistration.active || navigator.serviceWorker.controller;
+
+            if (!serviceWorker) {
+              serviceWorker = await new Promise(resolve => {
+                navigator.serviceWorker.addEventListener(
+                  'controllerchange',
+                  () => {
+                    resolve(navigator.serviceWorker.controller);
+                  }
+                );
+              });
+            }
+
+            console.log('Service Worker ready');
+          } catch (error) {
+            console.error('Service Worker registration failed:', error);
+            showNotification('Service Worker failed to load', 'error');
+          }
+        } else {
+          showNotification('Service Workers not supported', 'error');
+        }
+      }
+
+      async function loadNewApp() {
+        try {
+          const fileData = await window.electronAPI.openFileDialog();
+
+          if (fileData && fileData.success) {
+            showProgressBar('Loading app bundle...', 0);
+            // The app loading will be handled by the load-in.js script
+          } else if (fileData && fileData.error) {
+            showNotification(`Error: ${fileData.error}`, 'error');
+          }
+        } catch (error) {
+          console.error('Error loading app:', error);
+          showNotification(`Error loading app: ${error.message}`, 'error');
+        }
+      }
+
+      function showNotification(message, type = 'info') {
+        const notification = document.getElementById('notification');
+        const text = document.getElementById('notificationText');
+
+        text.textContent = message;
+        notification.className = `notification ${type} show`;
+
+        setTimeout(() => {
+          notification.classList.remove('show');
+        }, 3000);
+      }
+
+      function showProgressBar(message, percentage) {
+        const overlay = document.getElementById('progressOverlay');
+        const messageEl = document.getElementById('progressMessage');
+        const fillEl = document.getElementById('progressFill');
+        const percentageEl = document.getElementById('progressPercentage');
+
+        messageEl.textContent = message;
+        fillEl.style.width = `${percentage}%`;
+        percentageEl.textContent = `${Math.round(percentage)}%`;
+        overlay.style.display = 'flex';
+      }
+
+      function hideProgressBar() {
+        const overlay = document.getElementById('progressOverlay');
+        overlay.style.display = 'none';
+      }
+
+      function generateAppIcon(name) {
+        return name.charAt(0).toUpperCase();
+      }
+
+      async function renderApps() {
+        const appsGrid = document.getElementById('appsGrid');
+        const emptyState = document.getElementById('emptyState');
+
+        // First try to restore apps from keepsync
+        if (window.restoreAppsFromKeepsync) {
+          try {
+            const restoredApps = await window.restoreAppsFromKeepsync();
+            if (restoredApps.length > 0) {
+              loadedApps = restoredApps;
+              console.log('Apps restored from keepsync:', loadedApps.length);
+
+              // Also save restored apps to IndexedDB as cache
+              for (const app of loadedApps) {
+                if (appStorage && appStorage.saveApp) {
+                  await appStorage.saveApp(app);
                 }
-                
-            } catch (error) {
-                console.error('Error opening file:', error);
-                updateStatus(`Error opening file: ${error.message}`, 'error');
+              }
             }
+          } catch (error) {
+            console.warn('Failed to restore apps from keepsync:', error);
+          }
         }
 
-        // Initialize when page loads
-        window.addEventListener('load', registerServiceWorker);
+        // Fallback to IndexedDB if no apps from keepsync
+        if (loadedApps.length === 0) {
+          loadedApps = await appStorage.getApps();
+        }
+
+        loadedApps.sort((a, b) => b.lastAccessed - a.lastAccessed);
+
+        if (loadedApps.length === 0) {
+          appsGrid.style.display = 'none';
+          emptyState.style.display = 'block';
+          return;
+        }
+
+        appsGrid.style.display = 'grid';
+        emptyState.style.display = 'none';
+
+        appsGrid.innerHTML = loadedApps
+          .map(
+            app => `
+                <div class="app-card" onclick="launchApp('${app.id}')">
+                    <div class="app-icon">${generateAppIcon(app.name)}</div>
+                    <div class="app-name">${app.name}</div>
+                    <div class="app-meta">
+                        Last used: ${new Date(app.lastAccessed).toLocaleDateString()}
+                        ${app.restoredFromKeepsync ? ' (restored)' : ''}
+                    </div>
+                    <div class="app-actions">
+                        <button class="app-action-btn" onclick="event.stopPropagation(); deleteApp('${app.id}')">Delete</button>
+                    </div>
+                </div>
+            `
+          )
+          .join('');
+      }
+
+      async function launchApp(appId) {
+        const app = loadedApps.find(a => a.id === appId);
+        if (app) {
+          // Update last accessed time in keepsync
+          if (window.updateAppLastAccessed) {
+            await window.updateAppLastAccessed(app.name);
+          }
+
+          // Also update in local cache
+          app.lastAccessed = Date.now();
+          if (appStorage && appStorage.saveApp) {
+            await appStorage.saveApp(app);
+          }
+
+          // Navigate to app
+          window.location.href = `/apps/${app.name}/`;
+        }
+      }
+
+      async function deleteApp(appName, appId) {
+        if (confirm('Are you sure you want to delete this app?')) {
+          // Delete from keepsync
+          if (window.deleteAppFromKeepsync) {
+            await window.deleteAppFromKeepsync(appName);
+          }
+
+          // Also delete from IndexedDB
+          if (window.appStorage && window.appStorage.deleteApp) {
+            await appStorage.deleteApp(appId);
+          }
+
+          await renderApps();
+          showNotification('App deleted', 'success');
+        }
+      }
+
+      // Initialize when page loads
+      window.addEventListener('load', async () => {
+        await registerServiceWorker();
+        await appStorage.init();
+        // Make appStorage globally available for load-in.js
+        window.appStorage = appStorage;
+
+        // Wait a bit for load-in.js to initialize keepsync
+        setTimeout(async () => {
+          await renderApps();
+        }, 1000);
+      });
+
+      // Listen for progress events from load-in.js
+      window.addEventListener('loading-progress', event => {
+        showProgressBar(event.detail.message, event.detail.percentage);
+      });
+
+      // Listen for new app installations from load-in.js
+      window.addEventListener('app-installed', async event => {
+        hideProgressBar();
+        await renderApps();
+        showNotification(
+          `${event.detail.name} installed successfully!`,
+          'success'
+        );
+      });
+
+      // Listen for installation errors
+      window.addEventListener('app-install-error', event => {
+        hideProgressBar();
+        showNotification(`Installation failed: ${event.detail.error}`, 'error');
+      });
     </script>
-    
+
     <!-- Load the file content handler -->
     <script type="module" src="./load-in.js"></script>
-</body>
+  </body>
 </html>
