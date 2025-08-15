@@ -24,6 +24,8 @@ report.*.json
 
 # Env files
 .env
+.env.production
+.env.staging
 .env.*.local
 .env.local
 .direnv
@@ -40,3 +42,5 @@ report.*.json
 # macOS system files
 .DS_Store
 **/.DS_Store
+
+*.tonk
