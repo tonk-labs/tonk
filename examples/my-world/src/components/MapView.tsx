@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useRef } from "react";
-import { useLocationStore, useUserStore, useCategoryStore } from "../stores";
+import React, { useEffect, useState, useRef } from 'react';
+import { useLocationStore, useUserStore, useCategoryStore } from '../stores';
 import {
   User,
   MapPin,
@@ -10,18 +10,18 @@ import {
   Star,
   MessageSquare,
   Clock,
-} from "lucide-react";
+} from 'lucide-react';
 import {
   fetchAndUpdateBusinessHours,
   BusinessHours,
   updateAllLocationsOpenStatus,
-} from "../services/googleMapsService";
-import PlaceSearch from "./PlaceSearch";
-import UserComparison from "./UserComparison";
-import UserSelector from "./UserSelector";
-import CategoryManager from "./CategoryManager";
-import TourGuide from "./TourGuide";
-import ImportLocationsButton from "./ImportLocationsButton";
+} from '../services/googleMapsService';
+import PlaceSearch from './PlaceSearch';
+import UserComparison from './UserComparison';
+import UserSelector from './UserSelector';
+import CategoryManager from './CategoryManager';
+import TourGuide from './TourGuide';
+import ImportLocationsButton from './ImportLocationsButton';
 
 // Declare MapKit JS types
 declare global {
@@ -32,12 +32,12 @@ declare global {
 
 const getMapKitToken = async (): Promise<string> => {
   const token =
-    "eyJraWQiOiI0QVA3N1laNTI5IiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzUzOTc4MTk4LCJleHAiOjE3NTQ2MzYzOTl9.xwD8BKEoqf5j1-OhaOLxT8E4w_o02Q5AmEsj3GsJ0ryPFkqg9kb0UncNqQFs-QmW4YF_b9QcUCsrdLNB6Q70cA";
+    'eyJraWQiOiI1Q1U3UExLNktNIiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI4V1ZLUzJGMjRDIiwiaWF0IjoxNzU1Mjc0NTgxLCJleHAiOjE3NTU5MzIzOTl9._4GwNEW-8oQXXvhTfsjCOXvraMc-QSczTWgNvSJoloak3PSNzY9ajwQNnym8GZ_FeIZISvOWm0zQqnkUZ286Mg';
 
   if (!token) {
-    console.error("MapKit token not found in environment variables");
+    console.error('MapKit token not found in environment variables');
     throw new Error(
-      "MapKit token not configured. Please set MAPKIT_TOKEN environment variable.",
+      'MapKit token not configured. Please set MAPKIT_TOKEN environment variable.'
     );
   }
 
@@ -49,18 +49,18 @@ interface MapKitInitializerProps {
   onMapReady: (map: any) => void;
 }
 
-const MapKitInitializer: React.FC<MapKitInitializerProps> = ({ }) => {
+const MapKitInitializer: React.FC<MapKitInitializerProps> = ({}) => {
   useEffect(() => {
     const loadMapKit = async () => {
       try {
         // Load MapKit JS script if not already loaded
         if (!window.mapkit) {
-          const script = document.createElement("script");
-          script.src = "https://cdn.apple-mapkit.com/mk/5.x.x/mapkit.js";
+          const script = document.createElement('script');
+          script.src = 'https://cdn.apple-mapkit.com/mk/5.x.x/mapkit.js';
           script.async = true;
           document.head.appendChild(script);
 
-          await new Promise<void>((resolve) => {
+          await new Promise<void>(resolve => {
             script.onload = () => resolve();
           });
         }
@@ -73,7 +73,7 @@ const MapKitInitializer: React.FC<MapKitInitializerProps> = ({ }) => {
           },
         });
       } catch (error) {
-        console.error("Failed to initialize MapKit JS:", error);
+        console.error('Failed to initialize MapKit JS:', error);
       }
     };
 
@@ -90,12 +90,12 @@ const MapView: React.FC = () => {
   const { categories } = useCategoryStore();
   const [isAddingLocation, setIsAddingLocation] = useState(false);
   const [newLocation, setNewLocation] = useState({
-    name: "",
-    description: "",
+    name: '',
+    description: '',
     latitude: 0,
     longitude: 0,
-    placeId: "",
-    category: "default",
+    placeId: '',
+    category: 'default',
   });
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [showCategoryFilter, setShowCategoryFilter] = useState(false);
@@ -103,7 +103,7 @@ const MapView: React.FC = () => {
   const [mapZoom, setMapZoom] = useState<number | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [commonLocationIds, setCommonLocationIds] = useState<string[]>([]);
-  const userNames = useLocationStore((state) => state.userNames);
+  const userNames = useLocationStore(state => state.userNames);
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
@@ -112,85 +112,85 @@ const MapView: React.FC = () => {
   const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
   const [showReviewPanel, setShowReviewPanel] = useState(false);
   const [reviewRating, setReviewRating] = useState(5);
-  const [reviewComment, setReviewComment] = useState("");
+  const [reviewComment, setReviewComment] = useState('');
   const [businessHours, setBusinessHours] = useState<BusinessHours | null>(
-    null,
+    null
   );
   const [isLoadingHours, setIsLoadingHours] = useState(false);
   const [showTour, setShowTour] = useState(false);
   const [currentTourStep, setCurrentTourStep] = useState(() => {
-    const savedStep = localStorage.getItem("tour-main-step");
+    const savedStep = localStorage.getItem('tour-main-step');
     return savedStep ? parseInt(savedStep, 10) : 0;
   });
 
   // Get the active user profile
   const activeProfile = profiles.find(
-    (profile) => profile.id === activeProfileId,
-  ) || { id: "", name: "Select a profile" };
+    profile => profile.id === activeProfileId
+  ) || { id: '', name: 'Select a profile' };
 
   // Apple design system colors
   const appleColors = {
-    blue: "#007AFF",
-    green: "#34C759",
-    red: "#FF3B30",
-    yellow: "#FFCC00",
+    blue: '#007AFF',
+    green: '#34C759',
+    red: '#FF3B30',
+    yellow: '#FFCC00',
     gray: {
-      light: "#F2F2F7",
-      medium: "#E5E5EA",
-      dark: "#8E8E93",
+      light: '#F2F2F7',
+      medium: '#E5E5EA',
+      dark: '#8E8E93',
     },
     text: {
-      primary: "#000000",
-      secondary: "#8E8E93",
+      primary: '#000000',
+      secondary: '#8E8E93',
     },
   };
 
   const tourSteps = [
     {
-      title: "Welcome to My World!",
+      title: 'Welcome to My World!',
       content:
         "This is a demo app made by Tonk to get you started. Let's take a quick look around. Click 'Next' to begin.",
-      position: "center" as const,
+      position: 'center' as const,
     },
     {
-      target: ".user-selector",
-      title: "User Profiles",
+      target: '.user-selector',
+      title: 'User Profiles',
       content:
-        "Create and switch between different user profiles to manage your locations.",
-      position: "right" as const,
+        'Create and switch between different user profiles to manage your locations.',
+      position: 'right' as const,
     },
     {
-      target: ".category-manager",
-      title: "Categories",
+      target: '.category-manager',
+      title: 'Categories',
       content:
-        "Organise your locations by creating custom categories with colours.",
-      position: "right" as const,
+        'Organise your locations by creating custom categories with colours.',
+      position: 'right' as const,
     },
     {
-      target: ".location-list",
-      title: "Saved Locations",
+      target: '.location-list',
+      title: 'Saved Locations',
       content:
-        "View all your saved locations here. Click on any location to see details.",
-      position: "right" as const,
+        'View all your saved locations here. Click on any location to see details.',
+      position: 'right' as const,
     },
     {
-      target: ".search-bar",
-      title: "Interactive Map",
+      target: '.search-bar',
+      title: 'Interactive Map',
       content:
-        "Use the search bar to add a new location to the map, then continue to the next step.",
-      position: "right" as const,
+        'Use the search bar to add a new location to the map, then continue to the next step.',
+      position: 'right' as const,
     },
     {
-      title: "Transparent Data",
+      title: 'Transparent Data',
       content:
-        "Go back to the Tonk Hub and navigate to the file <code>my-world-locations.automerge</code> under <code>stores</code>. You should see your new location present in the list.",
-      position: "center" as const,
+        'Go back to the Tonk Hub and navigate to the file <code>my-world-locations.automerge</code> under <code>stores</code>. You should see your new location present in the list.',
+      position: 'center' as const,
     },
     {
-      title: "Add a Feature",
+      title: 'Add a Feature',
       content:
         "If you haven't already, open this project in your AI editor of choice and run the following prompt:\n\n\"Add a new 'Bucket List' feature that lets users star saved locations and displays them in a special list under saved locations in the sidebar.\"",
-      position: "center" as const,
+      position: 'center' as const,
       persistAfterReload: true,
     },
   ];
@@ -202,7 +202,7 @@ const MapView: React.FC = () => {
   useEffect(() => {
     if (window.mapkit && mapRef.current && !mapInstanceRef.current) {
       // Set Apple Maps style options
-      const colorScheme = window.matchMedia("(prefers-color-scheme: dark)")
+      const colorScheme = window.matchMedia('(prefers-color-scheme: dark)')
         .matches
         ? window.mapkit.Map.ColorSchemes.Dark
         : window.mapkit.Map.ColorSchemes.Light;
@@ -231,11 +231,11 @@ const MapView: React.FC = () => {
       // Set initial region
       map.region = new window.mapkit.CoordinateRegion(
         new window.mapkit.Coordinate(defaultCenter[0], defaultCenter[1]),
-        new window.mapkit.CoordinateSpan(0.1, 0.1),
+        new window.mapkit.CoordinateSpan(0.1, 0.1)
       );
 
       // Add click event listener for adding new locations
-      map.addEventListener("click", (event: any) => {
+      map.addEventListener('click', (event: any) => {
         const coordinate = event.coordinate;
         handleLocationPick(coordinate.latitude, coordinate.longitude);
         setIsAddingLocation(true);
@@ -243,7 +243,7 @@ const MapView: React.FC = () => {
 
       // Listen for dark mode changes to update map style
       const darkModeMediaQuery = window.matchMedia(
-        "(prefers-color-scheme: dark)",
+        '(prefers-color-scheme: dark)'
       );
       const handleColorSchemeChange = (e: MediaQueryListEvent) => {
         map.colorScheme = e.matches
@@ -251,15 +251,15 @@ const MapView: React.FC = () => {
           : window.mapkit.Map.ColorSchemes.Light;
       };
 
-      darkModeMediaQuery.addEventListener("change", handleColorSchemeChange);
+      darkModeMediaQuery.addEventListener('change', handleColorSchemeChange);
 
       mapInstanceRef.current = map;
       setMapIsReady(true);
 
       return () => {
         darkModeMediaQuery.removeEventListener(
-          "change",
-          handleColorSchemeChange,
+          'change',
+          handleColorSchemeChange
         );
       };
     }
@@ -274,7 +274,7 @@ const MapView: React.FC = () => {
 
       map.region = new window.mapkit.CoordinateRegion(
         new window.mapkit.Coordinate(mapCenter[0], mapCenter[1]),
-        new window.mapkit.CoordinateSpan(span, span),
+        new window.mapkit.CoordinateSpan(span, span)
       );
     }
   }, [mapCenter, mapZoom, mapIsReady]);
@@ -284,11 +284,11 @@ const MapView: React.FC = () => {
     latitude: number,
     longitude: number,
     name: string,
-    placeId?: string,
+    placeId?: string
   ) => {
     // Update state with the selected location
     // If we have the full place object, extract the ID from it
-    const effectivePlaceId = placeId || "";
+    const effectivePlaceId = placeId || '';
 
     setNewLocation({
       ...newLocation,
@@ -305,18 +305,18 @@ const MapView: React.FC = () => {
     // Add a simple temporary marker annotation
     if (mapIsReady && mapInstanceRef.current) {
       // Remove any existing temporary marker
-      const tempMarker = markersRef.current.find((m) => m.isTemporary);
+      const tempMarker = markersRef.current.find(m => m.isTemporary);
       if (tempMarker) {
         mapInstanceRef.current.removeAnnotation(tempMarker);
-        markersRef.current = markersRef.current.filter((m) => !m.isTemporary);
+        markersRef.current = markersRef.current.filter(m => !m.isTemporary);
       }
 
       // Create a simple marker annotation
       const coordinate = new window.mapkit.Coordinate(latitude, longitude);
       const marker = new window.mapkit.MarkerAnnotation(coordinate, {
-        color: "#34C759", // Green color for new location
+        color: '#34C759', // Green color for new location
         title: name,
-        glyphText: "+",
+        glyphText: '+',
         // No selected property to avoid callout
       });
 
@@ -333,14 +333,14 @@ const MapView: React.FC = () => {
         mapInstanceRef.current.addAnnotation(marker);
         markersRef.current.push(marker);
       } catch (error) {
-        console.error("Error adding annotation:", error);
+        console.error('Error adding annotation:', error);
       }
     }
   };
 
   // Handle manual location pick from map click
   const handleLocationPick = (lat: number, lng: number) => {
-    setNewLocation((prev) => ({
+    setNewLocation(prev => ({
       ...prev,
       latitude: lat,
       longitude: lng,
@@ -349,20 +349,20 @@ const MapView: React.FC = () => {
     // Add temporary marker for new location
     if (mapIsReady && mapInstanceRef.current) {
       // Remove any existing temporary marker
-      const tempMarker = markersRef.current.find((m) => m.isTemporary);
+      const tempMarker = markersRef.current.find(m => m.isTemporary);
       if (tempMarker) {
         mapInstanceRef.current.removeAnnotation(tempMarker);
-        markersRef.current = markersRef.current.filter((m) => !m.isTemporary);
+        markersRef.current = markersRef.current.filter(m => !m.isTemporary);
       }
 
       // Add new temporary marker
       const marker = new window.mapkit.MarkerAnnotation(
         new window.mapkit.Coordinate(lat, lng),
         {
-          color: "#34C759", // Green color for new location
-          title: "New Location",
-          glyphText: "+",
-        },
+          color: '#34C759', // Green color for new location
+          title: 'New Location',
+          glyphText: '+',
+        }
       );
       marker.isTemporary = true;
 
@@ -376,21 +376,21 @@ const MapView: React.FC = () => {
     if (!mapIsReady || !mapInstanceRef.current) return;
 
     // Remove all existing markers except temporary one
-    const tempMarker = markersRef.current.find((m) => m.isTemporary);
+    const tempMarker = markersRef.current.find(m => m.isTemporary);
     mapInstanceRef.current.removeAnnotations(
-      markersRef.current.filter((m) => !m.isTemporary),
+      markersRef.current.filter(m => !m.isTemporary)
     );
     markersRef.current = tempMarker ? [tempMarker] : [];
 
     // Filter locations by category if a category is selected
     const filteredLocations = selectedCategory
       ? Object.values(locations).filter(
-        (loc) => loc.category === selectedCategory,
-      )
+          loc => loc.category === selectedCategory
+        )
       : Object.values(locations);
 
     // Add markers for all locations
-    const markers = filteredLocations.map((location) => {
+    const markers = filteredLocations.map(location => {
       // Determine marker color based on category, who added it, and if it's common
       let markerColor = appleColors.blue; // Default blue for current user
 
@@ -412,11 +412,11 @@ const MapView: React.FC = () => {
         {
           color: markerColor,
           title: location.name,
-          subtitle: location.description || "",
+          subtitle: location.description || '',
           selected: false,
           animates: true, // Enable animation for a more polished feel
           displayPriority: 1000, // Ensure our custom markers are shown above POIs
-        },
+        }
       );
 
       // Add custom data to marker
@@ -425,21 +425,21 @@ const MapView: React.FC = () => {
       // Add callout (popup) with more information
       marker.callout = {
         calloutElementForAnnotation: (annotation: any) => {
-          const calloutElement = document.createElement("div");
-          calloutElement.className = "mapkit-callout";
+          const calloutElement = document.createElement('div');
+          calloutElement.className = 'mapkit-callout';
 
           // Apply Apple-style CSS
-          calloutElement.style.padding = "16px";
-          calloutElement.style.maxWidth = "280px";
-          calloutElement.style.backgroundColor = "white";
-          calloutElement.style.borderRadius = "14px";
-          calloutElement.style.boxShadow = "0 4px 16px rgba(0, 0, 0, 0.12)";
-          calloutElement.style.border = "none";
+          calloutElement.style.padding = '16px';
+          calloutElement.style.maxWidth = '280px';
+          calloutElement.style.backgroundColor = 'white';
+          calloutElement.style.borderRadius = '14px';
+          calloutElement.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.12)';
+          calloutElement.style.border = 'none';
           calloutElement.style.fontFamily =
             "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
           const location = Object.values(locations).find(
-            (loc) => loc.id === annotation.locationId,
+            loc => loc.id === annotation.locationId
           );
           if (!location) return calloutElement;
 
@@ -447,37 +447,40 @@ const MapView: React.FC = () => {
           const category = location.category
             ? categories[location.category]
             : null;
-          const categoryName = category ? category.name : "Uncategorized";
-          const categoryColor = category ? category.color : "#8E8E93";
+          const categoryName = category ? category.name : 'Uncategorized';
+          const categoryColor = category ? category.color : '#8E8E93';
 
           // Create Apple-style callout content
           calloutElement.innerHTML = `
                 <h3 style="font-weight: 600; font-size: 17px; margin-bottom: 6px; color: #000;">${location.name}</h3>
-                ${location.description ? `<p style="font-size: 15px; margin-bottom: 8px; color: #333;">${location.description}</p>` : ""}
+                ${location.description ? `<p style="font-size: 15px; margin-bottom: 8px; color: #333;">${location.description}</p>` : ''}
                 <div style="display: flex; align-items: center; margin-bottom: 4px;">
                   <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: ${categoryColor}; margin-right: 6px;"></span>
                   <span style="font-size: 13px; color: #8E8E93;">${categoryName}</span>
-                  ${location.isOpen !== undefined && location.isOpen !== null
-              ? `<span style="font-size: 12px; margin-left: 8px; padding: 2px 6px; border-radius: 10px; background-color: ${location.isOpen ? "rgba(52, 199, 89, 0.1)" : "rgba(255, 59, 48, 0.1)"}; color: ${location.isOpen ? "#34C759" : "#FF3B30"};">
-                      ${location.isOpen ? "Open" : "Closed"}
+                  ${
+                    location.isOpen !== undefined && location.isOpen !== null
+                      ? `<span style="font-size: 12px; margin-left: 8px; padding: 2px 6px; border-radius: 10px; background-color: ${location.isOpen ? 'rgba(52, 199, 89, 0.1)' : 'rgba(255, 59, 48, 0.1)'}; color: ${location.isOpen ? '#34C759' : '#FF3B30'};">
+                      ${location.isOpen ? 'Open' : 'Closed'}
                     </span>`
-              : ""
-            }
+                      : ''
+                  }
                 </div>
                 <p style="font-size: 13px; color: #8E8E93; margin-bottom: 4px;">
-                  Added by: ${activeProfileId === location.addedBy ? "You" : userNames[location.addedBy] || "Anonymous"}
+                  Added by: ${activeProfileId === location.addedBy ? 'You' : userNames[location.addedBy] || 'Anonymous'}
                 </p>
-                ${commonLocationIds.includes(location.id)
-              ? '<p style="font-size: 13px; color: #FF9500; font-weight: 500; margin-top: 4px; display: flex; align-items: center;"><span style="margin-right: 4px;">⭐</span> Common place</p>'
-              : ""
-            }
+                ${
+                  commonLocationIds.includes(location.id)
+                    ? '<p style="font-size: 13px; color: #FF9500; font-weight: 500; margin-top: 4px; display: flex; align-items: center;"><span style="margin-right: 4px;">⭐</span> Common place</p>'
+                    : ''
+                }
                 <div style="display: flex; gap: 12px; margin-top: 12px;">
                   <button id="info-${location.id}" style="font-size: 15px; color: #007AFF; border: none; background: none; cursor: pointer; padding: 8px 12px; border-radius: 8px; font-weight: 500; transition: background-color 0.2s;">Show Details</button>
                   <button id="review-${location.id}" style="font-size: 15px; color: #FF9500; border: none; background: none; cursor: pointer; padding: 8px 12px; border-radius: 8px; font-weight: 500; transition: background-color 0.2s;">Add Review</button>
-                  ${activeProfileId === location.addedBy
-              ? `<button id="remove-${location.id}" style="font-size: 15px; color: #FF3B30; border: none; background: none; cursor: pointer; padding: 8px 12px; border-radius: 8px; font-weight: 500; transition: background-color 0.2s;">Remove</button>`
-              : ""
-            }
+                  ${
+                    activeProfileId === location.addedBy
+                      ? `<button id="remove-${location.id}" style="font-size: 15px; color: #FF3B30; border: none; background: none; cursor: pointer; padding: 8px 12px; border-radius: 8px; font-weight: 500; transition: background-color 0.2s;">Remove</button>`
+                      : ''
+                  }
                 </div>
               `;
 
@@ -485,13 +488,13 @@ const MapView: React.FC = () => {
           setTimeout(() => {
             const infoButton = document.getElementById(`info-${location.id}`);
             if (infoButton) {
-              infoButton.addEventListener("mouseover", () => {
-                infoButton.style.backgroundColor = "rgba(0, 122, 255, 0.1)";
+              infoButton.addEventListener('mouseover', () => {
+                infoButton.style.backgroundColor = 'rgba(0, 122, 255, 0.1)';
               });
-              infoButton.addEventListener("mouseout", () => {
-                infoButton.style.backgroundColor = "transparent";
+              infoButton.addEventListener('mouseout', () => {
+                infoButton.style.backgroundColor = 'transparent';
               });
-              infoButton.addEventListener("click", () => {
+              infoButton.addEventListener('click', () => {
                 setSelectedLocation(location.id);
                 setShowReviewPanel(false);
 
@@ -500,12 +503,12 @@ const MapView: React.FC = () => {
                   setIsLoadingHours(true);
                   setBusinessHours(null);
                   fetchAndUpdateBusinessHours(location.id)
-                    .then((hours) => {
+                    .then(hours => {
                       setBusinessHours(hours);
                       setIsLoadingHours(false);
                     })
-                    .catch((error) => {
-                      console.error("Error fetching business hours:", error);
+                    .catch(error => {
+                      console.error('Error fetching business hours:', error);
                       setIsLoadingHours(false);
                     });
                 }
@@ -513,38 +516,38 @@ const MapView: React.FC = () => {
             }
 
             const reviewButton = document.getElementById(
-              `review-${location.id}`,
+              `review-${location.id}`
             );
             if (reviewButton) {
-              reviewButton.addEventListener("mouseover", () => {
-                reviewButton.style.backgroundColor = "rgba(255, 149, 0, 0.1)";
+              reviewButton.addEventListener('mouseover', () => {
+                reviewButton.style.backgroundColor = 'rgba(255, 149, 0, 0.1)';
               });
-              reviewButton.addEventListener("mouseout", () => {
-                reviewButton.style.backgroundColor = "transparent";
+              reviewButton.addEventListener('mouseout', () => {
+                reviewButton.style.backgroundColor = 'transparent';
               });
-              reviewButton.addEventListener("click", () => {
+              reviewButton.addEventListener('click', () => {
                 setSelectedLocation(location.id);
                 setShowReviewPanel(true);
                 setReviewRating(5);
-                setReviewComment("");
+                setReviewComment('');
               });
             }
 
             const removeButton = document.getElementById(
-              `remove-${location.id}`,
+              `remove-${location.id}`
             );
             if (removeButton) {
-              removeButton.addEventListener("mouseover", () => {
-                removeButton.style.backgroundColor = "rgba(255, 59, 48, 0.1)";
+              removeButton.addEventListener('mouseover', () => {
+                removeButton.style.backgroundColor = 'rgba(255, 59, 48, 0.1)';
               });
-              removeButton.addEventListener("mouseout", () => {
-                removeButton.style.backgroundColor = "transparent";
+              removeButton.addEventListener('mouseout', () => {
+                removeButton.style.backgroundColor = 'transparent';
               });
-              removeButton.addEventListener("click", () => {
+              removeButton.addEventListener('click', () => {
                 removeLocation(location.id);
                 mapInstanceRef.current.removeAnnotation(annotation);
                 markersRef.current = markersRef.current.filter(
-                  (m) => m !== annotation,
+                  m => m !== annotation
                 );
               });
             }
@@ -572,8 +575,8 @@ const MapView: React.FC = () => {
   // Update all locations' open status when component mounts
   useEffect(() => {
     if (Object.keys(locations).length > 0) {
-      updateAllLocationsOpenStatus().catch((error) => {
-        console.error("Error updating locations open status:", error);
+      updateAllLocationsOpenStatus().catch(error => {
+        console.error('Error updating locations open status:', error);
       });
     }
   }, []);
@@ -581,31 +584,31 @@ const MapView: React.FC = () => {
   // Save tour state when it changes
   useEffect(() => {
     if (showTour) {
-      localStorage.setItem("tour-main-active", "true");
+      localStorage.setItem('tour-main-active', 'true');
     }
   }, [showTour]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (newLocation.name.trim() === "" || newLocation.latitude === 0) return;
+    if (newLocation.name.trim() === '' || newLocation.latitude === 0) return;
 
     addLocation(newLocation);
     setIsAddingLocation(false);
     setNewLocation({
-      name: "",
-      description: "",
+      name: '',
+      description: '',
       latitude: 0,
       longitude: 0,
-      placeId: "",
-      category: "default",
+      placeId: '',
+      category: 'default',
     });
 
     // Remove temporary marker
     if (mapIsReady && mapInstanceRef.current) {
-      const tempMarker = markersRef.current.find((m) => m.isTemporary);
+      const tempMarker = markersRef.current.find(m => m.isTemporary);
       if (tempMarker) {
         mapInstanceRef.current.removeAnnotation(tempMarker);
-        markersRef.current = markersRef.current.filter((m) => !m.isTemporary);
+        markersRef.current = markersRef.current.filter(m => !m.isTemporary);
       }
     }
 
@@ -616,20 +619,20 @@ const MapView: React.FC = () => {
   const cancelAddLocation = () => {
     setIsAddingLocation(false);
     setNewLocation({
-      name: "",
-      description: "",
+      name: '',
+      description: '',
       latitude: 0,
       longitude: 0,
-      placeId: "",
-      category: "default",
+      placeId: '',
+      category: 'default',
     });
 
     // Remove temporary marker
     if (mapIsReady && mapInstanceRef.current) {
-      const tempMarker = markersRef.current.find((m) => m.isTemporary);
+      const tempMarker = markersRef.current.find(m => m.isTemporary);
       if (tempMarker) {
         mapInstanceRef.current.removeAnnotation(tempMarker);
-        markersRef.current = markersRef.current.filter((m) => !m.isTemporary);
+        markersRef.current = markersRef.current.filter(m => !m.isTemporary);
       }
     }
   };
@@ -640,10 +643,10 @@ const MapView: React.FC = () => {
       <div
         className="flex justify-between items-center p-4 bg-white shadow-sm"
         style={{
-          backgroundColor: "rgba(255, 255, 255, 0.8)",
-          backdropFilter: "blur(10px)",
-          WebkitBackdropFilter: "blur(10px)",
-          borderBottom: "1px solid rgba(0, 0, 0, 0.1)",
+          backgroundColor: 'rgba(255, 255, 255, 0.8)',
+          backdropFilter: 'blur(10px)',
+          WebkitBackdropFilter: 'blur(10px)',
+          borderBottom: '1px solid rgba(0, 0, 0, 0.1)',
         }}
       >
         <div className="flex items-center gap-2">
@@ -697,13 +700,13 @@ const MapView: React.FC = () => {
           className={`
             fixed md:relative top-0 h-full z-[960] overflow-y-auto
             w-[300px] transition-transform duration-300 ease-in-out
-            ${sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
+            ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
           `}
           style={{
-            backgroundColor: "rgba(255, 255, 255, 0.95)",
-            backdropFilter: "blur(10px)",
-            WebkitBackdropFilter: "blur(10px)",
-            borderRight: "1px solid rgba(0, 0, 0, 0.1)",
+            backgroundColor: 'rgba(255, 255, 255, 0.95)',
+            backdropFilter: 'blur(10px)',
+            WebkitBackdropFilter: 'blur(10px)',
+            borderRight: '1px solid rgba(0, 0, 0, 0.1)',
           }}
         >
           <div className="p-4 flex items-center justify-between md:hidden">
@@ -741,11 +744,11 @@ const MapView: React.FC = () => {
             >
               <div
                 className="px-4 py-3 border-b flex justify-between items-center"
-                style={{ borderColor: "rgba(0, 0, 0, 0.05)" }}
+                style={{ borderColor: 'rgba(0, 0, 0, 0.05)' }}
               >
                 <h3
                   className="font-semibold flex items-center gap-2"
-                  style={{ fontSize: "15px" }}
+                  style={{ fontSize: '15px' }}
                 >
                   <MapPin className="h-4 w-4" />
                   Saved Locations
@@ -768,29 +771,31 @@ const MapView: React.FC = () => {
               {showCategoryFilter && (
                 <div
                   className="p-2 border-b"
-                  style={{ borderColor: "rgba(0, 0, 0, 0.05)" }}
+                  style={{ borderColor: 'rgba(0, 0, 0, 0.05)' }}
                 >
                   <div className="flex flex-wrap gap-2">
                     <button
                       onClick={() => setSelectedCategory(null)}
-                      className={`px-2 py-1 rounded-full text-xs font-medium transition-colors ${selectedCategory === null
-                          ? "bg-gray-200"
-                          : "bg-gray-100"
-                        }`}
+                      className={`px-2 py-1 rounded-full text-xs font-medium transition-colors ${
+                        selectedCategory === null
+                          ? 'bg-gray-200'
+                          : 'bg-gray-100'
+                      }`}
                       style={{ color: appleColors.text.primary }}
                     >
                       All
                     </button>
-                    {Object.values(categories).map((category) => (
+                    {Object.values(categories).map(category => (
                       <button
                         key={category.id}
                         onClick={() => setSelectedCategory(category.id)}
-                        className={`px-2 py-1 rounded-full text-xs font-medium transition-colors ${selectedCategory === category.id
-                            ? "bg-opacity-20"
-                            : "bg-opacity-10"
-                          }`}
+                        className={`px-2 py-1 rounded-full text-xs font-medium transition-colors ${
+                          selectedCategory === category.id
+                            ? 'bg-opacity-20'
+                            : 'bg-opacity-10'
+                        }`}
                         style={{
-                          backgroundColor: `${category.color}${selectedCategory === category.id ? "33" : "1A"}`,
+                          backgroundColor: `${category.color}${selectedCategory === category.id ? '33' : '1A'}`,
                           color: category.color,
                         }}
                       >
@@ -821,11 +826,11 @@ const MapView: React.FC = () => {
                 ) : (
                   Object.values(locations)
                     .filter(
-                      (location) =>
+                      location =>
                         !selectedCategory ||
-                        location.category === selectedCategory,
+                        location.category === selectedCategory
                     )
-                    .map((location) => {
+                    .map(location => {
                       const category = location.category
                         ? categories[location.category]
                         : null;
@@ -835,11 +840,11 @@ const MapView: React.FC = () => {
                           className="mx-2 my-1 p-3 rounded-lg text-sm cursor-pointer transition-colors duration-150"
                           style={{
                             backgroundColor: commonLocationIds.includes(
-                              location.id,
+                              location.id
                             )
-                              ? "rgba(255, 204, 0, 0.1)"
-                              : "rgba(255, 255, 255, 0.6)",
-                            borderLeft: `3px solid ${category ? category.color : "transparent"}`,
+                              ? 'rgba(255, 204, 0, 0.1)'
+                              : 'rgba(255, 255, 255, 0.6)',
+                            borderLeft: `3px solid ${category ? category.color : 'transparent'}`,
                           }}
                           onClick={() => {
                             setMapCenter([
@@ -852,19 +857,20 @@ const MapView: React.FC = () => {
                         >
                           <div
                             className="font-medium flex items-center justify-between"
-                            style={{ fontSize: "15px" }}
+                            style={{ fontSize: '15px' }}
                           >
                             <div className="flex items-center gap-1">
                               <span>{location.name}</span>
                               {location.isOpen !== undefined &&
                                 location.isOpen !== null && (
                                   <span
-                                    className={`text-xs px-1.5 py-0.5 rounded-full ml-1 ${location.isOpen
-                                        ? "bg-green-100 text-green-700"
-                                        : "bg-red-100 text-red-700"
-                                      }`}
+                                    className={`text-xs px-1.5 py-0.5 rounded-full ml-1 ${
+                                      location.isOpen
+                                        ? 'bg-green-100 text-green-700'
+                                        : 'bg-red-100 text-red-700'
+                                    }`}
                                   >
-                                    {location.isOpen ? "Open" : "Closed"}
+                                    {location.isOpen ? 'Open' : 'Closed'}
                                   </span>
                                 )}
                             </div>
@@ -884,7 +890,7 @@ const MapView: React.FC = () => {
                                   >
                                     {location.reviews.reduce(
                                       (sum, review) => sum + review.rating,
-                                      0,
+                                      0
                                     ) / location.reviews.length}
                                   </span>
                                 </div>
@@ -913,8 +919,8 @@ const MapView: React.FC = () => {
                                 style={{ color: appleColors.text.secondary }}
                               >
                                 {activeProfileId === location.addedBy
-                                  ? "Added by you"
-                                  : `Added by ${userNames[location.addedBy] || "Anonymous"}`}
+                                  ? 'Added by you'
+                                  : `Added by ${userNames[location.addedBy] || 'Anonymous'}`}
                               </span>
                             </div>
                             <div className="flex items-center gap-1">
@@ -926,10 +932,10 @@ const MapView: React.FC = () => {
                                       color: appleColors.text.secondary,
                                     }}
                                   >
-                                    {location.reviews.length}{" "}
+                                    {location.reviews.length}{' '}
                                     {location.reviews.length === 1
-                                      ? "review"
-                                      : "reviews"}
+                                      ? 'review'
+                                      : 'reviews'}
                                   </span>
                                 )}
                               {category && (
@@ -961,7 +967,7 @@ const MapView: React.FC = () => {
               <ImportLocationsButton
                 docPath="/jack/locations"
                 username="Jack"
-                onComplete={(result) => {
+                onComplete={result => {
                   if (result.success && result.imported > 0) {
                     // Center the map on the first location if any were imported
                     const locationValues = Object.values(locations);
@@ -997,7 +1003,7 @@ const MapView: React.FC = () => {
         {/* Map Container */}
         <div className="flex-grow h-full relative">
           <MapKitInitializer
-            onMapReady={(map) => {
+            onMapReady={map => {
               mapInstanceRef.current = map;
               setMapIsReady(true);
             }}
@@ -1006,7 +1012,7 @@ const MapView: React.FC = () => {
           {/* MapKit JS container */}
           <div
             ref={mapRef}
-            style={{ height: "100%", width: "100%" }}
+            style={{ height: '100%', width: '100%' }}
             className="map-container"
           />
 
@@ -1027,18 +1033,18 @@ const MapView: React.FC = () => {
             <div
               className="absolute inset-x-0 bottom-0 bg-white rounded-t-xl shadow-lg z-[10000] transition-transform transform translate-y-0 max-h-[80vh] md:max-h-[60%] flex flex-col"
               style={{
-                backgroundColor: "rgba(255, 255, 255, 0.95)",
-                backdropFilter: "blur(10px)",
-                WebkitBackdropFilter: "blur(10px)",
-                borderTopLeftRadius: "16px",
-                borderTopRightRadius: "16px",
-                boxShadow: "0 -2px 20px rgba(0, 0, 0, 0.1)",
+                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                borderTopLeftRadius: '16px',
+                borderTopRightRadius: '16px',
+                boxShadow: '0 -2px 20px rgba(0, 0, 0, 0.1)',
               }}
             >
               {/* Apple-style header */}
               <div
                 className="p-4 flex items-center justify-between"
-                style={{ borderBottom: "1px solid rgba(0, 0, 0, 0.1)" }}
+                style={{ borderBottom: '1px solid rgba(0, 0, 0, 0.1)' }}
               >
                 <button
                   onClick={() => {
@@ -1106,17 +1112,17 @@ const MapView: React.FC = () => {
 
                       {/* Added by */}
                       <div className="text-sm text-gray-600 mb-4">
-                        Added by:{" "}
+                        Added by:{' '}
                         {activeProfileId === locations[selectedLocation].addedBy
-                          ? "You"
+                          ? 'You'
                           : userNames[locations[selectedLocation].addedBy] ||
-                          "Anonymous"}
+                            'Anonymous'}
                       </div>
 
                       {/* Coordinates */}
                       <div className="text-sm text-gray-600 mb-4">
-                        Coordinates:{" "}
-                        {locations[selectedLocation].latitude.toFixed(6)},{" "}
+                        Coordinates:{' '}
+                        {locations[selectedLocation].latitude.toFixed(6)},{' '}
                         {locations[selectedLocation].longitude.toFixed(6)}
                       </div>
 
@@ -1137,11 +1143,11 @@ const MapView: React.FC = () => {
                             <div>
                               <div className="text-sm mb-2">
                                 <span
-                                  className={`font-medium ${businessHours.isOpen ? "text-green-600" : "text-red-600"}`}
+                                  className={`font-medium ${businessHours.isOpen ? 'text-green-600' : 'text-red-600'}`}
                                 >
                                   {businessHours.isOpen
-                                    ? "Open now"
-                                    : "Closed now"}
+                                    ? 'Open now'
+                                    : 'Closed now'}
                                 </span>
                               </div>
                               <div className="text-sm text-gray-600 space-y-1">
@@ -1150,8 +1156,8 @@ const MapView: React.FC = () => {
                                     key={index}
                                     className="flex justify-between"
                                   >
-                                    <span>{day.split(": ")[0]}</span>
-                                    <span>{day.split(": ")[1]}</span>
+                                    <span>{day.split(': ')[0]}</span>
+                                    <span>{day.split(': ')[1]}</span>
                                   </div>
                                 ))}
                               </div>
@@ -1172,16 +1178,16 @@ const MapView: React.FC = () => {
                         </h3>
 
                         {!locations[selectedLocation].reviews ||
-                          locations[selectedLocation].reviews.length === 0 ? (
+                        locations[selectedLocation].reviews.length === 0 ? (
                           <div className="text-gray-500 text-sm">
                             No reviews yet. Be the first to add a review!
                           </div>
                         ) : (
                           <div className="space-y-4">
                             {locations[selectedLocation].reviews?.map(
-                              (review) => {
+                              review => {
                                 const reviewer =
-                                  userNames[review.userId] || "Anonymous";
+                                  userNames[review.userId] || 'Anonymous';
                                 const isCurrentUser =
                                   review.userId === activeProfileId;
 
@@ -1190,7 +1196,7 @@ const MapView: React.FC = () => {
                                     key={review.id}
                                     className="p-4 rounded-lg"
                                     style={{
-                                      backgroundColor: "rgba(0, 0, 0, 0.03)",
+                                      backgroundColor: 'rgba(0, 0, 0, 0.03)',
                                     }}
                                   >
                                     <div className="flex justify-between items-start">
@@ -1203,7 +1209,7 @@ const MapView: React.FC = () => {
                                               fill={
                                                 i < review.rating
                                                   ? appleColors.yellow
-                                                  : "none"
+                                                  : 'none'
                                               }
                                               stroke={
                                                 i < review.rating
@@ -1214,7 +1220,7 @@ const MapView: React.FC = () => {
                                           ))}
                                         </div>
                                         <span className="text-sm font-medium">
-                                          {isCurrentUser ? "You" : reviewer}
+                                          {isCurrentUser ? 'You' : reviewer}
                                         </span>
                                       </div>
 
@@ -1223,7 +1229,7 @@ const MapView: React.FC = () => {
                                           onClick={() =>
                                             removeReview(
                                               selectedLocation,
-                                              review.id,
+                                              review.id
                                             )
                                           }
                                           className="text-xs text-red-500"
@@ -1239,12 +1245,12 @@ const MapView: React.FC = () => {
 
                                     <div className="text-xs text-gray-500 mt-2">
                                       {new Date(
-                                        review.createdAt,
+                                        review.createdAt
                                       ).toLocaleDateString()}
                                     </div>
                                   </div>
                                 );
-                              },
+                              }
                             )}
                           </div>
                         )}
@@ -1254,7 +1260,7 @@ const MapView: React.FC = () => {
                           className="mt-4 w-full py-2 rounded-lg font-medium text-sm"
                           style={{
                             backgroundColor: appleColors.blue,
-                            color: "white",
+                            color: 'white',
                           }}
                         >
                           Add Your Review
@@ -1272,18 +1278,18 @@ const MapView: React.FC = () => {
             <div
               className="absolute inset-x-0 bottom-0 bg-white rounded-t-xl shadow-lg z-[10000] transition-transform transform translate-y-0 max-h-[80vh] md:max-h-[60%] flex flex-col"
               style={{
-                backgroundColor: "rgba(255, 255, 255, 0.95)",
-                backdropFilter: "blur(10px)",
-                WebkitBackdropFilter: "blur(10px)",
-                borderTopLeftRadius: "16px",
-                borderTopRightRadius: "16px",
-                boxShadow: "0 -2px 20px rgba(0, 0, 0, 0.1)",
+                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                borderTopLeftRadius: '16px',
+                borderTopRightRadius: '16px',
+                boxShadow: '0 -2px 20px rgba(0, 0, 0, 0.1)',
               }}
             >
               {/* Apple-style header */}
               <div
                 className="p-4 flex items-center justify-between"
-                style={{ borderBottom: "1px solid rgba(0, 0, 0, 0.1)" }}
+                style={{ borderBottom: '1px solid rgba(0, 0, 0, 0.1)' }}
               >
                 <button
                   onClick={() => setShowReviewPanel(false)}
@@ -1335,7 +1341,7 @@ const MapView: React.FC = () => {
                         Your Rating
                       </label>
                       <div className="flex gap-2">
-                        {[1, 2, 3, 4, 5].map((rating) => (
+                        {[1, 2, 3, 4, 5].map(rating => (
                           <button
                             key={rating}
                             type="button"
@@ -1347,7 +1353,7 @@ const MapView: React.FC = () => {
                               fill={
                                 rating <= reviewRating
                                   ? appleColors.yellow
-                                  : "none"
+                                  : 'none'
                               }
                               stroke={
                                 rating <= reviewRating
@@ -1375,12 +1381,12 @@ const MapView: React.FC = () => {
                         className="w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2"
                         style={{
                           borderColor: appleColors.gray.medium,
-                          borderRadius: "10px",
-                          fontSize: "16px",
-                          resize: "none",
+                          borderRadius: '10px',
+                          fontSize: '16px',
+                          resize: 'none',
                         }}
                         value={reviewComment}
-                        onChange={(e) => setReviewComment(e.target.value)}
+                        onChange={e => setReviewComment(e.target.value)}
                       />
                     </div>
 
@@ -1390,7 +1396,7 @@ const MapView: React.FC = () => {
                           addReview(
                             selectedLocation,
                             reviewRating,
-                            reviewComment,
+                            reviewComment
                           );
                           setShowReviewPanel(false);
                         }
@@ -1402,7 +1408,7 @@ const MapView: React.FC = () => {
                           ? appleColors.blue
                           : appleColors.gray.light,
                         color: reviewComment.trim()
-                          ? "white"
+                          ? 'white'
                           : appleColors.gray.dark,
                         opacity: reviewComment.trim() ? 1 : 0.7,
                       }}
@@ -1420,18 +1426,18 @@ const MapView: React.FC = () => {
             <div
               className="absolute inset-x-0 bottom-0 bg-white rounded-t-xl shadow-lg z-[10000] transition-transform transform translate-y-0 max-h-[80vh] md:max-h-[60%] flex flex-col"
               style={{
-                backgroundColor: "rgba(255, 255, 255, 0.95)",
-                backdropFilter: "blur(10px)",
-                WebkitBackdropFilter: "blur(10px)",
-                borderTopLeftRadius: "16px",
-                borderTopRightRadius: "16px",
-                boxShadow: "0 -2px 20px rgba(0, 0, 0, 0.1)",
+                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                borderTopLeftRadius: '16px',
+                borderTopRightRadius: '16px',
+                boxShadow: '0 -2px 20px rgba(0, 0, 0, 0.1)',
               }}
             >
               {/* Apple-style header */}
               <div
                 className="p-4 flex items-center justify-between"
-                style={{ borderBottom: "1px solid rgba(0, 0, 0, 0.1)" }}
+                style={{ borderBottom: '1px solid rgba(0, 0, 0, 0.1)' }}
               >
                 <button
                   onClick={cancelAddLocation}
@@ -1489,12 +1495,12 @@ const MapView: React.FC = () => {
                       className="w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2"
                       style={{
                         borderColor: appleColors.gray.medium,
-                        borderRadius: "10px",
-                        fontSize: "16px",
+                        borderRadius: '10px',
+                        fontSize: '16px',
                       }}
                       value={newLocation.name}
-                      onChange={(e) =>
-                        setNewLocation((prev) => ({
+                      onChange={e =>
+                        setNewLocation(prev => ({
                           ...prev,
                           name: e.target.value,
                         }))
@@ -1518,13 +1524,13 @@ const MapView: React.FC = () => {
                       className="w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2"
                       style={{
                         borderColor: appleColors.gray.medium,
-                        borderRadius: "10px",
-                        fontSize: "16px",
-                        resize: "none",
+                        borderRadius: '10px',
+                        fontSize: '16px',
+                        resize: 'none',
                       }}
                       value={newLocation.description}
-                      onChange={(e) =>
-                        setNewLocation((prev) => ({
+                      onChange={e =>
+                        setNewLocation(prev => ({
                           ...prev,
                           description: e.target.value,
                         }))
@@ -1541,23 +1547,24 @@ const MapView: React.FC = () => {
                       Category
                     </label>
                     <div className="grid grid-cols-2 gap-2 mt-1">
-                      {Object.values(categories).map((category) => (
+                      {Object.values(categories).map(category => (
                         <button
                           key={category.id}
                           type="button"
-                          className={`p-2 rounded-lg flex items-center gap-2 transition-colors ${newLocation.category === category.id
-                              ? "ring-2"
-                              : "hover:bg-gray-50"
-                            }`}
+                          className={`p-2 rounded-lg flex items-center gap-2 transition-colors ${
+                            newLocation.category === category.id
+                              ? 'ring-2'
+                              : 'hover:bg-gray-50'
+                          }`}
                           style={{
                             backgroundColor:
                               newLocation.category === category.id
                                 ? `${category.color}1A`
-                                : "white",
+                                : 'white',
                             borderColor: appleColors.gray.medium,
                           }}
                           onClick={() =>
-                            setNewLocation((prev) => ({
+                            setNewLocation(prev => ({
                               ...prev,
                               category: category.id,
                             }))
@@ -1577,8 +1584,8 @@ const MapView: React.FC = () => {
                     <div
                       className="p-3 rounded-lg flex items-center gap-2 text-sm"
                       style={{
-                        backgroundColor: "rgba(0, 122, 255, 0.1)",
-                        borderRadius: "10px",
+                        backgroundColor: 'rgba(0, 122, 255, 0.1)',
+                        borderRadius: '10px',
                       }}
                     >
                       <MapPin
@@ -1602,18 +1609,18 @@ const MapView: React.FC = () => {
               onNext={() => {
                 const nextStep = currentTourStep + 1;
                 setCurrentTourStep(nextStep);
-                localStorage.setItem("tour-main-step", nextStep.toString());
+                localStorage.setItem('tour-main-step', nextStep.toString());
               }}
               onPrev={() => {
                 const prevStep = currentTourStep - 1;
                 setCurrentTourStep(prevStep);
-                localStorage.setItem("tour-main-step", prevStep.toString());
+                localStorage.setItem('tour-main-step', prevStep.toString());
               }}
               onClose={() => {
                 setShowTour(false);
                 setCurrentTourStep(0);
-                localStorage.removeItem("tour-main-active");
-                localStorage.removeItem("tour-main-step");
+                localStorage.removeItem('tour-main-active');
+                localStorage.removeItem('tour-main-step');
               }}
               totalSteps={tourSteps.length}
               tourId="main"
