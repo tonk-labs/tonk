@@ -452,7 +452,31 @@
         const appsGrid = document.getElementById('appsGrid');
         const emptyState = document.getElementById('emptyState');
 
-        loadedApps = await appStorage.getApps();
+        // First try to restore apps from keepsync
+        if (window.restoreAppsFromKeepsync) {
+          try {
+            const restoredApps = await window.restoreAppsFromKeepsync();
+            if (restoredApps.length > 0) {
+              loadedApps = restoredApps;
+              console.log('Apps restored from keepsync:', loadedApps.length);
+
+              // Also save restored apps to IndexedDB as cache
+              for (const app of loadedApps) {
+                if (appStorage && appStorage.saveApp) {
+                  await appStorage.saveApp(app);
+                }
+              }
+            }
+          } catch (error) {
+            console.warn('Failed to restore apps from keepsync:', error);
+          }
+        }
+
+        // Fallback to IndexedDB if no apps from keepsync
+        if (loadedApps.length === 0) {
+          loadedApps = await appStorage.getApps();
+        }
+
         loadedApps.sort((a, b) => b.lastAccessed - a.lastAccessed);
 
         if (loadedApps.length === 0) {
@@ -472,6 +496,7 @@
                     <div class="app-name">${app.name}</div>
                     <div class="app-meta">
                         Last used: ${new Date(app.lastAccessed).toLocaleDateString()}
+                        ${app.restoredFromKeepsync ? ' (restored)' : ''}
                     </div>
                     <div class="app-actions">
                         <button class="app-action-btn" onclick="event.stopPropagation(); deleteApp('${app.id}')">Delete</button>
@@ -485,18 +510,34 @@
       async function launchApp(appId) {
         const app = loadedApps.find(a => a.id === appId);
         if (app) {
-          // Update last accessed time
+          // Update last accessed time in keepsync
+          if (window.updateAppLastAccessed) {
+            await window.updateAppLastAccessed(app.name);
+          }
+
+          // Also update in local cache
           app.lastAccessed = Date.now();
-          await appStorage.saveApp(app);
+          if (appStorage && appStorage.saveApp) {
+            await appStorage.saveApp(app);
+          }
 
           // Navigate to app
           window.location.href = `/apps/${app.name}/`;
         }
       }
 
-      async function deleteApp(appId) {
+      async function deleteApp(appName, appId) {
         if (confirm('Are you sure you want to delete this app?')) {
-          await appStorage.deleteApp(appId);
+          // Delete from keepsync
+          if (window.deleteAppFromKeepsync) {
+            await window.deleteAppFromKeepsync(appName);
+          }
+
+          // Also delete from IndexedDB
+          if (window.appStorage && window.appStorage.deleteApp) {
+            await appStorage.deleteApp(appId);
+          }
+
           await renderApps();
           showNotification('App deleted', 'success');
         }
@@ -508,7 +549,11 @@
         await appStorage.init();
         // Make appStorage globally available for load-in.js
         window.appStorage = appStorage;
-        await renderApps();
+
+        // Wait a bit for load-in.js to initialize keepsync
+        setTimeout(async () => {
+          await renderApps();
+        }, 1000);
       });
 
       // Listen for progress events from load-in.js
