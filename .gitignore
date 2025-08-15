@@ -44,3 +44,4 @@ report.*.json
 **/.DS_Store
 
 *.tonk
+*.tar.gz
