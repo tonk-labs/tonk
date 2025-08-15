@@ -21,3 +21,6 @@ export * from './core/index.js';
 
 // Re-export specific functions for easier access
 export { configureSyncEngine, getSyncEngine } from './core/syncConfig.js';
+
+// Export network adapters
+export { IrohNetworkAdapter } from './adapters/index.js';

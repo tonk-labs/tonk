@@ -1,4 +1,9 @@
-import {Message, NetworkAdapter, PeerId} from '@automerge/automerge-repo';
+import {
+  Message,
+  NetworkAdapter,
+  PeerId,
+  PeerMetadata,
+} from '@automerge/automerge-repo';
 
 export const pause = (t = 0) =>
   new Promise<void>(resolve => setTimeout(() => resolve(), t));
@@ -6,24 +11,44 @@ export const pause = (t = 0) =>
 export class DummyNetworkAdapter extends NetworkAdapter {
   #startReady: boolean;
   #sendMessage?: SendMessageFn;
+  #ready: boolean = false;
+  #readyPromise: Promise<void>;
+  #readyResolve: ((value: void) => void) | null = null;
 
-  constructor(opts: Options = {startReady: true}) {
+  constructor(opts: Options = { startReady: true }) {
     super();
     this.#startReady = opts.startReady || false;
     this.#sendMessage = opts.sendMessage;
+    this.#readyPromise = new Promise<void>(resolve => {
+      this.#readyResolve = resolve;
+    });
   }
 
-  connect(peerId: PeerId) {
+  isReady(): boolean {
+    return this.#ready;
+  }
+
+  whenReady(): Promise<void> {
+    return this.#readyPromise;
+  }
+
+  connect(peerId: PeerId, peerMetadata?: PeerMetadata) {
     this.peerId = peerId;
+    this.peerMetadata = peerMetadata;
     if (this.#startReady) {
-      this.emit('ready', {network: this});
+      this.#ready = true;
+      if (this.#readyResolve) {
+        this.#readyResolve();
+      }
     }
   }
 
-  disconnect() {}
+  disconnect() {
+    this.#ready = false;
+  }
 
   peerCandidate(peerId: PeerId) {
-    this.emit('peer-candidate', {peerId, peerMetadata: {}});
+    this.emit('peer-candidate', { peerId, peerMetadata: {} });
   }
 
   override send(message: Message) {
@@ -34,7 +59,7 @@ export class DummyNetworkAdapter extends NetworkAdapter {
     this.emit('message', message);
   }
 
-  static createConnectedPair({latency = 10}: {latency?: number} = {}) {
+  static createConnectedPair({ latency = 10 }: { latency?: number } = {}) {
     const adapter1: DummyNetworkAdapter = new DummyNetworkAdapter({
       startReady: true,
       sendMessage: (message: Message) =>
