@@ -95,10 +95,79 @@ button {
   margin-right: 5px;
 }
 
+/* Dashboard styles */
+.dashboard {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  text-align: left;
+}
+
+.status-section,
+.peers-section,
+.discovery-section,
+.debug-section {
+  margin-bottom: 30px;
+  padding: 20px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background-color: #fafafa;
+}
+
+.controls {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+  flex-wrap: wrap;
+}
+
+.peers-section ul,
+.discovery-section ul {
+  list-style: none;
+  padding: 0;
+}
+
+.peers-section li,
+.discovery-section li {
+  padding: 10px;
+  margin: 5px 0;
+  background: #f0f0f0;
+  border-radius: 5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.debug-section pre {
+  background: #f5f5f5;
+  padding: 10px;
+  border-radius: 5px;
+  overflow: auto;
+  font-size: 12px;
+  max-height: 300px;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color: #f6f6f6;
     background-color: #2f2f2f;
+  }
+
+  .status-section,
+  .peers-section,
+  .discovery-section,
+  .debug-section {
+    background-color: #3a3a3a;
+    border-color: #555;
+  }
+
+  .peers-section li,
+  .discovery-section li {
+    background: #4a4a4a;
+  }
+
+  .debug-section pre {
+    background: #333;
   }
 
   a:hover {

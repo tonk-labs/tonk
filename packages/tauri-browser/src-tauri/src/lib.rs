@@ -25,7 +25,25 @@ pub fn run() {
             send_automerge_message,
             disconnect_all_peers,
             get_node_id,
-            get_connected_peers
+            get_connected_peers,
+            get_discovered_peers,
+            configure_mdns_discovery,
+            toggle_local_discovery,
+            restart_discovery,
+            get_p2p_status,
+            get_connection_status,
+            get_all_connection_attempts,
+            reset_connection_attempts,
+            configure_connection_manager,
+            get_network_interfaces,
+            get_primary_network_interface,
+            check_network_connectivity,
+            refresh_network_info,
+            get_discovery_preferences,
+            update_discovery_preferences,
+            reset_discovery_preferences,
+            export_discovery_config,
+            import_discovery_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

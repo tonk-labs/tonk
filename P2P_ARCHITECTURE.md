@@ -357,7 +357,7 @@ export class P2PSync {
 #### Phase 2: P2P Discovery
 
 1. Implement mDNS discovery
-2. Add DHT-based discovery
+2. Add DHT-based discovery (come back later)
 3. Handle peer connection lifecycle
 4. Test local network discovery
 

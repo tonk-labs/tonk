@@ -18,8 +18,43 @@ export interface PeerInfo {
   connected: boolean;
 }
 
+export interface TonkServiceInfo {
+  bundle_id: string;
+  node_id: string;
+  protocol_version: number;
+  port: number;
+  capabilities: string[];
+  instance_name: string;
+  addresses: string[];
+  discovered_at: number;
+}
+
+export interface DiscoveryConfig {
+  enabled: boolean;
+  announce_interval: number;
+  browse_interval: number;
+  service_ttl: number;
+  max_peers: number;
+  interface?: string;
+}
+
+export interface ConnectionAttempt {
+  peer_id: string;
+  attempts: number;
+  last_attempt: string;
+  next_attempt: string;
+  backoff_duration: number;
+  max_attempts: number;
+  connected: boolean;
+}
+
+export interface ConnectionStatus {
+  [peerId: string]: ConnectionAttempt;
+}
+
 export class IrohNetworkAdapter extends NetworkAdapter {
   private peers: Map<PeerId, boolean> = new Map();
+  private discoveredPeers: Map<PeerId, TonkServiceInfo> = new Map();
   private _isReady = false;
   private readyPromise: Promise<void>;
   private resolveReady?: () => void;
@@ -69,12 +104,35 @@ export class IrohNetworkAdapter extends NetworkAdapter {
 
     // Listen for peer discovery events
     listen('peer_discovered', (event: any) => {
-      const { peerId, bundleId } = event.payload;
+      const { peerId, bundleId, addresses, port, capabilities } = event.payload;
       console.log('Peer discovered:', peerId, bundleId);
 
-      this.peers.set(peerId, true);
+      // Store discovered peer info
+      const serviceInfo: TonkServiceInfo = {
+        bundle_id: bundleId,
+        node_id: peerId,
+        protocol_version: 1,
+        port: port || 0,
+        capabilities: capabilities || ['sync'],
+        instance_name: `tonk-${bundleId.slice(0, 8)}`,
+        addresses: addresses || [],
+        discovered_at: Date.now(),
+      };
+
+      this.discoveredPeers.set(peerId, serviceInfo);
+      this.peers.set(peerId, false); // Not connected yet
+
       // Auto-connect to discovered peers
       this.connectToPeer(peerId);
+    });
+
+    // Listen for peer lost events
+    listen('peer_lost', (event: any) => {
+      const { peerId } = event.payload;
+      console.log('Peer lost:', peerId);
+
+      this.discoveredPeers.delete(peerId);
+      this.peers.delete(peerId);
     });
 
     // Listen for connection status
@@ -83,6 +141,30 @@ export class IrohNetworkAdapter extends NetworkAdapter {
       console.log('Peer connected:', peerId);
 
       this.peers.set(peerId, true);
+    });
+
+    // Listen for connection failures
+    listen('peer_connection_failed', (event: any) => {
+      const { peerId, reason } = event.payload;
+      console.log(`Peer connection failed: ${peerId}, reason: ${reason}`);
+    });
+
+    // Listen for retry attempts
+    listen('peer_retry_attempt', (event: any) => {
+      const { peerId } = event.payload;
+      console.log('Retrying connection to peer:', peerId);
+    });
+
+    // Listen for connection exhaustion
+    listen('peer_connection_exhausted', (event: any) => {
+      const { peerId } = event.payload;
+      console.log(`Connection attempts exhausted for peer: ${peerId}`);
+    });
+
+    // Listen for discovery events
+    listen('discovery_event', (event: any) => {
+      const { type, service } = event.payload;
+      console.log(`Discovery event: ${type}`, service);
     });
 
     // Listen for P2P ready event
@@ -95,6 +177,7 @@ export class IrohNetworkAdapter extends NetworkAdapter {
     listen('all_peers_disconnected', () => {
       console.log('All peers disconnected');
       this.peers.clear();
+      this.discoveredPeers.clear();
     });
   }
 
@@ -168,11 +251,71 @@ export class IrohNetworkAdapter extends NetworkAdapter {
     }
   }
 
+  async getDiscoveredPeers(): Promise<TonkServiceInfo[]> {
+    try {
+      return await invoke('get_discovered_peers');
+    } catch (error) {
+      console.error('Failed to get discovered peers:', error);
+      return [];
+    }
+  }
+
   async getNodeId(): Promise<string | null> {
     try {
       return await invoke('get_node_id');
     } catch (error) {
       console.error('Failed to get node ID:', error);
+      return null;
+    }
+  }
+
+  async getConnectionStatus(peerId: string): Promise<ConnectionAttempt | null> {
+    try {
+      return await invoke('get_connection_status', { peerId });
+    } catch (error) {
+      console.error('Failed to get connection status:', error);
+      return null;
+    }
+  }
+
+  async getAllConnectionAttempts(): Promise<ConnectionStatus> {
+    try {
+      return await invoke('get_all_connection_attempts');
+    } catch (error) {
+      console.error('Failed to get connection attempts:', error);
+      return {};
+    }
+  }
+
+  async resetConnectionAttempts(peerId: string): Promise<void> {
+    try {
+      await invoke('reset_connection_attempts', { peerId });
+    } catch (error) {
+      console.error('Failed to reset connection attempts:', error);
+    }
+  }
+
+  async toggleLocalDiscovery(enabled: boolean): Promise<void> {
+    try {
+      await invoke('toggle_local_discovery', { enabled });
+    } catch (error) {
+      console.error('Failed to toggle local discovery:', error);
+    }
+  }
+
+  async restartDiscovery(): Promise<void> {
+    try {
+      await invoke('restart_discovery');
+    } catch (error) {
+      console.error('Failed to restart discovery:', error);
+    }
+  }
+
+  async getP2PStatus(): Promise<any> {
+    try {
+      return await invoke('get_p2p_status');
+    } catch (error) {
+      console.error('Failed to get P2P status:', error);
       return null;
     }
   }

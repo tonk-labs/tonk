@@ -45,6 +45,48 @@ export class P2PSync {
     return this.networkAdapter.getConnectedPeers();
   }
 
+  async getDiscoveredPeers() {
+    if (!this.networkAdapter) {
+      return [];
+    }
+    return this.networkAdapter.getDiscoveredPeers();
+  }
+
+  async getConnectionStatus(peerId: string) {
+    if (!this.networkAdapter) {
+      return null;
+    }
+    return this.networkAdapter.getConnectionStatus(peerId);
+  }
+
+  async getAllConnectionAttempts() {
+    if (!this.networkAdapter) {
+      return {};
+    }
+    return this.networkAdapter.getAllConnectionAttempts();
+  }
+
+  async toggleDiscovery(enabled: boolean) {
+    if (!this.networkAdapter) {
+      return;
+    }
+    return this.networkAdapter.toggleLocalDiscovery(enabled);
+  }
+
+  async restartDiscovery() {
+    if (!this.networkAdapter) {
+      return;
+    }
+    return this.networkAdapter.restartDiscovery();
+  }
+
+  async getP2PStatus() {
+    if (!this.networkAdapter) {
+      return null;
+    }
+    return this.networkAdapter.getP2PStatus();
+  }
+
   async shutdown(): Promise<void> {
     if (this.networkAdapter) {
       this.networkAdapter.disconnect();
