@@ -1,9 +1,9 @@
-import { Repo, PeerId } from '@automerge/automerge-repo';
+import { PeerId } from '@automerge/automerge-repo';
 import { IndexedDBStorageAdapter } from '@automerge/automerge-repo-storage-indexeddb';
 import { IrohNetworkAdapter } from './adapters/iroh.js';
+import { configureSyncEngine, getSyncEngine } from '@tonk/keepsync';
 
 export class P2PSync {
-  private repo?: Repo;
   private networkAdapter?: IrohNetworkAdapter;
 
   async initialize(bundleId: string): Promise<void> {
@@ -18,8 +18,9 @@ export class P2PSync {
       throw new Error('Failed to get node ID from P2P system');
     }
 
-    // Initialize the Automerge repo with P2P networking
-    this.repo = new Repo({
+    // Configure keepsync's SyncEngine with Iroh network adapter
+    await configureSyncEngine({
+      url: '', // Empty URL will create a new root document
       peerId: nodeId as PeerId,
       network: [this.networkAdapter],
       storage: new IndexedDBStorageAdapter('tonk-p2p'),
@@ -28,14 +29,17 @@ export class P2PSync {
     // Wait for the network to be ready
     await this.networkAdapter.whenReady();
 
+    // Wait for the sync engine to be ready
+    const syncEngine = getSyncEngine();
+    if (syncEngine) {
+      await syncEngine.whenReady();
+    }
+
     console.log('P2P sync initialized for bundle:', bundleId);
   }
 
-  getRepo(): Repo {
-    if (!this.repo) {
-      throw new Error('P2PSync not initialized. Call initialize() first.');
-    }
-    return this.repo;
+  getSyncEngine() {
+    return getSyncEngine();
   }
 
   async getConnectedPeers() {
@@ -91,8 +95,12 @@ export class P2PSync {
     if (this.networkAdapter) {
       this.networkAdapter.disconnect();
     }
-    if (this.repo) {
-      await this.repo.shutdown();
+    const syncEngine = getSyncEngine();
+    if (syncEngine) {
+      const repo = syncEngine.getRepo();
+      if (repo) {
+        await repo.shutdown();
+      }
     }
     console.log('P2P sync shut down');
   }

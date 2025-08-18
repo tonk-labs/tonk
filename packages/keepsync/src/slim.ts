@@ -24,9 +24,6 @@ export * from './core/index.js';
 // Re-export specific functions for easier access
 export { configureSyncEngine, getSyncEngine } from './core/index.js';
 
-// Export network adapters
-export { IrohNetworkAdapter } from './adapters/index.js';
-
 // Export WASM initialization for slim entry point users
 export { initializeWasm } from '@automerge/automerge-repo/slim';
 setIsSlim();

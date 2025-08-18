@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { P2PSync } from '../lib/p2p-sync';
+import { DataSyncDemo } from './DataSyncDemo';
 
 interface PeerInfo {
   peer_id: string;
@@ -21,7 +22,7 @@ export function P2PDashboard() {
   const [p2pStatus, setP2PStatus] = useState<any>(null);
   const [connectedPeers, setConnectedPeers] = useState<PeerInfo[]>([]);
   const [discoveredPeers, setDiscoveredPeers] = useState<TonkServiceInfo[]>([]);
-  const [, setP2PSync] = useState<P2PSync | null>(null);
+  const [p2pSync, setP2PSync] = useState<P2PSync | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
@@ -148,6 +149,8 @@ export function P2PDashboard() {
         <h2>P2P Status</h2>
         <pre>{JSON.stringify(p2pStatus, null, 2)}</pre>
       </div>
+
+      <DataSyncDemo p2pSync={p2pSync} />
     </div>
   );
 }

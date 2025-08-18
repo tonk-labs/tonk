@@ -6,9 +6,16 @@ import {
 } from '@automerge/automerge-repo';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getSyncEngine } from '@tonk/keepsync';
 
 export interface AutomergeMessage {
   message_type: string;
+  data: number[];
+}
+
+// The message format we receive from Rust (after JSON transformation)
+export interface ReceivedAutomergeMessage {
+  type: string;
   data: number[];
 }
 
@@ -55,20 +62,20 @@ export interface ConnectionStatus {
 export class IrohNetworkAdapter extends NetworkAdapter {
   private peers: Map<PeerId, boolean> = new Map();
   private discoveredPeers: Map<PeerId, TonkServiceInfo> = new Map();
-  private _isReady = false;
+  private ready = false;
   private readyPromise: Promise<void>;
-  private resolveReady?: () => void;
+  private readyResolver?: () => void;
 
   constructor() {
     super();
     this.readyPromise = new Promise(resolve => {
-      this.resolveReady = resolve;
+      this.readyResolver = resolve;
     });
     this.setupListeners();
   }
 
   isReady(): boolean {
-    return this._isReady;
+    return this.ready;
   }
 
   whenReady(): Promise<void> {
@@ -76,10 +83,10 @@ export class IrohNetworkAdapter extends NetworkAdapter {
   }
 
   private setReady(): void {
-    if (!this._isReady) {
-      this._isReady = true;
-      if (this.resolveReady) {
-        this.resolveReady();
+    if (!this.ready) {
+      this.ready = true;
+      if (this.readyResolver) {
+        this.readyResolver();
       }
     }
   }
@@ -88,18 +95,43 @@ export class IrohNetworkAdapter extends NetworkAdapter {
     // Listen for Automerge messages from Iroh connections
     listen('automerge_message', (event: any) => {
       const { peerId, message } = event.payload;
-      console.log('Received automerge message from peer:', peerId);
+      console.log(
+        'Received automerge message from peer:',
+        peerId,
+        'type:',
+        message.type,
+        'data length:',
+        message.data.length
+      );
 
       // Convert number array back to Uint8Array
       const data = new Uint8Array(message.data);
 
       // Forward to Automerge-repo for processing
-      this.emit('message', {
+      const messageForRepo: any = {
         senderId: peerId as PeerId,
         targetId: this.peerId || ('' as PeerId),
-        type: message.message_type,
+        type: message.type,
         data: data,
+      };
+
+      // Add documentId for sync messages - use the root document ID
+      if (message.type === 'sync') {
+        const syncEngine = getSyncEngine();
+        if (syncEngine) {
+          const rootId = syncEngine.getRootId();
+          if (rootId) {
+            messageForRepo.documentId = rootId;
+          }
+        }
+      }
+
+      console.log('Emitting message to automerge-repo:', {
+        ...messageForRepo,
+        data: `[Uint8Array ${messageForRepo.data.length} bytes]`,
       });
+
+      this.emit('message', messageForRepo);
     });
 
     // Listen for peer discovery events
@@ -133,6 +165,9 @@ export class IrohNetworkAdapter extends NetworkAdapter {
 
       this.discoveredPeers.delete(peerId);
       this.peers.delete(peerId);
+
+      // Emit peer-disconnected event to notify Automerge repo
+      this.emit('peer-disconnected', { peerId });
     });
 
     // Listen for connection status
@@ -141,6 +176,9 @@ export class IrohNetworkAdapter extends NetworkAdapter {
       console.log('Peer connected:', peerId);
 
       this.peers.set(peerId, true);
+
+      // Emit peer-candidate event to notify Automerge repo about the new peer
+      this.peerCandidate(peerId as PeerId, {});
     });
 
     // Listen for connection failures
@@ -176,6 +214,12 @@ export class IrohNetworkAdapter extends NetworkAdapter {
     // Listen for disconnection events
     listen('all_peers_disconnected', () => {
       console.log('All peers disconnected');
+
+      // Emit peer-disconnected for each connected peer
+      for (const peerId of this.peers.keys()) {
+        this.emit('peer-disconnected', { peerId });
+      }
+
       this.peers.clear();
       this.discoveredPeers.clear();
     });
@@ -208,13 +252,19 @@ export class IrohNetworkAdapter extends NetworkAdapter {
   }
 
   send(message: Message): void {
-    if (!this._isReady) {
+    if (!this.ready) {
       console.warn('IrohNetworkAdapter not ready, dropping message');
       return;
     }
 
     // Ensure message.data exists and convert to array
     const data = message.data ? Array.from(message.data) : [];
+
+    console.log('Sending automerge message:', {
+      targetId: message.targetId,
+      type: message.type,
+      dataLength: data.length,
+    });
 
     // Send Automerge sync messages through Iroh
     invoke('send_automerge_message', {
@@ -236,7 +286,7 @@ export class IrohNetworkAdapter extends NetworkAdapter {
   disconnect(): void {
     console.log('Disconnecting all peers');
     this.peers.clear();
-    this._isReady = false;
+    this.ready = false;
     invoke('disconnect_all_peers').catch((error: any) => {
       console.error('Failed to disconnect peers:', error);
     });
@@ -318,5 +368,17 @@ export class IrohNetworkAdapter extends NetworkAdapter {
       console.error('Failed to get P2P status:', error);
       return null;
     }
+  }
+
+  private peerCandidate(
+    remotePeerId: PeerId,
+    peerMetadata: PeerMetadata
+  ): void {
+    console.log('Emitting peer-candidate for:', remotePeerId);
+    this.setReady(); // Mark adapter as ready when we have a peer
+    this.emit('peer-candidate', {
+      peerId: remotePeerId,
+      peerMetadata,
+    });
   }
 }
