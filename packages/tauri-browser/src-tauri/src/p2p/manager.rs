@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
@@ -16,8 +15,18 @@ use super::network::NetworkInterface;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomergeMessage {
+    #[serde(rename = "type")]
     pub message_type: String,
-    pub data: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Vec<u8>>,
+    #[serde(rename = "senderId")]
+    pub sender_id: Option<String>,
+    #[serde(rename = "targetId")]
+    pub target_id: Option<String>,
+    #[serde(rename = "documentId")]
+    pub document_id: Option<String>,
+    #[serde(rename = "peerMetadata", skip_serializing_if = "Option::is_none")]
+    pub peer_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,7 +97,7 @@ impl P2PManager {
 
         // Get the node ID and actual listening port from the endpoint
         let node_id = endpoint.node_id().to_string();
-        
+
         // Get the actual port the endpoint is listening on
         let local_addr = endpoint
             .bound_sockets()
@@ -302,43 +311,62 @@ impl P2PManager {
         target_id: String,
         message: AutomergeMessage,
     ) -> Result<()> {
-        println!("Sending message to peer: {}", target_id);
+        println!(
+            "Sending message to peer: {} type: {}, documentId: {:?}",
+            target_id, message.message_type, message.document_id
+        );
 
-        // Get the connection for this peer
+        // Handle broadcast messages (like arrive)
+        if target_id == "broadcast" || message.message_type == "arrive" {
+            // Send to all connected peers
+            let connections = self.connections.read().await;
+            for (peer_id, conn) in connections.iter() {
+                println!("Broadcasting message to peer: {}", peer_id);
+                self.send_message_to_connection(conn.clone(), message.clone())
+                    .await?;
+            }
+            return Ok(());
+        }
+
+        // Get the connection for this specific peer
         let connection = {
             let connections = self.connections.read().await;
             connections.get(&target_id).cloned()
         };
 
         if let Some(conn) = connection {
-            // Open a new unidirectional stream for this message
-            match conn.open_uni().await {
-                Ok(mut send_stream) => {
-                    // Serialize the message as JSON (we could use a more efficient format)
-                    let serialized = serde_json::to_vec(&message)
-                        .map_err(|e| anyhow::anyhow!("Failed to serialize message: {}", e))?;
-
-                    // Send the message
-                    send_stream
-                        .write_all(&serialized)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("Failed to write message: {}", e))?;
-
-                    send_stream
-                        .finish()
-                        .map_err(|e| anyhow::anyhow!("Failed to finish stream: {}", e))?;
-
-                    println!("Message sent successfully to peer: {}", target_id);
-                    Ok(())
-                }
-                Err(e) => Err(anyhow::anyhow!(
-                    "Failed to open stream to peer {}: {}",
-                    target_id,
-                    e
-                )),
-            }
+            self.send_message_to_connection(conn, message).await
         } else {
             Err(anyhow::anyhow!("No connection to peer: {}", target_id))
+        }
+    }
+
+    async fn send_message_to_connection(
+        &self,
+        conn: iroh::endpoint::Connection,
+        message: AutomergeMessage,
+    ) -> Result<()> {
+        // Open a new unidirectional stream for this message
+        match conn.open_uni().await {
+            Ok(mut send_stream) => {
+                // Serialize the message as JSON
+                let serialized = serde_json::to_vec(&message)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize message: {}", e))?;
+
+                // Send the message
+                send_stream
+                    .write_all(&serialized)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to write message: {}", e))?;
+
+                send_stream
+                    .finish()
+                    .map_err(|e| anyhow::anyhow!("Failed to finish stream: {}", e))?;
+
+                println!("Message sent successfully, type: {}", message.message_type);
+                Ok(())
+            }
+            Err(e) => Err(anyhow::anyhow!("Failed to open stream: {}", e)),
         }
     }
 
@@ -697,18 +725,31 @@ impl P2PManager {
                                     // Try to deserialize the message
                                     match serde_json::from_slice::<AutomergeMessage>(&data) {
                                         Ok(message) => {
-                                            println!("Received message from peer {}: type={}, data_len={}", 
-                                                peer_id, message.message_type, message.data.len());
+                                            println!("Received message from peer {}: type={}, data_len={}, documentId={:?}", 
+                                                peer_id, message.message_type, 
+                                                message.data.as_ref().map(|d| d.len()).unwrap_or(0),
+                                                message.document_id);
 
-                                            // Emit message to frontend
+                                            // Emit message to frontend with proper format
+                                            // Note: We're using the original field values directly to preserve them
+                                            let mut message_json = serde_json::json!({
+                                                "type": message.message_type,
+                                                "data": message.data,
+                                                "senderId": message.sender_id.clone().unwrap_or_else(|| peer_id.clone()),
+                                                "targetId": message.target_id,
+                                                "documentId": message.document_id,
+                                            });
+
+                                            // Add peer metadata for handshake messages
+                                            if let Some(metadata) = message.peer_metadata {
+                                                message_json["peerMetadata"] = metadata;
+                                            }
+
                                             if let Err(e) = app_handle.emit(
                                                 "automerge_message",
                                                 serde_json::json!({
                                                     "peerId": peer_id,
-                                                    "message": {
-                                                        "type": message.message_type,
-                                                        "data": message.data
-                                                    }
+                                                    "message": message_json
                                                 }),
                                             ) {
                                                 eprintln!(

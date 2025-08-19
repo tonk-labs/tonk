@@ -23,6 +23,7 @@ pub fn run() {
             start_discovery,
             connect_to_peer,
             send_automerge_message,
+            broadcast_message,
             disconnect_all_peers,
             get_node_id,
             get_connected_peers,

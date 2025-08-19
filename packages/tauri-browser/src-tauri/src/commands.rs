@@ -54,6 +54,29 @@ pub async fn send_automerge_message(
 }
 
 #[tauri::command]
+pub async fn broadcast_message(
+    message: serde_json::Value,
+    p2p_state: State<'_, P2PState>,
+) -> Result<(), String> {
+    let p2p_manager = p2p_state.lock().await;
+    
+    // Convert JSON to AutomergeMessage
+    let automerge_msg = AutomergeMessage {
+        message_type: message["type"].as_str().unwrap_or("unknown").to_string(),
+        data: None,
+        sender_id: message["senderId"].as_str().map(|s| s.to_string()),
+        target_id: None,
+        document_id: message["documentId"].as_str().map(|s| s.to_string()),
+        peer_metadata: message.get("peerMetadata").cloned(),
+    };
+    
+    p2p_manager
+        .send_automerge_message("broadcast".to_string(), automerge_msg)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn disconnect_all_peers(p2p_state: State<'_, P2PState>) -> Result<(), String> {
     let p2p_manager = p2p_state.lock().await;
     p2p_manager

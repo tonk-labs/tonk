@@ -3,21 +3,34 @@ import {
   Message,
   PeerId,
   PeerMetadata,
+  RepoMessage,
 } from '@automerge/automerge-repo';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { getSyncEngine } from '@tonk/keepsync';
 
-export interface AutomergeMessage {
-  message_type: string;
-  data: number[];
+// Handshake message types following MessageChannel adapter pattern
+// These are used internally for the handshake protocol
+interface ArriveMessage {
+  type: 'arrive';
+  senderId: PeerId;
+  peerMetadata: PeerMetadata;
+  targetId?: never;
 }
 
-// The message format we receive from Rust (after JSON transformation)
-export interface ReceivedAutomergeMessage {
-  type: string;
-  data: number[];
+interface WelcomeMessage {
+  type: 'welcome';
+  senderId: PeerId;
+  targetId: PeerId;
+  peerMetadata: PeerMetadata;
 }
+
+interface LeaveMessage {
+  type: 'leave';
+  senderId: PeerId;
+}
+
+// Union type for all handshake messages (used internally)
+export type HandshakeMessage = ArriveMessage | WelcomeMessage | LeaveMessage;
 
 export interface PeerInfo {
   peer_id: string;
@@ -65,6 +78,7 @@ export class IrohNetworkAdapter extends NetworkAdapter {
   private ready = false;
   private readyPromise: Promise<void>;
   private readyResolver?: () => void;
+  private remotePeerId?: PeerId;
 
   constructor() {
     super();
@@ -95,43 +109,94 @@ export class IrohNetworkAdapter extends NetworkAdapter {
     // Listen for Automerge messages from Iroh connections
     listen('automerge_message', (event: any) => {
       const { peerId, message } = event.payload;
+      const senderId = peerId as PeerId;
+
       console.log(
-        'Received automerge message from peer:',
+        'Received message from peer:',
         peerId,
         'type:',
         message.type,
         'data length:',
-        message.data.length
+        message.data ? message.data.length : 0
       );
 
-      // Convert number array back to Uint8Array
-      const data = new Uint8Array(message.data);
+      // Handle handshake messages
+      switch (message.type) {
+        case 'arrive': {
+          // Peer is announcing themselves, send welcome back
+          const peerMetadata = message.peerMetadata || {};
+          console.log('Received arrive message from:', senderId);
 
-      // Forward to Automerge-repo for processing
-      const messageForRepo: any = {
-        senderId: peerId as PeerId,
-        targetId: this.peerId || ('' as PeerId),
-        type: message.type,
-        data: data,
-      };
+          // Send welcome message back using invoke directly for handshake
+          invoke('send_automerge_message', {
+            targetId: senderId,
+            message: {
+              type: 'welcome',
+              senderId: this.peerId,
+              targetId: senderId,
+              peerMetadata: this.peerMetadata || {},
+            },
+          }).catch((error: any) => {
+            console.error('Failed to send welcome message:', error);
+          });
 
-      // Add documentId for sync messages - use the root document ID
-      if (message.type === 'sync') {
-        const syncEngine = getSyncEngine();
-        if (syncEngine) {
-          const rootId = syncEngine.getRootId();
-          if (rootId) {
-            messageForRepo.documentId = rootId;
+          // Announce the connection
+          this.announceConnection(senderId, peerMetadata);
+          break;
+        }
+
+        case 'welcome': {
+          // Peer is welcoming us after our arrive message
+          const peerMetadata = message.peerMetadata || {};
+          console.log('Received welcome message from:', senderId);
+
+          // Announce the connection
+          this.announceConnection(senderId, peerMetadata);
+          break;
+        }
+
+        case 'leave': {
+          // Peer is disconnecting
+          console.log('Received leave message from:', senderId);
+          if (this.remotePeerId === senderId) {
+            this.emit('peer-disconnected', { peerId: senderId });
+            this.emit('close');
           }
+          break;
+        }
+
+        default: {
+          // Regular Automerge sync message
+          const messageForRepo: Message = {
+            ...message,
+            senderId,
+            targetId: this.peerId!,
+            type: message.type,
+          };
+
+          console.log('RECEIVED MESSAGE:', message);
+
+          // Add documentId if present (required for sync and request messages)
+          // if (message.documentId) {
+          //   messageForRepo.documentId = message.documentId;
+          // }
+
+          // Convert data if present
+          if (message.data && message.data.length > 0) {
+            messageForRepo.data = new Uint8Array(message.data);
+          }
+
+          console.log('Emitting sync message to automerge-repo:', {
+            ...messageForRepo,
+            data: messageForRepo.data
+              ? `[Uint8Array ${messageForRepo.data.length} bytes]`
+              : undefined,
+          });
+
+          this.emit('message', messageForRepo);
+          break;
         }
       }
-
-      console.log('Emitting message to automerge-repo:', {
-        ...messageForRepo,
-        data: `[Uint8Array ${messageForRepo.data.length} bytes]`,
-      });
-
-      this.emit('message', messageForRepo);
     });
 
     // Listen for peer discovery events
@@ -177,8 +242,20 @@ export class IrohNetworkAdapter extends NetworkAdapter {
 
       this.peers.set(peerId, true);
 
-      // Emit peer-candidate event to notify Automerge repo about the new peer
-      this.peerCandidate(peerId as PeerId, {});
+      // Send arrive message to the newly connected peer to start handshake
+      if (this.peerId) {
+        console.log('Sending arrive message to newly connected peer:', peerId);
+        invoke('send_automerge_message', {
+          targetId: peerId,
+          message: {
+            type: 'arrive',
+            senderId: this.peerId,
+            peerMetadata: this.peerMetadata || {},
+          },
+        }).catch((error: any) => {
+          console.error('Failed to send arrive message to new peer:', error);
+        });
+      }
     });
 
     // Listen for connection failures
@@ -208,7 +285,7 @@ export class IrohNetworkAdapter extends NetworkAdapter {
     // Listen for P2P ready event
     listen('p2p_ready', (event: any) => {
       console.log('P2P system ready:', event.payload);
-      this.setReady();
+      // Don't mark as ready here - wait for handshake
     });
 
     // Listen for disconnection events
@@ -248,48 +325,142 @@ export class IrohNetworkAdapter extends NetworkAdapter {
   connect(peerId: PeerId, peerMetadata?: PeerMetadata): void {
     this.peerId = peerId;
     this.peerMetadata = peerMetadata;
-    console.log('Network adapter connected with peerId:', peerId);
+    console.log(
+      'Network adapter connect() called with peerId:',
+      peerId,
+      'metadata:',
+      peerMetadata
+    );
+
+    // Send arrive message to all connected peers (if any are connected yet)
+    this.sendArrive();
+
+    // Mark as ready after a timeout if no handshake completes
+    setTimeout(() => {
+      if (!this.ready) {
+        console.log(
+          'Handshake timeout reached, marking adapter as ready anyway'
+        );
+        this.setReady();
+      }
+    }, 100);
   }
 
-  send(message: Message): void {
-    if (!this.ready) {
-      console.warn('IrohNetworkAdapter not ready, dropping message');
-      return;
+  send(message: RepoMessage): void {
+    // Only handle regular Automerge repo messages here
+    // Handshake messages are sent directly via invoke
+
+    const messageToSend: any = {
+      ...message,
+      type: message.type,
+      senderId: message.senderId || this.peerId,
+      targetId: message.targetId,
+    };
+
+    // Add documentId if present (required for sync and request messages)
+    // if ('documentId' in message && message.documentId) {
+    //   messageToSend.documentId = message.documentId;
+    // }
+
+    // Convert binary data if present
+    if ('data' in message && message.data) {
+      // Convert Uint8Array to regular array for JSON serialization
+      messageToSend.data = Array.from(message.data);
     }
 
-    // Ensure message.data exists and convert to array
-    const data = message.data ? Array.from(message.data) : [];
-
-    console.log('Sending automerge message:', {
-      targetId: message.targetId,
-      type: message.type,
-      dataLength: data.length,
+    console.log('Automerge adapter sending message:', {
+      type: messageToSend.type,
+      senderId: messageToSend.senderId,
+      targetId: messageToSend.targetId,
+      documentId: messageToSend.documentId,
+      dataLength: messageToSend.data ? messageToSend.data.length : 0,
     });
 
-    // Send Automerge sync messages through Iroh
+    console.log('RAW MESSAGE:', message);
+    console.log('SENDING MESSAGE:', messageToSend);
+
+    // Send through Iroh
     invoke('send_automerge_message', {
-      targetId: message.targetId,
-      message: {
-        message_type: message.type,
-        data,
-      },
+      targetId: messageToSend.targetId,
+      message: messageToSend,
     }).catch((error: any) => {
       console.error('Failed to send automerge message:', error);
     });
   }
 
-  private connectToPeer(peerId: PeerId): Promise<void> {
-    console.log('Connecting to peer:', peerId);
-    return invoke('connect_to_peer', { peerId });
-  }
-
   disconnect(): void {
     console.log('Disconnecting all peers');
+
+    // Send leave message to all connected peers
+    if (this.peerId) {
+      this.peers.forEach((connected, peerId) => {
+        if (connected) {
+          invoke('send_automerge_message', {
+            targetId: peerId,
+            message: {
+              type: 'leave',
+              senderId: this.peerId,
+            },
+          }).catch((error: any) => {
+            console.error('Failed to send leave message:', error);
+          });
+        }
+      });
+    }
+
     this.peers.clear();
     this.ready = false;
     invoke('disconnect_all_peers').catch((error: any) => {
       console.error('Failed to disconnect peers:', error);
     });
+  }
+
+  private sendArrive(): void {
+    // Send arrive message to announce ourselves to all connected peers
+    console.log('sendArrive called, checking connected peers...');
+    const connectedPeers = Array.from(this.peers.entries()).filter(
+      ([_, connected]) => connected
+    );
+
+    if (connectedPeers.length === 0) {
+      console.log('No connected peers yet, skipping arrive broadcast');
+      return;
+    }
+
+    console.log(
+      `Sending arrive message to ${connectedPeers.length} connected peers`
+    );
+    connectedPeers.forEach(([peerId, _]) => {
+      console.log('Sending arrive message to peer:', peerId);
+      invoke('send_automerge_message', {
+        targetId: peerId,
+        message: {
+          type: 'arrive',
+          senderId: this.peerId,
+          peerMetadata: this.peerMetadata || {},
+        },
+      }).catch((error: any) => {
+        console.error('Failed to send arrive message:', error);
+      });
+    });
+  }
+
+  private announceConnection(peerId: PeerId, peerMetadata: PeerMetadata): void {
+    console.log(
+      'Announcing connection to Automerge repo for peer:',
+      peerId,
+      'with metadata:',
+      peerMetadata
+    );
+    this.remotePeerId = peerId;
+    this.setReady();
+    this.emit('peer-candidate', { peerId, peerMetadata });
+    console.log('Emitted peer-candidate event for peer:', peerId);
+  }
+
+  private connectToPeer(peerId: PeerId): Promise<void> {
+    console.log('Connecting to peer:', peerId);
+    return invoke('connect_to_peer', { peerId });
   }
 
   async getConnectedPeers(): Promise<PeerInfo[]> {
@@ -368,17 +539,5 @@ export class IrohNetworkAdapter extends NetworkAdapter {
       console.error('Failed to get P2P status:', error);
       return null;
     }
-  }
-
-  private peerCandidate(
-    remotePeerId: PeerId,
-    peerMetadata: PeerMetadata
-  ): void {
-    console.log('Emitting peer-candidate for:', remotePeerId);
-    this.setReady(); // Mark adapter as ready when we have a peer
-    this.emit('peer-candidate', {
-      peerId: remotePeerId,
-      peerMetadata,
-    });
   }
 }
