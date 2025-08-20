@@ -1,15 +1,15 @@
-import chalk from "chalk";
-import { Command } from "commander";
-import fs from "fs-extra";
-import inquirer from "inquirer";
-import ora from "ora";
-import path from "path";
-import process from "process";
-import { fileURLToPath } from "url";
-import { createReactTemplate } from "./templates/react";
-import { createFeedTemplate } from "./templates/feed";
-import { ProjectPlan, TemplateType } from "./types";
-import { createTravelTemplate } from "./templates/travel";
+import chalk from 'chalk';
+import { Command } from 'commander';
+import fs from 'fs-extra';
+import inquirer from 'inquirer';
+import ora from 'ora';
+import path from 'path';
+import process from 'process';
+import { fileURLToPath } from 'url';
+import { createReactTemplate } from './templates/react';
+import { createFeedTemplate } from './templates/feed';
+import { ProjectPlan, TemplateType } from './types';
+import { createTravelTemplate } from './templates/travel';
 
 /**
  * Resolves a package path by checking both local development and global installation paths
@@ -23,27 +23,28 @@ async function resolvePackagePath(relativePath: string): Promise<string> {
     const moduleDirPath = path.dirname(fileURLToPath(moduleUrl));
 
     // Try local development path first
-    const localPath = path.resolve(moduleDirPath, "..", relativePath);
+    const localPath = path.resolve(moduleDirPath, '..', relativePath);
 
     if (await fs.pathExists(localPath)) {
       return localPath;
     } else {
       // If local path doesn't exist, try global node_modules
-      const { execSync } = await import("child_process");
-      const globalNodeModules = execSync("npm root -g").toString().trim();
+      const { execSync } = await import('child_process');
+      const result = execSync('npm root -g');
+      const globalNodeModules = result ? result.toString().trim() : '';
 
       // Look for the package in global node_modules
       const globalPath = path.join(
         globalNodeModules,
-        "@tonk/create",
-        relativePath,
+        '@tonk/create',
+        relativePath
       );
 
       if (await fs.pathExists(globalPath)) {
         return globalPath;
       } else {
         throw new Error(
-          `Could not locate ${relativePath} in local or global paths`,
+          `Could not locate ${relativePath} in local or global paths`
         );
       }
     }
@@ -54,14 +55,18 @@ async function resolvePackagePath(relativePath: string): Promise<string> {
 }
 
 // Get package.json for version information
-let packageJson;
+let packageJson: any;
 
 try {
-  const packageJsonPath = await resolvePackagePath("package.json");
-  packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+  const packageJsonPath = await resolvePackagePath('package.json');
+  packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 } catch (error) {
-  console.error("Error resolving package.json:", error);
-  process.exit(1);
+  console.error('Error resolving package.json:', error);
+  if (!process.env.VITEST) {
+    process.exit(1);
+  }
+  // In test environment, use mock data
+  packageJson = { version: '0.0.0-test' };
 }
 
 const program = new Command();
@@ -69,35 +74,35 @@ const program = new Command();
 // Questions to understand project requirements
 const projectQuestions = [
   {
-    type: "list",
-    name: "platform",
-    message: "What type of project would you like to create?",
+    type: 'list',
+    name: 'platform',
+    message: 'What type of project would you like to create?',
     choices: [
       {
-        name: "React - blank Tonk app",
-        value: "react",
+        name: 'React - blank Tonk app',
+        value: 'react',
       },
       {
-        name: "Social Feed - share and comment on posts",
-        value: "social-feed",
+        name: 'Social Feed - share and comment on posts',
+        value: 'social-feed',
       },
       {
-        name: "Travel Planner - plan trips with friends",
-        value: "travel-planner",
+        name: 'Travel Planner - plan trips with friends',
+        value: 'travel-planner',
       },
     ],
-    default: "react",
+    default: 'react',
   },
   {
-    type: "input",
-    name: "projectName",
-    message: "What is your project named?",
-    default: "my-tonk-app",
+    type: 'input',
+    name: 'projectName',
+    message: 'What is your project named?',
+    default: 'my-tonk-app',
   },
   {
-    type: "input",
-    name: "description",
-    message: "Briefly describe your project:",
+    type: 'input',
+    name: 'description',
+    message: 'Briefly describe your project:',
   },
 ];
 
@@ -106,20 +111,20 @@ export async function createProject(
   projectName: string,
   plan: ProjectPlan,
   templateName: TemplateType,
-  _projectPath: string | null = null,
+  _projectPath: string | null = null
 ) {
-  const spinner = ora("Creating project structure...").start();
+  const spinner = ora('Creating project structure...').start();
   let projectPath = _projectPath;
 
   try {
     // Check if pnpm is installed, if not, install it
-    const { execSync } = await import("child_process");
+    const { execSync } = await import('child_process');
     try {
-      execSync("pnpm --version", { stdio: "pipe" });
-    } catch (error) {
-      spinner.text = "Installing pnpm...";
-      execSync("npm install -g pnpm", { stdio: "inherit" });
-      spinner.text = "Creating project structure...";
+      execSync('pnpm --version', { stdio: 'pipe' });
+    } catch {
+      spinner.text = 'Installing pnpm...';
+      execSync('npm install -g pnpm', { stdio: 'inherit' });
+      spinner.text = 'Creating project structure...';
     }
 
     // Create project directory
@@ -134,44 +139,50 @@ export async function createProject(
     } catch (error) {
       console.error(
         `Error resolving template path for "${templateName}":`,
-        error,
+        error
       );
       throw new Error(
-        `Could not locate template "${templateName}". Please ensure the package is installed correctly and the template exists.`,
+        `Could not locate template "${templateName}". Please ensure the package is installed correctly and the template exists.`
       );
     }
 
     // Ensure templatePath is defined before using it
     if (!templatePath || !(await fs.pathExists(templatePath))) {
       throw new Error(
-        `Template path not found for "${templateName}": ${templatePath}`,
+        `Template path not found for "${templateName}": ${templatePath}`
       );
     }
 
     // Switch on template type and call appropriate template creator
     switch (templateName) {
-      case "react": {
+      case 'react': {
         await createReactTemplate(projectPath, projectName, templatePath, plan);
         break;
       }
-      case "social-feed": {
+      case 'social-feed': {
         await createFeedTemplate(projectPath, projectName, templatePath, plan);
         break;
       }
-      case "travel-planner": {
+      case 'travel-planner': {
         await createTravelTemplate(
           projectPath,
           projectName,
           templatePath,
-          plan,
+          plan
         );
         break;
       }
+      default: {
+        throw new Error(`Unknown template type: ${templateName}`);
+      }
     }
   } catch (error) {
-    spinner.fail("Failed to setup project");
+    spinner.fail('Failed to setup project');
     console.error(error);
-    process.exit(1);
+    if (!process.env.VITEST) {
+      process.exit(1);
+    }
+    throw error;
   }
   spinner.stop();
 }
@@ -183,7 +194,7 @@ const createApp = async (options: {
   description?: string;
 }) => {
   try {
-    console.log("Scaffolding tonk code...");
+    console.log('Scaffolding tonk code...');
 
     let answers: any;
 
@@ -195,8 +206,8 @@ const createApp = async (options: {
       // Non-interactive mode - use provided options
       answers = {
         platform: options.template,
-        projectName: options.name || "my-tonk-app",
-        description: options.description || "",
+        projectName: options.name || 'my-tonk-app',
+        description: options.description || '',
       };
     } else {
       // Interactive mode - prompt for missing information
@@ -205,10 +216,10 @@ const createApp = async (options: {
         : projectQuestions;
 
       // Filter out questions for options that were already provided
-      const filteredQuestions = questions.filter((q) => {
-        if (q.name === "platform" && options.template) return false;
-        if (q.name === "projectName" && options.name) return false;
-        if (q.name === "description" && options.description) return false;
+      const filteredQuestions = questions.filter(q => {
+        if (q.name === 'platform' && options.template) return false;
+        if (q.name === 'projectName' && options.name) return false;
+        if (q.name === 'description' && options.description) return false;
         return true;
       });
 
@@ -216,9 +227,15 @@ const createApp = async (options: {
 
       // Merge provided options with prompted answers
       answers = {
-        platform: options.template || promptAnswers.platform,
-        projectName: options.name || promptAnswers.projectName,
-        description: options.description || promptAnswers.description,
+        platform:
+          options.template ||
+          (promptAnswers ? promptAnswers.platform : undefined),
+        projectName:
+          options.name ||
+          (promptAnswers ? promptAnswers.projectName : undefined),
+        description:
+          options.description ||
+          (promptAnswers ? promptAnswers.description : undefined),
       };
     }
 
@@ -228,37 +245,57 @@ const createApp = async (options: {
     // Create project with generated plan and template
     const finalProjectName = options.init
       ? path.basename(process.cwd())
-      : answers.projectName || "my-tonk-app";
+      : answers.projectName || 'my-tonk-app';
 
     const templateName = answers.platform as TemplateType;
-    let projectPath = options.init ? process.cwd() : null;
+
+    // Validate that we have a template before proceeding
+    if (!templateName) {
+      throw new Error(
+        'Template type is required. Please provide a template type using --template option or run in interactive mode.'
+      );
+    }
+
+    const projectPath = options.init ? process.cwd() : null;
     await createProject(finalProjectName, plan, templateName, projectPath);
   } catch (error) {
-    console.error(chalk.red("Error:"), error);
-    process.exit(1);
+    console.error(chalk.red('Error:'), error);
+    if (!process.env.VITEST) {
+      process.exit(1);
+    }
+    throw error;
   }
 };
 
 program
-  .name("create")
-  .description("Scaffold code for your Tonk projects")
-  .version(packageJson.version, "-v, --version", "Output the current version")
-  .option("-i, --init", "initialize in the folder")
+  .name('create')
+  .description('Scaffold code for your Tonk projects')
+  .version(packageJson.version, '-v, --version', 'Output the current version')
+  .option('-i, --init', 'initialize in the folder')
   .option(
-    "-t, --template <type>",
-    "template type (react, social feed, travel planner)",
+    '-t, --template <type>',
+    'template type (react, social feed, travel planner)'
   )
-  .option("-n, --name <name>", "project name")
-  .option("-d, --description <description>", "project description")
-  .action(async (options) => {
-    console.log(chalk.bold("\nWelcome to Tonk! 🚀\n"));
-    await createApp({
-      init: options.init ?? false,
-      template: options.template,
-      name: options.name,
-      description: options.description,
-    });
-    return;
+  .option('-n, --name <name>', 'project name')
+  .option('-d, --description <description>', 'project description')
+  .action(async options => {
+    try {
+      console.log(chalk.bold('\nWelcome to Tonk! 🚀\n'));
+      await createApp({
+        init: options.init ?? false,
+        template: options.template,
+        name: options.name,
+        description: options.description,
+      });
+    } catch (error) {
+      console.error(chalk.red('CLI Error:'), error);
+      if (!process.env.VITEST) {
+        process.exit(1);
+      }
+    }
   });
 
-program.parse(process.argv);
+// Only run CLI when not in test environment
+if (!process.env.VITEST && !process.env.NODE_ENV?.includes('test')) {
+  program.parse(process.argv);
+}
