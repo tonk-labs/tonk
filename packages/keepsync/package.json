@@ -69,6 +69,7 @@
     "@automerge/automerge-repo-network-websocket": "^2.2.0",
     "@automerge/automerge-repo-storage-indexeddb": "^2.2.0",
     "@automerge/automerge-repo-storage-nodefs": "^2.2.0",
+    "@tauri-apps/api": "^1.6.0",
     "axios": "^1.9.0",
     "bs58check": "^4.0.0",
     "chalk": "^5.4.1",

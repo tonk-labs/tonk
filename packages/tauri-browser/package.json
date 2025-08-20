@@ -1,0 +1,35 @@
+{
+  "name": "tauri-browser",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "P2P Tonk browser with Iroh integration",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@automerge/automerge-repo": "^2.2.0",
+    "@automerge/automerge-repo-storage-indexeddb": "^2.2.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "@tonk/keepsync": "file:../keepsync",
+    "@tonk/spec": "file:../spec",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.5.0"
+  }
+}
