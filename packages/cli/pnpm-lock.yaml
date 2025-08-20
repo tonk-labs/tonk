@@ -1602,8 +1602,8 @@ packages:
   cbor-x@1.6.0:
     resolution: {integrity: sha512-0kareyRwHSkL6ws5VXHEf8uY1liitysCVJjlmhaLG+IXLqhSaOO+t63coaso7yjwEzWZzLy8fJo06gZDVQM9Qg==}
 
-  chai@5.2.1:
-    resolution: {integrity: sha512-5nFxhUrX0PqtyogoYOA8IPswy5sZFTOsBFl/9bNsmDLgsxYTzSZQJDPppDnZPTQbzSEm0hqGjWPzRemQCYbD6A==}
+  chai@5.3.1:
+    resolution: {integrity: sha512-48af6xm9gQK8rhIcOxWwdGzIervm8BVTin+yRp9HEvU20BtVZ2lBywlIJBzwaDtvo0FvjeL7QdCADoUoqIbV3A==}
     engines: {node: '>=18'}
 
   chalk@4.1.2:
@@ -2445,8 +2445,8 @@ packages:
     resolution: {integrity: sha512-yg2d+Em4KizZC5niWhQaIomgf5WlL4vOOjZ5xGCmF8SnPE/mDWWXgvRExdcpCgh9lLRRa1/fSYp2ymmbJ1pI+A==}
     engines: {node: '>=10'}
 
-  istanbul-reports@3.1.7:
-    resolution: {integrity: sha512-BewmUXImeuRk2YY0PVbxgKAysvhRPUQE0h5QRM++nVWyubKGV0l8qQ5op8+B2DOmwSe63Jivj0BjkPQVf8fP5g==}
+  istanbul-reports@3.2.0:
+    resolution: {integrity: sha512-HGYWWS/ehqTV3xN10i23tkPkpH46MLCIMFNCaaKNavAXTF1RkqxawEPtnjnGZ6XKSInBKkiOA5BKS+aZiY3AvA==}
     engines: {node: '>=8'}
 
   jackspeak@3.4.3:
@@ -5382,7 +5382,7 @@ snapshots:
       istanbul-lib-coverage: 3.2.2
       istanbul-lib-report: 3.0.1
       istanbul-lib-source-maps: 5.0.6
-      istanbul-reports: 3.1.7
+      istanbul-reports: 3.2.0
       magic-string: 0.30.17
       magicast: 0.3.5
       std-env: 3.9.0
@@ -5397,7 +5397,7 @@ snapshots:
       '@types/chai': 5.2.2
       '@vitest/spy': 3.2.4
       '@vitest/utils': 3.2.4
-      chai: 5.2.1
+      chai: 5.3.1
       tinyrainbow: 2.0.0
 
   '@vitest/mocker@3.2.4(vite@5.4.19(@types/node@22.15.32))':
@@ -5673,7 +5673,7 @@ snapshots:
     optionalDependencies:
       cbor-extract: 2.2.0
 
-  chai@5.2.1:
+  chai@5.3.1:
     dependencies:
       assertion-error: 2.0.1
       check-error: 2.1.1
@@ -6588,7 +6588,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  istanbul-reports@3.1.7:
+  istanbul-reports@3.2.0:
     dependencies:
       html-escaper: 2.0.2
       istanbul-lib-report: 3.0.1
@@ -7683,7 +7683,7 @@ snapshots:
       '@vitest/snapshot': 3.2.4
       '@vitest/spy': 3.2.4
       '@vitest/utils': 3.2.4
-      chai: 5.2.1
+      chai: 5.3.1
       debug: 4.4.1
       expect-type: 1.2.2
       magic-string: 0.30.17
