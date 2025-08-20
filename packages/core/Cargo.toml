@@ -1,0 +1,11 @@
+[package]
+name = "tonk-core"
+version = "0.1.0"
+edition = "2024"
+authors = ["Tonk Labs"]
+description = "Core library of the Tonk stack, providing sync engine and bundling"
+license = "MIT"
+repository = "https://github.com/tonk-labs/tonk"
+keywords = ["tonk", "local-first", "sync", "automerge", "real-time", "collaboration"]
+
+[dependencies]
