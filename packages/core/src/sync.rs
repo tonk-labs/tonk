@@ -117,7 +117,7 @@ impl Clone for SyncEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
     async fn test_sync_engine_creation() {

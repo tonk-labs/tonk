@@ -1,5 +1,5 @@
 use crate::error::{Result, VfsError};
-use crate::vfs::automerge_helpers::AutomergeHelpers;
+use crate::vfs::backend::AutomergeHelpers;
 use crate::vfs::types::*;
 use samod::{DocHandle, DocumentId, Samod};
 use std::sync::Arc;
@@ -242,7 +242,7 @@ impl PathTraverser {
 mod tests {
     use super::*;
     use crate::sync::SyncEngine;
-    use crate::vfs::operations::VirtualFileSystem;
+    use crate::vfs::filesystem::VirtualFileSystem;
 
     // Helper function to create a test VFS with initialized root
     async fn create_test_vfs() -> (Arc<Samod>, DocumentId, PathTraverser) {

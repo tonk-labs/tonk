@@ -1,6 +1,8 @@
 use crate::error::Result;
 use crate::sync::SyncEngine;
-use crate::vfs::{DocumentWatcher, RefNode, VfsEvent, VirtualFileSystem};
+use crate::vfs::filesystem::{VfsEvent, VirtualFileSystem};
+use crate::vfs::types::RefNode;
+use crate::vfs::watcher::DocumentWatcher;
 use samod::{DocHandle, Samod};
 use std::sync::Arc;
 

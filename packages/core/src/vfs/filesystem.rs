@@ -1,5 +1,5 @@
 use crate::error::{Result, VfsError};
-use crate::vfs::automerge_helpers::AutomergeHelpers;
+use crate::vfs::backend::AutomergeHelpers;
 use crate::vfs::traversal::PathTraverser;
 use crate::vfs::types::*;
 use crate::vfs::watcher::DocumentWatcher;
