@@ -112,7 +112,7 @@ mod tests {
     #[tokio::test]
     async fn test_vfs_creation() {
         let vfs = Vfs::new().await.unwrap();
-        assert!(vfs.peer_id().to_string().len() > 0);
+        assert!(!vfs.peer_id().to_string().is_empty());
     }
 
     #[tokio::test]
@@ -128,7 +128,7 @@ mod tests {
         let vfs = Vfs::new().await.unwrap();
 
         // Test that we can access the underlying components
-        assert!(vfs.samod().peer_id().to_string().len() > 0);
+        assert!(!vfs.samod().peer_id().to_string().is_empty());
 
         // Test event subscription
         let _rx = vfs.subscribe_events();

@@ -1,3 +1,4 @@
+pub mod automerge_helpers;
 pub mod operations;
 pub mod simple_api;
 pub mod traversal;

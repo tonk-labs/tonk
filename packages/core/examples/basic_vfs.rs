@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("VFS created with peer ID: {}", vfs.peer_id());
     println!("Root ID: {}", vfs.vfs().root_id());
 
-    // Test basic operations (commented out until VFS is fully implemented)
+    // TODO: Test basic operations (commented out until VFS is fully implemented)
     /*
     // Create a document using VFS paths
     vfs.create_file("/documents/example.txt", "Hello, VFS!").await?;

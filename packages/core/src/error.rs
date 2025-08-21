@@ -32,6 +32,18 @@ pub enum VfsError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
+    #[error("Document not found: {0}")]
+    DocumentNotFound(String),
+
+    #[error("Invalid document structure")]
+    InvalidDocumentStructure,
+
+    #[error("Concurrent modification detected")]
+    ConcurrentModification,
+
+    #[error("Transaction failed: {0}")]
+    TransactionFailed(String),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
