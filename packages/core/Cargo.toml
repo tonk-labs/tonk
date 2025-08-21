@@ -10,11 +10,11 @@ keywords = ["tonk", "local-first", "sync", "automerge", "real-time", "collaborat
 
 [dependencies]
 # core deps
-samod = "0.2.2"
-automerge = "1.0.0-beta.3"
+samod = {version="0.2.2", features = ["tokio", "tungstenite"]}
+automerge = "0.6.1"
 
 # async runtime
-tokio = "1.47.1"
+tokio = {version="1.47.1", features=["macros", "rt-multi-thread"]}
 tokio-stream = "0.1.17"
 futures = "0.3.31"
 
@@ -29,8 +29,9 @@ thiserror = "2.0.16"
 # utilities
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
-chrono = "0.4.41"
+chrono = { version = "0.4.41", features = ["serde"] }
 tokio-tungstenite = "0.27"
+rand = "0.9.2"
 
 [dev-dependencies]
 tempfile = "3.21.0"
