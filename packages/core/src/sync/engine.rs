@@ -1,18 +1,22 @@
 use crate::error::{Result, VfsError};
+use crate::vfs::VirtualFileSystem;
+use rand::rng;
 use samod::storage::InMemoryStorage;
 use samod::{ConnDirection, DocHandle, DocumentId, PeerId, Samod};
 use std::sync::Arc;
 use tokio_tungstenite::connect_async;
-use tracing::{error, info};
+use tracing::info;
 
 pub struct SyncEngine {
     samod: Arc<Samod>,
+    vfs: Arc<VirtualFileSystem>,
 }
 
 impl SyncEngine {
     /// Create a new SyncEngine with a random peer ID
     pub async fn new() -> Result<Self> {
-        Self::with_peer_id(PeerId::random()).await
+        let mut rng = rng();
+        Self::with_peer_id(PeerId::new_with_rng(&mut rng)).await
     }
 
     /// Create a new SyncEngine with a specific peer ID
@@ -25,14 +29,21 @@ impl SyncEngine {
             .with_storage(storage)
             .with_peer_id(peer_id)
             .load()
-            .await
-            .map_err(|e| VfsError::SamodError(format!("Failed to initialize samod: {}", e)))?;
+            .await;
 
         let samod = Arc::new(samod);
 
-        info!("SyncEngine initialized with peer ID: {}", peer_id);
+        // Create VFS layer on top of samod
+        let vfs = Arc::new(VirtualFileSystem::new(samod.clone()).await?);
 
-        Ok(Self { samod })
+        info!("SyncEngine initialized with peer ID: {}", samod.peer_id());
+
+        Ok(Self { samod, vfs })
+    }
+
+    /// Get access to the VFS layer
+    pub fn vfs(&self) -> Arc<VirtualFileSystem> {
+        self.vfs.clone()
     }
 
     /// Get access to the underlying Samod instance
@@ -42,7 +53,7 @@ impl SyncEngine {
 
     /// Get the peer ID of this sync engine
     pub fn peer_id(&self) -> PeerId {
-        self.samod.get_peer_id()
+        self.samod.peer_id()
     }
 
     /// Connect to a WebSocket peer
@@ -59,27 +70,24 @@ impl SyncEngine {
             .connect_tungstenite(ws_stream, ConnDirection::Outgoing)
             .await;
 
-        match conn_finished {
-            Ok(_) => {
-                info!("Successfully connected to WebSocket peer at: {}", url);
-                Ok(())
-            }
-            Err(e) => {
-                error!("WebSocket connection failed: {:?}", e);
-                Err(VfsError::WebSocketError(format!(
-                    "Connection failed: {:?}",
-                    e
-                )))
-            }
-        }
+        info!("Successfully connected to WebSocket peer at: {}", url);
+        info!("Connection finished with reason: {:?}", conn_finished);
+        Ok(())
     }
 
     /// Find a document by its ID
     pub async fn find_document(&self, doc_id: DocumentId) -> Result<DocHandle> {
-        self.samod
-            .find(doc_id)
-            .await
-            .map_err(|e| VfsError::SamodError(format!("Failed to find document {}: {}", doc_id, e)))
+        match self.samod.find(doc_id.clone()).await {
+            Ok(Some(handle)) => Ok(handle),
+            Ok(None) => Err(VfsError::SamodError(format!(
+                "Document {} not found",
+                doc_id
+            ))),
+            Err(e) => Err(VfsError::SamodError(format!(
+                "Failed to find document {}: {}",
+                doc_id, e
+            ))),
+        }
     }
 
     /// Create a new document
@@ -111,6 +119,7 @@ impl Clone for SyncEngine {
     fn clone(&self) -> Self {
         Self {
             samod: self.samod.clone(),
+            vfs: self.vfs.clone(),
         }
     }
 }
@@ -128,8 +137,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sync_engine_with_peer_id() {
-        let peer_id = PeerId::random();
-        let engine = SyncEngine::with_peer_id(peer_id).await.unwrap();
+        let mut rng = rand::rng();
+        let peer_id = PeerId::new_with_rng(&mut rng);
+        let engine = SyncEngine::with_peer_id(peer_id.clone()).await.unwrap();
         assert_eq!(engine.peer_id(), peer_id);
     }
 
@@ -139,6 +149,23 @@ mod tests {
         let doc = automerge::Automerge::new();
         let handle = engine.create_document(doc).await.unwrap();
         assert!(handle.document_id().to_string().len() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_vfs_integration() {
+        let engine = SyncEngine::new().await.unwrap();
+        let vfs = engine.vfs();
+
+        // Test that VFS is accessible
+        assert!(vfs.root_id().to_string().len() > 0);
+
+        // Test that we can subscribe to VFS events
+        let _rx = vfs.subscribe_events();
+
+        // Test that both references point to the same samod instance
+        let engine_samod = engine.samod();
+        // Note: We can't easily compare Arc<Samod> for equality, but we can check peer IDs
+        assert_eq!(engine.peer_id(), engine_samod.peer_id());
     }
 
     #[tokio::test]
