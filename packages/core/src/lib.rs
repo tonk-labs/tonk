@@ -4,5 +4,8 @@ pub mod vfs;
 
 // Re-export main types
 pub use error::{Result, VfsError};
-pub use sync::SyncEngine as VfsSyncEngine;
-pub use vfs::{DirNode, DocNode, NodeType, RefNode, Timestamps, Vfs, VfsEvent, VirtualFileSystem};
+pub use sync::SyncEngine;
+pub use vfs::{
+    DirNode, DocNode, DocumentWatcher, NodeType, RefNode, Timestamps, Vfs, VfsEvent,
+    VirtualFileSystem,
+};

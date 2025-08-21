@@ -2,6 +2,7 @@ use crate::error::{Result, VfsError};
 use crate::vfs::automerge_helpers::AutomergeHelpers;
 use crate::vfs::traversal::PathTraverser;
 use crate::vfs::types::*;
+use crate::vfs::watcher::DocumentWatcher;
 use automerge::Automerge;
 use samod::{DocHandle, DocumentId, Samod};
 use std::sync::Arc;
@@ -405,6 +406,53 @@ impl VirtualFileSystem {
     async fn get_dir_node(&self, handle: &DocHandle) -> Result<DirNode> {
         AutomergeHelpers::read_directory(handle)
     }
+
+    /// Watch a document for changes at the specified path
+    pub async fn watch_document(&self, path: &str) -> Result<Option<DocumentWatcher>> {
+        if let Some(doc_handle) = self.find_document(path).await? {
+            Ok(Some(DocumentWatcher::new(doc_handle)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Watch a directory for changes at the specified path
+    pub async fn watch_directory(&self, path: &str) -> Result<Option<DocumentWatcher>> {
+        let result = self
+            .traverser
+            .traverse(self.root_id.clone(), path, false)
+            .await?;
+
+        if let Some(target_ref) = result.target_ref {
+            if target_ref.node_type == NodeType::Directory {
+                let dir_handle = self
+                    .samod
+                    .find(target_ref.pointer.clone())
+                    .await
+                    .map_err(|e| VfsError::SamodError(format!("Failed to find directory: {e}")))?;
+                match dir_handle {
+                    Some(handle) => Ok(Some(DocumentWatcher::new(handle))),
+                    None => Ok(None),
+                }
+            } else {
+                Err(VfsError::NodeTypeMismatch {
+                    expected: "directory".to_string(),
+                    actual: "document".to_string(),
+                })
+            }
+        } else if path == "/" || path.is_empty() {
+            // Watching root directory
+            let root_handle = self
+                .samod
+                .find(self.root_id.clone())
+                .await
+                .map_err(|e| VfsError::SamodError(format!("Failed to find root: {e}")))?
+                .ok_or_else(|| VfsError::DocumentNotFound(self.root_id.to_string()))?;
+            Ok(Some(DocumentWatcher::new(root_handle)))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -547,5 +595,66 @@ mod tests {
         // Try to create a directory with the same name
         let result = vfs.create_directory("/mydir").await;
         assert!(matches!(result, Err(VfsError::DocumentExists(_))));
+    }
+
+    #[tokio::test]
+    async fn test_watch_document() {
+        let engine = SyncEngine::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+
+        // Create a document
+        let _doc_handle = vfs
+            .create_document("/test.txt", "Initial content".to_string())
+            .await
+            .unwrap();
+
+        // Watch the document
+        let watcher = vfs.watch_document("/test.txt").await.unwrap();
+        assert!(watcher.is_some());
+
+        let watcher = watcher.unwrap();
+        assert!(!watcher.document_id().to_string().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_watch_directory() {
+        let engine = SyncEngine::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+
+        // Create a directory
+        vfs.create_directory("/mydir").await.unwrap();
+
+        // Watch the directory
+        let watcher = vfs.watch_directory("/mydir").await.unwrap();
+        assert!(watcher.is_some());
+
+        // Test watching root directory
+        let root_watcher = vfs.watch_directory("/").await.unwrap();
+        assert!(root_watcher.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_watch_non_existent_document() {
+        let engine = SyncEngine::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+
+        // Try to watch a non-existent document
+        let watcher = vfs.watch_document("/does-not-exist.txt").await.unwrap();
+        assert!(watcher.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_watch_type_mismatch() {
+        let engine = SyncEngine::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+
+        // Create a document
+        vfs.create_document("/file.txt", "content".to_string())
+            .await
+            .unwrap();
+
+        // Try to watch it as a directory
+        let result = vfs.watch_directory("/file.txt").await;
+        assert!(matches!(result, Err(VfsError::NodeTypeMismatch { .. })));
     }
 }

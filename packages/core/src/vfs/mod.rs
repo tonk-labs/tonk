@@ -3,7 +3,9 @@ pub mod operations;
 pub mod simple_api;
 pub mod traversal;
 pub mod types;
+pub mod watcher;
 
 pub use operations::*;
 pub use simple_api::Vfs;
 pub use types::*;
+pub use watcher::DocumentWatcher;
