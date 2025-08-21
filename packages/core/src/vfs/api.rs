@@ -1,6 +1,8 @@
 use crate::error::Result;
 use crate::sync::SyncEngine;
-use crate::vfs::{RefNode, VfsEvent, VirtualFileSystem};
+use crate::vfs::filesystem::{VfsEvent, VirtualFileSystem};
+use crate::vfs::types::RefNode;
+use crate::vfs::watcher::DocumentWatcher;
 use samod::{DocHandle, Samod};
 use std::sync::Arc;
 
@@ -92,6 +94,16 @@ impl Vfs {
     ) -> Result<Option<(crate::vfs::NodeType, crate::vfs::Timestamps)>> {
         self.vfs().get_metadata(path).await
     }
+
+    /// Watch a file for changes
+    pub async fn watch_file(&self, path: &str) -> Result<Option<DocumentWatcher>> {
+        self.vfs().watch_document(path).await
+    }
+
+    /// Watch a directory for changes
+    pub async fn watch_dir(&self, path: &str) -> Result<Option<DocumentWatcher>> {
+        self.vfs().watch_directory(path).await
+    }
 }
 
 impl Clone for Vfs {
@@ -112,7 +124,7 @@ mod tests {
     #[tokio::test]
     async fn test_vfs_creation() {
         let vfs = Vfs::new().await.unwrap();
-        assert!(vfs.peer_id().to_string().len() > 0);
+        assert!(!vfs.peer_id().to_string().is_empty());
     }
 
     #[tokio::test]
@@ -128,9 +140,39 @@ mod tests {
         let vfs = Vfs::new().await.unwrap();
 
         // Test that we can access the underlying components
-        assert!(vfs.samod().peer_id().to_string().len() > 0);
+        assert!(!vfs.samod().peer_id().to_string().is_empty());
 
         // Test event subscription
         let _rx = vfs.subscribe_events();
+    }
+
+    #[tokio::test]
+    async fn test_watch_file() {
+        let vfs = Vfs::new().await.unwrap();
+
+        // Create a file
+        vfs.create_file("/watch-test.txt", "content".to_string())
+            .await
+            .unwrap();
+
+        // Watch the file
+        let watcher = vfs.watch_file("/watch-test.txt").await.unwrap();
+        assert!(watcher.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_watch_dir() {
+        let vfs = Vfs::new().await.unwrap();
+
+        // Create a directory
+        vfs.create_dir("/watch-dir").await.unwrap();
+
+        // Watch the directory
+        let watcher = vfs.watch_dir("/watch-dir").await.unwrap();
+        assert!(watcher.is_some());
+
+        // Test watching root
+        let root_watcher = vfs.watch_dir("/").await.unwrap();
+        assert!(root_watcher.is_some());
     }
 }

@@ -22,6 +22,7 @@ impl SyncEngine {
     /// Create a new SyncEngine with a specific peer ID
     pub async fn with_peer_id(peer_id: PeerId) -> Result<Self> {
         // Use samod's built-in InMemoryStorage
+        // TODO: add option for FilesystemStorage
         let storage = InMemoryStorage::new();
 
         // Build samod instance with the storage and peer ID
@@ -60,9 +61,9 @@ impl SyncEngine {
     pub async fn connect_websocket(&self, url: &str) -> Result<()> {
         info!("Connecting to WebSocket peer at: {}", url);
 
-        let (ws_stream, _) = connect_async(url).await.map_err(|e| {
-            VfsError::WebSocketError(format!("Failed to connect to {}: {}", url, e))
-        })?;
+        let (ws_stream, _) = connect_async(url)
+            .await
+            .map_err(|e| VfsError::WebSocketError(format!("Failed to connect to {url}: {e}")))?;
 
         // Use samod's built-in WebSocket support
         let conn_finished = self
@@ -79,13 +80,9 @@ impl SyncEngine {
     pub async fn find_document(&self, doc_id: DocumentId) -> Result<DocHandle> {
         match self.samod.find(doc_id.clone()).await {
             Ok(Some(handle)) => Ok(handle),
-            Ok(None) => Err(VfsError::SamodError(format!(
-                "Document {} not found",
-                doc_id
-            ))),
+            Ok(None) => Err(VfsError::SamodError(format!("Document {doc_id} not found"))),
             Err(e) => Err(VfsError::SamodError(format!(
-                "Failed to find document {}: {}",
-                doc_id, e
+                "Failed to find document {doc_id}: {e}"
             ))),
         }
     }
@@ -95,19 +92,12 @@ impl SyncEngine {
         self.samod
             .create(initial_doc)
             .await
-            .map_err(|e| VfsError::SamodError(format!("Failed to create document: {}", e)))
-    }
-
-    /// Get all document IDs currently stored
-    pub async fn list_documents(&self) -> Result<Vec<DocumentId>> {
-        // Note: This method might not be available in samod's public API
-        // This is a placeholder for potential future functionality
-        Ok(Vec::new())
+            .map_err(|e| VfsError::SamodError(format!("Failed to create document: {e}")))
     }
 
     /// Subscribe to document changes
     pub fn subscribe_to_changes(&self) -> tokio::sync::broadcast::Receiver<DocumentId> {
-        // This is a placeholder for change notifications
+        // TODO: This is a placeholder for change notifications
         // We'll need to implement this based on samod's event system
         let (tx, rx) = tokio::sync::broadcast::channel(100);
         std::mem::drop(tx); // Close the sender to indicate no events for now
@@ -127,12 +117,12 @@ impl Clone for SyncEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
     async fn test_sync_engine_creation() {
         let engine = SyncEngine::new().await.unwrap();
-        assert!(engine.peer_id().to_string().len() > 0);
+        assert!(!engine.peer_id().to_string().is_empty());
     }
 
     #[tokio::test]
@@ -148,7 +138,7 @@ mod tests {
         let engine = SyncEngine::new().await.unwrap();
         let doc = automerge::Automerge::new();
         let handle = engine.create_document(doc).await.unwrap();
-        assert!(handle.document_id().to_string().len() > 0);
+        assert!(!handle.document_id().to_string().is_empty());
     }
 
     #[tokio::test]
@@ -157,14 +147,14 @@ mod tests {
         let vfs = engine.vfs();
 
         // Test that VFS is accessible
-        assert!(vfs.root_id().to_string().len() > 0);
+        assert!(!vfs.root_id().to_string().is_empty());
 
         // Test that we can subscribe to VFS events
         let _rx = vfs.subscribe_events();
 
         // Test that both references point to the same samod instance
         let engine_samod = engine.samod();
-        // Note: We can't easily compare Arc<Samod> for equality, but we can check peer IDs
+        // NOTE: We can't easily compare Arc<Samod> for equality, but we can check peer IDs
         assert_eq!(engine.peer_id(), engine_samod.peer_id());
     }
 
