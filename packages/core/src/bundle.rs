@@ -17,14 +17,16 @@ pub struct Version {
 /// Manifest structure for bundle metadata
 #[derive(Debug, Deserialize, Clone)]
 pub struct Manifest {
+    #[serde(rename="manifestVersion")]
     pub manifest_version: u32,
     pub version: Version,
     pub root: String,
     pub entrypoints: Vec<String>,
+    #[serde(rename="networkUris")]
     pub network_uris: Vec<String>,
-    #[serde(default)]
+    #[serde(default, rename="xNotes")]
     pub x_notes: Option<String>,
-    #[serde(default)]
+    #[serde(default, rename="xVendor")]
     pub x_vendor: Option<serde_json::Value>,
 }
 
@@ -457,16 +459,16 @@ mod tests {
         
         // Create the manifest.json content
         let manifest_content = r#"{
-            "manifest_version": 1,
+            "manifestVersion": 1,
             "version": { "major": 1, "minor": 0 },
             "root": "main",
             "entrypoints": ["bin/myapp", "bin/worker", "scripts/setup.sh"],
-            "network_uris": [
+            "networkUris": [
                 "https://api.example.com/v1",
                 "wss://realtime.example.com/socket"
             ],
-            "x_notes": "Test bundle",
-            "x_vendor": { "feature_flag": true }
+            "xNotes": "Test bundle",
+            "xVendor": { "featureFlag": true }
         }"#;
         
         // Add manifest.json
@@ -491,11 +493,11 @@ mod tests {
         
         // Create the manifest.json content
         let manifest_content = r#"{
-            "manifest_version": 1,
+            "manifestVersion": 1,
             "version": { "major": 1, "minor": 0 },
             "root": "main",
             "entrypoints": ["bin/myapp"],
-            "network_uris": []
+            "networkUris": []
         }"#;
         
         // Add manifest.json
@@ -543,11 +545,11 @@ mod tests {
         let mut zip_writer = ZipWriter::new(std::io::Cursor::new(&mut zip_data));
         
         let manifest_content = r#"{
-            "manifest_version": 2,
+            "manifestVersion": 2,
             "version": { "major": 1, "minor": 0 },
             "root": "main",
             "entrypoints": ["bin/myapp"],
-            "network_uris": []
+            "networkUris": []
         }"#;
         
         zip_writer.start_file("manifest.json", SimpleFileOptions::default())?;
