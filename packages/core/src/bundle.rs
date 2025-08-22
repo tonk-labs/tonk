@@ -1,6 +1,7 @@
-// pub mod format;
+pub mod path;
 
 use anyhow::{Context, Result};
+pub use path::BundlePath;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -30,36 +31,59 @@ pub struct Manifest {
     pub x_vendor: Option<serde_json::Value>,
 }
 
-/// Trait for random access to data sources with read and write capabilities
+/// Trait for random access to data sources with read and write capabilities.
+///
+/// This trait provides a unified interface for working with seekable, readable, and
+/// writable data sources such as files or in-memory buffers. It extends the standard
+/// library traits with additional convenience methods for common operations.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use tonk_core::bundle::RandomAccess;
+/// # use std::io::Cursor;
+/// let mut data = Cursor::new(vec![1, 2, 3, 4, 5]);
+/// let _pos = data.position();
+/// let _result = data.seek_to(2);
+/// ```
 pub trait RandomAccess: Read + Write + Seek + Send + std::fmt::Debug {
-    /// Get the current position
+    /// Get the current position in the stream.
+    ///
+    /// # Returns
+    /// The current position as bytes from the beginning of the stream.
+    ///
+    /// # Errors
+    /// Returns an error if the position cannot be determined.
     fn position(&mut self) -> Result<u64> {
-        self.stream_position()
-            .map_err(|e| anyhow::anyhow!("Failed to get position: {}", e))
+        self.stream_position().context("Failed to get position")
     }
 
-    /// Seek to a specific position
+    /// Seek to a specific position from the start of the stream.
+    ///
+    /// # Arguments
+    /// * `pos` - The position to seek to, in bytes from the start
+    ///
+    /// # Errors
+    /// Returns an error if the seek operation fails.
     fn seek_to(&mut self, pos: u64) -> Result<()> {
         self.seek(SeekFrom::Start(pos))
-            .map_err(|e| anyhow::anyhow!("Failed to seek to position {}: {}", pos, e))?;
+            .with_context(|| format!("Failed to seek to position {pos}"))?;
         Ok(())
     }
 
     /// Read exact number of bytes at current position
     fn read_exact_at(&mut self, buf: &mut [u8]) -> Result<()> {
-        self.read_exact(buf)
-            .map_err(|e| anyhow::anyhow!("Failed to read exact bytes: {}", e))
+        self.read_exact(buf).context("Failed to read exact bytes")
     }
 
     /// Write bytes at current position
     fn write_at(&mut self, data: &[u8]) -> Result<()> {
-        self.write_all(data)
-            .map_err(|e| anyhow::anyhow!("Failed to write bytes: {}", e))
+        self.write_all(data).context("Failed to write bytes")
     }
 
     /// Flush any buffered writes
     fn flush(&mut self) -> Result<()> {
-        Write::flush(self).map_err(|e| anyhow::anyhow!("Failed to flush: {}", e))
+        Write::flush(self).context("Failed to flush")
     }
 
     /// Get total size if available
@@ -75,8 +99,8 @@ pub trait RandomAccess: Read + Write + Seek + Send + std::fmt::Debug {
     }
 }
 
-// Implement RandomAccess for common types
-impl<T: Read + Write + Seek + Send + std::fmt::Debug> RandomAccess for T {}
+// Blanket implementation for types that implement the required traits
+impl<T> RandomAccess for T where T: Read + Write + Seek + Send + std::fmt::Debug {}
 
 /// Metadata for a ZIP entry stored in our index
 #[derive(Debug, Clone)]
@@ -285,6 +309,12 @@ impl<R: RandomAccess> Bundle<R> {
         Ok(bundle)
     }
 
+    /// Helper function to create a ZipArchive from the data source
+    fn create_archive(&mut self) -> Result<ZipArchive<&mut R>> {
+        self.data_source.seek_to(0)?;
+        ZipArchive::new(&mut self.data_source).context("Failed to create zip archive")
+    }
+
     /// Build the index by reading the ZIP central directory
     fn build_index(data_source: &mut R) -> Result<BundleIndex> {
         // Reset to the beginning to ensure we can read the ZIP structure properly
@@ -363,8 +393,8 @@ impl<R: RandomAccess> Bundle<R> {
     }
 
     /// Read a value by key  
-    pub fn get(&mut self, key: &[String]) -> Result<Option<Vec<u8>>> {
-        let path = key.join("/");
+    pub fn get(&mut self, key: &BundlePath) -> Result<Option<Vec<u8>>> {
+        let path = key.to_string();
 
         // Check if file exists in the index
         if let Some(metadata) = self.index.get_entry(&path).cloned() {
@@ -374,15 +404,14 @@ impl<R: RandomAccess> Bundle<R> {
         }
     }
 
+    /// Read a value by key components (deprecated, use BundlePath version)
+    pub fn get_by_components(&mut self, key: &[String]) -> Result<Option<Vec<u8>>> {
+        self.get(&BundlePath::from(key))
+    }
+
     /// Read the actual data for a ZIP entry
     fn read_entry_data(&mut self, metadata: &EntryMetadata) -> Result<Option<Vec<u8>>> {
-        // Reset to the beginning to ensure ZipArchive can read the central directory
-        self.data_source.seek_to(0)?;
-
-        // Create a temporary ZipArchive to read this specific entry
-        // We need to do this because we can't easily decode ZIP entries manually
-        let mut archive = ZipArchive::new(&mut self.data_source)
-            .context("Failed to create temporary zip archive")?;
+        let mut archive = self.create_archive()?;
 
         let mut file = archive
             .by_name(&metadata.path)
@@ -400,8 +429,8 @@ impl<R: RandomAccess> Bundle<R> {
     /// This operation is lazy - the file is immediately removed from the in-memory index
     /// but the physical ZIP file is not updated until flush()
     /// is called or the Bundle is dropped.
-    pub fn delete(&mut self, key: Vec<String>) -> Result<()> {
-        let path = key.join("/");
+    pub fn delete(&mut self, key: &BundlePath) -> Result<()> {
+        let path = key.to_string();
 
         // Check if the file exists and remove it from our in-memory index
         if self.index.entries.remove(&path).is_none() {
@@ -423,8 +452,8 @@ impl<R: RandomAccess> Bundle<R> {
     /// This operation is immediate - the file is written directly to the ZIP archive
     /// and the in-memory index is rebuilt to reflect the changes. This ensures the
     /// file is immediately available for reading.
-    pub fn put(&mut self, key: Vec<String>, value: Vec<u8>) -> Result<()> {
-        let path = key.join("/");
+    pub fn put(&mut self, key: &BundlePath, value: Vec<u8>) -> Result<()> {
+        let path = key.to_string();
 
         // Reset to the beginning to ensure ZipWriter can properly read the ZIP structure
         self.data_source.seek_to(0)?;
@@ -459,8 +488,8 @@ impl<R: RandomAccess> Bundle<R> {
     }
 
     /// Read all key-value pairs that match a key prefix
-    pub fn get_prefix(&mut self, prefix: &[String]) -> Result<Vec<(Vec<String>, Vec<u8>)>> {
-        let prefix_path = prefix.join("/");
+    pub fn get_prefix(&mut self, prefix: &BundlePath) -> Result<Vec<(BundlePath, Vec<u8>)>> {
+        let prefix_path = prefix.to_string();
         let entries: Vec<EntryMetadata> = self
             .index
             .get_prefix_entries(&prefix_path)
@@ -473,8 +502,8 @@ impl<R: RandomAccess> Bundle<R> {
         for metadata in entries {
             let path = &metadata.path;
 
-            // Convert path back to key
-            let key: Vec<String> = path.split('/').map(|s| s.to_string()).collect();
+            // Convert path back to BundlePath
+            let key = BundlePath::from_str(path);
 
             // Read the data
             if let Some(data) = self.read_entry_data(&metadata)? {
@@ -486,11 +515,11 @@ impl<R: RandomAccess> Bundle<R> {
     }
 
     /// Get all keys in the bundle
-    pub fn list_keys(&self) -> Vec<Vec<String>> {
+    pub fn list_keys(&self) -> Vec<BundlePath> {
         self.index
             .all_paths()
             .into_iter()
-            .map(|path| path.split('/').map(|s| s.to_string()).collect())
+            .map(|path| BundlePath::from_str(path))
             .collect()
     }
 
@@ -527,8 +556,9 @@ impl<R: RandomAccess> Bundle<R> {
                     zip_writer.write_all(&file_data)?;
                 } else {
                     // Log warning but continue - this file will be lost
-                    eprintln!(
-                        "Warning: Could not read data for file '{path}' during rebuild, skipping"
+                    tracing::warn!(
+                        "Could not read data for file '{}' during rebuild, skipping",
+                        path
                     );
                 }
             }
@@ -594,7 +624,7 @@ impl<R: RandomAccess> Drop for Bundle<R> {
         if self.needs_rebuild {
             // We can't propagate errors in Drop, so we just log them
             if let Err(e) = self.flush() {
-                eprintln!("Warning: Failed to flush pending changes during Bundle drop: {e}");
+                tracing::warn!("Failed to flush pending changes during Bundle drop: {}", e);
             }
         }
     }
@@ -830,7 +860,7 @@ mod tests {
 
         // Test reading welcome.txt
         let welcome_data = bundle
-            .get(&["welcome.txt".to_string()])
+            .get(&BundlePath::from_str("welcome.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -840,7 +870,7 @@ mod tests {
 
         // Test reading readme.txt
         let readme_data = bundle
-            .get(&["readme.txt".to_string()])
+            .get(&BundlePath::from_str("readme.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -856,7 +886,7 @@ mod tests {
 
         // Test seeking to documents/report.txt
         let report_data = bundle
-            .get(&["documents".to_string(), "report.txt".to_string()])
+            .get(&BundlePath::from_str("documents/report.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -866,7 +896,7 @@ mod tests {
 
         // Test seeking to notes/todo.txt
         let todo_data = bundle
-            .get(&["notes".to_string(), "todo.txt".to_string()])
+            .get(&BundlePath::from_str("notes/todo.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -876,11 +906,7 @@ mod tests {
 
         // Test seeking to deeply nested file
         let nested_data = bundle
-            .get(&[
-                "misc".to_string(),
-                "subfolder".to_string(),
-                "nested.txt".to_string(),
-            ])
+            .get(&BundlePath::from_str("misc/subfolder/nested.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -897,23 +923,19 @@ mod tests {
         // Read files in non-sequential order to test seeking
         let files_to_test = vec![
             (
-                vec![
-                    "misc".to_string(),
-                    "subfolder".to_string(),
-                    "hidden_message.txt".to_string(),
-                ],
+                BundlePath::from_str("misc/subfolder/hidden_message.txt"),
                 "You found the secret message!",
             ),
             (
-                vec!["notes".to_string(), "ideas.txt".to_string()],
+                BundlePath::from_str("notes/ideas.txt"),
                 "Build something amazing today!",
             ),
             (
-                vec!["documents".to_string(), "summary.txt".to_string()],
+                BundlePath::from_str("documents/summary.txt"),
                 "Executive summary complete.",
             ),
             (
-                vec!["misc".to_string(), "data.txt".to_string()],
+                BundlePath::from_str("misc/data.txt"),
                 "Random data goes here.",
             ),
         ];
@@ -922,7 +944,7 @@ mod tests {
             let data = bundle
                 .get(&key)
                 .expect("Failed to read file")
-                .unwrap_or_else(|| panic!("File not found: {key:?}"));
+                .unwrap_or_else(|| panic!("File not found: {key}"));
             assert_eq!(String::from_utf8(data).unwrap(), expected_content);
         }
     }
@@ -934,13 +956,13 @@ mod tests {
 
         // Get all files under documents
         let docs = bundle
-            .get_prefix(&["documents".to_string()])
+            .get_prefix(&BundlePath::from_str("documents"))
             .expect("Failed to get prefix");
         assert_eq!(docs.len(), 2);
 
         // Get all files under misc/subfolder
         let subfolder = bundle
-            .get_prefix(&["misc".to_string(), "subfolder".to_string()])
+            .get_prefix(&BundlePath::from_str("misc/subfolder"))
             .expect("Failed to get prefix");
         assert_eq!(subfolder.len(), 2);
 
@@ -960,7 +982,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         let result = bundle
-            .get(&["nonexistent.txt".to_string()])
+            .get(&BundlePath::from_str("nonexistent.txt"))
             .expect("Failed to read file");
         assert!(result.is_none());
     }
@@ -972,7 +994,7 @@ mod tests {
 
         // Test reading a file to ensure the bundle works correctly
         let data = bundle
-            .get(&["welcome.txt".to_string()])
+            .get(&BundlePath::from_str("welcome.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -988,11 +1010,11 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle from bytes");
 
         // Add a simple new file
-        let key = vec!["test".to_string(), "simple.txt".to_string()];
+        let key = BundlePath::from_str("test/simple.txt");
         let content = b"Simple test content".to_vec();
 
         bundle
-            .put(key.clone(), content.clone())
+            .put(&key, content.clone())
             .expect("Failed to put simple file");
 
         // Read it back
@@ -1011,10 +1033,10 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Add a new file
-        let new_key = vec!["new_file.txt".to_string()];
+        let new_key = BundlePath::from_str("new_file.txt");
         let new_content = b"This is a newly added file!".to_vec();
         bundle
-            .put(new_key.clone(), new_content.clone())
+            .put(&new_key, new_content.clone())
             .expect("Failed to put new file");
 
         // Re-read the file to verify it was added correctly
@@ -1043,15 +1065,15 @@ mod tests {
         // Add multiple new files
         let files_to_add = vec![
             (
-                vec!["test1.txt".to_string()],
+                BundlePath::from_str("test1.txt"),
                 b"Content of test file 1".to_vec(),
             ),
             (
-                vec!["documents".to_string(), "new_report.txt".to_string()],
+                BundlePath::from_str("documents/new_report.txt"),
                 b"New quarterly report data".to_vec(),
             ),
             (
-                vec!["notes".to_string(), "urgent.txt".to_string()],
+                BundlePath::from_str("notes/urgent.txt"),
                 b"Urgent reminder!".to_vec(),
             ),
         ];
@@ -1059,7 +1081,7 @@ mod tests {
         // Add all files
         for (key, content) in &files_to_add {
             bundle
-                .put(key.clone(), content.clone())
+                .put(key, content.clone())
                 .expect("Failed to put file");
         }
 
@@ -1086,19 +1108,15 @@ mod tests {
         // Add files in a new subdirectory
         let new_files = vec![
             (
-                vec!["new_dir".to_string(), "file1.txt".to_string()],
+                BundlePath::from_str("new_dir/file1.txt"),
                 b"File 1 content".to_vec(),
             ),
             (
-                vec!["new_dir".to_string(), "file2.txt".to_string()],
+                BundlePath::from_str("new_dir/file2.txt"),
                 b"File 2 content".to_vec(),
             ),
             (
-                vec![
-                    "new_dir".to_string(),
-                    "subdirectory".to_string(),
-                    "file3.txt".to_string(),
-                ],
+                BundlePath::from_str("new_dir/subdirectory/file3.txt"),
                 b"File 3 content".to_vec(),
             ),
         ];
@@ -1106,13 +1124,13 @@ mod tests {
         // Add all files
         for (key, content) in &new_files {
             bundle
-                .put(key.clone(), content.clone())
+                .put(key, content.clone())
                 .expect("Failed to put file");
         }
 
         // Test prefix query for the new directory
         let new_dir_files = bundle
-            .get_prefix(&["new_dir".to_string()])
+            .get_prefix(&BundlePath::from_str("new_dir"))
             .expect("Failed to get prefix");
 
         assert_eq!(new_dir_files.len(), 3);
@@ -1135,7 +1153,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Read original content to verify the file exists
-        let key = vec!["welcome.txt".to_string()];
+        let key = BundlePath::from_str("welcome.txt");
         let original_content = bundle
             .get(&key)
             .expect("Failed to read original file")
@@ -1147,7 +1165,7 @@ mod tests {
 
         // Try to add a file with the same path - this should fail with a duplicate filename error
         let duplicate_content = b"This content has been updated!".to_vec();
-        let result = bundle.put(key.clone(), duplicate_content);
+        let result = bundle.put(&key, duplicate_content);
 
         // Verify that putting a duplicate filename fails
         assert!(
@@ -1201,10 +1219,10 @@ mod tests {
         let mut bundle = Bundle::from_source(file).expect("Failed to load bundle from file source");
 
         // Add a new file
-        let key = vec!["from_file_source.txt".to_string()];
+        let key = BundlePath::from_str("from_file_source.txt");
         let content = b"Added via file data source!".to_vec();
         bundle
-            .put(key.clone(), content.clone())
+            .put(&key, content.clone())
             .expect("Failed to put file");
 
         // Read it back
@@ -1224,7 +1242,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Verify file exists
-        let key = vec!["welcome.txt".to_string()];
+        let key = BundlePath::from_str("welcome.txt");
         let content = bundle
             .get(&key)
             .expect("Failed to read file")
@@ -1235,7 +1253,7 @@ mod tests {
         );
 
         // Delete the file
-        bundle.delete(key.clone()).expect("Failed to delete file");
+        bundle.delete(&key).expect("Failed to delete file");
 
         // Verify file is no longer accessible
         let result = bundle.get(&key).expect("Failed to read deleted file");
@@ -1255,12 +1273,12 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Use a unique filename that doesn't exist in the test bundle
-        let key = vec!["unique_test_file.txt".to_string()];
+        let key = BundlePath::from_str("unique_test_file.txt");
         let original_content = b"Original content".to_vec();
 
         // Add a file
         bundle
-            .put(key.clone(), original_content.clone())
+            .put(&key, original_content.clone())
             .expect("Failed to put file");
 
         // Verify it exists
@@ -1271,7 +1289,7 @@ mod tests {
         assert_eq!(read_content, original_content);
 
         // Delete the file
-        bundle.delete(key.clone()).expect("Failed to delete file");
+        bundle.delete(&key).expect("Failed to delete file");
 
         // Verify it's deleted (removed from index)
         let deleted_result = bundle.get(&key).expect("Failed to read deleted file");
@@ -1316,8 +1334,8 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Try to delete a file that doesn't exist
-        let key = vec!["nonexistent.txt".to_string()];
-        let result = bundle.delete(key);
+        let key = BundlePath::from_str("nonexistent.txt");
+        let result = bundle.delete(&key);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("File not found"));
@@ -1331,25 +1349,25 @@ mod tests {
 
         // Get initial count of documents
         let initial_docs = bundle
-            .get_prefix(&["documents".to_string()])
+            .get_prefix(&BundlePath::from_str("documents"))
             .expect("Failed to get prefix");
         let initial_count = initial_docs.len();
 
         // Delete one document
         bundle
-            .delete(vec!["documents".to_string(), "report.txt".to_string()])
+            .delete(&BundlePath::from_str("documents/report.txt"))
             .expect("Failed to delete document");
 
         // Query again - should have one less document
         let after_delete_docs = bundle
-            .get_prefix(&["documents".to_string()])
+            .get_prefix(&BundlePath::from_str("documents"))
             .expect("Failed to get prefix after delete");
         assert_eq!(after_delete_docs.len(), initial_count - 1);
 
         // Verify the deleted file is not in the results
         let has_deleted_file = after_delete_docs
             .iter()
-            .any(|(key, _)| key.join("/") == "documents/report.txt");
+            .any(|(key, _)| key.to_string() == "documents/report.txt");
         assert!(
             !has_deleted_file,
             "Deleted file should not appear in prefix query"
@@ -1363,7 +1381,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Delete an existing file (not one we just added)
-        let key = vec!["welcome.txt".to_string()];
+        let key = BundlePath::from_str("welcome.txt");
 
         // Verify file exists first
         let content = bundle
@@ -1376,7 +1394,7 @@ mod tests {
         );
 
         // Delete the file - this should set needs_rebuild = true
-        bundle.delete(key.clone()).expect("Failed to delete file");
+        bundle.delete(&key).expect("Failed to delete file");
         assert!(
             bundle.needs_rebuild,
             "needs_rebuild should be true after delete"
@@ -1404,7 +1422,7 @@ mod tests {
 
         // Other files should still be accessible
         let other_content = bundle
-            .get(&["readme.txt".to_string()])
+            .get(&BundlePath::from_str("readme.txt"))
             .expect("Failed to read other file");
         assert!(
             other_content.is_some(),
@@ -1419,17 +1437,17 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Delete a file to set needs_rebuild = true
-        let key = vec!["welcome.txt".to_string()];
-        bundle.delete(key).expect("Failed to delete file");
+        let key = BundlePath::from_str("welcome.txt");
+        bundle.delete(&key).expect("Failed to delete file");
         assert!(
             bundle.needs_rebuild,
             "needs_rebuild should be true after delete"
         );
 
         // Put a new file - this should clear needs_rebuild since it does a full rebuild
-        let new_key = vec!["test_put_clears.txt".to_string()];
+        let new_key = BundlePath::from_str("test_put_clears.txt");
         bundle
-            .put(new_key.clone(), b"Test content".to_vec())
+            .put(&new_key, b"Test content".to_vec())
             .expect("Failed to put file");
 
         // needs_rebuild should be false since put() does immediate index rebuild
@@ -1450,30 +1468,36 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Get initial count of files
-        let initial_files = bundle.get_prefix(&[]).expect("Failed to get all files");
+        let initial_files = bundle
+            .get_prefix(&BundlePath::root())
+            .expect("Failed to get all files");
         let initial_count = initial_files.len();
 
         // Add a file and then delete it
-        let key = vec!["test_deleted.txt".to_string()];
+        let key = BundlePath::from_str("test_deleted.txt");
         bundle
-            .put(key.clone(), b"Test content".to_vec())
+            .put(&key, b"Test content".to_vec())
             .expect("Failed to put file");
 
         // Verify file was added
-        let after_add_files = bundle.get_prefix(&[]).expect("Failed to get all files");
+        let after_add_files = bundle
+            .get_prefix(&BundlePath::root())
+            .expect("Failed to get all files");
         assert_eq!(after_add_files.len(), initial_count + 1);
 
         // Delete the file
-        bundle.delete(key).expect("Failed to delete file");
+        bundle.delete(&key).expect("Failed to delete file");
 
         // Verify deleted file doesn't appear in queries
-        let after_delete_files = bundle.get_prefix(&[]).expect("Failed to get all files");
+        let after_delete_files = bundle
+            .get_prefix(&BundlePath::root())
+            .expect("Failed to get all files");
         assert_eq!(after_delete_files.len(), initial_count);
 
         // Verify the deleted file is not in the results
         let has_deleted_file = after_delete_files
             .iter()
-            .any(|(key_parts, _)| key_parts.join("/") == "test_deleted.txt");
+            .any(|(key_parts, _)| key_parts.to_string() == "test_deleted.txt");
         assert!(
             !has_deleted_file,
             "Deleted file should not appear in prefix queries"

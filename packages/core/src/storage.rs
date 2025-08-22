@@ -1,4 +1,4 @@
-use crate::bundle::{Bundle, RandomAccess};
+use crate::bundle::{Bundle, BundlePath, RandomAccess};
 use crate::util::CloneableFile;
 use samod::storage::{Storage, StorageKey};
 use std::collections::HashMap;
@@ -6,13 +6,36 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Storage adapter that uses Bundle for persistence instead of filesystem
+/// Storage adapter that uses Bundle for persistence instead of filesystem.
+///
+/// BundleStorage implements the samod Storage trait, allowing Bundle instances
+/// to be used as the persistence layer for CRDT synchronization. This enables
+/// storing document data in ZIP archives instead of traditional filesystems.
+///
+/// # Type Parameters
+/// * `R` - The RandomAccess type used by the underlying Bundle
+///
+/// # Examples
+///
+/// ```no_run
+/// # use tonk_core::storage::BundleStorage;
+/// # use std::io::Cursor;
+/// let data = vec![/* ZIP data */];
+/// let storage = BundleStorage::from_bytes(data).unwrap();
+/// ```
 #[derive(Debug)]
 pub struct BundleStorage<R: RandomAccess> {
     bundle: Arc<Mutex<Bundle<R>>>,
 }
 
 impl<R: RandomAccess> BundleStorage<R> {
+    /// Create a new BundleStorage from an existing Bundle.
+    ///
+    /// # Arguments
+    /// * `bundle` - The Bundle instance to wrap
+    ///
+    /// # Returns
+    /// A new BundleStorage instance that can be used with samod
     pub fn new(bundle: Bundle<R>) -> Self {
         Self {
             bundle: Arc::new(Mutex::new(bundle)),
@@ -49,12 +72,12 @@ impl BundleStorage<CloneableFile> {
 
 impl<R: RandomAccess + 'static> Storage for BundleStorage<R> {
     fn load(&self, key: StorageKey) -> impl std::future::Future<Output = Option<Vec<u8>>> + Send {
-        let bundle = self.bundle.clone();
+        let bundle = Arc::clone(&self.bundle);
         async move {
             let mut bundle_guard = bundle.lock().await;
 
-            // Convert StorageKey to Vec<String> for bundle
-            let bundle_key: Vec<String> = key.into_iter().collect();
+            // Convert StorageKey to BundlePath for bundle
+            let bundle_key = BundlePath::from(key.into_iter().collect::<Vec<String>>());
 
             bundle_guard.get(&bundle_key).unwrap_or_default()
         }
@@ -64,19 +87,22 @@ impl<R: RandomAccess + 'static> Storage for BundleStorage<R> {
         &self,
         prefix: StorageKey,
     ) -> impl std::future::Future<Output = HashMap<StorageKey, Vec<u8>>> + Send {
-        let bundle = self.bundle.clone();
+        let bundle = Arc::clone(&self.bundle);
         async move {
             let mut bundle_guard = bundle.lock().await;
             let mut result = HashMap::new();
 
-            // Convert StorageKey to Vec<String> for bundle prefix
-            let bundle_prefix: Vec<String> = prefix.into_iter().collect();
+            // Convert StorageKey to BundlePath for bundle prefix
+            let bundle_prefix = BundlePath::from(prefix.into_iter().collect::<Vec<String>>());
 
             if let Ok(entries) = bundle_guard.get_prefix(&bundle_prefix) {
-                for (key_components, data) in entries {
+                for (key_path, data) in entries {
                     // Convert back to StorageKey
-                    let storage_key: StorageKey =
-                        key_components.into_iter().collect::<StorageKey>();
+                    let storage_key: StorageKey = key_path
+                        .components()
+                        .iter()
+                        .cloned()
+                        .collect::<StorageKey>();
                     result.insert(storage_key, data);
                 }
             }
@@ -86,28 +112,28 @@ impl<R: RandomAccess + 'static> Storage for BundleStorage<R> {
     }
 
     fn put(&self, key: StorageKey, data: Vec<u8>) -> impl std::future::Future<Output = ()> + Send {
-        let bundle = self.bundle.clone();
+        let bundle = Arc::clone(&self.bundle);
         async move {
             let mut bundle_guard = bundle.lock().await;
 
-            // Convert StorageKey to Vec<String> for bundle
-            let bundle_key: Vec<String> = key.into_iter().collect();
+            // Convert StorageKey to BundlePath for bundle
+            let bundle_key = BundlePath::from(key.into_iter().collect::<Vec<String>>());
 
             // Ignore errors for now - in a real implementation you might want to handle them
-            let _ = bundle_guard.put(bundle_key, data);
+            let _ = bundle_guard.put(&bundle_key, data);
         }
     }
 
     async fn delete(&self, key: StorageKey) {
-        let bundle = self.bundle.clone();
-        let bundle_key: Vec<String> = key.into_iter().collect();
+        let bundle = Arc::clone(&self.bundle);
+        let bundle_key = BundlePath::from(key.into_iter().collect::<Vec<String>>());
 
         let mut bundle_guard = bundle.lock().await;
 
         // Call the delete method on the bundle
-        if let Err(e) = bundle_guard.delete(bundle_key) {
+        if let Err(e) = bundle_guard.delete(&bundle_key) {
             // Log the error but don't propagate it since the trait method doesn't return Result
-            eprintln!("Failed to delete key: {e}");
+            tracing::warn!("Failed to delete key: {}", e);
         }
     }
 }

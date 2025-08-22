@@ -36,7 +36,7 @@ impl Vfs {
 
     /// Get VFS handle for file operations
     pub fn vfs(&self) -> Arc<VirtualFileSystem> {
-        self.vfs.clone()
+        Arc::clone(&self.vfs)
     }
 
     /// Get the underlying samod instance for advanced operations
@@ -110,7 +110,7 @@ impl Clone for Vfs {
     fn clone(&self) -> Self {
         Self {
             engine: self.engine.clone(),
-            vfs: self.vfs.clone(),
+            vfs: Arc::clone(&self.vfs),
         }
     }
 }
