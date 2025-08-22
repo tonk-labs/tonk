@@ -56,10 +56,7 @@ impl<R: RandomAccess + 'static> Storage for BundleStorage<R> {
             // Convert StorageKey to Vec<String> for bundle
             let bundle_key: Vec<String> = key.into_iter().collect();
 
-            match bundle_guard.get(&bundle_key) {
-                Ok(data) => data,
-                Err(_) => None,
-            }
+            bundle_guard.get(&bundle_key).unwrap_or_default()
         }
     }
 
@@ -75,16 +72,13 @@ impl<R: RandomAccess + 'static> Storage for BundleStorage<R> {
             // Convert StorageKey to Vec<String> for bundle prefix
             let bundle_prefix: Vec<String> = prefix.into_iter().collect();
 
-            match bundle_guard.get_prefix(&bundle_prefix) {
-                Ok(entries) => {
-                    for (key_components, data) in entries {
-                        // Convert back to StorageKey
-                        let storage_key: StorageKey =
-                            key_components.into_iter().collect::<StorageKey>();
-                        result.insert(storage_key, data);
-                    }
+            if let Ok(entries) = bundle_guard.get_prefix(&bundle_prefix) {
+                for (key_components, data) in entries {
+                    // Convert back to StorageKey
+                    let storage_key: StorageKey =
+                        key_components.into_iter().collect::<StorageKey>();
+                    result.insert(storage_key, data);
                 }
-                Err(_) => {} // Return empty map on error
             }
 
             result
@@ -104,13 +98,11 @@ impl<R: RandomAccess + 'static> Storage for BundleStorage<R> {
         }
     }
 
-    fn delete(&self, _key: StorageKey) -> impl std::future::Future<Output = ()> + Send {
+    async fn delete(&self, _key: StorageKey) {
         // Note: Bundle doesn't currently support delete operations
         // This would need to be implemented in the Bundle struct
-        async move {
-            // For now, this is a no-op
-            // TODO: Implement delete functionality in Bundle
-        }
+        // For now, this is a no-op
+        // TODO: Implement delete functionality in Bundle
     }
 }
 
