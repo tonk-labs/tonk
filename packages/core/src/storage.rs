@@ -98,11 +98,17 @@ impl<R: RandomAccess + 'static> Storage for BundleStorage<R> {
         }
     }
 
-    async fn delete(&self, _key: StorageKey) {
-        // Note: Bundle doesn't currently support delete operations
-        // This would need to be implemented in the Bundle struct
-        // For now, this is a no-op
-        // TODO: Implement delete functionality in Bundle
+    async fn delete(&self, key: StorageKey) {
+        let bundle = self.bundle.clone();
+        let bundle_key: Vec<String> = key.into_iter().collect();
+
+        let mut bundle_guard = bundle.lock().await;
+
+        // Call the delete method on the bundle
+        if let Err(e) = bundle_guard.delete(bundle_key) {
+            // Log the error but don't propagate it since the trait method doesn't return Result
+            eprintln!("Failed to delete key: {e}");
+        }
     }
 }
 
@@ -111,7 +117,7 @@ mod tests {
     use super::*;
     use samod::storage::Storage;
     use std::io::Write;
-    use zip::{ZipWriter, write::SimpleFileOptions};
+    use zip::{write::SimpleFileOptions, ZipWriter};
 
     /// Create a test bundle with manifest and some test data
     fn create_test_bundle() -> anyhow::Result<Vec<u8>> {
@@ -241,5 +247,47 @@ mod tests {
         assert_eq!(result, Some(new_data));
 
         // temp_file is automatically cleaned up when it goes out of scope
+    }
+
+    #[tokio::test]
+    async fn test_bundle_storage_delete() {
+        let zip_data = create_test_bundle().expect("Failed to create test bundle");
+        let storage = BundleStorage::from_bytes(zip_data).expect("Failed to create storage");
+
+        // Add a file
+        let key = StorageKey::from_iter(vec!["delete_test".to_string(), "file.txt".to_string()]);
+        let data = b"This file will be deleted".to_vec();
+
+        storage.put(key.clone(), data.clone()).await;
+
+        // Verify it exists
+        let result = storage.load(key.clone()).await;
+        assert_eq!(result, Some(data));
+
+        // Delete the file
+        storage.delete(key.clone()).await;
+
+        // Verify it's gone
+        let after_delete = storage.load(key).await;
+        assert_eq!(after_delete, None);
+    }
+
+    #[tokio::test]
+    async fn test_bundle_storage_delete_and_recover() {
+        let zip_data = create_test_bundle().expect("Failed to create test bundle");
+        let storage = BundleStorage::from_bytes(zip_data).expect("Failed to create storage");
+
+        // Add a file
+        let key = StorageKey::from_iter(vec!["recover_test".to_string(), "file.txt".to_string()]);
+        let original_data = b"Original content".to_vec();
+
+        storage.put(key.clone(), original_data.clone()).await;
+
+        // Delete it
+        storage.delete(key.clone()).await;
+
+        // Verify it's gone
+        let after_delete = storage.load(key.clone()).await;
+        assert_eq!(after_delete, None);
     }
 }

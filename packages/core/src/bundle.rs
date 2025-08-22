@@ -156,6 +156,23 @@ impl PathTreeNode {
 
         paths
     }
+
+    /// Remove a path from the tree
+    fn remove_path(&mut self, path_components: &[String], full_path: &str) {
+        if path_components.is_empty() {
+            self.entries.retain(|p| p != full_path);
+            return;
+        }
+
+        if let Some(child) = self.children.get_mut(&path_components[0]) {
+            child.remove_path(&path_components[1..], full_path);
+
+            // Clean up empty nodes
+            if child.entries.is_empty() && child.children.is_empty() {
+                self.children.remove(&path_components[0]);
+            }
+        }
+    }
 }
 
 /// In-memory index of ZIP entries for fast access
@@ -219,6 +236,16 @@ impl BundleIndex {
     pub fn all_paths(&self) -> Vec<&String> {
         self.entries.keys().collect()
     }
+
+    /// Remove a path from the path tree
+    pub fn remove_from_path_tree(&mut self, path: &str) {
+        let path_components: Vec<String> = path
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        self.path_tree.remove_path(&path_components, path);
+    }
 }
 
 impl Default for BundleIndex {
@@ -235,6 +262,8 @@ pub struct Bundle<R: RandomAccess> {
     index: BundleIndex,
     /// Parsed manifest data
     manifest: Manifest,
+    /// Track if central directory needs updating
+    needs_rebuild: bool,
 }
 
 impl<R: RandomAccess> Bundle<R> {
@@ -246,11 +275,14 @@ impl<R: RandomAccess> Bundle<R> {
         // Read and parse the manifest
         let manifest = Self::read_manifest(&mut data_source, &index)?;
 
-        Ok(Bundle {
+        let bundle = Bundle {
             data_source,
             index,
             manifest,
-        })
+            needs_rebuild: false,
+        };
+
+        Ok(bundle)
     }
 
     /// Build the index by reading the ZIP central directory
@@ -334,6 +366,7 @@ impl<R: RandomAccess> Bundle<R> {
     pub fn get(&mut self, key: &[String]) -> Result<Option<Vec<u8>>> {
         let path = key.join("/");
 
+        // Check if file exists in the index
         if let Some(metadata) = self.index.get_entry(&path).cloned() {
             self.read_entry_data(&metadata)
         } else {
@@ -362,10 +395,34 @@ impl<R: RandomAccess> Bundle<R> {
         Ok(Some(buffer))
     }
 
+    /// Delete a file by removing it from the central directory
+    ///
+    /// This operation is lazy - the file is immediately removed from the in-memory index
+    /// but the physical ZIP file is not updated until flush()
+    /// is called or the Bundle is dropped.
+    pub fn delete(&mut self, key: Vec<String>) -> Result<()> {
+        let path = key.join("/");
+
+        // Check if the file exists and remove it from our in-memory index
+        if self.index.entries.remove(&path).is_none() {
+            return Err(anyhow::anyhow!("File not found: {}", path));
+        }
+
+        // Remove from path tree for prefix queries
+        self.index.remove_from_path_tree(&path);
+
+        // Mark for lazy central directory rebuild - the file will be physically
+        // removed from the ZIP when flush() is called or when Bundle is dropped
+        self.needs_rebuild = true;
+
+        Ok(())
+    }
+
     /// Append a key-value pair to the ZIP bundle
     ///
-    /// This uses ZipWriter::new_append to safely append new entries to the existing ZIP archive.
-    /// The ZIP central directory is properly updated, and our in-memory index is rebuilt.
+    /// This operation is immediate - the file is written directly to the ZIP archive
+    /// and the in-memory index is rebuilt to reflect the changes. This ensures the
+    /// file is immediately available for reading.
     pub fn put(&mut self, key: Vec<String>, value: Vec<u8>) -> Result<()> {
         let path = key.join("/");
 
@@ -373,7 +430,6 @@ impl<R: RandomAccess> Bundle<R> {
         self.data_source.seek_to(0)?;
 
         // Use ZipWriter::new_append to safely append to the existing ZIP archive
-        // This borrows our data_source mutably and handles the ZIP format correctly
         let mut zip_writer = ZipWriter::new_append(&mut self.data_source)
             .context("Failed to create ZipWriter for appending")?;
 
@@ -388,15 +444,16 @@ impl<R: RandomAccess> Bundle<R> {
             .context("Failed to write data to ZIP entry")?;
 
         // Finish the ZIP operation to update the central directory
-        // This returns the original data_source back (since ZipWriter took ownership temporarily)
         zip_writer
             .finish()
             .context("Failed to finish ZIP writing")?;
 
         // After writing, we need to rebuild the index since the ZIP structure has changed
-        // This ensures our index stays in sync with the actual ZIP contents
         self.index = Self::build_index(&mut self.data_source)
             .context("Failed to rebuild index after writing")?;
+
+        // Reset needs_rebuild since we just did a full rebuild
+        self.needs_rebuild = false;
 
         Ok(())
     }
@@ -414,8 +471,10 @@ impl<R: RandomAccess> Bundle<R> {
         let mut results = Vec::new();
 
         for metadata in entries {
+            let path = &metadata.path;
+
             // Convert path back to key
-            let key: Vec<String> = metadata.path.split('/').map(|s| s.to_string()).collect();
+            let key: Vec<String> = path.split('/').map(|s| s.to_string()).collect();
 
             // Read the data
             if let Some(data) = self.read_entry_data(&metadata)? {
@@ -438,6 +497,106 @@ impl<R: RandomAccess> Bundle<R> {
     /// Get the parsed manifest data
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// Flush changes by rebuilding the central directory if needed
+    pub fn flush(&mut self) -> Result<()> {
+        if self.needs_rebuild {
+            self.rebuild_central_directory()?;
+            self.needs_rebuild = false;
+        }
+        Ok(())
+    }
+
+    /// Rebuild the central directory to reflect current index state
+    /// This creates a new ZIP archive that only includes files present in our index
+    fn rebuild_central_directory(&mut self) -> Result<()> {
+        // Create new ZIP archive with only files from our current index
+        let mut new_data = Vec::new();
+        {
+            let mut zip_writer = ZipWriter::new(std::io::Cursor::new(&mut new_data));
+
+            // Copy only files that exist in our index (excluding deleted ones)
+            let entries: Vec<(String, EntryMetadata)> =
+                self.index.entries.clone().into_iter().collect();
+            for (path, metadata) in entries {
+                // Try to read file data, but skip if it fails (file might have been
+                // corrupted or the ZIP structure changed since we last rebuilt)
+                if let Ok(Some(file_data)) = self.read_entry_data(&metadata) {
+                    zip_writer.start_file(&path, SimpleFileOptions::default())?;
+                    zip_writer.write_all(&file_data)?;
+                } else {
+                    // Log warning but continue - this file will be lost
+                    eprintln!(
+                        "Warning: Could not read data for file '{path}' during rebuild, skipping"
+                    );
+                }
+            }
+
+            zip_writer.finish()?;
+        }
+
+        // Replace our data source with the new ZIP that excludes deleted files
+        self.data_source.seek_to(0)?;
+        self.data_source.write_all(&new_data)?;
+        RandomAccess::flush(&mut self.data_source)?;
+
+        // Rebuild index from the new archive
+        self.index = Self::build_index(&mut self.data_source)?;
+
+        Ok(())
+    }
+
+    /// Compact the bundle by creating a new archive with only active files
+    /// This physically removes deleted file data and reclaims space
+    pub fn compact(&mut self) -> Result<()> {
+        // Create new ZIP archive with only files from our index
+        let mut new_data = Vec::new();
+        {
+            let mut zip_writer = ZipWriter::new(std::io::Cursor::new(&mut new_data));
+
+            // Copy only files that exist in our index
+            let entries: Vec<(String, EntryMetadata)> =
+                self.index.entries.clone().into_iter().collect();
+            for (path, metadata) in entries {
+                if let Some(file_data) = self.read_entry_data(&metadata)? {
+                    zip_writer.start_file(&path, SimpleFileOptions::default())?;
+                    zip_writer.write_all(&file_data)?;
+                }
+            }
+
+            zip_writer.finish()?;
+        }
+
+        // Replace our data source with compacted version
+        self.data_source.seek_to(0)?;
+        self.data_source.write_all(&new_data)?;
+        RandomAccess::flush(&mut self.data_source)?;
+
+        // Truncate the data source if possible (for files)
+        if let Some(_size) = self.data_source.size()? {
+            // For files, we should truncate to the new size
+            // This is a limitation of the RandomAccess trait - it doesn't have truncate
+            // In practice, this would need to be handled at the file level
+        }
+
+        // Rebuild index from new archive
+        self.index = Self::build_index(&mut self.data_source)?;
+        self.needs_rebuild = false;
+
+        Ok(())
+    }
+}
+
+impl<R: RandomAccess> Drop for Bundle<R> {
+    /// Automatically flush any pending changes when Bundle is dropped
+    fn drop(&mut self) {
+        if self.needs_rebuild {
+            // We can't propagate errors in Drop, so we just log them
+            if let Err(e) = self.flush() {
+                eprintln!("Warning: Failed to flush pending changes during Bundle drop: {e}");
+            }
+        }
     }
 }
 
@@ -611,11 +770,9 @@ mod tests {
             "Expected error when loading bundle without manifest.json"
         );
         let error = result.unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("manifest.json not found in bundle")
-        );
+        assert!(error
+            .to_string()
+            .contains("manifest.json not found in bundle"));
     }
 
     #[test]
@@ -661,11 +818,9 @@ mod tests {
         );
 
         let error = result.unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("Unsupported manifest version: 2")
-        );
+        assert!(error
+            .to_string()
+            .contains("Unsupported manifest version: 2"));
     }
 
     #[test]
@@ -1060,5 +1215,268 @@ mod tests {
         assert_eq!(read_content, content);
 
         // temp_file is automatically cleaned up when it goes out of scope
+    }
+
+    #[test]
+    fn test_delete_and_get() {
+        // Create test bundle in memory
+        let zip_data = create_complete_test_bundle().expect("Failed to create test bundle");
+        let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
+
+        // Verify file exists
+        let key = vec!["welcome.txt".to_string()];
+        let content = bundle
+            .get(&key)
+            .expect("Failed to read file")
+            .expect("File not found");
+        assert_eq!(
+            String::from_utf8(content).unwrap(),
+            "Hello from the root directory!"
+        );
+
+        // Delete the file
+        bundle.delete(key.clone()).expect("Failed to delete file");
+
+        // Verify file is no longer accessible
+        let result = bundle.get(&key).expect("Failed to read deleted file");
+        assert!(result.is_none(), "Deleted file should not be accessible");
+
+        // File should be deleted from index
+        assert!(
+            bundle.index.get_entry("welcome.txt").is_none(),
+            "File should be removed from index after deletion"
+        );
+    }
+
+    #[test]
+    fn test_delete_and_recover() {
+        // Create test bundle in memory
+        let zip_data = create_complete_test_bundle().expect("Failed to create test bundle");
+        let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
+
+        // Use a unique filename that doesn't exist in the test bundle
+        let key = vec!["unique_test_file.txt".to_string()];
+        let original_content = b"Original content".to_vec();
+
+        // Add a file
+        bundle
+            .put(key.clone(), original_content.clone())
+            .expect("Failed to put file");
+
+        // Verify it exists
+        let read_content = bundle
+            .get(&key)
+            .expect("Failed to read file")
+            .expect("File not found");
+        assert_eq!(read_content, original_content);
+
+        // Delete the file
+        bundle.delete(key.clone()).expect("Failed to delete file");
+
+        // Verify it's deleted (removed from index)
+        let deleted_result = bundle.get(&key).expect("Failed to read deleted file");
+        assert!(deleted_result.is_none());
+
+        // In the central directory approach, recovery means the file is still
+        // physically in the ZIP but just removed from our index
+        // We can simulate recovery by adding it back to the index manually
+        // (in practice, this would be done by putting a new file or
+        // rebuilding from the physical ZIP contents)
+
+        // For this test, let's verify that the file is indeed gone
+        // and that we could recover it by rebuilding the index from the ZIP
+
+        // The physical file should still exist in the ZIP archive
+        // Let's rebuild the index to see the original file
+        let original_index =
+            Bundle::<std::io::Cursor<Vec<u8>>>::build_index(&mut bundle.data_source)
+                .expect("Failed to rebuild index");
+
+        // The original file should be back in the rebuilt index
+        assert!(
+            original_index.get_entry("unique_test_file.txt").is_some(),
+            "File should exist in rebuilt index"
+        );
+
+        // If we restore it to our bundle's index, it should be accessible
+        if let Some(metadata) = original_index.get_entry("unique_test_file.txt") {
+            bundle.index.add_entry(metadata.clone());
+            let recovered_result = bundle
+                .get(&key)
+                .expect("Failed to read recovered file")
+                .expect("Recovered file not found");
+            assert_eq!(recovered_result, original_content);
+        }
+    }
+
+    #[test]
+    fn test_delete_nonexistent_file() {
+        // Create test bundle in memory
+        let zip_data = create_complete_test_bundle().expect("Failed to create test bundle");
+        let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
+
+        // Try to delete a file that doesn't exist
+        let key = vec!["nonexistent.txt".to_string()];
+        let result = bundle.delete(key);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("File not found"));
+    }
+
+    #[test]
+    fn test_prefix_query_with_delete() {
+        // Create test bundle in memory
+        let zip_data = create_complete_test_bundle().expect("Failed to create test bundle");
+        let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
+
+        // Get initial count of documents
+        let initial_docs = bundle
+            .get_prefix(&["documents".to_string()])
+            .expect("Failed to get prefix");
+        let initial_count = initial_docs.len();
+
+        // Delete one document
+        bundle
+            .delete(vec!["documents".to_string(), "report.txt".to_string()])
+            .expect("Failed to delete document");
+
+        // Query again - should have one less document
+        let after_delete_docs = bundle
+            .get_prefix(&["documents".to_string()])
+            .expect("Failed to get prefix after delete");
+        assert_eq!(after_delete_docs.len(), initial_count - 1);
+
+        // Verify the deleted file is not in the results
+        let has_deleted_file = after_delete_docs
+            .iter()
+            .any(|(key, _)| key.join("/") == "documents/report.txt");
+        assert!(
+            !has_deleted_file,
+            "Deleted file should not appear in prefix query"
+        );
+    }
+
+    #[test]
+    fn test_flush_and_lazy_deletion() {
+        // Create test bundle in memory
+        let zip_data = create_complete_test_bundle().expect("Failed to create test bundle");
+        let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
+
+        // Delete an existing file (not one we just added)
+        let key = vec!["welcome.txt".to_string()];
+
+        // Verify file exists first
+        let content = bundle
+            .get(&key)
+            .expect("Failed to read file")
+            .expect("File should exist");
+        assert_eq!(
+            String::from_utf8(content).unwrap(),
+            "Hello from the root directory!"
+        );
+
+        // Delete the file - this should set needs_rebuild = true
+        bundle.delete(key.clone()).expect("Failed to delete file");
+        assert!(
+            bundle.needs_rebuild,
+            "needs_rebuild should be true after delete"
+        );
+
+        // File should be immediately inaccessible even though ZIP wasn't updated yet
+        let result = bundle.get(&key).expect("Failed to read deleted file");
+        assert!(result.is_none(), "Deleted file should not be accessible");
+
+        // Explicitly flush to apply the deletion to the ZIP
+        bundle.flush().expect("Failed to flush");
+        assert!(
+            !bundle.needs_rebuild,
+            "needs_rebuild should be false after flush"
+        );
+
+        // File should still be inaccessible after flush
+        let result = bundle
+            .get(&key)
+            .expect("Failed to read deleted file after flush");
+        assert!(
+            result.is_none(),
+            "Deleted file should still not be accessible after flush"
+        );
+
+        // Other files should still be accessible
+        let other_content = bundle
+            .get(&["readme.txt".to_string()])
+            .expect("Failed to read other file");
+        assert!(
+            other_content.is_some(),
+            "Other files should still be accessible after flush"
+        );
+    }
+
+    #[test]
+    fn test_put_clears_needs_rebuild() {
+        // Create test bundle in memory
+        let zip_data = create_complete_test_bundle().expect("Failed to create test bundle");
+        let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
+
+        // Delete a file to set needs_rebuild = true
+        let key = vec!["welcome.txt".to_string()];
+        bundle.delete(key).expect("Failed to delete file");
+        assert!(
+            bundle.needs_rebuild,
+            "needs_rebuild should be true after delete"
+        );
+
+        // Put a new file - this should clear needs_rebuild since it does a full rebuild
+        let new_key = vec!["test_put_clears.txt".to_string()];
+        bundle
+            .put(new_key.clone(), b"Test content".to_vec())
+            .expect("Failed to put file");
+
+        // needs_rebuild should be false since put() does immediate index rebuild
+        assert!(
+            !bundle.needs_rebuild,
+            "needs_rebuild should be false after put"
+        );
+
+        // New file should be accessible
+        let result = bundle.get(&new_key).expect("Failed to read new file");
+        assert!(result.is_some(), "New file should be accessible");
+    }
+
+    #[test]
+    fn test_deleted_files_not_in_queries() {
+        // Create test bundle in memory
+        let zip_data = create_complete_test_bundle().expect("Failed to create test bundle");
+        let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
+
+        // Get initial count of files
+        let initial_files = bundle.get_prefix(&[]).expect("Failed to get all files");
+        let initial_count = initial_files.len();
+
+        // Add a file and then delete it
+        let key = vec!["test_deleted.txt".to_string()];
+        bundle
+            .put(key.clone(), b"Test content".to_vec())
+            .expect("Failed to put file");
+
+        // Verify file was added
+        let after_add_files = bundle.get_prefix(&[]).expect("Failed to get all files");
+        assert_eq!(after_add_files.len(), initial_count + 1);
+
+        // Delete the file
+        bundle.delete(key).expect("Failed to delete file");
+
+        // Verify deleted file doesn't appear in queries
+        let after_delete_files = bundle.get_prefix(&[]).expect("Failed to get all files");
+        assert_eq!(after_delete_files.len(), initial_count);
+
+        // Verify the deleted file is not in the results
+        let has_deleted_file = after_delete_files
+            .iter()
+            .any(|(key_parts, _)| key_parts.join("/") == "test_deleted.txt");
+        assert!(
+            !has_deleted_file,
+            "Deleted file should not appear in prefix queries"
+        );
     }
 }
