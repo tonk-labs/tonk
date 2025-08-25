@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tonk Core WASM Example</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f5f5f5;
+      }
+      h1 {
+        color: #333;
+      }
+      .section {
+        background: white;
+        padding: 20px;
+        margin: 20px 0;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      button {
+        background: #007bff;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin: 5px;
+      }
+      button:hover {
+        background: #0056b3;
+      }
+      .output {
+        background: #f8f9fa;
+        padding: 10px;
+        border-radius: 4px;
+        margin-top: 10px;
+        font-family: monospace;
+        white-space: pre-wrap;
+      }
+      input[type='text'] {
+        width: 300px;
+        padding: 8px;
+        margin: 5px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Tonk Core WASM Example</h1>
+
+    <div class="section">
+      <h2>Sync Engine</h2>
+      <button onclick="createEngine()">Create Sync Engine</button>
+      <button onclick="connectWebSocket()">Connect to WebSocket</button>
+      <input
+        type="text"
+        id="wsUrl"
+        placeholder="ws://localhost:8080"
+        value="ws://localhost:8080"
+      />
+      <div id="engineOutput" class="output"></div>
+    </div>
+
+    <div class="section">
+      <h2>Virtual File System</h2>
+      <input
+        type="text"
+        id="filePath"
+        placeholder="Enter file path"
+        value="/test/file.txt"
+      />
+      <input
+        type="text"
+        id="fileContent"
+        placeholder="Enter file content"
+        value="Hello from WASM!"
+      />
+      <br />
+      <button onclick="createFile()">Create File</button>
+      <button onclick="readFile()">Read File</button>
+      <button onclick="deleteFile()">Delete File</button>
+      <button onclick="listDirectory()">List Directory</button>
+      <div id="vfsOutput" class="output"></div>
+    </div>
+
+    <div class="section">
+      <h2>Bundle Operations</h2>
+      <input
+        type="text"
+        id="bundleKey"
+        placeholder="Enter key"
+        value="test/data.json"
+      />
+      <input
+        type="text"
+        id="bundleValue"
+        placeholder="Enter value"
+        value='{"message": "Hello from bundle!"}'
+      />
+      <br />
+      <button onclick="createBundle()">Create Bundle</button>
+      <button onclick="putValue()">Put Value</button>
+      <button onclick="getValue()">Get Value</button>
+      <button onclick="listKeys()">List Keys</button>
+      <div id="bundleOutput" class="output"></div>
+    </div>
+
+    <script type="module">
+      import init, {
+        create_sync_engine,
+        create_bundle_from_bytes,
+        WasmSyncEngine,
+        WasmVfs,
+        WasmBundle,
+      } from '../pkg/tonk_core.js';
+
+      let engine = null;
+      let vfs = null;
+      let bundle = null;
+
+      // Initialize WASM module
+      async function initWasm() {
+        await init();
+        log('engineOutput', 'WASM module initialized');
+      }
+
+      // Helper function to log output
+      function log(elementId, message) {
+        const output = document.getElementById(elementId);
+        const timestamp = new Date().toLocaleTimeString();
+        output.textContent = `[${timestamp}] ${message}\n${output.textContent}`;
+      }
+
+      // Sync Engine functions
+      window.createEngine = async function () {
+        try {
+          engine = await create_sync_engine();
+          const peerId = await engine.getPeerId();
+          log('engineOutput', `Sync engine created with peer ID: ${peerId}`);
+
+          // Get VFS instance
+          vfs = await engine.getVfs();
+          log('engineOutput', 'VFS instance obtained');
+        } catch (err) {
+          log('engineOutput', `Error creating engine: ${err}`);
+        }
+      };
+
+      window.connectWebSocket = async function () {
+        if (!engine) {
+          log('engineOutput', 'Please create engine first');
+          return;
+        }
+
+        const url = document.getElementById('wsUrl').value;
+        try {
+          await engine.connectWebsocket(url);
+          log('engineOutput', `Connected to WebSocket: ${url}`);
+        } catch (err) {
+          log('engineOutput', `Error connecting: ${err}`);
+        }
+      };
+
+      // VFS functions
+      window.createFile = async function () {
+        if (!vfs) {
+          log('vfsOutput', 'Please create engine first');
+          return;
+        }
+
+        const path = document.getElementById('filePath').value;
+        const content = document.getElementById('fileContent').value;
+
+        try {
+          await vfs.createFile(path, content);
+          log('vfsOutput', `File created: ${path}`);
+        } catch (err) {
+          log('vfsOutput', `Error creating file: ${err}`);
+        }
+      };
+
+      window.readFile = async function () {
+        if (!vfs) {
+          log('vfsOutput', 'Please create engine first');
+          return;
+        }
+
+        const path = document.getElementById('filePath').value;
+
+        try {
+          const content = await vfs.readFile(path);
+          log(
+            'vfsOutput',
+            `File content: ${content || '(empty or not found)'}`
+          );
+        } catch (err) {
+          log('vfsOutput', `Error reading file: ${err}`);
+        }
+      };
+
+      window.deleteFile = async function () {
+        if (!vfs) {
+          log('vfsOutput', 'Please create engine first');
+          return;
+        }
+
+        const path = document.getElementById('filePath').value;
+
+        try {
+          const deleted = await vfs.deleteFile(path);
+          log('vfsOutput', `File deleted: ${deleted}`);
+        } catch (err) {
+          log('vfsOutput', `Error deleting file: ${err}`);
+        }
+      };
+
+      window.listDirectory = async function () {
+        if (!vfs) {
+          log('vfsOutput', 'Please create engine first');
+          return;
+        }
+
+        const path = document.getElementById('filePath').value;
+        const dirPath = path.substring(0, path.lastIndexOf('/')) || '/';
+
+        try {
+          const entries = await vfs.listDirectory(dirPath);
+          log(
+            'vfsOutput',
+            `Directory listing for ${dirPath}:\n${JSON.stringify(entries, null, 2)}`
+          );
+        } catch (err) {
+          log('vfsOutput', `Error listing directory: ${err}`);
+        }
+      };
+
+      // Bundle functions
+      window.createBundle = async function () {
+        try {
+          // Create an empty ZIP file structure for demo
+          const encoder = new TextEncoder();
+          const manifestContent = JSON.stringify({
+            manifestVersion: 1,
+            version: { major: 1, minor: 0 },
+            root: 'main',
+            entrypoints: [],
+            networkUris: [],
+          });
+
+          // For demo purposes, we'll create a simple ZIP structure
+          // In real usage, you would load an actual bundle file
+          log(
+            'bundleOutput',
+            'Note: Bundle creation from scratch not implemented in this demo'
+          );
+          log('bundleOutput', 'Please load an existing bundle file');
+        } catch (err) {
+          log('bundleOutput', `Error creating bundle: ${err}`);
+        }
+      };
+
+      window.putValue = async function () {
+        if (!bundle) {
+          log('bundleOutput', 'Please create or load a bundle first');
+          return;
+        }
+
+        const key = document.getElementById('bundleKey').value;
+        const value = document.getElementById('bundleValue').value;
+        const encoder = new TextEncoder();
+        const data = encoder.encode(value);
+
+        try {
+          await bundle.put(key, data);
+          log('bundleOutput', `Value stored at key: ${key}`);
+        } catch (err) {
+          log('bundleOutput', `Error storing value: ${err}`);
+        }
+      };
+
+      window.getValue = async function () {
+        if (!bundle) {
+          log('bundleOutput', 'Please create or load a bundle first');
+          return;
+        }
+
+        const key = document.getElementById('bundleKey').value;
+
+        try {
+          const data = await bundle.get(key);
+          if (data) {
+            const decoder = new TextDecoder();
+            const value = decoder.decode(data);
+            log('bundleOutput', `Value at ${key}: ${value}`);
+          } else {
+            log('bundleOutput', `No value found at key: ${key}`);
+          }
+        } catch (err) {
+          log('bundleOutput', `Error getting value: ${err}`);
+        }
+      };
+
+      window.listKeys = async function () {
+        if (!bundle) {
+          log('bundleOutput', 'Please create or load a bundle first');
+          return;
+        }
+
+        try {
+          const keys = await bundle.listKeys();
+          log('bundleOutput', `Bundle keys:\n${JSON.stringify(keys, null, 2)}`);
+        } catch (err) {
+          log('bundleOutput', `Error listing keys: ${err}`);
+        }
+      };
+
+      // Initialize on page load
+      initWasm().catch(console.error);
+    </script>
+  </body>
+</html>

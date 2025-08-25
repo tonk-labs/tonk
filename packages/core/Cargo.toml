@@ -8,13 +8,15 @@ license = "MIT"
 repository = "https://github.com/tonk-labs/tonk"
 keywords = ["tonk", "local-first", "sync", "automerge", "real-time", "collaboration"]
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 # core deps
-samod = {version="0.2.2", features = ["tokio", "tungstenite"]}
+samod = { path = "../samod/samod" }
 automerge = "0.6.1"
 
 # async runtime
-tokio = {version="1.47.1", features=["macros", "rt-multi-thread"]}
 tokio-stream = "0.1.17"
 futures = "0.3.31"
 
@@ -30,9 +32,40 @@ thiserror = "2.0.16"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 chrono = { version = "0.4.41", features = ["serde"] }
-tokio-tungstenite = "0.27"
 zip = "4.4.0"
 rand = "0.9.2"
+getrandom = { version = "0.3.3", features = ["wasm_js"]}
 
 [dev-dependencies]
 tempfile = "3.21.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = {version="1.47.1", features=["macros", "rt-multi-thread"]}
+tokio-tungstenite = "0.27"
+samod = { path = "../samod/samod", features = ["tokio", "tungstenite"]}
+
+# [target.'cfg(target_arch = "wasm32")'.dependencies]
+# tokio = {version = "1.47.1", features = ["macros", "rt", "sync"]}
+wasm-bindgen = { version = "0.2.100", features = ["serde-serialize"] }
+wasm-bindgen-futures = "0.4.50"
+serde-wasm-bindgen = "0.6.5"
+js-sys = "0.3.77"
+console_error_panic_hook = { version = "0.1.7", optional = true}
+wee_alloc = { version = "0.4.5", optional = true }
+wasm-bindgen-test = "0.3.50"
+web-sys = {version = "0.3.77", features = [
+  "BinaryType",
+  "Blob",
+  "ErrorEvent", 
+  "FileReader",
+  "MessageEvent",
+  "ProgressEvent",
+  "WebSocket"
+]}
+
+[features]
+default = ["console_error_panic_hook"]
+wee_alloc = ["dep:wee_alloc"]
+
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

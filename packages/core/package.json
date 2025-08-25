@@ -1,0 +1,41 @@
+{
+  "name": "@tonk/core-wasm",
+  "version": "0.1.0",
+  "description": "WASM bindings for Tonk Core - local-first sync engine",
+  "main": "pkg/tonk_core.js",
+  "module": "pkg/tonk_core_bg.js",
+  "types": "pkg/tonk_core.d.ts",
+  "files": [
+    "pkg/**/*"
+  ],
+  "scripts": {
+    "build": "wasm-pack build --target web --out-dir pkg",
+    "build:node": "wasm-pack build --target nodejs --out-dir pkg-node",
+    "build:bundler": "wasm-pack build --target bundler --out-dir pkg-bundler",
+    "build:all": "npm run build && npm run build:node && npm run build:bundler",
+    "test": "wasm-pack test --headless --firefox",
+    "clean": "rm -rf pkg pkg-node pkg-bundler"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonk-labs/tonk.git"
+  },
+  "keywords": [
+    "tonk",
+    "local-first",
+    "sync",
+    "automerge",
+    "wasm",
+    "real-time",
+    "collaboration"
+  ],
+  "author": "Tonk Labs",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/tonk-labs/tonk/issues"
+  },
+  "homepage": "https://github.com/tonk-labs/tonk#readme",
+  "devDependencies": {
+    "wasm-pack": "^0.12.1"
+  }
+}

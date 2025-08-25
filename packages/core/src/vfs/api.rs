@@ -3,6 +3,7 @@ use crate::sync::SyncEngine;
 use crate::vfs::filesystem::{VfsEvent, VirtualFileSystem};
 use crate::vfs::types::RefNode;
 use crate::vfs::watcher::DocumentWatcher;
+use automerge::AutoSerde;
 use samod::{DocHandle, Samod};
 use std::sync::Arc;
 
@@ -63,8 +64,17 @@ impl Vfs {
     }
 
     /// Read a document at a path
-    pub async fn read_file(&self, path: &str) -> Result<Option<DocHandle>> {
-        self.vfs().find_document(path).await
+    pub async fn read_file(&self, path: &str) -> Result<Option<String>> {
+        if let Some(handle) = self.vfs().find_document(path).await? {
+            let json_string = handle.with_document(|doc| {
+                let auto_serde = AutoSerde::from(&*doc);
+                serde_json::to_string_pretty(&auto_serde)
+                    .unwrap_or_else(|e| format!("Error serializing: {e}"))
+            });
+            Ok(Some(json_string))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Delete a document at a path

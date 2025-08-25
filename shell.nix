@@ -17,6 +17,9 @@ pkgs.mkShell {
     # Docker
     docker
     docker-compose
+
+    # Rust + WASM
+    wasm-pack
   ];
 
   shellHook = ''

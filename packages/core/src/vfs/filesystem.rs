@@ -503,7 +503,7 @@ mod tests {
             .create_document("/test.txt", "Hello, VFS!".to_string())
             .await
             .unwrap();
-        assert!(doc_handle.document_id().to_string().len() > 0);
+        assert!(!doc_handle.document_id().to_string().is_empty());
 
         // Verify document exists
         let found = vfs.find_document("/test.txt").await.unwrap();
@@ -525,7 +525,7 @@ mod tests {
 
         // Create a directory
         let dir_handle = vfs.create_directory("/documents").await.unwrap();
-        assert!(dir_handle.document_id().to_string().len() > 0);
+        assert!(!dir_handle.document_id().to_string().is_empty());
 
         // List root directory
         let children = vfs.list_directory("/").await.unwrap();
