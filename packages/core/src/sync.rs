@@ -7,13 +7,45 @@ use std::sync::Arc;
 use tokio_tungstenite::connect_async;
 use tracing::info;
 
+/// Core synchronization engine that orchestrates CRDT operations and VFS interactions.
+///
+/// SyncEngine combines samod (CRDT synchronization) with a virtual file system layer,
+/// providing a unified interface for document synchronization and file operations.
+/// The engine manages peer connections, document creation/retrieval, and real-time
+/// synchronization of changes across distributed systems.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use tonk_core::sync::SyncEngine;
+/// # async fn example() {
+/// let engine = SyncEngine::new().await.unwrap();
+/// let vfs = engine.vfs();
+/// // Use VFS for file operations...
+/// # }
+/// ```
 pub struct SyncEngine {
     samod: Arc<Samod>,
     vfs: Arc<VirtualFileSystem>,
 }
 
 impl SyncEngine {
-    /// Create a new SyncEngine with a random peer ID
+    /// Create a new SyncEngine with a randomly generated peer ID.
+    ///
+    /// The engine will use in-memory storage by default. For persistent storage,
+    /// use alternative constructors or configure the underlying samod instance.
+    ///
+    /// # Returns
+    /// A Result containing the new SyncEngine instance or an error if initialization fails.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use tonk_core::sync::SyncEngine;
+    /// # async fn example() {
+    /// let engine = SyncEngine::new().await.unwrap();
+    /// println!("Engine peer ID: {}", engine.peer_id());
+    /// # }
+    /// ```
     pub async fn new() -> Result<Self> {
         let mut rng = rng();
         Self::with_peer_id(PeerId::new_with_rng(&mut rng)).await
@@ -44,12 +76,12 @@ impl SyncEngine {
 
     /// Get access to the VFS layer
     pub fn vfs(&self) -> Arc<VirtualFileSystem> {
-        self.vfs.clone()
+        Arc::clone(&self.vfs)
     }
 
     /// Get access to the underlying Samod instance
     pub fn samod(&self) -> Arc<Samod> {
-        self.samod.clone()
+        Arc::clone(&self.samod)
     }
 
     /// Get the peer ID of this sync engine
@@ -78,13 +110,11 @@ impl SyncEngine {
 
     /// Find a document by its ID
     pub async fn find_document(&self, doc_id: DocumentId) -> Result<DocHandle> {
-        match self.samod.find(doc_id.clone()).await {
-            Ok(Some(handle)) => Ok(handle),
-            Ok(None) => Err(VfsError::SamodError(format!("Document {doc_id} not found"))),
-            Err(e) => Err(VfsError::SamodError(format!(
-                "Failed to find document {doc_id}: {e}"
-            ))),
-        }
+        self.samod
+            .find(doc_id.clone())
+            .await
+            .map_err(|e| VfsError::SamodError(format!("Failed to find document {doc_id}: {e}")))?
+            .ok_or_else(|| VfsError::SamodError(format!("Document {doc_id} not found")))
     }
 
     /// Create a new document
@@ -108,8 +138,8 @@ impl SyncEngine {
 impl Clone for SyncEngine {
     fn clone(&self) -> Self {
         Self {
-            samod: self.samod.clone(),
-            vfs: self.vfs.clone(),
+            samod: Arc::clone(&self.samod),
+            vfs: Arc::clone(&self.vfs),
         }
     }
 }
