@@ -20,6 +20,7 @@ pkgs.mkShell {
 
     # Rust + WASM
     wasm-pack
+    llvmPackages.bintools
   ];
 
   shellHook = ''

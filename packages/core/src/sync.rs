@@ -2,7 +2,7 @@ use crate::error::{Result, VfsError};
 use crate::vfs::VirtualFileSystem;
 use rand::rng;
 use samod::storage::InMemoryStorage;
-use samod::{ConnDirection, DocHandle, DocumentId, PeerId, Samod};
+use samod::{ConnDirection, DocHandle, DocumentId, PeerId, Repo, RepoBuilder};
 use std::sync::Arc;
 use tokio_tungstenite::connect_async;
 use tracing::info;
@@ -25,7 +25,7 @@ use tracing::info;
 /// # }
 /// ```
 pub struct SyncEngine {
-    samod: Arc<Samod>,
+    samod: Arc<Repo>,
     vfs: Arc<VirtualFileSystem>,
 }
 
@@ -58,7 +58,8 @@ impl SyncEngine {
         let storage = InMemoryStorage::new();
 
         // Build samod instance with the storage and peer ID
-        let samod = Samod::build_tokio()
+        let runtime = tokio::runtime::Handle::current();
+        let samod = RepoBuilder::new(runtime)
             .with_storage(storage)
             .with_peer_id(peer_id)
             .load()
@@ -79,8 +80,8 @@ impl SyncEngine {
         Arc::clone(&self.vfs)
     }
 
-    /// Get access to the underlying Samod instance
-    pub fn samod(&self) -> Arc<Samod> {
+    /// Get access to the underlying Repo instance
+    pub fn samod(&self) -> Arc<Repo> {
         Arc::clone(&self.samod)
     }
 
@@ -147,7 +148,7 @@ impl Clone for SyncEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     #[tokio::test]
     async fn test_sync_engine_creation() {
@@ -184,7 +185,7 @@ mod tests {
 
         // Test that both references point to the same samod instance
         let engine_samod = engine.samod();
-        // NOTE: We can't easily compare Arc<Samod> for equality, but we can check peer IDs
+        // NOTE: We can't easily compare Arc<Repo> for equality, but we can check peer IDs
         assert_eq!(engine.peer_id(), engine_samod.peer_id());
     }
 

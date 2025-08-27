@@ -1,7 +1,7 @@
 use crate::error::{Result, VfsError};
 use crate::vfs::backend::AutomergeHelpers;
 use crate::vfs::types::*;
-use samod::{DocHandle, DocumentId, Samod};
+use samod::{DocHandle, DocumentId, Repo};
 use std::sync::Arc;
 
 pub struct TraverseResult {
@@ -13,11 +13,11 @@ pub struct TraverseResult {
 
 #[derive(Clone)]
 pub struct PathTraverser {
-    samod: Arc<Samod>,
+    samod: Arc<Repo>,
 }
 
 impl PathTraverser {
-    pub fn new(samod: Arc<Samod>) -> Self {
+    pub fn new(samod: Arc<Repo>) -> Self {
         Self { samod }
     }
 
@@ -245,7 +245,7 @@ mod tests {
     use crate::vfs::filesystem::VirtualFileSystem;
 
     // Helper function to create a test VFS with initialized root
-    async fn create_test_vfs() -> (Arc<Samod>, DocumentId, PathTraverser) {
+    async fn create_test_vfs() -> (Arc<Repo>, DocumentId, PathTraverser) {
         let engine = SyncEngine::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
         let traverser = PathTraverser::new(engine.samod());
@@ -253,7 +253,7 @@ mod tests {
     }
 
     // Helper function to create a directory structure for testing
-    async fn setup_test_directory_structure(vfs_root: DocumentId, samod: Arc<Samod>) {
+    async fn setup_test_directory_structure(vfs_root: DocumentId, samod: Arc<Repo>) {
         let root_handle = samod.find(vfs_root.clone()).await.unwrap().unwrap();
 
         // Create /docs directory

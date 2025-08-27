@@ -4,7 +4,7 @@ use crate::vfs::filesystem::{VfsEvent, VirtualFileSystem};
 use crate::vfs::types::RefNode;
 use crate::vfs::watcher::DocumentWatcher;
 use automerge::AutoSerde;
-use samod::{DocHandle, Samod};
+use samod::{DocHandle, Repo};
 use std::sync::Arc;
 
 /// Simplified API for common VFS use cases
@@ -41,7 +41,7 @@ impl Vfs {
     }
 
     /// Get the underlying samod instance for advanced operations
-    pub fn samod(&self) -> Arc<Samod> {
+    pub fn samod(&self) -> Arc<Repo> {
         self.engine.samod()
     }
 

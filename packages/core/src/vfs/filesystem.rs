@@ -4,12 +4,12 @@ use crate::vfs::traversal::PathTraverser;
 use crate::vfs::types::*;
 use crate::vfs::watcher::DocumentWatcher;
 use automerge::Automerge;
-use samod::{DocHandle, DocumentId, Samod};
+use samod::{DocHandle, DocumentId, Repo};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
 pub struct VirtualFileSystem {
-    samod: Arc<Samod>,
+    samod: Arc<Repo>,
     root_id: DocumentId,
     traverser: PathTraverser,
     event_tx: broadcast::Sender<VfsEvent>,
@@ -24,7 +24,7 @@ pub enum VfsEvent {
 }
 
 impl VirtualFileSystem {
-    pub async fn new(samod: Arc<Samod>) -> Result<Self> {
+    pub async fn new(samod: Arc<Repo>) -> Result<Self> {
         // Create root document with directory structure
         let root_doc = Automerge::new();
 
@@ -50,7 +50,7 @@ impl VirtualFileSystem {
     }
 
     /// Create a new VFS from an existing root document
-    pub async fn from_root(samod: Arc<Samod>, root_id: DocumentId) -> Result<Self> {
+    pub async fn from_root(samod: Arc<Repo>, root_id: DocumentId) -> Result<Self> {
         // Verify the root document exists and is a directory
         let root_handle = samod
             .find(root_id.clone())

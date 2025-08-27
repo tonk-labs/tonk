@@ -1,0 +1,7 @@
+# Configuration for wasm32-unknown-unknown target (browsers, wasm-pack)
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+
+# Configuration for wasm32-wasi target
+[target.wasm32-wasip2]
+# WASI has proper random support, so no special configuration needed
