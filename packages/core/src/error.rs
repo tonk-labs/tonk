@@ -50,6 +50,7 @@ pub enum VfsError {
 
 pub type Result<T> = std::result::Result<T, VfsError>;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<tokio_tungstenite::tungstenite::Error> for VfsError {
     fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
         VfsError::WebSocketError(err.to_string())

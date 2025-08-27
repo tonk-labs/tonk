@@ -343,7 +343,6 @@ impl<R: RandomAccess> Bundle<R> {
                 compression_method: match file.compression() {
                     zip::CompressionMethod::Stored => 0,
                     zip::CompressionMethod::Deflated => 8,
-                    zip::CompressionMethod::Bzip2 => 12,
                     _ => 0, // Default to stored for unknown methods
                 },
             };
@@ -800,9 +799,11 @@ mod tests {
             "Expected error when loading bundle without manifest.json"
         );
         let error = result.unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("manifest.json not found in bundle"));
+        assert!(
+            error
+                .to_string()
+                .contains("manifest.json not found in bundle")
+        );
     }
 
     #[test]
@@ -848,9 +849,11 @@ mod tests {
         );
 
         let error = result.unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("Unsupported manifest version: 2"));
+        assert!(
+            error
+                .to_string()
+                .contains("Unsupported manifest version: 2")
+        );
     }
 
     #[test]

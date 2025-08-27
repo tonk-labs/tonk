@@ -44,8 +44,9 @@ tokio = {version="1.47.1", features=["macros", "rt-multi-thread"]}
 tokio-tungstenite = "0.27"
 samod = { path = "../samod/samod", features = ["tokio", "tungstenite"]}
 
-# [target.'cfg(target_arch = "wasm32")'.dependencies]
-# tokio = {version = "1.47.1", features = ["macros", "rt", "sync"]}
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = {version = "1.47.1", features = ["macros", "rt", "sync"]}
+samod = { path = "../samod/samod" }
 wasm-bindgen = { version = "0.2.100", features = ["serde-serialize"] }
 wasm-bindgen-futures = "0.4.50"
 serde-wasm-bindgen = "0.6.5"
@@ -66,6 +67,5 @@ web-sys = {version = "0.3.77", features = [
 [features]
 default = ["console_error_panic_hook"]
 wee_alloc = ["dep:wee_alloc"]
-
-[target.wasm32-unknown-unknown]
-rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+wasm-browser = ["samod/wasm-browser"]
+wasm-node = ["samod/wasm-node"]

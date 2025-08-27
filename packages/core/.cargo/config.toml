@@ -1,6 +1,6 @@
 # Configuration for wasm32-unknown-unknown target (browsers, wasm-pack)
 [target.wasm32-unknown-unknown]
-rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"', '-C', 'target-feature=+atomics,+bulk-memory,+mutable-globals']
 
 # Configuration for wasm32-wasi target
 [target.wasm32-wasip2]

@@ -14,22 +14,22 @@ use wasm_bindgen_futures::future_to_promise;
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-// #[wasm_bindgen]
-// extern "C" {
-//     #[wasm_bindgen(js_namespace = console)]
-//     fn log(s: &str);
-//
-//     #[wasm_bindgen(js_namespace = console)]
-//     fn error(s: &str);
-// }
-//
-// macro_rules! console_log {
-//     ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
-// }
-//
-// macro_rules! console_error {
-//     ($($t:tt)*) => (error(&format_args!($($t)*).to_string()))
-// }
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+
+    #[wasm_bindgen(js_namespace = console)]
+    fn error(s: &str);
+}
+
+macro_rules! console_log {
+    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
+}
+
+macro_rules! console_error {
+    ($($t:tt)*) => (error(&format_args!($($t)*).to_string()))
+}
 
 #[wasm_bindgen(start)]
 pub fn init() {
@@ -50,12 +50,20 @@ impl WasmSyncEngine {
     #[wasm_bindgen(constructor)]
     #[allow(clippy::new_ret_no_self)]
     pub fn new() -> Promise {
+        console_log!("WasmSyncEngine::new() called");
         future_to_promise(async move {
+            console_log!("About to call SyncEngine::new()");
             match SyncEngine::new().await {
-                Ok(engine) => Ok(JsValue::from(WasmSyncEngine {
-                    engine: Arc::new(Mutex::new(engine)),
-                })),
-                Err(e) => Err(js_error(e)),
+                Ok(engine) => {
+                    console_log!("SyncEngine created successfully");
+                    Ok(JsValue::from(WasmSyncEngine {
+                        engine: Arc::new(Mutex::new(engine)),
+                    }))
+                }
+                Err(e) => {
+                    console_error!("SyncEngine creation failed: {}", e);
+                    Err(js_error(e))
+                }
             }
         })
     }
@@ -370,6 +378,7 @@ pub struct WasmVfsEvent {
 
 #[wasm_bindgen]
 pub fn create_sync_engine() -> Promise {
+    console_log!("create_sync_engine() called");
     WasmSyncEngine::new()
 }
 

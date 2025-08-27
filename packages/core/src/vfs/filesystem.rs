@@ -8,6 +8,26 @@ use samod::{DocHandle, DocumentId, Repo};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
+#[cfg(target_arch = "wasm32")]
+macro_rules! wasm_log {
+    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+macro_rules! wasm_log {
+    ($($t:tt)*) => {};
+}
+
 pub struct VirtualFileSystem {
     samod: Arc<Repo>,
     root_id: DocumentId,
@@ -25,22 +45,32 @@ pub enum VfsEvent {
 
 impl VirtualFileSystem {
     pub async fn new(samod: Arc<Repo>) -> Result<Self> {
-        // Create root document with directory structure
-        let root_doc = Automerge::new();
+        wasm_log!("VirtualFileSystem::new() called");
 
-        let root_handle = samod
-            .create(root_doc)
-            .await
-            .map_err(|e| VfsError::SamodError(format!("Failed to create root document: {e}")))?;
+        // Create root document with directory structure
+        wasm_log!("Creating root automerge document");
+        let root_doc = Automerge::new();
+        wasm_log!("Root document created");
+
+        wasm_log!("About to call samod.create()");
+        let root_handle = samod.create(root_doc).await.map_err(|e| {
+            wasm_log!("samod.create() failed: {}", e);
+            VfsError::SamodError(format!("Failed to create root document: {e}"))
+        })?;
+        wasm_log!("samod.create() succeeded");
 
         let root_id = root_handle.document_id().clone();
+        wasm_log!("Got root_id: {}", root_id);
 
         // Initialize root as directory
+        wasm_log!("Initializing root as directory");
         AutomergeHelpers::init_as_directory(&root_handle, "/")?;
+        wasm_log!("Root initialized as directory");
 
         let (event_tx, _) = broadcast::channel(100);
         let traverser = PathTraverser::new(samod.clone());
 
+        wasm_log!("VirtualFileSystem created successfully");
         Ok(Self {
             samod,
             root_id,
