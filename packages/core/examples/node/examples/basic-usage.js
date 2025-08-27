@@ -25,7 +25,7 @@ try {
 }
 
 async function main() {
-  console.log('🚀 Tonk Core WASM Node.js Basic Usage Example\n');
+  console.log('Tonk Core WASM Node.js Basic Usage Example\n');
 
   try {
     // Create a sync engine

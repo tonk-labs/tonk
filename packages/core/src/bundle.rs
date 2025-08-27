@@ -454,6 +454,7 @@ impl<R: RandomAccess> Bundle<R> {
     pub fn put(&mut self, key: &BundlePath, value: Vec<u8>) -> Result<()> {
         let path = key.to_string();
 
+        // HACK: properly implement ZIP file updates
         // Reset to the beginning to ensure ZipWriter can properly read the ZIP structure
         self.data_source.seek_to(0)?;
 

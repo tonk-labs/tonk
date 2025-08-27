@@ -5,3 +5,6 @@ rustflags = ['--cfg', 'getrandom_backend="wasm_js"', '-C', 'target-feature=+atom
 # Configuration for wasm32-wasi target
 [target.wasm32-wasip2]
 # WASI has proper random support, so no special configuration needed
+
+[unstable]
+build-std = ["panic_abort", "std"]

@@ -35,7 +35,7 @@ impl CloneableFile {
     }
 
     /// Helper function to acquire the inner lock
-    fn lock_inner(&self) -> Result<MutexGuard<CloneableFileInner>> {
+    fn lock_inner(&self) -> Result<MutexGuard<'_, CloneableFileInner>> {
         self.inner
             .lock()
             .map_err(|_| Error::other("Failed to acquire file lock"))
