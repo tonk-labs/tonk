@@ -20,16 +20,6 @@ extern "C" {
     fn log(s: &str);
 }
 
-#[cfg(target_arch = "wasm32")]
-macro_rules! wasm_log {
-    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-macro_rules! wasm_log {
-    ($($t:tt)*) => {};
-}
-
 /// Core synchronization engine that orchestrates CRDT operations and VFS interactions.
 ///
 /// SyncEngine combines samod (CRDT synchronization) with a virtual file system layer,
@@ -70,22 +60,16 @@ impl SyncEngine {
     /// # }
     /// ```
     pub async fn new() -> Result<Self> {
-        wasm_log!("SyncEngine::new() called");
         let mut rng = rng();
         let peer_id = PeerId::new_with_rng(&mut rng);
-        wasm_log!("Generated peer ID: {}", peer_id);
         Self::with_peer_id(peer_id).await
     }
 
     /// Create a new SyncEngine with a specific peer ID
     pub async fn with_peer_id(peer_id: PeerId) -> Result<Self> {
-        wasm_log!("SyncEngine::with_peer_id({}) called", peer_id);
-
         // Use samod's built-in InMemoryStorage
         // TODO: add option for FilesystemStorage
-        wasm_log!("Creating InMemoryStorage");
         let storage = InMemoryStorage::new();
-        wasm_log!("InMemoryStorage created");
 
         // Build samod instance with the storage and peer ID
         #[cfg(not(target_arch = "wasm32"))]
@@ -100,28 +84,19 @@ impl SyncEngine {
 
         #[cfg(target_arch = "wasm32")]
         let samod = {
-            wasm_log!("About to call Repo::build_wasm()");
             let builder = Repo::build_wasm();
-            wasm_log!("Got builder, adding storage");
             let builder = builder.with_storage(storage);
-            wasm_log!("Added storage, adding peer_id");
             let builder = builder.with_peer_id(peer_id);
-            wasm_log!("Added peer_id, calling load()");
             let result = builder.load().await;
-            wasm_log!("load() completed");
             result
         };
 
-        wasm_log!("Creating Arc for samod");
         let samod = Arc::new(samod);
 
         // Create VFS layer on top of samod
-        wasm_log!("Creating VFS layer");
         let vfs = Arc::new(VirtualFileSystem::new(samod.clone()).await?);
-        wasm_log!("VFS created successfully");
 
         info!("SyncEngine initialized with peer ID: {}", samod.peer_id());
-        wasm_log!("SyncEngine initialization complete");
 
         Ok(Self { samod, vfs })
     }

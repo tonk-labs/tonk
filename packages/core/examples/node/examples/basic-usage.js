@@ -100,9 +100,9 @@ async function bundleExample() {
   console.log('\n\n📦 Bundle Operations Example\n');
 
   try {
-    // Create a new bundle
+    // Create a new empty bundle
     console.log('📦 Creating a new bundle...');
-    const bundle = await wasm.create_bundle();
+    const bundle = wasm.create_bundle();
     console.log('✅ Bundle created successfully');
 
     // Add some data to the bundle
@@ -128,8 +128,19 @@ async function bundleExample() {
     // Retrieve and display content
     console.log('\n📄 Reading config/app.json...');
     const appConfigData = await bundle.get('config/app.json');
-    const appConfig = new TextDecoder().decode(appConfigData);
-    console.log('Content:', appConfig);
+    if (appConfigData) {
+      const appConfig = new TextDecoder().decode(appConfigData);
+      console.log('Content:', appConfig);
+    }
+
+    // Demonstrate prefix queries
+    console.log('\n🔍 Finding config files...');
+    const configFiles = await bundle.getPrefix('config/');
+    console.log(`Found ${configFiles.length} config files:`);
+    configFiles.forEach(({ key, value }) => {
+      const content = new TextDecoder().decode(value);
+      console.log(`  - ${key}: ${content.substring(0, 50)}...`);
+    });
 
     // Demonstrate serialization
     console.log('\n💾 Serializing bundle...');
@@ -138,9 +149,17 @@ async function bundleExample() {
 
     // Create new bundle from serialized data
     console.log('\n📦 Creating bundle from serialized data...');
-    const newBundle = await wasm.create_bundle_from_bytes(serialized);
+    const newBundle = wasm.create_bundle_from_bytes(serialized);
     const newKeys = await newBundle.listKeys();
     console.log(`✅ Restored bundle with ${newKeys.length} items`);
+
+    // Delete a file to demonstrate deletion
+    console.log('\n🗑️ Deleting README.md...');
+    const deleted = await bundle.delete('README.md');
+    console.log(`✅ File deleted: ${deleted}`);
+
+    const keysAfterDelete = await bundle.listKeys();
+    console.log(`Bundle now has ${keysAfterDelete.length} files`);
 
     console.log('\n✅ Bundle operations completed successfully!');
   } catch (error) {

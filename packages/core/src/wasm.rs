@@ -368,6 +368,22 @@ impl WasmBundle {
             }
         })
     }
+
+    #[wasm_bindgen(js_name = toBytes)]
+    pub fn to_bytes(&self) -> Promise {
+        let bundle = self.bundle.clone();
+        future_to_promise(async move {
+            let mut bundle = bundle.lock().await;
+            match bundle.to_bytes() {
+                Ok(bytes) => {
+                    let array = Uint8Array::new_with_length(bytes.len() as u32);
+                    array.copy_from(&bytes);
+                    Ok(JsValue::from(array))
+                }
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -385,6 +401,16 @@ pub fn create_sync_engine() -> Promise {
 #[wasm_bindgen]
 pub fn create_sync_engine_with_peer_id(peer_id: String) -> Promise {
     WasmSyncEngine::with_peer_id(peer_id)
+}
+
+#[wasm_bindgen]
+pub fn create_bundle() -> std::result::Result<WasmBundle, JsValue> {
+    match Bundle::create_empty() {
+        Ok(bundle) => Ok(WasmBundle {
+            bundle: Arc::new(Mutex::new(bundle)),
+        }),
+        Err(e) => Err(js_error(e)),
+    }
 }
 
 #[wasm_bindgen]

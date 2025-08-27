@@ -636,6 +636,49 @@ impl Bundle<std::io::Cursor<Vec<u8>>> {
         let cursor = std::io::Cursor::new(data);
         Self::from_source(cursor)
     }
+
+    /// Create a new empty bundle with a minimal manifest
+    pub fn create_empty() -> Result<Self> {
+        use zip::write::SimpleFileOptions;
+
+        // Create minimal manifest
+        let manifest = serde_json::json!({
+            "manifestVersion": 1,
+            "version": { "major": 1, "minor": 0 },
+            "root": "main",
+            "entrypoints": [],
+            "networkUris": []
+        });
+
+        let manifest_json =
+            serde_json::to_string_pretty(&manifest).context("Failed to serialize manifest")?;
+
+        // Create in-memory ZIP with just the manifest
+        let mut zip_data = Vec::new();
+        {
+            let mut zip_writer = ZipWriter::new(std::io::Cursor::new(&mut zip_data));
+            zip_writer.start_file("manifest.json", SimpleFileOptions::default())?;
+            zip_writer.write_all(manifest_json.as_bytes())?;
+            zip_writer.finish()?;
+        }
+
+        // Create bundle from the new ZIP data
+        Self::from_bytes(zip_data)
+    }
+
+    /// Get the bundle data as bytes (for serialization)
+    pub fn to_bytes(&mut self) -> Result<Vec<u8>> {
+        // First flush any pending changes
+        self.flush()?;
+
+        // Read all data from our cursor
+        self.data_source.seek_to(0)?;
+        let mut bytes = Vec::new();
+        self.data_source
+            .read_to_end(&mut bytes)
+            .context("Failed to read bundle data")?;
+        Ok(bytes)
+    }
 }
 
 impl Bundle<std::fs::File> {
