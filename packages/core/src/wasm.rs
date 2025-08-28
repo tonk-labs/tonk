@@ -1,8 +1,9 @@
 use crate::bundle::{Bundle, BundlePath};
 use crate::sync::SyncEngine;
 use crate::vfs::{NodeType, VirtualFileSystem};
-use automerge::AutoSerde;
+use automerge::{transaction::Transactable, AutoSerde, ReadDoc};
 use js_sys::{Array, Promise, Uint8Array};
+use samod::Repo;
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::sync::Arc;
@@ -16,9 +17,6 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = console)]
-    fn log(s: &str);
-
     #[wasm_bindgen(js_namespace = console)]
     fn error(s: &str);
 }
@@ -74,7 +72,7 @@ impl WasmSyncEngine {
 
     #[wasm_bindgen(js_name = getPeerId)]
     pub fn get_peer_id(&self) -> Promise {
-        let engine = self.engine.clone();
+        let engine = Arc::clone(&self.engine);
         future_to_promise(async move {
             let engine = engine.lock().await;
             Ok(JsValue::from_str(&engine.peer_id().to_string()))
@@ -83,7 +81,7 @@ impl WasmSyncEngine {
 
     #[wasm_bindgen(js_name = connectWebsocket)]
     pub fn connect_websocket(&self, url: String) -> Promise {
-        let engine = self.engine.clone();
+        let engine = Arc::clone(&self.engine);
         future_to_promise(async move {
             let engine = engine.lock().await;
             match engine.connect_websocket(&url).await {
@@ -93,14 +91,39 @@ impl WasmSyncEngine {
         })
     }
 
+    #[wasm_bindgen(js_name = connectWebsocketWithServerRoot)]
+    pub fn connect_websocket_with_server_root(&self, url: String) -> Promise {
+        let engine = Arc::clone(&self.engine);
+        future_to_promise(async move {
+            let mut engine = engine.lock().await;
+            match engine.connect_websocket_with_server_root(&url).await {
+                Ok(_) => Ok(JsValue::undefined()),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
     #[wasm_bindgen(js_name = getVfs)]
     pub fn get_vfs(&self) -> Promise {
-        let engine = self.engine.clone();
+        let engine = Arc::clone(&self.engine);
         future_to_promise(async move {
             let engine = engine.lock().await;
             let vfs = engine.vfs();
+
             Ok(JsValue::from(WasmVfs {
                 vfs: Arc::new(Mutex::new(vfs)),
+            }))
+        })
+    }
+
+    #[wasm_bindgen(js_name = getRepo)]
+    pub fn get_repo(&self) -> Promise {
+        let engine = Arc::clone(&self.engine);
+        future_to_promise(async move {
+            let engine = engine.lock().await;
+            let repo = engine.samod();
+            Ok(JsValue::from(WasmRepo {
+                repo: Arc::new(Mutex::new(repo)),
             }))
         })
     }
@@ -109,6 +132,75 @@ impl WasmSyncEngine {
 #[wasm_bindgen]
 pub struct WasmVfs {
     vfs: Arc<Mutex<Arc<VirtualFileSystem>>>,
+}
+
+#[wasm_bindgen]
+pub struct WasmRepo {
+    repo: Arc<Mutex<Arc<Repo>>>,
+}
+
+#[wasm_bindgen]
+impl WasmRepo {
+    #[wasm_bindgen(js_name = createDocument)]
+    pub fn create_document(&self, content: String) -> Promise {
+        let repo = Arc::clone(&self.repo);
+        future_to_promise(async move {
+            let repo = repo.lock().await;
+
+            // Create a new Automerge document with the content
+            let mut doc = automerge::Automerge::new();
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "content", content)
+                .map_err(|e| js_error(e))?;
+            tx.commit();
+
+            match repo.create(doc).await {
+                Ok(handle) => {
+                    let doc_id = handle.document_id();
+                    Ok(JsValue::from_str(&doc_id.to_string()))
+                }
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
+    #[wasm_bindgen(js_name = findDocument)]
+    pub fn find_document(&self, doc_id: String) -> Promise {
+        let repo = Arc::clone(&self.repo);
+        future_to_promise(async move {
+            let repo = repo.lock().await;
+
+            // Parse the document ID
+            let document_id = doc_id
+                .parse()
+                .map_err(|e| js_error(format!("Invalid document ID: {e}")))?;
+
+            match repo.find(document_id).await {
+                Ok(Some(handle)) => {
+                    // Get the document content
+                    let content =
+                        handle.with_document(|doc| match doc.get(automerge::ROOT, "content") {
+                            Ok(Some((value, _))) => {
+                                value.to_str().map(|s| s.to_string()).unwrap_or_default()
+                            }
+                            _ => String::new(),
+                        });
+                    Ok(JsValue::from_str(&content))
+                }
+                Ok(None) => Ok(JsValue::NULL),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
+    #[wasm_bindgen(js_name = getPeerId)]
+    pub fn get_peer_id(&self) -> Promise {
+        let repo = Arc::clone(&self.repo);
+        future_to_promise(async move {
+            let repo = repo.lock().await;
+            Ok(JsValue::from_str(&repo.peer_id().to_string()))
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -122,13 +214,13 @@ pub struct WasmNodeMetadata {
 impl WasmVfs {
     #[wasm_bindgen(js_name = createFile)]
     pub fn create_file(&self, path: String, content: JsValue) -> Promise {
-        let vfs = self.vfs.clone();
+        let vfs = Arc::clone(&self.vfs);
         future_to_promise(async move {
             let vfs = vfs.lock().await;
             let content_str = content.as_string().unwrap_or_default();
 
             match vfs.create_document(&path, content_str).await {
-                Ok(_handle) => Ok(JsValue::TRUE),
+                Ok(_) => Ok(JsValue::TRUE),
                 Err(e) => Err(js_error(e)),
             }
         })
@@ -136,18 +228,18 @@ impl WasmVfs {
 
     #[wasm_bindgen(js_name = readFile)]
     pub fn read_file(&self, path: String) -> Promise {
-        let vfs = self.vfs.clone();
+        let vfs = Arc::clone(&self.vfs);
         future_to_promise(async move {
             let vfs = vfs.lock().await;
 
             match vfs.find_document(&path).await {
                 Ok(Some(handle)) => {
-                    handle.with_document(|doc| {
+                    let content = handle.with_document(|doc| {
                         let auto_serde = AutoSerde::from(&*doc);
                         serde_json::to_string_pretty(&auto_serde)
                             .unwrap_or_else(|e| format!("Error serializing: {e}"))
                     });
-                    Ok(JsValue::from_str(""))
+                    Ok(JsValue::from_str(&content))
                 }
                 Ok(None) => Ok(JsValue::NULL),
                 Err(e) => Err(js_error(e)),
@@ -157,7 +249,7 @@ impl WasmVfs {
 
     #[wasm_bindgen(js_name = deleteFile)]
     pub fn delete_file(&self, path: String) -> Promise {
-        let vfs = self.vfs.clone();
+        let vfs = Arc::clone(&self.vfs);
         future_to_promise(async move {
             let vfs = vfs.lock().await;
 
@@ -170,7 +262,7 @@ impl WasmVfs {
 
     #[wasm_bindgen(js_name = createDirectory)]
     pub fn create_directory(&self, path: String) -> Promise {
-        let vfs = self.vfs.clone();
+        let vfs = Arc::clone(&self.vfs);
         future_to_promise(async move {
             let vfs = vfs.lock().await;
 
@@ -183,14 +275,14 @@ impl WasmVfs {
 
     #[wasm_bindgen(js_name = listDirectory)]
     pub fn list_directory(&self, path: String) -> Promise {
-        let vfs = self.vfs.clone();
+        let vfs = Arc::clone(&self.vfs);
         future_to_promise(async move {
             let vfs = vfs.lock().await;
 
             match vfs.list_directory(&path).await {
                 Ok(nodes) => {
                     let array = Array::new();
-                    for node in nodes {
+                    for (_, node) in nodes.iter().enumerate() {
                         let obj = js_sys::Object::new();
                         match node.node_type {
                             NodeType::Directory => {
@@ -203,7 +295,8 @@ impl WasmVfs {
                             }
                         }
 
-                        js_sys::Reflect::set(&obj, &"name".into(), &node.name.into()).unwrap();
+                        js_sys::Reflect::set(&obj, &"name".into(), &node.name.clone().into())
+                            .unwrap();
 
                         array.push(&obj);
                     }
@@ -216,7 +309,7 @@ impl WasmVfs {
 
     #[wasm_bindgen(js_name = exists)]
     pub fn exists(&self, path: String) -> Promise {
-        let vfs = self.vfs.clone();
+        let vfs = Arc::clone(&self.vfs);
         future_to_promise(async move {
             let vfs = vfs.lock().await;
 
@@ -229,7 +322,7 @@ impl WasmVfs {
 
     #[wasm_bindgen(js_name = getMetadata)]
     pub fn get_metadata(&self, path: String) -> Promise {
-        let vfs = self.vfs.clone();
+        let vfs = Arc::clone(&self.vfs);
         future_to_promise(async move {
             let vfs = vfs.lock().await;
 
@@ -272,10 +365,10 @@ impl WasmBundle {
 
     #[wasm_bindgen(js_name = get)]
     pub fn get(&self, key: String) -> Promise {
-        let bundle = self.bundle.clone();
+        let bundle = Arc::clone(&self.bundle);
         future_to_promise(async move {
             let mut bundle = bundle.lock().await;
-            let path = BundlePath::from_str(&key);
+            let path = BundlePath::from(&key);
 
             match bundle.get(&path) {
                 Ok(Some(data)) => {
@@ -291,10 +384,10 @@ impl WasmBundle {
 
     #[wasm_bindgen(js_name = put)]
     pub fn put(&self, key: String, value: Uint8Array) -> Promise {
-        let bundle = self.bundle.clone();
+        let bundle = Arc::clone(&self.bundle);
         future_to_promise(async move {
             let mut bundle = bundle.lock().await;
-            let path = BundlePath::from_str(&key);
+            let path = BundlePath::from(&key);
             let data = value.to_vec();
 
             match bundle.put(&path, data) {
@@ -306,10 +399,10 @@ impl WasmBundle {
 
     #[wasm_bindgen(js_name = delete)]
     pub fn delete(&self, key: String) -> Promise {
-        let bundle = self.bundle.clone();
+        let bundle = Arc::clone(&self.bundle);
         future_to_promise(async move {
             let mut bundle = bundle.lock().await;
-            let path = BundlePath::from_str(&key);
+            let path = BundlePath::from(&key);
 
             match bundle.delete(&path) {
                 Ok(_) => Ok(JsValue::TRUE),
@@ -320,7 +413,7 @@ impl WasmBundle {
 
     #[wasm_bindgen(js_name = listKeys)]
     pub fn list_keys(&self) -> Promise {
-        let bundle = self.bundle.clone();
+        let bundle = Arc::clone(&self.bundle);
         future_to_promise(async move {
             let bundle = bundle.lock().await;
             let keys = bundle.list_keys();
@@ -335,10 +428,10 @@ impl WasmBundle {
 
     #[wasm_bindgen(js_name = getPrefix)]
     pub fn get_prefix(&self, prefix: String) -> Promise {
-        let bundle = self.bundle.clone();
+        let bundle = Arc::clone(&self.bundle);
         future_to_promise(async move {
             let mut bundle = bundle.lock().await;
-            let prefix_path = BundlePath::from_str(&prefix);
+            let prefix_path = BundlePath::from(&prefix);
 
             match bundle.get_prefix(&prefix_path) {
                 Ok(entries) => {
@@ -362,7 +455,7 @@ impl WasmBundle {
 
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self) -> Promise {
-        let bundle = self.bundle.clone();
+        let bundle = Arc::clone(&self.bundle);
         future_to_promise(async move {
             let mut bundle = bundle.lock().await;
             match bundle.to_bytes() {

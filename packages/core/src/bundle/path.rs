@@ -1,15 +1,15 @@
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 /// A type-safe wrapper for bundle paths that ensures consistent path handling.
-/// 
+///
 /// BundlePath provides a safe interface for working with file paths in ZIP bundles,
 /// automatically handling path normalization and component parsing.
-/// 
+///
 /// # Examples
-/// 
+///
 /// ```
 /// # use tonk_core::bundle::path::BundlePath;
-/// let path = BundlePath::from_str("/documents/readme.txt");
+/// let path: BundlePath = BundlePath::from("/documents/readme.txt");
 /// assert_eq!(path.filename(), Some("readme.txt"));
 /// assert_eq!(path.parent().unwrap().to_string(), "documents");
 /// ```
@@ -18,12 +18,12 @@ pub struct BundlePath(Vec<String>);
 
 impl BundlePath {
     /// Create a new bundle path from components.
-    /// 
+    ///
     /// Empty components are automatically filtered out to ensure path consistency.
-    /// 
+    ///
     /// # Arguments
     /// * `components` - Vector of path components
-    /// 
+    ///
     /// # Examples
     /// ```
     /// # use tonk_core::bundle::path::BundlePath;
@@ -35,18 +35,18 @@ impl BundlePath {
     }
 
     /// Create a bundle path from a slash-separated string
-    pub fn from_str(path: &str) -> Self {
+    fn parse_path(path: &str) -> Self {
         if path.is_empty() || path == "/" {
             return Self::root();
         }
-        
+
         let components: Vec<String> = path
             .trim_start_matches('/')
             .split('/')
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect();
-        
+
         Self(components)
     }
 
@@ -61,7 +61,7 @@ impl BundlePath {
     }
 
     /// Convert to a slash-separated string
-    pub fn to_string(&self) -> String {
+    fn as_string(&self) -> String {
         if self.0.is_empty() {
             String::new()
         } else {
@@ -105,7 +105,7 @@ impl BundlePath {
         if prefix.0.len() > self.0.len() {
             return false;
         }
-        
+
         self.0[..prefix.0.len()] == prefix.0
     }
 
@@ -119,7 +119,7 @@ impl BundlePath {
 
 impl fmt::Display for BundlePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        write!(f, "{}", self.as_string())
     }
 }
 
@@ -137,13 +137,21 @@ impl From<&[String]> for BundlePath {
 
 impl From<&str> for BundlePath {
     fn from(path: &str) -> Self {
-        Self::from_str(path)
+        Self::parse_path(path)
     }
 }
 
-impl Into<Vec<String>> for BundlePath {
-    fn into(self) -> Vec<String> {
-        self.0
+impl From<&String> for BundlePath {
+    fn from(path: &String) -> Self {
+        Self::parse_path(path)
+    }
+}
+
+impl FromStr for BundlePath {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::parse_path(s))
     }
 }
 
@@ -153,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_bundle_path_creation() {
-        let path = BundlePath::from_str("/foo/bar/baz");
+        let path: BundlePath = BundlePath::from("/foo/bar/baz");
         assert_eq!(path.components(), &["foo", "bar", "baz"]);
         assert_eq!(path.to_string(), "foo/bar/baz");
     }
@@ -161,9 +169,9 @@ mod tests {
     #[test]
     fn test_root_path() {
         let root1 = BundlePath::root();
-        let root2 = BundlePath::from_str("/");
-        let root3 = BundlePath::from_str("");
-        
+        let root2: BundlePath = BundlePath::from("/");
+        let root3: BundlePath = BundlePath::from("");
+
         assert!(root1.is_root());
         assert!(root2.is_root());
         assert!(root3.is_root());
@@ -173,24 +181,31 @@ mod tests {
 
     #[test]
     fn test_path_operations() {
-        let path = BundlePath::from_str("/docs/readme.txt");
-        
+        let path: BundlePath = BundlePath::from("/docs/readme.txt");
+
         assert_eq!(path.filename(), Some("readme.txt"));
-        assert_eq!(path.parent(), Some(BundlePath::from_str("/docs")));
+        assert_eq!(path.parent(), Some(BundlePath::from("/docs")));
         assert_eq!(path.len(), 2);
-        
+
         let child = path.child("backup");
         assert_eq!(child.to_string(), "docs/readme.txt/backup");
     }
 
     #[test]
     fn test_path_prefix() {
-        let path = BundlePath::from_str("/docs/readme.txt");
-        let prefix = BundlePath::from_str("/docs");
-        let non_prefix = BundlePath::from_str("/src");
-        
+        let path: BundlePath = BundlePath::from("/docs/readme.txt");
+        let prefix: BundlePath = BundlePath::from("/docs");
+        let non_prefix: BundlePath = BundlePath::from("/src");
+
         assert!(path.starts_with(&prefix));
         assert!(!path.starts_with(&non_prefix));
         assert!(path.starts_with(&BundlePath::root()));
+    }
+
+    #[test]
+    fn test_from_str_trait() {
+        let path: BundlePath = BundlePath::from("/docs/file.txt");
+        assert_eq!(path.to_string(), "docs/file.txt");
+        assert_eq!(path.filename(), Some("file.txt"));
     }
 }

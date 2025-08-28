@@ -8,16 +8,6 @@ use samod::{DocHandle, DocumentId, Repo};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = console)]
-    fn log(s: &str);
-}
-
 pub struct VirtualFileSystem {
     samod: Arc<Repo>,
     root_id: DocumentId,
@@ -155,6 +145,7 @@ impl VirtualFileSystem {
 
         // Add reference to parent directory
         let doc_ref = RefNode::new_document(filename.to_string(), doc_handle.document_id().clone());
+
         AutomergeHelpers::add_child_to_directory(&parent_handle, &doc_ref)?;
 
         // Emit event
@@ -304,7 +295,10 @@ impl VirtualFileSystem {
                 .map_err(|e| VfsError::SamodError(format!("Failed to find directory: {e}")))?;
 
             let dir_node = match dir_handle {
-                Some(ref handle) => self.get_dir_node(handle).await?,
+                Some(ref handle) => {
+                    let node = self.get_dir_node(handle).await?;
+                    node
+                }
                 None => return Err(VfsError::PathNotFound(path.to_string())),
             };
             Ok(dir_node.children)

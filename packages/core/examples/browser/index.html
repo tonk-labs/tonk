@@ -24,8 +24,8 @@
       <input
         type="text"
         id="wsUrl"
-        placeholder="ws://localhost:8080"
-        value="ws://localhost:8080"
+        placeholder="ws://localhost:8081"
+        value="ws://localhost:8081"
       />
       <div id="engineOutput" class="output"></div>
     </div>
@@ -81,7 +81,7 @@
         WasmSyncEngine,
         WasmVfs,
         WasmBundle,
-      } from '../pkg/tonk_core.js';
+      } from '../../pkg-browser/tonk_core.js';
 
       let engine = null;
       let vfs = null;
@@ -103,48 +103,58 @@
       // Sync Engine functions
       window.createEngine = async function () {
         try {
+          console.log(`[CLIENT-${Math.random().toString(36).substr(2, 9)}] Creating sync engine...`);
           engine = await create_sync_engine();
           const peerId = await engine.getPeerId();
-          log('engineOutput', `Sync engine created with peer ID: ${peerId}`);
+          log('engineOutput', `[CLIENT] Sync engine created with peer ID: ${peerId}`);
 
           // Get VFS instance
           vfs = await engine.getVfs();
-          log('engineOutput', 'VFS instance obtained');
+          log('engineOutput', '[CLIENT] VFS instance obtained');
         } catch (err) {
-          log('engineOutput', `Error creating engine: ${err}`);
+          log('engineOutput', `[CLIENT] Error creating engine: ${err}`);
         }
       };
 
       window.connectWebSocket = async function () {
         if (!engine) {
-          log('engineOutput', 'Please create engine first');
+          log('engineOutput', '[CLIENT] Please create engine first');
           return;
         }
 
         const url = document.getElementById('wsUrl').value;
+        const clientId = Math.random().toString(36).substr(2, 9);
         try {
-          await engine.connectWebsocket(url);
-          log('engineOutput', `Connected to WebSocket: ${url}`);
+          console.log(`[CLIENT-${clientId}] Connecting to WebSocket: ${url}`);
+          // Use the new method that adopts server's root document
+          await engine.connectWebsocketWithServerRoot(url);
+          log('engineOutput', `[CLIENT-${clientId}] Connected to WebSocket and adopted server root: ${url}`);
+          
+          // Get updated VFS instance after root adoption
+          vfs = await engine.getVfs();
+          log('engineOutput', `[CLIENT-${clientId}] VFS updated with server root document`);
         } catch (err) {
-          log('engineOutput', `Error connecting: ${err}`);
+          log('engineOutput', `[CLIENT-${clientId}] Error connecting: ${err}`);
         }
       };
 
       // VFS functions
       window.createFile = async function () {
         if (!vfs) {
-          log('vfsOutput', 'Please create engine first');
+          log('vfsOutput', '[CLIENT] Please create engine first');
           return;
         }
 
         const path = document.getElementById('filePath').value;
         const content = document.getElementById('fileContent').value;
+        const clientId = Math.random().toString(36).substr(2, 9);
 
         try {
+          console.log(`[CLIENT-${clientId}] Creating file: ${path} with content: "${content}"`);
           await vfs.createFile(path, content);
-          log('vfsOutput', `File created: ${path}`);
+          log('vfsOutput', `[CLIENT-${clientId}] File created: ${path}`);
         } catch (err) {
-          log('vfsOutput', `Error creating file: ${err}`);
+          log('vfsOutput', `[CLIENT-${clientId}] Error creating file: ${err}`);
         }
       };
 
@@ -185,21 +195,23 @@
 
       window.listDirectory = async function () {
         if (!vfs) {
-          log('vfsOutput', 'Please create engine first');
+          log('vfsOutput', '[CLIENT] Please create engine first');
           return;
         }
 
         const path = document.getElementById('filePath').value;
         const dirPath = path.substring(0, path.lastIndexOf('/')) || '/';
+        const clientId = Math.random().toString(36).substr(2, 9);
 
         try {
+          console.log(`[CLIENT-${clientId}] Listing directory: ${dirPath}`);
           const entries = await vfs.listDirectory(dirPath);
           log(
             'vfsOutput',
-            `Directory listing for ${dirPath}:\n${JSON.stringify(entries, null, 2)}`
+            `[CLIENT-${clientId}] Directory listing for ${dirPath}:\n${JSON.stringify(entries, null, 2)}`
           );
         } catch (err) {
-          log('vfsOutput', `Error listing directory: ${err}`);
+          log('vfsOutput', `[CLIENT-${clientId}] Error listing directory: ${err}`);
         }
       };
 

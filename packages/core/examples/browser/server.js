@@ -26,14 +26,14 @@ function getContentType(filePath) {
   return MIME_TYPES[ext] || 'text/plain';
 }
 
-function createServer(rootDir = '.', port = 8080) {
+function createServer(rootDir = '.') {
   const server = http.createServer((req, res) => {
     const parsedUrl = url.parse(req.url);
     let filePath = path.join(rootDir, parsedUrl.pathname);
 
     // Default to index.html for directory requests
     if (parsedUrl.pathname.endsWith('/')) {
-      filePath = path.join(filePath, 'index.html');
+      filePath = path.join(filePath, 'examples/browser/index.html');
     }
 
     // Security: prevent directory traversal
@@ -93,11 +93,11 @@ function main() {
     args.find(arg => arg.startsWith('--port='))?.split('=')[1] || 8080;
   const dir = args.find(arg => arg.startsWith('--dir='))?.split('=')[1] || '.';
 
-  const server = createServer(dir, parseInt(port));
+  const server = createServer(dir);
 
   server.listen(port, '127.0.0.1', () => {
     console.log('Tonk Browser Test Server');
-    console.log(`Serving at: http://127.0.0.1:${port}`);
+    console.log(`HTTP Server: http://127.0.0.1:${port}`);
     console.log(`Directory: ${path.resolve(dir)}`);
     console.log(
       `Test Runner: http://127.0.0.1:${port}/examples/browser/test-runner.html`

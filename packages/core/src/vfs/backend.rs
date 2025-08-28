@@ -1,6 +1,6 @@
 use crate::error::{Result, VfsError};
 use crate::vfs::types::*;
-use automerge::{ObjType, ReadDoc, Value, transaction::Transactable};
+use automerge::{transaction::Transactable, ObjType, ReadDoc, Value};
 use samod::{DocHandle, DocumentId};
 
 /// Helper functions for working with Automerge documents in the VFS
@@ -107,6 +107,7 @@ impl AutomergeHelpers {
                             // Child already exists, update it
                             Self::write_ref_node(&mut tx, child_obj_id, child_ref)?;
                             Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+
                             tx.commit();
                             return Ok(());
                         }

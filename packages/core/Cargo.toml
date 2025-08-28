@@ -57,11 +57,14 @@ wasm-bindgen-test = "0.3.50"
 web-sys = {version = "0.3.77", features = [
   "BinaryType",
   "Blob",
+  "CloseEvent",
   "ErrorEvent", 
   "FileReader",
   "MessageEvent",
   "ProgressEvent",
-  "WebSocket"
+  "Response",
+  "WebSocket",
+  "Window"
 ]}
 
 [features]
