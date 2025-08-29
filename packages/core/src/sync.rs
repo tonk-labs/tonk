@@ -76,6 +76,7 @@ impl SyncEngine {
             RepoBuilder::new(runtime)
                 .with_storage(storage)
                 .with_peer_id(peer_id)
+                .with_threadpool(None)
                 .load()
                 .await
         };

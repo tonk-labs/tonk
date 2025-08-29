@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
  * Simple HTTP server with Cross-Origin Isolation headers for WASM testing.
- * This enables SharedArrayBuffer and atomics features required for wasm-bindgen-rayon.
  */
 
 const http = require('http');
@@ -48,7 +47,7 @@ function createServer(rootDir = '.') {
 
     console.log(`Serving: ${parsedUrl.pathname} -> ${resolvedPath}`);
 
-    // Set Cross-Origin Isolation headers (required for SharedArrayBuffer)
+    // Set Cross-Origin Isolation headers
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');

@@ -17,10 +17,8 @@ echo "Cleaning previous builds..."
 rm -rf pkg pkg-node pkg-browser
 
 # Build for web target
-echo "Building for web target with threading (wasm-browser)..."
-# Note: For full wasm-bindgen-rayon support, you'll need to use nightly Rust with rust-src
-# and add: -- -Z build-std=panic_abort,std
-RUSTFLAGS="-C target-feature=+atomics,+bulk-memory --cfg getrandom_backend=\"wasm_js\"" \
+echo "Building for web target (wasm-browser)..."
+RUSTFLAGS="--cfg getrandom_backend=\"wasm_js\"" \
   wasm-pack build --target web --out-dir pkg-browser \
   --features wasm-browser
 
@@ -31,7 +29,7 @@ wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node
 echo "WASM build completed successfully!"
 echo ""
 echo "Build outputs:"
-echo "  - Web (with threading): ./pkg-browser/"
+echo "  - Web: ./pkg-browser/"
 echo "  - Node.js: ./pkg-node/"
 echo ""
 echo "Next steps:"
