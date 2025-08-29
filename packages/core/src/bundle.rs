@@ -503,7 +503,7 @@ impl<R: RandomAccess> Bundle<R> {
             let path = &metadata.path;
 
             // Convert path back to BundlePath
-            let key = BundlePath::from_str(path);
+            let key = BundlePath::from(path.as_str());
 
             // Read the data
             if let Some(data) = self.read_entry_data(&metadata)? {
@@ -519,7 +519,7 @@ impl<R: RandomAccess> Bundle<R> {
         self.index
             .all_paths()
             .into_iter()
-            .map(|path| BundlePath::from_str(path))
+            .map(|path| BundlePath::from(path.as_str()))
             .collect()
     }
 
@@ -843,11 +843,9 @@ mod tests {
             "Expected error when loading bundle without manifest.json"
         );
         let error = result.unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("manifest.json not found in bundle")
-        );
+        assert!(error
+            .to_string()
+            .contains("manifest.json not found in bundle"));
     }
 
     #[test]
@@ -893,11 +891,9 @@ mod tests {
         );
 
         let error = result.unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("Unsupported manifest version: 2")
-        );
+        assert!(error
+            .to_string()
+            .contains("Unsupported manifest version: 2"));
     }
 
     #[test]
@@ -907,7 +903,7 @@ mod tests {
 
         // Test reading welcome.txt
         let welcome_data = bundle
-            .get(&BundlePath::from_str("welcome.txt"))
+            .get(&BundlePath::from("welcome.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -917,7 +913,7 @@ mod tests {
 
         // Test reading readme.txt
         let readme_data = bundle
-            .get(&BundlePath::from_str("readme.txt"))
+            .get(&BundlePath::from("readme.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -933,7 +929,7 @@ mod tests {
 
         // Test seeking to documents/report.txt
         let report_data = bundle
-            .get(&BundlePath::from_str("documents/report.txt"))
+            .get(&BundlePath::from("documents/report.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -943,7 +939,7 @@ mod tests {
 
         // Test seeking to notes/todo.txt
         let todo_data = bundle
-            .get(&BundlePath::from_str("notes/todo.txt"))
+            .get(&BundlePath::from("notes/todo.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -953,7 +949,7 @@ mod tests {
 
         // Test seeking to deeply nested file
         let nested_data = bundle
-            .get(&BundlePath::from_str("misc/subfolder/nested.txt"))
+            .get(&BundlePath::from("misc/subfolder/nested.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -970,21 +966,18 @@ mod tests {
         // Read files in non-sequential order to test seeking
         let files_to_test = vec![
             (
-                BundlePath::from_str("misc/subfolder/hidden_message.txt"),
+                BundlePath::from("misc/subfolder/hidden_message.txt"),
                 "You found the secret message!",
             ),
             (
-                BundlePath::from_str("notes/ideas.txt"),
+                BundlePath::from("notes/ideas.txt"),
                 "Build something amazing today!",
             ),
             (
-                BundlePath::from_str("documents/summary.txt"),
+                BundlePath::from("documents/summary.txt"),
                 "Executive summary complete.",
             ),
-            (
-                BundlePath::from_str("misc/data.txt"),
-                "Random data goes here.",
-            ),
+            (BundlePath::from("misc/data.txt"), "Random data goes here."),
         ];
 
         for (key, expected_content) in files_to_test {
@@ -1003,13 +996,13 @@ mod tests {
 
         // Get all files under documents
         let docs = bundle
-            .get_prefix(&BundlePath::from_str("documents"))
+            .get_prefix(&BundlePath::from("documents"))
             .expect("Failed to get prefix");
         assert_eq!(docs.len(), 2);
 
         // Get all files under misc/subfolder
         let subfolder = bundle
-            .get_prefix(&BundlePath::from_str("misc/subfolder"))
+            .get_prefix(&BundlePath::from("misc/subfolder"))
             .expect("Failed to get prefix");
         assert_eq!(subfolder.len(), 2);
 
@@ -1029,7 +1022,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         let result = bundle
-            .get(&BundlePath::from_str("nonexistent.txt"))
+            .get(&BundlePath::from("nonexistent.txt"))
             .expect("Failed to read file");
         assert!(result.is_none());
     }
@@ -1041,7 +1034,7 @@ mod tests {
 
         // Test reading a file to ensure the bundle works correctly
         let data = bundle
-            .get(&BundlePath::from_str("welcome.txt"))
+            .get(&BundlePath::from("welcome.txt"))
             .expect("Failed to read file")
             .expect("File not found");
         assert_eq!(
@@ -1057,7 +1050,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle from bytes");
 
         // Add a simple new file
-        let key = BundlePath::from_str("test/simple.txt");
+        let key = BundlePath::from("test/simple.txt");
         let content = b"Simple test content".to_vec();
 
         bundle
@@ -1080,7 +1073,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Add a new file
-        let new_key = BundlePath::from_str("new_file.txt");
+        let new_key = BundlePath::from("new_file.txt");
         let new_content = b"This is a newly added file!".to_vec();
         bundle
             .put(&new_key, new_content.clone())
@@ -1112,15 +1105,15 @@ mod tests {
         // Add multiple new files
         let files_to_add = vec![
             (
-                BundlePath::from_str("test1.txt"),
+                BundlePath::from("test1.txt"),
                 b"Content of test file 1".to_vec(),
             ),
             (
-                BundlePath::from_str("documents/new_report.txt"),
+                BundlePath::from("documents/new_report.txt"),
                 b"New quarterly report data".to_vec(),
             ),
             (
-                BundlePath::from_str("notes/urgent.txt"),
+                BundlePath::from("notes/urgent.txt"),
                 b"Urgent reminder!".to_vec(),
             ),
         ];
@@ -1155,15 +1148,15 @@ mod tests {
         // Add files in a new subdirectory
         let new_files = vec![
             (
-                BundlePath::from_str("new_dir/file1.txt"),
+                BundlePath::from("new_dir/file1.txt"),
                 b"File 1 content".to_vec(),
             ),
             (
-                BundlePath::from_str("new_dir/file2.txt"),
+                BundlePath::from("new_dir/file2.txt"),
                 b"File 2 content".to_vec(),
             ),
             (
-                BundlePath::from_str("new_dir/subdirectory/file3.txt"),
+                BundlePath::from("new_dir/subdirectory/file3.txt"),
                 b"File 3 content".to_vec(),
             ),
         ];
@@ -1177,7 +1170,7 @@ mod tests {
 
         // Test prefix query for the new directory
         let new_dir_files = bundle
-            .get_prefix(&BundlePath::from_str("new_dir"))
+            .get_prefix(&BundlePath::from("new_dir"))
             .expect("Failed to get prefix");
 
         assert_eq!(new_dir_files.len(), 3);
@@ -1200,7 +1193,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Read original content to verify the file exists
-        let key = BundlePath::from_str("welcome.txt");
+        let key = BundlePath::from("welcome.txt");
         let original_content = bundle
             .get(&key)
             .expect("Failed to read original file")
@@ -1266,7 +1259,7 @@ mod tests {
         let mut bundle = Bundle::from_source(file).expect("Failed to load bundle from file source");
 
         // Add a new file
-        let key = BundlePath::from_str("from_file_source.txt");
+        let key = BundlePath::from("from_file_source.txt");
         let content = b"Added via file data source!".to_vec();
         bundle
             .put(&key, content.clone())
@@ -1289,7 +1282,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Verify file exists
-        let key = BundlePath::from_str("welcome.txt");
+        let key = BundlePath::from("welcome.txt");
         let content = bundle
             .get(&key)
             .expect("Failed to read file")
@@ -1320,7 +1313,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Use a unique filename that doesn't exist in the test bundle
-        let key = BundlePath::from_str("unique_test_file.txt");
+        let key = BundlePath::from("unique_test_file.txt");
         let original_content = b"Original content".to_vec();
 
         // Add a file
@@ -1381,7 +1374,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Try to delete a file that doesn't exist
-        let key = BundlePath::from_str("nonexistent.txt");
+        let key = BundlePath::from("nonexistent.txt");
         let result = bundle.delete(&key);
 
         assert!(result.is_err());
@@ -1396,18 +1389,18 @@ mod tests {
 
         // Get initial count of documents
         let initial_docs = bundle
-            .get_prefix(&BundlePath::from_str("documents"))
+            .get_prefix(&BundlePath::from("documents"))
             .expect("Failed to get prefix");
         let initial_count = initial_docs.len();
 
         // Delete one document
         bundle
-            .delete(&BundlePath::from_str("documents/report.txt"))
+            .delete(&BundlePath::from("documents/report.txt"))
             .expect("Failed to delete document");
 
         // Query again - should have one less document
         let after_delete_docs = bundle
-            .get_prefix(&BundlePath::from_str("documents"))
+            .get_prefix(&BundlePath::from("documents"))
             .expect("Failed to get prefix after delete");
         assert_eq!(after_delete_docs.len(), initial_count - 1);
 
@@ -1428,7 +1421,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Delete an existing file (not one we just added)
-        let key = BundlePath::from_str("welcome.txt");
+        let key = BundlePath::from("welcome.txt");
 
         // Verify file exists first
         let content = bundle
@@ -1469,7 +1462,7 @@ mod tests {
 
         // Other files should still be accessible
         let other_content = bundle
-            .get(&BundlePath::from_str("readme.txt"))
+            .get(&BundlePath::from("readme.txt"))
             .expect("Failed to read other file");
         assert!(
             other_content.is_some(),
@@ -1484,7 +1477,7 @@ mod tests {
         let mut bundle = Bundle::from_bytes(zip_data).expect("Failed to load bundle");
 
         // Delete a file to set needs_rebuild = true
-        let key = BundlePath::from_str("welcome.txt");
+        let key = BundlePath::from("welcome.txt");
         bundle.delete(&key).expect("Failed to delete file");
         assert!(
             bundle.needs_rebuild,
@@ -1492,7 +1485,7 @@ mod tests {
         );
 
         // Put a new file - this should clear needs_rebuild since it does a full rebuild
-        let new_key = BundlePath::from_str("test_put_clears.txt");
+        let new_key = BundlePath::from("test_put_clears.txt");
         bundle
             .put(&new_key, b"Test content".to_vec())
             .expect("Failed to put file");
@@ -1521,7 +1514,7 @@ mod tests {
         let initial_count = initial_files.len();
 
         // Add a file and then delete it
-        let key = BundlePath::from_str("test_deleted.txt");
+        let key = BundlePath::from("test_deleted.txt");
         bundle
             .put(&key, b"Test content".to_vec())
             .expect("Failed to put file");

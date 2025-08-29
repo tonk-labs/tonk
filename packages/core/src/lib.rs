@@ -4,6 +4,7 @@ pub mod storage;
 pub mod sync;
 pub mod util;
 pub mod vfs;
+pub mod websocket;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
