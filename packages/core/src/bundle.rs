@@ -3,21 +3,21 @@ pub mod path;
 use anyhow::{Context, Result};
 use automerge::transaction::Transactable;
 pub use path::BundlePath;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 /// Version information for the bundle
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Version {
     pub major: u32,
     pub minor: u32,
 }
 
 /// Manifest structure for bundle metadata
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Manifest {
     #[serde(rename = "manifestVersion")]
     pub manifest_version: u32,

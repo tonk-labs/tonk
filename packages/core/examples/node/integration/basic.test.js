@@ -159,7 +159,7 @@ describe('Basic Integration Tests', function () {
 
       const listedKeys = await bundle.listKeys();
       expect(listedKeys).to.be.an('array');
-      expect(listedKeys).to.have.lengthOf(keys.length + 1); // +1 for manifest.json
+      expect(listedKeys).to.have.lengthOf(keys.length + 2); // +2 for manifest and root doc
 
       for (const key of keys) {
         expect(listedKeys).to.include(key);

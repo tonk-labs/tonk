@@ -176,12 +176,13 @@ mod tests {
         let storage = BundleStorage::from_bytes(zip_data).expect("Failed to create storage");
 
         // Test loading existing data
-        let key = StorageKey::from_iter(vec!["test".to_string(), "data1.bin".to_string()]);
+        let key =
+            StorageKey::from_parts(vec!["test".to_string(), "data1.bin".to_string()]).unwrap();
         let result = storage.load(key).await;
         assert_eq!(result, Some(b"test data 1".to_vec()));
 
         // Test loading non-existent data
-        let missing_key = StorageKey::from_iter(vec!["missing".to_string()]);
+        let missing_key = StorageKey::from_parts(vec!["missing".to_string()]).unwrap();
         let result = storage.load(missing_key).await;
         assert_eq!(result, None);
     }
@@ -192,13 +193,15 @@ mod tests {
         let storage = BundleStorage::from_bytes(zip_data).expect("Failed to create storage");
 
         // Test loading with prefix
-        let prefix = StorageKey::from_iter(vec!["test".to_string()]);
+        let prefix = StorageKey::from_parts(vec!["test".to_string()]).unwrap();
         let result = storage.load_range(prefix).await;
 
         assert_eq!(result.len(), 2);
 
-        let key1 = StorageKey::from_iter(vec!["test".to_string(), "data1.bin".to_string()]);
-        let key2 = StorageKey::from_iter(vec!["test".to_string(), "data2.bin".to_string()]);
+        let key1 =
+            StorageKey::from_parts(vec!["test".to_string(), "data1.bin".to_string()]).unwrap();
+        let key2 =
+            StorageKey::from_parts(vec!["test".to_string(), "data2.bin".to_string()]).unwrap();
 
         assert_eq!(result.get(&key1), Some(&b"test data 1".to_vec()));
         assert_eq!(result.get(&key2), Some(&b"test data 2".to_vec()));
@@ -210,7 +213,7 @@ mod tests {
         let storage = BundleStorage::from_bytes(zip_data).expect("Failed to create storage");
 
         // Test putting new data
-        let key = StorageKey::from_iter(vec!["new".to_string(), "file.bin".to_string()]);
+        let key = StorageKey::from_parts(vec!["new".to_string(), "file.bin".to_string()]).unwrap();
         let data = b"new test data".to_vec();
 
         storage.put(key.clone(), data.clone()).await;
@@ -227,13 +230,13 @@ mod tests {
 
         // Test loading with empty prefix (should get all files)
         let empty_vec: Vec<String> = vec![];
-        let prefix: StorageKey = empty_vec.into_iter().collect();
+        let prefix = StorageKey::from_parts(empty_vec).unwrap();
         let result = storage.load_range(prefix).await;
 
         // Should include manifest.json and the test files
         assert!(result.len() >= 3);
 
-        let manifest_key = StorageKey::from_iter(vec!["manifest.json".to_string()]);
+        let manifest_key = StorageKey::from_parts(vec!["manifest.json".to_string()]).unwrap();
         assert!(result.contains_key(&manifest_key));
     }
 
@@ -255,12 +258,14 @@ mod tests {
             .expect("Failed to create storage from file");
 
         // Test loading existing data
-        let key = StorageKey::from_iter(vec!["test".to_string(), "data1.bin".to_string()]);
+        let key =
+            StorageKey::from_parts(vec!["test".to_string(), "data1.bin".to_string()]).unwrap();
         let result = storage.load(key).await;
         assert_eq!(result, Some(b"test data 1".to_vec()));
 
         // Test putting new data (this will modify the file)
-        let new_key = StorageKey::from_iter(vec!["file_test".to_string(), "new.bin".to_string()]);
+        let new_key =
+            StorageKey::from_parts(vec!["file_test".to_string(), "new.bin".to_string()]).unwrap();
         let new_data = b"data from file storage".to_vec();
 
         storage.put(new_key.clone(), new_data.clone()).await;
@@ -278,7 +283,8 @@ mod tests {
         let storage = BundleStorage::from_bytes(zip_data).expect("Failed to create storage");
 
         // Add a file
-        let key = StorageKey::from_iter(vec!["delete_test".to_string(), "file.txt".to_string()]);
+        let key = StorageKey::from_parts(vec!["delete_test".to_string(), "file.txt".to_string()])
+            .unwrap();
         let data = b"This file will be deleted".to_vec();
 
         storage.put(key.clone(), data.clone()).await;
@@ -301,7 +307,8 @@ mod tests {
         let storage = BundleStorage::from_bytes(zip_data).expect("Failed to create storage");
 
         // Add a file
-        let key = StorageKey::from_iter(vec!["recover_test".to_string(), "file.txt".to_string()]);
+        let key = StorageKey::from_parts(vec!["recover_test".to_string(), "file.txt".to_string()])
+            .unwrap();
         let original_data = b"Original content".to_vec();
 
         storage.put(key.clone(), original_data.clone()).await;

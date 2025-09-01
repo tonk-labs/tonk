@@ -42,7 +42,7 @@ describe('Bundle Integration Tests', function () {
 
       // Verify all files are stored
       const keys = await bundle.listKeys();
-      expect(keys).to.have.lengthOf(testFiles.length + 1); // +1 for manifest.json
+      expect(keys).to.have.lengthOf(testFiles.length + 2); // +2 for manifest and root doc
 
       for (const file of testFiles) {
         expect(keys).to.include(file.key);
@@ -66,7 +66,7 @@ describe('Bundle Integration Tests', function () {
       }
 
       const keys = await bundle.listKeys();
-      expect(keys).to.have.lengthOf(hierarchicalFiles.length + 1); // +1 for manifest.json
+      expect(keys).to.have.lengthOf(hierarchicalFiles.length + 2); // +2 for manifest and root doc
 
       // Verify we can retrieve all files
       for (const path of hierarchicalFiles) {
@@ -181,7 +181,7 @@ describe('Bundle Integration Tests', function () {
 
       // Verify all data is preserved
       const keys = await deserializedBundle.listKeys();
-      expect(keys).to.have.lengthOf(testData.length + 1); // +1 for manifest.json
+      expect(keys).to.have.lengthOf(testData.length + 2); // +2 for manifest and root doc
 
       for (const item of testData) {
         const retrieved = await deserializedBundle.get(item.key);
@@ -201,7 +201,7 @@ describe('Bundle Integration Tests', function () {
 
       const deserialized = await wasm.create_bundle_from_bytes(serialized);
       const keys = await deserialized.listKeys();
-      expect(keys).to.have.lengthOf(1); // 1 for manifest.json (empty bundle still has manifest)
+      expect(keys).to.have.lengthOf(2); // +2 for manifest and root doc
     });
   });
 
@@ -225,7 +225,7 @@ describe('Bundle Integration Tests', function () {
 
       // Verify count
       const keys = await bundle.listKeys();
-      expect(keys).to.have.lengthOf(fileCount + 1); // +1 for manifest.json
+      expect(keys).to.have.lengthOf(fileCount + 2); // +2 for manifest and root doc
 
       // Time retrieval
       const retrieveTimer = new PerfTimer('Retrieving all files');
