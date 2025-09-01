@@ -1,6 +1,7 @@
 pub mod path;
 
 use anyhow::{Context, Result};
+use automerge::transaction::Transactable;
 pub use path::BundlePath;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -353,45 +354,23 @@ impl<R: RandomAccess> Bundle<R> {
         Ok(index)
     }
 
-    /// Read and parse the manifest.json file from the bundle
-    fn read_manifest(data_source: &mut R, index: &BundleIndex) -> Result<Manifest> {
-        // Check that manifest.json exists in the bundle
-        index
-            .get_entry("manifest.json")
-            .ok_or_else(|| anyhow::anyhow!("manifest.json not found in bundle"))?;
+    /// Get the root Automerge document from the bundle
+    pub fn root_document(&mut self) -> Result<automerge::Automerge> {
+        // Get the root path from the manifest
+        let root_path = self.manifest.root.clone();
 
-        // Reset to the beginning to ensure ZipArchive can read the central directory
-        data_source.seek_to(0)?;
+        // Read the document bytes from the bundle
+        let doc_bytes = self
+            .get(&BundlePath::from(root_path.as_str()))?
+            .ok_or_else(|| anyhow::anyhow!("Root document not found in bundle"))?;
 
-        // Create a temporary ZipArchive to read the manifest entry
-        let mut archive = ZipArchive::new(data_source)
-            .context("Failed to create zip archive for manifest reading")?;
+        // Load the Automerge document from bytes
+        let doc = automerge::Automerge::load(&doc_bytes).context("Failed to load root document")?;
 
-        let mut manifest_file = archive
-            .by_name("manifest.json")
-            .context("Failed to find manifest.json in zip")?;
-
-        let mut manifest_content = String::new();
-        manifest_file
-            .read_to_string(&mut manifest_content)
-            .context("Failed to read manifest.json content")?;
-
-        // Parse the JSON
-        let manifest: Manifest =
-            serde_json::from_str(&manifest_content).context("Failed to parse manifest.json")?;
-
-        // Validate manifest version
-        if manifest.manifest_version != 1 {
-            return Err(anyhow::anyhow!(
-                "Unsupported manifest version: {}. Expected version 1.",
-                manifest.manifest_version
-            ));
-        }
-
-        Ok(manifest)
+        Ok(doc)
     }
 
-    /// Read a value by key  
+    /// Read a value by key
     pub fn get(&mut self, key: &BundlePath) -> Result<Option<Vec<u8>>> {
         let path = key.to_string();
 
@@ -401,11 +380,6 @@ impl<R: RandomAccess> Bundle<R> {
         } else {
             Ok(None)
         }
-    }
-
-    /// Read a value by key components (deprecated, use BundlePath version)
-    pub fn get_by_components(&mut self, key: &[String]) -> Result<Option<Vec<u8>>> {
-        self.get(&BundlePath::from(key))
     }
 
     /// Read the actual data for a ZIP entry
@@ -528,6 +502,44 @@ impl<R: RandomAccess> Bundle<R> {
         &self.manifest
     }
 
+    /// Read and parse the manifest.json file from the bundle
+    fn read_manifest(data_source: &mut R, index: &BundleIndex) -> Result<Manifest> {
+        // Check that manifest.json exists in the bundle
+        index
+            .get_entry("manifest.json")
+            .ok_or_else(|| anyhow::anyhow!("manifest.json not found in bundle"))?;
+
+        // Reset to the beginning to ensure ZipArchive can read the central directory
+        data_source.seek_to(0)?;
+
+        // Create a temporary ZipArchive to read the manifest entry
+        let mut archive = ZipArchive::new(data_source)
+            .context("Failed to create zip archive for manifest reading")?;
+
+        let mut manifest_file = archive
+            .by_name("manifest.json")
+            .context("Failed to find manifest.json in zip")?;
+
+        let mut manifest_content = String::new();
+        manifest_file
+            .read_to_string(&mut manifest_content)
+            .context("Failed to read manifest.json content")?;
+
+        // Parse the JSON
+        let manifest: Manifest =
+            serde_json::from_str(&manifest_content).context("Failed to parse manifest.json")?;
+
+        // Validate manifest version
+        if manifest.manifest_version != 1 {
+            return Err(anyhow::anyhow!(
+                "Unsupported manifest version: {}. Expected version 1.",
+                manifest.manifest_version
+            ));
+        }
+
+        Ok(manifest)
+    }
+
     /// Flush changes by rebuilding the central directory if needed
     pub fn flush(&mut self) -> Result<()> {
         if self.needs_rebuild {
@@ -640,13 +652,35 @@ impl Bundle<std::io::Cursor<Vec<u8>>> {
 
     /// Create a new empty bundle with a minimal manifest
     pub fn create_empty() -> Result<Self> {
-        use zip::write::SimpleFileOptions;
+        // Create and initialize root document as directory
+        let mut root_doc = automerge::Automerge::new();
+
+        // Initialize as directory
+        // TODO: way to reuse AutomergeHelpers::init_as_directory here?
+        {
+            let mut tx = root_doc.transaction();
+            tx.put(automerge::ROOT, "type", "dir")?;
+            tx.put(automerge::ROOT, "name", "/")?;
+
+            let now = chrono::Utc::now().timestamp_millis();
+            let timestamps_obj =
+                tx.put_object(automerge::ROOT, "timestamps", automerge::ObjType::Map)?;
+            tx.put(timestamps_obj.clone(), "created", now)?;
+            tx.put(timestamps_obj, "modified", now)?;
+
+            tx.put_object(automerge::ROOT, "children", automerge::ObjType::List)?;
+
+            tx.commit();
+        }
+
+        // Serialize the root doc
+        let root_doc_bytes = root_doc.save();
 
         // Create minimal manifest
         let manifest = serde_json::json!({
             "manifestVersion": 1,
             "version": { "major": 1, "minor": 0 },
-            "root": "main",
+            "root": "root",
             "entrypoints": [],
             "networkUris": []
         });
@@ -658,8 +692,15 @@ impl Bundle<std::io::Cursor<Vec<u8>>> {
         let mut zip_data = Vec::new();
         {
             let mut zip_writer = ZipWriter::new(std::io::Cursor::new(&mut zip_data));
+
+            // Add manifest
             zip_writer.start_file("manifest.json", SimpleFileOptions::default())?;
             zip_writer.write_all(manifest_json.as_bytes())?;
+
+            // Add root document
+            zip_writer.start_file("root", SimpleFileOptions::default())?;
+            zip_writer.write_all(&root_doc_bytes)?;
+
             zip_writer.finish()?;
         }
 

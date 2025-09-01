@@ -154,7 +154,7 @@ impl WasmRepo {
             let mut doc = automerge::Automerge::new();
             let mut tx = doc.transaction();
             tx.put(automerge::ROOT, "content", content)
-                .map_err(|e| js_error(e))?;
+                .map_err(js_error)?;
             tx.commit();
 
             match repo.create(doc).await {
@@ -285,7 +285,7 @@ impl WasmVfs {
             match vfs.list_directory(&path).await {
                 Ok(nodes) => {
                     let array = Array::new();
-                    for (_, node) in nodes.iter().enumerate() {
+                    for node in nodes.iter() {
                         let obj = js_sys::Object::new();
                         match node.node_type {
                             NodeType::Directory => {

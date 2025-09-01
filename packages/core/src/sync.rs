@@ -130,7 +130,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Connect to a WebSocket peer (WASM) and adopt server's root document
+    /// Connect to a WebSocket peer (WASM)
     #[cfg(target_arch = "wasm32")]
     pub async fn connect_websocket(&self, url: &str) -> Result<()> {
         info!("Connecting to WebSocket peer at: {}", url);
@@ -155,118 +155,118 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Connect to WebSocket and adopt server's root filesystem document
-    #[cfg(target_arch = "wasm32")]
-    pub async fn connect_websocket_with_server_root(&mut self, url: &str) -> Result<()> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            #[wasm_bindgen]
-            extern "C" {
-                #[wasm_bindgen(js_namespace = console)]
-                fn log(s: &str);
-            }
-        }
-
-        // First establish WebSocket connection
+     /// Connect to WebSocket and adopt server's root filesystem document
+     #[cfg(target_arch = "wasm32")]
+     pub async fn connect_websocket_with_server_root(&mut self, url: &str) -> Result<()> {
+         #[cfg(target_arch = "wasm32")]
+         {
+             #[wasm_bindgen]
+             extern "C" {
+                 #[wasm_bindgen(js_namespace = console)]
+                 fn log(s: &str);
+             }
+         }
+ 
+         // First establish WebSocket connection
         crate::websocket::connect_wasm(Arc::clone(&self.samod), url)
-            .await?;
-
-        // Extract server hostname and port from WebSocket URL
-        let http_url = if url.starts_with("ws://") {
-            url.replace("ws://", "http://")
-        } else if url.starts_with("wss://") {
-            url.replace("wss://", "https://")
-        } else {
-            return Err(VfsError::WebSocketError(
-                "Invalid WebSocket URL format".to_string(),
-            ));
-        };
-
-        // Fetch server's root document ID
-        let root_response = web_sys::window()
-            .unwrap()
-            .fetch_with_str(&format!("{}/root", http_url));
-
-        let response = wasm_bindgen_futures::JsFuture::from(root_response)
-            .await
-            .map_err(|_| {
-                VfsError::WebSocketError("Failed to fetch server root document ID".to_string())
-            })?;
-
-        let response: web_sys::Response = response.dyn_into().unwrap();
-        let json_promise = response.json().unwrap();
-        let json_value = wasm_bindgen_futures::JsFuture::from(json_promise)
-            .await
-            .map_err(|_| {
-                VfsError::WebSocketError("Failed to parse server root response".to_string())
-            })?;
-
-        // Extract root document ID from JSON response
-        let root_id_str = js_sys::Reflect::get(&json_value, &"rootDocumentId".into())
-            .unwrap()
-            .as_string()
-            .ok_or_else(|| {
-                VfsError::WebSocketError("Invalid root document ID in response".to_string())
-            })?;
-
-        let root_id: DocumentId = root_id_str.parse().map_err(|_| {
-            VfsError::WebSocketError("Failed to parse root document ID".to_string())
-        })?;
-
-        // Request the root document from the server and wait for it to sync
-        match self.samod.find(root_id.clone()).await {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                // Poll for the document with increasing delays
-                let mut attempts = 0;
-                let max_attempts = 20; // 10 seconds total (500ms * 20)
-
-                loop {
-                    // Wait before each attempt
-                    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(
-                        &mut |resolve, _| {
-                            web_sys::window()
-                                .unwrap()
-                                .set_timeout_with_callback_and_timeout_and_arguments_0(
-                                    &resolve, 500,
-                                )
-                                .unwrap();
-                        },
-                    ))
-                    .await
-                    .unwrap();
-
-                    // Check if document is now available
-                    if let Ok(Some(_)) = self.samod.find(root_id.clone()).await {
-                        break;
-                    }
-
-                    attempts += 1;
-                    if attempts >= max_attempts {
-                        return Err(VfsError::WebSocketError(format!(
-                            "Root document {} not available after waiting 10 seconds. Server may not be sharing the document properly.", 
-                            root_id_str
-                        )));
-                    }
-                }
-            }
-            Err(e) => {
-                return Err(VfsError::SamodError(format!(
-                    "Error checking for root document: {}",
-                    e
-                )));
-            }
-        }
-
-        // Replace current VFS with one using server's root document
-        let new_vfs =
-            Arc::new(VirtualFileSystem::from_root(Arc::clone(&self.samod), root_id).await?);
-        self.vfs = new_vfs;
-
-        info!("Successfully connected to WebSocket and adopted server root");
-        Ok(())
-    }
-
+             .await?;
+ 
+         // Extract server hostname and port from WebSocket URL
+         let http_url = if url.starts_with("ws://") {
+             url.replace("ws://", "http://")
+         } else if url.starts_with("wss://") {
+             url.replace("wss://", "https://")
+         } else {
+             return Err(VfsError::WebSocketError(
+                 "Invalid WebSocket URL format".to_string(),
+             ));
+         };
+ 
+         // Fetch server's root document ID
+         let root_response = web_sys::window()
+             .unwrap()
+             .fetch_with_str(&format!("{}/root", http_url));
+ 
+         let response = wasm_bindgen_futures::JsFuture::from(root_response)
+             .await
+             .map_err(|_| {
+                 VfsError::WebSocketError("Failed to fetch server root document ID".to_string())
+             })?;
+ 
+         let response: web_sys::Response = response.dyn_into().unwrap();
+         let json_promise = response.json().unwrap();
+         let json_value = wasm_bindgen_futures::JsFuture::from(json_promise)
+             .await
+             .map_err(|_| {
+                 VfsError::WebSocketError("Failed to parse server root response".to_string())
+             })?;
+ 
+         // Extract root document ID from JSON response
+         let root_id_str = js_sys::Reflect::get(&json_value, &"rootDocumentId".into())
+             .unwrap()
+             .as_string()
+             .ok_or_else(|| {
+                 VfsError::WebSocketError("Invalid root document ID in response".to_string())
+             })?;
+ 
+         let root_id: DocumentId = root_id_str.parse().map_err(|_| {
+             VfsError::WebSocketError("Failed to parse root document ID".to_string())
+         })?;
+ 
+         // Request the root document from the server and wait for it to sync
+         match self.samod.find(root_id.clone()).await {
+             Ok(Some(_)) => {}
+             Ok(None) => {
+                 // Poll for the document with increasing delays
+                 let mut attempts = 0;
+                 let max_attempts = 20; // 10 seconds total (500ms * 20)
+ 
+                 loop {
+                     // Wait before each attempt
+                     wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(
+                         &mut |resolve, _| {
+                             web_sys::window()
+                                 .unwrap()
+                                 .set_timeout_with_callback_and_timeout_and_arguments_0(
+                                     &resolve, 500,
+                                 )
+                                 .unwrap();
+                         },
+                     ))
+                     .await
+                     .unwrap();
+ 
+                     // Check if document is now available
+                     if let Ok(Some(_)) = self.samod.find(root_id.clone()).await {
+                         break;
+                     }
+ 
+                     attempts += 1;
+                     if attempts >= max_attempts {
+                         return Err(VfsError::WebSocketError(format!(
+                             "Root document {} not available after waiting 10 seconds. Server may not be sharing the document properly.", 
+                             root_id_str
+                         )));
+                     }
+                 }
+             }
+             Err(e) => {
+                 return Err(VfsError::SamodError(format!(
+                     "Error checking for root document: {}",
+                     e
+                 )));
+             }
+         }
+ 
+         // Replace current VFS with one using server's root document
+         let new_vfs =
+             Arc::new(VirtualFileSystem::from_root(Arc::clone(&self.samod), root_id).await?);
+         self.vfs = new_vfs;
+ 
+         info!("Successfully connected to WebSocket and adopted server root");
+         Ok(())
+     }
+ 
     /// Find a document by its ID
     pub async fn find_document(&self, doc_id: DocumentId) -> Result<DocHandle> {
         self.samod

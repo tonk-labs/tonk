@@ -1,8 +1,10 @@
+use crate::bundle::RandomAccess;
 use crate::error::{Result, VfsError};
 use crate::vfs::backend::AutomergeHelpers;
 use crate::vfs::traversal::PathTraverser;
 use crate::vfs::types::*;
 use crate::vfs::watcher::DocumentWatcher;
+use crate::Bundle;
 use automerge::Automerge;
 use samod::{DocHandle, DocumentId, Repo};
 use std::sync::Arc;
@@ -40,6 +42,36 @@ impl VirtualFileSystem {
 
         let (event_tx, _) = broadcast::channel(100);
         let traverser = PathTraverser::new(samod.clone());
+
+        Ok(Self {
+            samod,
+            root_id,
+            traverser,
+            event_tx,
+        })
+    }
+
+    /// Create a new VFS from a bundle containing a root document
+    pub async fn from_bundle<R: RandomAccess>(
+        samod: Arc<Repo>,
+        bundle: &mut Bundle<R>,
+    ) -> Result<Self> {
+        // Get the root document from the bundle
+        let root_doc = bundle.root_document()?;
+
+        // Import the document into samod
+        let root_handle = samod
+            .create(root_doc)
+            .await
+            .map_err(|e| VfsError::SamodError(format!("Failed to import root document: {e}")))?;
+
+        let root_id = root_handle.document_id().clone();
+
+        // Verify it's a directory
+        let _root_node = AutomergeHelpers::read_directory(&root_handle)?;
+
+        let (event_tx, _) = broadcast::channel(100);
+        let traverser = PathTraverser::new(Arc::clone(&samod));
 
         Ok(Self {
             samod,
