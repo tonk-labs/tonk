@@ -16,6 +16,9 @@ use wasm_bindgen::prelude::*;
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
+
+    #[wasm_bindgen(js_namespace = console)]
+    fn error(s: &str);
 }
 
 /// Core synchronization engine that orchestrates CRDT operations and VFS interactions.
@@ -120,9 +123,7 @@ impl SyncEngine {
     pub async fn connect_websocket(&self, url: &str) -> Result<()> {
         info!("Connecting to WebSocket peer at: {}", url);
 
-        let conn_finished =
-            crate::websocket::native_impl::connect_websocket_to_samod(Arc::clone(&self.samod), url)
-                .await?;
+        let conn_finished = crate::websocket::connect(Arc::clone(&self.samod), url).await?;
 
         info!("Successfully connected to WebSocket peer at: {}", url);
         info!("Connection finished with reason: {:?}", conn_finished);
@@ -134,17 +135,21 @@ impl SyncEngine {
     pub async fn connect_websocket(&self, url: &str) -> Result<()> {
         info!("Connecting to WebSocket peer at: {}", url);
 
-        #[cfg(target_arch = "wasm32")]
-        {
-            #[wasm_bindgen]
-            extern "C" {
-                #[wasm_bindgen(js_namespace = console)]
-                fn log(s: &str);
-            }
-        }
+        let samod = Arc::clone(&self.samod);
+        let url = url.to_string();
+        let url_copy = url.clone();
 
-        crate::websocket::wasm_impl::connect_websocket_to_samod(Arc::clone(&self.samod), url)
-            .await?;
+        // Spawn connection future so it runs in background
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::websocket::connect_wasm(samod, &url_copy).await {
+                Ok(reason) => {
+                    log(&format!("WebSocket connection closed: {reason:?}"));
+                }
+                Err(e) => {
+                    error(&format!("WebSocket connection error: {e}"));
+                }
+            }
+        });
 
         info!("Successfully connected to WebSocket peer at: {}", url);
         Ok(())
@@ -163,7 +168,7 @@ impl SyncEngine {
         }
 
         // First establish WebSocket connection
-        crate::websocket::wasm_impl::connect_websocket_to_samod(Arc::clone(&self.samod), url)
+        crate::websocket::connect_wasm(Arc::clone(&self.samod), url)
             .await?;
 
         // Extract server hostname and port from WebSocket URL

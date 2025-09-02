@@ -98,11 +98,8 @@ impl<R: RandomAccess + 'static> Storage for BundleStorage<R> {
             if let Ok(entries) = bundle_guard.get_prefix(&bundle_prefix) {
                 for (key_path, data) in entries {
                     // Convert back to StorageKey
-                    let storage_key: StorageKey = key_path
-                        .components()
-                        .iter()
-                        .cloned()
-                        .collect::<StorageKey>();
+                    let storage_key: StorageKey = StorageKey::from_parts(key_path.components())
+                        .expect("Failed to create StorageKey from BundlePath");
                     result.insert(storage_key, data);
                 }
             }

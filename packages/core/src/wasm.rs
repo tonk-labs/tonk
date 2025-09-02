@@ -19,6 +19,9 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn error(s: &str);
+
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
 }
 
 macro_rules! console_error {
@@ -95,8 +98,8 @@ impl WasmSyncEngine {
     pub fn connect_websocket_with_server_root(&self, url: String) -> Promise {
         let engine = Arc::clone(&self.engine);
         future_to_promise(async move {
-            let mut engine = engine.lock().await;
-            match engine.connect_websocket_with_server_root(&url).await {
+            let engine = engine.lock().await;
+            match engine.connect_websocket(&url).await {
                 Ok(_) => Ok(JsValue::undefined()),
                 Err(e) => Err(js_error(e)),
             }

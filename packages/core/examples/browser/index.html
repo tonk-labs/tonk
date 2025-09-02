@@ -103,10 +103,15 @@
       // Sync Engine functions
       window.createEngine = async function () {
         try {
-          console.log(`[CLIENT-${Math.random().toString(36).substr(2, 9)}] Creating sync engine...`);
+          console.log(
+            `[CLIENT-${Math.random().toString(36).substr(2, 9)}] Creating sync engine...`
+          );
           engine = await create_sync_engine();
           const peerId = await engine.getPeerId();
-          log('engineOutput', `[CLIENT] Sync engine created with peer ID: ${peerId}`);
+          log(
+            'engineOutput',
+            `[CLIENT] Sync engine created with peer ID: ${peerId}`
+          );
 
           // Get VFS instance
           vfs = await engine.getVfs();
@@ -126,13 +131,11 @@
         const clientId = Math.random().toString(36).substr(2, 9);
         try {
           console.log(`[CLIENT-${clientId}] Connecting to WebSocket: ${url}`);
-          // Use the new method that adopts server's root document
-          await engine.connectWebsocketWithServerRoot(url);
-          log('engineOutput', `[CLIENT-${clientId}] Connected to WebSocket and adopted server root: ${url}`);
-          
-          // Get updated VFS instance after root adoption
-          vfs = await engine.getVfs();
-          log('engineOutput', `[CLIENT-${clientId}] VFS updated with server root document`);
+          await engine.connectWebsocket(url);
+          log(
+            'engineOutput',
+            `[CLIENT-${clientId}] Connected to WebSocket: ${url}`
+          );
         } catch (err) {
           log('engineOutput', `[CLIENT-${clientId}] Error connecting: ${err}`);
         }
@@ -150,7 +153,9 @@
         const clientId = Math.random().toString(36).substr(2, 9);
 
         try {
-          console.log(`[CLIENT-${clientId}] Creating file: ${path} with content: "${content}"`);
+          console.log(
+            `[CLIENT-${clientId}] Creating file: ${path} with content: "${content}"`
+          );
           await vfs.createFile(path, content);
           log('vfsOutput', `[CLIENT-${clientId}] File created: ${path}`);
         } catch (err) {
@@ -211,7 +216,10 @@
             `[CLIENT-${clientId}] Directory listing for ${dirPath}:\n${JSON.stringify(entries, null, 2)}`
           );
         } catch (err) {
-          log('vfsOutput', `[CLIENT-${clientId}] Error listing directory: ${err}`);
+          log(
+            'vfsOutput',
+            `[CLIENT-${clientId}] Error listing directory: ${err}`
+          );
         }
       };
 
@@ -223,7 +231,7 @@
           const manifestContent = JSON.stringify({
             manifestVersion: 1,
             version: { major: 1, minor: 0 },
-            root: 'main',
+            root: 'root',
             entrypoints: [],
             networkUris: [],
           });
