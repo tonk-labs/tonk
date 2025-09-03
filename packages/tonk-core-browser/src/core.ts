@@ -1,13 +1,9 @@
-import {
+import type {
   WasmSyncEngine,
   WasmVfs,
   WasmRepo,
   WasmBundle,
-  create_sync_engine,
-  create_sync_engine_with_peer_id,
-  create_bundle,
-  create_bundle_from_bytes,
-} from '../dist/tonk_core.js';
+} from './tonk_core.js';
 
 /**
  * Metadata for a file or directory node in the virtual file system
@@ -47,8 +43,6 @@ export interface BundleEntry {
 export interface TonkConfig {
   /** Custom path to the WASM module */
   wasmPath?: string;
-  /** Number of worker threads to spawn (enables multi-threading) */
-  numThreads?: number;
 }
 
 /**
@@ -311,7 +305,7 @@ export class Repository {
    *
    * @returns The peer ID as a string
    */
-  get peerId(): Promise<string> {
+  getPeerId(): Promise<string> {
     return this.#wasm.getPeerId();
   }
 
@@ -376,11 +370,13 @@ export class Bundle {
   /**
    * Create a new empty bundle.
    *
+   * @param wasmModule - WASM module functions (for lazy loading)
    * @returns A new Bundle instance
-   * @throws {BundleError} If bundle creation fails
+   * @throws {BundleError} If bundle creation fails or WASM not initialized
    */
-  static create(): Bundle {
+  static async create(wasmModule?: any): Promise<Bundle> {
     try {
+      const { create_bundle } = wasmModule || (await import('./tonk_core.js'));
       return new Bundle(create_bundle());
     } catch (error) {
       throw new BundleError(`Failed to create bundle: ${error}`);
@@ -391,11 +387,14 @@ export class Bundle {
    * Create a bundle from existing data.
    *
    * @param data - Binary data representing a serialized bundle
+   * @param wasmModule - WASM module functions (for lazy loading)
    * @returns A new Bundle instance
-   * @throws {BundleError} If the data is invalid or corrupted
+   * @throws {BundleError} If the data is invalid, corrupted, or WASM not initialized
    */
-  static fromBytes(data: Uint8Array): Bundle {
+  static async fromBytes(data: Uint8Array, wasmModule?: any): Promise<Bundle> {
     try {
+      const { create_bundle_from_bytes } =
+        wasmModule || (await import('./tonk_core.js'));
       return new Bundle(create_bundle_from_bytes(data));
     } catch (error) {
       throw new BundleError(`Failed to create bundle from bytes: ${error}`);
@@ -544,10 +543,13 @@ export class SyncEngine {
   /**
    * Create a new sync engine with an auto-generated peer ID.
    *
+   * @param wasmModule - WASM module functions (for lazy loading)
    * @returns A new SyncEngine instance
-   * @throws {Error} If engine creation fails
+   * @throws {Error} If engine creation fails or WASM not initialized
    */
-  static async create(): Promise<SyncEngine> {
+  static async create(wasmModule?: any): Promise<SyncEngine> {
+    const { create_sync_engine } =
+      wasmModule || (await import('./tonk_core.js'));
     const wasm = await create_sync_engine();
     return new SyncEngine(wasm);
   }
@@ -556,10 +558,16 @@ export class SyncEngine {
    * Create a new sync engine with a specific peer ID.
    *
    * @param peerId - The peer ID to use
+   * @param wasmModule - WASM module functions (for lazy loading)
    * @returns A new SyncEngine instance
-   * @throws {Error} If engine creation fails or peer ID is invalid
+   * @throws {Error} If engine creation fails, peer ID is invalid, or WASM not initialized
    */
-  static async createWithPeerId(peerId: string): Promise<SyncEngine> {
+  static async createWithPeerId(
+    peerId: string,
+    wasmModule?: any
+  ): Promise<SyncEngine> {
+    const { create_sync_engine_with_peer_id } =
+      wasmModule || (await import('./tonk_core.js'));
     const wasm = await create_sync_engine_with_peer_id(peerId);
     return new SyncEngine(wasm);
   }
@@ -569,7 +577,7 @@ export class SyncEngine {
    *
    * @returns The peer ID as a string
    */
-  get peerId(): Promise<string> {
+  getPeerId(): Promise<string> {
     return this.#wasm.getPeerId();
   }
 
@@ -578,7 +586,7 @@ export class SyncEngine {
    *
    * @returns The VirtualFileSystem instance
    */
-  get vfs(): Promise<VirtualFileSystem> {
+  async getVfs(): Promise<VirtualFileSystem> {
     return this.#wasm.getVfs().then(wasm => new VirtualFileSystem(wasm));
   }
 
@@ -587,7 +595,7 @@ export class SyncEngine {
    *
    * @returns The Repository instance
    */
-  get repo(): Promise<Repository> {
+  async getRepo(): Promise<Repository> {
     return this.#wasm.getRepo().then(wasm => new Repository(wasm));
   }
 
@@ -611,34 +619,53 @@ export class SyncEngine {
   }
 
   /**
-   * Connect to a WebSocket server and adopt the server's root document.
-   *
-   * This is useful when you want to sync with an existing file system
-   * on the server rather than starting with an empty one.
-   *
-   * @param url - WebSocket URL to connect to
-   * @throws {ConnectionError} If connection fails
-   *
-   * @example
-   * ```typescript
-   * await engine.connectWebsocketWithServerRoot('ws://sync.example.com:8080');
-   * ```
-   */
-  async connectWebsocketWithServerRoot(url: string): Promise<void> {
-    try {
-      await this.#wasm.connectWebsocketWithServerRoot(url);
-    } catch (error) {
-      throw new ConnectionError(
-        `Failed to connect to ${url} with server root: ${error}`
-      );
-    }
-  }
-
-  /**
    * Free the WASM memory associated with this engine.
    * Call this when you're done with the engine to prevent memory leaks.
    */
   free(): void {
     this.#wasm.free();
   }
+}
+
+/**
+ * Factory functions that can work with either direct or lazy-loaded WASM modules
+ */
+export function createFactoryFunctions(wasmModule?: any) {
+  return {
+    /**
+     * Create a new sync engine with an auto-generated peer ID.
+     *
+     * @returns A new SyncEngine instance
+     * @throws {Error} If engine creation fails
+     */
+    createSyncEngine: () => SyncEngine.create(wasmModule),
+
+    /**
+     * Create a new sync engine with a specific peer ID.
+     *
+     * @param peerId - The peer ID to use
+     * @returns A new SyncEngine instance
+     * @throws {Error} If engine creation fails or peer ID is invalid
+     */
+    createSyncEngineWithPeerId: (peerId: string) =>
+      SyncEngine.createWithPeerId(peerId, wasmModule),
+
+    /**
+     * Create a new empty bundle.
+     *
+     * @returns A new Bundle instance
+     * @throws {BundleError} If bundle creation fails
+     */
+    createBundle: () => Bundle.create(wasmModule),
+
+    /**
+     * Create a bundle from existing data.
+     *
+     * @param data - Binary data representing a serialized bundle
+     * @returns A new Bundle instance
+     * @throws {BundleError} If the data is invalid or corrupted
+     */
+    createBundleFromBytes: (data: Uint8Array) =>
+      Bundle.fromBytes(data, wasmModule),
+  };
 }

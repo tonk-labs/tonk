@@ -3,6 +3,7 @@ node_modules/
 
 # Built files
 dist/
+generated/
 
 # Logs
 *.log

@@ -15,7 +15,6 @@ npm install @tonk/core-browser-wasm
 - **Virtual File System**: In-memory file system with Automerge-based CRDT synchronization
 - **Bundle Operations**: Create and manage bundled content
 - **TypeScript Support**: Full type definitions included
-- **Web Worker Threading**: Optional multi-threading support for better performance
 
 ## Quick Start
 
@@ -51,7 +50,6 @@ Initialize the WASM module with optional configuration.
 ```typescript
 await initializeTonk({
   wasmPath: '/path/to/tonk_core_bg.wasm', // Optional: custom WASM path
-  numThreads: 4, // Optional: enable multi-threading
 });
 ```
 
@@ -201,21 +199,6 @@ async function bundleExample() {
 }
 ```
 
-### Multi-threading Setup
-
-```typescript
-import { initializeTonk } from '@tonk/core-browser-wasm';
-
-// Enable 4 worker threads for better performance
-await initializeTonk({
-  numThreads: 4,
-});
-
-// Note: When using workers, ensure your server has proper CORS headers:
-// - Cross-Origin-Embedder-Policy: require-corp
-// - Cross-Origin-Opener-Policy: same-origin
-```
-
 ## Browser Compatibility
 
 This package requires a modern browser with WebAssembly support:
@@ -224,12 +207,6 @@ This package requires a modern browser with WebAssembly support:
 - Firefox 52+
 - Safari 11+
 
-For multi-threading support, additional requirements:
-
-- SharedArrayBuffer support
-- Proper CORS headers configured on your server
-
 ## License
 
 MIT
-
