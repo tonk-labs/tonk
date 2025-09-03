@@ -69,15 +69,61 @@ impl Drop for TestSyncServer {
 pub async fn create_test_bundle(
     files: Vec<(&str, &str)>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let mut tonk = TonkCore::new().await?;
+    let tonk = TonkCore::new().await?;
 
     for (path, content) in files {
+        // Create parent directories if needed
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() > 2 {
+            let mut dir_path = String::new();
+            for part in &parts[1..parts.len() - 1] {
+                dir_path.push('/');
+                dir_path.push_str(part);
+                if !tonk.vfs().exists(&dir_path).await? {
+                    tonk.vfs().create_directory(&dir_path).await?;
+                }
+            }
+        }
+        
         tonk.vfs()
             .create_document(path, content.to_string())
             .await?;
     }
 
     Ok(tonk.to_bytes().await?)
+}
+
+/// Helper to load a TonkCore from bundle bytes
+pub async fn load_from_bundle(bundle_bytes: Vec<u8>) -> Result<TonkCore, Box<dyn std::error::Error>> {
+    Ok(TonkCore::from_bytes(bundle_bytes).await?)
+}
+
+/// Helper to create a TonkCore with pre-populated content and return it
+pub async fn create_test_tonk(
+    files: Vec<(&str, &str)>,
+) -> Result<TonkCore, Box<dyn std::error::Error>> {
+    let tonk = TonkCore::new().await?;
+
+    for (path, content) in files {
+        // Create parent directories if needed
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() > 2 {
+            let mut dir_path = String::new();
+            for part in &parts[1..parts.len() - 1] {
+                dir_path.push('/');
+                dir_path.push_str(part);
+                if !tonk.vfs().exists(&dir_path).await? {
+                    tonk.vfs().create_directory(&dir_path).await?;
+                }
+            }
+        }
+        
+        tonk.vfs()
+            .create_document(path, content.to_string())
+            .await?;
+    }
+
+    Ok(tonk)
 }
 
 /// Simple mock sync server for tests that don't need full server
@@ -138,4 +184,3 @@ pub async fn wait_for_sync(timeout: Duration) {
 pub fn is_port_available(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
-

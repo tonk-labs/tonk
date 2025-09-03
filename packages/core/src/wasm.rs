@@ -1,5 +1,5 @@
 use crate::bundle::{Bundle, BundlePath};
-use crate::sync::SyncEngine;
+use crate::tonk_core::TonkCore;
 use crate::vfs::{NodeType, VirtualFileSystem};
 use automerge::{transaction::Transactable, AutoSerde, ReadDoc};
 use js_sys::{Array, Promise, Uint8Array};
@@ -38,22 +38,22 @@ fn js_error(err: impl std::fmt::Display) -> JsValue {
 }
 
 #[wasm_bindgen]
-pub struct WasmSyncEngine {
-    engine: Arc<Mutex<SyncEngine>>,
+pub struct WasmTonkCore {
+    engine: Arc<Mutex<TonkCore>>,
 }
 
 #[wasm_bindgen]
-impl WasmSyncEngine {
+impl WasmTonkCore {
     #[wasm_bindgen(constructor)]
     #[allow(clippy::new_ret_no_self)]
     pub fn new() -> Promise {
         future_to_promise(async move {
-            match SyncEngine::new().await {
-                Ok(engine) => Ok(JsValue::from(WasmSyncEngine {
+            match TonkCore::new().await {
+                Ok(engine) => Ok(JsValue::from(WasmTonkCore {
                     engine: Arc::new(Mutex::new(engine)),
                 })),
                 Err(e) => {
-                    console_error!("SyncEngine creation failed: {}", e);
+                    console_error!("TonkCore creation failed: {}", e);
                     Err(js_error(e))
                 }
             }
@@ -64,8 +64,8 @@ impl WasmSyncEngine {
     pub fn with_peer_id(peer_id: String) -> Promise {
         future_to_promise(async move {
             let peer_id = samod::PeerId::from_string(peer_id);
-            match SyncEngine::with_peer_id(peer_id).await {
-                Ok(engine) => Ok(JsValue::from(WasmSyncEngine {
+            match TonkCore::with_peer_id(peer_id).await {
+                Ok(engine) => Ok(JsValue::from(WasmTonkCore {
                     engine: Arc::new(Mutex::new(engine)),
                 })),
                 Err(e) => Err(js_error(e)),
@@ -84,18 +84,6 @@ impl WasmSyncEngine {
 
     #[wasm_bindgen(js_name = connectWebsocket)]
     pub fn connect_websocket(&self, url: String) -> Promise {
-        let engine = Arc::clone(&self.engine);
-        future_to_promise(async move {
-            let engine = engine.lock().await;
-            match engine.connect_websocket(&url).await {
-                Ok(_) => Ok(JsValue::undefined()),
-                Err(e) => Err(js_error(e)),
-            }
-        })
-    }
-
-    #[wasm_bindgen(js_name = connectWebsocketWithServerRoot)]
-    pub fn connect_websocket_with_server_root(&self, url: String) -> Promise {
         let engine = Arc::clone(&self.engine);
         future_to_promise(async move {
             let engine = engine.lock().await;
@@ -385,35 +373,6 @@ impl WasmBundle {
         })
     }
 
-    #[wasm_bindgen(js_name = put)]
-    pub fn put(&self, key: String, value: Uint8Array) -> Promise {
-        let bundle = Arc::clone(&self.bundle);
-        future_to_promise(async move {
-            let mut bundle = bundle.lock().await;
-            let path = BundlePath::from(&key);
-            let data = value.to_vec();
-
-            match bundle.put(&path, data) {
-                Ok(_) => Ok(JsValue::TRUE),
-                Err(e) => Err(js_error(e)),
-            }
-        })
-    }
-
-    #[wasm_bindgen(js_name = delete)]
-    pub fn delete(&self, key: String) -> Promise {
-        let bundle = Arc::clone(&self.bundle);
-        future_to_promise(async move {
-            let mut bundle = bundle.lock().await;
-            let path = BundlePath::from(&key);
-
-            match bundle.delete(&path) {
-                Ok(_) => Ok(JsValue::TRUE),
-                Err(e) => Err(js_error(e)),
-            }
-        })
-    }
-
     #[wasm_bindgen(js_name = listKeys)]
     pub fn list_keys(&self) -> Promise {
         let bundle = Arc::clone(&self.bundle);
@@ -481,12 +440,12 @@ pub struct WasmVfsEvent {
 
 #[wasm_bindgen]
 pub fn create_sync_engine() -> Promise {
-    WasmSyncEngine::new()
+    WasmTonkCore::new()
 }
 
 #[wasm_bindgen]
 pub fn create_sync_engine_with_peer_id(peer_id: String) -> Promise {
-    WasmSyncEngine::with_peer_id(peer_id)
+    WasmTonkCore::with_peer_id(peer_id)
 }
 
 #[wasm_bindgen]

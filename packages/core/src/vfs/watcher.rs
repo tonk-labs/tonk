@@ -34,19 +34,27 @@ impl DocumentWatcher {
             self.handle.with_document(|doc| callback(doc));
         }
     }
+
+    /// Watch for changes with a timeout, useful for tests
+    pub async fn on_change_timeout<F>(self, timeout: tokio::time::Duration, callback: F) -> Result<(), tokio::time::error::Elapsed>
+    where
+        F: FnMut(&mut automerge::Automerge) + Send,
+    {
+        tokio::time::timeout(timeout, self.on_change(callback)).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::SyncEngine;
-    use automerge::{AutomergeError, ROOT, ReadDoc, transaction::Transactable};
+    use crate::tonk_core::TonkCore;
+    use automerge::{transaction::Transactable, AutomergeError, ReadDoc, ROOT};
     use std::sync::{Arc, Mutex};
     use tokio::time::Duration;
 
     #[tokio::test]
     async fn test_document_watcher_creation() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let doc = automerge::Automerge::new();
         let handle = engine.create_document(doc).await.unwrap();
 
@@ -56,19 +64,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_on_change_callback() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let doc = automerge::Automerge::new();
         let handle = engine.create_document(doc).await.unwrap();
 
         let watcher = DocumentWatcher::new(handle.clone());
         let received_values = Arc::new(Mutex::new(Vec::new()));
 
-        // Spawn a task to listen for changes
+        // Spawn a task to listen for changes with timeout
         let listener_task = tokio::spawn({
             let received = received_values.clone();
             async move {
-                watcher
-                    .on_change(move |doc| {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    watcher.on_change(move |doc| {
                         // Get the value from the document
                         if let Ok(Some((automerge::Value::Scalar(v), _))) =
                             doc.get(ROOT, "test_key")
@@ -76,7 +85,7 @@ mod tests {
                             received.lock().unwrap().push(v.to_string());
                         }
                     })
-                    .await;
+                ).await;
             }
         });
 
@@ -102,26 +111,28 @@ mod tests {
 
         // Clean up
         listener_task.abort();
+        let _ = listener_task.await;
     }
 
     #[tokio::test]
     async fn test_multiple_changes() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let doc = automerge::Automerge::new();
         let handle = engine.create_document(doc).await.unwrap();
 
         let watcher = DocumentWatcher::new(handle.clone());
         let change_count = Arc::new(Mutex::new(0));
 
-        // Spawn the listener
+        // Spawn the listener with timeout
         let listener_task = tokio::spawn({
             let count = change_count.clone();
             async move {
-                watcher
-                    .on_change(move |_doc| {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    watcher.on_change(move |_doc| {
                         *count.lock().unwrap() += 1;
                     })
-                    .await;
+                ).await;
             }
         });
 
@@ -148,5 +159,6 @@ mod tests {
 
         // Clean up
         listener_task.abort();
+        let _ = listener_task.await;
     }
 }

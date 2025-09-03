@@ -51,15 +51,52 @@ impl VirtualFileSystem {
         })
     }
 
-    /// Create a new VFS from a bundle containing a root document
+    /// Create a new VFS from a bundle containing a root document and storage files
     pub async fn from_bundle<R: RandomAccess>(
         samod: Arc<Repo>,
         bundle: &mut Bundle<R>,
     ) -> Result<Self> {
-        // Get the root document from the bundle
-        let root_doc = bundle.root_document()?;
+        use crate::BundlePath;
+        use std::collections::HashMap;
 
-        // Import the document into samod
+        // First, import all documents from the bundle's storage into the new samod repo
+        // This will create a mapping from old document IDs to new document IDs
+        let mut doc_id_mapping: HashMap<String, DocumentId> = HashMap::new();
+
+        // Import all storage files
+        let storage_prefix = BundlePath::from("storage");
+        if let Ok(storage_entries) = bundle.prefix(&storage_prefix) {
+            for (bundle_path, data) in storage_entries {
+                let path_str = bundle_path.to_string();
+                if let Some(relative_path) = path_str.strip_prefix("storage/") {
+                    // Reconstruct original document ID from path splaying
+                    let original_doc_id =
+                        if relative_path.len() >= 3 && relative_path.chars().nth(2) == Some('/') {
+                            // Path was splayed: "ab/cdefg" -> "abcdefg"
+                            let parts: Vec<&str> = relative_path.split('/').collect();
+                            if parts.len() >= 2 {
+                                format!("{}{}", parts[0], parts[1])
+                            } else {
+                                relative_path.to_string()
+                            }
+                        } else {
+                            relative_path.to_string()
+                        };
+
+                    // Load the automerge document from the data
+                    if let Ok(doc) = automerge::Automerge::load(&data) {
+                        // Create it in the new samod repo (this will assign a new ID)
+                        if let Ok(new_handle) = samod.create(doc).await {
+                            let new_doc_id = new_handle.document_id().clone();
+                            doc_id_mapping.insert(original_doc_id, new_doc_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Now import the root document and create VFS
+        let root_doc = bundle.root_document()?;
         let root_handle = samod
             .create(root_doc)
             .await
@@ -67,8 +104,8 @@ impl VirtualFileSystem {
 
         let root_id = root_handle.document_id().clone();
 
-        // Verify it's a directory
-        let _root_node = AutomergeHelpers::read_directory(&root_handle)?;
+        // Update the root document's children references to use new document IDs
+        Self::update_document_references(&samod, &root_handle, &doc_id_mapping).await?;
 
         let (event_tx, _) = broadcast::channel(100);
         let traverser = PathTraverser::new(Arc::clone(&samod));
@@ -107,6 +144,19 @@ impl VirtualFileSystem {
     /// Get the root document ID
     pub fn root_id(&self) -> DocumentId {
         self.root_id.clone()
+    }
+
+    /// Get the root document
+    pub async fn root_document(&self) -> Result<Automerge> {
+        let root_handle = self
+            .samod
+            .find(self.root_id.clone())
+            .await
+            .map_err(|e| VfsError::SamodError(format!("Failed to find root document: {e}")))?
+            .ok_or_else(|| VfsError::DocumentNotFound(self.root_id.to_string()))?;
+
+        let doc = root_handle.with_document(|doc| doc.fork());
+        Ok(doc)
     }
 
     /// Subscribe to VFS events
@@ -328,7 +378,7 @@ impl VirtualFileSystem {
 
             let dir_node = match dir_handle {
                 Some(ref handle) => {
-                    let node = self.get_dir_node(handle).await?;
+                    let node = self.dir_node(handle).await?;
                     node
                 }
                 None => return Err(VfsError::PathNotFound(path.to_string())),
@@ -425,7 +475,7 @@ impl VirtualFileSystem {
     }
 
     /// Get metadata for a path
-    pub async fn get_metadata(&self, path: &str) -> Result<Option<(NodeType, Timestamps)>> {
+    pub async fn metadata(&self, path: &str) -> Result<Option<(NodeType, Timestamps)>> {
         let result = self
             .traverser
             .traverse(self.root_id.clone(), path, false)
@@ -439,7 +489,7 @@ impl VirtualFileSystem {
     }
 
     // Helper method to extract DirNode from a document handle
-    async fn get_dir_node(&self, handle: &DocHandle) -> Result<DirNode> {
+    async fn dir_node(&self, handle: &DocHandle) -> Result<DirNode> {
         AutomergeHelpers::read_directory(handle)
     }
 
@@ -489,16 +539,135 @@ impl VirtualFileSystem {
             Ok(None)
         }
     }
+
+    /// Collect all document IDs used by this VFS (for bundle export)
+    pub async fn collect_all_document_ids(&self) -> Result<std::collections::HashSet<DocumentId>> {
+        let mut doc_ids = std::collections::HashSet::new();
+
+        // Always include the root
+        doc_ids.insert(self.root_id.clone());
+
+        // Recursively traverse the VFS to collect all document IDs
+        self.collect_document_ids_recursive("/", &mut doc_ids)
+            .await?;
+
+        Ok(doc_ids)
+    }
+
+    /// Recursively collect document IDs from a directory
+    fn collect_document_ids_recursive<'a>(
+        &'a self,
+        path: &'a str,
+        doc_ids: &'a mut std::collections::HashSet<DocumentId>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            // List entries in this directory
+            let entries = self.list_directory(path).await?;
+
+            for entry in entries {
+                // Add this document's ID
+                doc_ids.insert(entry.pointer.clone());
+
+                // If it's a directory, recurse into it
+                if entry.node_type == NodeType::Directory {
+                    let child_path = if path == "/" {
+                        format!("/{}", entry.name)
+                    } else {
+                        format!("{}/{}", path, entry.name)
+                    };
+
+                    self.collect_document_ids_recursive(&child_path, doc_ids)
+                        .await?;
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Recursively update document references to use new document IDs after bundle import
+    fn update_document_references<'a>(
+        samod: &'a Arc<Repo>,
+        handle: &'a DocHandle,
+        doc_id_mapping: &'a std::collections::HashMap<String, DocumentId>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            use automerge::{transaction::Transactable, ReadDoc};
+
+            // Read the directory
+            let dir_node = AutomergeHelpers::read_directory(handle)?;
+
+            // Update each child reference
+            handle.with_document(|doc| {
+                let mut tx = doc.transaction();
+
+                if let Ok(Some((
+                    automerge::Value::Object(automerge::ObjType::List),
+                    children_obj_id,
+                ))) = tx.get(automerge::ROOT, "children")
+                {
+                    let len = tx.length(children_obj_id.clone());
+                    for i in 0..len {
+                        if let Ok(Some((
+                            automerge::Value::Object(automerge::ObjType::Map),
+                            child_obj_id,
+                        ))) = tx.get(children_obj_id.clone(), i)
+                        {
+                            // Get the old pointer value
+                            if let Ok(Some((pointer_value, _))) =
+                                tx.get(child_obj_id.clone(), "pointer")
+                            {
+                                if let Some(old_pointer_str) =
+                                    AutomergeHelpers::extract_string_value(&pointer_value)
+                                {
+                                    // Look up the new document ID
+                                    if let Some(new_doc_id) = doc_id_mapping.get(&old_pointer_str) {
+                                        // Update the pointer to the new document ID
+                                        tx.put(
+                                            child_obj_id.clone(),
+                                            "pointer",
+                                            new_doc_id.to_string(),
+                                        )?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                tx.commit();
+                Ok::<(), VfsError>(())
+            })?;
+
+            // Recursively update child directories
+            for child in &dir_node.children {
+                if child.node_type == NodeType::Directory {
+                    // Get the new document ID for this directory
+                    let old_id_str = child.pointer.to_string();
+                    if let Some(new_doc_id) = doc_id_mapping.get(&old_id_str) {
+                        if let Ok(Some(child_handle)) = samod.find(new_doc_id.clone()).await {
+                            Self::update_document_references(samod, &child_handle, doc_id_mapping)
+                                .await?;
+                        }
+                    }
+                }
+            }
+
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use tracing::info;
+
     use super::*;
-    use crate::sync::SyncEngine;
+    use crate::tonk_core::TonkCore;
 
     #[tokio::test]
     async fn test_vfs_creation() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         assert!(!vfs.root_id().to_string().is_empty());
@@ -506,7 +675,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_subscription() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         let _rx = vfs.subscribe_events();
@@ -515,7 +684,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_path_validation() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         // Test root path validation
@@ -531,7 +700,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_document_creation_and_removal() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         // Create a document
@@ -556,7 +725,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_directory_operations() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         // Create a directory
@@ -583,7 +752,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_nested_directory_creation() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         // Create a document in a nested path (should create parent directories)
@@ -611,7 +780,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_duplicate_prevention() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         // Create a document
@@ -635,7 +804,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_document() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         // Create a document
@@ -654,7 +823,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_directory() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         // Create a directory
@@ -671,7 +840,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_non_existent_document() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         // Try to watch a non-existent document
@@ -681,16 +850,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_type_mismatch() {
-        let engine = SyncEngine::new().await.unwrap();
+        let engine = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
 
         // Create a document
-        vfs.create_document("/file.txt", "content".to_string())
-            .await
-            .unwrap();
+        let _create_result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            vfs.create_document("/file.txt", "content".to_string()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         // Try to watch it as a directory
-        let result = vfs.watch_directory("/file.txt").await;
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            vfs.watch_directory("/file.txt"),
+        )
+        .await
+        .unwrap();
         assert!(matches!(result, Err(VfsError::NodeTypeMismatch { .. })));
     }
 }

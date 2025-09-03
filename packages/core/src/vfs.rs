@@ -1,22 +1,29 @@
+pub mod backend;
+pub mod filesystem;
+pub mod traversal;
+pub mod types;
+pub mod watcher;
+
+pub use filesystem::*;
+pub use types::*;
+pub use watcher::DocumentWatcher;
+
 use crate::error::Result;
-use crate::sync::SyncEngine;
-use crate::vfs::filesystem::{VfsEvent, VirtualFileSystem};
-use crate::vfs::types::RefNode;
-use crate::vfs::watcher::DocumentWatcher;
+use crate::tonk_core::TonkCore;
 use automerge::AutoSerde;
 use samod::{DocHandle, Repo};
 use std::sync::Arc;
 
 /// Simplified API for common VFS use cases
 pub struct Vfs {
-    engine: SyncEngine,
+    engine: TonkCore,
     vfs: Arc<VirtualFileSystem>,
 }
 
 impl Vfs {
     /// Create a new VFS instance with in-memory storage
     pub async fn new() -> Result<Self> {
-        let engine = SyncEngine::new().await?;
+        let engine = TonkCore::new().await?;
         let vfs = Arc::new(VirtualFileSystem::new(engine.samod()).await?);
 
         Ok(Self { engine, vfs })
@@ -24,7 +31,7 @@ impl Vfs {
 
     /// Create a new VFS instance with a specific peer ID
     pub async fn with_peer_id(peer_id: samod::PeerId) -> Result<Self> {
-        let engine = SyncEngine::with_peer_id(peer_id).await?;
+        let engine = TonkCore::with_peer_id(peer_id).await?;
         let vfs = Arc::new(VirtualFileSystem::new(engine.samod()).await?);
 
         Ok(Self { engine, vfs })
@@ -102,7 +109,7 @@ impl Vfs {
         &self,
         path: &str,
     ) -> Result<Option<(crate::vfs::NodeType, crate::vfs::Timestamps)>> {
-        self.vfs().get_metadata(path).await
+        self.vfs().metadata(path).await
     }
 
     /// Watch a file for changes

@@ -189,7 +189,7 @@ impl AutomergeHelpers {
     }
 
     // Helper functions
-    fn extract_string_value(value: &Value) -> Option<String> {
+    pub fn extract_string_value(value: &Value) -> Option<String> {
         match value {
             Value::Scalar(s) => {
                 let s_str = s.to_string();

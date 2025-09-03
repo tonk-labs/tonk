@@ -1,15 +1,13 @@
 pub mod bundle;
-pub mod core;
+pub mod cloneable_file;
 pub mod error;
-pub mod storage;
-pub mod sync;
-pub mod util;
+pub mod tonk_core;
 pub mod vfs;
 pub mod websocket;
 
-pub use bundle::Bundle;
-pub use core::TonkCore;
-pub use util::CloneableFile;
+pub use bundle::{Bundle, BundlePath};
+pub use cloneable_file::CloneableFile;
+pub use tonk_core::TonkCore;
 pub use vfs::{
     DirNode, DocNode, DocumentWatcher, NodeType, RefNode, Timestamps, Vfs, VfsEvent,
     VirtualFileSystem,
