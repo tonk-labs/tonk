@@ -2002,7 +2002,7 @@ packages:
     hasBin: true
 
   '@tonk/core@file:tonk-core-0.1.0.tgz':
-    resolution: {integrity: sha512-7JvfhXIgoQcskY/aTmkraSvUW70it/X3yIEqFXQ96/Sb57gbC+9/1Ri5qgfWIwAEYEfFRHVIXUslTcA9PyRE/Q==, tarball: file:tonk-core-0.1.0.tgz}
+    resolution: {integrity: sha512-J3rBT5lOMqyPlee1weztK3CtTVHZYe6GcRE4dF3753E78LlKDJxmuLOZDBmx9CV7b2l/gzIfmNzk8kphbDgdHg==, tarball: file:tonk-core-0.1.0.tgz}
     version: 0.1.0
     engines: {node: '>=16.0.0'}
 

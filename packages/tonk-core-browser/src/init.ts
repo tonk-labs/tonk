@@ -75,7 +75,7 @@ export async function initializeTonkWithEmbeddedWasm(
         const wasmBlob = Uint8Array.from(atob(WASM_BASE64), c =>
           c.charCodeAt(0)
         );
-        initSync(wasmBlob);
+        initSync({ module: wasmBlob });
       }
       initialized = true;
     } catch (error) {
@@ -115,4 +115,3 @@ export function ensureInitialized(): void {
     );
   }
 }
-
