@@ -38,12 +38,12 @@ getrandom = { version = "0.3.3", features = ["wasm_js"]}
 tempfile = "3.21.0"
 
 [dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = {version="1.47.1", features=["macros", "rt-multi-thread"]}
 tokio-tungstenite = "0.27"
 samod = { path = "../../../../repos/samod/samod", features = ["tokio", "tungstenite"]}
-warp = { version = "0.4.2", features = ["websocket", "server"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = {version = "1.47.1", features = ["macros", "rt", "sync"]}

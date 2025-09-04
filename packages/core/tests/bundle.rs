@@ -733,19 +733,11 @@ async fn test_bundle_partial_write_recovery() {
 // ============ Sync Integration Tests ============
 
 #[tokio::test]
-#[ignore] // Requires mock sync server
+#[ignore] // Requires TypeScript server dependencies
 async fn test_bundle_load_then_sync() {
-    use common::mock_server;
-
-    // Start mock sync server
-    let port = 9876;
-    tokio::spawn(async move {
-        let _ = mock_server::start_mock_sync_server(port).await;
-    });
-
-    sleep(Duration::from_millis(500)).await;
-
-    let server_url = format!("ws://127.0.0.1:{}", port);
+    // Start TypeScript automerge-repo server
+    let server = common::AutomergeServer::start().await.unwrap();
+    let server_url = server.url();
 
     // Create first TonkCore with content
     let tonk1 = TonkCore::new().await.unwrap();

@@ -317,7 +317,7 @@ impl WasmVfs {
         future_to_promise(async move {
             let vfs = vfs.lock().await;
 
-            match vfs.get_metadata(&path).await {
+            match vfs.metadata(&path).await {
                 Ok(Some((node_type, timestamps))) => {
                     let metadata = WasmNodeMetadata {
                         node_type: match node_type {
@@ -395,7 +395,7 @@ impl WasmBundle {
             let mut bundle = bundle.lock().await;
             let prefix_path = BundlePath::from(&prefix);
 
-            match bundle.get_prefix(&prefix_path) {
+            match bundle.prefix(&prefix_path) {
                 Ok(entries) => {
                     let array = Array::new();
                     for (key, value) in entries {
