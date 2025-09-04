@@ -93,7 +93,7 @@ pub async fn create_test_bundle(
     Ok(tonk.to_bytes().await?)
 }
 
-/// Helper to load a TonkCore from bundle bytes
+/// Helper to load a TonkCore from bundle bytes (uses in-memory storage)
 pub async fn load_from_bundle(bundle_bytes: Vec<u8>) -> Result<TonkCore, Box<dyn std::error::Error>> {
     Ok(TonkCore::from_bytes(bundle_bytes).await?)
 }
