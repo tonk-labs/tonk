@@ -242,7 +242,6 @@ impl PathTraverser {
 mod tests {
     use super::*;
     use crate::tonk_core::TonkCore;
-    use crate::vfs::filesystem::VirtualFileSystem;
 
     // Helper function to create a test VFS with initialized root
     async fn create_test_vfs() -> (Arc<Repo>, DocumentId, PathTraverser, TonkCore) {

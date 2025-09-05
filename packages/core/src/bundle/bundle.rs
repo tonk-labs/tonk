@@ -1,10 +1,8 @@
 use anyhow::{Context, Result};
-use automerge::transaction::Transactable;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
-use zip::write::SimpleFileOptions;
-use zip::{ZipArchive, ZipWriter};
+use zip::ZipArchive;
 
 use crate::BundlePath;
 
@@ -21,7 +19,8 @@ pub struct Manifest {
     #[serde(rename = "manifestVersion")]
     pub manifest_version: u32,
     pub version: Version,
-    pub root: String,
+    // pub root: String,
+    pub root_id: String,
     pub entrypoints: Vec<String>,
     #[serde(rename = "networkUris")]
     pub network_uris: Vec<String>,
@@ -350,20 +349,9 @@ impl<R: RandomAccess> Bundle<R> {
         Ok(index)
     }
 
-    /// Get the root Automerge document from the bundle
-    pub fn root_document(&mut self) -> Result<automerge::Automerge> {
-        // Get the root path from the manifest
-        let root_path = self.manifest.root.clone();
-
-        // Read the document bytes from the bundle
-        let doc_bytes = self
-            .get(&BundlePath::from(root_path.as_str()))?
-            .ok_or_else(|| anyhow::anyhow!("Root document not found in bundle"))?;
-
-        // Load the Automerge document from bytes
-        let doc = automerge::Automerge::load(&doc_bytes).context("Failed to load root document")?;
-
-        Ok(doc)
+    /// Get the root Atuomerge document ID from the bundle
+    pub fn root_id(&self) -> Result<String> {
+        Ok(self.manifest.root_id.clone())
     }
 
     /// Read a value by key
@@ -481,64 +469,6 @@ impl Bundle<std::io::Cursor<Vec<u8>>> {
         Self::from_source(cursor)
     }
 
-    /// Create a new empty bundle with a minimal manifest
-    pub fn create_empty() -> Result<Self> {
-        // Create and initialize root document as directory
-        let mut root_doc = automerge::Automerge::new();
-
-        // Initialize as directory
-        // TODO: way to reuse AutomergeHelpers::init_as_directory here?
-        {
-            let mut tx = root_doc.transaction();
-            tx.put(automerge::ROOT, "type", "dir")?;
-            tx.put(automerge::ROOT, "name", "/")?;
-
-            let now = chrono::Utc::now().timestamp_millis();
-            let timestamps_obj =
-                tx.put_object(automerge::ROOT, "timestamps", automerge::ObjType::Map)?;
-            tx.put(timestamps_obj.clone(), "created", now)?;
-            tx.put(timestamps_obj, "modified", now)?;
-
-            tx.put_object(automerge::ROOT, "children", automerge::ObjType::List)?;
-
-            tx.commit();
-        }
-
-        // Serialize the root doc
-        let root_doc_bytes = root_doc.save();
-
-        // Create minimal manifest
-        let manifest = serde_json::json!({
-            "manifestVersion": 1,
-            "version": { "major": 1, "minor": 0 },
-            "root": "root",
-            "entrypoints": [],
-            "networkUris": []
-        });
-
-        let manifest_json =
-            serde_json::to_string_pretty(&manifest).context("Failed to serialize manifest")?;
-
-        // Create in-memory ZIP with just the manifest
-        let mut zip_data = Vec::new();
-        {
-            let mut zip_writer = ZipWriter::new(std::io::Cursor::new(&mut zip_data));
-
-            // Add manifest
-            zip_writer.start_file("manifest.json", SimpleFileOptions::default())?;
-            zip_writer.write_all(manifest_json.as_bytes())?;
-
-            // Add root document
-            zip_writer.start_file("root", SimpleFileOptions::default())?;
-            zip_writer.write_all(&root_doc_bytes)?;
-
-            zip_writer.finish()?;
-        }
-
-        // Create bundle from the new ZIP data
-        Self::from_bytes(zip_data)
-    }
-
     /// Get the bundle data as bytes (for serialization)
     pub fn to_bytes(&mut self) -> Result<Vec<u8>> {
         // Read all data from our cursor
@@ -578,6 +508,8 @@ impl<T: Read + Write + Seek + Send + std::fmt::Debug> Bundle<T> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
 
     /// Create a bundle with valid manifest for testing - returns the ZIP data as bytes
     fn create_test_bundle_with_manifest() -> Result<Vec<u8>> {
@@ -588,7 +520,7 @@ mod tests {
         let manifest_content = r#"{
             "manifestVersion": 1,
             "version": { "major": 1, "minor": 0 },
-            "root": "main",
+            "root_id": "test-root-id",
             "entrypoints": ["bin/myapp", "bin/worker", "scripts/setup.sh"],
             "networkUris": [
                 "https://api.example.com/v1",
@@ -622,7 +554,7 @@ mod tests {
         let manifest_content = r#"{
             "manifestVersion": 1,
             "version": { "major": 1, "minor": 0 },
-            "root": "main",
+            "root_id": "test-root-id",
             "entrypoints": ["bin/myapp"],
             "networkUris": []
         }"#;
@@ -677,7 +609,7 @@ mod tests {
         let manifest_content = r#"{
             "manifestVersion": 2,
             "version": { "major": 1, "minor": 0 },
-            "root": "main",
+            "root_id": "test-root-id",
             "entrypoints": ["bin/myapp"],
             "networkUris": []
         }"#;
@@ -728,7 +660,7 @@ mod tests {
         assert_eq!(manifest.manifest_version, 1);
         assert_eq!(manifest.version.major, 1);
         assert_eq!(manifest.version.minor, 0);
-        assert_eq!(manifest.root, "main");
+        // assert_eq!(manifest.root, "main");
         assert_eq!(manifest.entrypoints.len(), 3);
         assert_eq!(manifest.entrypoints[0], "bin/myapp");
         assert_eq!(manifest.entrypoints[1], "bin/worker");

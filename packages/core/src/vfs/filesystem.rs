@@ -51,87 +51,18 @@ impl VirtualFileSystem {
         })
     }
 
-    /// Create a new VFS from a bundle containing a root document and storage files
+    /// Create a new VFS from a bundle
     pub async fn from_bundle<R: RandomAccess>(
         samod: Arc<Repo>,
         bundle: &mut Bundle<R>,
     ) -> Result<Self> {
-        use crate::BundlePath;
-        use std::collections::HashMap;
-
-        // First, import all documents from the bundle's storage into the new samod repo
-        // This will create a mapping from old document IDs to new document IDs
-        let mut doc_id_mapping: HashMap<String, DocumentId> = HashMap::new();
-
-        // Import all storage files
-        let storage_prefix = BundlePath::from("storage");
-        if let Ok(storage_entries) = bundle.prefix(&storage_prefix) {
-            for (bundle_path, data) in storage_entries {
-                let path_str = bundle_path.to_string();
-                if let Some(relative_path) = path_str.strip_prefix("storage/") {
-                    // Reconstruct original document ID from path splaying
-                    let original_doc_id =
-                        if relative_path.len() >= 3 && relative_path.chars().nth(2) == Some('/') {
-                            // Path was splayed: "ab/cdefg" -> "abcdefg"
-                            let parts: Vec<&str> = relative_path.split('/').collect();
-                            if parts.len() >= 2 {
-                                format!("{}{}", parts[0], parts[1])
-                            } else {
-                                relative_path.to_string()
-                            }
-                        } else {
-                            relative_path.to_string()
-                        };
-
-                    // Load the automerge document from the data
-                    if let Ok(doc) = automerge::Automerge::load(&data) {
-                        // Create it in the new samod repo (this will assign a new ID)
-                        if let Ok(new_handle) = samod.create(doc).await {
-                            let new_doc_id = new_handle.document_id().clone();
-                            doc_id_mapping.insert(original_doc_id, new_doc_id);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Now import the root document and create VFS
-        let root_doc = bundle.root_document()?;
-        let root_handle = samod
-            .create(root_doc)
-            .await
-            .map_err(|e| VfsError::SamodError(format!("Failed to import root document: {e}")))?;
-
-        let root_id = root_handle.document_id().clone();
-
-        // Update the root document's children references to use new document IDs
-        Self::update_document_references(&samod, &root_handle, &doc_id_mapping).await?;
+        let root_id_str = bundle.manifest().root_id.clone();
+        let root_id = root_id_str
+            .parse::<DocumentId>()
+            .map_err(|e| VfsError::Other(anyhow::anyhow!("Failed to parse root ID: {}", e)))?;
 
         let (event_tx, _) = broadcast::channel(100);
         let traverser = PathTraverser::new(Arc::clone(&samod));
-
-        Ok(Self {
-            samod,
-            root_id,
-            traverser,
-            event_tx,
-        })
-    }
-
-    /// Create a new VFS from an existing root document
-    pub async fn from_root(samod: Arc<Repo>, root_id: DocumentId) -> Result<Self> {
-        // Verify the root document exists and is a directory
-        let root_handle = samod
-            .find(root_id.clone())
-            .await
-            .map_err(|e| VfsError::SamodError(format!("Failed to find root document: {e}")))?
-            .ok_or_else(|| VfsError::DocumentNotFound(root_id.to_string()))?;
-
-        // Verify it's a directory (will return error if not)
-        let _root_node = AutomergeHelpers::read_directory(&root_handle)?;
-
-        let (event_tx, _) = broadcast::channel(100);
-        let traverser = PathTraverser::new(samod.clone());
 
         Ok(Self {
             samod,
@@ -164,6 +95,7 @@ impl VirtualFileSystem {
         self.event_tx.subscribe()
     }
 
+    // TODO: need a write_document as well
     /// Create a document at the specified path
     pub async fn create_document<T>(&self, path: &str, content: T) -> Result<DocHandle>
     where
@@ -584,84 +516,10 @@ impl VirtualFileSystem {
             Ok(())
         })
     }
-
-    /// Recursively update document references to use new document IDs after bundle import
-    fn update_document_references<'a>(
-        samod: &'a Arc<Repo>,
-        handle: &'a DocHandle,
-        doc_id_mapping: &'a std::collections::HashMap<String, DocumentId>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(async move {
-            use automerge::{transaction::Transactable, ReadDoc};
-
-            // Read the directory
-            let dir_node = AutomergeHelpers::read_directory(handle)?;
-
-            // Update each child reference
-            handle.with_document(|doc| {
-                let mut tx = doc.transaction();
-
-                if let Ok(Some((
-                    automerge::Value::Object(automerge::ObjType::List),
-                    children_obj_id,
-                ))) = tx.get(automerge::ROOT, "children")
-                {
-                    let len = tx.length(children_obj_id.clone());
-                    for i in 0..len {
-                        if let Ok(Some((
-                            automerge::Value::Object(automerge::ObjType::Map),
-                            child_obj_id,
-                        ))) = tx.get(children_obj_id.clone(), i)
-                        {
-                            // Get the old pointer value
-                            if let Ok(Some((pointer_value, _))) =
-                                tx.get(child_obj_id.clone(), "pointer")
-                            {
-                                if let Some(old_pointer_str) =
-                                    AutomergeHelpers::extract_string_value(&pointer_value)
-                                {
-                                    // Look up the new document ID
-                                    if let Some(new_doc_id) = doc_id_mapping.get(&old_pointer_str) {
-                                        // Update the pointer to the new document ID
-                                        tx.put(
-                                            child_obj_id.clone(),
-                                            "pointer",
-                                            new_doc_id.to_string(),
-                                        )?;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                tx.commit();
-                Ok::<(), VfsError>(())
-            })?;
-
-            // Recursively update child directories
-            for child in &dir_node.children {
-                if child.node_type == NodeType::Directory {
-                    // Get the new document ID for this directory
-                    let old_id_str = child.pointer.to_string();
-                    if let Some(new_doc_id) = doc_id_mapping.get(&old_id_str) {
-                        if let Ok(Some(child_handle)) = samod.find(new_doc_id.clone()).await {
-                            Self::update_document_references(samod, &child_handle, doc_id_mapping)
-                                .await?;
-                        }
-                    }
-                }
-            }
-
-            Ok(())
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use tracing::info;
-
     use super::*;
     use crate::tonk_core::TonkCore;
 

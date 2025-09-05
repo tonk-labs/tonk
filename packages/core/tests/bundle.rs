@@ -418,7 +418,8 @@ async fn test_bundle_manifest_metadata() {
     assert_eq!(manifest.manifest_version, 1);
     assert_eq!(manifest.version.major, 1);
     assert_eq!(manifest.version.minor, 0);
-    assert_eq!(manifest.root, "root");
+    // root_id is a DocumentId string, just verify it exists and is not empty
+    assert!(!manifest.root_id.is_empty());
     assert!(manifest.entrypoints.is_empty());
     assert!(manifest.network_uris.is_empty());
 
