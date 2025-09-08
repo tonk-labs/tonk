@@ -3,9 +3,9 @@ import './index.css';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
-import { createTonk, TonkCore } from '@tonk/core';
+import { TonkCore } from '@tonk/core';
 
-const tonk1 = await createTonk();
+const tonk1 = await TonkCore.create({ storage: { type: 'indexeddb' } });
 const vfs1 = await tonk1.getVfs();
 
 const _watcher = vfs1.watchDirectory('/', docState => {

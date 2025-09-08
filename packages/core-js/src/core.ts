@@ -75,11 +75,23 @@ export interface Manifest {
 }
 
 /**
+ * Storage configuration options
+ */
+export interface StorageConfig {
+  /** Storage type: 'memory' for in-memory storage, 'indexeddb' for IndexedDB storage */
+  type: 'memory' | 'indexeddb';
+}
+
+/**
  * Configuration options for Tonk initialization
  */
 export interface TonkConfig {
   /** Custom path to the WASM module */
   wasmPath?: string;
+  /** Storage configuration */
+  storage?: StorageConfig;
+  /** Peer ID to use (auto-generated if not provided) */
+  peerId?: string;
 }
 
 /**
@@ -653,14 +665,51 @@ export class TonkCore {
   /**
    * Create a new Tonk Core with an auto-generated peer ID.
    *
+   * @param config - Configuration options
    * @param wasmModule - WASM module functions (for lazy loading)
    * @returns A new TonkCore instance
    * @throws {Error} If Tonk creation fails or WASM not initialized
+   * 
+   * @example
+   * ```typescript
+   * // Default in-memory storage
+   * const tonk = await TonkCore.create();
+   * 
+   * // With IndexedDB storage
+   * const tonk = await TonkCore.create({ storage: { type: 'indexeddb' } });
+   * 
+   * // With custom peer ID
+   * const tonk = await TonkCore.create({ 
+   *   peerId: 'my-custom-peer-id',
+   *   storage: { type: 'indexeddb' }
+   * });
+   * ```
    */
-  static async create(wasmModule?: any): Promise<TonkCore> {
-    const { create_tonk } = wasmModule || (await import('./tonk_core.js'));
-    const wasm = await create_tonk();
-    return new TonkCore(wasm);
+  static async create(config?: TonkConfig, wasmModule?: any): Promise<TonkCore> {
+    const module = wasmModule || (await import('./tonk_core.js'));
+    
+    if (config?.peerId && config?.storage) {
+      const { create_tonk_with_config } = module;
+      const wasm = await create_tonk_with_config(
+        config.peerId,
+        config.storage.type === 'indexeddb'
+      );
+      return new TonkCore(wasm);
+    } else if (config?.peerId) {
+      const { create_tonk_with_peer_id } = module;
+      const wasm = await create_tonk_with_peer_id(config.peerId);
+      return new TonkCore(wasm);
+    } else if (config?.storage) {
+      const { create_tonk_with_storage } = module;
+      const wasm = await create_tonk_with_storage(
+        config.storage.type === 'indexeddb'
+      );
+      return new TonkCore(wasm);
+    } else {
+      const { create_tonk } = module;
+      const wasm = await create_tonk();
+      return new TonkCore(wasm);
+    }
   }
 
   /**
@@ -685,33 +734,82 @@ export class TonkCore {
    * Create a new Tonk Core from an existing bundle
    *
    * @param bundle - The Bundle instance from which to load
+   * @param config - Configuration options
    * @param wasmModule - WASM module functions (for lazy loading)
    * @returns A new TonkCore instance
    * @throws {Error} If Tonk creation fails, bundle is invalid, or WASM not initialized
+   * 
+   * @example
+   * ```typescript
+   * // Load with in-memory storage (default)
+   * const tonk = await TonkCore.fromBundle(bundle);
+   * 
+   * // Load with IndexedDB storage
+   * const tonk = await TonkCore.fromBundle(bundle, { 
+   *   storage: { type: 'indexeddb' } 
+   * });
+   * ```
    */
-  static async fromBundle(bundle: Bundle, wasmModule?: any): Promise<TonkCore> {
-    const { create_tonk_from_bundle } =
-      wasmModule || (await import('./tonk_core.js'));
-    const wasm = await create_tonk_from_bundle(bundle);
-    return new TonkCore(wasm);
+  static async fromBundle(
+    bundle: Bundle, 
+    config?: TonkConfig, 
+    wasmModule?: any
+  ): Promise<TonkCore> {
+    const module = wasmModule || (await import('./tonk_core.js'));
+    
+    if (config?.storage) {
+      const { create_tonk_from_bundle_with_storage } = module;
+      const wasm = await create_tonk_from_bundle_with_storage(
+        bundle,
+        config.storage.type === 'indexeddb'
+      );
+      return new TonkCore(wasm);
+    } else {
+      const { create_tonk_from_bundle } = module;
+      const wasm = await create_tonk_from_bundle(bundle);
+      return new TonkCore(wasm);
+    }
   }
 
   /**
    * Create a new Tonk Core from bundle data
    *
    * @param data - The Bundle data from which to load
+   * @param config - Configuration options
    * @param wasmModule - WASM module functions (for lazy loading)
    * @returns A new TonkCore instance
    * @throws {Error} If Tonk creation fails, bundle is invalid, or WASM not initialized
+   * 
+   * @example
+   * ```typescript
+   * // Load with in-memory storage (default)
+   * const tonk = await TonkCore.fromBytes(bundleData);
+   * 
+   * // Load with IndexedDB storage
+   * const tonk = await TonkCore.fromBytes(bundleData, { 
+   *   storage: { type: 'indexeddb' } 
+   * });
+   * ```
    */
   static async fromBytes(
     data: Uint8Array,
+    config?: TonkConfig,
     wasmModule?: any
   ): Promise<TonkCore> {
-    const { create_tonk_from_bytes } =
-      wasmModule || (await import('./tonk_core.js'));
-    const wasm = await create_tonk_from_bytes(data);
-    return new TonkCore(wasm);
+    const module = wasmModule || (await import('./tonk_core.js'));
+    
+    if (config?.storage) {
+      const { create_tonk_from_bytes_with_storage } = module;
+      const wasm = await create_tonk_from_bytes_with_storage(
+        data,
+        config.storage.type === 'indexeddb'
+      );
+      return new TonkCore(wasm);
+    } else {
+      const { create_tonk_from_bytes } = module;
+      const wasm = await create_tonk_from_bytes(data);
+      return new TonkCore(wasm);
+    }
   }
 
   /**

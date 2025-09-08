@@ -1,6 +1,7 @@
 use crate::bundle::{Bundle, BundlePath};
 use crate::tonk_core::TonkCore;
 use crate::vfs::{NodeType, VirtualFileSystem};
+use crate::StorageConfig;
 use automerge::{transaction::Transactable, AutoSerde, ReadDoc};
 use js_sys::{Array, Function, Promise, Uint8Array};
 use samod::Repo;
@@ -703,6 +704,58 @@ pub fn create_tonk_with_peer_id(peer_id: String) -> Promise {
 }
 
 #[wasm_bindgen]
+pub fn create_tonk_with_storage(use_indexed_db: bool) -> Promise {
+    future_to_promise(async move {
+        let storage_config = if use_indexed_db {
+            StorageConfig::IndexedDB
+        } else {
+            StorageConfig::InMemory
+        };
+
+        match TonkCore::builder()
+            .with_storage(storage_config)
+            .build()
+            .await
+        {
+            Ok(tonk) => Ok(JsValue::from(WasmTonkCore {
+                tonk: Arc::new(Mutex::new(tonk)),
+            })),
+            Err(e) => {
+                console_error!("TonkCore creation failed: {}", e);
+                Err(js_error(e))
+            }
+        }
+    })
+}
+
+#[wasm_bindgen]
+pub fn create_tonk_with_config(peer_id: String, use_indexed_db: bool) -> Promise {
+    future_to_promise(async move {
+        let peer_id = samod::PeerId::from_string(peer_id);
+        let storage_config = if use_indexed_db {
+            StorageConfig::IndexedDB
+        } else {
+            StorageConfig::InMemory
+        };
+
+        match TonkCore::builder()
+            .with_peer_id(peer_id)
+            .with_storage(storage_config)
+            .build()
+            .await
+        {
+            Ok(tonk) => Ok(JsValue::from(WasmTonkCore {
+                tonk: Arc::new(Mutex::new(tonk)),
+            })),
+            Err(e) => {
+                console_error!("TonkCore creation failed: {}", e);
+                Err(js_error(e))
+            }
+        }
+    })
+}
+
+#[wasm_bindgen]
 pub fn create_bundle_from_bytes(data: Uint8Array) -> std::result::Result<WasmBundle, JsValue> {
     WasmBundle::from_bytes(data)
 }
@@ -713,6 +766,71 @@ pub fn create_tonk_from_bundle(bundle: &WasmBundle) -> Promise {
 }
 
 #[wasm_bindgen]
+pub fn create_tonk_from_bundle_with_storage(bundle: &WasmBundle, use_indexed_db: bool) -> Promise {
+    let bundle_to_bytes_promise = bundle.to_bytes();
+    future_to_promise(async move {
+        let bytes_result = JsFuture::from(bundle_to_bytes_promise).await;
+        match bytes_result {
+            Ok(bytes_value) => {
+                let bytes_array: Uint8Array = bytes_value.into();
+                let bytes = bytes_array.to_vec();
+                
+                let storage_config = if use_indexed_db {
+                    StorageConfig::IndexedDB
+                } else {
+                    StorageConfig::InMemory
+                };
+
+                match TonkCore::builder()
+                    .with_storage(storage_config)
+                    .from_bytes(bytes)
+                    .await
+                {
+                    Ok(tonk) => Ok(JsValue::from(WasmTonkCore {
+                        tonk: Arc::new(Mutex::new(tonk)),
+                    })),
+                    Err(e) => {
+                        console_error!("Failed to load TonkCore from bundle with storage: {}", e);
+                        Err(js_error(e))
+                    }
+                }
+            }
+            Err(e) => {
+                console_error!("Failed to get bundle bytes: {:?}", e);
+                Err(js_error("Failed to get bundle bytes"))
+            }
+        }
+    })
+}
+
+#[wasm_bindgen]
 pub fn create_tonk_from_bytes(data: Uint8Array) -> Promise {
     WasmTonkCore::from_bytes(data)
+}
+
+#[wasm_bindgen]
+pub fn create_tonk_from_bytes_with_storage(data: Uint8Array, use_indexed_db: bool) -> Promise {
+    future_to_promise(async move {
+        let bytes = data.to_vec();
+        
+        let storage_config = if use_indexed_db {
+            StorageConfig::IndexedDB
+        } else {
+            StorageConfig::InMemory
+        };
+
+        match TonkCore::builder()
+            .with_storage(storage_config)
+            .from_bytes(bytes)
+            .await
+        {
+            Ok(tonk) => Ok(JsValue::from(WasmTonkCore {
+                tonk: Arc::new(Mutex::new(tonk)),
+            })),
+            Err(e) => {
+                console_error!("Failed to load TonkCore from bytes with storage: {}", e);
+                Err(js_error(e))
+            }
+        }
+    })
 }
