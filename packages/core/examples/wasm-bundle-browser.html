@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TonkCore WASM Bundle Example</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 { color: #333; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { 
+            background: #ccc; 
+            cursor: not-allowed;
+        }
+        .output {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .success { color: #28a745; }
+        .error { color: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>TonkCore WASM Bundle Example</h1>
+        <p>This example demonstrates bundle loading and saving functionality in the browser.</p>
+        
+        <div>
+            <button id="createBtn">Create TonkCore</button>
+            <button id="addDataBtn" disabled>Add Test Data</button>
+            <button id="exportBtn" disabled>Export to Bundle</button>
+            <button id="importBtn" disabled>Import from Bundle</button>
+            <button id="downloadBtn" disabled>Download Bundle</button>
+            <input type="file" id="uploadInput" style="display: none" accept=".tonk">
+            <button id="uploadBtn">Upload Bundle</button>
+        </div>
+        
+        <div id="output" class="output"></div>
+    </div>
+
+    <script type="module">
+        import init, { WasmTonkCore, WasmBundle } from '../pkg-browser/tonk_core.js';
+        
+        let engine = null;
+        let bundleData = null;
+        const output = document.getElementById('output');
+        
+        function log(message, type = 'info') {
+            const className = type === 'success' ? 'success' : type === 'error' ? 'error' : '';
+            output.innerHTML += `<span class="${className}">${message}</span>\n`;
+            output.scrollTop = output.scrollHeight;
+        }
+        
+        async function initWasm() {
+            try {
+                await init();
+                log('✅ WASM module initialized', 'success');
+                document.getElementById('createBtn').disabled = false;
+            } catch (err) {
+                log(`❌ Failed to initialize WASM: ${err}`, 'error');
+            }
+        }
+        
+        document.getElementById('createBtn').addEventListener('click', async () => {
+            try {
+                log('\n📦 Creating new TonkCore instance...');
+                engine = await WasmTonkCore.new();
+                log('✅ TonkCore created', 'success');
+                
+                document.getElementById('addDataBtn').disabled = false;
+                document.getElementById('createBtn').disabled = true;
+            } catch (err) {
+                log(`❌ Error: ${err}`, 'error');
+            }
+        });
+        
+        document.getElementById('addDataBtn').addEventListener('click', async () => {
+            try {
+                log('\n📝 Adding test data...');
+                const vfs = await engine.getVfs();
+                
+                await vfs.createDirectory('/documents');
+                await vfs.createFile('/documents/hello.txt', 'Hello from the browser!');
+                await vfs.createFile('/config.json', JSON.stringify({
+                    app: 'TonkCore Browser Example',
+                    version: '1.0.0',
+                    timestamp: new Date().toISOString()
+                }, null, 2));
+                
+                log('✅ Added test files', 'success');
+                document.getElementById('exportBtn').disabled = false;
+                document.getElementById('addDataBtn').disabled = true;
+            } catch (err) {
+                log(`❌ Error: ${err}`, 'error');
+            }
+        });
+        
+        document.getElementById('exportBtn').addEventListener('click', async () => {
+            try {
+                log('\n💾 Exporting to bundle...');
+                bundleData = await engine.toBytes();
+                log(`✅ Exported bundle (${bundleData.length} bytes)`, 'success');
+                
+                document.getElementById('importBtn').disabled = false;
+                document.getElementById('downloadBtn').disabled = false;
+            } catch (err) {
+                log(`❌ Error: ${err}`, 'error');
+            }
+        });
+        
+        document.getElementById('importBtn').addEventListener('click', async () => {
+            try {
+                log('\n📥 Importing from bundle...');
+                
+                // Create new engine from bundle
+                const newEngine = await WasmTonkCore.fromBytes(bundleData);
+                const vfs = await newEngine.getVfs();
+                
+                // Verify data
+                const helloExists = await vfs.exists('/documents/hello.txt');
+                const configExists = await vfs.exists('/config.json');
+                
+                log(`✅ File check: hello.txt=${helloExists}, config.json=${configExists}`, 'success');
+                
+                // Read file content
+                const configContent = await vfs.readFile('/config.json');
+                const config = JSON.parse(JSON.parse(configContent).content);
+                log(`✅ Config loaded: ${config.app} v${config.version}`, 'success');
+                
+                // Test WasmBundle
+                log('\n🔍 Testing WasmBundle...');
+                const bundle = WasmBundle.fromBytes(bundleData);
+                const keys = await bundle.listKeys();
+                log(`✅ Bundle has ${keys.length} entries`, 'success');
+                
+                const engineFromBundle = await WasmTonkCore.fromBundle(bundle);
+                log('✅ Successfully loaded from WasmBundle', 'success');
+                
+            } catch (err) {
+                log(`❌ Error: ${err}`, 'error');
+            }
+        });
+        
+        document.getElementById('downloadBtn').addEventListener('click', () => {
+            const blob = new Blob([bundleData], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `tonk-bundle-${Date.now()}.tonk`;
+            a.click();
+            URL.revokeObjectURL(url);
+            log('✅ Bundle downloaded', 'success');
+        });
+        
+        document.getElementById('uploadBtn').addEventListener('click', () => {
+            document.getElementById('uploadInput').click();
+        });
+        
+        document.getElementById('uploadInput').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            try {
+                log(`\n📤 Uploading ${file.name}...`);
+                const arrayBuffer = await file.arrayBuffer();
+                const bytes = new Uint8Array(arrayBuffer);
+                
+                const uploadedEngine = await WasmTonkCore.fromBytes(bytes);
+                const vfs = await uploadedEngine.getVfs();
+                
+                // List root directory
+                const entries = await vfs.listDirectory('/');
+                log(`✅ Loaded bundle with ${entries.length} root entries`, 'success');
+                
+                for (const entry of entries) {
+                    log(`  - ${entry.name} (${entry.type})`);
+                }
+                
+            } catch (err) {
+                log(`❌ Error loading bundle: ${err}`, 'error');
+            }
+        });
+        
+        // Initialize on load
+        initWasm();
+    </script>
+</body>
+</html>

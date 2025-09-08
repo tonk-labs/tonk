@@ -525,16 +525,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_vfs_creation() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         assert!(!vfs.root_id().to_string().is_empty());
     }
 
     #[tokio::test]
     async fn test_event_subscription() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         let _rx = vfs.subscribe_events();
         // Just test that we can subscribe
@@ -542,8 +542,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_path_validation() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Test root path validation
         let result = vfs.create_document("/", "content".to_string()).await;
@@ -558,8 +558,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_document_creation_and_removal() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a document
         let doc_handle = vfs
@@ -583,8 +583,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_directory_operations() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a directory
         let dir_handle = vfs.create_directory("/documents").await.unwrap();
@@ -610,8 +610,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_nested_directory_creation() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a document in a nested path (should create parent directories)
         vfs.create_document("/a/b/c/file.txt", "Nested content".to_string())
@@ -638,8 +638,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_duplicate_prevention() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a document
         vfs.create_document("/test.txt", "Original".to_string())
@@ -662,8 +662,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_document() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a document
         let _doc_handle = vfs
@@ -681,8 +681,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_directory() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a directory
         vfs.create_directory("/mydir").await.unwrap();
@@ -698,8 +698,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_non_existent_document() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Try to watch a non-existent document
         let watcher = vfs.watch_document("/does-not-exist.txt").await.unwrap();
@@ -708,8 +708,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_type_mismatch() {
-        let engine = TonkCore::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a document
         let _create_result = tokio::time::timeout(

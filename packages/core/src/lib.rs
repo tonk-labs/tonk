@@ -9,7 +9,7 @@ pub use bundle::{Bundle, BundlePath};
 pub use cloneable_file::CloneableFile;
 pub use tonk_core::{StorageConfig, TonkCore, TonkCoreBuilder};
 pub use vfs::{
-    DirNode, DocNode, DocumentWatcher, NodeType, RefNode, Timestamps, Vfs, VfsEvent,
+    DirNode, DocNode, DocumentWatcher, NodeType, RefNode, Timestamps, VfsEvent,
     VirtualFileSystem,
 };
 

@@ -36,7 +36,11 @@ impl DocumentWatcher {
     }
 
     /// Watch for changes with a timeout, useful for tests
-    pub async fn on_change_timeout<F>(self, timeout: tokio::time::Duration, callback: F) -> Result<(), tokio::time::error::Elapsed>
+    pub async fn on_change_timeout<F>(
+        self,
+        timeout: tokio::time::Duration,
+        callback: F,
+    ) -> Result<(), tokio::time::error::Elapsed>
     where
         F: FnMut(&mut automerge::Automerge) + Send,
     {
@@ -54,9 +58,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_document_watcher_creation() {
-        let engine = TonkCore::new().await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
         let doc = automerge::Automerge::new();
-        let handle = engine.create_document(doc).await.unwrap();
+        let handle = tonk.create_document(doc).await.unwrap();
 
         let watcher = DocumentWatcher::new(handle.clone());
         assert_eq!(watcher.document_id(), handle.document_id().clone());
@@ -64,9 +68,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_on_change_callback() {
-        let engine = TonkCore::new().await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
         let doc = automerge::Automerge::new();
-        let handle = engine.create_document(doc).await.unwrap();
+        let handle = tonk.create_document(doc).await.unwrap();
 
         let watcher = DocumentWatcher::new(handle.clone());
         let received_values = Arc::new(Mutex::new(Vec::new()));
@@ -84,8 +88,9 @@ mod tests {
                         {
                             received.lock().unwrap().push(v.to_string());
                         }
-                    })
-                ).await;
+                    }),
+                )
+                .await;
             }
         });
 
@@ -116,9 +121,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_changes() {
-        let engine = TonkCore::new().await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
         let doc = automerge::Automerge::new();
-        let handle = engine.create_document(doc).await.unwrap();
+        let handle = tonk.create_document(doc).await.unwrap();
 
         let watcher = DocumentWatcher::new(handle.clone());
         let change_count = Arc::new(Mutex::new(0));
@@ -131,8 +136,9 @@ mod tests {
                     Duration::from_secs(5),
                     watcher.on_change(move |_doc| {
                         *count.lock().unwrap() += 1;
-                    })
-                ).await;
+                    }),
+                )
+                .await;
             }
         });
 
