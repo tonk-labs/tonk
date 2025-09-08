@@ -12,8 +12,8 @@ importers:
         specifier: ^0.2.6
         version: 0.2.28(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(@types/react@19.0.12)(react-dom@19.0.0(react@19.0.0))(typescript@5.8.2)
       '@tonk/core':
-        specifier: file:tonk-core-0.1.0.tgz
-        version: file:tonk-core-0.1.0.tgz
+        specifier: file:../../packages/core-js
+        version: file:../../packages/core-js
       lucide-react:
         specifier: ^0.475.0
         version: 0.475.0(react@19.0.0)
@@ -2001,9 +2001,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@tonk/core@file:tonk-core-0.1.0.tgz':
-    resolution: {integrity: sha512-J3rBT5lOMqyPlee1weztK3CtTVHZYe6GcRE4dF3753E78LlKDJxmuLOZDBmx9CV7b2l/gzIfmNzk8kphbDgdHg==, tarball: file:tonk-core-0.1.0.tgz}
-    version: 0.1.0
+  '@tonk/core@file:../../packages/core-js':
+    resolution: {directory: ../../packages/core-js, type: directory}
     engines: {node: '>=16.0.0'}
 
   '@tonk/server@0.2.16':
@@ -8357,7 +8356,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@tonk/core@file:tonk-core-0.1.0.tgz': {}
+  '@tonk/core@file:../../packages/core-js': {}
 
   '@tonk/server@0.2.16(@swc/core@1.11.24(@swc/helpers@0.5.17))(@types/node@22.13.14)(typescript@5.8.2)':
     dependencies:

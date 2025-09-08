@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "@tonk/cli": "^0.2.6",
-    "@tonk/core": "file:tonk-core-0.1.0.tgz",
+    "@tonk/core": "file:../../packages/core-js",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

@@ -6,7 +6,7 @@
  *
  * @example
  * ```typescript
- * import { initializeTonk, createSyncEngine } from '@tonk/core-browser-wasm/slim';
+ * import { initializeTonk, createTonk } from '@tonk/core-browser-wasm/slim';
  *
  * // Initialize with explicit WASM path
  * await initializeTonk({
@@ -14,7 +14,7 @@
  * });
  *
  * // Now you can use Tonk
- * const engine = await createSyncEngine();
+ * const tonk = await createTonk();
  * ```
  */
 
@@ -26,7 +26,7 @@ export { initializeTonk, isInitialized } from './init.js';
 // Re-export wrapper classes and types
 export {
   // Main classes
-  SyncEngine,
+  TonkCore,
   VirtualFileSystem,
   Repository,
   Bundle,
@@ -51,51 +51,62 @@ export {
 const lazyFactories = createFactoryFunctions();
 
 /**
- * Create a new sync engine with an auto-generated peer ID.
+ * Create a new Tonk Core with an auto-generated peer ID.
  *
- * @returns A new SyncEngine instance
- * @throws {Error} If engine creation fails or WASM not initialized
+ * @returns A new TonkCore instance
+ * @throws {Error} If Tonk creation fails or WASM not initialized
  *
  * @example
  * ```typescript
  * await initializeTonk();
- * const engine = await createSyncEngine();
- * const peerId = await engine.getPeerId();
- * console.log('Created engine with peer ID:', peerId);
+ * const tonk = await createTonk();
+ * const peerId = await tonk.getPeerId();
+ * console.log('Created Tonk with peer ID:', peerId);
  * ```
  */
-export const createSyncEngine = lazyFactories.createSyncEngine;
+export const createTonk = lazyFactories.createTonk;
 
 /**
- * Create a new sync engine with a specific peer ID.
+ * Create a new Tonk Core with a specific peer ID.
  *
  * @param peerId - The peer ID to use
- * @returns A new SyncEngine instance
- * @throws {Error} If engine creation fails, peer ID is invalid, or WASM not initialized
+ * @returns A new TonkCore instance
+ * @throws {Error} If Tonk creation fails, peer ID is invalid, or WASM not initialized
  *
  * @example
  * ```typescript
  * await initializeTonk();
- * const engine = await createSyncEngineWithPeerId('my-custom-peer-id');
+ * const tonk = await createTonkWithPeerId('my-custom-peer-id');
  * ```
  */
-export const createSyncEngineWithPeerId =
-  lazyFactories.createSyncEngineWithPeerId;
+export const createTonkWithPeerId = lazyFactories.createTonkWithPeerId;
 
 /**
- * Create a new empty bundle.
- *
- * @returns A new Bundle instance
- * @throws {BundleError} If bundle creation fails or WASM not initialized
+ * Create a Tonk Core from an existing bundle
+ * @param bundle - The Bundle instance from which to load
+ * @returns A new TonkCore instance
+ * @throws {Error} If Tonk creation fails or bundle is invalid
  *
  * @example
  * ```typescript
- * await initializeTonk();
- * const bundle = await createBundle();
- * await bundle.put('key', new Uint8Array([1, 2, 3]));
+ * const tonk = await createTonkFromBundle(bundle);
  * ```
  */
-export const createBundle = lazyFactories.createBundle;
+export const createTonkFromBundle = lazyFactories.createTonkFromBundle;
+
+/**
+ * Create a Tonk Core from bundle data
+ * @param bundle - The Bundle data from which to load
+ * @returns A new TonkCore instance
+ * @throws {Error} If Tonk creation fails or bundle is invalid
+ *
+ * @example
+ * ```typescript
+ * const data = bundle.toBytes();
+ * const tonk = await createTonkFromBytes(data);
+ * ```
+ */
+export const createTonkFromBytes = lazyFactories.createTonkFromBytes;
 
 /**
  * Create a bundle from existing data.

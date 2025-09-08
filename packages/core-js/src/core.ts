@@ -1,5 +1,5 @@
 import type {
-  WasmSyncEngine,
+  WasmTonkCore,
   WasmVfs,
   WasmRepo,
   WasmBundle,
@@ -35,6 +35,29 @@ export interface BundleEntry {
   key: string;
   /** Binary data stored at this key */
   value: Uint8Array;
+}
+
+/**
+ * Tonk version
+ */
+export interface Version {
+  major: number;
+  minor: number;
+}
+
+/**
+ * Bundle manifest
+ */
+export interface Manifest {
+  /** Manifest version */
+  manifestVersion: number;
+  /** Tonk version */
+  version: Version;
+  rootId: String;
+  entrypoints: String[];
+  networkUris: String[];
+  xNotes?: String;
+  xVendor?: Object;
 }
 
 /**
@@ -96,8 +119,8 @@ export class BundleError extends TonkError {
  *
  * @example
  * ```typescript
- * const engine = await SyncEngine.create();
- * const vfs = await engine.vfs;
+ * const tonk = await TonkCore.create();
+ * const vfs = await tonk.vfs;
  *
  * // Create a file
  * await vfs.createFile('/notes/todo.md', '# My Todo List');
@@ -287,7 +310,7 @@ export class VirtualFileSystem {
  *
  * @example
  * ```typescript
- * const repo = await engine.repo;
+ * const repo = await tonk.repo;
  * const docId = await repo.createDocument('{"title": "My Document"}');
  * const content = await repo.findDocument(docId);
  * ```
@@ -333,6 +356,7 @@ export class Repository {
   }
 }
 
+// TODO: update docs for bundles
 /**
  * Bundle for storing and retrieving binary data in a ZIP-like format.
  *
@@ -368,22 +392,6 @@ export class Bundle {
   }
 
   /**
-   * Create a new empty bundle.
-   *
-   * @param wasmModule - WASM module functions (for lazy loading)
-   * @returns A new Bundle instance
-   * @throws {BundleError} If bundle creation fails or WASM not initialized
-   */
-  static async create(wasmModule?: any): Promise<Bundle> {
-    try {
-      const { create_bundle } = wasmModule || (await import('./tonk_core.js'));
-      return new Bundle(create_bundle());
-    } catch (error) {
-      throw new BundleError(`Failed to create bundle: ${error}`);
-    }
-  }
-
-  /**
    * Create a bundle from existing data.
    *
    * @param data - Binary data representing a serialized bundle
@@ -402,17 +410,17 @@ export class Bundle {
   }
 
   /**
-   * Store a value in the bundle.
+   * Retrieve the root ID from the bundle
    *
-   * @param key - The key to store the value under
-   * @param value - Binary data to store
+   * @returns The root ID
    * @throws {BundleError} If the operation fails
    */
-  async put(key: string, value: Uint8Array): Promise<void> {
+  async getRootId(): Promise<String> {
     try {
-      await this.#wasm.put(key, value);
+      const rootId = await this.#wasm.getRootId();
+      return rootId;
     } catch (error) {
-      throw new BundleError(`Failed to put key ${key}: ${error}`);
+      throw new BundleError(`Failed to get root ID: ${error}`);
     }
   }
 
@@ -429,20 +437,6 @@ export class Bundle {
       return result === null ? null : result;
     } catch (error) {
       throw new BundleError(`Failed to get key ${key}: ${error}`);
-    }
-  }
-
-  /**
-   * Delete a value from the bundle.
-   *
-   * @param key - The key to delete
-   * @throws {BundleError} If the operation fails
-   */
-  async delete(key: string): Promise<void> {
-    try {
-      await this.#wasm.delete(key);
-    } catch (error) {
-      throw new BundleError(`Failed to delete key ${key}: ${error}`);
     }
   }
 
@@ -489,6 +483,20 @@ export class Bundle {
   }
 
   /**
+   * Retrieve the bundle manifest
+   *
+   * @returns Manifest as JSON
+   * @throws {BundleError} If the operation fails
+   */
+  async getManifest(): Promise<Manifest> {
+    try {
+      return await this.#wasm.getManifest();
+    } catch (error) {
+      throw new BundleError(`Failed to retrive manifest: ${error}`);
+    }
+  }
+
+  /**
    * Serialize the bundle to binary data.
    *
    * @returns The serialized bundle data
@@ -514,66 +522,98 @@ export class Bundle {
 /**
  * Main synchronization engine for Tonk.
  *
- * The SyncEngine manages peer-to-peer synchronization, WebSocket connections,
+ * The TonkCore manages peer-to-peer synchronization, WebSocket connections,
  * and provides access to the virtual file system and repository.
  *
  * @example
  * ```typescript
- * // Create a sync engine with auto-generated peer ID
- * const engine = await SyncEngine.create();
+ * // Create a Tonk Core with auto-generated peer ID
+ * const tonk = await TonkCore.create();
  *
  * // Or create with a specific peer ID
- * const engine = await SyncEngine.createWithPeerId('my-peer-id');
+ * const tonk = await TonkCore.createWithPeerId('my-peer-id');
  *
  * // Connect to a sync server
- * await engine.connectWebsocket('ws://localhost:8080');
+ * await tonk.connectWebsocket('ws://localhost:8080');
  *
  * // Access the virtual file system
- * const vfs = await engine.vfs;
+ * const vfs = await tonk.vfs;
  * ```
  */
-export class SyncEngine {
-  #wasm: WasmSyncEngine;
+export class TonkCore {
+  #wasm: WasmTonkCore;
 
   /** @internal */
-  private constructor(wasm: WasmSyncEngine) {
+  private constructor(wasm: WasmTonkCore) {
     this.#wasm = wasm;
   }
 
   /**
-   * Create a new sync engine with an auto-generated peer ID.
+   * Create a new Tonk Core with an auto-generated peer ID.
    *
    * @param wasmModule - WASM module functions (for lazy loading)
-   * @returns A new SyncEngine instance
-   * @throws {Error} If engine creation fails or WASM not initialized
+   * @returns A new TonkCore instance
+   * @throws {Error} If Tonk creation fails or WASM not initialized
    */
-  static async create(wasmModule?: any): Promise<SyncEngine> {
-    const { create_sync_engine } =
-      wasmModule || (await import('./tonk_core.js'));
-    const wasm = await create_sync_engine();
-    return new SyncEngine(wasm);
+  static async create(wasmModule?: any): Promise<TonkCore> {
+    const { create_tonk } = wasmModule || (await import('./tonk_core.js'));
+    const wasm = await create_tonk();
+    return new TonkCore(wasm);
   }
 
   /**
-   * Create a new sync engine with a specific peer ID.
+   * Create a new Tonk Core with a specific peer ID.
    *
    * @param peerId - The peer ID to use
    * @param wasmModule - WASM module functions (for lazy loading)
-   * @returns A new SyncEngine instance
-   * @throws {Error} If engine creation fails, peer ID is invalid, or WASM not initialized
+   * @returns A new TonkCore instance
+   * @throws {Error} If Tonk creation fails, peer ID is invalid, or WASM not initialized
    */
   static async createWithPeerId(
     peerId: string,
     wasmModule?: any
-  ): Promise<SyncEngine> {
-    const { create_sync_engine_with_peer_id } =
+  ): Promise<TonkCore> {
+    const { create_tonk_with_peer_id } =
       wasmModule || (await import('./tonk_core.js'));
-    const wasm = await create_sync_engine_with_peer_id(peerId);
-    return new SyncEngine(wasm);
+    const wasm = await create_tonk_with_peer_id(peerId);
+    return new TonkCore(wasm);
   }
 
   /**
-   * Get the peer ID of this sync engine.
+   * Create a new Tonk Core from an existing bundle
+   *
+   * @param bundle - The Bundle instance from which to load
+   * @param wasmModule - WASM module functions (for lazy loading)
+   * @returns A new TonkCore instance
+   * @throws {Error} If Tonk creation fails, bundle is invalid, or WASM not initialized
+   */
+  static async fromBundle(bundle: Bundle, wasmModule?: any): Promise<TonkCore> {
+    const { create_tonk_from_bundle } =
+      wasmModule || (await import('./tonk_core.js'));
+    const wasm = await create_tonk_from_bundle(bundle);
+    return new TonkCore(wasm);
+  }
+
+  /**
+   * Create a new Tonk Core from bundle data
+   *
+   * @param data - The Bundle data from which to load
+   * @param wasmModule - WASM module functions (for lazy loading)
+   * @returns A new TonkCore instance
+   * @throws {Error} If Tonk creation fails, bundle is invalid, or WASM not initialized
+   */
+  static async fromBytes(
+    data: Uint8Array,
+    wasmModule?: any
+  ): Promise<TonkCore> {
+    const { create_tonk_from_bytes } =
+      wasmModule || (await import('./tonk_core.js'));
+    const wasm = await create_tonk_from_bytes(data);
+    return new TonkCore(wasm);
+  }
+
+  /**
+   * Get the peer ID of this Tonk Core
    *
    * @returns The peer ID as a string
    */
@@ -587,7 +627,7 @@ export class SyncEngine {
    * @returns The VirtualFileSystem instance
    */
   async getVfs(): Promise<VirtualFileSystem> {
-    return this.#wasm.getVfs().then(wasm => new VirtualFileSystem(wasm));
+    return this.#wasm.getVfs().then((wasm: any) => new VirtualFileSystem(wasm));
   }
 
   /**
@@ -596,7 +636,7 @@ export class SyncEngine {
    * @returns The Repository instance
    */
   async getRepo(): Promise<Repository> {
-    return this.#wasm.getRepo().then(wasm => new Repository(wasm));
+    return this.#wasm.getRepo().then((wasm: any) => new Repository(wasm));
   }
 
   /**
@@ -607,7 +647,7 @@ export class SyncEngine {
    *
    * @example
    * ```typescript
-   * await engine.connectWebsocket('ws://sync.example.com:8080');
+   * await tonk.connectWebsocket('ws://sync.example.com:8080');
    * ```
    */
   async connectWebsocket(url: string): Promise<void> {
@@ -619,8 +659,22 @@ export class SyncEngine {
   }
 
   /**
-   * Free the WASM memory associated with this engine.
-   * Call this when you're done with the engine to prevent memory leaks.
+   * Serialize the Tonk Core to bundle binary data.
+   *
+   * @returns The serialized bundle data
+   * @throws {TonkError} If serialization fails
+   */
+  async toBytes(): Promise<Uint8Array> {
+    try {
+      return await this.#wasm.toBytes();
+    } catch (error) {
+      throw new TonkError(`Failed to serialize to bundle data: ${error}`);
+    }
+  }
+
+  /**
+   * Free the WASM memory associated with this Tonk Core.
+   * Call this when you're done with the Tonk to prevent memory leaks.
    */
   free(): void {
     this.#wasm.free();
@@ -633,30 +687,40 @@ export class SyncEngine {
 export function createFactoryFunctions(wasmModule?: any) {
   return {
     /**
-     * Create a new sync engine with an auto-generated peer ID.
+     * Create a new Tonk Core with an auto-generated peer ID.
      *
-     * @returns A new SyncEngine instance
-     * @throws {Error} If engine creation fails
+     * @returns A new TonkCore instance
+     * @throws {Error} If Tonk creation fails
      */
-    createSyncEngine: () => SyncEngine.create(wasmModule),
+    createTonk: () => TonkCore.create(wasmModule),
 
     /**
-     * Create a new sync engine with a specific peer ID.
+     * Create a new Tonk Core with a specific peer ID.
      *
      * @param peerId - The peer ID to use
-     * @returns A new SyncEngine instance
-     * @throws {Error} If engine creation fails or peer ID is invalid
+     * @returns A new TonkCore instance
+     * @throws {Error} If Tonk creation fails or peer ID is invalid
      */
-    createSyncEngineWithPeerId: (peerId: string) =>
-      SyncEngine.createWithPeerId(peerId, wasmModule),
+    createTonkWithPeerId: (peerId: string) =>
+      TonkCore.createWithPeerId(peerId, wasmModule),
 
     /**
-     * Create a new empty bundle.
-     *
-     * @returns A new Bundle instance
-     * @throws {BundleError} If bundle creation fails
+     * Create a Tonk Core from an existing bundle
+     * @param bundle - The Bundle instance from which to load
+     * @returns A new TonkCore instance
+     * @throws {Error} If Tonk creation fails or bundle is invalid
      */
-    createBundle: () => Bundle.create(wasmModule),
+    createTonkFromBundle: (bundle: Bundle) =>
+      TonkCore.fromBundle(bundle, wasmModule),
+
+    /**
+     * Create a Tonk Core from bundle data
+     * @param bundle - The Bundle data from which to load
+     * @returns A new TonkCore instance
+     * @throws {Error} If Tonk creation fails or bundle is invalid
+     */
+    createTonkFromBytes: (data: Uint8Array) =>
+      TonkCore.fromBytes(data, wasmModule),
 
     /**
      * Create a bundle from existing data.

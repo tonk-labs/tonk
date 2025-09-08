@@ -241,15 +241,16 @@ impl PathTraverser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::SyncEngine;
-    use crate::vfs::filesystem::VirtualFileSystem;
+    use crate::tonk_core::TonkCore;
 
     // Helper function to create a test VFS with initialized root
-    async fn create_test_vfs() -> (Arc<Repo>, DocumentId, PathTraverser) {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
-        let traverser = PathTraverser::new(engine.samod());
-        (engine.samod(), vfs.root_id(), traverser)
+    async fn create_test_vfs() -> (Arc<Repo>, DocumentId, PathTraverser, TonkCore) {
+        let core = TonkCore::new().await.unwrap();
+        let vfs = core.vfs();
+        let traverser = PathTraverser::new(core.samod());
+        let samod = core.samod();
+        let root_id = vfs.root_id();
+        (samod, root_id, traverser, core) // Keep engine alive
     }
 
     // Helper function to create a directory structure for testing
@@ -285,7 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_traverse_root_path() {
-        let (_, root_id, traverser) = create_test_vfs().await;
+        let (_, root_id, traverser, _tonk) = create_test_vfs().await;
 
         // Test traversing to root with various path formats
         let paths = vec!["/", "", "//", "///"];
@@ -304,7 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_traverse_existing_single_level_path() {
-        let (samod, root_id, traverser) = create_test_vfs().await;
+        let (samod, root_id, traverser, _tonk) = create_test_vfs().await;
         setup_test_directory_structure(root_id.clone(), samod).await;
 
         // Test traversing to /docs
@@ -322,7 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_traverse_existing_multi_level_path() {
-        let (samod, root_id, traverser) = create_test_vfs().await;
+        let (samod, root_id, traverser, _tonk) = create_test_vfs().await;
         setup_test_directory_structure(root_id.clone(), samod.clone()).await;
 
         // Test traversing to /docs/readme.txt
@@ -340,17 +341,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_path_normalization() {
-        let (samod, root_id, traverser) = create_test_vfs().await;
-        setup_test_directory_structure(root_id.clone(), samod).await;
+        let (samod, root_id, traverser, _tonk) = create_test_vfs().await;
+        let _setup_result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            setup_test_directory_structure(root_id.clone(), samod),
+        )
+        .await
+        .unwrap();
 
         // Test various path formats that should all resolve to /docs
         let paths = vec!["/docs", "docs", "/docs/", "docs/", "//docs//"];
 
         for path in paths {
-            let result = traverser
-                .traverse(root_id.clone(), path, false)
-                .await
-                .unwrap();
+            let result = tokio::time::timeout(
+                tokio::time::Duration::from_secs(5),
+                traverser.traverse(root_id.clone(), path, false),
+            )
+            .await
+            .unwrap()
+            .unwrap();
             assert!(result.target_ref.is_some());
             assert_eq!(result.target_ref.unwrap().name, "docs");
             assert_eq!(result.parent_path, "/docs");
@@ -359,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_missing_directories() {
-        let (_, root_id, traverser) = create_test_vfs().await;
+        let (_, root_id, traverser, _tonk) = create_test_vfs().await;
 
         // Test creating a nested directory structure
         let result = traverser
@@ -393,7 +402,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_final_directory_only() {
-        let (samod, root_id, traverser) = create_test_vfs().await;
+        let (samod, root_id, traverser, _tonk) = create_test_vfs().await;
 
         // Create /existing manually
         let existing_doc = automerge::Automerge::new();
@@ -418,7 +427,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_traverse_non_existent_path_no_create() {
-        let (_, root_id, traverser) = create_test_vfs().await;
+        let (_, root_id, traverser, _tonk) = create_test_vfs().await;
 
         // Test traversing to non-existent path without creating
         let result = traverser
@@ -433,7 +442,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_traverse_through_document_fails() {
-        let (samod, root_id, traverser) = create_test_vfs().await;
+        let (samod, root_id, traverser, _tonk) = create_test_vfs().await;
 
         // Create a document at root
         let doc_doc = automerge::Automerge::new();
@@ -457,8 +466,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_missing_root_document() {
-        let engine = SyncEngine::new().await.unwrap();
-        let traverser = PathTraverser::new(engine.samod());
+        let tonk = TonkCore::new().await.unwrap();
+        let traverser = PathTraverser::new(tonk.samod());
         let mut rng = rand::rng();
         let fake_id = DocumentId::new(&mut rng); // Non-existent document ID
 
@@ -472,7 +481,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_path_segments() {
-        let (samod, root_id, traverser) = create_test_vfs().await;
+        let (samod, root_id, traverser, _tonk) = create_test_vfs().await;
         setup_test_directory_structure(root_id.clone(), samod).await;
 
         // Test paths with empty segments
@@ -486,7 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_traverse_result_validation() {
-        let (samod, root_id, traverser) = create_test_vfs().await;
+        let (samod, root_id, traverser, _tonk) = create_test_vfs().await;
         setup_test_directory_structure(root_id.clone(), samod.clone()).await;
 
         // Test complete TraverseResult for existing path
@@ -516,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_directory_creation_race_condition() {
-        let (samod, root_id, traverser) = create_test_vfs().await;
+        let (samod, root_id, traverser, _tonk) = create_test_vfs().await;
 
         // Simulate race condition by creating directory between checks
         // This tests the logic in lines 158-183 of traverse()
@@ -527,15 +536,25 @@ mod tests {
         let root_id1 = root_id.clone();
         let root_id2 = root_id.clone();
 
-        let handle1 =
-            tokio::spawn(async move { traverser1.traverse(root_id1, "/race/test", true).await });
+        let handle1 = tokio::spawn(async move {
+            tokio::time::timeout(
+                tokio::time::Duration::from_secs(5),
+                traverser1.traverse(root_id1, "/race/test", true),
+            )
+            .await
+        });
 
-        let handle2 =
-            tokio::spawn(async move { traverser2.traverse(root_id2, "/race/test", true).await });
+        let handle2 = tokio::spawn(async move {
+            tokio::time::timeout(
+                tokio::time::Duration::from_secs(5),
+                traverser2.traverse(root_id2, "/race/test", true),
+            )
+            .await
+        });
 
         // Both should succeed without errors
-        let result1 = handle1.await.unwrap();
-        let result2 = handle2.await.unwrap();
+        let result1 = handle1.await.unwrap().unwrap();
+        let result2 = handle2.await.unwrap().unwrap();
 
         assert!(result1.is_ok());
         assert!(result2.is_ok());
@@ -562,31 +581,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_special_characters_in_paths() {
-        let (_, root_id, traverser) = create_test_vfs().await;
+        let (_, root_id, traverser, _tonk) = create_test_vfs().await;
 
         // Test creating directories with special characters
         let special_names = vec!["test-dir", "test.dir", "test_dir", "test dir", "测试"];
 
         for name in special_names {
             let path = format!("/{name}");
-            let result = traverser
-                .traverse(root_id.clone(), &path, true)
-                .await
-                .unwrap();
+            let result = tokio::time::timeout(
+                tokio::time::Duration::from_secs(10),
+                traverser.traverse(root_id.clone(), &path, true),
+            )
+            .await
+            .unwrap()
+            .unwrap();
             assert_eq!(result.node.name, name);
 
             // Verify it can be found again
-            let verify = traverser
-                .traverse(root_id.clone(), &path, false)
-                .await
-                .unwrap();
+            let verify = tokio::time::timeout(
+                tokio::time::Duration::from_secs(10),
+                traverser.traverse(root_id.clone(), &path, false),
+            )
+            .await
+            .unwrap()
+            .unwrap();
             assert_eq!(verify.target_ref.unwrap().name, name);
         }
     }
 
     #[tokio::test]
     async fn test_very_long_paths() {
-        let (_, root_id, traverser) = create_test_vfs().await;
+        let (_, root_id, traverser, _tonk) = create_test_vfs().await;
 
         // Create a deep directory structure (reduced from 20 to 10 for faster tests)
         let mut path = String::new();
@@ -627,8 +652,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_uninitialized_root_with_create_missing() {
-        let engine = SyncEngine::new().await.unwrap();
-        let samod = engine.samod();
+        let tonk = TonkCore::new().await.unwrap();
+        let samod = tonk.samod();
         let traverser = PathTraverser::new(samod.clone());
 
         // Create a root document but don't initialize it

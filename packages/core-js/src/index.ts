@@ -2,7 +2,7 @@ import { initializeTonkWithEmbeddedWasm, isInitialized } from './init.js';
 import type { TonkConfig } from './core.js';
 import {
   // Main classes
-  SyncEngine,
+  TonkCore,
   VirtualFileSystem,
   Repository,
   Bundle,
@@ -62,7 +62,7 @@ export { isInitialized };
 // Re-export all wrapper classes and types
 export {
   // Main classes
-  SyncEngine,
+  TonkCore,
   VirtualFileSystem,
   Repository,
   Bundle,
@@ -81,47 +81,60 @@ export {
 };
 
 /**
- * Create a new sync engine with an auto-generated peer ID.
+ * Create a new Tonk Core
  *
- * @returns A new SyncEngine instance
- * @throws {Error} If engine creation fails
+ * @returns A new TonkCore instance
+ * @throws {Error} If Tonk creation fails
  *
  * @example
  * ```typescript
- * const engine = await createSyncEngine();
- * const peerId = await engine.getPeerId();
- * console.log('Created engine with peer ID:', peerId);
+ * const tonk = await createTonk();
+ * const peerId = await tonk.getPeerId();
+ * console.log('Created Tonk with peer ID:', peerId);
  * ```
  */
-export const createSyncEngine = factories.createSyncEngine;
+export const createTonk = factories.createTonk;
 
 /**
- * Create a new sync engine with a specific peer ID.
+ * Create a new Tonk Core with a specific peer ID.
  *
  * @param peerId - The peer ID to use
- * @returns A new SyncEngine instance
- * @throws {Error} If engine creation fails or peer ID is invalid
+ * @returns A new TonkCore instance
+ * @throws {Error} If Tonk creation fails or peer ID is invalid
  *
  * @example
  * ```typescript
- * const engine = await createSyncEngineWithPeerId('my-custom-peer-id');
+ * const tonk = await createTonkWithPeerId('my-custom-peer-id');
  * ```
  */
-export const createSyncEngineWithPeerId = factories.createSyncEngineWithPeerId;
+export const createTonkWithPeerId = factories.createTonkWithPeerId;
 
 /**
- * Create a new empty bundle.
- *
- * @returns A new Bundle instance
- * @throws {BundleError} If bundle creation fails
+ * Create a Tonk Core from an existing bundle
+ * @param bundle - The Bundle instance from which to load
+ * @returns A new TonkCore instance
+ * @throws {Error} If Tonk creation fails or bundle is invalid
  *
  * @example
  * ```typescript
- * const bundle = await createBundle();
- * await bundle.put('key', new Uint8Array([1, 2, 3]));
+ * const tonk = await createTonkFromBundle(bundle);
  * ```
  */
-export const createBundle = factories.createBundle;
+export const createTonkFromBundle = factories.createTonkFromBundle;
+
+/**
+ * Create a Tonk Core from bundle data
+ * @param bundle - The Bundle data from which to load
+ * @returns A new TonkCore instance
+ * @throws {Error} If Tonk creation fails or bundle is invalid
+ *
+ * @example
+ * ```typescript
+ * const data = bundle.toBytes();
+ * const tonk = await createTonkFromBytes(data);
+ * ```
+ */
+export const createTonkFromBytes = factories.createTonkFromBytes;
 
 /**
  * Create a bundle from existing data.

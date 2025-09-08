@@ -29,8 +29,8 @@
   ],
   "scripts": {
     "embed-wasm": "tsx ./scripts/embed-wasm.ts",
-    "build": "npm run build:wasm && npm run embed-wasm && npm run build:wrapper",
-    "build:wasm": "cd ../core && npm run build:browser && cp -r pkg-browser/* ../tonk-core-browser/dist/",
+    "build": "npm run build:wasm && npm run build:wrapper",
+    "build:wasm": "cd ../core && npm run build:browser && cp -r pkg-browser/* ../core-js/dist/ && cd ../core-js/ && npm run embed-wasm",
     "build:wrapper": "tsc",
     "clean": "rm -rf dist",
     "prebuild": "npm run clean && mkdir -p dist",

@@ -51,50 +51,18 @@ impl VirtualFileSystem {
         })
     }
 
-    /// Create a new VFS from a bundle containing a root document
+    /// Create a new VFS from a bundle
     pub async fn from_bundle<R: RandomAccess>(
         samod: Arc<Repo>,
         bundle: &mut Bundle<R>,
     ) -> Result<Self> {
-        // Get the root document from the bundle
-        let root_doc = bundle.root_document()?;
-
-        // Import the document into samod
-        let root_handle = samod
-            .create(root_doc)
-            .await
-            .map_err(|e| VfsError::SamodError(format!("Failed to import root document: {e}")))?;
-
-        let root_id = root_handle.document_id().clone();
-
-        // Verify it's a directory
-        let _root_node = AutomergeHelpers::read_directory(&root_handle)?;
+        let root_id_str = bundle.manifest().root_id.clone();
+        let root_id = root_id_str
+            .parse::<DocumentId>()
+            .map_err(|e| VfsError::Other(anyhow::anyhow!("Failed to parse root ID: {}", e)))?;
 
         let (event_tx, _) = broadcast::channel(100);
         let traverser = PathTraverser::new(Arc::clone(&samod));
-
-        Ok(Self {
-            samod,
-            root_id,
-            traverser,
-            event_tx,
-        })
-    }
-
-    /// Create a new VFS from an existing root document
-    pub async fn from_root(samod: Arc<Repo>, root_id: DocumentId) -> Result<Self> {
-        // Verify the root document exists and is a directory
-        let root_handle = samod
-            .find(root_id.clone())
-            .await
-            .map_err(|e| VfsError::SamodError(format!("Failed to find root document: {e}")))?
-            .ok_or_else(|| VfsError::DocumentNotFound(root_id.to_string()))?;
-
-        // Verify it's a directory (will return error if not)
-        let _root_node = AutomergeHelpers::read_directory(&root_handle)?;
-
-        let (event_tx, _) = broadcast::channel(100);
-        let traverser = PathTraverser::new(samod.clone());
 
         Ok(Self {
             samod,
@@ -109,11 +77,25 @@ impl VirtualFileSystem {
         self.root_id.clone()
     }
 
+    /// Get the root document
+    pub async fn root_document(&self) -> Result<Automerge> {
+        let root_handle = self
+            .samod
+            .find(self.root_id.clone())
+            .await
+            .map_err(|e| VfsError::SamodError(format!("Failed to find root document: {e}")))?
+            .ok_or_else(|| VfsError::DocumentNotFound(self.root_id.to_string()))?;
+
+        let doc = root_handle.with_document(|doc| doc.fork());
+        Ok(doc)
+    }
+
     /// Subscribe to VFS events
     pub fn subscribe_events(&self) -> broadcast::Receiver<VfsEvent> {
         self.event_tx.subscribe()
     }
 
+    // TODO: need a write_document as well
     /// Create a document at the specified path
     pub async fn create_document<T>(&self, path: &str, content: T) -> Result<DocHandle>
     where
@@ -328,7 +310,7 @@ impl VirtualFileSystem {
 
             let dir_node = match dir_handle {
                 Some(ref handle) => {
-                    let node = self.get_dir_node(handle).await?;
+                    let node = self.dir_node(handle).await?;
                     node
                 }
                 None => return Err(VfsError::PathNotFound(path.to_string())),
@@ -425,7 +407,7 @@ impl VirtualFileSystem {
     }
 
     /// Get metadata for a path
-    pub async fn get_metadata(&self, path: &str) -> Result<Option<(NodeType, Timestamps)>> {
+    pub async fn metadata(&self, path: &str) -> Result<Option<(NodeType, Timestamps)>> {
         let result = self
             .traverser
             .traverse(self.root_id.clone(), path, false)
@@ -439,7 +421,7 @@ impl VirtualFileSystem {
     }
 
     // Helper method to extract DirNode from a document handle
-    async fn get_dir_node(&self, handle: &DocHandle) -> Result<DirNode> {
+    async fn dir_node(&self, handle: &DocHandle) -> Result<DirNode> {
         AutomergeHelpers::read_directory(handle)
     }
 
@@ -489,25 +471,70 @@ impl VirtualFileSystem {
             Ok(None)
         }
     }
+
+    /// Collect all document IDs used by this VFS (for bundle export)
+    pub async fn collect_all_document_ids(&self) -> Result<std::collections::HashSet<DocumentId>> {
+        let mut doc_ids = std::collections::HashSet::new();
+
+        // Always include the root
+        doc_ids.insert(self.root_id.clone());
+
+        // Recursively traverse the VFS to collect all document IDs
+        self.collect_document_ids_recursive("/", &mut doc_ids)
+            .await?;
+
+        Ok(doc_ids)
+    }
+
+    /// Recursively collect document IDs from a directory
+    fn collect_document_ids_recursive<'a>(
+        &'a self,
+        path: &'a str,
+        doc_ids: &'a mut std::collections::HashSet<DocumentId>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            // List entries in this directory
+            let entries = self.list_directory(path).await?;
+
+            for entry in entries {
+                // Add this document's ID
+                doc_ids.insert(entry.pointer.clone());
+
+                // If it's a directory, recurse into it
+                if entry.node_type == NodeType::Directory {
+                    let child_path = if path == "/" {
+                        format!("/{}", entry.name)
+                    } else {
+                        format!("{}/{}", path, entry.name)
+                    };
+
+                    self.collect_document_ids_recursive(&child_path, doc_ids)
+                        .await?;
+                }
+            }
+
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::SyncEngine;
+    use crate::tonk_core::TonkCore;
 
     #[tokio::test]
     async fn test_vfs_creation() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         assert!(!vfs.root_id().to_string().is_empty());
     }
 
     #[tokio::test]
     async fn test_event_subscription() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         let _rx = vfs.subscribe_events();
         // Just test that we can subscribe
@@ -515,8 +542,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_path_validation() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Test root path validation
         let result = vfs.create_document("/", "content".to_string()).await;
@@ -531,8 +558,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_document_creation_and_removal() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a document
         let doc_handle = vfs
@@ -556,8 +583,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_directory_operations() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a directory
         let dir_handle = vfs.create_directory("/documents").await.unwrap();
@@ -583,8 +610,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_nested_directory_creation() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a document in a nested path (should create parent directories)
         vfs.create_document("/a/b/c/file.txt", "Nested content".to_string())
@@ -611,8 +638,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_duplicate_prevention() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a document
         vfs.create_document("/test.txt", "Original".to_string())
@@ -635,8 +662,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_document() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a document
         let _doc_handle = vfs
@@ -654,8 +681,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_directory() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a directory
         vfs.create_directory("/mydir").await.unwrap();
@@ -671,8 +698,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_non_existent_document() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Try to watch a non-existent document
         let watcher = vfs.watch_document("/does-not-exist.txt").await.unwrap();
@@ -681,16 +708,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_type_mismatch() {
-        let engine = SyncEngine::new().await.unwrap();
-        let vfs = VirtualFileSystem::new(engine.samod()).await.unwrap();
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Create a document
-        vfs.create_document("/file.txt", "content".to_string())
-            .await
-            .unwrap();
+        let _create_result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            vfs.create_document("/file.txt", "content".to_string()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         // Try to watch it as a directory
-        let result = vfs.watch_directory("/file.txt").await;
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            vfs.watch_directory("/file.txt"),
+        )
+        .await
+        .unwrap();
         assert!(matches!(result, Err(VfsError::NodeTypeMismatch { .. })));
     }
 }
