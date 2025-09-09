@@ -291,12 +291,26 @@ impl WasmVfs {
 
             match vfs.find_document(&path).await {
                 Ok(Some(handle)) => {
-                    let content = handle.with_document(|doc| {
+                    let doc = handle.with_document(|doc| {
                         let auto_serde = AutoSerde::from(&*doc);
-                        serde_json::to_string_pretty(&auto_serde)
-                            .unwrap_or_else(|e| format!("Error serializing: {e}"))
+                        serde_json::to_value(&auto_serde)
                     });
-                    Ok(JsValue::from_str(&content))
+
+                    match doc {
+                        Ok(json_value) => {
+                            if let Some(content_field) = json_value.get("content") {
+                                if let Some(content_str) = content_field.as_str() {
+                                    Ok(JsValue::from_str(content_str))
+                                } else {
+                                    // If content is not a string, return it as JSON text
+                                    Ok(JsValue::from_str(&content_field.to_string()))
+                                }
+                            } else {
+                                Ok(JsValue::NULL)
+                            }
+                        }
+                        Err(e) => Err(js_error(e)),
+                    }
                 }
                 Ok(None) => Ok(JsValue::NULL),
                 Err(e) => Err(js_error(e)),
