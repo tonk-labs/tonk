@@ -37,6 +37,20 @@ export interface BundleEntry {
   value: Uint8Array;
 }
 
+export interface DocumentWatcher {
+  /**
+   * Gets the document ID being watched
+   * @returns The document ID as a string
+   */
+  documentId(): string;
+
+  /**
+   * Stops the document watcher and aborts any ongoing watch operations
+   * @returns Promise that resolves when the watcher is stopped
+   */
+  stop(): Promise<void>;
+}
+
 /**
  * Tonk version
  */
@@ -189,6 +203,34 @@ export class VirtualFileSystem {
   }
 
   /**
+   * Update an existing file with the given content.
+   *
+   * @param path - Absolute path of the file to update
+   * @param content - Content to write to the file (string or binary data)
+   * @returns true if the file was updated, false if it didn't exist
+   * @throws {FileSystemError} If the path is invalid
+   *
+   * @example
+   * ```typescript
+   * // Create a text file
+   * await vfs.createFile('/hello.txt', 'Hello, World!');
+   *
+   * // Overwrite it
+   * await vfs.updateFile('/hello.txt', 'See you later!');
+   * ```
+   */
+  async updateFile(
+    path: string,
+    content: string | Uint8Array
+  ): Promise<boolean> {
+    try {
+      return await this.#wasm.updateFile(path, content);
+    } catch (error) {
+      throw new FileSystemError(`Failed to update file at ${path}: ${error}`);
+    }
+  }
+
+  /**
    * Delete a file.
    *
    * @param path - Absolute path to the file
@@ -298,6 +340,66 @@ export class VirtualFileSystem {
       };
     } catch (error) {
       throw new FileSystemError(`Failed to get metadata for ${path}: ${error}`);
+    }
+  }
+
+  /**
+   * Watch a file for changes at the specified path
+   *
+   * @param path - Absolute path to the file
+   * @param callback - Callback to run on change events
+   * @returns A DocumentWatcher for the specified path
+   *
+   * @example
+   * ```typescript
+   * const watcher = await vfs.watchFile('/text.txt', docState => {
+   *   console.log('Document changed:', docState);
+   * });
+   * ```
+   */
+  async watchFile(
+    path: string,
+    callback: Function
+  ): Promise<DocumentWatcher | null> {
+    try {
+      const result = await this.#wasm.watchDocument(path, callback);
+      if (result === null) return null;
+
+      return result;
+    } catch (error) {
+      throw new FileSystemError(
+        `Failed to watch file at path ${path}: ${error}`
+      );
+    }
+  }
+
+  /**
+   * Watch a directory for changes at the specified path
+   *
+   * @param path - Absolute path to the directory
+   * @param callback - Callback to run on change events
+   * @returns A DocumentWatcher for the specified path
+   *
+   * @example
+   * ```typescript
+   * const watcher = await vfs.watchDirecotry('/documents', docState => {
+   *   console.log('Directory changed:', docState);
+   * });
+   * ```
+   */
+  async watchDirectory(
+    path: string,
+    callback: Function
+  ): Promise<DocumentWatcher | null> {
+    try {
+      const result = await this.#wasm.watchDirectory(path, callback);
+      if (result === null) return null;
+
+      return result;
+    } catch (error) {
+      throw new FileSystemError(
+        `Failed to watch directory at path ${path}: ${error}`
+      );
     }
   }
 }

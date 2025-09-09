@@ -185,6 +185,44 @@ impl VirtualFileSystem {
                 // Update the document content
                 AutomergeHelpers::update_document_content(&doc_handle, content)?;
 
+                // Update the RefNode timestamp in the parent directory
+                // Extract filename from path
+                let filename = path
+                    .rsplit('/')
+                    .next()
+                    .ok_or_else(|| VfsError::InvalidPath(path.to_string()))?;
+
+                // Get the parent directory path
+                let parent_path = if path.contains('/') {
+                    let last_slash = path.rfind('/').unwrap();
+                    if last_slash == 0 {
+                        "/"
+                    } else {
+                        &path[..last_slash]
+                    }
+                } else {
+                    "/"
+                };
+
+                // Find the parent directory and update the RefNode timestamp
+                let result = self
+                    .traverser
+                    .traverse(self.root_id.clone(), parent_path, false)
+                    .await?;
+
+                let parent_handle = if let Some(ref target_ref) = result.target_ref {
+                    self.samod
+                        .find(target_ref.pointer.clone())
+                        .await
+                        .map_err(|e| VfsError::SamodError(format!("Failed to find parent directory: {e}")))?
+                        .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
+                } else {
+                    result.node_handle.clone()
+                };
+
+                // Update the child's RefNode timestamp in the parent directory
+                let _ = AutomergeHelpers::update_child_ref_timestamp(&parent_handle, filename);
+
                 // Emit update event
                 let _ = self.event_tx.send(VfsEvent::DocumentUpdated {
                     path: path.to_string(),

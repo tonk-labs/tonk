@@ -2,14 +2,14 @@ use crate::bundle::{Bundle, BundlePath};
 use crate::tonk_core::TonkCore;
 use crate::vfs::{NodeType, VirtualFileSystem};
 use automerge::{transaction::Transactable, AutoSerde, ReadDoc};
-use js_sys::{Array, Promise, Uint8Array};
+use js_sys::{Array, Function, Promise, Uint8Array};
 use samod::Repo;
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{future_to_promise, JsFuture};
+use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
 #[cfg(feature = "wee_alloc")]
 #[global_allocator]
@@ -428,6 +428,114 @@ impl WasmVfs {
             }
         })
     }
+
+    #[wasm_bindgen(js_name = watchDocument)]
+    pub fn watch_document(&self, path: String, callback: Function) -> Promise {
+        let vfs = Arc::clone(&self.vfs);
+        future_to_promise(async move {
+            let vfs = vfs.lock().await;
+
+            match vfs.watch_document(&path).await {
+                Ok(Some(watcher)) => {
+                    // Get the document ID before moving the watcher
+                    let document_id = watcher.document_id().to_string();
+
+                    // Create abort handle for the watcher task
+                    let (abort_handle, abort_registration) =
+                        futures::future::AbortHandle::new_pair();
+
+                    // Create a channel for communication between the watcher and callback
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+                    // Spawn a task to receive document updates and call the JS callback
+                    spawn_local(async move {
+                        while let Some(json_str) = rx.recv().await {
+                            let js_value = JsValue::from_str(&json_str);
+                            let _ = callback.call1(&JsValue::null(), &js_value);
+                        }
+                    });
+
+                    // Spawn the watcher task
+                    spawn_local(async move {
+                        let abortable = futures::future::Abortable::new(
+                            watcher.on_change(move |doc| {
+                                // Convert document to JSON
+                                let auto_serde = AutoSerde::from(&*doc);
+                                if let Ok(json_str) = serde_json::to_string(&auto_serde) {
+                                    // Send the JSON through the channel
+                                    let _ = tx.send(json_str);
+                                }
+                            }),
+                            abort_registration,
+                        );
+                        let _ = abortable.await;
+                    });
+
+                    Ok(JsValue::from(WasmDocumentWatcher {
+                        document_id,
+                        abort_handle: Arc::new(Mutex::new(Some(abort_handle))),
+                    }))
+                }
+                Ok(None) => Err(js_error("Document not found at the specified path")),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
+    #[wasm_bindgen(js_name = watchDirectory)]
+    pub fn watch_directory(&self, path: String, callback: Function) -> Promise {
+        let vfs = Arc::clone(&self.vfs);
+        future_to_promise(async move {
+            let vfs = vfs.lock().await;
+
+            match vfs.watch_directory(&path).await {
+                Ok(Some(watcher)) => {
+                    // Get the document ID before moving the watcher
+                    let document_id = watcher.document_id().to_string();
+
+                    // Create abort handle for the watcher task
+                    let (abort_handle, abort_registration) =
+                        futures::future::AbortHandle::new_pair();
+
+                    // Create a channel for communication between the watcher and callback
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+                    // Move the callback into the spawned task
+
+                    // Spawn a task to receive document updates and call the JS callback
+                    spawn_local(async move {
+                        while let Some(json_str) = rx.recv().await {
+                            let js_value = JsValue::from_str(&json_str);
+                            let _ = callback.call1(&JsValue::null(), &js_value);
+                        }
+                    });
+
+                    // Spawn the watcher task
+                    spawn_local(async move {
+                        let abortable = futures::future::Abortable::new(
+                            watcher.on_change(move |doc| {
+                                // Convert document to JSON
+                                let auto_serde = AutoSerde::from(&*doc);
+                                if let Ok(json_str) = serde_json::to_string(&auto_serde) {
+                                    // Send the JSON through the channel
+                                    let _ = tx.send(json_str);
+                                }
+                            }),
+                            abort_registration,
+                        );
+                        let _ = abortable.await;
+                    });
+
+                    Ok(JsValue::from(WasmDocumentWatcher {
+                        document_id,
+                        abort_handle: Arc::new(Mutex::new(Some(abort_handle))),
+                    }))
+                }
+                Ok(None) => Err(js_error("Directory not found at the specified path")),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
 }
 
 #[wasm_bindgen]
@@ -555,6 +663,33 @@ impl WasmBundle {
 pub struct WasmVfsEvent {
     pub event_type: String,
     pub path: String,
+}
+
+#[wasm_bindgen]
+pub struct WasmDocumentWatcher {
+    document_id: String,
+    abort_handle: Arc<Mutex<Option<futures::future::AbortHandle>>>,
+}
+
+#[wasm_bindgen]
+impl WasmDocumentWatcher {
+    #[wasm_bindgen(js_name = stop)]
+    pub fn stop(&self) -> Promise {
+        let abort_handle = Arc::clone(&self.abort_handle);
+        future_to_promise(async move {
+            // Abort the watcher task
+            if let Some(handle) = abort_handle.lock().await.take() {
+                handle.abort();
+            }
+
+            Ok(JsValue::undefined())
+        })
+    }
+
+    #[wasm_bindgen(js_name = documentId)]
+    pub fn document_id(&self) -> String {
+        self.document_id.clone()
+    }
 }
 
 #[wasm_bindgen]

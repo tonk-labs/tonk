@@ -8,9 +8,20 @@ import { createTonk, TonkCore } from '@tonk/core';
 const tonk1 = await createTonk();
 const vfs1 = await tonk1.getVfs();
 
+const _watcher = vfs1.watchDirectory('/', docState => {
+  console.log(`Directory changed: ${docState}`);
+});
+
 await vfs1.createFile('/hello.txt', 'Hello, World!');
+
+const _watcher2 = vfs1.watchFile('/hello.txt', docState => {
+  console.log(`File changed: ${docState}`);
+});
+
 const content1 = await vfs1.readFile('/hello.txt');
 console.log('Initial content:', content1);
+
+await vfs1.updateFile('/hello.txt', 'Goodbye, world!');
 
 const data = await tonk1.toBytes();
 const tonk2 = await TonkCore.fromBytes(data);

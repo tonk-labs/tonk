@@ -491,4 +491,47 @@ impl AutomergeHelpers {
             Ok(())
         })
     }
+
+    /// Update the timestamp of a RefNode in a directory
+    pub fn update_child_ref_timestamp(handle: &DocHandle, child_name: &str) -> Result<bool> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            let mut found = false;
+
+            if let Ok(Some((Value::Object(ObjType::List), children_obj_id))) =
+                tx.get(automerge::ROOT, "children")
+            {
+                let len = tx.length(children_obj_id.clone());
+                for i in 0..len {
+                    if let Ok(Some((Value::Object(ObjType::Map), child_obj_id))) =
+                        tx.get(children_obj_id.clone(), i)
+                    {
+                        if let Ok(Some((existing_name, _))) = tx.get(child_obj_id.clone(), "name") {
+                            if Self::extract_string_value(&existing_name).as_deref()
+                                == Some(child_name)
+                            {
+                                // Found the child, update its timestamp
+                                if let Ok(Some((Value::Object(_), ts_obj_id))) =
+                                    tx.get(child_obj_id, "timestamps")
+                                {
+                                    let now = chrono::Utc::now().timestamp_millis();
+                                    tx.put(ts_obj_id, "modified", now)?;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if found {
+                // Also update the directory's own modified timestamp
+                Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+            }
+
+            tx.commit();
+            Ok(found)
+        })
+    }
 }
