@@ -203,7 +203,6 @@ impl WasmRepo {
         let repo = Arc::clone(&self.repo);
         future_to_promise(async move {
             let repo = repo.lock().await;
-            
 
             // Create a new Automerge document with the content
             let mut doc = automerge::Automerge::new();
@@ -303,12 +302,10 @@ impl WasmVfs {
                                 if let Some(content_str) = content_field.as_str() {
                                     Ok(JsValue::from_str(content_str))
                                 } else {
-                                    // If content is not a string, return it as JSON text.
-                                    // (If you have `JsValue::from_serde`, prefer that.)
+                                    // If content is not a string, return it as JSON text
                                     Ok(JsValue::from_str(&content_field.to_string()))
                                 }
                             } else {
-                                // If no content field, return null (or UNDEFINED—your call)
                                 Ok(JsValue::NULL)
                             }
                         }
