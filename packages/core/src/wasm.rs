@@ -318,6 +318,20 @@ impl WasmVfs {
         })
     }
 
+    #[wasm_bindgen(js_name = updateFile)]
+    pub fn update_file(&self, path: String, content: JsValue) -> Promise {
+        let vfs = Arc::clone(&self.vfs);
+        future_to_promise(async move {
+            let vfs = vfs.lock().await;
+            let content_str = content.as_string().unwrap_or_default();
+
+            match vfs.update_document(&path, content_str).await {
+                Ok(updated) => Ok(JsValue::from_bool(updated)),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
     #[wasm_bindgen(js_name = deleteFile)]
     pub fn delete_file(&self, path: String) -> Promise {
         let vfs = Arc::clone(&self.vfs);
