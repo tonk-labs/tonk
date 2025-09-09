@@ -154,7 +154,7 @@ export class VirtualFileSystem {
    * await vfs.createFile('/image.png', imageData);
    * ```
    */
-  async createFile(path: string, content: string | Uint8Array): Promise<void> {
+  async createFile(path: string, content: string): Promise<void> {
     try {
       await this.#wasm.createFile(path, content);
     } catch (error) {
