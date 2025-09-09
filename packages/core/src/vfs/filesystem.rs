@@ -95,7 +95,6 @@ impl VirtualFileSystem {
         self.event_tx.subscribe()
     }
 
-    // TODO: need a write_document as well
     /// Create a document at the specified path
     pub async fn create_document<T>(&self, path: &str, content: T) -> Result<DocHandle>
     where
@@ -169,6 +168,71 @@ impl VirtualFileSystem {
         });
 
         Ok(doc_handle)
+    }
+
+    /// Update an existing document at the specified path
+    pub async fn update_document<T>(&self, path: &str, content: T) -> Result<bool>
+    where
+        T: serde::Serialize + Send + 'static,
+    {
+        if path == "/" {
+            return Err(VfsError::RootPathError);
+        }
+
+        // Find the existing document
+        match self.find_document(path).await? {
+            Some(doc_handle) => {
+                // Update the document content
+                AutomergeHelpers::update_document_content(&doc_handle, content)?;
+
+                // Update the RefNode timestamp in the parent directory
+                // Extract filename from path
+                let filename = path
+                    .rsplit('/')
+                    .next()
+                    .ok_or_else(|| VfsError::InvalidPath(path.to_string()))?;
+
+                // Get the parent directory path
+                let parent_path = if path.contains('/') {
+                    let last_slash = path.rfind('/').unwrap();
+                    if last_slash == 0 {
+                        "/"
+                    } else {
+                        &path[..last_slash]
+                    }
+                } else {
+                    "/"
+                };
+
+                // Find the parent directory and update the RefNode timestamp
+                let result = self
+                    .traverser
+                    .traverse(self.root_id.clone(), parent_path, false)
+                    .await?;
+
+                let parent_handle = if let Some(ref target_ref) = result.target_ref {
+                    self.samod
+                        .find(target_ref.pointer.clone())
+                        .await
+                        .map_err(|e| VfsError::SamodError(format!("Failed to find parent directory: {e}")))?
+                        .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
+                } else {
+                    result.node_handle.clone()
+                };
+
+                // Update the child's RefNode timestamp in the parent directory
+                let _ = AutomergeHelpers::update_child_ref_timestamp(&parent_handle, filename);
+
+                // Emit update event
+                let _ = self.event_tx.send(VfsEvent::DocumentUpdated {
+                    path: path.to_string(),
+                    doc_id: doc_handle.document_id().clone(),
+                });
+
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     /// Find a document at the specified path
@@ -536,8 +600,37 @@ mod tests {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
-        let _rx = vfs.subscribe_events();
-        // Just test that we can subscribe
+        let mut rx = vfs.subscribe_events();
+        
+        // Create a document
+        vfs.create_document("/test.txt", "Initial".to_string())
+            .await
+            .unwrap();
+        
+        // Check for create event
+        if let Ok(event) = rx.try_recv() {
+            match event {
+                VfsEvent::DocumentCreated { path, .. } => {
+                    assert_eq!(path, "/test.txt");
+                }
+                _ => panic!("Expected DocumentCreated event"),
+            }
+        }
+        
+        // Update the document
+        vfs.update_document("/test.txt", "Updated".to_string())
+            .await
+            .unwrap();
+        
+        // Check for update event
+        if let Ok(event) = rx.try_recv() {
+            match event {
+                VfsEvent::DocumentUpdated { path, .. } => {
+                    assert_eq!(path, "/test.txt");
+                }
+                _ => panic!("Expected DocumentUpdated event"),
+            }
+        }
     }
 
     #[tokio::test]
@@ -553,6 +646,9 @@ mod tests {
         assert!(matches!(result, Err(VfsError::RootPathError)));
 
         let result = vfs.create_directory("/").await;
+        assert!(matches!(result, Err(VfsError::RootPathError)));
+
+        let result = vfs.update_document("/", "content".to_string()).await;
         assert!(matches!(result, Err(VfsError::RootPathError)));
     }
 
@@ -579,6 +675,70 @@ mod tests {
         // Verify document no longer exists
         let found = vfs.find_document("/test.txt").await.unwrap();
         assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_document_update() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create a document
+        let doc_handle = vfs
+            .create_document("/test.txt", "Initial content".to_string())
+            .await
+            .unwrap();
+        let doc_id = doc_handle.document_id().clone();
+
+        // Verify initial content
+        let handle = vfs.find_document("/test.txt").await.unwrap().unwrap();
+        let initial_content: String = handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            match doc.get(automerge::ROOT, "content") {
+                Ok(Some((value, _))) => {
+                    if let Some(s) = value.to_str() {
+                        s.to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => String::new(),
+            }
+        });
+        assert_eq!(initial_content, "\"Initial content\"");
+
+        // Update the document
+        let updated = vfs
+            .update_document("/test.txt", "Updated content".to_string())
+            .await
+            .unwrap();
+        assert!(updated);
+
+        // Verify updated content
+        let handle = vfs.find_document("/test.txt").await.unwrap().unwrap();
+        let updated_content: String = handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            match doc.get(automerge::ROOT, "content") {
+                Ok(Some((value, _))) => {
+                    if let Some(s) = value.to_str() {
+                        s.to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => String::new(),
+            }
+        });
+        assert_eq!(updated_content, "\"Updated content\"");
+
+        // Verify document ID remains the same
+        assert_eq!(handle.document_id(), &doc_id);
+
+        // Try to update a non-existent document
+        let updated = vfs
+            .update_document("/non-existent.txt", "Content".to_string())
+            .await
+            .unwrap();
+        assert!(!updated);
     }
 
     #[tokio::test]
@@ -634,6 +794,41 @@ mod tests {
         let children = vfs.list_directory("/a/b/c").await.unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].name, "file.txt");
+    }
+
+    #[tokio::test]
+    async fn test_update_in_nested_directory() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create a document in a nested directory
+        vfs.create_document("/a/b/c/file.txt", "Original content".to_string())
+            .await
+            .unwrap();
+
+        // Update the nested document
+        let updated = vfs
+            .update_document("/a/b/c/file.txt", "New content".to_string())
+            .await
+            .unwrap();
+        assert!(updated);
+
+        // Verify the update
+        let handle = vfs.find_document("/a/b/c/file.txt").await.unwrap().unwrap();
+        let content: String = handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            match doc.get(automerge::ROOT, "content") {
+                Ok(Some((value, _))) => {
+                    if let Some(s) = value.to_str() {
+                        s.to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => String::new(),
+            }
+        });
+        assert_eq!(content, "\"New content\"");
     }
 
     #[tokio::test]

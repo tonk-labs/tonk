@@ -1,15 +1,16 @@
 use crate::bundle::{Bundle, BundlePath};
 use crate::tonk_core::TonkCore;
 use crate::vfs::{NodeType, VirtualFileSystem};
+use crate::StorageConfig;
 use automerge::{transaction::Transactable, AutoSerde, ReadDoc};
-use js_sys::{Array, Promise, Uint8Array};
+use js_sys::{Array, Function, Promise, Uint8Array};
 use samod::Repo;
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{future_to_promise, JsFuture};
+use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
 #[cfg(feature = "wee_alloc")]
 #[global_allocator]
@@ -318,6 +319,20 @@ impl WasmVfs {
         })
     }
 
+    #[wasm_bindgen(js_name = updateFile)]
+    pub fn update_file(&self, path: String, content: JsValue) -> Promise {
+        let vfs = Arc::clone(&self.vfs);
+        future_to_promise(async move {
+            let vfs = vfs.lock().await;
+            let content_str = content.as_string().unwrap_or_default();
+
+            match vfs.update_document(&path, content_str).await {
+                Ok(updated) => Ok(JsValue::from_bool(updated)),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
     #[wasm_bindgen(js_name = deleteFile)]
     pub fn delete_file(&self, path: String) -> Promise {
         let vfs = Arc::clone(&self.vfs);
@@ -410,6 +425,114 @@ impl WasmVfs {
                     Ok(serde_wasm_bindgen::to_value(&metadata).unwrap())
                 }
                 Ok(None) => Ok(JsValue::NULL),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
+    #[wasm_bindgen(js_name = watchDocument)]
+    pub fn watch_document(&self, path: String, callback: Function) -> Promise {
+        let vfs = Arc::clone(&self.vfs);
+        future_to_promise(async move {
+            let vfs = vfs.lock().await;
+
+            match vfs.watch_document(&path).await {
+                Ok(Some(watcher)) => {
+                    // Get the document ID before moving the watcher
+                    let document_id = watcher.document_id().to_string();
+
+                    // Create abort handle for the watcher task
+                    let (abort_handle, abort_registration) =
+                        futures::future::AbortHandle::new_pair();
+
+                    // Create a channel for communication between the watcher and callback
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+                    // Spawn a task to receive document updates and call the JS callback
+                    spawn_local(async move {
+                        while let Some(json_str) = rx.recv().await {
+                            let js_value = JsValue::from_str(&json_str);
+                            let _ = callback.call1(&JsValue::null(), &js_value);
+                        }
+                    });
+
+                    // Spawn the watcher task
+                    spawn_local(async move {
+                        let abortable = futures::future::Abortable::new(
+                            watcher.on_change(move |doc| {
+                                // Convert document to JSON
+                                let auto_serde = AutoSerde::from(&*doc);
+                                if let Ok(json_str) = serde_json::to_string(&auto_serde) {
+                                    // Send the JSON through the channel
+                                    let _ = tx.send(json_str);
+                                }
+                            }),
+                            abort_registration,
+                        );
+                        let _ = abortable.await;
+                    });
+
+                    Ok(JsValue::from(WasmDocumentWatcher {
+                        document_id,
+                        abort_handle: Arc::new(Mutex::new(Some(abort_handle))),
+                    }))
+                }
+                Ok(None) => Err(js_error("Document not found at the specified path")),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
+    #[wasm_bindgen(js_name = watchDirectory)]
+    pub fn watch_directory(&self, path: String, callback: Function) -> Promise {
+        let vfs = Arc::clone(&self.vfs);
+        future_to_promise(async move {
+            let vfs = vfs.lock().await;
+
+            match vfs.watch_directory(&path).await {
+                Ok(Some(watcher)) => {
+                    // Get the document ID before moving the watcher
+                    let document_id = watcher.document_id().to_string();
+
+                    // Create abort handle for the watcher task
+                    let (abort_handle, abort_registration) =
+                        futures::future::AbortHandle::new_pair();
+
+                    // Create a channel for communication between the watcher and callback
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+                    // Move the callback into the spawned task
+
+                    // Spawn a task to receive document updates and call the JS callback
+                    spawn_local(async move {
+                        while let Some(json_str) = rx.recv().await {
+                            let js_value = JsValue::from_str(&json_str);
+                            let _ = callback.call1(&JsValue::null(), &js_value);
+                        }
+                    });
+
+                    // Spawn the watcher task
+                    spawn_local(async move {
+                        let abortable = futures::future::Abortable::new(
+                            watcher.on_change(move |doc| {
+                                // Convert document to JSON
+                                let auto_serde = AutoSerde::from(&*doc);
+                                if let Ok(json_str) = serde_json::to_string(&auto_serde) {
+                                    // Send the JSON through the channel
+                                    let _ = tx.send(json_str);
+                                }
+                            }),
+                            abort_registration,
+                        );
+                        let _ = abortable.await;
+                    });
+
+                    Ok(JsValue::from(WasmDocumentWatcher {
+                        document_id,
+                        abort_handle: Arc::new(Mutex::new(Some(abort_handle))),
+                    }))
+                }
+                Ok(None) => Err(js_error("Directory not found at the specified path")),
                 Err(e) => Err(js_error(e)),
             }
         })
@@ -544,6 +667,33 @@ pub struct WasmVfsEvent {
 }
 
 #[wasm_bindgen]
+pub struct WasmDocumentWatcher {
+    document_id: String,
+    abort_handle: Arc<Mutex<Option<futures::future::AbortHandle>>>,
+}
+
+#[wasm_bindgen]
+impl WasmDocumentWatcher {
+    #[wasm_bindgen(js_name = stop)]
+    pub fn stop(&self) -> Promise {
+        let abort_handle = Arc::clone(&self.abort_handle);
+        future_to_promise(async move {
+            // Abort the watcher task
+            if let Some(handle) = abort_handle.lock().await.take() {
+                handle.abort();
+            }
+
+            Ok(JsValue::undefined())
+        })
+    }
+
+    #[wasm_bindgen(js_name = documentId)]
+    pub fn document_id(&self) -> String {
+        self.document_id.clone()
+    }
+}
+
+#[wasm_bindgen]
 pub fn create_tonk() -> Promise {
     WasmTonkCore::new()
 }
@@ -551,6 +701,58 @@ pub fn create_tonk() -> Promise {
 #[wasm_bindgen]
 pub fn create_tonk_with_peer_id(peer_id: String) -> Promise {
     WasmTonkCore::with_peer_id(peer_id)
+}
+
+#[wasm_bindgen]
+pub fn create_tonk_with_storage(use_indexed_db: bool) -> Promise {
+    future_to_promise(async move {
+        let storage_config = if use_indexed_db {
+            StorageConfig::IndexedDB
+        } else {
+            StorageConfig::InMemory
+        };
+
+        match TonkCore::builder()
+            .with_storage(storage_config)
+            .build()
+            .await
+        {
+            Ok(tonk) => Ok(JsValue::from(WasmTonkCore {
+                tonk: Arc::new(Mutex::new(tonk)),
+            })),
+            Err(e) => {
+                console_error!("TonkCore creation failed: {}", e);
+                Err(js_error(e))
+            }
+        }
+    })
+}
+
+#[wasm_bindgen]
+pub fn create_tonk_with_config(peer_id: String, use_indexed_db: bool) -> Promise {
+    future_to_promise(async move {
+        let peer_id = samod::PeerId::from_string(peer_id);
+        let storage_config = if use_indexed_db {
+            StorageConfig::IndexedDB
+        } else {
+            StorageConfig::InMemory
+        };
+
+        match TonkCore::builder()
+            .with_peer_id(peer_id)
+            .with_storage(storage_config)
+            .build()
+            .await
+        {
+            Ok(tonk) => Ok(JsValue::from(WasmTonkCore {
+                tonk: Arc::new(Mutex::new(tonk)),
+            })),
+            Err(e) => {
+                console_error!("TonkCore creation failed: {}", e);
+                Err(js_error(e))
+            }
+        }
+    })
 }
 
 #[wasm_bindgen]
@@ -564,6 +766,71 @@ pub fn create_tonk_from_bundle(bundle: &WasmBundle) -> Promise {
 }
 
 #[wasm_bindgen]
+pub fn create_tonk_from_bundle_with_storage(bundle: &WasmBundle, use_indexed_db: bool) -> Promise {
+    let bundle_to_bytes_promise = bundle.to_bytes();
+    future_to_promise(async move {
+        let bytes_result = JsFuture::from(bundle_to_bytes_promise).await;
+        match bytes_result {
+            Ok(bytes_value) => {
+                let bytes_array: Uint8Array = bytes_value.into();
+                let bytes = bytes_array.to_vec();
+                
+                let storage_config = if use_indexed_db {
+                    StorageConfig::IndexedDB
+                } else {
+                    StorageConfig::InMemory
+                };
+
+                match TonkCore::builder()
+                    .with_storage(storage_config)
+                    .from_bytes(bytes)
+                    .await
+                {
+                    Ok(tonk) => Ok(JsValue::from(WasmTonkCore {
+                        tonk: Arc::new(Mutex::new(tonk)),
+                    })),
+                    Err(e) => {
+                        console_error!("Failed to load TonkCore from bundle with storage: {}", e);
+                        Err(js_error(e))
+                    }
+                }
+            }
+            Err(e) => {
+                console_error!("Failed to get bundle bytes: {:?}", e);
+                Err(js_error("Failed to get bundle bytes"))
+            }
+        }
+    })
+}
+
+#[wasm_bindgen]
 pub fn create_tonk_from_bytes(data: Uint8Array) -> Promise {
     WasmTonkCore::from_bytes(data)
+}
+
+#[wasm_bindgen]
+pub fn create_tonk_from_bytes_with_storage(data: Uint8Array, use_indexed_db: bool) -> Promise {
+    future_to_promise(async move {
+        let bytes = data.to_vec();
+        
+        let storage_config = if use_indexed_db {
+            StorageConfig::IndexedDB
+        } else {
+            StorageConfig::InMemory
+        };
+
+        match TonkCore::builder()
+            .with_storage(storage_config)
+            .from_bytes(bytes)
+            .await
+        {
+            Ok(tonk) => Ok(JsValue::from(WasmTonkCore {
+                tonk: Arc::new(Mutex::new(tonk)),
+            })),
+            Err(e) => {
+                console_error!("Failed to load TonkCore from bytes with storage: {}", e);
+                Err(js_error(e))
+            }
+        }
+    })
 }

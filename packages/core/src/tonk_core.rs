@@ -2,11 +2,14 @@ use crate::error::{Result, VfsError};
 use crate::vfs::VirtualFileSystem;
 use crate::Bundle;
 use rand::rng;
-use samod::storage::Storage;
+#[cfg(target_arch = "wasm32")]
+use samod::storage::IndexedDbStorage;
 #[cfg(not(target_arch = "wasm32"))]
 use samod::storage::TokioFilesystemStorage as FilesystemStorage;
-use samod::storage::{InMemoryStorage, StorageKey};
-use samod::{DocHandle, DocumentId, PeerId, Repo, RepoBuilder};
+use samod::storage::{InMemoryStorage, Storage, StorageKey};
+#[cfg(not(target_arch = "wasm32"))]
+use samod::RepoBuilder;
+use samod::{DocHandle, DocumentId, PeerId, Repo};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +25,9 @@ pub enum StorageConfig {
     /// Use filesystem storage at the specified path
     #[cfg(not(target_arch = "wasm32"))]
     Filesystem(PathBuf),
+    /// Use IndexedDB storage
+    #[cfg(target_arch = "wasm32")]
+    IndexedDB,
 }
 
 /// Builder for creating TonkCore instances with custom configurations
@@ -93,9 +99,24 @@ impl TonkCoreBuilder {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let builder = Repo::build_wasm();
-            let builder = builder.with_peer_id(peer_id);
-            let samod = Arc::new(builder.load().await);
+            let samod: Repo = match self.storage_config {
+                StorageConfig::InMemory => {
+                    Repo::build_wasm()
+                        .with_peer_id(peer_id)
+                        .with_storage(InMemoryStorage::new())
+                        .load()
+                        .await
+                }
+                StorageConfig::IndexedDB => {
+                    Repo::build_wasm()
+                        .with_peer_id(peer_id)
+                        .with_storage(IndexedDbStorage::new())
+                        .load()
+                        .await
+                }
+            };
+
+            let samod = Arc::new(samod);
             let vfs = Arc::new(VirtualFileSystem::new(samod.clone()).await?);
 
             info!("TonkCore initialized with peer ID: {}", samod.peer_id());
@@ -117,18 +138,15 @@ impl TonkCoreBuilder {
 
         #[cfg(not(target_arch = "wasm32"))]
         let runtime = tokio::runtime::Handle::current();
-        #[cfg(target_arch = "wasm32")]
-        let runtime = samod::runtime::wasm::WasmRuntime::new();
 
+        // TODO: helper that reduces duplicated code populating storage
         let samod = match &self.storage_config {
             StorageConfig::InMemory => {
                 let storage = InMemoryStorage::new();
 
                 // Extract storage entries from bundle and populate in-memory storage
                 let storage_prefix = BundlePath::from("storage");
-                let storage_entries = bundle
-                    .prefix(&storage_prefix)
-                    .map_err(|e| VfsError::Other(e))?;
+                let storage_entries = bundle.prefix(&storage_prefix).map_err(VfsError::Other)?;
 
                 for (bundle_path, data) in storage_entries {
                     let path_str = bundle_path.to_string();
@@ -157,12 +175,24 @@ impl TonkCoreBuilder {
                     }
                 }
 
-                RepoBuilder::new(runtime)
-                    .with_storage(storage)
-                    .with_peer_id(peer_id)
-                    .with_threadpool(None)
-                    .load()
-                    .await
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    RepoBuilder::new(runtime)
+                        .with_storage(storage)
+                        .with_peer_id(peer_id)
+                        .with_threadpool(None)
+                        .load()
+                        .await
+                }
+
+                #[cfg(target_arch = "wasm32")]
+                {
+                    Repo::build_wasm()
+                        .with_peer_id(peer_id)
+                        .with_storage(storage)
+                        .load()
+                        .await
+                }
             }
             #[cfg(not(target_arch = "wasm32"))]
             StorageConfig::Filesystem(storage_path) => {
@@ -196,6 +226,47 @@ impl TonkCoreBuilder {
                     .load()
                     .await
             }
+            #[cfg(target_arch = "wasm32")]
+            StorageConfig::IndexedDB => {
+                let storage = IndexedDbStorage::new();
+
+                // Extract storage entries from bundle and populate IndexedDB
+                let storage_prefix = BundlePath::from("storage");
+                let storage_entries = bundle.prefix(&storage_prefix).map_err(VfsError::Other)?;
+
+                for (bundle_path, data) in storage_entries {
+                    let path_str = bundle_path.to_string();
+                    if let Some(relative_path) = path_str.strip_prefix("storage/") {
+                        let path_parts: Vec<String> =
+                            relative_path.split('/').map(|s| s.to_string()).collect();
+
+                        let reconstructed_parts =
+                            if path_parts.len() >= 2 && path_parts[0].len() == 2 {
+                                // Looks like a splayed document
+                                let mut parts = vec![format!("{}{}", path_parts[0], path_parts[1])];
+                                parts.extend_from_slice(&path_parts[2..]);
+                                parts
+                            } else {
+                                path_parts
+                            };
+
+                        if let Ok(storage_key) = StorageKey::from_parts(reconstructed_parts.clone())
+                        {
+                            eprintln!(
+                                "Loading storage key: {:?} (from path: {})",
+                                reconstructed_parts, relative_path
+                            );
+                            storage.put(storage_key.clone(), data).await;
+                        }
+                    }
+                }
+
+                Repo::build_wasm()
+                    .with_peer_id(peer_id)
+                    .with_storage(storage)
+                    .load()
+                    .await
+            }
         };
 
         let samod = Arc::new(samod);
@@ -220,6 +291,12 @@ impl TonkCoreBuilder {
     pub async fn from_file<P: AsRef<std::path::Path>>(self, path: P) -> Result<TonkCore> {
         let data = std::fs::read(path).map_err(VfsError::IoError)?;
         self.from_bytes(data).await
+    }
+}
+
+impl Default for TonkCoreBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -359,7 +436,7 @@ impl TonkCore {
         };
 
         let manifest_json =
-            serde_json::to_string_pretty(&manifest).map_err(|e| VfsError::SerializationError(e))?;
+            serde_json::to_string_pretty(&manifest).map_err(VfsError::SerializationError)?;
 
         // Create ZIP bundle in memory
         let mut zip_data = Vec::new();
@@ -372,7 +449,7 @@ impl TonkCore {
                 .map_err(|e| VfsError::IoError(e.into()))?;
             zip_writer
                 .write_all(manifest_json.as_bytes())
-                .map_err(|e| VfsError::IoError(e))?;
+                .map_err(VfsError::IoError)?;
 
             // Export all storage data directly from samod's storage
             // Iterate through all documents and export their storage data
@@ -417,7 +494,7 @@ impl TonkCore {
                         .map_err(|e| VfsError::IoError(e.into()))?;
                     zip_writer
                         .write_all(&doc_bytes)
-                        .map_err(|e| VfsError::IoError(e))?;
+                        .map_err(VfsError::IoError)?;
                 }
             }
 
@@ -540,6 +617,8 @@ impl Clone for TonkCore {
 mod tests {
     use super::*;
     use tokio::time::{timeout, Duration};
+    #[cfg(not(target_arch = "wasm32"))]
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_sync_engine_creation() {
@@ -623,6 +702,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn test_bundle_round_trip() {
         // Create first engine with some data
         let tonk1 = TonkCore::new().await.unwrap();
@@ -704,6 +784,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn test_filesystem_storage() {
         let temp_dir = TempDir::new().unwrap();
         let storage_path = temp_dir.path().join("tonk_storage");
@@ -758,6 +839,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn test_bundle_with_in_memory_storage() {
         // Create an engine with filesystem storage and some data
         let temp_dir = TempDir::new().unwrap();
