@@ -3,8 +3,6 @@ import type { TonkConfig } from './core.js';
 import {
   // Main classes
   TonkCore,
-  VirtualFileSystem,
-  Repository,
   Bundle,
 
   // Types
@@ -63,8 +61,6 @@ export { isInitialized };
 export {
   // Main classes
   TonkCore,
-  VirtualFileSystem,
-  Repository,
   Bundle,
 
   // Types

@@ -27,8 +27,6 @@ export { initializeTonk, isInitialized } from './init.js';
 export {
   // Main classes
   TonkCore,
-  VirtualFileSystem,
-  Repository,
   Bundle,
 
   // Types

@@ -1,9 +1,4 @@
-import type {
-  WasmTonkCore,
-  WasmVfs,
-  WasmRepo,
-  WasmBundle,
-} from './tonk_core.js';
+import type { WasmTonkCore, WasmBundle } from './tonk_core.js';
 
 /**
  * Metadata for a file or directory node in the virtual file system
@@ -134,341 +129,6 @@ export class BundleError extends TonkError {
   constructor(message: string) {
     super(message, 'BUNDLE_ERROR');
     this.name = 'BundleError';
-  }
-}
-
-/**
- * Virtual file system with CRDT-based synchronization.
- *
- * Provides a file-like interface for storing and retrieving documents
- * that are automatically synchronized across peers.
- *
- * @example
- * ```typescript
- * const tonk = await TonkCore.create();
- * const vfs = await tonk.vfs;
- *
- * // Create a file
- * await vfs.createFile('/notes/todo.md', '# My Todo List');
- *
- * // Read it back
- * const content = await vfs.readFile('/notes/todo.md');
- * ```
- */
-export class VirtualFileSystem {
-  #wasm: WasmVfs;
-
-  /** @internal */
-  constructor(wasm: WasmVfs) {
-    this.#wasm = wasm;
-  }
-
-  /**
-   * Create a new file with the given content.
-   *
-   * @param path - Absolute path where the file should be created
-   * @param content - Content to write to the file (any JSON-serializable value)
-   * @throws {FileSystemError} If the file already exists or path is invalid
-   *
-   * @example
-   * ```typescript
-   * // Create a text file with a string
-   * await vfs.createFile('/hello.txt', 'Hello, World!');
-   *
-   * // Create a JSON file with an object
-   * await vfs.createFile('/config.json', { theme: 'dark', fontSize: 14 });
-   *
-   * // Create a file with an array
-   * await vfs.createFile('/data.json', [1, 2, 3, 4, 5]);
-   * ```
-   */
-  async createFile(path: string, content: any): Promise<void> {
-    try {
-      await this.#wasm.createFile(path, content);
-    } catch (error) {
-      throw new FileSystemError(`Failed to create file at ${path}: ${error}`);
-    }
-  }
-
-  /**
-   * Read the contents of a file.
-   *
-   * @param path - Absolute path to the file
-   * @returns The file contents as a string
-   * @throws {FileSystemError} If the file doesn't exist or can't be read
-   *
-   * @example
-   * ```typescript
-   * const content = await vfs.readFile('/notes/todo.md');
-   * console.log(content);
-   * ```
-   */
-  async readFile(path: string): Promise<string> {
-    try {
-      const result = await this.#wasm.readFile(path);
-      if (result === null) {
-        throw new FileSystemError(`File not found: ${path}`);
-      }
-      return result;
-    } catch (error) {
-      if (error instanceof FileSystemError) throw error;
-      throw new FileSystemError(`Failed to read file at ${path}: ${error}`);
-    }
-  }
-
-  /**
-   * Update an existing file with the given content.
-   *
-   * @param path - Absolute path of the file to update
-   * @param content - Content to write to the file (any JSON-serializable value)
-   * @returns true if the file was updated, false if it didn't exist
-   * @throws {FileSystemError} If the path is invalid
-   *
-   * @example
-   * ```typescript
-   * // Create a text file
-   * await vfs.createFile('/hello.txt', 'Hello, World!');
-   *
-   * // Overwrite it with a string
-   * await vfs.updateFile('/hello.txt', 'See you later!');
-   *
-   * // Update with an object
-   * await vfs.updateFile('/config.json', { theme: 'light', fontSize: 16 });
-   * ```
-   */
-  async updateFile(path: string, content: any): Promise<boolean> {
-    try {
-      return await this.#wasm.updateFile(path, content);
-    } catch (error) {
-      throw new FileSystemError(`Failed to update file at ${path}: ${error}`);
-    }
-  }
-
-  /**
-   * Delete a file.
-   *
-   * @param path - Absolute path to the file
-   * @returns true if the file was deleted, false if it didn't exist
-   * @throws {FileSystemError} If the deletion fails
-   */
-  async deleteFile(path: string): Promise<boolean> {
-    try {
-      return await this.#wasm.deleteFile(path);
-    } catch (error) {
-      throw new FileSystemError(`Failed to delete file at ${path}: ${error}`);
-    }
-  }
-
-  /**
-   * Create a new directory.
-   *
-   * @param path - Absolute path where the directory should be created
-   * @throws {FileSystemError} If the directory already exists or path is invalid
-   *
-   * @example
-   * ```typescript
-   * await vfs.createDirectory('/projects/my-app');
-   * ```
-   */
-  async createDirectory(path: string): Promise<void> {
-    try {
-      await this.#wasm.createDirectory(path);
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to create directory at ${path}: ${error}`
-      );
-    }
-  }
-
-  /**
-   * List the contents of a directory.
-   *
-   * @param path - Absolute path to the directory
-   * @returns Array of directory entries
-   * @throws {FileSystemError} If the directory doesn't exist or can't be read
-   *
-   * @example
-   * ```typescript
-   * const entries = await vfs.listDirectory('/projects');
-   * for (const entry of entries) {
-   *   console.log(`${entry.type}: ${entry.name}`);
-   * }
-   * ```
-   */
-  async listDirectory(path: string): Promise<DirectoryEntry[]> {
-    try {
-      const entries = await this.#wasm.listDirectory(path);
-      return entries.map((entry: any) => ({
-        name: entry.name,
-        type: entry.type as 'directory' | 'document',
-      }));
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to list directory at ${path}: ${error}`
-      );
-    }
-  }
-
-  /**
-   * Check if a file or directory exists at the given path.
-   *
-   * @param path - Absolute path to check
-   * @returns true if something exists at the path, false otherwise
-   */
-  async exists(path: string): Promise<boolean> {
-    try {
-      return await this.#wasm.exists(path);
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to check existence of ${path}: ${error}`
-      );
-    }
-  }
-
-  /**
-   * Get metadata for a file or directory.
-   *
-   * @param path - Absolute path to the file or directory
-   * @returns Metadata object or null if the path doesn't exist
-   * @throws {FileSystemError} If the metadata can't be retrieved
-   *
-   * @example
-   * ```typescript
-   * const metadata = await vfs.getMetadata('/notes/todo.md');
-   * if (metadata) {
-   *   console.log(`Type: ${metadata.nodeType}`);
-   *   console.log(`Created: ${metadata.createdAt}`);
-   *   console.log(`Modified: ${metadata.modifiedAt}`);
-   * }
-   * ```
-   */
-  async getMetadata(path: string): Promise<NodeMetadata | null> {
-    try {
-      const result = await this.#wasm.getMetadata(path);
-      if (result === null) return null;
-
-      return {
-        nodeType: result.node_type as 'directory' | 'document',
-        createdAt: new Date(result.created_at * 1000),
-        modifiedAt: new Date(result.modified_at * 1000),
-      };
-    } catch (error) {
-      throw new FileSystemError(`Failed to get metadata for ${path}: ${error}`);
-    }
-  }
-
-  /**
-   * Watch a file for changes at the specified path
-   *
-   * @param path - Absolute path to the file
-   * @param callback - Callback to run on change events
-   * @returns A DocumentWatcher for the specified path
-   *
-   * @example
-   * ```typescript
-   * const watcher = await vfs.watchFile('/text.txt', docState => {
-   *   console.log('Document changed:', docState);
-   * });
-   * ```
-   */
-  async watchFile(
-    path: string,
-    callback: Function
-  ): Promise<DocumentWatcher | null> {
-    try {
-      const result = await this.#wasm.watchDocument(path, callback);
-      if (result === null) return null;
-
-      return result;
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to watch file at path ${path}: ${error}`
-      );
-    }
-  }
-
-  /**
-   * Watch a directory for changes at the specified path
-   *
-   * @param path - Absolute path to the directory
-   * @param callback - Callback to run on change events
-   * @returns A DocumentWatcher for the specified path
-   *
-   * @example
-   * ```typescript
-   * const watcher = await vfs.watchDirecotry('/documents', docState => {
-   *   console.log('Directory changed:', docState);
-   * });
-   * ```
-   */
-  async watchDirectory(
-    path: string,
-    callback: Function
-  ): Promise<DocumentWatcher | null> {
-    try {
-      const result = await this.#wasm.watchDirectory(path, callback);
-      if (result === null) return null;
-
-      return result;
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to watch directory at path ${path}: ${error}`
-      );
-    }
-  }
-}
-
-/**
- * Repository for managing Automerge documents.
- *
- * Provides low-level access to CRDT documents for advanced use cases.
- * Most users should use the VirtualFileSystem instead.
- *
- * @example
- * ```typescript
- * const repo = await tonk.repo;
- * const docId = await repo.createDocument('{"title": "My Document"}');
- * const content = await repo.findDocument(docId);
- * ```
- */
-export class Repository {
-  #wasm: WasmRepo;
-
-  /** @internal */
-  constructor(wasm: WasmRepo) {
-    this.#wasm = wasm;
-  }
-
-  /**
-   * Get the peer ID of this repository.
-   *
-   * @returns The peer ID as a string
-   */
-  getPeerId(): Promise<string> {
-    return this.#wasm.getPeerId();
-  }
-
-  /**
-   * Create a new Automerge document with the given content.
-   *
-   * @param content - Initial content for the document (as JSON string)
-   * @returns The ID of the created document
-   * @throws {Error} If document creation fails
-   */
-  async createDocument(content: string): Promise<string> {
-    return this.#wasm.createDocument(content);
-  }
-
-  /**
-   * Find and retrieve a document by its ID.
-   *
-   * @param docId - The document ID to search for
-   * @returns The document content as a string, or null if not found
-   * @throws {Error} If the document ID is invalid
-   */
-  async findDocument(docId: string): Promise<string | null> {
-    const result = await this.#wasm.findDocument(docId);
-    return result === null ? null : result;
   }
 }
 
@@ -639,7 +299,7 @@ export class Bundle {
  * Main synchronization engine for Tonk.
  *
  * The TonkCore manages peer-to-peer synchronization, WebSocket connections,
- * and provides access to the virtual file system and repository.
+ * and access to the virtual file system.
  *
  * @example
  * ```typescript
@@ -651,9 +311,6 @@ export class Bundle {
  *
  * // Connect to a sync server
  * await tonk.connectWebsocket('ws://localhost:8080');
- *
- * // Access the virtual file system
- * const vfs = await tonk.vfs;
  * ```
  */
 export class TonkCore {
@@ -827,24 +484,6 @@ export class TonkCore {
   }
 
   /**
-   * Get the virtual file system instance.
-   *
-   * @returns The VirtualFileSystem instance
-   */
-  async getVfs(): Promise<VirtualFileSystem> {
-    return this.#wasm.getVfs().then((wasm: any) => new VirtualFileSystem(wasm));
-  }
-
-  /**
-   * Get the repository instance.
-   *
-   * @returns The Repository instance
-   */
-  async getRepo(): Promise<Repository> {
-    return this.#wasm.getRepo().then((wasm: any) => new Repository(wasm));
-  }
-
-  /**
    * Connect to a WebSocket server for real-time synchronization.
    *
    * @param url - WebSocket URL to connect to
@@ -874,6 +513,260 @@ export class TonkCore {
       return await this.#wasm.toBytes();
     } catch (error) {
       throw new TonkError(`Failed to serialize to bundle data: ${error}`);
+    }
+  }
+
+  /**
+   * Create a new file with the given content.
+   *
+   * @param path - Absolute path where the file should be created
+   * @param content - Content to write to the file (any JSON-serializable value)
+   * @throws {FileSystemError} If the file already exists or path is invalid
+   *
+   * @example
+   * ```typescript
+   * // Create a text file with a string
+   * await createFile('/hello.txt', 'Hello, World!');
+   *
+   * // Create a JSON file with an object
+   * await createFile('/config.json', { theme: 'dark', fontSize: 14 });
+   *
+   * // Create a file with an array
+   * await createFile('/data.json', [1, 2, 3, 4, 5]);
+   * ```
+   */
+  async createFile(path: string, content: any): Promise<void> {
+    try {
+      await this.#wasm.createFile(path, content);
+    } catch (error) {
+      throw new FileSystemError(`Failed to create file at ${path}: ${error}`);
+    }
+  }
+
+  /**
+   * Read the contents of a file.
+   *
+   * @param path - Absolute path to the file
+   * @returns The file contents as a string
+   * @throws {FileSystemError} If the file doesn't exist or can't be read
+   *
+   * @example
+   * ```typescript
+   * const content = await readFile('/notes/todo.md');
+   * console.log(content);
+   * ```
+   */
+  async readFile(path: string): Promise<string> {
+    try {
+      const result = await this.#wasm.readFile(path);
+      if (result === null) {
+        throw new FileSystemError(`File not found: ${path}`);
+      }
+      return result;
+    } catch (error) {
+      if (error instanceof FileSystemError) throw error;
+      throw new FileSystemError(`Failed to read file at ${path}: ${error}`);
+    }
+  }
+
+  /**
+   * Update an existing file with the given content.
+   *
+   * @param path - Absolute path of the file to update
+   * @param content - Content to write to the file (any JSON-serializable value)
+   * @returns true if the file was updated, false if it didn't exist
+   * @throws {FileSystemError} If the path is invalid
+   *
+   * @example
+   * ```typescript
+   * // Create a text file
+   * await createFile('/hello.txt', 'Hello, World!');
+   *
+   * // Overwrite it with a string
+   * await updateFile('/hello.txt', 'See you later!');
+   *
+   * // Update with an object
+   * await updateFile('/config.json', { theme: 'light', fontSize: 16 });
+   * ```
+   */
+  async updateFile(path: string, content: any): Promise<boolean> {
+    try {
+      return await this.#wasm.updateFile(path, content);
+    } catch (error) {
+      throw new FileSystemError(`Failed to update file at ${path}: ${error}`);
+    }
+  }
+
+  /**
+   * Delete a file.
+   *
+   * @param path - Absolute path to the file
+   * @returns true if the file was deleted, false if it didn't exist
+   * @throws {FileSystemError} If the deletion fails
+   */
+  async deleteFile(path: string): Promise<boolean> {
+    try {
+      return await this.#wasm.deleteFile(path);
+    } catch (error) {
+      throw new FileSystemError(`Failed to delete file at ${path}: ${error}`);
+    }
+  }
+
+  /**
+   * Create a new directory.
+   *
+   * @param path - Absolute path where the directory should be created
+   * @throws {FileSystemError} If the directory already exists or path is invalid
+   *
+   * @example
+   * ```typescript
+   * await createDirectory('/projects/my-app');
+   * ```
+   */
+  async createDirectory(path: string): Promise<void> {
+    try {
+      await this.#wasm.createDirectory(path);
+    } catch (error) {
+      throw new FileSystemError(
+        `Failed to create directory at ${path}: ${error}`
+      );
+    }
+  }
+
+  /**
+   * List the contents of a directory.
+   *
+   * @param path - Absolute path to the directory
+   * @returns Array of directory entries
+   * @throws {FileSystemError} If the directory doesn't exist or can't be read
+   *
+   * @example
+   * ```typescript
+   * const entries = await listDirectory('/projects');
+   * for (const entry of entries) {
+   *   console.log(`${entry.type}: ${entry.name}`);
+   * }
+   * ```
+   */
+  async listDirectory(path: string): Promise<DirectoryEntry[]> {
+    try {
+      const entries = await this.#wasm.listDirectory(path);
+      return entries.map((entry: any) => ({
+        name: entry.name,
+        type: entry.type as 'directory' | 'document',
+      }));
+    } catch (error) {
+      throw new FileSystemError(
+        `Failed to list directory at ${path}: ${error}`
+      );
+    }
+  }
+
+  /**
+   * Check if a file or directory exists at the given path.
+   *
+   * @param path - Absolute path to check
+   * @returns true if something exists at the path, false otherwise
+   */
+  async exists(path: string): Promise<boolean> {
+    try {
+      return await this.#wasm.exists(path);
+    } catch (error) {
+      throw new FileSystemError(
+        `Failed to check existence of ${path}: ${error}`
+      );
+    }
+  }
+
+  /**
+   * Get metadata for a file or directory.
+   *
+   * @param path - Absolute path to the file or directory
+   * @returns Metadata object or null if the path doesn't exist
+   * @throws {FileSystemError} If the metadata can't be retrieved
+   *
+   * @example
+   * ```typescript
+   * const metadata = await getMetadata('/notes/todo.md');
+   * if (metadata) {
+   *   console.log(`Type: ${metadata.nodeType}`);
+   *   console.log(`Created: ${metadata.createdAt}`);
+   *   console.log(`Modified: ${metadata.modifiedAt}`);
+   * }
+   * ```
+   */
+  async getMetadata(path: string): Promise<NodeMetadata | null> {
+    try {
+      const result = await this.#wasm.getMetadata(path);
+      if (result === null) return null;
+
+      return {
+        nodeType: result.node_type as 'directory' | 'document',
+        createdAt: new Date(result.created_at * 1000),
+        modifiedAt: new Date(result.modified_at * 1000),
+      };
+    } catch (error) {
+      throw new FileSystemError(`Failed to get metadata for ${path}: ${error}`);
+    }
+  }
+
+  /**
+   * Watch a file for changes at the specified path
+   *
+   * @param path - Absolute path to the file
+   * @param callback - Callback to run on change events
+   * @returns A DocumentWatcher for the specified path
+   *
+   * @example
+   * ```typescript
+   * const watcher = await watchFile('/text.txt', docState => {
+   *   console.log('Document changed:', docState);
+   * });
+   * ```
+   */
+  async watchFile(
+    path: string,
+    callback: Function
+  ): Promise<DocumentWatcher | null> {
+    try {
+      const result = await this.#wasm.watchDocument(path, callback);
+      if (result === null) return null;
+
+      return result;
+    } catch (error) {
+      throw new FileSystemError(
+        `Failed to watch file at path ${path}: ${error}`
+      );
+    }
+  }
+
+  /**
+   * Watch a directory for changes at the specified path
+   *
+   * @param path - Absolute path to the directory
+   * @param callback - Callback to run on change events
+   * @returns A DocumentWatcher for the specified path
+   *
+   * @example
+   * ```typescript
+   * const watcher = await watchDirecotry('/documents', docState => {
+   *   console.log('Directory changed:', docState);
+   * });
+   * ```
+   */
+  async watchDirectory(
+    path: string,
+    callback: Function
+  ): Promise<DocumentWatcher | null> {
+    try {
+      const result = await this.#wasm.watchDirectory(path, callback);
+      if (result === null) return null;
+
+      return result;
+    } catch (error) {
+      throw new FileSystemError(
+        `Failed to watch directory at path ${path}: ${error}`
+      );
     }
   }
 
