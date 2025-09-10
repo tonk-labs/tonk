@@ -2,19 +2,17 @@ use crate::error::{Result, VfsError};
 use crate::vfs::VirtualFileSystem;
 use crate::Bundle;
 use rand::rng;
-#[cfg(target_arch = "wasm32")]
-use samod::storage::IndexedDbStorage;
 #[cfg(not(target_arch = "wasm32"))]
 use samod::storage::TokioFilesystemStorage as FilesystemStorage;
-use samod::storage::{InMemoryStorage, Storage, StorageKey};
+use samod::storage::{InMemoryStorage, StorageKey};
+#[cfg(target_arch = "wasm32")]
+use samod::storage::{IndexedDbStorage, LocalStorage};
 #[cfg(not(target_arch = "wasm32"))]
 use samod::RepoBuilder;
 use samod::{DocHandle, DocumentId, PeerId, Repo};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use tempfile::TempDir;
 use tracing::info;
 
 /// Storage configuration options for TonkCore
@@ -111,7 +109,7 @@ impl TonkCoreBuilder {
                     Repo::build_wasm()
                         .with_peer_id(peer_id)
                         .with_storage(IndexedDbStorage::new())
-                        .load()
+                        .load_local()
                         .await
                 }
             };
@@ -170,7 +168,7 @@ impl TonkCoreBuilder {
                                 "Loading storage key: {:?} (from path: {})",
                                 reconstructed_parts, relative_path
                             );
-                            storage.put(storage_key.clone(), data).await;
+                            samod::storage::Storage::put(&storage, storage_key.clone(), data).await;
                         }
                     }
                 }
@@ -264,7 +262,7 @@ impl TonkCoreBuilder {
                 Repo::build_wasm()
                     .with_peer_id(peer_id)
                     .with_storage(storage)
-                    .load()
+                    .load_local()
                     .await
             }
         };
@@ -616,9 +614,9 @@ impl Clone for TonkCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{timeout, Duration};
     #[cfg(not(target_arch = "wasm32"))]
     use tempfile::TempDir;
+    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
     async fn test_sync_engine_creation() {
