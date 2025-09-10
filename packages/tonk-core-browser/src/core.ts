@@ -209,7 +209,7 @@ export class VirtualFileSystem {
    * Read the contents of a blob file.
    *
    * @param path - Absolute path to the file
-   * @returns JSON representing the blob and its metadata
+   * @returns File contents as a string, which can be decoded to include both metadata and blob
    * @throws {FileSystemError} If the file doesn't exist, can't be read, or 
    * wasn't created using the `createBlobFile` function (resulting in incorrect structure)
    *
@@ -226,8 +226,9 @@ export class VirtualFileSystem {
         if (result === null) {
           throw new FileSystemError(`File not found: ${path}`);
         }
-        const result_parsed = JSON.parse(result);
-        if (!result_parsed.content.blob || !result_parsed.content.metadata) {
+        const result_parsed = JSON.parse(JSON.parse(JSON.parse(result).content));
+        console.log(`PARSED FILE: ${result_parsed}`);
+        if (!result_parsed.blob || !result_parsed.metadata) {
           throw new FileSystemError(`File not a blob type: ${path}. Try using readFile instead.`);
         }
         return result;
