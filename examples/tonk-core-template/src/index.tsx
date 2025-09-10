@@ -6,28 +6,26 @@ import App from './App';
 import { TonkCore } from '@tonk/core';
 
 const tonk1 = await TonkCore.create({ storage: { type: 'indexeddb' } });
-const vfs1 = await tonk1.getVfs();
 
-const _watcher = vfs1.watchDirectory('/', docState => {
+const _watcher = tonk1.watchDirectory('/', docState => {
   console.log(`Directory changed: ${docState}`);
 });
 
-await vfs1.createFile('/hello.txt', 'Hello, World!');
+await tonk1.createFile('/hello.txt', 'Hello, World!');
 
-const _watcher2 = vfs1.watchFile('/hello.txt', docState => {
+const _watcher2 = tonk1.watchFile('/hello.txt', docState => {
   console.log(`File changed: ${docState}`);
 });
 
-const content1 = await vfs1.readFile('/hello.txt');
+const content1 = await tonk1.readFile('/hello.txt');
 console.log('Initial content:', content1);
 
-await vfs1.updateFile('/hello.txt', 'Goodbye, world!');
+await tonk1.updateFile('/hello.txt', 'Goodbye, world!');
 
 const data = await tonk1.toBytes();
 const tonk2 = await TonkCore.fromBytes(data);
-const vfs2 = await tonk2.getVfs();
 
-const content2 = await vfs2.readFile('/hello.txt');
+const content2 = await tonk2.readFile('/hello.txt');
 console.log('Retrieved content:', content2);
 
 const container = document.getElementById('root');
