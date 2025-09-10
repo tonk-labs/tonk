@@ -2070,6 +2070,7 @@ dependencies = [
  "getrandom 0.3.3",
  "js-sys",
  "rand",
+ "rayon",
  "reqwest",
  "samod",
  "serde",

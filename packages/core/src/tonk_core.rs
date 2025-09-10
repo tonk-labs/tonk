@@ -71,7 +71,9 @@ impl TonkCoreBuilder {
                     RepoBuilder::new(runtime)
                         .with_storage(storage)
                         .with_peer_id(peer_id)
-                        .with_threadpool(None)
+                        .with_concurrency(samod::ConcurrencyConfig::Threadpool(
+                            rayon::ThreadPoolBuilder::new().build().unwrap(),
+                        ))
                         .load()
                         .await
                 }
@@ -81,7 +83,9 @@ impl TonkCoreBuilder {
                     RepoBuilder::new(runtime)
                         .with_storage(storage)
                         .with_peer_id(peer_id)
-                        .with_threadpool(None)
+                        .with_concurrency(samod::ConcurrencyConfig::Threadpool(
+                            rayon::ThreadPoolBuilder::new().build().unwrap(),
+                        ))
                         .load()
                         .await
                 }
@@ -178,7 +182,9 @@ impl TonkCoreBuilder {
                     RepoBuilder::new(runtime)
                         .with_storage(storage)
                         .with_peer_id(peer_id)
-                        .with_threadpool(None)
+                        .with_concurrency(samod::ConcurrencyConfig::Threadpool(
+                            rayon::ThreadPoolBuilder::new().build().unwrap(),
+                        ))
                         .load()
                         .await
                 }
@@ -220,7 +226,9 @@ impl TonkCoreBuilder {
                 RepoBuilder::new(runtime)
                     .with_storage(storage)
                     .with_peer_id(peer_id)
-                    .with_threadpool(None)
+                    .with_concurrency(samod::ConcurrencyConfig::Threadpool(
+                        rayon::ThreadPoolBuilder::new().build().unwrap(),
+                    ))
                     .load()
                     .await
             }
