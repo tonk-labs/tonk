@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { TonkCore, VirtualFileSystem } from '@tonk/core';
+import { TonkCore } from '@tonk/core';
 
 export interface Todo {
   id: string;
@@ -11,7 +11,6 @@ export interface Todo {
 interface TodoState {
   todos: Todo[];
   tonk: TonkCore | null;
-  vfs: VirtualFileSystem | null;
   isInitialized: boolean;
   addTodo: (text: string) => Promise<void>;
   toggleTodo: (id: string) => Promise<void>;
@@ -20,42 +19,59 @@ interface TodoState {
   connectSync: (url: string) => Promise<void>;
 }
 
-const TODOS_FILE = '/todos.json';
+const TODOS_FILE = '/todos';
 
 export const useTodoStore = create<TodoState>((set, get) => ({
   todos: [],
   tonk: null,
-  vfs: null,
   isInitialized: false,
 
   initialize: async () => {
     try {
-      console.log('Initializing TonkCore with IndexedDB...');
-      const tonk = await TonkCore.create({ storage: { type: 'indexeddb' } });
-      const vfs = await tonk.getVfs();
+      const response = await fetch('http://localhost:6080/.manifest.tonk');
+      const arrayBuffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
 
-      console.log('TonkCore initialized, checking for existing todos...');
+      const tonk = await TonkCore.fromBytes(bytes, {
+        storage: { type: 'indexeddb' },
+      });
 
-      // Load existing todos from VFS
+      await tonk.connectWebsocket('ws://localhost:6080');
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Load existing todos from tonk
       let todos: Todo[] = [];
       try {
-        const exists = await vfs.exists(TODOS_FILE);
-        console.log(`Todos file exists: ${exists}`);
+        const exists = await tonk.exists(TODOS_FILE);
 
         if (exists) {
-          const content = await vfs.readFile(TODOS_FILE);
-          console.log('Loaded todos content:', content);
+          const doc = await tonk.readFile(TODOS_FILE);
+          const content = doc.content;
           todos = JSON.parse(content);
-          console.log('Parsed todos:', todos);
         } else {
           console.log('No existing todos file, starting with empty array');
+          await tonk.createFile(TODOS_FILE, todos);
         }
       } catch (error) {
         console.warn('Could not load existing todos:', error);
       }
 
-      set({ tonk, vfs, todos, isInitialized: true });
-      console.log('Todo store initialized with', todos.length, 'todos');
+      // Set up directory watcher for reactive updates
+      await tonk.watchDirectory('/', async () => {
+        // Check if the event is related to our todos file
+        try {
+          const doc = await tonk.readFile(TODOS_FILE);
+          const content = doc.content;
+
+          let updatedTodos: Todo[] = JSON.parse(content);
+
+          set({ todos: updatedTodos });
+        } catch (error) {
+          console.error('Failed to load updated todos:', error);
+        }
+      });
+
+      set({ tonk, todos, isInitialized: true });
     } catch (error) {
       console.error('Failed to initialize TonkCore:', error);
       set({ isInitialized: true }); // Set initialized even on error so UI doesn't hang
@@ -67,7 +83,6 @@ export const useTodoStore = create<TodoState>((set, get) => ({
     if (tonk) {
       try {
         await tonk.connectWebsocket(url);
-        console.log('Connected to sync server:', url);
       } catch (error) {
         console.error('Failed to connect to sync server:', error);
       }
@@ -75,8 +90,8 @@ export const useTodoStore = create<TodoState>((set, get) => ({
   },
 
   addTodo: async (text: string) => {
-    const { todos, vfs } = get();
-    if (!vfs) return;
+    const { todos, tonk } = get();
+    if (!tonk) return;
 
     const newTodo: Todo = {
       id: crypto.randomUUID(),
@@ -88,7 +103,7 @@ export const useTodoStore = create<TodoState>((set, get) => ({
     const updatedTodos = [...todos, newTodo];
 
     try {
-      await vfs.createFile(TODOS_FILE, JSON.stringify(updatedTodos, null, 2));
+      await tonk.updateFile(TODOS_FILE, updatedTodos);
       set({ todos: updatedTodos });
     } catch (error) {
       console.error('Failed to save todo:', error);
@@ -96,15 +111,15 @@ export const useTodoStore = create<TodoState>((set, get) => ({
   },
 
   toggleTodo: async (id: string) => {
-    const { todos, vfs } = get();
-    if (!vfs) return;
+    const { todos, tonk } = get();
+    if (!tonk) return;
 
     const updatedTodos = todos.map(todo =>
       todo.id === id ? { ...todo, completed: !todo.completed } : todo
     );
 
     try {
-      await vfs.createFile(TODOS_FILE, JSON.stringify(updatedTodos, null, 2));
+      await tonk.updateFile(TODOS_FILE, updatedTodos);
       set({ todos: updatedTodos });
     } catch (error) {
       console.error('Failed to update todo:', error);
@@ -112,17 +127,16 @@ export const useTodoStore = create<TodoState>((set, get) => ({
   },
 
   deleteTodo: async (id: string) => {
-    const { todos, vfs } = get();
-    if (!vfs) return;
+    const { todos, tonk } = get();
+    if (!tonk) return;
 
     const updatedTodos = todos.filter(todo => todo.id !== id);
 
     try {
-      await vfs.createFile(TODOS_FILE, JSON.stringify(updatedTodos, null, 2));
+      await tonk.updateFile(TODOS_FILE, updatedTodos);
       set({ todos: updatedTodos });
     } catch (error) {
       console.error('Failed to delete todo:', error);
     }
   },
 }));
-

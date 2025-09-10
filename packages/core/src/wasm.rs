@@ -5,6 +5,7 @@ use crate::StorageConfig;
 use automerge::AutoSerde;
 use js_sys::{Array, Function, Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
+use serde_wasm_bindgen::Serializer;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -36,6 +37,13 @@ pub fn init() {
 
 fn js_error(err: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&err.to_string())
+}
+
+fn to_js_value<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    let serializer = Serializer::json_compatible();
+    value
+        .serialize(&serializer)
+        .map_err(|e| js_error(format!("Failed to serialize to JsValue: {}", e)))
 }
 
 #[wasm_bindgen]
@@ -193,8 +201,7 @@ impl WasmTonkCore {
                     });
 
                     match doc {
-                        Ok(json_value) => serde_wasm_bindgen::to_value(&json_value)
-                            .map_err(|e| js_error(format!("Failed to convert to JsValue: {}", e))),
+                        Ok(json_value) => to_js_value(&json_value),
                         Err(e) => Err(js_error(e)),
                     }
                 }
@@ -316,7 +323,7 @@ impl WasmTonkCore {
                         created_at: timestamps.created.timestamp(),
                         modified_at: timestamps.modified.timestamp(),
                     };
-                    Ok(serde_wasm_bindgen::to_value(&metadata).unwrap())
+                    Ok(to_js_value(&metadata)?)
                 }
                 Ok(None) => Ok(JsValue::NULL),
                 Err(e) => Err(js_error(e)),
@@ -539,10 +546,7 @@ impl WasmBundle {
         future_to_promise(async move {
             let bundle = bundle.lock().await;
             let manifest = bundle.manifest();
-            match serde_wasm_bindgen::to_value(&manifest) {
-                Ok(value) => Ok(value),
-                Err(e) => Err(js_error(format!("Failed to serialize manifest: {}", e))),
-            }
+            to_js_value(&manifest)
         })
     }
 
