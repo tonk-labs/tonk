@@ -167,20 +167,22 @@ export class VirtualFileSystem {
    * Create a new file with the given content.
    *
    * @param path - Absolute path where the file should be created
-   * @param content - Content to write to the file (string or binary data)
+   * @param content - Content to write to the file (any JSON-serializable value)
    * @throws {FileSystemError} If the file already exists or path is invalid
    *
    * @example
    * ```typescript
-   * // Create a text file
+   * // Create a text file with a string
    * await vfs.createFile('/hello.txt', 'Hello, World!');
    *
-   * // Create a binary file
-   * const imageData = new Uint8Array([...]);
-   * await vfs.createFile('/image.png', imageData);
+   * // Create a JSON file with an object
+   * await vfs.createFile('/config.json', { theme: 'dark', fontSize: 14 });
+   *
+   * // Create a file with an array
+   * await vfs.createFile('/data.json', [1, 2, 3, 4, 5]);
    * ```
    */
-  async createFile(path: string, content: string): Promise<void> {
+  async createFile(path: string, content: any): Promise<void> {
     try {
       await this.#wasm.createFile(path, content);
     } catch (error) {
@@ -218,7 +220,7 @@ export class VirtualFileSystem {
    * Update an existing file with the given content.
    *
    * @param path - Absolute path of the file to update
-   * @param content - Content to write to the file (string or binary data)
+   * @param content - Content to write to the file (any JSON-serializable value)
    * @returns true if the file was updated, false if it didn't exist
    * @throws {FileSystemError} If the path is invalid
    *
@@ -227,14 +229,14 @@ export class VirtualFileSystem {
    * // Create a text file
    * await vfs.createFile('/hello.txt', 'Hello, World!');
    *
-   * // Overwrite it
+   * // Overwrite it with a string
    * await vfs.updateFile('/hello.txt', 'See you later!');
+   *
+   * // Update with an object
+   * await vfs.updateFile('/config.json', { theme: 'light', fontSize: 16 });
    * ```
    */
-  async updateFile(
-    path: string,
-    content: string | Uint8Array
-  ): Promise<boolean> {
+  async updateFile(path: string, content: any): Promise<boolean> {
     try {
       return await this.#wasm.updateFile(path, content);
     } catch (error) {
@@ -669,25 +671,28 @@ export class TonkCore {
    * @param wasmModule - WASM module functions (for lazy loading)
    * @returns A new TonkCore instance
    * @throws {Error} If Tonk creation fails or WASM not initialized
-   * 
+   *
    * @example
    * ```typescript
    * // Default in-memory storage
    * const tonk = await TonkCore.create();
-   * 
+   *
    * // With IndexedDB storage
    * const tonk = await TonkCore.create({ storage: { type: 'indexeddb' } });
-   * 
+   *
    * // With custom peer ID
-   * const tonk = await TonkCore.create({ 
+   * const tonk = await TonkCore.create({
    *   peerId: 'my-custom-peer-id',
    *   storage: { type: 'indexeddb' }
    * });
    * ```
    */
-  static async create(config?: TonkConfig, wasmModule?: any): Promise<TonkCore> {
+  static async create(
+    config?: TonkConfig,
+    wasmModule?: any
+  ): Promise<TonkCore> {
     const module = wasmModule || (await import('./tonk_core.js'));
-    
+
     if (config?.peerId && config?.storage) {
       const { create_tonk_with_config } = module;
       const wasm = await create_tonk_with_config(
@@ -738,25 +743,25 @@ export class TonkCore {
    * @param wasmModule - WASM module functions (for lazy loading)
    * @returns A new TonkCore instance
    * @throws {Error} If Tonk creation fails, bundle is invalid, or WASM not initialized
-   * 
+   *
    * @example
    * ```typescript
    * // Load with in-memory storage (default)
    * const tonk = await TonkCore.fromBundle(bundle);
-   * 
+   *
    * // Load with IndexedDB storage
-   * const tonk = await TonkCore.fromBundle(bundle, { 
-   *   storage: { type: 'indexeddb' } 
+   * const tonk = await TonkCore.fromBundle(bundle, {
+   *   storage: { type: 'indexeddb' }
    * });
    * ```
    */
   static async fromBundle(
-    bundle: Bundle, 
-    config?: TonkConfig, 
+    bundle: Bundle,
+    config?: TonkConfig,
     wasmModule?: any
   ): Promise<TonkCore> {
     const module = wasmModule || (await import('./tonk_core.js'));
-    
+
     if (config?.storage) {
       const { create_tonk_from_bundle_with_storage } = module;
       const wasm = await create_tonk_from_bundle_with_storage(
@@ -779,15 +784,15 @@ export class TonkCore {
    * @param wasmModule - WASM module functions (for lazy loading)
    * @returns A new TonkCore instance
    * @throws {Error} If Tonk creation fails, bundle is invalid, or WASM not initialized
-   * 
+   *
    * @example
    * ```typescript
    * // Load with in-memory storage (default)
    * const tonk = await TonkCore.fromBytes(bundleData);
-   * 
+   *
    * // Load with IndexedDB storage
-   * const tonk = await TonkCore.fromBytes(bundleData, { 
-   *   storage: { type: 'indexeddb' } 
+   * const tonk = await TonkCore.fromBytes(bundleData, {
+   *   storage: { type: 'indexeddb' }
    * });
    * ```
    */
@@ -797,7 +802,7 @@ export class TonkCore {
     wasmModule?: any
   ): Promise<TonkCore> {
     const module = wasmModule || (await import('./tonk_core.js'));
-    
+
     if (config?.storage) {
       const { create_tonk_from_bytes_with_storage } = module;
       const wasm = await create_tonk_from_bytes_with_storage(

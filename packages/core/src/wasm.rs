@@ -275,9 +275,12 @@ impl WasmVfs {
         let vfs = Arc::clone(&self.vfs);
         future_to_promise(async move {
             let vfs = vfs.lock().await;
-            let content_str = content.as_string().unwrap_or_default();
 
-            match vfs.create_document(&path, content_str).await {
+            // Deserialize JsValue to serde_json::Value
+            let content_value: serde_json::Value = serde_wasm_bindgen::from_value(content)
+                .map_err(|e| js_error(format!("Invalid content value: {}", e)))?;
+
+            match vfs.create_document(&path, content_value).await {
                 Ok(_) => Ok(JsValue::TRUE),
                 Err(e) => Err(js_error(e)),
             }
@@ -324,9 +327,12 @@ impl WasmVfs {
         let vfs = Arc::clone(&self.vfs);
         future_to_promise(async move {
             let vfs = vfs.lock().await;
-            let content_str = content.as_string().unwrap_or_default();
 
-            match vfs.update_document(&path, content_str).await {
+            // Deserialize JsValue to serde_json::Value
+            let content_value: serde_json::Value = serde_wasm_bindgen::from_value(content)
+                .map_err(|e| js_error(format!("Invalid content value: {}", e)))?;
+
+            match vfs.update_document(&path, content_value).await {
                 Ok(updated) => Ok(JsValue::from_bool(updated)),
                 Err(e) => Err(js_error(e)),
             }
@@ -774,7 +780,7 @@ pub fn create_tonk_from_bundle_with_storage(bundle: &WasmBundle, use_indexed_db:
             Ok(bytes_value) => {
                 let bytes_array: Uint8Array = bytes_value.into();
                 let bytes = bytes_array.to_vec();
-                
+
                 let storage_config = if use_indexed_db {
                     StorageConfig::IndexedDB
                 } else {
@@ -812,7 +818,7 @@ pub fn create_tonk_from_bytes(data: Uint8Array) -> Promise {
 pub fn create_tonk_from_bytes_with_storage(data: Uint8Array, use_indexed_db: bool) -> Promise {
     future_to_promise(async move {
         let bytes = data.to_vec();
-        
+
         let storage_config = if use_indexed_db {
             StorageConfig::IndexedDB
         } else {
