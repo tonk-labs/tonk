@@ -179,7 +179,64 @@ export class VirtualFileSystem {
       throw new FileSystemError(`Failed to delete file at ${path}: ${error}`);
     }
   }
-
+  /**
+   * Create a new blob file with the given blob metadata, and content.
+   *
+   * @param path - Absolute path where the file should be created
+   * @param metadata - Content to write to the file (string or binary data)
+   * @param blob - Uint8Array representing the binary data
+   * @throws {FileSystemError} If the file already exists or path is invalid
+   *
+   * @example
+   * ```typescript
+   * // Create a text file
+   * await vfs.createFile('/media/my_video_compressed.png', {name: "my-image", mime: "image/png"}, imgArray);
+   * ```
+   */
+  async createBlobFile(path: string, metadata: string, blob: Uint8Array): Promise<void> {
+      try {
+        const content = {
+            metadata: metadata, 
+            blob: blob
+        };
+        await this.#wasm.createFile(path, JSON.stringify(content));
+      }
+      catch (error) {
+        throw new FileSystemError(`Failed to create file at ${path}: ${error}`);
+      }
+  }
+  /**
+   * Read the contents of a blob file.
+   *
+   * @param path - Absolute path to the file
+   * @returns JSON representing the blob and its metadata
+   * @throws {FileSystemError} If the file doesn't exist, can't be read, or 
+   * wasn't created using the `createBlobFile` function (resulting in incorrect structure)
+   *
+   * @example
+   * ```typescript
+   * const myVideo = await vfs.readBlobFile('/media/my_video_compressed.png');
+   * const videoContent = JSON.parse(myVideo).content;
+   * myClass.render(videoContent.blob, videoContent.metadata.mime);
+   * ```
+   */
+  async readBlobFile(path: string): Promise<string> {
+      try {
+        const result = await this.#wasm.readFile(path);
+        if (result === null) {
+          throw new FileSystemError(`File not found: ${path}`);
+        }
+        const result_parsed = JSON.parse(result);
+        if (!result_parsed.content.blob || !result_parsed.content.metadata) {
+          throw new FileSystemError(`File not a blob type: ${path}. Try using readFile instead.`);
+        }
+        return result;
+      }
+      catch (error) {
+        if (error instanceof FileSystemError) throw error;
+        throw new FileSystemError(`Failed to read file at ${path}: ${error}`);
+      }
+  }
   /**
    * Create a new directory.
    *
