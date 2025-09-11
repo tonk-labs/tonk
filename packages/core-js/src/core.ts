@@ -46,6 +46,18 @@ export interface DocumentWatcher {
   stop(): Promise<void>;
 }
 
+export interface DocumentTimestaps {
+  created: number;
+  modified: number;
+}
+
+export interface DocumentData {
+  content: string;
+  name: string;
+  timestamps: DocumentTimestaps;
+  type: 'doc' | 'dir';
+}
+
 /**
  * Tonk version
  */
@@ -569,16 +581,22 @@ export class TonkCore {
    * Read the contents of a file.
    *
    * @param path - Absolute path to the file
-   * @returns The file contents as a string
+   * @returns An object containing the file data
    * @throws {FileSystemError} If the file doesn't exist or can't be read
    *
    * @example
    * ```typescript
-   * const content = await readFile('/notes/todo.md');
-   * console.log(content);
+   * const doc = await readFile('/notes/todo');
+   * console.log(doc.content);   // string
+   * console.log(doc.name);      // string
+   * console.log(doc.type);      // 'doc' | 'dir'
+   * console.log(doc.timestamps.created);   // number
+   * console.log(doc.timestamps.modified);  // number
    * ```
    */
-  async readFile(path: string): Promise<any> {
+
+  async readFile(path: string): Promise<DocumentData> {
+
     try {
       const result = await this.#wasm.readFile(path);
       if (result === null) {
@@ -737,7 +755,7 @@ export class TonkCore {
    *
    * @example
    * ```typescript
-   * const metadata = await getMetadata('/notes/todo.md');
+   * const metadata = await getMetadata('/notes/todo');
    * if (metadata) {
    *   console.log(`Type: ${metadata.nodeType}`);
    *   console.log(`Created: ${metadata.createdAt}`);

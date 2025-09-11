@@ -521,7 +521,7 @@ mod tests {
         let manifest_content = r#"{
             "manifestVersion": 1,
             "version": { "major": 1, "minor": 0 },
-            "root_id": "test-root-id",
+            "rootId": "test-root-id",
             "entrypoints": ["bin/myapp", "bin/worker", "scripts/setup.sh"],
             "networkUris": [
                 "https://api.example.com/v1",
@@ -555,7 +555,7 @@ mod tests {
         let manifest_content = r#"{
             "manifestVersion": 1,
             "version": { "major": 1, "minor": 0 },
-            "root_id": "test-root-id",
+            "rootId": "test-root-id",
             "entrypoints": ["bin/myapp"],
             "networkUris": []
         }"#;
@@ -610,7 +610,7 @@ mod tests {
         let manifest_content = r#"{
             "manifestVersion": 2,
             "version": { "major": 1, "minor": 0 },
-            "root_id": "test-root-id",
+            "rootId": "test-root-id",
             "entrypoints": ["bin/myapp"],
             "networkUris": []
         }"#;
