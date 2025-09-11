@@ -1,41 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { useTodoStore } from '../stores/todoStore';
 import { AddTodo } from '../components/AddTodo';
 import { TodoItem } from '../components/TodoItem';
-import { Wifi, WifiOff, Loader } from 'lucide-react';
+import { Loader } from 'lucide-react';
 
 export const TodoApp: React.FC = () => {
-  const {
-    todos,
-    isInitialized,
-    addTodo,
-    toggleTodo,
-    deleteTodo,
-    initialize,
-    connectSync,
-  } = useTodoStore();
-
-  const [syncStatus, setSyncStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
-  const [syncUrl, setSyncUrl] = useState('ws://localhost:7777/sync');
+  const { todos, isInitialized, addTodo, toggleTodo, deleteTodo, initialize } =
+    useTodoStore();
 
   useEffect(() => {
     if (!isInitialized) {
       initialize();
     }
   }, [isInitialized, initialize]);
-
-  const handleConnectSync = async () => {
-    if (!isInitialized) return;
-    
-    setSyncStatus('connecting');
-    try {
-      await connectSync(syncUrl);
-      setSyncStatus('connected');
-    } catch (error) {
-      console.error('Sync connection failed:', error);
-      setSyncStatus('disconnected');
-    }
-  };
 
   const completedCount = todos.filter(todo => todo.completed).length;
   const totalCount = todos.length;
@@ -59,49 +36,10 @@ export const TodoApp: React.FC = () => {
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Todo App</h1>
               <p className="text-gray-600 mt-1">
-                {totalCount === 0 ? 'No todos yet' : `${completedCount} of ${totalCount} completed`}
+                {totalCount === 0
+                  ? 'No todos yet'
+                  : `${completedCount} of ${totalCount} completed`}
               </p>
-            </div>
-            
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={syncUrl}
-                  onChange={(e) => setSyncUrl(e.target.value)}
-                  placeholder="Sync server URL"
-                  className="px-3 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  disabled={syncStatus === 'connecting'}
-                />
-                <button
-                  onClick={handleConnectSync}
-                  disabled={syncStatus === 'connecting'}
-                  className={`px-3 py-1 text-sm rounded flex items-center gap-1 ${
-                    syncStatus === 'connected'
-                      ? 'bg-green-100 text-green-700'
-                      : syncStatus === 'connecting'
-                      ? 'bg-yellow-100 text-yellow-700'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  {syncStatus === 'connected' ? (
-                    <>
-                      <Wifi size={14} />
-                      Connected
-                    </>
-                  ) : syncStatus === 'connecting' ? (
-                    <>
-                      <Loader className="animate-spin" size={14} />
-                      Connecting...
-                    </>
-                  ) : (
-                    <>
-                      <WifiOff size={14} />
-                      Connect
-                    </>
-                  )}
-                </button>
-              </div>
             </div>
           </div>
 
@@ -125,26 +63,9 @@ export const TodoApp: React.FC = () => {
                 ))
             )}
           </div>
-
-          {syncStatus === 'connected' && (
-            <div className="mt-6 p-3 bg-green-50 border border-green-200 rounded-lg">
-              <p className="text-sm text-green-800">
-                🌐 Real-time sync is active! Open this app in multiple tabs to see changes sync automatically.
-              </p>
-            </div>
-          )}
-        </div>
-
-        <div className="bg-white rounded-xl shadow-sm p-4">
-          <h3 className="text-lg font-semibold mb-2">About This Todo App</h3>
-          <ul className="text-sm text-gray-600 space-y-1">
-            <li>• Data persists in IndexedDB using Tonk Core VFS</li>
-            <li>• Real-time sync between browser tabs and devices</li>
-            <li>• Offline-first with conflict resolution</li>
-            <li>• Built with React, Zustand, and Tailwind CSS</li>
-          </ul>
         </div>
       </div>
     </div>
   );
 };
+
