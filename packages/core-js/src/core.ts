@@ -556,6 +556,28 @@ export class TonkCore {
   }
 
   /**
+   * Create a new file with the given content and byte array.
+   *
+   * @param path - Absolute path where the file should be created
+   * @param content - Content to write to the file (any JSON-serializable value)
+   * @param bytes - The binary data you want to store (should be Uint8Array)
+   * @throws {FileSystemError} If the file already exists or path is invalid
+   *
+   * @example
+   * ```typescript
+   * // Create a media file with JSON metadata
+   * await createFile('/tree.png', { mime: 'image/png', alt: 'picture of a tree' }, encodedImageData);
+   * ```
+   */
+  async createFileWithBytes(path: string, content: any, bytes: Uint8Array): Promise<void> {
+    try {
+      await this.#wasm.createFileWithBytes(path, content, bytes);
+    } catch (error) {
+      throw new FileSystemError(`Failed to create file at ${path}: ${error}`);
+    }
+  }
+
+  /**
    * Read the contents of a file.
    *
    * @param path - Absolute path to the file
@@ -572,7 +594,9 @@ export class TonkCore {
    * console.log(doc.timestamps.modified);  // number
    * ```
    */
+
   async readFile(path: string): Promise<DocumentData> {
+
     try {
       const result = await this.#wasm.readFile(path);
       if (result === null) {
@@ -608,6 +632,34 @@ export class TonkCore {
   async updateFile(path: string, content: any): Promise<boolean> {
     try {
       return await this.#wasm.updateFile(path, content);
+    } catch (error) {
+      throw new FileSystemError(`Failed to update file at ${path}: ${error}`);
+    }
+  }
+
+  /**
+   * Update an existing file with the given content.
+   *
+   * @param path - Absolute path of the file to update
+   * @param content - Content to write to the file (any JSON-serializable value)
+   * @returns true if the file was updated, false if it didn't exist
+   * @throws {FileSystemError} If the path is invalid
+   *
+   * @example
+   * ```typescript
+   * // Create a text file
+   * await createFile('/hello.txt', 'Hello, World!');
+   *
+   * // Overwrite it with a string
+   * await updateFile('/hello.txt', 'See you later!');
+   *
+   * // Update with an object
+   * await updateFile('/config.json', { theme: 'light', fontSize: 16 });
+   * ```
+   */
+  async updateFileWithBytes(path: string, content: any, bytes: Uint8Array): Promise<boolean> {
+    try {
+      return await this.#wasm.updateFileWithBytes(path, content, bytes);
     } catch (error) {
       throw new FileSystemError(`Failed to update file at ${path}: ${error}`);
     }

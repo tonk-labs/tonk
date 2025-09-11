@@ -9,6 +9,7 @@ use automerge::Automerge;
 use samod::{DocHandle, DocumentId, Repo};
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use bytes::Bytes;
 
 pub struct VirtualFileSystem {
     samod: Arc<Repo>,
@@ -100,6 +101,22 @@ impl VirtualFileSystem {
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
     {
+        self.create_document_inner(path, content, Bytes::new(), false).await
+    }
+
+    /// Create a document at the specified path using bytes 
+    pub async fn create_document_with_bytes<T>(&self, path: &str, content: T, bytes: Bytes) -> Result<DocHandle>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    {
+        self.create_document_inner(path, content, bytes, true).await
+    }
+
+    /// Create a document at the specified path
+    async fn create_document_inner<T>(&self, path: &str, content: T, bytes: Bytes, use_bytes: bool) -> Result<DocHandle>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    {
         if path == "/" {
             return Err(VfsError::RootPathError);
         }
@@ -153,8 +170,13 @@ impl VirtualFileSystem {
             .await
             .map_err(|e| VfsError::SamodError(format!("Failed to create document: {e}")))?;
 
-        // Initialize the document with content
-        AutomergeHelpers::init_as_document(&doc_handle, filename, content)?;
+        if use_bytes {
+            // Initialize the document with content and bytes
+            AutomergeHelpers::init_as_document_with_bytes(&doc_handle, filename, content, bytes)?;
+        } else {
+            // Initialize the document with content
+            AutomergeHelpers::init_as_document(&doc_handle, filename, content)?;
+        }
 
         // Add reference to parent directory
         let doc_ref = RefNode::new_document(filename.to_string(), doc_handle.document_id().clone());
@@ -170,8 +192,24 @@ impl VirtualFileSystem {
         Ok(doc_handle)
     }
 
-    /// Update an existing document at the specified path
+    /// Update a document at the specified path
     pub async fn update_document<T>(&self, path: &str, content: T) -> Result<bool>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    {
+        self.update_document_inner(path, content, Bytes::new(), false).await
+    }
+
+    /// Update a document at the specified path using bytes 
+    pub async fn update_document_with_bytes<T>(&self, path: &str, content: T, bytes: Bytes) -> Result<bool>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    {
+        self.update_document_inner(path, content, bytes, true).await
+    }
+
+    /// Update an existing document at the specified path
+    async fn update_document_inner<T>(&self, path: &str, content: T, bytes: Bytes, use_bytes: bool) -> Result<bool>
     where
         T: serde::Serialize + Send + 'static,
     {
@@ -182,8 +220,13 @@ impl VirtualFileSystem {
         // Find the existing document
         match self.find_document(path).await? {
             Some(doc_handle) => {
-                // Update the document content
-                AutomergeHelpers::update_document_content(&doc_handle, content)?;
+                // Update the document content (conditional)
+                if use_bytes {
+                    AutomergeHelpers::update_document_content_with_bytes(&doc_handle, content, bytes)?;
+                }
+                else { 
+                    AutomergeHelpers::update_document_content(&doc_handle, content)?;
+                }
 
                 // Update the RefNode timestamp in the parent directory
                 // Extract filename from path
