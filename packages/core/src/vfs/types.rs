@@ -110,17 +110,17 @@ pub struct DocNode<T> {
     pub name: String,
     pub timestamps: Timestamps,
     pub content: T,
-    pub content_bytes: Option<Vec<u8>>,
+    pub bytes: Option<Vec<u8>>,
 }
 
 impl<T> DocNode<T> {
-    pub fn new(name: String, content: T, content_bytes: Option<Vec<u8>>) -> Self {
+    pub fn new(name: String, content: T, bytes: Option<Vec<u8>>) -> Self {
         Self {
             node_type: NodeType::Document,
             name,
             timestamps: Timestamps::now(),
             content,
-            content_bytes,
+            bytes,
         }
     }
 

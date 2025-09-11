@@ -641,7 +641,7 @@ export class TonkCore {
    */
   async updateFileWithBytes(path: string, content: any, bytes: Uint8Array): Promise<boolean> {
     try {
-      return await this.#wasm.updateFileWithBytes(path, content);
+      return await this.#wasm.updateFileWithBytes(path, content, bytes);
     } catch (error) {
       throw new FileSystemError(`Failed to update file at ${path}: ${error}`);
     }

@@ -513,7 +513,7 @@ impl AutomergeHelpers {
                 name,
                 timestamps,
                 content,
-                content_bytes: None,
+                bytes: None,
             })
         })
     }
@@ -570,7 +570,7 @@ impl AutomergeHelpers {
                 name,
                 timestamps,
                 content,
-                content_bytes: Some(content_bytes),
+                bytes: Some(content_bytes),
             })
         })
     }
