@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # core deps
-samod = { path = "../../../../repos/samod/samod", features = ["tokio"] }
+samod = { path = "../../../../../repos/new-samod/samod/samod", features = ["tokio"] }
 automerge = "0.6.1"
 
 # runtime
@@ -45,11 +45,11 @@ reqwest = { version = "0.12", features = ["json"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = {version="1.47.1", features=["macros", "rt-multi-thread"]}
 tokio-tungstenite = "0.27"
-samod = { path = "../../../../repos/samod/samod", features = ["tungstenite", "threadpool"]}
+samod = { path = "../../../../../repos/new-samod/samod/samod", features = ["tungstenite", "threadpool"]}
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = {version = "1.47.1", features = ["macros", "rt", "sync"]}
-samod = { path = "../../../../repos/samod/samod" }
+samod = { path = "../../../../../repos/new-samod/samod/samod" }
 wasm-bindgen = { version = "0.2.100", features = ["serde-serialize"] }
 wasm-bindgen-futures = "0.4.50"
 serde-wasm-bindgen = "0.6.5"
