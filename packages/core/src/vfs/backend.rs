@@ -1,7 +1,8 @@
 use crate::error::{Result, VfsError};
 use crate::vfs::types::*;
-use automerge::{transaction::Transactable, ObjType, ReadDoc, Value};
+use automerge::{transaction::Transactable, ObjType, ReadDoc, Value, ScalarValue};
 use samod::{DocHandle, DocumentId};
+use bytes::Bytes;
 
 /// Helper functions for working with Automerge documents in the VFS
 pub struct AutomergeHelpers;
@@ -188,6 +189,39 @@ impl AutomergeHelpers {
         })
     }
 
+    /// Initialise a document as a document node (retaining the byte type of the second arg)
+    pub fn init_as_document_with_bytes<T>(handle: &DocHandle, name: &str, content: T, bytes: Bytes) -> Result<()>
+    where
+        T: serde::Serialize,
+    {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "type", "doc")?;
+            tx.put(automerge::ROOT, "name", name)?;
+
+            let now = chrono::Utc::now().timestamp_millis();
+            let timestamps_obj =
+                tx.put_object(automerge::ROOT, "timestamps", automerge::ObjType::Map)?;
+            tx.put(timestamps_obj.clone(), "created", now)?;
+            tx.put(timestamps_obj, "modified", now)?;
+
+            // The design is quesitonable here, one option could be to store both content and bytes under one doc attribute
+            // but i've decided to just store seperately for simplicity
+
+            // Serialize content as JSON string
+            let content_json =
+                serde_json::to_string(&content).map_err(VfsError::SerializationError)?;
+            tx.put(automerge::ROOT, "content", content_json)?;
+            
+            // Store bytes value seperately
+            let bytes_scalar = ScalarValue::Bytes(bytes.to_vec());
+            tx.put(automerge::ROOT, "bytes", bytes_scalar)?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
     // Helper functions
     pub fn extract_string_value(value: &Value) -> Option<String> {
         match value {
@@ -198,6 +232,18 @@ impl AutomergeHelpers {
                     Some(s_str[1..s_str.len() - 1].to_string())
                 } else {
                     Some(s_str)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn extract_bytes_value(value: &automerge::Value) -> Option<Vec<u8>> {
+        match value {
+            automerge::Value::Scalar(scalar) => {
+                match scalar.as_ref() {
+                    automerge::ScalarValue::Bytes(bytes) => Some(bytes.clone()),
+                    _ => None,
                 }
             }
             _ => None,
@@ -467,6 +513,64 @@ impl AutomergeHelpers {
                 name,
                 timestamps,
                 content,
+                content_bytes: None,
+            })
+        })
+    }
+
+    /// Read a document node from an Automerge document (specifically getting bytes)
+    /// this is never actually used! doc reading goes through samod
+    pub fn read_bytes_document<T>(handle: &DocHandle) -> Result<DocNode<T>>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        handle.with_document(|doc| {
+            // Check if it's a document
+            let node_type = doc
+                .get(automerge::ROOT, "type")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_string_value(&value))
+                .unwrap_or_else(|| "doc".to_string());
+
+            if node_type != "doc" {
+                return Err(VfsError::NodeTypeMismatch {
+                    expected: "doc".to_string(),
+                    actual: node_type,
+                });
+            }
+
+            // Get name
+            let name = doc
+                .get(automerge::ROOT, "name")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_string_value(&value))
+                .unwrap_or_default();
+
+            // Get timestamps
+            let timestamps = Self::read_timestamps(doc, automerge::ROOT)?;
+
+            // Get content
+            let content_str = doc
+                .get(automerge::ROOT, "content")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_string_value(&value))
+                .ok_or_else(|| VfsError::InvalidDocumentStructure)?;
+
+            let content =
+                serde_json::from_str(&content_str).map_err(VfsError::SerializationError)?;
+
+            let content_bytes = doc
+                .get(automerge::ROOT, "bytes")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_bytes_value(&value))
+                .ok_or_else(|| VfsError::InvalidDocumentStructure)?;
+
+            Ok(DocNode {
+                node_type: NodeType::Document,
+                name,
+                timestamps,
+                content,
+                content_bytes,
             })
         })
     }
@@ -483,6 +587,31 @@ impl AutomergeHelpers {
             let content_json =
                 serde_json::to_string(&content).map_err(VfsError::SerializationError)?;
             tx.put(automerge::ROOT, "content", content_json)?;
+
+            // Update modified timestamp
+            Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Update content and binary data of an existing document
+    pub fn update_document_content_with_bytes<T>(handle: &DocHandle, content: T, bytes: Bytes) -> Result<()>
+    where
+        T: serde::Serialize,
+    {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+
+            // Update content
+            let content_json =
+                serde_json::to_string(&content).map_err(VfsError::SerializationError)?;
+            tx.put(automerge::ROOT, "content", content_json)?;
+
+            // Update binary data
+            let bytes_scalar = ScalarValue::Bytes(bytes.to_vec());
+            tx.put(automerge::ROOT, "bytes", bytes_scalar)?;
 
             // Update modified timestamp
             Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;

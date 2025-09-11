@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
+use bytes::Bytes;
 
 #[cfg(feature = "wee_alloc")]
 #[global_allocator]
@@ -178,6 +179,24 @@ impl WasmTonkCore {
         })
     }
 
+    #[wasm_bindgen(js_name = createFileWithBytes)]
+    pub fn create_file_with_bytes(&self, path: String, content: JsValue, bytes: &[u8]) -> Promise {
+        let tonk = Arc::clone(&self.tonk);
+        future_to_promise(async move {
+            let tonk = tonk.lock().await;
+            let vfs = tonk.vfs();
+            // Deserialize JsValue to serde_json::Value
+            let content_value: serde_json::Value = serde_wasm_bindgen::from_value(content)
+            .map_err(|e| js_error(format!("Invalid content value: {}", e)))?;
+            // Extract bytes from array
+            let bytes_parsed = Bytes::from(bytes.to_vec());
+            match vfs.create_document_with_bytes(&path, content_value, bytes_parsed).await {
+                Ok(_) => Ok(JsValue::TRUE),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
     #[wasm_bindgen(js_name = readFile)]
     pub fn read_file(&self, path: String) -> Promise {
         let tonk = Arc::clone(&self.tonk);
@@ -216,6 +235,25 @@ impl WasmTonkCore {
                 .map_err(|e| js_error(format!("Invalid content value: {}", e)))?;
 
             match vfs.update_document(&path, content_value).await {
+                Ok(updated) => Ok(JsValue::from_bool(updated)),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
+    #[wasm_bindgen(js_name = updateFileWithBytes)]
+    pub fn update_file_with_bytes(&self, path: String, content: JsValue, bytes: &[u8]) -> Promise {
+        let tonk = Arc::clone(&self.tonk);
+        let bytes_parsed = Bytes::from(bytes.to_vec());
+        future_to_promise(async move {
+            let tonk = tonk.lock().await;
+            let vfs = tonk.vfs();
+
+            // Deserialize JsValue to serde_json::Value
+            let content_value: serde_json::Value = serde_wasm_bindgen::from_value(content)
+                .map_err(|e| js_error(format!("Invalid content value: {}", e)))?;
+
+            match vfs.update_document_with_bytes(&path, content_value, bytes_parsed).await {
                 Ok(updated) => Ok(JsValue::from_bool(updated)),
                 Err(e) => Err(js_error(e)),
             }
