@@ -13,6 +13,7 @@ npm install @tonk/core
 
 - **TonkCore**: Main synchronization engine
 - **Virtual File System**: CRDT-based file system with hierarchical document management
+- **Byte Storage API**: Store and retrieve binary data alongside JSON metadata
 - **Bundle Operations**: ZIP-based data export/import
 - **WebSocket Sync**: Real-time peer-to-peer synchronization
 
@@ -28,14 +29,15 @@ const tonk = await createTonk();
 const peerId = await tonk.getPeerId();
 console.log('Peer ID:', peerId);
 
-// Get the virtual file system
-const vfs = await tonk.getVfs();
-
 // Create a file
-await vfs.createFile('/hello.txt', 'Hello, World!');
+await tonk.createFile('/hello.txt', 'Hello, World!');
+
+// Create a file with binary data
+const imageData = new Uint8Array([137, 80, 78, 71, /* ... more PNG bytes */]);
+await tonk.createFileWithBytes('/image.png', { mime: 'image/png', alt: 'Sample image' }, imageData);
 
 // Read the file
-const content = await vfs.readFile('/hello.txt');
+const content = await tonk.readFile('/hello.txt');
 console.log('File content:', content);
 ```
 
@@ -90,11 +92,41 @@ class TonkCore {
   // Connect to a WebSocket server
   connectWebsocket(url: string): Promise<void>;
 
-  // Get the virtual file system
-  getVfs(): Promise<VirtualFileSystem>;
+  // Create a file with content
+  createFile(path: string, content: any): Promise<void>;
 
-  // Get the repository (low-level CRDT access)
-  getRepo(): Promise<Repository>;
+  // Create a file with binary data
+  createFileWithBytes(path: string, content: any, bytes: Uint8Array): Promise<void>;
+
+  // Read a file
+  readFile(path: string): Promise<any>;
+
+  // Update an existing file
+  updateFile(path: string, content: any): Promise<boolean>;
+
+  // Update a file with binary data
+  updateFileWithBytes(path: string, content: any, bytes: Uint8Array): Promise<boolean>;
+
+  // Delete a file
+  deleteFile(path: string): Promise<boolean>;
+
+  // Check if a path exists
+  exists(path: string): Promise<boolean>;
+
+  // Create a directory
+  createDirectory(path: string): Promise<void>;
+
+  // List directory contents
+  listDirectory(path: string): Promise<DirectoryEntry[]>;
+
+  // Get file/directory metadata
+  getMetadata(path: string): Promise<NodeMetadata | null>;
+
+  // Watch a file for changes
+  watchFile(path: string, callback: Function): Promise<DocumentWatcher | null>;
+
+  // Watch a directory for changes
+  watchDirectory(path: string, callback: Function): Promise<DocumentWatcher | null>;
 
   // Export to bundle bytes
   toBytes(): Promise<Uint8Array>;
