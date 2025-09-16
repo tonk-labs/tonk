@@ -1,1 +1,1 @@
-export { default as HelloWorld } from './HelloWorld';
+export { CompilerTest } from './CompilerTest';
