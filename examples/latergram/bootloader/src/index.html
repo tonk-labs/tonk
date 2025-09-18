@@ -13,7 +13,9 @@
         if (redirectPath) {
           console.log("Redirecting to:", redirectPath, "in 3 seconds...")
           await new Promise(resolve => setTimeout(resolve, 3000))
-          window.location.href = redirectPath
+          // instead of a redirect here, we should just signify to the sw that we want to load the new page
+          // window.location.href = redirectPath
+          window.location.href = window.location.href
         }
       }
       

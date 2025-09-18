@@ -51,46 +51,6 @@ self.addEventListener('activate', async _event => {
   clients.claim();
 });
 
-/* const targetToResponse = async (target, path) => {
-  if (target.mimeType) {
-    return new Response(target.content, {
-      headers: { 'Content-Type': target.mimeType },
-    });
-  }
-
-  if (typeof target === 'string') {
-    // Assume string content from VFS is base64-encoded
-    try {
-      const decodedContent = target;
-      // Try to determine content type from the content
-      let contentType = 'text/plain';
-      if (decodedContent.trim().startsWith('<!DOCTYPE html') || decodedContent.trim().startsWith('<!doctype html') || decodedContent.trim().startsWith('<html')) {
-        contentType = 'text/html';
-      } else if (decodedContent.trim().startsWith('{') || decodedContent.trim().startsWith('[')) {
-        contentType = 'application/json';
-      } else if (decodedContent.includes('function') || decodedContent.includes('const ') || decodedContent.includes('import ')) {
-        contentType = 'application/javascript';
-      } else if (decodedContent.includes('body {') || decodedContent.includes('@media')) {
-        contentType = 'text/css';
-      }
-      console.log(`i think this is: ${contentType}`);
-
-      return new Response(decodedContent, {
-        headers: { 'Content-Type': contentType },
-      });
-    } catch (e) {
-      // If base64 decode fails, treat as plain text
-      return new Response(target, {
-        headers: { 'Content-Type': 'text/plain' },
-      });
-    }
-  }
-
-  return new Response(JSON.stringify(target), {
-    headers: { 'Content-Type': 'application/json' },
-  });
-}; */
-
 const targetToResponse = async (target, path) => {
   if (target.mimeType) {
     return new Response(target.content, {
@@ -127,6 +87,7 @@ self.addEventListener('fetch', async event => {
   if (url.origin === location.origin) {
     event.respondWith(
       (async () => {
+        // Init tonk!
         try {
           await self.tonk.exists("/test");
           console.log("tonk is acting normally");
@@ -154,12 +115,33 @@ self.addEventListener('fetch', async event => {
           const appMatch = referrerPath.match(/^\/([^\/]+)\//);
           if (appMatch) {
             appContext = appMatch[1];
+            if (appContext.includes('test-wasm')) {
+              appContext.replace('test-wasm-2/', '');
+              console.log("old legacy stuff here???");
+            }
           }
         }
 
         // Handle root path - show app browser
         if (pathname === '/') {
-          pathname = '/index.html';
+          //pathname = '/index.html';
+          pathname = '/';
+
+          let target; 
+          try {
+            target = await self.tonk.readFile('/app/test-wasm-2/index.html');
+            console.log(`read ${'/app/test-wasm-2/index.html'} successfully!`);
+          } catch (error) {
+            console.log(`error inside asset branch trying to get ${'/app/test-wasm-2/index.html'}: ${error}`);
+            console.log(error);
+            target = null; 
+          }
+          console.log(target);
+
+          if (target) {
+            return targetToResponse(JSON.parse(target.content), '/app/test-wasm-2/index.html');
+          }
+
           // For the app browser itself, try to fetch from cache or network
           const response = await caches.match(event.request);
           if (response) {
@@ -213,7 +195,8 @@ self.addEventListener('fetch', async event => {
           return targetToResponse(JSON.parse(target.content), vfsPath);
         }
 
-        // Handle assets and other paths when in app context
+        // Handle assets and other paths when in a specific subset of app context 
+        // e.g. /app/test-wasm/index.html 
         if (appContext && !pathname.startsWith('/app/')) {
           // Rewrite the path to include the app context in VFS
           const rewrittenPath = `/app/${appContext}${pathname}`;
@@ -237,7 +220,7 @@ self.addEventListener('fetch', async event => {
         // Handle assets and other paths when outside of app context
         if (!appContext && !(!pathname.includes('.js') && !pathname.includes('.css') && !pathname.includes('.wasm') && !pathname.includes('.svg') && !pathname.includes('.ico'))) {
           // Rewrite the path to include the app context in VFS
-          const rewrittenPath = `/app/${appContext}${pathname}`;
+          const rewrittenPath = `/app/${pathname}`;
           console.log(`Rewriting ${pathname} to ${rewrittenPath}`);
 
           let target; 
