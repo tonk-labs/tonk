@@ -125,21 +125,20 @@ self.addEventListener('fetch', async event => {
         // Handle root path - show app browser
         if (pathname === '/') {
           //pathname = '/index.html';
-          pathname = '/';
 
           let target; 
           try {
-            target = await self.tonk.readFile('/app/test-wasm-2/index.html');
-            console.log(`read ${'/app/test-wasm-2/index.html'} successfully!`);
+            target = await self.tonk.readFile('/app/index.html');
+            console.log(`read ${'/app/index.html'} successfully!`);
           } catch (error) {
-            console.log(`error inside asset branch trying to get ${'/app/test-wasm-2/index.html'}: ${error}`);
+            console.log(`error inside asset branch trying to get ${'/app/index.html'}: ${error}`);
             console.log(error);
             target = null; 
           }
           console.log(target);
 
           if (target) {
-            return targetToResponse(JSON.parse(target.content), '/app/test-wasm-2/index.html');
+            return targetToResponse(JSON.parse(target.content), '/app/index.html');
           }
 
           // For the app browser itself, try to fetch from cache or network
@@ -220,7 +219,7 @@ self.addEventListener('fetch', async event => {
         // Handle assets and other paths when outside of app context
         if (!appContext && !(!pathname.includes('.js') && !pathname.includes('.css') && !pathname.includes('.wasm') && !pathname.includes('.svg') && !pathname.includes('.ico'))) {
           // Rewrite the path to include the app context in VFS
-          const rewrittenPath = `/app/${pathname}`;
+          const rewrittenPath = `/app${pathname}`;
           console.log(`Rewriting ${pathname} to ${rewrittenPath}`);
 
           let target; 

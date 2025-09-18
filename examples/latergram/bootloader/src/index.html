@@ -12,7 +12,7 @@
         const redirectPath = '/test-wasm-2/'
         if (redirectPath) {
           console.log("Redirecting to:", redirectPath, "in 3 seconds...")
-          await new Promise(resolve => setTimeout(resolve, 3000))
+          //await new Promise(resolve => setTimeout(resolve, 3000))
           // instead of a redirect here, we should just signify to the sw that we want to load the new page
           // window.location.href = redirectPath
           window.location.href = window.location.href
@@ -40,6 +40,9 @@
               console.log("Service worker now controlling the page")
               await handleRedirect()
             })
+            try {await handleRedirect()}
+            catch (error) {console.log(error)}
+
             await new Promise(resolve => setTimeout(resolve, 5000))
           }
         }

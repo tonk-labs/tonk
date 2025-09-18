@@ -14,13 +14,13 @@ async function loadDistFiles(distPath, basePath = '') {
         const relativePath = basePath ? `${basePath}/${file}` : file;
 
         if (fs.statSync(fullPath).isDirectory()) {
-            loadDistFiles(fullPath, relativePath);
+          await tonk.createDirectory(relativePath);
+          loadDistFiles(fullPath, relativePath);
         } else {
-            const content = fs.readFileSync(fullPath, 'utf-8');
-            const mimeType = getMimeType(file);
-            console.log(relativePath);
-            await tonk.createFile(relativePath, content);
-            console.log(await tonk.readFile(relativePath));
+          const content = fs.readFileSync(fullPath, 'utf-8');
+          console.log(relativePath);
+          await tonk.createFile(relativePath, content);
+          console.log(await tonk.readFile(relativePath));
         }
     }
 } 
@@ -61,8 +61,11 @@ async function uploadFilesToTonk() {
       await tonk.connectWebsocket('ws://localhost:8081');
       console.log('Connected to Tonk server');
     }
-
-    if (await tonk.exists('/app/test-wasm-2/index.html')) { 
+    if (await tonk.exists('/app')) {
+      await tonk.deleteFile('/app');
+      console.log("------- DELETED !!! -------");
+    }
+    if (await tonk.exists('/app/index.html')) { 
       console.log("already exists :)");
       console.log(await tonk.listDirectory('/app'));
       return;
@@ -70,18 +73,17 @@ async function uploadFilesToTonk() {
     else {
       // 5. Create directory structure
       await tonk.createDirectory('/app');
-      await tonk.createDirectory('/app/test-wasm-2');
   
       console.log('Created directory structure');
       
       // 6. upload files using tonk file system :o
       const distPath = './eg-app-2';
-      const basePath = '/app/test-wasm-2';
+      const basePath = '/app';
   
       await loadDistFiles(distPath, basePath); 
       
       console.log('✅ All files uploaded successfully!');
-      console.log('🚀 Your React app should now be available at /test-wasm-2/');
+      console.log('🚀 Your React app should now be available');
     }
 
   } catch (error) {
@@ -89,27 +91,9 @@ async function uploadFilesToTonk() {
   }
 }
 
-function getMimeType(filePath) {
-    const ext = path.extname(filePath).toLowerCase();
-    const mimeTypes = {
-        '.html': 'text/html',
-        '.css': 'text/css',
-        '.js': 'application/javascript',
-        '.svg': 'image/svg+xml',
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif',
-        '.json': 'application/json',
-        '.txt': 'text/plain'
-    };
-    return mimeTypes[ext] || 'application/octet-stream';
-}
-
 // Run the upload
 await uploadFilesToTonk();
 console.log("all uploaded :)")
 
 console.log(tonk.listDirectory('/'));
-console.log(await tonk.listDirectory('/app/test-wasm-2'));
-console.log(await tonk.listDirectory('/app/test-wasm-2/assets'));
+console.log(await tonk.listDirectory('/app'));
