@@ -1456,7 +1456,7 @@ async function __wbg_init(module_or_path) {
         if (Object.getPrototypeOf(module_or_path) === Object.prototype) {
             ({module_or_path} = module_or_path)
         } else {
-            console.warn('using deprecated parameters for the initialization function; pass a single object instead')
+            console.warn(`using deprecated parameters for the initialization function; pass a single object instead, not ${module_or_path}`)
         }
     }
 

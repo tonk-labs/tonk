@@ -5,10 +5,14 @@
     <title>Opening portal...</title>
     <script>
       async function handleRedirect() {
-        const redirectPath = '/test-wasm/'
+        // Debug bundle contents first
+        console.log("Bundle is ready! Check the service worker console logs to see available directories.")
+
+        // Now redirect to test our React app
+        const redirectPath = '/test-wasm-2/'
         if (redirectPath) {
-          console.log("Redirecting to:", '/test-wasm/', "in 5 seconds...")
-          await new Promise(resolve => setTimeout(resolve, 5000))
+          console.log("Redirecting to:", redirectPath, "in 3 seconds...")
+          await new Promise(resolve => setTimeout(resolve, 3000))
           window.location.href = redirectPath
         }
       }
