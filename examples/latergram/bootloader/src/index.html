@@ -9,14 +9,9 @@
         console.log("Bundle is ready! Check the service worker console logs to see available directories.")
 
         // Now redirect to test our React app
-        const redirectPath = '/test-wasm-2/'
-        if (redirectPath) {
-          console.log("Redirecting to:", redirectPath, "in 3 seconds...")
-          //await new Promise(resolve => setTimeout(resolve, 3000))
-          // instead of a redirect here, we should just signify to the sw that we want to load the new page
-          // window.location.href = redirectPath
-          window.location.href = window.location.href
-        }
+        // instead of a redirect here, we should just signify to the sw that we want to load the new page
+        console.log("Redirecting...")
+        window.location.href = window.location.href
       }
       
       (async () => {
@@ -43,7 +38,7 @@
             try {await handleRedirect()}
             catch (error) {console.log(error)}
 
-            await new Promise(resolve => setTimeout(resolve, 5000))
+            await new Promise(resolve => setTimeout(resolve, 1000))
           }
         }
       })()

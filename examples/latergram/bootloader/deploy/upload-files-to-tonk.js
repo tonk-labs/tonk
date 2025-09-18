@@ -77,7 +77,7 @@ async function uploadFilesToTonk() {
       console.log('Created directory structure');
       
       // 6. upload files using tonk file system :o
-      const distPath = './eg-app-2';
+      const distPath = Deno.args[0] || './eg-app';
       const basePath = '/app';
   
       await loadDistFiles(distPath, basePath); 
