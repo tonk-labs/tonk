@@ -171,7 +171,7 @@ self.addEventListener('fetch', async event => {
         // Handle app paths: /{app-name}/... or just /{app-name}
         // Check if this looks like an app path (not a static asset)
         const appPathMatch = pathname.match(/^\/([^\/]+)(?:\/(.*))?$/);
-        if (appPathMatch && !pathname.startsWith('/assets/') && !pathname.includes('.js') && !pathname.includes('.css') && !pathname.includes('.wasm')) {
+        if (appPathMatch && !pathname.startsWith('/assets/') && !pathname.includes('.js') && !pathname.includes('.css') && !pathname.includes('.wasm') && !pathname.includes('.svg')) {
           const [, appName, resourcePath = ''] = appPathMatch;
           let vfsPath = `/app/${appName}/${resourcePath}`;
 
