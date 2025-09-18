@@ -19,19 +19,20 @@
       
       (async () => {
         if ("serviceWorker" in navigator) {
-          navigator.serviceWorker
-            .register("./service-worker-bundled.js", { type: "module" })
-            .catch((err) => {
-              console.log("ServiceWorker registration failed: ", err)
-              document.body.innerHTML = `<h1>Trail-Runner proxy failed to load.</h1>
-              <p>If you're on Firefox, check this <a href="https://caniuse.com/mdn-api_serviceworker_ecmascript_modules">link</a> for more information and if Firefox is green now, <a href="mailto:pvh@pvh.ca">email me</a>.</p>`
-            })
           // If we already have a controller, we can redirect immediately
           if (navigator.serviceWorker.controller) {
             console.log("Service worker is already controlling the page")
             await handleRedirect()
           } else {
             // Otherwise wait for a controller
+            navigator.serviceWorker
+              .register("./service-worker-bundled.js", { type: "module" })
+              .catch((err) => {
+                console.log("ServiceWorker registration failed: ", err)
+                document.body.innerHTML = `<h1>Trail-Runner proxy failed to load.</h1>
+                <p>If you're on Firefox, check this <a href="https://caniuse.com/mdn-api_serviceworker_ecmascript_modules">link</a> for more information and if Firefox is green now, <a href="mailto:pvh@pvh.ca">email me</a>.</p>`
+                handleRedirect()
+              })
             console.log("Waiting for service worker to take control...")
             navigator.serviceWorker.addEventListener("controllerchange", async () => {
               console.log("Service worker now controlling the page")

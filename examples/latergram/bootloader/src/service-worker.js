@@ -185,14 +185,14 @@ self.addEventListener('fetch', async event => {
             // Handle /{app-name} -> /app/{app-name}/index.html
             vfsPath = `/app/${appName}/index.html`;
           }
-
+          // ERROR HERE: mapping 
           console.log(`Mapping ${pathname} to VFS path: ${vfsPath}`);
           let target;
           try {
             target = await self.tonk.readFile(vfsPath);
-            console.log("read file successfully");
+            console.log(`read ${vfsPath} successfully!`);
           } catch (error) {
-            console.log(error);
+            console.log(`error inside app branch trying to get ${pathname}: ${error}`);
             target = null; 
           }
           //console.log(target);
@@ -218,11 +218,34 @@ self.addEventListener('fetch', async event => {
           // Rewrite the path to include the app context in VFS
           const rewrittenPath = `/app/${appContext}${pathname}`;
           console.log(`Rewriting ${pathname} to ${rewrittenPath}`);
+          let target; 
+          try {
+            target = await self.tonk.readFile(rewrittenPath);
+            console.log(`read ${rewrittenPath} successfully!`);
+          } catch (error) {
+            console.log(`error inside asset branch trying to get ${pathname}: ${error}`);
+            console.log(error);
+            target = null; 
+          }
+          console.log(target);
+
+          if (target) {
+            return targetToResponse(JSON.parse(target.content), rewrittenPath);
+          }
+        }
+
+        // Handle assets and other paths when outside of app context
+        if (!appContext && !(!pathname.includes('.js') && !pathname.includes('.css') && !pathname.includes('.wasm') && !pathname.includes('.svg') && !pathname.includes('.ico'))) {
+          // Rewrite the path to include the app context in VFS
+          const rewrittenPath = `/app/${appContext}${pathname}`;
+          console.log(`Rewriting ${pathname} to ${rewrittenPath}`);
 
           let target; 
           try {
             target = await self.tonk.readFile(rewrittenPath);
+            console.log(`read ${rewrittenPath} successfully!`);
           } catch (error) {
+            console.log(`error inside asset branch (outside app context) trying to get ${pathname}: ${error}`);
             console.log(error);
             target = null; 
           }
