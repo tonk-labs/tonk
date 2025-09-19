@@ -9,7 +9,7 @@
         console.log("Bundle is ready! Check the service worker console logs to see available directories.")
 
         // Now redirect to test our React app
-        // instead of a redirect here, we should just signify to the sw that we want to load the new page
+        // To remove the need for an augmented url, trigger a fetch instruction to signify to the SW that the app index should be loaded
         console.log("Redirecting...")
         window.location.href = window.location.href
       }
