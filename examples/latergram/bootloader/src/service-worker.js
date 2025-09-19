@@ -166,7 +166,7 @@ self.addEventListener('fetch', async event => {
             // Handle /{app-name} -> /app/{app-name}/index.html
             vfsPath = `/app/${appName}/index.html`;
           }
-          // ERROR HERE: mapping 
+          
           console.log(`Mapping ${pathname} to VFS path: ${vfsPath}`);
           let target;
           try {
@@ -174,27 +174,31 @@ self.addEventListener('fetch', async event => {
             console.log(`read ${vfsPath} successfully!`);
           } catch (error) {
             console.log(`error inside app branch trying to get ${pathname}: ${error}`);
-            target = null; 
+
+            // try defaulting to the home page if path to current page is not found, but restrict to html pages only
+            if (vfsPath.includes('.html')) {
+              console.log("rerouting to app/index.html...");
+              try {
+                target = await self.tonk.readFile('/app/index.html');
+                console.log(`read /app/index.html successfully!`);
+              } catch (error) {
+                console.log(error);
+                target = null; 
+              }
+            }
           }
           //console.log(target);
 
           if (!target) {
-            // try defaulting to the home page if path not found 
-            console.log("rerouting to index.html...");
-            try {
-              target = await self.tonk.readFile('/app/index.html');
-              console.log(`read /app/index.html successfully!`);
-            } catch (error) {
-              const directories = await self.tonk.listDirectory('/app');
-              console.log(directories);
-              return new Response(
-                `App path "${pathname}" (mapped to "${vfsPath}") not found. directories: ${JSON.stringify(directories)}. Make sure the app is properly loaded. error: ${error}`,
-                {
-                  status: 404,
-                  headers: { 'Content-Type': 'text/plain' },
-                }
-              );
-            }
+            const directories = await self.tonk.listDirectory('/app');
+            console.log(directories);
+            return new Response(
+              `App path "${pathname}" (mapped to "${vfsPath}") not found. directories available: ${JSON.stringify(directories)}. Make sure the app is properly loaded. error: ${error}`,
+              {
+                status: 404,
+                headers: { 'Content-Type': 'text/plain' },
+              }
+            );
           }
           console.log(target);
 
