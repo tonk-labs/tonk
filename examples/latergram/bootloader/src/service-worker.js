@@ -179,15 +179,22 @@ self.addEventListener('fetch', async event => {
           //console.log(target);
 
           if (!target) {
-            const directories = await self.tonk.listDirectory('/app');
-            console.log(directories);
-            return new Response(
-              `App path "${pathname}" (mapped to "${vfsPath}") not found. directories: ${JSON.stringify(directories)}. Make sure the app is properly loaded.`,
-              {
-                status: 404,
-                headers: { 'Content-Type': 'text/plain' },
-              }
-            );
+            // try defaulting to the home page if path not found 
+            console.log("rerouting to index.html...");
+            try {
+              target = await self.tonk.readFile('/app/index.html');
+              console.log(`read /app/index.html successfully!`);
+            } catch (error) {
+              const directories = await self.tonk.listDirectory('/app');
+              console.log(directories);
+              return new Response(
+                `App path "${pathname}" (mapped to "${vfsPath}") not found. directories: ${JSON.stringify(directories)}. Make sure the app is properly loaded. error: ${error}`,
+                {
+                  status: 404,
+                  headers: { 'Content-Type': 'text/plain' },
+                }
+              );
+            }
           }
           console.log(target);
 
