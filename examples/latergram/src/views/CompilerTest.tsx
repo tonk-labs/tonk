@@ -1,12 +1,11 @@
 import React from 'react';
-import { Compiler } from '../components/Compiler';
+import { HotCompiler } from '../components/HotCompiler';
 
 /**
  * Test page for the simplified TypeScript compiler
  */
 export const CompilerTest: React.FC = () => {
-  const exampleCode = `// No imports needed! React and hooks are automatically available
-
+  const exampleCode = `
 export default function TodoList() {
   const [todos, setTodos] = useState([
     { id: 1, text: 'Learn TypeScript', done: false },
@@ -90,29 +89,13 @@ export default function TodoList() {
   return (
     <div className="min-h-screen bg-gray-100 p-8">
       <div className="max-w-6xl mx-auto">
-        <h1 className="text-3xl font-bold text-gray-800 mb-2">
-          TypeScript Compiler
-        </h1>
-        <p className="text-gray-600 mb-8">
-          Write TypeScript/React code without imports. All React hooks and
-          utilities are automatically available.
-        </p>
-
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-          <h3 className="font-semibold text-blue-900 mb-2">
-            Available without imports:
-          </h3>
-          <code className="text-sm text-blue-800">
-            React, useState, useEffect, useCallback, useMemo, useRef,
-            useReducer, useContext, Fragment
-          </code>
-        </div>
-
-        <Compiler
+        <HotCompiler
           initialCode={exampleCode}
           height="500px"
+          autoCompile={true}
+          debounceDelay={600}
           onCompiled={result => {
-            console.log('Compiled:', result);
+            console.log('Hot compiled:', result);
           }}
         />
       </div>
