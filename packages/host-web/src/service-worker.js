@@ -1,7 +1,38 @@
-import { TonkCore, initializeTonk } from "@tonk-local/index-slim.js";
+/* eslint-env serviceworker */
+/* global self, console, fetch, atob, btoa, caches, clients, location, URL, Response */
+import { TonkCore, initializeTonk } from "@tonk/core/slim";
 import mime from 'mime';
 
 const CACHE_NAME = 'v6';
+
+// Debug logging flag - set to true to enable comprehensive logging
+const DEBUG_LOGGING = true;
+
+// Logger utility
+function log(level, message, data) {
+  if (!DEBUG_LOGGING) return;
+
+  const timestamp = new Date().toISOString();
+  const prefix = `[VFS Service Worker ${timestamp}] ${level.toUpperCase()}:`;
+
+  if (data !== undefined) {
+    console[level](prefix, message, data);
+  } else {
+    console[level](prefix, message);
+  }
+}
+
+// Worker state for file watchers
+const watchers = new Map();
+
+// Helper to post messages back to main thread
+function postResponse(response) {
+  log('info', 'Posting response to main thread', {
+    type: response.type,
+    success: 'success' in response ? response.success : 'N/A',
+  });
+  self.postMessage(response);
+}
 
 async function loadTonk() {
   // Initialize WASM with the remote path
@@ -10,13 +41,329 @@ async function loadTonk() {
   // Fetch the manifest data
   const manifestResponse = await fetch('http://localhost:8081/.manifest.tonk');
   const manifestBytes = await manifestResponse.arrayBuffer();
-  // for use in testing in place of the real manifest root doc
-  const manifestData = new Uint8Array([80, 75, 3, 4, 20, 0, 0, 0, 8, 0, 0, 0, 33, 0, 189, 99, 1, 115, 217, 0, 0, 0, 58, 1, 0, 0, 13, 0, 0, 0, 109, 97, 110, 105, 102, 101, 115, 116, 46, 106, 115, 111, 110, 77, 143, 49, 79, 195, 48, 16, 133, 247, 252, 138, 147, 87, 72, 228, 52, 137, 160, 222, 88, 144, 24, 138, 58, 52, 161, 8, 49, 84, 245, 33, 76, 154, 187, 234, 236, 134, 160, 42, 255, 29, 217, 64, 197, 248, 125, 126, 79, 126, 119, 206, 0, 212, 176, 35, 247, 134, 62, 116, 40, 222, 49, 41, 3, 229, 117, 244, 227, 133, 207, 25, 64, 10, 126, 176, 252, 61, 3, 168, 193, 81, 98, 157, 1, 204, 169, 34, 204, 225, 193, 42, 3, 202, 251, 119, 172, 199, 250, 185, 181, 237, 106, 187, 222, 158, 6, 234, 187, 169, 92, 57, 251, 180, 86, 41, 138, 20, 228, 235, 200, 142, 130, 87, 6, 94, 94, 147, 36, 12, 159, 44, 125, 43, 238, 159, 156, 30, 57, 96, 100, 58, 29, 14, 63, 166, 67, 178, 233, 235, 223, 101, 211, 134, 169, 191, 32, 128, 218, 11, 238, 2, 218, 187, 16, 183, 44, 244, 162, 201, 245, 50, 47, 111, 54, 101, 99, 154, 91, 83, 233, 162, 174, 170, 43, 173, 141, 214, 105, 77, 234, 224, 116, 100, 9, 104, 239, 133, 135, 88, 11, 76, 125, 190, 103, 65, 24, 117, 81, 22, 90, 165, 224, 28, 143, 205, 230, 111, 80, 75, 3, 4, 20, 0, 0, 0, 8, 0, 0, 0, 33, 0, 68, 12, 55, 184, 214, 0, 0, 0, 213, 0, 0, 0, 59, 0, 0, 0, 115, 116, 111, 114, 97, 103, 101, 47, 115, 115, 47, 104, 101, 52, 118, 52, 89, 85, 100, 85, 77, 88, 80, 88, 117, 109, 110, 107, 86, 120, 49, 77, 105, 100, 87, 80, 47, 115, 110, 97, 112, 115, 104, 111, 116, 47, 98, 117, 110, 100, 108, 101, 95, 101, 120, 112, 111, 114, 116, 107, 205, 247, 106, 182, 126, 42, 234, 204, 112, 138, 145, 81, 160, 187, 51, 224, 202, 92, 43, 247, 132, 29, 11, 62, 134, 207, 190, 34, 116, 149, 177, 187, 236, 199, 223, 222, 178, 72, 131, 63, 91, 111, 27, 68, 148, 221, 96, 14, 57, 236, 253, 97, 87, 153, 255, 251, 217, 18, 57, 231, 150, 77, 250, 35, 196, 206, 200, 196, 204, 36, 204, 172, 204, 228, 192, 236, 204, 20, 198, 196, 197, 200, 194, 196, 34, 106, 160, 200, 164, 204, 110, 194, 232, 196, 22, 198, 30, 46, 208, 192, 200, 196, 196, 192, 196, 88, 199, 192, 198, 196, 80, 199, 192, 88, 207, 192, 196, 206, 192, 194, 196, 192, 192, 194, 196, 92, 197, 145, 156, 145, 153, 147, 82, 148, 154, 199, 146, 151, 152, 155, 202, 85, 146, 153, 155, 90, 92, 146, 152, 91, 80, 204, 82, 82, 89, 144, 202, 158, 92, 148, 154, 88, 146, 154, 194, 145, 155, 159, 146, 153, 150, 153, 154, 194, 198, 80, 197, 86, 195, 88, 199, 204, 200, 86, 203, 196, 200, 192, 204, 88, 195, 32, 198, 96, 198, 148, 162, 159, 146, 89, 52, 127, 203, 140, 195, 83, 141, 33, 36, 27, 3, 35, 0, 80, 75, 1, 2, 20, 3, 20, 0, 0, 0, 8, 0, 0, 0, 33, 0, 189, 99, 1, 115, 217, 0, 0, 0, 58, 1, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 164, 129, 0, 0, 0, 0, 109, 97, 110, 105, 102, 101, 115, 116, 46, 106, 115, 111, 110, 80, 75, 1, 2, 20, 3, 20, 0, 0, 0, 8, 0, 0, 0, 33, 0, 68, 12, 55, 184, 214, 0, 0, 0, 213, 0, 0, 0, 59, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 164, 129, 4, 1, 0, 0, 115, 116, 111, 114, 97, 103, 101, 47, 115, 115, 47, 104, 101, 52, 118, 52, 89, 85, 100, 85, 77, 88, 80, 88, 117, 109, 110, 107, 86, 120, 49, 77, 105, 100, 87, 80, 47, 115, 110, 97, 112, 115, 104, 111, 116, 47, 98, 117, 110, 100, 108, 101, 95, 101, 120, 112, 111, 114, 116, 80, 75, 5, 6, 0, 0, 0, 0, 2, 0, 2, 0, 164, 0, 0, 0, 51, 2, 0, 0, 0, 0]);
 
-  const tonk = await TonkCore.fromBytes(manifestData);
+  const tonk = await TonkCore.fromBytes(manifestBytes);
   await tonk.connectWebsocket('ws://localhost:8081');
   self.tonk = tonk;
   return tonk;
+}
+
+// Handle VFS file operations via messages
+async function handleMessage(message) {
+  log('info', 'Received message', {
+    type: message.type,
+    id: 'id' in message ? message.id : 'N/A',
+  });
+
+  if (!self.tonk && message.type !== 'init') {
+    log('error', 'Operation attempted before VFS initialization', {
+      type: message.type,
+    });
+    if ('id' in message) {
+      postResponse({
+        type: message.type,
+        id: message.id,
+        success: false,
+        error: 'VFS not initialized',
+      });
+    }
+    return;
+  }
+
+  switch (message.type) {
+    case 'readFile':
+      log('info', 'Reading file', { path: message.path, id: message.id });
+      try {
+        const content = await self.tonk.readFile(message.path);
+        log('info', 'File read successfully', {
+          path: message.path,
+          contentType: typeof content,
+          contentConstructor: content?.constructor?.name,
+          isString: typeof content === 'string',
+        });
+
+        // Extract content from Map and decode if needed
+        let stringContent;
+        if (content instanceof Map && content.has('content')) {
+          const rawContent = content.get('content');
+          if (typeof rawContent === 'string') {
+            // Clean and decode base64 content
+            try {
+              // Remove any whitespace and non-base64 characters
+              const cleanedContent = rawContent.replace(/[^A-Za-z0-9+/=]/g, '');
+
+              // Ensure proper padding
+              const paddedContent =
+                cleanedContent +
+                '==='.slice(0, (4 - (cleanedContent.length % 4)) % 4);
+
+              stringContent = atob(paddedContent);
+              log('info', 'Decoded base64 content', {
+                originalLength: rawContent.length,
+                cleanedLength: cleanedContent.length,
+                decodedLength: stringContent.length,
+              });
+            } catch (error) {
+              // If still not valid base64, use as-is
+              log('warn', 'Failed to decode base64, using raw content', {
+                error: error instanceof Error ? error.message : String(error),
+                contentPreview: rawContent.substring(0, 50) + '...',
+              });
+              stringContent = rawContent;
+            }
+          } else {
+            stringContent = String(rawContent);
+          }
+        } else if (typeof content === 'object' && content.content) {
+          // Handle case where content is already parsed JSON
+          const rawContent = content.content;
+          try {
+            stringContent = atob(rawContent.replace(/[^A-Za-z0-9+/=]/g, ''));
+          } catch (error) {
+            stringContent = rawContent;
+          }
+        } else {
+          stringContent =
+            typeof content === 'string' ? content : String(content);
+        }
+
+        log('info', 'Sending file content response', {
+          contentLength: stringContent.length,
+          preview: stringContent.substring(0, 100),
+        });
+
+        postResponse({
+          type: 'readFile',
+          id: message.id,
+          success: true,
+          data: stringContent,
+        });
+      } catch (error) {
+        log('error', 'Failed to read file', {
+          path: message.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'readFile',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'writeFile':
+      log('info', 'Writing file', {
+        path: message.path,
+        id: message.id,
+        create: message.create,
+        contentLength: message.content.length,
+      });
+      try {
+        // Encode content as base64 for TonkCore
+        const encodedContent = btoa(message.content);
+        log('info', 'Encoded content for storage', {
+          originalLength: message.content.length,
+          encodedLength: encodedContent.length,
+        });
+
+        if (message.create) {
+          log('info', 'Creating new file', { path: message.path });
+          await self.tonk.createFile(message.path, encodedContent);
+        } else {
+          log('info', 'Updating existing file', { path: message.path });
+          await self.tonk.updateFile(message.path, encodedContent);
+        }
+        log('info', 'File write completed successfully', {
+          path: message.path,
+        });
+        postResponse({
+          type: 'writeFile',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to write file', {
+          path: message.path,
+          create: message.create,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'writeFile',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'deleteFile':
+      log('info', 'Deleting file', { path: message.path, id: message.id });
+      try {
+        await self.tonk.deleteFile(message.path);
+        log('info', 'File deleted successfully', { path: message.path });
+        postResponse({
+          type: 'deleteFile',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to delete file', {
+          path: message.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'deleteFile',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'listDirectory':
+      log('info', 'Listing directory', { path: message.path, id: message.id });
+      try {
+        const files = await self.tonk.listDirectory(message.path);
+        log('info', 'Directory listed successfully', {
+          path: message.path,
+          fileCount: Array.isArray(files) ? files.length : 'unknown',
+        });
+        // Pass through the raw response from TonkCore
+        postResponse({
+          type: 'listDirectory',
+          id: message.id,
+          success: true,
+          data: files,
+        });
+      } catch (error) {
+        log('error', 'Failed to list directory', {
+          path: message.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'listDirectory',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'exists':
+      log('info', 'Checking file existence', {
+        path: message.path,
+        id: message.id,
+      });
+      try {
+        const exists = await self.tonk.exists(message.path);
+        log('info', 'File existence check completed', {
+          path: message.path,
+          exists,
+        });
+        postResponse({
+          type: 'exists',
+          id: message.id,
+          success: true,
+          data: exists,
+        });
+      } catch (error) {
+        log('error', 'Failed to check file existence', {
+          path: message.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'exists',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'watchFile':
+      log('info', 'Starting file watch', {
+        path: message.path,
+        id: message.id,
+      });
+      try {
+        const watcher = await self.tonk.watchFile(
+          message.path,
+          (rawContent) => {
+            log('info', 'File change detected', {
+              watchId: message.id,
+              path: message.path,
+            });
+
+            const base64 = JSON.parse(rawContent).content;
+            const decodedContent = atob(base64.replace(/[^A-Za-z0-9+/=]/g, ''));
+
+            postResponse({
+              type: 'fileChanged',
+              watchId: message.id,
+              content: decodedContent,
+            });
+          }
+        );
+        watchers.set(message.id, watcher);
+        log('info', 'File watch started successfully', {
+          path: message.path,
+          watchId: message.id,
+          totalWatchers: watchers.size,
+        });
+        postResponse({
+          type: 'watchFile',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to start file watch', {
+          path: message.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'watchFile',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'unwatchFile':
+      log('info', 'Stopping file watch', { watchId: message.id });
+      try {
+        const watcher = watchers.get(message.id);
+        if (watcher) {
+          log('info', 'Found watcher, stopping it', { watchId: message.id });
+          watcher.stop();
+          watchers.delete(message.id);
+          log('info', 'File watch stopped successfully', {
+            watchId: message.id,
+            remainingWatchers: watchers.size,
+          });
+        } else {
+          log('warn', 'No watcher found for ID', { watchId: message.id });
+        }
+        postResponse({
+          type: 'unwatchFile',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to stop file watch', {
+          watchId: message.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'unwatchFile',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+  }
 }
 
 try {
@@ -25,6 +372,8 @@ try {
   self.tonkPromise.then(r => {
     self.tonk = r;
     console.log('Tonk core service worker initialized');
+    // Signal to main thread that worker is ready for VFS operations
+    self.postMessage({ type: 'ready' });
   });
 } catch (error) {
   console.log(`tonk error when initialising: `, error); 
@@ -259,3 +608,17 @@ self.addEventListener('fetch', async event => {
     );
   }
 });
+
+// Listen for messages from main thread (for VFS operations)
+self.addEventListener('message', async event => {
+  try {
+    await handleMessage(event.data);
+  } catch (error) {
+    log('error', 'Error handling message', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+// Worker startup
+log('info', 'VFS Service Worker started', { debugLogging: DEBUG_LOGGING });
