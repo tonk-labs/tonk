@@ -1,0 +1,32 @@
+{
+  "name": "tonk-core",
+  "type": "module",
+  "collaborators": [
+    "Tonk Labs"
+  ],
+  "description": "Core library of the Tonk stack, providing sync engine and bundling",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tonk-labs/tonk"
+  },
+  "files": [
+    "tonk_core_bg.wasm",
+    "tonk_core.js",
+    "tonk_core.d.ts"
+  ],
+  "main": "tonk_core.js",
+  "types": "tonk_core.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ],
+  "keywords": [
+    "tonk",
+    "local-first",
+    "sync",
+    "automerge",
+    "real-time",
+    "collaboration"
+  ]
+}
