@@ -1,18 +1,13 @@
 {
-  "name": "tonk-core-template",
+  "name": "latergram",
   "version": "0.1.0",
-  "description": "A Tonk application",
+  "description": "Ensemble demo",
   "type": "module",
   "main": "index.js",
-  "workspaces": [
-    "server"
-  ],
   "scripts": {
-    "dev": "concurrently \"pnpm dev:client\" \"pnpm dev:server\"",
-    "dev:client": "vite",
-    "dev:server": "pnpm --filter server dev",
+    "dev": "vite",
     "clean": "rm -rf dist bundle",
-    "build": "npm run clean && tsc && tsx scripts/build.ts",
+    "build": "pnpm clean && tsc && vite build",
     "serve": "vite preview",
     "deployment": "tonk deploy",
     "test": "jest",
@@ -27,6 +22,7 @@
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.2",
+    "esbuild-wasm": "^0.25.9",
     "mprocs": "^0.7.2",
     "postcss": "^8.4.31",
     "react-router-dom": "^6.29.0",
@@ -45,6 +41,7 @@
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "typescript": "^5.7.3",
     "zustand": "^5.0.3"
   },
   "author": "tonk-labs",

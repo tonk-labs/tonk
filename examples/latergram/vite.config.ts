@@ -21,27 +21,13 @@ export default defineConfig({
         short_name: 'Tonk App',
         description: 'My new Tonk App',
       },
+      workbox: {
+        additionalManifestEntries: [
+          { url: '/ts-compiler-sw.js', revision: null },
+        ],
+      },
     }),
   ],
-  server: {
-    port: 3000,
-    proxy: {
-      '/sync': {
-        target: 'ws://localhost:7777',
-        ws: true,
-        changeOrigin: true,
-      },
-      '/.well-known/root.json': {
-        target: 'http://localhost:7777',
-        changeOrigin: true,
-      },
-      '/api': {
-        target: 'http://localhost:6080',
-        changeOrigin: true,
-        secure: false,
-      },
-    },
-  },
   build: {
     sourcemap: true,
     outDir: 'dist',
