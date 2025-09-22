@@ -79,16 +79,8 @@ const projectQuestions = [
     message: 'What type of project would you like to create?',
     choices: [
       {
-        name: 'React - blank Tonk app',
+        name: 'React - blank tonk',
         value: 'react',
-      },
-      {
-        name: 'Social Feed - share and comment on posts',
-        value: 'social-feed',
-      },
-      {
-        name: 'Travel Planner - plan trips with friends',
-        value: 'travel-planner',
       },
     ],
     default: 'react',
