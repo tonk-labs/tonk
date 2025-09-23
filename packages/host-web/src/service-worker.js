@@ -1,5 +1,5 @@
 /* eslint-env serviceworker */
-/* global self, console, fetch, atob, btoa, caches, clients, location, URL, Response */
+/* global self, console, fetch, atob, btoa, caches, clients, location, URL, Response, __DEV_MODE__ */
 import { TonkCore, initializeTonk } from "@tonk/core/slim";
 import mime from 'mime';
 
@@ -7,6 +7,10 @@ const CACHE_NAME = 'v6';
 
 // Debug logging flag - set to true to enable comprehensive logging
 const DEBUG_LOGGING = true;
+
+// Development mode flag - injected by Vite
+const DEV_MODE = typeof __DEV_MODE__ !== 'undefined' ? __DEV_MODE__ : false;
+const DEV_SERVER_URL = 'http://localhost:3000';
 
 // Logger utility
 function log(level, message, data) {
@@ -32,6 +36,47 @@ function postResponse(response) {
     success: 'success' in response ? response.success : 'N/A',
   });
   self.postMessage(response);
+}
+
+// Check if development server is available
+async function isDevServerAvailable() {
+  if (!DEV_MODE) return false;
+  
+  try {
+    await fetch(DEV_SERVER_URL + '/', { 
+      method: 'HEAD',
+      mode: 'no-cors',
+    });
+    return true;
+  } catch (error) {
+    log('info', 'Dev server not available', { error: error.message });
+    return false;
+  }
+}
+
+// Proxy request to development server
+async function proxyToDevServer(pathname) {
+  try {
+    const devUrl = DEV_SERVER_URL + pathname;
+    log('info', 'Proxying to dev server', { pathname, devUrl });
+    
+    const response = await fetch(devUrl);
+    if (response.ok) {
+      return response;
+    }
+    
+    log('info', 'Dev server returned non-OK status', { 
+      status: response.status, 
+      pathname 
+    });
+    return null;
+  } catch (error) {
+    log('info', 'Failed to proxy to dev server', { 
+      pathname, 
+      error: error.message 
+    });
+    return null;
+  }
 }
 
 async function loadTonk() {
@@ -374,9 +419,15 @@ try {
     console.log('Tonk core service worker initialized');
     // Signal to main thread that worker is ready for VFS operations
     self.postMessage({ type: 'ready' });
+  }).catch(error => {
+    console.log(`tonk error when initialising: `, error);
+    self.tonkInitializationFailed = true;
+    // Still signal ready so the main thread knows we're operational (just without VFS)
+    self.postMessage({ type: 'ready', tonkAvailable: false });
   });
 } catch (error) {
-  console.log(`tonk error when initialising: `, error); 
+  console.log(`tonk error when initialising: `, error);
+  self.tonkInitializationFailed = true;
 }
 
 async function clearOldCaches() {
@@ -390,12 +441,12 @@ async function clearOldCaches() {
   await Promise.all(deletePromises);
 }
 
-self.addEventListener('install', _event => {
+self.addEventListener('install', () => {
   console.log('Installing SW');
   self.skipWaiting();
 });
 
-self.addEventListener('activate', async _event => {
+self.addEventListener('activate', async () => {
   console.log('Activating service worker.');
   await clearOldCaches();
   clients.claim();
@@ -433,26 +484,43 @@ const targetToResponse = async (target, path) => {
 self.addEventListener('fetch', async event => {
   const url = new URL(event.request.url);
   console.log("response requested");
+  let pathname = url.pathname;
+  if (!pathname.includes('service-worker') && !pathname.includes('.wasm')) {
+    const devResponse = await proxyToDevServer(pathname);
+    if (devResponse) {
+      log('info', 'Served from dev server', { pathname });
+      return devResponse;
+    }
+  }
 
   if (url.origin === location.origin) {
     event.respondWith(
       (async () => {
-        // Init tonk!
+        // Wait for tonk initialization to complete (or fail)
         try {
-          await self.tonk.exists("/test");
-          console.log("tonk is acting normally");
-        } catch (error) {
-          console.log("error when using tonk: ", error);
-          try {
-            console.log('Before registration');
-            self.tonk = await loadTonk();
-            console.log('Tonk core service worker initialized');
-          } catch (error) {
-            console.log(`tonk error when initialising: `, error); 
+          if (self.tonkPromise && !self.tonk && !self.tonkInitializationFailed) {
+            console.log('Waiting for tonk initialization...');
+            await self.tonkPromise;
           }
+        } catch (error) {
+          console.log('Tonk initialization failed, continuing without VFS:', error);
+          self.tonkInitializationFailed = true;
         }
+
         let pathname = url.pathname;
         console.log('Service worker handling:', pathname);
+
+        // In development mode, try to proxy to dev server first
+        if (DEV_MODE && await isDevServerAvailable()) {
+          // Try dev server for all requests except service worker itself
+          if (!pathname.includes('service-worker') && !pathname.includes('.wasm')) {
+            const devResponse = await proxyToDevServer(pathname);
+            if (devResponse) {
+              log('info', 'Served from dev server', { pathname });
+              return devResponse;
+            }
+          }
+        }
 
         // Check if we're serving from an app context by looking at the referrer
         const referrer = event.request.referrer;
@@ -462,7 +530,7 @@ self.addEventListener('fetch', async event => {
           const referrerUrl = new URL(referrer);
           const referrerPath = referrerUrl.pathname;
           // Extract app name if referrer is from /{app-name}/
-          const appMatch = referrerPath.match(/^\/([^\/]+)\//);
+          const appMatch = referrerPath.match(/^\/([^/]+)\//);
           if (appMatch) {
             appContext = appMatch[1];
             if (appContext.includes('test-wasm')) {
@@ -501,7 +569,7 @@ self.addEventListener('fetch', async event => {
 
         // Handle app paths: /{app-name}/... or just /{app-name}
         // Check if this looks like an app path (not a static asset)
-        const appPathMatch = pathname.match(/^\/([^\/]+)(?:\/(.*))?$/);
+        const appPathMatch = pathname.match(/^\/([^/]+)(?:\/(.*))?$/);
         if (appPathMatch && !pathname.startsWith('/assets/') && !pathname.includes('.js') && !pathname.includes('.css') && !pathname.includes('.wasm') && !pathname.includes('.svg')) {
           const [, appName, resourcePath = ''] = appPathMatch;
           let vfsPath = `/app/${appName}/${resourcePath}`;
@@ -519,10 +587,12 @@ self.addEventListener('fetch', async event => {
           
           console.log(`Mapping ${pathname} to VFS path: ${vfsPath}`);
           let target;
+          let lastError = null;
           try {
             target = await self.tonk.readFile(vfsPath);
             console.log(`read ${vfsPath} successfully!`);
           } catch (error) {
+            lastError = error;
             console.log(`error inside app branch trying to get ${pathname}: ${error}`);
 
             // try defaulting to the home page if path to current page is not found, but restrict to html pages only
@@ -531,8 +601,8 @@ self.addEventListener('fetch', async event => {
               try {
                 target = await self.tonk.readFile('/app/index.html');
                 console.log(`read /app/index.html successfully!`);
-              } catch (error) {
-                console.log(error);
+              } catch (fallbackError) {
+                console.log(fallbackError);
                 target = null; 
               }
             }
@@ -542,7 +612,7 @@ self.addEventListener('fetch', async event => {
             const directories = await self.tonk.listDirectory('/app');
             console.log(directories);
             return new Response(
-              `App path "${pathname}" (mapped to "${vfsPath}") not found. directories available: ${JSON.stringify(directories)}. Make sure the app is properly loaded. error: ${error}`,
+              `App path "${pathname}" (mapped to "${vfsPath}") not found. directories available: ${JSON.stringify(directories)}. Make sure the app is properly loaded. error: ${lastError}`,
               {
                 status: 404,
                 headers: { 'Content-Type': 'text/plain' },

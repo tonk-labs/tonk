@@ -1,11 +1,12 @@
 {
-  "name": "trail-runner",
-  "version": "0.0.2",
-  "description": "A boot-loader for a local-first web.",
+  "name": "host-web",
+  "version": "0.0.1",
+  "description": "Host shell to bootstrap a tonk on the web",
   "scripts": {
     "dev": "npm run build:sw && vite dev",
+    "dev:with-proxy": "npm run build:sw && NODE_ENV=development vite dev",
     "build": "npm run build:sw && vite build",
-    "build:sw": "vite build --config vite.sw.config.ts && cp -r dist-sw/* dist/",
+    "build:sw": "vite build --config vite.sw.config.ts && mkdir -p dist && cp -r dist-sw/* dist/",
     "preview": "vite preview",
     "serve-raw": "serve src"
   },
@@ -20,6 +21,7 @@
     "vite": "^5.0.0"
   },
   "dependencies": {
+    "@tonk/core": "workspace:../core-js",
     "mime": "^4.1.0",
     "tailwindcss": "^4.1.13"
   }

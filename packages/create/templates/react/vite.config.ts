@@ -1,42 +1,49 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import wasm from "vite-plugin-wasm";
-import { VitePWA } from "vite-plugin-pwa";
-import topLevelAwait from "vite-plugin-top-level-await";
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import wasm from 'vite-plugin-wasm';
+import { VitePWA } from 'vite-plugin-pwa';
+import topLevelAwait from 'vite-plugin-top-level-await';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  base: process.env.VITE_BASE_PATH || "/",
+  base: process.env.VITE_BASE_PATH || '/',
   plugins: [
     wasm(),
     react(),
     topLevelAwait(),
     VitePWA({
-      registerType: "autoUpdate",
+      registerType: 'autoUpdate',
       devOptions: {
         enabled: true,
       },
       manifest: {
-        name: "Tonk App",
-        short_name: "Tonk App",
-        description: "My new Tonk App",
+        name: 'Tonk App',
+        short_name: 'Tonk App',
+        description: 'My new Tonk App',
       },
     }),
   ],
   server: {
-    port: 3000,
+    port: 3001,
+    cors: true,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers':
+        'Origin, X-Requested-With, Content-Type, Accept, Authorization',
+    },
     proxy: {
-      "/sync": {
-        target: "ws://localhost:7777",
+      '/sync': {
+        target: 'ws://localhost:7777',
         ws: true,
         changeOrigin: true,
       },
-      "/.well-known/root.json": {
-        target: "http://localhost:7777",
+      '/.well-known/root.json': {
+        target: 'http://localhost:7777',
         changeOrigin: true,
       },
-      "/api": {
-        target: "http://localhost:6080",
+      '/api': {
+        target: 'http://localhost:6080',
         changeOrigin: true,
         secure: false,
       },
@@ -44,24 +51,24 @@ export default defineConfig({
   },
   build: {
     sourcemap: true,
-    outDir: "dist",
-    assetsDir: "assets",
+    outDir: 'dist',
+    assetsDir: 'assets',
     rollupOptions: {
       // Improves chunking to address the large file size warning
       output: {
         manualChunks: {
-          vendor: ["react", "react-dom", "react-router-dom"],
-          automerge: ["@automerge/automerge"],
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          automerge: ['@automerge/automerge'],
         },
       },
     },
   },
   optimizeDeps: {
     esbuildOptions: {
-      target: "esnext",
+      target: 'esnext',
     },
   },
   esbuild: {
-    target: "esnext",
+    target: 'esnext',
   },
 });

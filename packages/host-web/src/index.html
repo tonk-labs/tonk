@@ -19,7 +19,7 @@
           // If we already have a controller, we can redirect immediately
           if (navigator.serviceWorker.controller) {
             console.log("Service worker is already controlling the page")
-            await handleRedirect()
+            // await handleRedirect()
           } else {
             // Otherwise wait for a controller
             navigator.serviceWorker
@@ -28,17 +28,14 @@
                 console.log("ServiceWorker registration failed: ", err)
                 document.body.innerHTML = `<h1>Trail-Runner proxy failed to load.</h1>
                 <p>If you're on Firefox, check this <a href="https://caniuse.com/mdn-api_serviceworker_ecmascript_modules">link</a> to see if support is available yet.</p>`
-                handleRedirect()
+                // handleRedirect()
               })
             console.log("Waiting for service worker to take control...")
             navigator.serviceWorker.addEventListener("controllerchange", async () => {
               console.log("Service worker now controlling the page")
-              await handleRedirect()
+              // await handleRedirect()
             })
-            try {await handleRedirect()}
-            catch (error) {console.log(error)}
 
-            await new Promise(resolve => setTimeout(resolve, 1000))
           }
         }
       })()
