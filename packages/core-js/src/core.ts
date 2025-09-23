@@ -111,6 +111,20 @@ export interface TonkConfig {
 }
 
 /**
+ * Configuration for bundle export
+ */
+export interface BundleConfig {
+  /** Entry points for the bundle (e.g., main application files) */
+  entrypoints?: string[];
+  /** Network URIs that the bundle may need to access */
+  networkUris?: string[];
+  /** Optional notes about the bundle */
+  notes?: string;
+  /** Custom vendor-specific metadata */
+  vendorMetadata?: any;
+}
+
+/**
  * Base error class for all Tonk-related errors
  */
 export class TonkError extends Error {
@@ -290,6 +304,20 @@ export class Bundle {
       return await this.#wasm.getManifest();
     } catch (error) {
       throw new BundleError(`Failed to retrive manifest: ${error}`);
+    }
+  }
+
+  /**
+   * Update the bundle manifest with new configuration
+   *
+   * @param config Bundle configuration to apply to the manifest
+   * @throws {BundleError} If the operation fails
+   */
+  async setManifest(config: BundleConfig): Promise<void> {
+    try {
+      await (this.#wasm as any).setManifest(config);
+    } catch (error) {
+      throw new BundleError(`Failed to set manifest: ${error}`);
     }
   }
 
@@ -526,12 +554,13 @@ export class TonkCore {
   /**
    * Serialize the Tonk Core to bundle binary data.
    *
+   * @param config Optional configuration for bundle export
    * @returns The serialized bundle data
    * @throws {TonkError} If serialization fails
    */
-  async toBytes(): Promise<Uint8Array> {
+  async toBytes(config?: BundleConfig): Promise<Uint8Array> {
     try {
-      return await this.#wasm.toBytes();
+      return await this.#wasm.toBytes(config);
     } catch (error) {
       throw new TonkError(`Failed to serialize to bundle data: ${error}`);
     }

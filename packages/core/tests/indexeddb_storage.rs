@@ -56,7 +56,7 @@ mod wasm_tests {
             .expect("Failed to check existence"));
 
         // Export to bundle to test persistence through bundle round-trip
-        let bundle_bytes = tonk1.to_bytes().await.expect("Failed to export bundle");
+        let bundle_bytes = tonk1.to_bytes(None).await.expect("Failed to export bundle");
 
         // Load from the bundle to test persistence
         let tonk3 = TonkCore::from_bundle(
@@ -175,7 +175,7 @@ mod wasm_tests {
         });
 
         // Export to bundle
-        let bundle_bytes = tonk1.to_bytes().await.expect("Failed to export bundle");
+        let bundle_bytes = tonk1.to_bytes(None).await.expect("Failed to export bundle");
 
         // Load from bundle in new instance
         let tonk2 = TonkCore::from_bundle(

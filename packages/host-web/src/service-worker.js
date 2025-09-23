@@ -484,18 +484,26 @@ const targetToResponse = async (target, path) => {
 self.addEventListener('fetch', async event => {
   const url = new URL(event.request.url);
   console.log("response requested");
-  let pathname = url.pathname;
-  if (!pathname.includes('service-worker') && !pathname.includes('.wasm')) {
-    const devResponse = await proxyToDevServer(pathname);
-    if (devResponse) {
-      log('info', 'Served from dev server', { pathname });
-      return devResponse;
-    }
-  }
 
   if (url.origin === location.origin) {
     event.respondWith(
       (async () => {
+        let pathname = url.pathname;
+        console.log('Service worker handling:', pathname);
+
+        // DEVELOPMENT MODE LOGIC
+        // In development mode, try to proxy to dev server first
+        if (DEV_MODE && await isDevServerAvailable()) {
+          // Try dev server for all requests except service worker itself
+          const devResponse = await proxyToDevServer(pathname);
+          if (devResponse) {
+            log('info', 'Served from dev server', { pathname });
+            return devResponse;
+          }
+        }
+
+
+        // AUTOMERGE LOGIC
         // Wait for tonk initialization to complete (or fail)
         try {
           if (self.tonkPromise && !self.tonk && !self.tonkInitializationFailed) {
@@ -507,20 +515,7 @@ self.addEventListener('fetch', async event => {
           self.tonkInitializationFailed = true;
         }
 
-        let pathname = url.pathname;
-        console.log('Service worker handling:', pathname);
 
-        // In development mode, try to proxy to dev server first
-        if (DEV_MODE && await isDevServerAvailable()) {
-          // Try dev server for all requests except service worker itself
-          if (!pathname.includes('service-worker') && !pathname.includes('.wasm')) {
-            const devResponse = await proxyToDevServer(pathname);
-            if (devResponse) {
-              log('info', 'Served from dev server', { pathname });
-              return devResponse;
-            }
-          }
-        }
 
         // Check if we're serving from an app context by looking at the referrer
         const referrer = event.request.referrer;
@@ -533,10 +528,6 @@ self.addEventListener('fetch', async event => {
           const appMatch = referrerPath.match(/^\/([^/]+)\//);
           if (appMatch) {
             appContext = appMatch[1];
-            if (appContext.includes('test-wasm')) {
-              appContext.replace('test-wasm-2/', '');
-              console.log("old legacy stuff here???");
-            }
           }
         }
 

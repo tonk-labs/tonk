@@ -24,7 +24,7 @@ async fn test_basic_bundle_round_trip() {
         .unwrap();
 
     // Save to bundle
-    let bundle_bytes = tonk1.to_bytes().await.unwrap();
+    let bundle_bytes = tonk1.to_bytes(None).await.unwrap();
     assert!(!bundle_bytes.is_empty(), "Bundle should not be empty");
 
     // Debug: save bundle to file so we can inspect it
@@ -62,7 +62,7 @@ async fn test_empty_bundle() {
     let tonk1 = TonkCore::new().await.unwrap();
 
     // Save empty state to bundle
-    let bundle_bytes = tonk1.to_bytes().await.unwrap();
+    let bundle_bytes = tonk1.to_bytes(None).await.unwrap();
 
     // Load from bundle
     let tonk2 = TonkCore::from_bytes(bundle_bytes).await.unwrap();
@@ -114,7 +114,7 @@ async fn test_bundle_with_complex_structure() {
     }
 
     // Save to bundle
-    let bundle_bytes = tonk.to_bytes().await.unwrap();
+    let bundle_bytes = tonk.to_bytes(None).await.unwrap();
 
     // Load in new instance
     let tonk2 = TonkCore::from_bytes(bundle_bytes).await.unwrap();
@@ -175,7 +175,7 @@ async fn test_multiple_save_load_cycles() {
         .await
         .unwrap();
 
-    let bytes1 = tonk.to_bytes().await.unwrap();
+    let bytes1 = tonk.to_bytes(None).await.unwrap();
     tonk = TonkCore::from_bytes(bytes1).await.unwrap();
 
     // Verify cycle 1 content exists
@@ -187,7 +187,7 @@ async fn test_multiple_save_load_cycles() {
         .await
         .unwrap();
 
-    let bytes2 = tonk.to_bytes().await.unwrap();
+    let bytes2 = tonk.to_bytes(None).await.unwrap();
     tonk = TonkCore::from_bytes(bytes2).await.unwrap();
 
     // Verify both files exist
@@ -206,7 +206,7 @@ async fn test_multiple_save_load_cycles() {
         .await
         .unwrap();
 
-    let bytes3 = tonk.to_bytes().await.unwrap();
+    let bytes3 = tonk.to_bytes(None).await.unwrap();
     let final_tonk = TonkCore::from_bytes(bytes3).await.unwrap();
 
     // Verify all changes
@@ -232,7 +232,7 @@ async fn test_bundle_preserves_timestamps() {
     let modified1 = metadata1.1.modified;
 
     // Save and load
-    let bundle_bytes = tonk1.to_bytes().await.unwrap();
+    let bundle_bytes = tonk1.to_bytes(None).await.unwrap();
     let tonk2 = TonkCore::from_bytes(bundle_bytes).await.unwrap();
 
     // Get timestamps after load
@@ -269,7 +269,7 @@ async fn test_bundle_with_special_characters() {
     }
 
     // Bundle and reload
-    let bundle_bytes = tonk.to_bytes().await.unwrap();
+    let bundle_bytes = tonk.to_bytes(None).await.unwrap();
     let tonk2 = TonkCore::from_bytes(bundle_bytes).await.unwrap();
 
     // Verify all files exist with correct names
@@ -294,7 +294,7 @@ async fn test_peer_id_regeneration() {
         .await
         .unwrap();
 
-    let bundle_bytes = tonk1.to_bytes().await.unwrap();
+    let bundle_bytes = tonk1.to_bytes(None).await.unwrap();
 
     // Load from bundle multiple times
     let tonk2 = TonkCore::from_bytes(bundle_bytes.clone()).await.unwrap();
@@ -326,7 +326,7 @@ async fn test_concurrent_bundle_operations() {
             .unwrap();
     }
 
-    let bundle_bytes = tonk.to_bytes().await.unwrap();
+    let bundle_bytes = tonk.to_bytes(None).await.unwrap();
 
     // Load the same bundle concurrently
     let futures = (0..5).map(|_| {
@@ -368,7 +368,7 @@ async fn test_concurrent_bundle_operations() {
 //     }
 //
 //     // Save to bundle
-//     let bundle_bytes = tonk.to_bytes().await.unwrap();
+//     let bundle_bytes = tonk.to_bytes(None).await.unwrap();
 //     assert!(
 //         bundle_bytes.len() > 1024 * 1024,
 //         "Bundle should be larger than 1MB"
@@ -409,7 +409,7 @@ async fn test_bundle_manifest_metadata() {
         .await
         .unwrap();
 
-    let bundle_bytes = tonk.to_bytes().await.unwrap();
+    let bundle_bytes = tonk.to_bytes(None).await.unwrap();
 
     // Parse the bundle to check manifest
     let bundle = Bundle::from_bytes(bundle_bytes).unwrap();
@@ -661,7 +661,7 @@ async fn test_bundle_size_limits() {
 
     // Try to bundle - should succeed but might be slow
     let start = std::time::Instant::now();
-    let bundle_bytes = tonk.to_bytes().await.unwrap();
+    let bundle_bytes = tonk.to_bytes(None).await.unwrap();
     let duration = start.elapsed();
 
     println!(
@@ -698,7 +698,7 @@ async fn test_bundle_with_deep_nesting() {
         .unwrap();
 
     // Bundle and reload
-    let bundle_bytes = tonk.to_bytes().await.unwrap();
+    let bundle_bytes = tonk.to_bytes(None).await.unwrap();
     let tonk2 = TonkCore::from_bytes(bundle_bytes).await.unwrap();
 
     // Verify the deep file exists
@@ -717,7 +717,7 @@ async fn test_bundle_partial_write_recovery() {
         .unwrap();
 
     // Get bundle bytes
-    let bundle_bytes = tonk.to_bytes().await.unwrap();
+    let bundle_bytes = tonk.to_bytes(None).await.unwrap();
 
     // Write only partial data to file
     let temp_file = NamedTempFile::new().unwrap();
@@ -749,7 +749,7 @@ async fn test_bundle_load_then_sync() {
         .unwrap();
 
     // Save to bundle
-    let bundle_bytes = tonk1.to_bytes().await.unwrap();
+    let bundle_bytes = tonk1.to_bytes(None).await.unwrap();
 
     // Load bundle in new instance and connect to sync
     let tonk2 = TonkCore::from_bytes(bundle_bytes.clone()).await.unwrap();
@@ -818,7 +818,7 @@ async fn test_offline_bundle_online_workflow() {
         .unwrap();
 
     // Phase 2: Save to bundle
-    let bundle_bytes = offline_tonk.to_bytes().await.unwrap();
+    let bundle_bytes = offline_tonk.to_bytes(None).await.unwrap();
 
     // Simulate transport (e.g., USB drive, email attachment)
     // ... time passes ...
@@ -862,7 +862,7 @@ async fn test_multiple_peers_from_same_bundle() {
         .await
         .unwrap();
 
-    let bundle_bytes = original.to_bytes().await.unwrap();
+    let bundle_bytes = original.to_bytes(None).await.unwrap();
 
     // Load same bundle into 3 different peers
     let peer1 = TonkCore::from_bytes(bundle_bytes.clone()).await.unwrap();
@@ -900,7 +900,7 @@ async fn test_bundle_crdt_merge_behavior() {
         .unwrap();
 
     // Bundle tonk1
-    let bundle1 = tonk1.to_bytes().await.unwrap();
+    let bundle1 = tonk1.to_bytes(None).await.unwrap();
 
     // Meanwhile, tonk2 creates its own version
     tonk2
@@ -932,7 +932,7 @@ async fn test_bundle_with_network_uris_in_manifest() {
         .unwrap();
 
     // Save bundle (network URIs would be set via manifest)
-    let bundle_bytes = tonk.to_bytes().await.unwrap();
+    let bundle_bytes = tonk.to_bytes(None).await.unwrap();
 
     // Load and verify bundle structure
     let bundle = Bundle::from_bytes(bundle_bytes.clone()).unwrap();
@@ -958,7 +958,7 @@ async fn test_sync_after_bundle_modifications() {
         .await
         .unwrap();
 
-    let bundle_bytes = tonk1.to_bytes().await.unwrap();
+    let bundle_bytes = tonk1.to_bytes(None).await.unwrap();
 
     // Load bundle and make modifications
     let tonk2 = TonkCore::from_bytes(bundle_bytes.clone()).await.unwrap();
@@ -980,7 +980,7 @@ async fn test_sync_after_bundle_modifications() {
         .unwrap();
 
     // Save modified state to new bundle
-    let bundle2_bytes = tonk2.to_bytes().await.unwrap();
+    let bundle2_bytes = tonk2.to_bytes(None).await.unwrap();
 
     // Load in third instance
     let tonk3 = TonkCore::from_bytes(bundle2_bytes).await.unwrap();
@@ -1016,7 +1016,7 @@ async fn test_bundle_storage_isolation() {
             .create_document("/test.txt", "Test content".to_string())
             .await
             .unwrap();
-        tonk.to_bytes().await.unwrap()
+        tonk.to_bytes(None).await.unwrap()
     };
 
     // Load same bundle multiple times concurrently
@@ -1076,7 +1076,7 @@ async fn test_bundle_stress_many_small_files() {
 
     // Bundle creation
     let bundle_start = std::time::Instant::now();
-    let bundle_bytes = tonk.to_bytes().await.unwrap();
+    let bundle_bytes = tonk.to_bytes(None).await.unwrap();
     let bundle_time = bundle_start.elapsed();
 
     println!(
@@ -1118,7 +1118,7 @@ async fn test_bundle_memory_stress() {
         println!("Created {}MB file in {:?}", size_mb, create_start.elapsed());
 
         let bundle_start = std::time::Instant::now();
-        let bundle_bytes = tonk.to_bytes().await.unwrap();
+        let bundle_bytes = tonk.to_bytes(None).await.unwrap();
         println!(
             "Bundle size: {} bytes, created in {:?}",
             bundle_bytes.len(),
@@ -1169,7 +1169,7 @@ async fn test_bundle_concurrent_modifications() {
     // Bundle and verify
     let bundle_bytes = {
         let tonk = tonk.lock().await;
-        tonk.to_bytes().await.unwrap()
+        tonk.to_bytes(None).await.unwrap()
     };
 
     let tonk2 = TonkCore::from_bytes(bundle_bytes).await.unwrap();
@@ -1204,7 +1204,7 @@ async fn test_bundle_rapid_save_load_cycles() {
             .unwrap();
 
         // Save to bundle
-        let bytes = tonk.to_bytes().await.unwrap();
+        let bytes = tonk.to_bytes(None).await.unwrap();
 
         // Load from bundle (creates new TonkCore)
         tonk = TonkCore::from_bytes(bytes).await.unwrap();

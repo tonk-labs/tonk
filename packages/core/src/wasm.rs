@@ -1,4 +1,4 @@
-use crate::bundle::{Bundle, BundlePath};
+use crate::bundle::{Bundle, BundleConfig, BundlePath};
 use crate::tonk_core::TonkCore;
 use crate::vfs::NodeType;
 use crate::StorageConfig;
@@ -151,11 +151,25 @@ impl WasmTonkCore {
     }
 
     #[wasm_bindgen(js_name = toBytes)]
-    pub fn to_bytes(&self) -> Promise {
+    pub fn to_bytes(&self, config: JsValue) -> Promise {
         let tonk = Arc::clone(&self.tonk);
         future_to_promise(async move {
             let tonk = tonk.lock().await;
-            match tonk.to_bytes().await {
+            
+            // Convert JsValue config to BundleConfig if provided
+            let bundle_config = if config.is_undefined() || config.is_null() {
+                None
+            } else {
+                match serde_wasm_bindgen::from_value::<BundleConfig>(config) {
+                    Ok(config) => Some(config),
+                    Err(e) => {
+                        console_error!("Failed to parse bundle config: {}", e);
+                        return Err(JsValue::from_str(&format!("Invalid bundle config: {}", e)));
+                    }
+                }
+            };
+            
+            match tonk.to_bytes(bundle_config).await {
                 Ok(bytes) => {
                     let array = Uint8Array::new_with_length(bytes.len() as u32);
                     array.copy_from(&bytes);
@@ -585,6 +599,35 @@ impl WasmBundle {
             let bundle = bundle.lock().await;
             let manifest = bundle.manifest();
             to_js_value(&manifest)
+        })
+    }
+
+    #[wasm_bindgen(js_name = setManifest)]
+    pub fn set_manifest(&self, config: JsValue) -> Promise {
+        let bundle = Arc::clone(&self.bundle);
+        future_to_promise(async move {
+            let mut bundle = bundle.lock().await;
+            
+            // Convert JsValue config to BundleConfig
+            let bundle_config = if config.is_undefined() || config.is_null() {
+                BundleConfig::default()
+            } else {
+                match serde_wasm_bindgen::from_value::<BundleConfig>(config) {
+                    Ok(config) => config,
+                    Err(e) => {
+                        console_error!("Failed to parse bundle config: {}", e);
+                        return Err(JsValue::from_str(&format!("Invalid bundle config: {}", e)));
+                    }
+                }
+            };
+            
+            match bundle.set_manifest(bundle_config) {
+                Ok(()) => Ok(JsValue::UNDEFINED),
+                Err(e) => {
+                    console_error!("Failed to set manifest: {}", e);
+                    Err(js_error(e))
+                }
+            }
         })
     }
 
