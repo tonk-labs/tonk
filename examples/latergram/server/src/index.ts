@@ -65,7 +65,16 @@ class Server {
         // Read the WASM file from the server directory
         const __filename = fileURLToPath(import.meta.url);
         const __dirname = dirname(__filename);
-        const wasmPath = join(__dirname, '..', 'tonk_core_bg.wasm');
+        const wasmPath = join(
+          __dirname,
+          '..',
+          '..',
+          '..',
+          'packages',
+          'core-js',
+          'dist',
+          'tonk_core_bg.wasm'
+        );
         const wasmBuffer = readFileSync(wasmPath);
 
         // Set headers similar to esm.sh

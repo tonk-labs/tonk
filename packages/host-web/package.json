@@ -1,0 +1,28 @@
+{
+  "name": "host-web",
+  "version": "0.0.1",
+  "description": "Host shell to bootstrap a tonk on the web",
+  "scripts": {
+    "dev": "npm run build:sw && vite dev",
+    "dev:with-proxy": "npm run build:sw && NODE_ENV=development vite dev",
+    "build": "npm run build:sw && vite build",
+    "build:sw": "vite build --config vite.sw.config.ts && mkdir -p dist && cp -r dist-sw/* dist/",
+    "preview": "vite preview",
+    "serve-raw": "serve src"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "buffer": "^6.0.3",
+    "prettier": "^2.8.8",
+    "process": "^0.11.10",
+    "serve": "^14.2.0",
+    "util": "^0.12.5",
+    "vite": "^5.0.0"
+  },
+  "dependencies": {
+    "@tonk/core": "workspace:../core-js",
+    "mime": "^4.1.0",
+    "tailwindcss": "^4.1.13"
+  }
+}

@@ -6,7 +6,7 @@
   "main": "src/index.ts",
   "private": true,
   "scripts": {
-    "dev": "tsx watch src/index.ts 6080 bundle.tonk",
+    "dev": "tsx watch src/index.ts 8081 blank.tonk",
     "build": "tsc",
     "start": "node dist/index.js"
   },
