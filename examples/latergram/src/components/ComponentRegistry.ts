@@ -1,74 +1,129 @@
-export interface ComponentSignature {
-  hookOrder: string[];
-  hookCount: number;
-  componentName: string;
-  lastCompiled: number;
-  checksum?: string;
-}
-
-export interface HookState {
-  type: 'state' | 'ref' | 'memo' | 'callback' | 'effect';
-  value: any;
-  deps?: any[];
-  index: number;
+export interface ComponentMetadata {
+  id: string;
+  name: string;
+  filePath: string;
+  created: Date;
+  modified: Date;
+  status: 'loading' | 'success' | 'error';
+  error?: string;
 }
 
 export interface ProxiedComponent {
   id: string;
+  metadata: ComponentMetadata;
   original: React.ComponentType<any>;
   proxy: React.ComponentType<any>;
-  signature: ComponentSignature;
   version: number;
 }
 
 class ComponentRegistry {
   private components: Map<string, ProxiedComponent> = new Map();
-  private stateCache: Map<string, HookState[]> = new Map();
-  private signatures: Map<string, ComponentSignature> = new Map();
   private updateCallbacks: Map<string, Set<() => void>> = new Map();
+  private contextUpdateCallbacks: Set<() => void> = new Set();
 
-  register(id: string, component: React.ComponentType<any>): ProxiedComponent {
-    const signature = this.generateSignature(component);
-    const proxied = this.createProxy(id, component, signature);
+  register(
+    id: string,
+    component: React.ComponentType<any>,
+    metadata?: Partial<ComponentMetadata>
+  ): ProxiedComponent {
+    const now = new Date();
+    const componentMetadata: ComponentMetadata = {
+      id,
+      name: metadata?.name || `Component-${id}`,
+      filePath: metadata?.filePath || `/components/${id}.tsx`,
+      created: metadata?.created || now,
+      modified: metadata?.modified || now,
+      status: 'success',
+      ...metadata,
+    };
 
+    const proxied = this.createProxy(id, component, componentMetadata);
     this.components.set(id, proxied);
-    this.signatures.set(id, signature);
+    this.notifyContextUpdate();
 
     return proxied;
   }
 
-  update(id: string, newComponent: React.ComponentType<any>): boolean {
+  createComponent(name: string, filePath?: string): string {
+    const id = this.generateId();
+    const metadata: ComponentMetadata = {
+      id,
+      name,
+      filePath: filePath || `/components/${id}.tsx`,
+      created: new Date(),
+      modified: new Date(),
+      status: 'loading',
+    };
+
+    const dummyComponent = () => null;
+    const proxied = this.createProxy(id, dummyComponent, metadata);
+    this.components.set(id, proxied);
+    this.notifyContextUpdate();
+
+    return id;
+  }
+
+  updateMetadata(id: string, updates: Partial<ComponentMetadata>): void {
+    const existing = this.components.get(id);
+    if (existing) {
+      existing.metadata = {
+        ...existing.metadata,
+        ...updates,
+        modified: new Date(),
+      };
+      this.notifyUpdate(id);
+    }
+  }
+
+  getAllComponents(): ProxiedComponent[] {
+    return Array.from(this.components.values());
+  }
+
+  getComponentsByStatus(
+    status: ComponentMetadata['status']
+  ): ProxiedComponent[] {
+    return this.getAllComponents().filter(
+      comp => comp.metadata.status === status
+    );
+  }
+
+  deleteComponent(id: string): boolean {
+    const deleted = this.components.delete(id);
+    if (deleted) {
+      this.updateCallbacks.delete(id);
+      this.notifyContextUpdate();
+    }
+    return deleted;
+  }
+
+  private generateId(): string {
+    return `comp-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+  }
+
+  update(
+    id: string,
+    newComponent: React.ComponentType<any>,
+    status: ComponentMetadata['status'] = 'success',
+    error?: string
+  ): void {
     const existing = this.components.get(id);
     if (!existing) {
-      return false;
-    }
-
-    const newSignature = this.generateSignature(newComponent);
-    const canPreserveState = this.canPreserveState(
-      existing.signature,
-      newSignature
-    );
-
-    if (!canPreserveState) {
-      this.stateCache.delete(id);
+      return;
     }
 
     existing.original = newComponent;
-    existing.signature = newSignature;
     existing.version++;
+    existing.metadata.modified = new Date();
+    existing.metadata.status = status;
+    if (error) {
+      existing.metadata.error = error;
+    } else {
+      delete existing.metadata.error;
+    }
 
-    this.signatures.set(id, newSignature);
     this.notifyUpdate(id);
-
-    return canPreserveState;
-  }
-
-  getState(id: string): HookState[] | undefined {
-    return this.stateCache.get(id);
-  }
-
-  preserveState(id: string, state: HookState[]): void {
-    this.stateCache.set(id, state);
+    this.notifyContextUpdate();
+    this.notifyContextUpdate();
   }
 
   onUpdate(id: string, callback: () => void): () => void {
@@ -87,6 +142,13 @@ class ComponentRegistry {
     };
   }
 
+  onContextUpdate(callback: () => void): () => void {
+    this.contextUpdateCallbacks.add(callback);
+    return () => {
+      this.contextUpdateCallbacks.delete(callback);
+    };
+  }
+
   private notifyUpdate(id: string): void {
     const callbacks = this.updateCallbacks.get(id);
     if (callbacks) {
@@ -94,10 +156,14 @@ class ComponentRegistry {
     }
   }
 
+  private notifyContextUpdate(): void {
+    this.contextUpdateCallbacks.forEach(cb => cb());
+  }
+
   private createProxy(
     id: string,
     component: React.ComponentType<any>,
-    signature: ComponentSignature
+    metadata: ComponentMetadata
   ): ProxiedComponent {
     const registry = this;
 
@@ -154,65 +220,27 @@ class ComponentRegistry {
 
     return {
       id,
+      metadata,
       original: component,
       proxy: ProxyComponent as React.ComponentType<any>,
-      signature,
       version: 1,
     };
   }
 
-  private generateSignature(
-    component: React.ComponentType<any>
-  ): ComponentSignature {
-    const componentString = component.toString();
-    const hookRegex = /use[A-Z]\w*/g;
-    const hooks = componentString.match(hookRegex) || [];
-
-    return {
-      hookOrder: hooks,
-      hookCount: hooks.length,
-      componentName: component.name || 'Anonymous',
-      lastCompiled: Date.now(),
-      checksum: this.simpleChecksum(componentString),
-    };
-  }
-
-  private canPreserveState(
-    oldSig: ComponentSignature,
-    newSig: ComponentSignature
-  ): boolean {
-    if (oldSig.hookCount !== newSig.hookCount) {
-      return false;
-    }
-
-    for (let i = 0; i < oldSig.hookOrder.length; i++) {
-      if (oldSig.hookOrder[i] !== newSig.hookOrder[i]) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  private simpleChecksum(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash = hash & hash;
-    }
-    return hash.toString(36);
-  }
-
   clear(): void {
     this.components.clear();
-    this.stateCache.clear();
-    this.signatures.clear();
     this.updateCallbacks.clear();
+    this.notifyContextUpdate();
   }
 
   getComponent(id: string): ProxiedComponent | undefined {
     return this.components.get(id);
+  }
+
+  getComponentByFilePath(filePath: string): ProxiedComponent | undefined {
+    return Array.from(this.components.values()).find(
+      comp => comp.metadata.filePath === filePath
+    );
   }
 }
 

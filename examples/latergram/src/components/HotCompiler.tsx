@@ -2,12 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Code, AlertCircle, Circle } from 'lucide-react';
 import { componentRegistry } from './ComponentRegistry';
 import { useDebounce } from './hooks/useDebounce';
+import { buildAvailablePackages } from './contextBuilder';
 
 interface CompilationResult {
   success: boolean;
   component?: any;
   error?: string;
-  preservedState?: boolean;
 }
 
 interface HotCompilerProps {
@@ -49,18 +49,6 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
 
   const debouncedCode = useDebounce(code, debounceDelay);
 
-  const availablePackages = {
-    React: (window as any).React,
-    useState: (window as any).React?.useState,
-    useEffect: (window as any).React?.useEffect,
-    useCallback: (window as any).React?.useCallback,
-    useMemo: (window as any).React?.useMemo,
-    useRef: (window as any).React?.useRef,
-    useReducer: (window as any).React?.useReducer,
-    useContext: (window as any).React?.useContext,
-    Fragment: (window as any).React?.Fragment,
-  };
-
   const compileAndExecute = useCallback(
     async (forceRecompile = false) => {
       if (!forceRecompile && code === lastCompiledCodeRef.current) {
@@ -85,8 +73,10 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
           },
         });
 
-        const contextKeys = Object.keys(availablePackages);
-        const contextValues = Object.values(availablePackages);
+        // Always get fresh context to ensure all available components are included
+        const freshPackages = buildAvailablePackages();
+        const contextKeys = Object.keys(freshPackages);
+        const contextValues = Object.values(freshPackages);
 
         const moduleFactory = new Function(
           ...contextKeys,
@@ -104,9 +94,8 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
         const componentId = componentIdRef.current;
         const existingComponent = componentRegistry.getComponent(componentId);
 
-        let preservedState = false;
         if (existingComponent) {
-          preservedState = componentRegistry.update(componentId, component);
+          componentRegistry.update(componentId, component);
         } else {
           componentRegistry.register(componentId, component);
         }
@@ -115,7 +104,7 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
         setCompilationTime(Math.round(endTime - startTime));
 
         setStatus('success');
-        setResult({ success: true, component, preservedState });
+        setResult({ success: true, component });
         lastCompiledCodeRef.current = code;
 
         if (typeof component === 'function') {
@@ -130,7 +119,7 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
         setResult({ success: false, error: errorMessage });
       }
     },
-    [code, availablePackages, onCompiled]
+    [code, onCompiled]
   );
 
   const renderComponent = useCallback((componentId: string) => {
@@ -179,7 +168,6 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
         const script = document.createElement('script');
         script.src = '/typescript.js';
         script.onload = () => {
-          console.log('TypeScript loaded');
           compileAndExecute(true);
         };
         document.head.appendChild(script);
@@ -245,7 +233,7 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
               {status === 'compiling'
                 ? 'Compiling...'
                 : status === 'success'
-                  ? `Compiled${result?.preservedState ? ' (state preserved)' : ''} in ${compilationTime}ms`
+                  ? `Compiled in ${compilationTime}ms`
                   : status === 'error'
                     ? 'Error'
                     : 'Ready'}

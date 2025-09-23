@@ -299,16 +299,22 @@ async function handleMessage(message: VFSWorkerMessage) {
       try {
         const watcher = await tonk!.watchFile(
           message.path,
-          (rawContent: { content: string }) => {
+          (rawContent: string) => {
             log('info', 'File change detected', {
               watchId: message.id,
               path: message.path,
             });
 
+            // Parse the JSON string to get the document object
+            const documentData = JSON.parse(rawContent);
+
+            // Extract the actual content from the document
+            const actualContent = JSON.parse(documentData.content);
+
             postResponse({
               type: 'fileChanged',
               watchId: message.id,
-              content: JSON.parse(rawContent.content),
+              content: actualContent,
             });
           }
         );
