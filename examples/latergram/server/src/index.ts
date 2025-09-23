@@ -70,6 +70,7 @@ class Server {
           '..',
           '..',
           '..',
+          '..',
           'packages',
           'core-js',
           'dist',

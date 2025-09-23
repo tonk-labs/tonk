@@ -3,27 +3,6 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   base: './',
-  root: 'src',
-
-  server: {
-    // Serve service worker from root for proper registration
-    fs: {
-      allow: ['..'],
-    },
-    proxy: {
-      // Proxy app requests to React dev server when in development
-      '/dev-proxy': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-        rewrite: path => path.replace(/^\/dev-proxy/, ''),
-        configure: proxy => {
-          proxy.on('error', (err, req, res) => {
-            console.log('Dev proxy error:', err.message);
-          });
-        },
-      },
-    },
-  },
 
   build: {
     target: 'esnext',
@@ -31,6 +10,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'src/index.html'),
+        '404': resolve(__dirname, 'src/404.html'),
       },
       output: {
         entryFileNames: `[name].js`,
@@ -46,8 +26,6 @@ export default defineConfig({
   define: {
     'process.env': {},
     global: 'globalThis',
-    // Pass development mode flag to the service worker
-    __DEV_MODE__: JSON.stringify(process.env.NODE_ENV === 'development'),
   },
   resolve: {
     alias: {

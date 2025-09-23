@@ -4,8 +4,10 @@ import {
   // Main classes
   TonkCore,
   Bundle,
+  Manifest,
 
   // Types
+  type DocumentData,
   type NodeMetadata,
   type DirectoryEntry,
   type BundleEntry,
@@ -64,6 +66,8 @@ export {
   Bundle,
 
   // Types
+  type DocumentData,
+  type Manifest,
   type NodeMetadata,
   type DirectoryEntry,
   type BundleEntry,
