@@ -6,10 +6,13 @@ export class VFSService {
   private initialized = false;
   private workerReady = false;
   private messageId = 0;
-  private pendingRequests = new Map<string, {
-    resolve: (value: unknown) => void;
-    reject: (error: Error) => void;
-  }>();
+  private pendingRequests = new Map<
+    string,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+    }
+  >();
   private watchers = new Map<string, (content: string) => void>();
 
   constructor() {
@@ -64,11 +67,11 @@ export class VFSService {
       }
     };
 
-    this.worker.onerror = (error) => {
+    this.worker.onerror = error => {
       console.error('VFS Worker error:', error);
     };
-    
-    this.worker.onmessageerror = (error) => {
+
+    this.worker.onmessageerror = error => {
       console.error('VFS Worker message error:', error);
     };
   }
@@ -85,12 +88,12 @@ export class VFSService {
       const message: VFSWorkerMessage = {
         type: 'init',
         manifest,
-        wsUrl
+        wsUrl,
       };
 
       // Wait for worker to be ready
       console.log('Waiting for worker to be ready...');
-      await new Promise<void>((resolve) => {
+      await new Promise<void>(resolve => {
         const checkReady = () => {
           if (this.workerReady) {
             resolve();
@@ -100,7 +103,7 @@ export class VFSService {
         };
         checkReady();
       });
-      
+
       console.log('Worker is ready, sending init message...');
       this.worker.postMessage(message);
       console.log('Init message sent');
@@ -115,7 +118,7 @@ export class VFSService {
           }
         };
         checkInit();
-        
+
         // Timeout after 10 seconds
         setTimeout(() => {
           if (!this.initialized) {
@@ -124,7 +127,9 @@ export class VFSService {
         }, 10000);
       });
     } catch (error) {
-      throw new Error(`Failed to initialize VFS: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Failed to initialize VFS: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
@@ -132,7 +137,9 @@ export class VFSService {
     return `req_${++this.messageId}`;
   }
 
-  private sendMessage<T>(message: VFSWorkerMessage & { id: string }): Promise<T> {
+  private sendMessage<T>(
+    message: VFSWorkerMessage & { id: string }
+  ): Promise<T> {
     if (!this.worker) {
       return Promise.reject(new Error('Worker not initialized'));
     }
@@ -142,7 +149,10 @@ export class VFSService {
     }
 
     return new Promise((resolve, reject) => {
-      this.pendingRequests.set(message.id, { resolve: resolve as (value: unknown) => void, reject });
+      this.pendingRequests.set(message.id, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+      });
       this.worker!.postMessage(message);
 
       // Timeout after 30 seconds
@@ -160,19 +170,26 @@ export class VFSService {
     return this.sendMessage<string>({
       type: 'readFile',
       id,
-      path
+      path,
     });
   }
 
-  async writeFile(path: string, content: string, create = false): Promise<void> {
+  async writeFile(
+    path: string,
+    content: string,
+    create = false
+  ): Promise<void> {
     const id = this.generateId();
-    return this.sendMessage<void>({
+
+    const result = await this.sendMessage<void>({
       type: 'writeFile',
       id,
       path,
       content,
-      create
+      create,
     });
+
+    return result;
   }
 
   async deleteFile(path: string): Promise<void> {
@@ -180,7 +197,7 @@ export class VFSService {
     return this.sendMessage<void>({
       type: 'deleteFile',
       id,
-      path
+      path,
     });
   }
 
@@ -189,7 +206,7 @@ export class VFSService {
     return this.sendMessage<unknown[]>({
       type: 'listDirectory',
       id,
-      path
+      path,
     });
   }
 
@@ -198,19 +215,22 @@ export class VFSService {
     return this.sendMessage<boolean>({
       type: 'exists',
       id,
-      path
+      path,
     });
   }
 
-  async watchFile(path: string, callback: (content: string) => void): Promise<string> {
+  async watchFile(
+    path: string,
+    callback: (content: string) => void
+  ): Promise<string> {
     const id = this.generateId();
     this.watchers.set(id, callback);
-    
+
     try {
       await this.sendMessage<void>({
         type: 'watchFile',
         id,
-        path
+        path,
       });
       return id;
     } catch (error) {
@@ -224,7 +244,7 @@ export class VFSService {
     return this.sendMessage<void>({
       type: 'unwatchFile',
       id: watchId,
-      path: '' // Not used for unwatch
+      path: '', // Not used for unwatch
     });
   }
 

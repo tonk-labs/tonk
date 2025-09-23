@@ -7,7 +7,6 @@ interface CompilationResult {
   success: boolean;
   component?: any;
   error?: string;
-  preservedState?: boolean;
 }
 
 interface HotCompilerProps {
@@ -104,9 +103,8 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
         const componentId = componentIdRef.current;
         const existingComponent = componentRegistry.getComponent(componentId);
 
-        let preservedState = false;
         if (existingComponent) {
-          preservedState = componentRegistry.update(componentId, component);
+          componentRegistry.update(componentId, component);
         } else {
           componentRegistry.register(componentId, component);
         }
@@ -115,7 +113,7 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
         setCompilationTime(Math.round(endTime - startTime));
 
         setStatus('success');
-        setResult({ success: true, component, preservedState });
+        setResult({ success: true, component });
         lastCompiledCodeRef.current = code;
 
         if (typeof component === 'function') {
@@ -245,7 +243,7 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
               {status === 'compiling'
                 ? 'Compiling...'
                 : status === 'success'
-                  ? `Compiled${result?.preservedState ? ' (state preserved)' : ''} in ${compilationTime}ms`
+                  ? `Compiled in ${compilationTime}ms`
                   : status === 'error'
                     ? 'Error'
                     : 'Ready'}
