@@ -25,10 +25,10 @@ cd ../core-js
 
 # Build TypeScript wrapper
 echo "Building TypeScript wrapper..."
+npm run build:wasm
 npm run build:wrapper
 
 echo "Build complete!"
 echo ""
 echo "Files in dist/:"
 ls -la dist/
-
