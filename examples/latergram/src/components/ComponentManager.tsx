@@ -3,6 +3,7 @@ import { Plus, Folder, Lightbulb } from 'lucide-react';
 import { ComponentBrowser } from './ComponentBrowser';
 import { ComponentEditor } from './ComponentEditor';
 import { ComponentPreview } from './ComponentPreview';
+import { AvailableComponentsPanel } from './AvailableComponentsPanel';
 import { componentRegistry } from './ComponentRegistry';
 import { useVFSComponent } from './hooks/useVFSComponent';
 import { useComponentWatcher } from './hooks/useComponentWatcher';
@@ -304,26 +305,62 @@ export const ComponentManager: React.FC = () => {
   };
 
   const extractComponentName = (content: string, fileName: string): string => {
-    // Try to extract component name from export default function
-    const functionMatch = content.match(/export\s+default\s+function\s+(\w+)/);
-    if (functionMatch) {
-      return functionMatch[1];
-    }
+    const ts = (window as any).ts;
 
-    // Try to extract from arrow function
-    const arrowMatch = content.match(/export\s+default\s+(\w+)\s*=>/);
-    if (arrowMatch) {
-      return arrowMatch[1];
-    }
+    const fallback = (fileName: string) => {
+      const cleanName = fileName
+        .replace('.tsx', '')
+        .replace(/[^a-zA-Z0-9]/g, '');
+      return cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
+    };
 
-    // Try to extract from const declaration
-    const constMatch = content.match(/const\s+(\w+)\s*[=:]/);
-    if (constMatch) {
-      return constMatch[1];
-    }
+    if (!ts) return fallback(fileName);
 
-    // Fallback to filename without extension
-    return fileName.replace('.tsx', '').replace(/[^a-zA-Z0-9]/g, '');
+    try {
+      const sourceFile = ts.createSourceFile(
+        fileName,
+        content,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TSX
+      );
+
+      let componentName: string | null = null;
+
+      const visit = (node: any) => {
+        // export default function ComponentName
+        if (
+          ts.isFunctionDeclaration(node) &&
+          node.modifiers?.some(
+            (m: any) => m.kind === ts.SyntaxKind.ExportKeyword
+          ) &&
+          node.modifiers?.some(
+            (m: any) => m.kind === ts.SyntaxKind.DefaultKeyword
+          ) &&
+          node.name
+        ) {
+          componentName = node.name.text;
+        }
+
+        // export default ComponentName (variable reference)
+        if (ts.isExportAssignment(node) && ts.isIdentifier(node.expression)) {
+          componentName = node.expression.text;
+        }
+
+        ts.forEachChild(node, visit);
+      };
+
+      visit(sourceFile);
+
+      if (componentName) {
+        return componentName;
+      }
+
+      // Fallback to filename
+      return fallback(fileName);
+    } catch (error) {
+      return fallback(fileName);
+    }
   };
 
   useEffect(() => {
@@ -442,6 +479,9 @@ export const ComponentManager: React.FC = () => {
               className="h-full"
             />
           </div>
+
+          {/* Available Components Panel */}
+          <AvailableComponentsPanel />
         </div>
       </div>
 

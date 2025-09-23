@@ -1,6 +1,8 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { componentRegistry, ProxiedComponent } from './ComponentRegistry';
+import { useComponentWatcher } from './hooks/useComponentWatcher';
+import { getVFSService } from '../services/vfs-service';
 
 interface ComponentPreviewProps {
   componentId: string | null;
@@ -16,6 +18,10 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
   const [component, setComponent] = useState<ProxiedComponent | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [isVisible, setIsVisible] = useState(true);
+  const [isRecompiling, setIsRecompiling] = useState(false);
+
+  const { compileAndUpdate } = useComponentWatcher();
+  const vfs = getVFSService();
 
   useEffect(() => {
     if (componentId) {
@@ -34,6 +40,39 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
       setComponent(null);
     }
   }, [componentId]);
+
+  // Recompile with latest context before previewing
+  useEffect(() => {
+    const recompileForPreview = async () => {
+      if (componentId && vfs.isInitialized()) {
+        setIsRecompiling(true);
+        setRenderError(null);
+
+        try {
+          const comp = componentRegistry.getComponent(componentId);
+          if (comp && comp.metadata.filePath) {
+            // Read the current source code
+            const sourceCode = await vfs.readFile(comp.metadata.filePath);
+
+            // Recompile with latest context
+            await compileAndUpdate(componentId, sourceCode);
+          }
+        } catch (error) {
+          console.error('Failed to recompile component for preview:', error);
+          setRenderError(
+            `Recompilation failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+          );
+        } finally {
+          setIsRecompiling(false);
+        }
+      }
+    };
+
+    // Only recompile when componentId changes (i.e., when selecting a different component for preview)
+    if (componentId) {
+      recompileForPreview();
+    }
+  }, [componentId, compileAndUpdate, vfs]);
 
   useEffect(() => {
     if (!component || !sandboxRef.current || !isVisible) {
@@ -151,11 +190,13 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
       </div>
 
       <div className="relative">
-        {component.metadata.status === 'loading' && (
+        {(component.metadata.status === 'loading' || isRecompiling) && (
           <div className="absolute inset-0 bg-blue-50 bg-opacity-50 flex items-center justify-center z-10">
             <div className="flex items-center gap-2 text-blue-600">
               <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm">Compiling...</span>
+              <span className="text-sm">
+                {isRecompiling ? 'Recompiling for preview...' : 'Compiling...'}
+              </span>
             </div>
           </div>
         )}

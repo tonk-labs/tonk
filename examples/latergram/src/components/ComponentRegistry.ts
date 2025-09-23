@@ -19,6 +19,7 @@ export interface ProxiedComponent {
 class ComponentRegistry {
   private components: Map<string, ProxiedComponent> = new Map();
   private updateCallbacks: Map<string, Set<() => void>> = new Map();
+  private contextUpdateCallbacks: Set<() => void> = new Set();
 
   register(
     id: string,
@@ -38,6 +39,7 @@ class ComponentRegistry {
 
     const proxied = this.createProxy(id, component, componentMetadata);
     this.components.set(id, proxied);
+    this.notifyContextUpdate();
 
     return proxied;
   }
@@ -56,6 +58,7 @@ class ComponentRegistry {
     const dummyComponent = () => null;
     const proxied = this.createProxy(id, dummyComponent, metadata);
     this.components.set(id, proxied);
+    this.notifyContextUpdate();
 
     return id;
   }
@@ -88,6 +91,7 @@ class ComponentRegistry {
     const deleted = this.components.delete(id);
     if (deleted) {
       this.updateCallbacks.delete(id);
+      this.notifyContextUpdate();
     }
     return deleted;
   }
@@ -118,6 +122,8 @@ class ComponentRegistry {
     }
 
     this.notifyUpdate(id);
+    this.notifyContextUpdate();
+    this.notifyContextUpdate();
   }
 
   onUpdate(id: string, callback: () => void): () => void {
@@ -136,11 +142,22 @@ class ComponentRegistry {
     };
   }
 
+  onContextUpdate(callback: () => void): () => void {
+    this.contextUpdateCallbacks.add(callback);
+    return () => {
+      this.contextUpdateCallbacks.delete(callback);
+    };
+  }
+
   private notifyUpdate(id: string): void {
     const callbacks = this.updateCallbacks.get(id);
     if (callbacks) {
       callbacks.forEach(cb => cb());
     }
+  }
+
+  private notifyContextUpdate(): void {
+    this.contextUpdateCallbacks.forEach(cb => cb());
   }
 
   private createProxy(
@@ -213,6 +230,7 @@ class ComponentRegistry {
   clear(): void {
     this.components.clear();
     this.updateCallbacks.clear();
+    this.notifyContextUpdate();
   }
 
   getComponent(id: string): ProxiedComponent | undefined {

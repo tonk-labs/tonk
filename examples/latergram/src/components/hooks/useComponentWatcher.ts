@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useRef } from 'react';
 import { getVFSService } from '../../services/vfs-service';
 import { componentRegistry } from '../ComponentRegistry';
+import { buildAvailablePackages } from '../contextBuilder';
 
 export interface ComponentWatcherHook {
   watchComponent: (componentId: string, filePath: string) => Promise<void>;
@@ -11,18 +12,6 @@ export interface ComponentWatcherHook {
 export function useComponentWatcher(): ComponentWatcherHook {
   const vfs = getVFSService();
   const watchersRef = useRef<Map<string, string>>(new Map());
-
-  const availablePackages = {
-    React: (window as any).React,
-    useState: (window as any).React?.useState,
-    useEffect: (window as any).React?.useEffect,
-    useCallback: (window as any).React?.useCallback,
-    useMemo: (window as any).React?.useMemo,
-    useRef: (window as any).React?.useRef,
-    useReducer: (window as any).React?.useReducer,
-    useContext: (window as any).React?.useContext,
-    Fragment: (window as any).React?.Fragment,
-  };
 
   const compileAndUpdate = useCallback(
     async (componentId: string, code: string) => {
@@ -40,8 +29,10 @@ export function useComponentWatcher(): ComponentWatcherHook {
           },
         });
 
-        const contextKeys = Object.keys(availablePackages);
-        const contextValues = Object.values(availablePackages);
+        // Always get fresh context to ensure all available components are included
+        const freshPackages = buildAvailablePackages();
+        const contextKeys = Object.keys(freshPackages);
+        const contextValues = Object.values(freshPackages);
 
         const moduleFactory = new Function(
           ...contextKeys,
