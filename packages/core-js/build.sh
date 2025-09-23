@@ -2,7 +2,7 @@
 
 set -e
 
-echo "Building @tonk/core-browser-wasm package..."
+echo "Building @tonk/core..."
 
 # Clean previous builds
 echo "Cleaning previous builds..."
@@ -18,13 +18,14 @@ npm run build:browser
 
 # Copy built files
 echo "Copying WASM files..."
-cp -r pkg-browser/* ../tonk-core-browser-wasm/dist/
+cp -r pkg-browser/* ../core-js/dist/
 
 # Go back to package directory
-cd ../tonk-core-browser-wasm
+cd ../core-js
 
 # Build TypeScript wrapper
 echo "Building TypeScript wrapper..."
+npm run build:wasm
 npm run build:wrapper
 
 echo "Build complete!"
