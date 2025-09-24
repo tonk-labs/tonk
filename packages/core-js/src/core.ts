@@ -51,11 +51,20 @@ export interface DocumentTimestaps {
   modified: number;
 }
 
+/**
+ * Type for structured JSON that must be an object or array at the top level.
+ * Covers the full JSON specification but excludes primitive values at the root.
+ */
+export type JsonValue =
+  | { [key: string]: JsonValue | null | boolean | number | string }
+  | (JsonValue | null | boolean | number | string)[];
+
 export interface DocumentData {
-  content: string;
+  content: JsonValue;
   name: string;
   timestamps: DocumentTimestaps;
   type: 'doc' | 'dir';
+  bytes?: string; // Base64-encoded binary data when file was created with bytes
 }
 
 /**
@@ -537,8 +546,6 @@ export class TonkCore {
    *
    * @example
    * ```typescript
-   * // Create a text file with a string
-   * await createFile('/hello.txt', 'Hello, World!');
    *
    * // Create a JSON file with an object
    * await createFile('/config.json', { theme: 'dark', fontSize: 14 });
@@ -547,7 +554,7 @@ export class TonkCore {
    * await createFile('/data.json', [1, 2, 3, 4, 5]);
    * ```
    */
-  async createFile(path: string, content: any): Promise<void> {
+  async createFile(path: string, content: JsonValue): Promise<void> {
     try {
       await this.#wasm.createFile(path, content);
     } catch (error) {
@@ -569,7 +576,11 @@ export class TonkCore {
    * await createFile('/tree.png', { mime: 'image/png', alt: 'picture of a tree' }, encodedImageData);
    * ```
    */
-  async createFileWithBytes(path: string, content: any, bytes: Uint8Array): Promise<void> {
+  async createFileWithBytes(
+    path: string,
+    content: JsonValue,
+    bytes: Uint8Array
+  ): Promise<void> {
     try {
       await this.#wasm.createFileWithBytes(path, content, bytes);
     } catch (error) {
@@ -596,13 +607,16 @@ export class TonkCore {
    */
 
   async readFile(path: string): Promise<DocumentData> {
-
     try {
-      const result = await this.#wasm.readFile(path);
-      if (result === null) {
+      const intermediary = await this.#wasm.readFile(path);
+      if (intermediary === null) {
         throw new FileSystemError(`File not found: ${path}`);
       }
-      return result;
+
+      return {
+        ...intermediary,
+        content: JSON.parse(intermediary.content),
+      };
     } catch (error) {
       if (error instanceof FileSystemError) throw error;
       throw new FileSystemError(`Failed to read file at ${path}: ${error}`);
@@ -629,7 +643,7 @@ export class TonkCore {
    * await updateFile('/config.json', { theme: 'light', fontSize: 16 });
    * ```
    */
-  async updateFile(path: string, content: any): Promise<boolean> {
+  async updateFile(path: string, content: JsonValue): Promise<boolean> {
     try {
       return await this.#wasm.updateFile(path, content);
     } catch (error) {
@@ -657,7 +671,11 @@ export class TonkCore {
    * await updateFile('/config.json', { theme: 'light', fontSize: 16 });
    * ```
    */
-  async updateFileWithBytes(path: string, content: any, bytes: Uint8Array): Promise<boolean> {
+  async updateFileWithBytes(
+    path: string,
+    content: JsonValue,
+    bytes: Uint8Array
+  ): Promise<boolean> {
     try {
       return await this.#wasm.updateFileWithBytes(path, content, bytes);
     } catch (error) {
