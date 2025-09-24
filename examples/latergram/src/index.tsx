@@ -5,10 +5,16 @@ import * as ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { getVFSService } from './services/vfs-service';
+import * as zustand from 'zustand';
+import { sync } from './middleware';
 
 // Make React available globally for hot injection
 (window as any).React = React;
 (window as any).ReactDOM = ReactDOM;
+
+// Make zustand and middleware available globally for store compilation
+(window as any).zustand = zustand;
+(window as any).sync = sync;
 
 const container = document.getElementById('root');
 if (!container) throw new Error('Failed to find the root element');

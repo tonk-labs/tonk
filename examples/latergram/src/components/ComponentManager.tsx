@@ -297,7 +297,6 @@ export const ComponentManager: React.FC = () => {
       }
     } catch (error) {
       console.warn('Failed to discover existing components:', error);
-      // Don't throw - this is not critical for app functionality
     } finally {
       isLoadingRef.current = false;
       setComponentsLoaded(true);
