@@ -15,6 +15,7 @@ export default defineConfig({
       registerType: 'autoUpdate',
       devOptions: {
         enabled: true,
+        
       },
       manifest: {
         name: 'Tonk App',
@@ -25,9 +26,15 @@ export default defineConfig({
         additionalManifestEntries: [
           { url: '/ts-compiler-sw.js', revision: null },
         ],
+        disableDevLogs: true
       },
     }),
   ],
+  server: {
+    proxy: {
+      '/api': process.env.MANIFEST_URL || 'http://localhost:8081'
+    }
+  },
   build: {
     sourcemap: true,
     outDir: 'dist',
@@ -49,4 +56,5 @@ export default defineConfig({
   esbuild: {
     target: 'esnext',
   },
+  assetsInclude: ['**/*.md'],
 });

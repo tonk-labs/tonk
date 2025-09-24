@@ -1,55 +1,44 @@
 import React from 'react';
-import { Route, Routes, Link, useLocation } from 'react-router-dom';
-import { CompilerTest } from './views';
-import { StoreManager } from './components/StoreManager';
+import { Route, Routes, useParams } from 'react-router-dom';
 import { AppInitializer } from './components/AppInitializer';
-import { Layers, Database } from 'lucide-react';
+import { ViewRenderer } from './components/ViewRenderer';
+import { PageLayout } from './components/PageLayout';
+import Editor from './components/unified-editor/Editor';
 
-const App: React.FC = () => {
-  const location = useLocation();
+// Dynamic view component that maps routes to view files
+const DynamicView: React.FC<{ viewName?: string }> = ({ viewName }) => {
+  // If no viewName provided, it's a catch-all route, get from URL
+  const params = useParams();
+  const pathSegments = params['*'] || viewName || 'index';
+
+  // Construct the view path - map route to file path
+  const viewPath = `/src/views/${pathSegments}.tsx`;
+
+  return (
+    <ViewRenderer
+      viewPath={viewPath}
+    />
+  );
+};
+
+const App: React.FC<{ viewName?: string }> = ({ viewName }) => {
+  const params = useParams();
+  const pathSegments = params['*'] || viewName || 'index';
+  const viewPath = `/src/views/${pathSegments}.tsx`;
 
   return (
     <AppInitializer>
-      <div className="h-screen flex flex-col">
-        {/* Navigation */}
-        <nav className="bg-white border-b border-gray-200 px-6 py-3">
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-1">
-              <Link
-                to="/"
-                className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
-                  location.pathname === '/'
-                    ? 'bg-blue-100 text-blue-700'
-                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-                }`}
-              >
-                <Layers className="w-4 h-4" />
-                Components
-              </Link>
+      <Routes>
+        {/* Editor route - has its own layout */}
+        <Route path="/editor/*" element={<Editor />} />
 
-              <Link
-                to="/stores"
-                className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
-                  location.pathname === '/stores'
-                    ? 'bg-purple-100 text-purple-700'
-                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-                }`}
-              >
-                <Database className="w-4 h-4" />
-                Stores
-              </Link>
-            </div>
-          </div>
-        </nav>
-
-        {/* Main Content */}
-        <div className="flex-1 overflow-hidden">
-          <Routes>
-            <Route path="/" element={<CompilerTest />} />
-            <Route path="/stores" element={<StoreManager />} />
-          </Routes>
-        </div>
-      </div>
+        {/* Page routes with persistent drawer overlay */}
+        <Route element={<PageLayout viewPath={viewPath} />}>
+          <Route path="/" element={<DynamicView viewName="index" />} />
+          {/* Catch all route for dynamic views */}
+          <Route path="/*" element={<DynamicView />} />
+        </Route>
+      </Routes>
     </AppInitializer>
   );
 };
