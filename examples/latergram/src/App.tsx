@@ -4,6 +4,7 @@ import { CompilerTest } from './views';
 import { StoreManager } from './components/StoreManager';
 import { AppInitializer } from './components/AppInitializer';
 import { Layers, Database } from 'lucide-react';
+import AgentChat from './views/AgentChat';
 
 const App: React.FC = () => {
   const location = useLocation();
@@ -43,11 +44,16 @@ const App: React.FC = () => {
         </nav>
 
         {/* Main Content */}
-        <div className="flex-1 overflow-hidden">
+        <div className="overflow-hidden grid-cols-8 grid h-full">
+          <div className="overflow-hidden col-span-6 ">
           <Routes>
             <Route path="/" element={<CompilerTest />} />
             <Route path="/stores" element={<StoreManager />} />
           </Routes>
+          </div>
+          <div className="overflow-hidden col-span-2 border-l border-gray-200">
+          <AgentChat/>
+          </div>
         </div>
       </div>
     </AppInitializer>

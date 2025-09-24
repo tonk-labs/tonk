@@ -30,7 +30,7 @@ export const AvailableComponentsPanel: React.FC = () => {
     .filter(name => name !== 'UnnamedComponent');
 
   return (
-    <div className="w-64 bg-white border-l border-gray-200 p-4 overflow-y-auto">
+    <div className="w-full bg-white border border-gray-200 p-4 overflow-y-auto">
       <h3 className="text-sm font-semibold text-gray-800 mb-3">
         Available Components ({availableNames.length})
       </h3>

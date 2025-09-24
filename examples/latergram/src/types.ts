@@ -13,7 +13,9 @@ export type VFSWorkerMessage =
   | { type: 'listDirectory'; id: string; path: string }
   | { type: 'exists'; id: string; path: string }
   | { type: 'watchFile'; id: string; path: string }
-  | { type: 'unwatchFile'; id: string; path: string };
+  | { type: 'unwatchFile'; id: string; path: string }
+  | { type: 'watchDirectory'; id: string; path: string }
+  | { type: 'unwatchDirectory'; id: string; path: string };
 export type VFSWorkerResponse =
   | { type: 'init'; success: boolean; error?: string }
   | {
@@ -41,4 +43,7 @@ export type VFSWorkerResponse =
     }
   | { type: 'watchFile'; id: string; success: boolean; error?: string }
   | { type: 'unwatchFile'; id: string; success: boolean; error?: string }
-  | { type: 'fileChanged'; watchId: string; content: string };
+  | { type: 'fileChanged'; watchId: string; content: string }
+  | { type: 'watchDirectory'; id: string; success: boolean; error?: string }
+  | { type: 'unwatchDirectory'; id: string; success: boolean; error?: string }
+  | { type: 'directoryChanged'; watchId: string; path: string; changeData: any };

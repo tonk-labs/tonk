@@ -14,6 +14,7 @@ export class VFSService {
     }
   >();
   private watchers = new Map<string, (content: string) => void>();
+  private directoryWatchers = new Map<string, (changeData: any) => void>();
 
   constructor() {
     this.initWorker();
@@ -50,6 +51,14 @@ export class VFSService {
         const callback = this.watchers.get(response.watchId);
         if (callback) {
           callback(response.content);
+        }
+        return;
+      }
+
+      if (response.type === 'directoryChanged' && 'watchId' in response) {
+        const callback = this.directoryWatchers.get(response.watchId);
+        if (callback) {
+          callback(response.changeData);
         }
         return;
       }
@@ -248,6 +257,35 @@ export class VFSService {
     });
   }
 
+  async watchDirectory(
+    path: string,
+    callback: (changeData: any) => void
+  ): Promise<string> {
+    const id = this.generateId();
+    this.directoryWatchers.set(id, callback);
+
+    try {
+      await this.sendMessage<void>({
+        type: 'watchDirectory',
+        id,
+        path,
+      });
+      return id;
+    } catch (error) {
+      this.directoryWatchers.delete(id);
+      throw error;
+    }
+  }
+
+  async unwatchDirectory(watchId: string): Promise<void> {
+    this.directoryWatchers.delete(watchId);
+    return this.sendMessage<void>({
+      type: 'unwatchDirectory',
+      id: watchId,
+      path: '', // Not used for unwatch
+    });
+  }
+
   isInitialized(): boolean {
     return this.initialized;
   }
@@ -259,6 +297,7 @@ export class VFSService {
     }
     this.pendingRequests.clear();
     this.watchers.clear();
+    this.directoryWatchers.clear();
     this.initialized = false;
   }
 }

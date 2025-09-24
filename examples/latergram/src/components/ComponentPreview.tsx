@@ -189,7 +189,7 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
         </button>
       </div>
 
-      <div className="relative">
+      <div className="relative h-full">
         {(component.metadata.status === 'loading' || isRecompiling) && (
           <div className="absolute inset-0 bg-blue-50 bg-opacity-50 flex items-center justify-center z-10">
             <div className="flex items-center gap-2 text-blue-600">
@@ -233,7 +233,7 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
 
         <div
           ref={sandboxRef}
-          className="p-4 min-h-[300px]"
+          className="p-4 min-h-[300px] overflow-scroll overflow-y-scroll"
           style={{
             display: isVisible ? 'block' : 'none',
             background:
