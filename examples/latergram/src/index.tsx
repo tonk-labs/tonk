@@ -42,12 +42,12 @@ const initializeVFS = async () => {
   }
 };
 
-initializeVFS();
-
-root.render(
-  <React.StrictMode>
-    <BrowserRouter basename={basename}>
-      <App />
-    </BrowserRouter>
-  </React.StrictMode>
-);
+initializeVFS().then(() => {
+  root.render(
+    <React.StrictMode>
+      <BrowserRouter basename={basename}>
+        <App />
+      </BrowserRouter>
+    </React.StrictMode>
+  );
+});

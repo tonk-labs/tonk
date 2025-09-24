@@ -11,7 +11,7 @@ import { getStoreTemplate } from './StoreTemplates';
 export const StoreManager: React.FC = () => {
   const [selectedStoreId, setSelectedStoreId] = useState<string | null>(null);
 
-  const { discoverFiles, isLoading: isDiscovering } = useVFSDiscovery({
+  const { discoverFiles } = useVFSDiscovery({
     directory: '/stores',
     fileExtension: '.ts',
     extractName: extractStoreName,
@@ -44,16 +44,6 @@ export const StoreManager: React.FC = () => {
       }
     },
   });
-
-  useEffect(() => {
-    const initializeStores = async () => {
-      await ensureTypeScriptLoaded();
-      // Wait a bit to ensure VFS is initialized
-      setTimeout(discoverFiles, 1000);
-    };
-
-    initializeStores();
-  }, [discoverFiles]);
 
   const handleStoreSelect = useCallback((storeId: string) => {
     setSelectedStoreId(storeId);

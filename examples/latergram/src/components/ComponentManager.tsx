@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Plus, Folder, Lightbulb } from 'lucide-react';
 import { ComponentBrowser } from './ComponentBrowser';
 import { ComponentEditor } from './ComponentEditor';
@@ -218,8 +218,6 @@ export const ComponentManager: React.FC = () => {
   const [showNewComponentDialog, setShowNewComponentDialog] = useState(false);
   const [newComponentName, setNewComponentName] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState(0);
-  const [componentsLoaded, setComponentsLoaded] = useState(false);
-  const isLoadingRef = useRef(false);
 
   const { createFile } = useVFSComponent(null);
   const { watchComponent, unwatchComponent } = useComponentWatcher();
@@ -235,142 +233,6 @@ export const ComponentManager: React.FC = () => {
       }
     };
     loadTypeScript();
-  }, []);
-
-  const loadExistingComponents = async () => {
-    if (!vfs.isInitialized()) {
-      return;
-    }
-
-    if (isLoadingRef.current) {
-      return;
-    }
-    isLoadingRef.current = true;
-
-    if (componentsLoaded) {
-      isLoadingRef.current = false;
-      return;
-    }
-
-    try {
-      // List files in the components directory
-      const componentFiles = await vfs.listDirectory('/components');
-
-      for (const fileInfo of componentFiles as any[]) {
-        // Handle different file info formats
-        const fileName =
-          typeof fileInfo === 'string'
-            ? fileInfo
-            : fileInfo.name || fileInfo.path;
-
-        if (!fileName || !fileName.endsWith('.tsx')) {
-          continue; // Skip non-component files
-        }
-
-        const filePath = `/components/${fileName}`;
-
-        try {
-          // Check if component already exists
-          const existingComponent =
-            componentRegistry.getComponentByFilePath(filePath);
-          if (existingComponent) {
-            continue;
-          }
-
-          // Read the component file content
-          const content = await vfs.readFile(filePath);
-
-          // Extract component name from file content
-          const componentName = extractComponentName(content, fileName);
-
-          // Create component in registry
-          const componentId = componentRegistry.createComponent(
-            componentName,
-            filePath
-          );
-
-          // Set up file watcher for the component
-          await watchComponent(componentId, filePath);
-        } catch (fileError) {
-          console.warn(`Failed to load component file ${filePath}:`, fileError);
-        }
-      }
-    } catch (error) {
-      console.warn('Failed to discover existing components:', error);
-    } finally {
-      isLoadingRef.current = false;
-      setComponentsLoaded(true);
-    }
-  };
-
-  const extractComponentName = (content: string, fileName: string): string => {
-    const ts = (window as any).ts;
-
-    const fallback = (fileName: string) => {
-      const cleanName = fileName
-        .replace('.tsx', '')
-        .replace(/[^a-zA-Z0-9]/g, '');
-      return cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
-    };
-
-    if (!ts) return fallback(fileName);
-
-    try {
-      const sourceFile = ts.createSourceFile(
-        fileName,
-        content,
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.TSX
-      );
-
-      let componentName: string | null = null;
-
-      const visit = (node: any) => {
-        // export default function ComponentName
-        if (
-          ts.isFunctionDeclaration(node) &&
-          node.modifiers?.some(
-            (m: any) => m.kind === ts.SyntaxKind.ExportKeyword
-          ) &&
-          node.modifiers?.some(
-            (m: any) => m.kind === ts.SyntaxKind.DefaultKeyword
-          ) &&
-          node.name
-        ) {
-          componentName = node.name.text;
-        }
-
-        // export default ComponentName (variable reference)
-        if (ts.isExportAssignment(node) && ts.isIdentifier(node.expression)) {
-          componentName = node.expression.text;
-        }
-
-        ts.forEachChild(node, visit);
-      };
-
-      visit(sourceFile);
-
-      if (componentName) {
-        return componentName;
-      }
-
-      // Fallback to filename
-      return fallback(fileName);
-    } catch (error) {
-      return fallback(fileName);
-    }
-  };
-
-  useEffect(() => {
-    const initializeComponents = async () => {
-      // Wait a bit to ensure VFS is initialized
-      setTimeout(async () => {
-        await loadExistingComponents();
-      }, 1000);
-    };
-
-    initializeComponents();
   }, []);
 
   const createNewComponent = async () => {
