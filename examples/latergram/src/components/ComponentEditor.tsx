@@ -100,7 +100,7 @@ export const ComponentEditor: React.FC<ComponentEditorProps> = ({
   }
 
   return (
-    <div className="w-full bg-white rounded-lg border shadow-sm">
+    <div className="w-full bg-white rounded-lg border shadow-sm h-full flex flex-col">
       <div className="flex items-center justify-between p-4 border-b bg-gray-50">
         <div className="flex items-center gap-3">
           <Code className="w-5 h-5 text-blue-500" />
@@ -157,7 +157,7 @@ export const ComponentEditor: React.FC<ComponentEditorProps> = ({
         </div>
       </div>
 
-      <div className="relative">
+      <div className="relative flex flex-grow">
         {isLoading && (
           <div className="absolute top-2 right-2 px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded z-10">
             Loading...
@@ -169,7 +169,7 @@ export const ComponentEditor: React.FC<ComponentEditorProps> = ({
           value={localContent}
           onChange={handleContentChange}
           placeholder="Write TypeScript component code here..."
-          className="w-full p-4 font-mono text-sm border-0 resize-none focus:outline-none bg-gray-50"
+          className="w-full h-full p-4 font-mono text-sm border-0 resize-none focus:outline-none bg-gray-50"
           style={{ height, minHeight: '200px' }}
           spellCheck={false}
           disabled={isLoading}

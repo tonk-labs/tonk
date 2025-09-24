@@ -6,7 +6,7 @@ interface DocumentWatcher {
 import type { VFSWorkerMessage, VFSWorkerResponse } from './types';
 
 // Debug logging flag - set to true to enable comprehensive logging
-const DEBUG_LOGGING = true;
+const DEBUG_LOGGING = false;
 
 // Logger utility
 function log(
@@ -370,6 +370,87 @@ async function handleMessage(message: VFSWorkerMessage) {
         });
         postResponse({
           type: 'unwatchFile',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'watchDirectory':
+      log('info', 'Starting directory watch', {
+        path: message.path,
+        id: message.id,
+      });
+      try {
+        const watcher = await tonk!.watchDirectory(
+          message.path,
+          (changeData: any) => {
+            log('info', 'Directory change detected', {
+              watchId: message.id,
+              path: message.path,
+            });
+
+            postResponse({
+              type: 'directoryChanged',
+              watchId: message.id,
+              path: message.path,
+              changeData,
+            });
+          }
+        );
+        watchers.set(message.id, watcher!);
+        log('info', 'Directory watch started successfully', {
+          path: message.path,
+          watchId: message.id,
+          totalWatchers: watchers.size,
+        });
+        postResponse({
+          type: 'watchDirectory',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to start directory watch', {
+          path: message.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'watchDirectory',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'unwatchDirectory':
+      log('info', 'Stopping directory watch', { watchId: message.id });
+      try {
+        const watcher = watchers.get(message.id);
+        if (watcher) {
+          log('info', 'Found directory watcher, stopping it', { watchId: message.id });
+          watcher.stop();
+          watchers.delete(message.id);
+          log('info', 'Directory watch stopped successfully', {
+            watchId: message.id,
+            remainingWatchers: watchers.size,
+          });
+        } else {
+          log('warn', 'No directory watcher found for ID', { watchId: message.id });
+        }
+        postResponse({
+          type: 'unwatchDirectory',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to stop directory watch', {
+          watchId: message.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'unwatchDirectory',
           id: message.id,
           success: false,
           error: error instanceof Error ? error.message : String(error),

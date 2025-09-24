@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Folder, Lightbulb } from 'lucide-react';
+import { Plus, Folder, Lightbulb, Code, Eye } from 'lucide-react';
 import { ComponentBrowser } from './ComponentBrowser';
 import { ComponentEditor } from './ComponentEditor';
 import { ComponentPreview } from './ComponentPreview';
@@ -8,6 +8,7 @@ import { componentRegistry } from './ComponentRegistry';
 import { useVFSComponent } from './hooks/useVFSComponent';
 import { useComponentWatcher } from './hooks/useComponentWatcher';
 import { getVFSService } from '../services/vfs-service';
+import AgentChat from '../views/AgentChat';
 
 const DEFAULT_COMPONENT_TEMPLATE = `export default function MyComponent() {
   const [count, setCount] = useState(0);
@@ -218,6 +219,7 @@ export const ComponentManager: React.FC = () => {
   const [showNewComponentDialog, setShowNewComponentDialog] = useState(false);
   const [newComponentName, setNewComponentName] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState(0);
+  const [activeTab, setActiveTab] = useState<'edit' | 'preview'>('preview');
 
   const { createFile } = useVFSComponent(null);
   const { watchComponent, unwatchComponent } = useComponentWatcher();
@@ -293,7 +295,7 @@ export const ComponentManager: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen bg-gray-100">
+    <div className="flex h-full bg-gray-100 overflow-hidden">
       {/* Component Browser Sidebar */}
       <ComponentBrowser
         selectedComponentId={selectedComponentId}
@@ -302,7 +304,7 @@ export const ComponentManager: React.FC = () => {
       />
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* Header */}
         <div className="bg-white border-b border-gray-200 px-6 py-4">
           <div className="flex items-center justify-between">
@@ -323,26 +325,58 @@ export const ComponentManager: React.FC = () => {
           </div>
         </div>
 
-        {/* Editor and Preview */}
-        <div className="flex-1 flex">
-          {/* Code Editor */}
-          <div className="flex-1 p-6">
-            <ComponentEditor
-              componentId={selectedComponentId}
-              height="calc(100vh - 200px)"
-            />
+        {/* Editor and Preview with Tabs */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Tab Bar */}
+          <div className="bg-white border-b border-gray-200 px-6">
+            <div className="flex gap-1">
+              <button
+                onClick={() => setActiveTab('preview')}
+                className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+                  activeTab === 'preview'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Eye className="w-4 h-4" />
+                  Preview
+                </div>
+              </button>
+              <button
+                onClick={() => setActiveTab('edit')}
+                className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+                  activeTab === 'edit'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Code className="w-4 h-4" />
+                  Edit
+                </div>
+              </button>
+            </div>
           </div>
 
-          {/* Live Preview */}
-          <div className="w-96 p-6">
-            <ComponentPreview
-              componentId={selectedComponentId}
-              className="h-full"
-            />
+          {/* Tab Content */}
+          <div className="flex-1 flex overflow-hidden">
+            {activeTab === 'edit' ? (
+              <div className="flex-1 p-6 overflow-auto">
+                <ComponentEditor
+                  componentId={selectedComponentId}
+                  height="calc(100vh - 250px)"
+                />
+              </div>
+            ) : (
+              <div className="flex-1 p-6 overflow-auto">
+                <ComponentPreview
+                  componentId={selectedComponentId}
+                  className="h-full"
+                />
+              </div>
+            )}
           </div>
-
-          {/* Available Components Panel */}
-          <AvailableComponentsPanel />
         </div>
       </div>
 

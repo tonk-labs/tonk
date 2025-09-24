@@ -135,7 +135,7 @@ class Server {
 }
 
 async function main() {
-  const port = process.argv[2] ? parseInt(process.argv[2]) : 6080;
+  const port = process.argv[2] ? parseInt(process.argv[2]) : 8080;
   const bundlePath = process.argv[3];
 
   if (!bundlePath) {

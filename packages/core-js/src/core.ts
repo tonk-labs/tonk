@@ -155,9 +155,9 @@ export class BundleError extends TonkError {
 
 // TODO: update docs for bundles
 /**
- * Bundle for storing and retrieving binary data in a ZIP-like format.
+ * Bundle for storing and retreiving binary data in a ZIP-like format.
  *
- * Bundles provide efficient storage and retrieval of key-value pairs
+ * Bundles provide efficent storage and retrieval of key-value pairs
  * with support for prefix queries and serialization.
  *
  * @example
@@ -241,7 +241,7 @@ export class Bundle {
    * Get all entries with keys that start with the given prefix.
    *
    * @param prefix - The prefix to search for
-   * @returns Array of matching entries
+   * @returns Array of matching entrys
    * @throws {BundleError} If the operation fails
    *
    * @example
@@ -317,7 +317,7 @@ export class Bundle {
 }
 
 /**
- * Main synchronization engine for Tonk.
+ * Main syncronization engine for Tonk.
  *
  * The TonkCore manages peer-to-peer synchronization, WebSocket connections,
  * and access to the virtual file system.
@@ -505,7 +505,7 @@ export class TonkCore {
   }
 
   /**
-   * Connect to a WebSocket server for real-time synchronization.
+   * Connect to a WebSocket server for real-time syncronization.
    *
    * @param url - WebSocket URL to connect to
    * @throws {ConnectionError} If connection fails
@@ -699,7 +699,7 @@ export class TonkCore {
   }
 
   /**
-   * Create a new directory.
+   * Create a new directoy.
    *
    * @param path - Absolute path where the directory should be created
    * @throws {FileSystemError} If the directory already exists or path is invalid
