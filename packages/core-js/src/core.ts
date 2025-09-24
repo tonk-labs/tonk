@@ -51,8 +51,16 @@ export interface DocumentTimestaps {
   modified: number;
 }
 
+/**
+ * Type for structured JSON that must be an object or array at the top level.
+ * Covers the full JSON specification but excludes primitive values at the root.
+ */
+export type JsonValue =
+  | { [key: string]: JsonValue | null | boolean | number | string }
+  | (JsonValue | null | boolean | number | string)[];
+
 export interface DocumentData {
-  content: Record<string, any>;
+  content: JsonValue;
   name: string;
   timestamps: DocumentTimestaps;
   type: 'doc' | 'dir';
@@ -546,7 +554,7 @@ export class TonkCore {
    * await createFile('/data.json', [1, 2, 3, 4, 5]);
    * ```
    */
-  async createFile(path: string, content: Record<string, any>): Promise<void> {
+  async createFile(path: string, content: JsonValue): Promise<void> {
     try {
       await this.#wasm.createFile(path, content);
     } catch (error) {
@@ -570,7 +578,7 @@ export class TonkCore {
    */
   async createFileWithBytes(
     path: string,
-    content: Record<string, any>,
+    content: JsonValue,
     bytes: Uint8Array
   ): Promise<void> {
     try {
@@ -635,10 +643,7 @@ export class TonkCore {
    * await updateFile('/config.json', { theme: 'light', fontSize: 16 });
    * ```
    */
-  async updateFile(
-    path: string,
-    content: Record<string, any>
-  ): Promise<boolean> {
+  async updateFile(path: string, content: JsonValue): Promise<boolean> {
     try {
       return await this.#wasm.updateFile(path, content);
     } catch (error) {
@@ -668,7 +673,7 @@ export class TonkCore {
    */
   async updateFileWithBytes(
     path: string,
-    content: Record<string, any>,
+    content: JsonValue,
     bytes: Uint8Array
   ): Promise<boolean> {
     try {
