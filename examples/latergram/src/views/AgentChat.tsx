@@ -55,9 +55,11 @@ const AgentChat: React.FC = () => {
 
   const handleSaveEdit = useCallback(async () => {
     if (editingMessageId && editContent.trim()) {
-      await updateMessage(editingMessageId, editContent);
       setEditingMessageId(null);
+      const content = editContent;
       setEditContent('');
+      // This will update the message and regenerate the response
+      await updateMessage(editingMessageId, content);
     }
   }, [editingMessageId, editContent, updateMessage]);
 
@@ -256,23 +258,38 @@ const AgentChat: React.FC = () => {
                           <textarea
                             value={editContent}
                             onChange={e => setEditContent(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                handleSaveEdit();
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault();
+                                handleCancelEdit();
+                              }
+                            }}
                             className="w-full p-2 border border-gray-300 rounded text-xs text-black"
                             rows={3}
                             autoFocus
+                            placeholder="Press Enter to send, Shift+Enter for new line, Esc to cancel"
                           />
-                          <div className="flex gap-2">
+                          <div className="flex gap-2 items-center">
                             <button
                               onClick={handleSaveEdit}
-                              className="px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600"
+                              className="px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600 flex items-center gap-1"
+                              title="Save and regenerate (Enter)"
                             >
                               <Check className="w-3 h-3" />
+                              <span>Send</span>
                             </button>
                             <button
                               onClick={handleCancelEdit}
-                              className="px-2 py-1 bg-gray-500 text-white rounded text-xs hover:bg-gray-600"
+                              className="px-2 py-1 bg-gray-500 text-white rounded text-xs hover:bg-gray-600 flex items-center gap-1"
+                              title="Cancel (Esc)"
                             >
                               <X className="w-3 h-3" />
+                              <span>Cancel</span>
                             </button>
+                            <span className="text-[10px] text-gray-500 ml-2">Enter to send • Esc to cancel</span>
                           </div>
                         </div>
                       ) : (

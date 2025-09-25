@@ -157,19 +157,67 @@ export function useAgent(): UseAgentReturn {
   }, []);
 
   const updateMessage = useCallback(async (messageId: string, newContent: string) => {
-    if (!isReady) {
+    console.log('[useAgent] updateMessage called:', { messageId, newContent });
+
+    if (!isReady || isLoading) {
+      console.log('[useAgent] Not ready or already loading');
       return;
     }
 
+    setIsLoading(true);
+    setError(null);
+    setStreamingContent('');
+
     try {
-      await agentService.current.updateMessage(messageId, newContent);
-      const updatedHistory = agentService.current.getHistory();
-      setMessages(updatedHistory);
+      // Create a temporary assistant message for streaming
+      const tempAssistantMessage: ChatMessage = {
+        id: `temp_assistant_${Date.now()}`,
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+      };
+
+      // Update messages to show we're regenerating
+      const currentMessages = agentService.current.getHistory();
+      setMessages([...currentMessages, tempAssistantMessage]);
+
+      let accumulatedContent = '';
+
+      // Regenerate from this message with new content
+      console.log('[useAgent] Starting regeneration...');
+      for await (const chunk of agentService.current.regenerateFrom(messageId, newContent)) {
+        if (chunk.content) {
+          accumulatedContent += chunk.content;
+          setStreamingContent(accumulatedContent);
+
+          // Update the temporary assistant message
+          setMessages(prev => {
+            const newMessages = [...prev];
+            const lastMessage = newMessages[newMessages.length - 1];
+            if (lastMessage && lastMessage.id.startsWith('temp_assistant_')) {
+              lastMessage.content = accumulatedContent;
+            }
+            return newMessages;
+          });
+        }
+
+        if (chunk.done) {
+          // Update with the final history from the service
+          const updatedHistory = agentService.current.getHistory();
+          setMessages(updatedHistory);
+          setStreamingContent('');
+        }
+      }
     } catch (err) {
-      console.error('Failed to update message:', err);
-      setError(err instanceof Error ? err.message : 'Failed to update message');
+      console.error('Failed to update and regenerate:', err);
+      setError(err instanceof Error ? err.message : 'Failed to update and regenerate');
+
+      // Remove temporary message on error
+      setMessages(prev => prev.filter(msg => !msg.id.startsWith('temp_')));
+    } finally {
+      setIsLoading(false);
     }
-  }, [isReady]);
+  }, [isReady, isLoading]);
 
   const deleteMessage = useCallback(async (messageId: string) => {
     if (!isReady) {

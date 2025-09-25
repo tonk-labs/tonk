@@ -389,6 +389,8 @@ export class AgentService {
   }
 
   async* regenerateFrom(messageId: string, newContent?: string): AsyncGenerator<{ content: string; done: boolean; type?: 'text' | 'tool_call' | 'tool_result' }> {
+    console.log('[AgentService] regenerateFrom called:', { messageId, newContent });
+
     // If new content provided, update the message
     if (newContent) {
       await this.chatHistory.updateMessage(messageId, newContent);
@@ -397,16 +399,159 @@ export class AgentService {
     // Delete all messages after this one
     await this.chatHistory.deleteMessagesAfter(messageId);
 
-    // Get the last user message content to regenerate from
-    const messages = this.chatHistory.getMessages();
-    const lastUserMessage = messages[messages.length - 1];
+    // Check what messages we have now
+    const currentMessages = this.chatHistory.getMessages();
+    console.log('[AgentService] Messages after deletion:', currentMessages.map(m => ({
+      id: m.id,
+      role: m.role,
+      content: m.content.substring(0, 50) + '...'
+    })));
 
-    if (!lastUserMessage || lastUserMessage.role !== 'user') {
-      throw new Error('No user message to regenerate from');
+    // Now generate a new response without adding the user message again
+    if (!this.initialized) {
+      throw new Error('Agent service not initialized');
     }
 
-    // Stream a new response for the last user message
-    yield* this.streamMessage(lastUserMessage.content);
+    // Create new abort controller for this request
+    this.abortController = new AbortController();
+
+    // Get conversation history for context (already includes the edited message)
+    const messages = this.chatHistory.formatForAI();
+
+    console.log('[AgentService] Formatted messages for AI:', messages.length);
+
+    try {
+      console.log('[AgentService] Regenerating response...');
+
+      // Stream response with tools - stop when finish tool is called
+      const result = await streamText({
+        model: this.openrouter(MODEL),
+        system: AGENT_SYSTEM_PROMPT,
+        messages: messages as any,
+        tools: tonkTools,
+        maxRetries: 5,
+        abortSignal: this.abortController.signal,
+        stopWhen: ({ toolCalls }: any) => {
+          return toolCalls?.some((call: any) => call.toolName === 'finish') ?? false;
+        },
+      });
+
+      let fullContent = '';
+
+      // Stream the text content
+      for await (const chunk of result.textStream) {
+        fullContent += chunk;
+        yield { content: chunk, done: false, type: 'text' };
+      }
+
+      // Wait for the full response to complete
+      const finalResult = await result;
+      const steps = Array.isArray(finalResult.steps) ? finalResult.steps : [];
+
+      // Format and show tool calls if any
+      const toolCalls = steps.flatMap(step => step.toolCalls || []);
+      const toolResults = steps.flatMap(step => step.toolResults || []);
+
+      if (toolCalls.length > 0) {
+        if (fullContent.trim()) {
+          yield { content: '\n\n---\n\n', done: false, type: 'text' };
+        }
+
+        for (let i = 0; i < toolCalls.length; i++) {
+          const call = toolCalls[i];
+          const result = toolResults[i];
+
+          const toolInfo = `🔧 **Tool called:** \`${call.toolName}\`\n`;
+          yield { content: toolInfo, done: false, type: 'tool_call' };
+
+          const args = 'args' in call ? call.args : (call as any).arguments;
+          if (args && Object.keys(args).length > 0) {
+            const argsPreview = JSON.stringify(args, null, 2);
+            const argsText = argsPreview.length > 300 ?
+              argsPreview.substring(0, 300) + '...' :
+              argsPreview;
+            yield { content: `\`\`\`json\n${argsText}\n\`\`\`\n`, done: false, type: 'tool_call' };
+          }
+
+          if (result) {
+            const resultData = 'result' in result ? result.result : result.output;
+            if (resultData !== undefined && resultData !== null) {
+              const resultStr = typeof resultData === 'string' ?
+                resultData :
+                JSON.stringify(resultData, null, 2);
+              const resultPreview = resultStr.length > 200 ?
+                '(result truncated)' :
+                resultStr;
+              yield { content: `✅ **Result:** ${resultPreview}\n\n`, done: false, type: 'tool_result' };
+            }
+          }
+        }
+
+        // Store tool calls in history
+        for (let i = 0; i < toolCalls.length; i++) {
+          const call = toolCalls[i];
+          const result = toolResults[i];
+          const args = 'args' in call ? call.args : (call as any).arguments;
+          const resultData = result && ('result' in result ? result.result : result.output);
+
+          await this.chatHistory.addMessage({
+            role: 'assistant',
+            content: `Calling tool: ${call.toolName}\nArguments: ${JSON.stringify(args, null, 2)}`,
+            hidden: true,
+            toolCalls: [{
+              id: call.toolCallId,
+              name: call.toolName,
+              args: args,
+              result: null,
+            }],
+          });
+
+          if (result) {
+            await this.chatHistory.addMessage({
+              role: 'tool',
+              content: JSON.stringify(resultData, null, 2),
+              hidden: true,
+              toolName: call.toolName,
+              toolCallId: call.toolCallId,
+            });
+          }
+        }
+      }
+
+      // Add the final assistant message
+      const formattedToolCalls = toolCalls.length > 0 ? toolCalls.map((call, index) => ({
+        id: call.toolCallId,
+        name: call.toolName,
+        args: 'args' in call ? call.args : (call as any).arguments,
+        result: toolResults[index] && ('result' in toolResults[index] ? (toolResults[index] as any).result : (toolResults[index] as any).output),
+      })) : undefined;
+
+      await this.chatHistory.addMessage({
+        role: 'assistant',
+        content: fullContent || 'Task completed.',
+        toolCalls: formattedToolCalls,
+      });
+
+      yield { content: '', done: true, type: 'text' };
+    } catch (error) {
+      console.error('[AgentService] Error regenerating response:', error);
+
+      // Don't add error message if aborted
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log('[AgentService] Generation was aborted');
+        yield { content: '', done: true, type: 'text' };
+        return;
+      }
+
+      const errorMsg = `I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      await this.chatHistory.addMessage({
+        role: 'assistant',
+        content: errorMsg,
+      });
+
+      yield { content: errorMsg, done: true, type: 'text' };
+      throw error;
+    }
   }
 }
 
