@@ -162,7 +162,17 @@ export class ChatHistory {
   async deleteMessagesAfter(messageId: string): Promise<void> {
     const messageIndex = this.messages.findIndex(msg => msg.id === messageId);
     if (messageIndex !== -1) {
+      // Keep messages up to and including the one with messageId
       this.messages = this.messages.slice(0, messageIndex + 1);
+      await this.saveHistory();
+    }
+  }
+
+  async deleteMessagesFrom(messageId: string): Promise<void> {
+    const messageIndex = this.messages.findIndex(msg => msg.id === messageId);
+    if (messageIndex !== -1) {
+      // Keep messages before the one with messageId (not including it)
+      this.messages = this.messages.slice(0, messageIndex);
       await this.saveHistory();
     }
   }
