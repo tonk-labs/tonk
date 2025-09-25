@@ -146,19 +146,6 @@ export const StoreManager: React.FC = () => {
   return (
     <div className="h-full bg-gray-50 flex flex-col">
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <Database className="w-6 h-6 text-purple-500" />
-          <div>
-            <h1 className="text-xl font-semibold text-gray-900">
-              Store Manager
-            </h1>
-            <p className="text-sm text-gray-600">
-              Create and manage zustand stores for persistent, reactive state
-            </p>
-          </div>
-        </div>
-      </div>
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left Panel - Store Browser */}
@@ -173,6 +160,19 @@ export const StoreManager: React.FC = () => {
 
         {/* Main Content */}
         <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
+        <div className="flex items-center gap-3">
+          <Database className="w-6 h-6 text-purple-500" />
+          <div>
+            <h1 className="text-xl font-semibold text-gray-900">
+              Store Manager
+            </h1>
+            <p className="text-sm text-gray-600">
+              Create and manage zustand stores for persistent, reactive state
+            </p>
+          </div>
+        </div>
+      </div>
           {selectedStoreId ? (
             /* Store Editor */
             <div className="flex-1 p-6 overflow-hidden">
