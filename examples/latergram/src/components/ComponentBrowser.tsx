@@ -6,6 +6,7 @@ import {
   CheckCircle,
   Clock,
   Trash2,
+  Plus,
 } from 'lucide-react';
 import {
   componentRegistry,
@@ -17,12 +18,14 @@ interface ComponentBrowserProps {
   selectedComponentId: string | null;
   onSelectComponent: (componentId: string | null) => void;
   onDeleteComponent: (componentId: string) => void;
+  onCreateComponent: () => void;
 }
 
 export const ComponentBrowser: React.FC<ComponentBrowserProps> = ({
   selectedComponentId,
   onSelectComponent,
   onDeleteComponent,
+  onCreateComponent,
 }) => {
   const [components, setComponents] = useState<ProxiedComponent[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -115,8 +118,18 @@ export const ComponentBrowser: React.FC<ComponentBrowserProps> = ({
   };
 
   return (
-    <div className="w-80 bg-white border-r border-gray-200 flex flex-col h-full">
+    <div className="w-64 bg-white border-r border-gray-200 flex flex-col h-full">
       <div className="p-4 border-b border-gray-200">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-gray-800">Components</h3>
+          <button
+            onClick={onCreateComponent}
+            className="p-1 hover:bg-gray-100 rounded transition-colors"
+            title="Create new component"
+          >
+            <Plus className="w-4 h-4 text-gray-600" />
+          </button>
+        </div>
         <div className="relative mb-3">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
           <input

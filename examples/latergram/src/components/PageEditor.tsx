@@ -234,6 +234,7 @@ export const PageEditor: React.FC = () => {
   const hasChanges = pageContent !== originalContent;
 
   return (
+    <>
     <div className="flex h-full bg-gray-100 overflow-hidden">
       {/* Sidebar - Pages List */}
       <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
@@ -309,7 +310,7 @@ export const PageEditor: React.FC = () => {
             ))
           )}
       </div>
-
+</div>
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
@@ -420,6 +421,8 @@ export const PageEditor: React.FC = () => {
         </div>
       </div>
 
+    
+    </div>
       {/* New Page Dialog */}
       {showNewPageDialog && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -464,6 +467,6 @@ export const PageEditor: React.FC = () => {
           </div>
         </div>
       )}
-    </div>
+</>
   );
 };

@@ -74,35 +74,29 @@ export const StoreBrowser: React.FC<StoreBrowserProps> = ({
   };
 
   return (
-    <div className="h-full bg-white rounded-lg border shadow-sm">
+    <div className="w-64 bg-white border-r border-gray-200 flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b bg-gray-50">
-        <div className="flex items-center gap-3">
-          <Database className="w-5 h-5 text-purple-500" />
-          <h3 className="font-semibold text-gray-800">Store Browser</h3>
-          <span className="text-sm text-gray-500">
-            ({stores.length} stores)
-          </span>
+      <div className="p-4 border-b border-gray-200">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-gray-800">Stores</h3>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="p-1 hover:bg-gray-100 rounded transition-colors"
+            title="Create new store"
+          >
+            <Plus className="w-4 h-4 text-gray-600" />
+          </button>
         </div>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors text-sm"
-        >
-          <Plus className="w-4 h-4" />
-          New Store
-        </button>
-      </div>
 
-      {/* Search and Filter */}
-      <div className="p-4 space-y-3 border-b">
+        {/* Search */}
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
           <input
             type="text"
             placeholder="Search stores..."
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+            className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
           />
         </div>
       </div>

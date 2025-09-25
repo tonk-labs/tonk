@@ -141,6 +141,31 @@ export class ChatHistory {
   getVisibleMessages(): ChatMessage[] {
     return this.messages.filter(msg => !msg.hidden);
   }
+
+  async updateMessage(messageId: string, newContent: string): Promise<void> {
+    const messageIndex = this.messages.findIndex(msg => msg.id === messageId);
+    if (messageIndex !== -1) {
+      this.messages[messageIndex].content = newContent;
+      this.messages[messageIndex].timestamp = Date.now();
+      await this.saveHistory();
+    }
+  }
+
+  async deleteMessage(messageId: string): Promise<void> {
+    const messageIndex = this.messages.findIndex(msg => msg.id === messageId);
+    if (messageIndex !== -1) {
+      this.messages.splice(messageIndex, 1);
+      await this.saveHistory();
+    }
+  }
+
+  async deleteMessagesAfter(messageId: string): Promise<void> {
+    const messageIndex = this.messages.findIndex(msg => msg.id === messageId);
+    if (messageIndex !== -1) {
+      this.messages = this.messages.slice(0, messageIndex + 1);
+      await this.saveHistory();
+    }
+  }
 }
 
 // Singleton instance

@@ -144,43 +144,41 @@ export const StoreManager: React.FC = () => {
   );
 
   return (
-    <div className="h-full bg-gray-50 flex flex-col">
-      {/* Header */}
+    <div className="flex h-full bg-gray-100 overflow-hidden">
+      {/* Sidebar - Store Browser */}
+      <StoreBrowser
+        selectedStoreId={selectedStoreId}
+        onStoreSelect={handleStoreSelect}
+        onCreateStore={handleCreateStore}
+        onDeleteStore={handleDeleteStore}
+      />
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left Panel - Store Browser */}
-        <div className="w-80 border-r border-gray-200 bg-white flex-shrink-0">
-          <StoreBrowser
-            selectedStoreId={selectedStoreId}
-            onStoreSelect={handleStoreSelect}
-            onCreateStore={handleCreateStore}
-            onDeleteStore={handleDeleteStore}
-          />
-        </div>
-
-        {/* Main Content */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <Database className="w-6 h-6 text-purple-500" />
-          <div>
-            <h1 className="text-xl font-semibold text-gray-900">
-              Store Manager
-            </h1>
-            <p className="text-sm text-gray-600">
-              Create and manage zustand stores for persistent, reactive state
-            </p>
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
+        {/* Header */}
+        <div className="bg-white border-b border-gray-200 px-6 py-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <Database className="w-5 h-5 text-purple-500" />
+              <h2 className="text-lg font-semibold text-gray-800">
+                Store Editor
+              </h2>
+              {selectedStoreId && (
+                <span className="text-sm text-gray-500">
+                  {storeRegistry.getStore(selectedStoreId)?.metadata.filePath}
+                </span>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+        {/* Content Area */}
+        <div className="flex-1 overflow-hidden">
           {selectedStoreId ? (
-            /* Store Editor */
-            <div className="flex-1 p-6 overflow-hidden">
+            <div className="h-full p-6">
               <StoreEditor storeId={selectedStoreId} height="100%" />
             </div>
           ) : (
-            /* Welcome Screen */
-            <div className="flex-1 flex items-center justify-center">
+            <div className="flex items-center justify-center h-full bg-gray-50">
               <div className="text-center max-w-md">
                 <div className="flex justify-center mb-6">
                   <div className="relative">

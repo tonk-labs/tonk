@@ -18,6 +18,7 @@ export class AgentService {
   private vfs = getVFSService();
   private chatHistory = getChatHistory();
   private openrouter = createOpenRouterProvider();
+  private abortController: AbortController | null = null;
 
   async initialize(options: AgentServiceOptions = {}): Promise<void> {
     if (this.initialized) {
@@ -179,6 +180,9 @@ export class AgentService {
       throw new Error('Agent service not initialized');
     }
 
+    // Create new abort controller for this request
+    this.abortController = new AbortController();
+
     // Add user message to history
     await this.chatHistory.addMessage({
       role: 'user',
@@ -198,6 +202,7 @@ export class AgentService {
         messages: messages as any, // Type assertion needed due to AI SDK type limitations
         tools: tonkTools,
         maxRetries: 5,
+        abortSignal: this.abortController.signal,
         stopWhen: ({ toolCalls }: any) => {
           // Stop when the finish tool is called
           return toolCalls?.some((call: any) => call.toolName === 'finish') ?? false;
@@ -365,6 +370,43 @@ export class AgentService {
 
   isInitialized(): boolean {
     return this.initialized;
+  }
+
+  stopGeneration(): void {
+    if (this.abortController) {
+      console.log('[AgentService] Stopping generation...');
+      this.abortController.abort();
+      this.abortController = null;
+    }
+  }
+
+  async updateMessage(messageId: string, newContent: string): Promise<void> {
+    await this.chatHistory.updateMessage(messageId, newContent);
+  }
+
+  async deleteMessage(messageId: string): Promise<void> {
+    await this.chatHistory.deleteMessage(messageId);
+  }
+
+  async* regenerateFrom(messageId: string, newContent?: string): AsyncGenerator<{ content: string; done: boolean; type?: 'text' | 'tool_call' | 'tool_result' }> {
+    // If new content provided, update the message
+    if (newContent) {
+      await this.chatHistory.updateMessage(messageId, newContent);
+    }
+
+    // Delete all messages after this one
+    await this.chatHistory.deleteMessagesAfter(messageId);
+
+    // Get the last user message content to regenerate from
+    const messages = this.chatHistory.getMessages();
+    const lastUserMessage = messages[messages.length - 1];
+
+    if (!lastUserMessage || lastUserMessage.role !== 'user') {
+      throw new Error('No user message to regenerate from');
+    }
+
+    // Stream a new response for the last user message
+    yield* this.streamMessage(lastUserMessage.content);
   }
 }
 
