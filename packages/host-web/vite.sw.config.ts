@@ -7,7 +7,7 @@ export default defineConfig({
     outDir: 'dist-sw',
     emptyOutDir: true,
     rollupOptions: {
-      input: resolve(__dirname, './src/service-worker.js'),
+      input: resolve(__dirname, './src/service-worker.ts'),
       output: {
         entryFileNames: 'service-worker-bundled.js',
         format: 'es',

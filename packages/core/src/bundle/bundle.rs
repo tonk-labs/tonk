@@ -31,6 +31,19 @@ pub struct Manifest {
     pub x_vendor: Option<serde_json::Value>,
 }
 
+/// Configuration for bundle export
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct BundleConfig {
+    /// Entry points for the bundle (e.g., main application files)
+    pub entrypoints: Vec<String>,
+    /// Network URIs that the bundle may need to access
+    pub network_uris: Vec<String>,
+    /// Optional notes about the bundle
+    pub notes: Option<String>,
+    /// Custom vendor-specific metadata
+    pub vendor_metadata: Option<serde_json::Value>,
+}
+
 /// Trait for random access to data sources with read and write capabilities.
 ///
 /// This trait provides a unified interface for working with seekable, readable, and
@@ -353,6 +366,25 @@ impl<R: RandomAccess> Bundle<R> {
     /// Get the root Atuomerge document ID from the bundle
     pub fn root_id(&self) -> Result<String> {
         Ok(self.manifest.root_id.clone())
+    }
+
+    /// Update the manifest with new values
+    /// Note: This only updates the in-memory manifest. To persist changes,
+    /// you need to serialize the bundle to bytes and reload it.
+    pub fn set_manifest(&mut self, config: BundleConfig) -> Result<()> {
+        if !config.entrypoints.is_empty() {
+            self.manifest.entrypoints = config.entrypoints;
+        }
+        if !config.network_uris.is_empty() {
+            self.manifest.network_uris = config.network_uris;
+        }
+        if let Some(notes) = config.notes {
+            self.manifest.x_notes = Some(notes);
+        }
+        if let Some(vendor) = config.vendor_metadata {
+            self.manifest.x_vendor = Some(vendor);
+        }
+        Ok(())
     }
 
     /// Read a value by key

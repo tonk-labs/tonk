@@ -8,6 +8,7 @@ export type VFSWorkerMessage =
       id: string;
       path: string;
       content: string;
+      bytes: string; //base64 encoded string
       create: boolean;
     }
   | { type: 'deleteFile'; id: string; path: string }

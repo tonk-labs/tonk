@@ -29,7 +29,7 @@ async fn test_e2e_bundle_sync_workflow() {
         .unwrap();
 
     // Save the bundle - this captures the VFS structure and content
-    let bundle_bytes = creator.to_bytes().await.unwrap();
+    let bundle_bytes = creator.to_bytes(None).await.unwrap();
     println!("Bundle created with {} bytes", bundle_bytes.len());
 
     // Phase 2: Load multiple clients from the same bundle
@@ -204,7 +204,7 @@ async fn test_bundle_content_sync_behavior() {
         .await
         .unwrap();
 
-    let bundle_bytes = original.to_bytes().await.unwrap();
+    let bundle_bytes = original.to_bytes(None).await.unwrap();
 
     // Load bundle into multiple clients
     let client1 = TonkCore::from_bytes(bundle_bytes.clone()).await.unwrap();
@@ -285,7 +285,7 @@ async fn test_different_bundles_isolated_sync() {
             .create_document("/bundle1.txt", "From bundle 1".to_string())
             .await
             .unwrap();
-        tonk.to_bytes().await.unwrap()
+        tonk.to_bytes(None).await.unwrap()
     };
 
     let bundle2 = {
@@ -294,7 +294,7 @@ async fn test_different_bundles_isolated_sync() {
             .create_document("/bundle2.txt", "From bundle 2".to_string())
             .await
             .unwrap();
-        tonk.to_bytes().await.unwrap()
+        tonk.to_bytes(None).await.unwrap()
     };
 
     // Load clients from different bundles
@@ -333,7 +333,7 @@ async fn test_sequential_bundle_client_joins() {
             .create_document("/foundation.txt", "Foundation content".to_string())
             .await
             .unwrap();
-        tonk.to_bytes().await.unwrap()
+        tonk.to_bytes(None).await.unwrap()
     };
 
     // Client 1 joins first
@@ -414,7 +414,7 @@ async fn test_peer_id_uniqueness_after_bundle_load() {
             .create_document("/test.txt", "Test content".to_string())
             .await
             .unwrap();
-        tonk.to_bytes().await.unwrap()
+        tonk.to_bytes(None).await.unwrap()
     };
 
     // Load same bundle multiple times

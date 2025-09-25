@@ -85,7 +85,7 @@ async fn test_multiple_websocket_uris_in_manifest() {
     let tonk = TonkCore::new().await.unwrap();
     
     // Save to bundle
-    let bundle_bytes = tonk.to_bytes().await.unwrap();
+    let bundle_bytes = tonk.to_bytes(None).await.unwrap();
     
     // Load from bundle and verify it works
     let tonk2 = TonkCore::from_bytes(bundle_bytes).await.unwrap();
@@ -139,7 +139,7 @@ async fn test_offline_then_sync() {
     tonk.vfs().create_directory("/offline-dir").await.unwrap();
 
     // Save state using new bundle API
-    let bytes = tonk.to_bytes().await.unwrap();
+    let bytes = tonk.to_bytes(None).await.unwrap();
 
     // Load from saved state (simulating restart)
     let tonk2 = TonkCore::from_bytes(bytes).await.unwrap();
@@ -215,7 +215,7 @@ async fn test_bundle_with_network_uris() {
         .unwrap();
 
     // Save and reload using new bundle API
-    let bytes = tonk.to_bytes().await.unwrap();
+    let bytes = tonk.to_bytes(None).await.unwrap();
     let tonk2 = TonkCore::from_bytes(bytes).await.unwrap();
 
     // Content should still be there

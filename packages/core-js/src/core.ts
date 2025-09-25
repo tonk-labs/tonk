@@ -111,6 +111,20 @@ export interface TonkConfig {
 }
 
 /**
+ * Configuration for bundle export
+ */
+export interface BundleConfig {
+  /** Entry points for the bundle (e.g., main application files) */
+  entrypoints?: string[];
+  /** Network URIs that the bundle may need to access */
+  networkUris?: string[];
+  /** Optional notes about the bundle */
+  notes?: string;
+  /** Custom vendor-specific metadata */
+  vendorMetadata?: any;
+}
+
+/**
  * Base error class for all Tonk-related errors
  */
 export class TonkError extends Error {
@@ -290,6 +304,20 @@ export class Bundle {
       return await this.#wasm.getManifest();
     } catch (error) {
       throw new BundleError(`Failed to retrive manifest: ${error}`);
+    }
+  }
+
+  /**
+   * Update the bundle manifest with new configuration
+   *
+   * @param config Bundle configuration to apply to the manifest
+   * @throws {BundleError} If the operation fails
+   */
+  async setManifest(config: BundleConfig): Promise<void> {
+    try {
+      await (this.#wasm as any).setManifest(config);
+    } catch (error) {
+      throw new BundleError(`Failed to set manifest: ${error}`);
     }
   }
 
@@ -526,12 +554,13 @@ export class TonkCore {
   /**
    * Serialize the Tonk Core to bundle binary data.
    *
+   * @param config Optional configuration for bundle export
    * @returns The serialized bundle data
    * @throws {TonkError} If serialization fails
    */
-  async toBytes(): Promise<Uint8Array> {
+  async toBytes(config?: BundleConfig): Promise<Uint8Array> {
     try {
-      return await this.#wasm.toBytes();
+      return await this.#wasm.toBytes(config);
     } catch (error) {
       throw new TonkError(`Failed to serialize to bundle data: ${error}`);
     }
@@ -579,10 +608,13 @@ export class TonkCore {
   async createFileWithBytes(
     path: string,
     content: JsonValue,
-    bytes: Uint8Array
+    bytes: Uint8Array | string
   ): Promise<void> {
     try {
-      await this.#wasm.createFileWithBytes(path, content, bytes);
+      let normalizedBytes: Uint8Array =
+        typeof bytes === 'string' ? extractBytes(bytes) : bytes;
+
+      await this.#wasm.createFileWithBytes(path, content, normalizedBytes);
     } catch (error) {
       throw new FileSystemError(`Failed to create file at ${path}: ${error}`);
     }
@@ -613,9 +645,34 @@ export class TonkCore {
         throw new FileSystemError(`File not found: ${path}`);
       }
 
+      // For some reason, we seem to get different return types in different environments
+      let normalizedBytes;
+      if (intermediary.bytes) {
+        // Normalize bytes to always be base64 string
+        if (typeof intermediary.bytes === 'string') {
+          // Already a base64 string
+          normalizedBytes = intermediary.bytes;
+        } else if (Array.isArray(intermediary.bytes)) {
+          // Convert array of char codes to base64 string
+          // Process in chunks to avoid maximum call stack exceeded errors
+          const chunkSize = 8192; // Safe chunk size for String.fromCharCode
+          let binaryString = '';
+          for (let i = 0; i < intermediary.bytes.length; i += chunkSize) {
+            const chunk = intermediary.bytes.slice(i, i + chunkSize);
+            binaryString += String.fromCharCode(...chunk);
+          }
+          normalizedBytes = btoa(binaryString);
+        } else {
+          throw new FileSystemError(
+            `Unrecognized bytes type in readFile ${typeof intermediary.bytes}`
+          );
+        }
+      }
+
       return {
         ...intermediary,
         content: JSON.parse(intermediary.content),
+        bytes: normalizedBytes,
       };
     } catch (error) {
       if (error instanceof FileSystemError) throw error;
@@ -674,10 +731,16 @@ export class TonkCore {
   async updateFileWithBytes(
     path: string,
     content: JsonValue,
-    bytes: Uint8Array
+    bytes: Uint8Array | string
   ): Promise<boolean> {
     try {
-      return await this.#wasm.updateFileWithBytes(path, content, bytes);
+      let normalizedBytes: Uint8Array =
+        typeof bytes === 'string' ? extractBytes(bytes) : bytes;
+      return await this.#wasm.updateFileWithBytes(
+        path,
+        content,
+        normalizedBytes
+      );
     } catch (error) {
       throw new FileSystemError(`Failed to update file at ${path}: ${error}`);
     }
@@ -917,3 +980,14 @@ export function createFactoryFunctions(wasmModule?: any) {
       Bundle.fromBytes(data, wasmModule),
   };
 }
+
+// Utility to turn base64 into Uint8Array
+const extractBytes = (bytes: string) => {
+  // Convert base64 string to Uint8Array
+  const binaryString = atob(bytes);
+  const barr = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    barr[i] = binaryString.charCodeAt(i);
+  }
+  return barr;
+};

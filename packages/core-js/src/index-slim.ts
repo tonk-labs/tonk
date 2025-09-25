@@ -30,6 +30,8 @@ export {
   Bundle,
 
   // Types
+  type DocumentData,
+  type Manifest,
   type NodeMetadata,
   type DirectoryEntry,
   type BundleEntry,

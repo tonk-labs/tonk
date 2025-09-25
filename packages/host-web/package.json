@@ -3,10 +3,11 @@
   "version": "0.0.1",
   "description": "Host shell to bootstrap a tonk on the web",
   "scripts": {
-    "dev": "npm run build:sw && vite dev",
-    "dev:with-proxy": "npm run build:sw && NODE_ENV=development vite dev",
+    "dev": "npm run build:sw && npm run copy-sw-for-dev && serve src",
+    "dev:with-proxy": "npm run build:sw && npm run copy-sw-for-dev && NODE_ENV=development vite dev",
     "build": "npm run build:sw && vite build",
     "build:sw": "vite build --config vite.sw.config.ts && mkdir -p dist && cp -r dist-sw/* dist/",
+    "copy-sw-for-dev": "cp dist/service-worker-bundled.js src/service-worker-bundled.js",
     "preview": "vite preview",
     "serve-raw": "serve src"
   },
