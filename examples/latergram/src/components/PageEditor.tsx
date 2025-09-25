@@ -1,9 +1,27 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { FileText, AlertCircle, File, RefreshCw, Clock } from 'lucide-react';
-import { useLocation, useSearchParams } from 'react-router-dom';
+import {
+  FileText,
+  AlertCircle,
+  File,
+  RefreshCw,
+  Clock,
+  Eye,
+} from 'lucide-react';
+import {
+  useLocation,
+  useSearchParams,
+  useNavigate,
+  Link,
+} from 'react-router-dom';
 import { getVFSService } from '../services/vfs-service';
 import { ViewRenderer } from './ViewRenderer';
-import { EditorSidebar, SearchInput, SidebarItem, EmptyState, useAutoSave } from './shared';
+import {
+  EditorSidebar,
+  SearchInput,
+  SidebarItem,
+  EmptyState,
+  useAutoSave,
+} from './shared';
 
 interface PageFile {
   path: string;
@@ -57,9 +75,12 @@ const DEFAULT_PAGE_TEMPLATE = `export default function HomePage() {
 
 export const PageEditor: React.FC = () => {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const fileFromUrl = searchParams.get('file');
 
-  const [selectedPage, setSelectedPage] = useState<string>(fileFromUrl || '/src/views/index.tsx');
+  const [selectedPage, setSelectedPage] = useState<string>(
+    fileFromUrl || '/src/views/index.tsx'
+  );
   const [pageContent, setPageContent] = useState<string>('');
   const [pages, setPages] = useState<PageFile[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -71,18 +92,36 @@ export const PageEditor: React.FC = () => {
 
   const vfs = getVFSService();
 
+  // Function to handle page selection and update URL
+  const handlePageSelect = useCallback(
+    (pagePath: string) => {
+      setSelectedPage(pagePath);
+      // Update the URL with the new file parameter
+      navigate(`/editor/pages?file=${encodeURIComponent(pagePath)}`);
+    },
+    [navigate]
+  );
+
   // Handle URL parameter changes
   useEffect(() => {
     if (fileFromUrl && fileFromUrl !== selectedPage) {
       setSelectedPage(fileFromUrl);
       // Also ensure the file is in our pages list
       if (!pages.some(p => p.path === fileFromUrl)) {
-        const pageName = fileFromUrl.replace('/src/views/', '').replace('.tsx', '');
-        setPages(prev => [...prev, {
-          path: fileFromUrl,
-          name: pageName === 'index' ? 'Home Page (index)' : pageName.replace(/-/g, ' '),
-          exists: true // Will be checked when loading
-        }]);
+        const pageName = fileFromUrl
+          .replace('/src/views/', '')
+          .replace('.tsx', '');
+        setPages(prev => [
+          ...prev,
+          {
+            path: fileFromUrl,
+            name:
+              pageName === 'index'
+                ? 'Home Page (index)'
+                : pageName.replace(/-/g, ' '),
+            exists: true, // Will be checked when loading
+          },
+        ]);
       }
     }
   }, [fileFromUrl, selectedPage, pages]);
@@ -99,14 +138,14 @@ export const PageEditor: React.FC = () => {
       discoveredPages.push({
         path: '/src/views/index.tsx',
         name: 'Home Page (index)',
-        exists: indexExists
+        exists: indexExists,
       });
     } catch (error) {
       console.error('Failed to check index.tsx:', error);
       discoveredPages.push({
         path: '/src/views/index.tsx',
         name: 'Home Page (index)',
-        exists: false
+        exists: false,
       });
     }
 
@@ -114,15 +153,20 @@ export const PageEditor: React.FC = () => {
     try {
       const files = await vfs.listDirectory('/src/views');
       for (const file of files as any[]) {
-        const fileName = typeof file === 'string' ? file : file.name || file.path;
+        const fileName =
+          typeof file === 'string' ? file : file.name || file.path;
         if (fileName && fileName.endsWith('.tsx') && fileName !== 'index.tsx') {
           const fullPath = `/src/views/${fileName}`;
-          const name = fileName.replace('.tsx', '').replace(/-/g, ' ')
-            .split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+          const name = fileName
+            .replace('.tsx', '')
+            .replace(/-/g, ' ')
+            .split(' ')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ');
           discoveredPages.push({
             path: fullPath,
             name: name,
-            exists: true
+            exists: true,
           });
         }
       }
@@ -134,47 +178,55 @@ export const PageEditor: React.FC = () => {
   }, [vfs]);
 
   // Load page content
-  const loadPage = useCallback(async (pagePath: string) => {
-    if (!vfs.isInitialized()) return;
+  const loadPage = useCallback(
+    async (pagePath: string) => {
+      if (!vfs.isInitialized()) return;
 
-    setIsLoading(true);
-    setError(null);
+      setIsLoading(true);
+      setError(null);
 
-    try {
-      const exists = await vfs.exists(pagePath);
-      if (!exists) {
-        setPageContent(DEFAULT_PAGE_TEMPLATE);
-      } else {
-        const content = await vfs.readFile(pagePath);
-        setPageContent(content);
+      try {
+        const exists = await vfs.exists(pagePath);
+        if (!exists) {
+          setPageContent(DEFAULT_PAGE_TEMPLATE);
+        } else {
+          const content = await vfs.readFile(pagePath);
+          setPageContent(content);
+        }
+      } catch (error) {
+        console.error('Failed to load page:', error);
+        setError(
+          `Failed to load page: ${error instanceof Error ? error.message : 'Unknown error'}`
+        );
+        setPageContent('');
+        setOriginalContent('');
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error) {
-      console.error('Failed to load page:', error);
-      setError(`Failed to load page: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      setPageContent('');
-      setOriginalContent('');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [vfs]);
+    },
+    [vfs]
+  );
 
   // Save page content function for auto-save
-  const savePage = useCallback(async (content: string) => {
-    if (!vfs.isInitialized() || !selectedPage) return;
+  const savePage = useCallback(
+    async (content: string) => {
+      if (!vfs.isInitialized() || !selectedPage) return;
 
-    try {
-      const exists = await vfs.exists(selectedPage);
-      await vfs.writeFile(selectedPage, content, !exists);
-      // Refresh pages list if new file
-      if (!exists) {
-        await discoverPages();
+      try {
+        const exists = await vfs.exists(selectedPage);
+        await vfs.writeFile(selectedPage, content, !exists);
+        // Refresh pages list if new file
+        if (!exists) {
+          await discoverPages();
+        }
+        return true;
+      } catch (error) {
+        console.error('Failed to save page:', error);
+        throw error;
       }
-      return true;
-    } catch (error) {
-      console.error('Failed to save page:', error);
-      throw error;
-    }
-  }, [vfs, selectedPage, discoverPages]);
+    },
+    [vfs, selectedPage, discoverPages]
+  );
 
   // Use auto-save hook
   const { isSaving, lastSaved, hasChanges } = useAutoSave({
@@ -200,12 +252,15 @@ export const PageEditor: React.FC = () => {
       }
 
       // Create the new page with template
-      const customTemplate = DEFAULT_PAGE_TEMPLATE.replace('HomePage', newPageName.replace(/\s+/g, ''));
+      const customTemplate = DEFAULT_PAGE_TEMPLATE.replace(
+        'HomePage',
+        newPageName.replace(/\s+/g, '')
+      );
       await vfs.writeFile(filePath, customTemplate, true);
 
       // Refresh pages list and select the new page
       await discoverPages();
-      setSelectedPage(filePath);
+      handlePageSelect(filePath);
       await loadPage(filePath);
 
       // Close dialog
@@ -213,31 +268,38 @@ export const PageEditor: React.FC = () => {
       setNewPageName('');
     } catch (error) {
       console.error('Failed to create new page:', error);
-      setError(`Failed to create page: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setError(
+        `Failed to create page: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
     }
   }, [vfs, newPageName, discoverPages, loadPage]);
 
   // Delete page
-  const deletePage = useCallback(async (pagePath: string) => {
-    if (!vfs.isInitialized()) return;
+  const deletePage = useCallback(
+    async (pagePath: string) => {
+      if (!vfs.isInitialized()) return;
 
-    if (!confirm(`Are you sure you want to delete this page?`)) return;
+      if (!confirm(`Are you sure you want to delete this page?`)) return;
 
-    try {
-      await vfs.deleteFile(pagePath);
+      try {
+        await vfs.deleteFile(pagePath);
 
-      // If we deleted the selected page, select another one
-      if (pagePath === selectedPage) {
-        setSelectedPage('/src/views/index.tsx');
+        // If we deleted the selected page, select another one
+        if (pagePath === selectedPage) {
+          setSelectedPage('/src/views/index.tsx');
+        }
+
+        // Refresh pages list
+        await discoverPages();
+      } catch (error) {
+        console.error('Failed to delete page:', error);
+        setError(
+          `Failed to delete page: ${error instanceof Error ? error.message : 'Unknown error'}`
+        );
       }
-
-      // Refresh pages list
-      await discoverPages();
-    } catch (error) {
-      console.error('Failed to delete page:', error);
-      setError(`Failed to delete page: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }, [vfs, selectedPage, discoverPages]);
+    },
+    [vfs, selectedPage, discoverPages]
+  );
 
   // Initialize
   useEffect(() => {
@@ -254,167 +316,211 @@ export const PageEditor: React.FC = () => {
   }, [selectedPage, loadPage, vfs]);
 
   // Filter pages based on search
-  const filteredPages = pages.filter(page =>
-    page.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    page.path.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredPages = pages.filter(
+    page =>
+      page.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      page.path.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
     <>
-    <div className="flex h-full bg-gray-100 overflow-hidden">
-      {/* Sidebar - Pages List */}
-      <EditorSidebar
-        title="Pages"
-        onCreateClick={() => setShowNewPageDialog(true)}
-      >
-        <div className="p-4 border-b border-gray-200">
-          <SearchInput
-            value={searchTerm}
-            onChange={setSearchTerm}
-            placeholder="Search pages..."
-            focusColor="green"
-          />
-        </div>
-
-        <div className="flex-1 overflow-y-auto">
-          {filteredPages.length === 0 ? (
-            <EmptyState
-              icon={<FileText className="w-12 h-12 text-gray-300" />}
-              title={pages.length === 0 ? "No pages yet" : "No pages match your search"}
-              subtitle={pages.length === 0 ? "Create your first page to get started" : undefined}
-              actionText={pages.length === 0 ? "Create your first page" : undefined}
-              onAction={pages.length === 0 ? () => setShowNewPageDialog(true) : undefined}
+      <div className="flex h-full bg-gray-100 overflow-hidden">
+        {/* Sidebar - Pages List */}
+        <EditorSidebar
+          title="Pages"
+          onCreateClick={() => setShowNewPageDialog(true)}
+        >
+          <div className="p-4 border-b border-gray-200">
+            <SearchInput
+              value={searchTerm}
+              onChange={setSearchTerm}
+              placeholder="Search pages..."
+              focusColor="green"
             />
-          ) : (
-            <div className="p-2">
-              {filteredPages.map(page => (
-                <SidebarItem
-                  key={page.path}
-                  selected={selectedPage === page.path}
-                  onClick={() => setSelectedPage(page.path)}
-                  onDelete={page.path !== '/src/views/index.tsx' ? () => deletePage(page.path) : undefined}
-                  icon={<File className={`w-4 h-4 ${page.exists ? 'text-green-500' : 'text-gray-400'}`} />}
-                  title={page.name}
-                  subtitle={page.path.replace('/src/views/', '')}
-                  color="green"
-                  canDelete={page.exists && page.path !== '/src/views/index.tsx'}
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {filteredPages.length === 0 ? (
+              <EmptyState
+                icon={<FileText className="w-12 h-12 text-gray-300" />}
+                title={
+                  pages.length === 0
+                    ? 'No pages yet'
+                    : 'No pages match your search'
+                }
+                subtitle={
+                  pages.length === 0
+                    ? 'Create your first page to get started'
+                    : undefined
+                }
+                actionText={
+                  pages.length === 0 ? 'Create your first page' : undefined
+                }
+                onAction={
+                  pages.length === 0
+                    ? () => setShowNewPageDialog(true)
+                    : undefined
+                }
+              />
+            ) : (
+              <div className="p-2">
+                {filteredPages.map(page => (
+                  <SidebarItem
+                    key={page.path}
+                    selected={selectedPage === page.path}
+                    onClick={() => handlePageSelect(page.path)}
+                    onDelete={
+                      page.path !== '/src/views/index.tsx'
+                        ? () => deletePage(page.path)
+                        : undefined
+                    }
+                    icon={
+                      <File
+                        className={`w-4 h-4 ${page.exists ? 'text-green-500' : 'text-gray-400'}`}
+                      />
+                    }
+                    title={page.name}
+                    subtitle={page.path.replace('/src/views/', '')}
+                    color="green"
+                    canDelete={
+                      page.exists && page.path !== '/src/views/index.tsx'
+                    }
+                  >
+                    {!page.exists && (
+                      <div className="text-xs text-amber-600 mt-1 ml-6">
+                        Click to create
+                      </div>
+                    )}
+                  </SidebarItem>
+                ))}
+              </div>
+            )}
+          </div>
+        </EditorSidebar>
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Header */}
+          <div className="bg-white border-b border-gray-200 px-6 py-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <FileText className="w-5 h-5 text-blue-500" />
+                <h2 className="text-lg font-semibold text-gray-800">
+                  Page Editor
+                </h2>
+                <span className="text-sm text-gray-500">{selectedPage}</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {isSaving && (
+                  <span className="text-xs text-blue-600 flex items-center gap-1">
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    Saving...
+                  </span>
+                )}
+                {!isSaving && lastSaved && (
+                  <span className="text-xs text-gray-500 flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    Auto-saved
+                  </span>
+                )}
+                {hasChanges && !isSaving && (
+                  <span className="text-xs text-amber-600">• Unsaved</span>
+                )}
+              </div>
+              <div className="flex grow"/>
+                <Link
+                  to={
+                    '/' +
+                    selectedPage.replace('/src/views/', '').replace('.tsx', '')
+                  }
                 >
-                  {!page.exists && (
-                    <div className="text-xs text-amber-600 mt-1 ml-6">
-                      Click to create
-                    </div>
-                  )}
-                </SidebarItem>
-              ))}
-            </div>
-          )}
-        </div>
-      </EditorSidebar>
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="bg-white border-b border-gray-200 px-6 py-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <FileText className="w-5 h-5 text-blue-500" />
-              <h2 className="text-lg font-semibold text-gray-800">
-                Page Editor
-              </h2>
-              <span className="text-sm text-gray-500">
-                {selectedPage}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {isSaving && (
-                <span className="text-xs text-blue-600 flex items-center gap-1">
-                  <RefreshCw className="w-3 h-3 animate-spin" />
-                  Saving...
-                </span>
-              )}
-              {!isSaving && lastSaved && (
-                <span className="text-xs text-gray-500 flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  Auto-saved
-                </span>
-              )}
-              {hasChanges && !isSaving && (
-                <span className="text-xs text-amber-600">
-                  • Unsaved
-                </span>
-              )}
+                  <div className="flex flex-row items-center items-justify gap-2">
+                    <Eye className="w-4 h-4 text-blue-500" />
+                    <h2 className="underline text-lg font-semibold text-gray-800">
+                      View page
+                    </h2>
+                  </div>
+                </Link>
             </div>
           </div>
-        </div>
 
-        {/* Tab Bar */}
-        <div className="bg-white border-b border-gray-200 px-6">
-          <div className="flex gap-1">
-            <button
-              onClick={() => setActiveTab('preview')}
-              className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
-                activeTab === 'preview'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Preview
-            </button>
-            <button
-              onClick={() => setActiveTab('edit')}
-              className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
-                activeTab === 'edit'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Edit
-            </button>
-          </div>
-        </div>
-
-        {/* Error Display */}
-        {error && (
-          <div className="bg-red-50 border-b border-red-200 px-6 py-3">
-            <div className="flex items-center gap-2 text-sm text-red-700">
-              <AlertCircle className="w-4 h-4" />
-              {error}
+          {/* Tab Bar */}
+          <div className="bg-white border-b border-gray-200 px-6">
+            <div className="flex gap-1">
+              <button
+                onClick={() => setActiveTab('preview')}
+                className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+                  activeTab === 'preview'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Preview
+              </button>
+              <button
+                onClick={() => setActiveTab('edit')}
+                className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+                  activeTab === 'edit'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Edit
+              </button>
             </div>
           </div>
-        )}
 
-        {/* Content Area */}
-        <div className="flex-1 overflow-hidden">
-          {isLoading ? (
-            <div className="flex items-center justify-center h-full bg-gray-50">
-              <div className="text-center">
-                <RefreshCw className="w-8 h-8 animate-spin text-blue-500 mx-auto mb-4" />
-                <p className="text-gray-600">Loading page...</p>
+          {/* Error Display */}
+          {error && (
+            <div className="bg-red-50 border-b border-red-200 px-6 py-3">
+              <div className="flex items-center gap-2 text-sm text-red-700">
+                <AlertCircle className="w-4 h-4" />
+                {error}
               </div>
             </div>
-          ) : activeTab === 'edit' ? (
-            <div className="h-full bg-gray-900">
-              <textarea
-                value={pageContent}
-                onChange={(e) => setPageContent(e.target.value)}
-                className="w-full h-full p-6 font-mono text-sm text-gray-100 bg-gray-900 resize-none focus:outline-none"
-                spellCheck={false}
-                placeholder="// Start writing your page component..."
-              />
-            </div>
-          ) : (
-            <div className="h-full overflow-auto bg-white">
-              <ViewRenderer
-                viewPath={selectedPage}
-                className="min-h-full"
-              />
-            </div>
           )}
+
+          {/* Content Area */}
+          <div className="flex-1 overflow-hidden relative">
+            {isLoading ? (
+              <div className="flex items-center justify-center h-full bg-gray-50">
+                <div className="text-center">
+                  <RefreshCw className="w-8 h-8 animate-spin text-blue-500 mx-auto mb-4" />
+                  <p className="text-gray-600">Loading page...</p>
+                </div>
+              </div>
+            ) : activeTab === 'edit' ? (
+              <div className="h-full bg-gray-900">
+                <textarea
+                  value={pageContent}
+                  onChange={e => setPageContent(e.target.value)}
+                  className="w-full h-full p-6 font-mono text-sm text-gray-100 bg-gray-900 resize-none focus:outline-none"
+                  spellCheck={false}
+                  placeholder="// Start writing your page component..."
+                />
+              </div>
+            ) : (
+              <div className="h-full overflow-auto bg-white relative">
+                {/* Container with isolation to prevent fixed elements from escaping */}
+                <div
+                  style={{
+                    isolation: 'isolate',
+                    transform: 'translateZ(0)',
+                    position: 'relative',
+                    zIndex: 0,
+                  }}
+                >
+                  <ViewRenderer
+                    viewPath={selectedPage}
+                    className="min-h-full"
+                    showEditor={false}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
-
-    
-    </div>
       {/* New Page Dialog */}
       {showNewPageDialog && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -428,13 +534,14 @@ export const PageEditor: React.FC = () => {
               <input
                 type="text"
                 value={newPageName}
-                onChange={(e) => setNewPageName(e.target.value)}
+                onChange={e => setNewPageName(e.target.value)}
                 placeholder="e.g., About Us"
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 autoFocus
               />
               <p className="text-xs text-gray-500 mt-1">
-                Will be saved as: /src/views/{newPageName.toLowerCase().replace(/\s+/g, '-')}.tsx
+                Will be saved as: /src/views/
+                {newPageName.toLowerCase().replace(/\s+/g, '-')}.tsx
               </p>
             </div>
 
@@ -459,6 +566,6 @@ export const PageEditor: React.FC = () => {
           </div>
         </div>
       )}
-</>
+    </>
   );
 };

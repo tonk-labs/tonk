@@ -190,7 +190,7 @@ export const ComponentEditor: React.FC<ComponentEditorProps> = ({
         <div className="flex justify-between items-center">
           <span>
             Changes auto-save • Last modified:{' '}
-            {formatTime(component.metadata.modified)}
+            {(component.metadata.modified || Date.now()).toLocaleString()}
           </span>
           <span>
             Lines: {localContent.split('\n').length} • Characters:{' '}
