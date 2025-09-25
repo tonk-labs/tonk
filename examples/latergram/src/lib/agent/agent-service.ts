@@ -174,7 +174,7 @@ export class AgentService {
     }
   }
 
-  async* streamMessage(prompt: string): AsyncGenerator<{ content: string; done: boolean }> {
+  async* streamMessage(prompt: string): AsyncGenerator<{ content: string; done: boolean; type?: 'text' | 'tool_call' | 'tool_result' }> {
     if (!this.initialized) {
       throw new Error('Agent service not initialized');
     }
@@ -206,9 +206,10 @@ export class AgentService {
 
       let fullContent = '';
 
+      // First, stream the text content
       for await (const chunk of result.textStream) {
         fullContent += chunk;
-        yield { content: chunk, done: false };
+        yield { content: chunk, done: false, type: 'text' };
       }
 
       // Wait for the full response to complete
@@ -225,6 +226,47 @@ export class AgentService {
       // Format tool calls for storage - extract from steps
       const toolCalls = steps.flatMap(step => step.toolCalls || []);
       const toolResults = steps.flatMap(step => step.toolResults || []);
+
+      // If there were tool calls, append them to the output
+      if (toolCalls.length > 0) {
+        // Add spacing if there was text before
+        if (fullContent.trim()) {
+          yield { content: '\n\n---\n\n', done: false, type: 'text' };
+        }
+
+        for (let i = 0; i < toolCalls.length; i++) {
+          const call = toolCalls[i];
+          const result = toolResults[i];
+
+          // Show tool call
+          const toolInfo = `🔧 **Tool called:** \`${call.toolName}\`\n`;
+          yield { content: toolInfo, done: false, type: 'tool_call' };
+
+          // Show simplified args (not full JSON for readability)
+          const args = 'args' in call ? call.args : (call as any).arguments;
+          if (args && Object.keys(args).length > 0) {
+            const argsPreview = JSON.stringify(args, null, 2);
+            const argsText = argsPreview.length > 300 ?
+              argsPreview.substring(0, 300) + '...' :
+              argsPreview;
+            yield { content: `\`\`\`json\n${argsText}\n\`\`\`\n`, done: false, type: 'tool_call' };
+          }
+
+          // Show result if available
+          if (result) {
+            const resultData = 'result' in result ? result.result : result.output;
+            if (resultData !== undefined && resultData !== null) {
+              const resultStr = typeof resultData === 'string' ?
+                resultData :
+                JSON.stringify(resultData, null, 2);
+              const resultPreview = resultStr.length > 200 ?
+                '(result truncated)' :
+                resultStr;
+              yield { content: `✅ **Result:** ${resultPreview}\n\n`, done: false, type: 'tool_result' };
+            }
+          }
+        }
+      }
 
       if (toolCalls.length > 0) {
         console.log('[AgentService] Tool calls made during stream:', toolCalls.map(c => ({
@@ -292,7 +334,7 @@ export class AgentService {
 
       console.log('[AgentService] Stream complete - message saved');
 
-      yield { content: '', done: true };
+      yield { content: '', done: true, type: 'text' };
     } catch (error) {
       console.error('Error streaming response:', error);
 
@@ -304,7 +346,7 @@ export class AgentService {
         content: errorMsg,
       });
 
-      yield { content: errorMsg, done: true };
+      yield { content: errorMsg, done: true, type: 'text' };
       throw error;
     }
   }

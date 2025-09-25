@@ -1,7 +1,8 @@
 import { FormEvent, useCallback, useState, useRef, useEffect } from 'react';
 import { Bot, Send, User, Trash2, AlertCircle, Loader2, Wrench } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useAgent } from '../lib/agent/use-agent';
-// poop
 const AgentChat: React.FC = () => {
   const [prompt, setPrompt] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -41,42 +42,97 @@ const AgentChat: React.FC = () => {
   }, [clearConversation]);
 
   const renderMessageContent = (message: typeof messages[0]) => {
+    // Check if content contains markdown formatting
+    const hasMarkdown = message.content.includes('**') ||
+                       message.content.includes('`') ||
+                       message.content.includes('#') ||
+                       message.content.includes('🔧') ||
+                       message.content.includes('✅');
+
     return (
       <>
-        <p className="text-xs whitespace-pre-wrap break-words">
-          {message.content}
-        </p>
+        {hasMarkdown ? (
+          <div className="text-xs prose prose-xs max-w-none prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-code:text-xs prose-code:bg-gray-100 prose-code:px-1 prose-code:rounded prose-strong:font-semibold prose-p:my-1">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+              pre: ({ children, ...props }) => (
+                <pre className="bg-gray-900 text-gray-100 p-2 rounded-md overflow-x-auto text-[10px] my-2" {...props}>
+                  {children}
+                </pre>
+              ),
+              code: ({ className, children, ...props }) => {
+                const match = /language-(\w+)/.exec(className || '');
+                return match ? (
+                  <code className="block bg-gray-900 text-gray-100 p-2 rounded-md overflow-x-auto text-[10px]" {...props}>
+                    {children}
+                  </code>
+                ) : (
+                  <code className="bg-gray-100 px-1 rounded text-[11px]" {...props}>
+                    {children}
+                  </code>
+                );
+              },
+              p: ({ children, ...props }) => (
+                <p className="text-xs my-1" {...props}>{children}</p>
+              ),
+              strong: ({ children, ...props }) => (
+                <strong className="font-semibold" {...props}>{children}</strong>
+              ),
+              ul: ({ children, ...props }) => (
+                <ul className="list-disc list-inside text-xs my-1 pl-2" {...props}>{children}</ul>
+              ),
+              ol: ({ children, ...props }) => (
+                <ol className="list-decimal list-inside text-xs my-1 pl-2" {...props}>{children}</ol>
+              ),
+              li: ({ children, ...props }) => (
+                <li className="text-xs" {...props}>{children}</li>
+              ),
+            }}
+            >
+              {message.content}
+            </ReactMarkdown>
+          </div>
+        ) : (
+          <p className="text-xs whitespace-pre-wrap break-words">
+            {message.content}
+          </p>
+        )}
         {message.toolCalls && message.toolCalls.length > 0 && (
-          <div className="mt-2 space-y-1">
-            <div className="text-[10px] text-gray-600 font-semibold">Tool Calls:</div>
-            {message.toolCalls.map(tool => (
-              <details
-                key={tool.id}
-                className="bg-gray-50 border border-gray-200 rounded p-1.5"
-              >
-                <summary className="cursor-pointer text-[10px] text-blue-700 font-medium flex items-center gap-1">
-                  <Wrench className="w-2.5 h-2.5 inline" />
-                  {tool.name}
-                </summary>
-                <div className="mt-1 pl-3 space-y-1">
-                  <div className="text-[9px] text-gray-600">
-                    <strong>Args:</strong>
-                    <pre className="bg-white p-1 rounded mt-0.5 overflow-x-auto">
-                      {JSON.stringify(tool.args, null, 2)}
-                    </pre>
+          <details className="mt-2">
+            <summary className="cursor-pointer text-[10px] text-gray-500 hover:text-gray-700">
+              View tool call details ({message.toolCalls.length} calls)
+            </summary>
+            <div className="mt-2 space-y-1">
+              {message.toolCalls.map(tool => (
+                <div
+                  key={tool.id}
+                  className="bg-gray-50 border border-gray-200 rounded p-1.5"
+                >
+                  <div className="text-[10px] text-blue-700 font-medium flex items-center gap-1">
+                    <Wrench className="w-2.5 h-2.5" />
+                    {tool.name}
                   </div>
-                  {tool.result && (
+                  <div className="mt-1 pl-3 space-y-1">
                     <div className="text-[9px] text-gray-600">
-                      <strong>Result:</strong>
-                      <pre className="bg-white p-1 rounded mt-0.5 overflow-x-auto max-h-32 overflow-y-auto">
-                        {JSON.stringify(tool.result, null, 2)}
+                      <strong>Args:</strong>
+                      <pre className="bg-white p-1 rounded mt-0.5 overflow-x-auto text-[8px]">
+                        {JSON.stringify(tool.args, null, 2)}
                       </pre>
                     </div>
-                  )}
+                    {tool.result && (
+                      <div className="text-[9px] text-gray-600">
+                        <strong>Result:</strong>
+                        <pre className="bg-white p-1 rounded mt-0.5 overflow-x-auto max-h-32 overflow-y-auto text-[8px]">
+                          {JSON.stringify(tool.result, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </details>
-            ))}
-          </div>
+              ))}
+            </div>
+          </details>
         )}
       </>
     );
