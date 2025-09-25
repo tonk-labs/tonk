@@ -286,7 +286,7 @@ export const PageEditor: React.FC = () => {
 
         // If we deleted the selected page, select another one
         if (pagePath === selectedPage) {
-          setSelectedPage('/src/views/index.tsx');
+          handlePageSelect('/src/views/index.tsx');
         }
 
         // Refresh pages list
