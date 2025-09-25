@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Search,
   FileText,
   AlertCircle,
   CheckCircle,
   Clock,
-  Trash2,
-  Plus,
+  File,
 } from 'lucide-react';
+import { EditorSidebar, SearchInput, SidebarItem, EmptyState } from './shared';
 import {
   componentRegistry,
   ProxiedComponent,
@@ -110,34 +109,20 @@ export const ComponentBrowser: React.FC<ComponentBrowserProps> = ({
     return `${days} days ago`;
   };
 
-  const handleDeleteComponent = (e: React.MouseEvent, componentId: string) => {
-    e.stopPropagation();
-    if (confirm('Are you sure you want to delete this component?')) {
-      onDeleteComponent(componentId);
-    }
-  };
+  // Removed handleDeleteComponent as it's now handled by SidebarItem
 
   return (
-    <div className="w-64 bg-white border-r border-gray-200 flex flex-col h-full">
+    <EditorSidebar
+      title="Components"
+      onCreateClick={onCreateComponent}
+    >
       <div className="p-4 border-b border-gray-200">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-gray-800">Components</h3>
-          <button
-            onClick={onCreateComponent}
-            className="p-1 hover:bg-gray-100 rounded transition-colors"
-            title="Create new component"
-          >
-            <Plus className="w-4 h-4 text-gray-600" />
-          </button>
-        </div>
-        <div className="relative mb-3">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-          <input
-            type="text"
-            placeholder="Search components..."
+        <div className="mb-3">
+          <SearchInput
             value={searchTerm}
-            onChange={e => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+            onChange={setSearchTerm}
+            placeholder="Search components..."
+            focusColor="blue"
           />
         </div>
 
@@ -156,67 +141,33 @@ export const ComponentBrowser: React.FC<ComponentBrowserProps> = ({
 
       <div className="flex-1 overflow-y-auto">
         {filteredComponents.length === 0 ? (
-          <div className="p-6 text-center text-gray-500">
-            <FileText className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-            <p className="text-sm">
-              {searchTerm
-                ? 'No components match your search'
-                : 'No components yet'}
-            </p>
-          </div>
+          <EmptyState
+            icon={<FileText className="w-12 h-12 text-gray-300" />}
+            title={searchTerm ? 'No components match your search' : 'No components yet'}
+          />
         ) : (
           <div className="p-2">
             {filteredComponents.map(component => (
-              <div
+              <SidebarItem
                 key={component.id}
+                selected={selectedComponentId === component.id}
                 onClick={() => onSelectComponent(component.id)}
-                className={`
-                  p-3 mb-2 rounded-lg border cursor-pointer transition-all duration-200 group
-                  ${
-                    selectedComponentId === component.id
-                      ? 'border-blue-500 bg-blue-50 shadow-sm'
-                      : `hover:shadow-sm ${getStatusColor(component.metadata.status)}`
-                  }
-                `}
+                onDelete={() => onDeleteComponent(component.id)}
+                icon={getStatusIcon(component.metadata.status)}
+                title={component.metadata.name}
+                subtitle={component.metadata.filePath}
+                status={component.metadata.status}
+                error={component.metadata.error}
+                color="blue"
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      {getStatusIcon(component.metadata.status)}
-                      <h3 className="font-medium text-gray-900 text-sm truncate">
-                        {component.metadata.name}
-                      </h3>
-                    </div>
-
-                    <p className="text-xs text-gray-500 truncate mb-1">
-                      {component.metadata.filePath}
-                    </p>
-
-                    <p className="text-xs text-gray-400">
-                      {formatTime(component.metadata.modified)}
-                    </p>
-
-                    {component.metadata.status === 'error' &&
-                      component.metadata.error && (
-                        <p className="text-xs text-red-600 mt-1 truncate">
-                          {component.metadata.error}
-                        </p>
-                      )}
-                  </div>
-
-                  <button
-                    onClick={e => handleDeleteComponent(e, component.id)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 p-1 hover:bg-red-100 rounded text-red-500"
-                    title="Delete component"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
+                <p className="text-xs text-gray-400 mt-1 ml-6">
+                  {formatTime(component.metadata.modified)}
+                </p>
+              </SidebarItem>
             ))}
           </div>
         )}
       </div>
-    </div>
+    </EditorSidebar>
   );
 };

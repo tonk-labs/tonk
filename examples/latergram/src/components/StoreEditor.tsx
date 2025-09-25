@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Code, Save, AlertCircle, Database, Clock, Circle } from 'lucide-react';
+import { Code, Save, AlertCircle, Database, Clock, Circle, RefreshCw } from 'lucide-react';
 import { storeRegistry, ProxiedStore } from './StoreRegistry';
 import { useVFSStore } from './hooks/useVFSStore';
-import { useDebounce } from './hooks/useDebounce';
+import { useAutoSave } from './shared/hooks/useAutoSave';
 import { compileTSCode } from './utils/tsCompiler';
 
 interface StoreEditorProps {
@@ -19,8 +19,6 @@ export const StoreEditor: React.FC<StoreEditorProps> = ({
 }) => {
   const [store, setStore] = useState<ProxiedStore | null>(null);
   const [localContent, setLocalContent] = useState<string>('');
-  const [isSaving, setIsSaving] = useState(false);
-  const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [compilationStatus, setCompilationStatus] =
     useState<CompilationStatus>('idle');
   const [compilationError, setCompilationError] = useState<string | null>(null);
@@ -35,7 +33,6 @@ export const StoreEditor: React.FC<StoreEditorProps> = ({
     error: vfsError,
     updateContent,
   } = useVFSStore(filePath);
-  const debouncedContent = useDebounce(localContent, debounceDelay);
 
   useEffect(() => {
     if (storeId) {
@@ -109,27 +106,28 @@ export const StoreEditor: React.FC<StoreEditorProps> = ({
     [store, lastCompiledCode]
   );
 
-  const saveContent = async () => {
-    if (!store || !debouncedContent) return;
+  // Save content function for auto-save
+  const saveContent = useCallback(async (content: string) => {
+    if (!store || !content) return;
 
-    setIsSaving(true);
     try {
-      await updateContent(debouncedContent);
-      setLastSaved(new Date());
+      await updateContent(content);
+      // Also compile the store when saving
+      await compileStore(content);
+      return true;
     } catch (error) {
       console.error('Failed to save store content:', error);
-    } finally {
-      setIsSaving(false);
+      throw error;
     }
-  };
+  }, [store, updateContent, compileStore]);
 
-  // Trigger compilation when content changes
-  useEffect(() => {
-    if (debouncedContent && debouncedContent !== vfsContent && store) {
-      saveContent();
-      compileStore(debouncedContent);
-    }
-  }, [debouncedContent, compileStore, vfsContent, store]);
+  // Use auto-save hook
+  const { isSaving, lastSaved, hasChanges } = useAutoSave({
+    content: localContent,
+    onSave: saveContent,
+    debounceMs: debounceDelay,
+    enabled: !!store,
+  });
 
   // Load TypeScript compiler if not available and compile initial content
   useEffect(() => {
@@ -152,14 +150,6 @@ export const StoreEditor: React.FC<StoreEditorProps> = ({
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setLocalContent(e.target.value);
-  };
-
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
   };
 
   if (!storeId || !store) {
@@ -191,21 +181,22 @@ export const StoreEditor: React.FC<StoreEditorProps> = ({
 
         <div className="flex items-center gap-4 text-sm">
           {/* Save Status */}
-          {isSaving ? (
-            <div className="flex items-center gap-2 text-blue-600">
-              <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-              <span>Saving...</span>
-            </div>
-          ) : lastSaved ? (
-            <div className="flex items-center gap-2 text-green-600">
-              <Save className="w-4 h-4" />
-              <span>Saved at {formatTime(lastSaved)}</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-gray-500">
-              <Clock className="w-4 h-4" />
-              <span>Auto-save</span>
-            </div>
+          {isSaving && (
+            <span className="text-xs text-blue-600 flex items-center gap-1">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              Saving...
+            </span>
+          )}
+          {!isSaving && lastSaved && (
+            <span className="text-xs text-gray-500 flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              Auto-saved
+            </span>
+          )}
+          {hasChanges && !isSaving && (
+            <span className="text-xs text-amber-600">
+              • Unsaved
+            </span>
           )}
 
           {/* Compilation Status */}
@@ -312,12 +303,6 @@ return create<${store.metadata.name}State>()(
           spellCheck={false}
           disabled={isLoading}
         />
-
-        {isSaving && (
-          <div className="absolute top-2 right-2 px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded">
-            Saving...
-          </div>
-        )}
       </div>
 
       {/* Info Panel */}

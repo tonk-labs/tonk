@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Code, Save, AlertCircle, FileText, Clock } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Code, Save, AlertCircle, FileText, Clock, RefreshCw } from 'lucide-react';
 import { componentRegistry, ProxiedComponent } from './ComponentRegistry';
 import { useVFSComponent } from './hooks/useVFSComponent';
-import { useDebounce } from './hooks/useDebounce';
+import { useAutoSave } from './shared/hooks/useAutoSave';
 
 interface ComponentEditorProps {
   componentId: string | null;
@@ -17,8 +17,6 @@ export const ComponentEditor: React.FC<ComponentEditorProps> = ({
 }) => {
   const [component, setComponent] = useState<ProxiedComponent | null>(null);
   const [localContent, setLocalContent] = useState<string>('');
-  const [isSaving, setIsSaving] = useState(false);
-  const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const filePath = component?.metadata.filePath || null;
@@ -28,7 +26,6 @@ export const ComponentEditor: React.FC<ComponentEditorProps> = ({
     error: vfsError,
     updateContent,
   } = useVFSComponent(filePath);
-  const debouncedContent = useDebounce(localContent, debounceDelay);
 
   useEffect(() => {
     if (componentId) {
@@ -54,36 +51,29 @@ export const ComponentEditor: React.FC<ComponentEditorProps> = ({
     }
   }, [vfsContent]);
 
-  useEffect(() => {
-    if (debouncedContent && debouncedContent !== vfsContent && component) {
-      saveContent();
-    }
-  }, [debouncedContent]);
+  // Save content function for auto-save
+  const saveContent = useCallback(async (content: string) => {
+    if (!component || !content) return;
 
-  const saveContent = async () => {
-    if (!component || !debouncedContent) return;
-
-    setIsSaving(true);
     try {
-      await updateContent(debouncedContent);
-      setLastSaved(new Date());
+      await updateContent(content);
+      return true;
     } catch (error) {
       console.error('Failed to save content:', error);
-    } finally {
-      setIsSaving(false);
+      throw error;
     }
-  };
+  }, [component, updateContent]);
+
+  // Use auto-save hook
+  const { isSaving, lastSaved, hasChanges } = useAutoSave({
+    content: localContent,
+    onSave: saveContent,
+    debounceMs: debounceDelay,
+    enabled: !!component,
+  });
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setLocalContent(e.target.value);
-  };
-
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
   };
 
   if (!componentId || !component) {
@@ -115,17 +105,21 @@ export const ComponentEditor: React.FC<ComponentEditorProps> = ({
 
         <div className="flex items-center gap-3">
           {isSaving && (
-            <div className="flex items-center gap-2 text-blue-600">
-              <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm">Saving...</span>
-            </div>
+            <span className="text-xs text-blue-600 flex items-center gap-1">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              Saving...
+            </span>
           )}
-
-          {lastSaved && !isSaving && (
-            <div className="flex items-center gap-2 text-green-600">
-              <Save className="w-4 h-4" />
-              <span className="text-sm">Saved at {formatTime(lastSaved)}</span>
-            </div>
+          {!isSaving && lastSaved && (
+            <span className="text-xs text-gray-500 flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              Auto-saved
+            </span>
+          )}
+          {hasChanges && !isSaving && (
+            <span className="text-xs text-amber-600">
+              • Unsaved
+            </span>
           )}
 
           <div className="flex items-center gap-2">

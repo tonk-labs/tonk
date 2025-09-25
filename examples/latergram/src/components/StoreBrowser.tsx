@@ -1,12 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Plus,
   Database,
-  Search,
-  Trash2,
   Circle,
   AlertCircle,
 } from 'lucide-react';
+import { EditorSidebar, SearchInput, SidebarItem, EmptyState } from './shared';
 import { storeRegistry, ProxiedStore } from './StoreRegistry';
 import { STORE_TEMPLATES } from './StoreTemplates';
 
@@ -74,93 +72,50 @@ export const StoreBrowser: React.FC<StoreBrowserProps> = ({
   };
 
   return (
-    <div className="w-64 bg-white border-r border-gray-200 flex flex-col h-full">
-      {/* Header */}
-      <div className="p-4 border-b border-gray-200">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-gray-800">Stores</h3>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="p-1 hover:bg-gray-100 rounded transition-colors"
-            title="Create new store"
-          >
-            <Plus className="w-4 h-4 text-gray-600" />
-          </button>
-        </div>
-
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-          <input
-            type="text"
-            placeholder="Search stores..."
+    <>
+      <EditorSidebar
+        title="Stores"
+        onCreateClick={() => setShowCreateModal(true)}
+      >
+        <div className="p-4 border-b border-gray-200">
+          <SearchInput
             value={searchTerm}
-            onChange={e => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
+            onChange={setSearchTerm}
+            placeholder="Search stores..."
+            focusColor="purple"
           />
         </div>
-      </div>
 
-      {/* Store List */}
-      <div className="flex-1 overflow-y-auto">
-        {Object.keys(filteredStores).length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-48 text-gray-500">
-            <Database className="w-12 h-12 text-gray-300 mb-3" />
-            <p className="text-sm">No stores found</p>
-            <p className="text-xs text-gray-400 mt-1">
-              Create your first store to get started
-            </p>
-          </div>
-        ) : (
-          <div className="p-2">
-            <div className="space-y-1">
+        {/* Store List */}
+        <div className="flex-1 overflow-y-auto">
+          {filteredStores.length === 0 ? (
+            <EmptyState
+              icon={<Database className="w-12 h-12 text-gray-300" />}
+              title="No stores found"
+              subtitle="Create your first store to get started"
+              actionText="Create store"
+              onAction={() => setShowCreateModal(true)}
+            />
+          ) : (
+            <div className="p-2">
               {filteredStores.map(store => (
-                <div
+                <SidebarItem
                   key={store.id}
+                  selected={selectedStoreId === store.id}
                   onClick={() => onStoreSelect?.(store.id)}
-                  className={`group flex items-center gap-3 p-2 rounded-md cursor-pointer transition-colors ${
-                    selectedStoreId === store.id
-                      ? 'bg-purple-50 border border-purple-200'
-                      : 'hover:bg-gray-50'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                    {getStatusIcon(store.metadata.status)}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">
-                        {store.metadata.name}
-                      </p>
-                      <p className="text-xs text-gray-500 truncate">
-                        {store.metadata.name}
-                      </p>
-                    </div>
-                  </div>
-
-                  {store.metadata.status === 'error' &&
-                    store.metadata.error && (
-                      <div title={store.metadata.error}>
-                        <AlertCircle className="w-4 h-4 text-red-500" />
-                      </div>
-                    )}
-
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={e => {
-                        e.stopPropagation();
-                        onDeleteStore?.(store.id);
-                      }}
-                      className="p-1 text-gray-400 hover:text-red-600 transition-colors"
-                      title="Delete store"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
+                  onDelete={() => onDeleteStore?.(store.id)}
+                  icon={getStatusIcon(store.metadata.status)}
+                  title={store.metadata.name}
+                  subtitle={store.metadata.filePath}
+                  status={store.metadata.status}
+                  error={store.metadata.error}
+                  color="purple"
+                />
               ))}
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      </EditorSidebar>
 
       {/* Create Store Modal */}
       {showCreateModal && (
@@ -219,6 +174,6 @@ export const StoreBrowser: React.FC<StoreBrowserProps> = ({
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };
