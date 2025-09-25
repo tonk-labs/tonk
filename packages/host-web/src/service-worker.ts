@@ -239,7 +239,6 @@ const determinePath = (url: URL, referrer?: string): string => {
 
   // Special case for expected web server behavior
   const candidatePath = relativePath.split('/');
-  console.log(candidatePath);
   if (candidatePath[candidatePath.length - 1] === '') {
     candidatePath[candidatePath.length - 1] = 'index.html';
   }
@@ -250,31 +249,23 @@ const determinePath = (url: URL, referrer?: string): string => {
 (self as any).addEventListener('fetch', (event: FetchEvent) => {
   const url = new URL(event.request.url);
   const referrer = event.request.referrer;
-  console.log('🌐 SERVICE WORKER FETCH:', url.pathname);
-  console.log('🌐 SERVICE WORKER FULL URL:', url.href);
-  console.log('🌐 SERVICE WORKER REFERRER:', referrer);
 
   if (url.origin === location.origin) {
     event.respondWith(
       (async () => {
         const path = determinePath(url, referrer);
-        console.log('Fetching Path', path);
         const tonkInstance = getTonk();
         if (!tonkInstance) {
           throw new Error('Tonk not initialized');
         }
-        console.log(path);
-
         try {
           const target = await tonkInstance.tonk.readFile(`/app/${path}`);
-          console.log(target);
           return targetToResponse(target, path);
         } catch (e) {
           log('error', 'failed to fetch file', e);
         }
 
         const directories = await tonkInstance.tonk.listDirectory('/app');
-        console.log(directories);
         return new Response(
           `App path "${path}" not found. directories available: ${JSON.stringify(
             directories

@@ -641,7 +641,6 @@ export class TonkCore {
   async readFile(path: string): Promise<DocumentData> {
     try {
       const intermediary = await this.#wasm.readFile(path);
-      console.log('IVE READ THE INTERMEDIARY!!!!!!!!!');
       if (intermediary === null) {
         throw new FileSystemError(`File not found: ${path}`);
       }
