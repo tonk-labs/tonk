@@ -55,7 +55,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
 
   const loadAllStores = async () => {
     try {
-      const storeFiles = await vfs.listDirectory('/stores');
+      const storeFiles = await vfs.listDirectory('/src/stores');
 
       for (const fileInfo of storeFiles as any[]) {
         const fileName =
@@ -67,7 +67,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
           continue;
         }
 
-        const filePath = `/stores/${fileName}`;
+        const filePath = `/src/stores/${fileName}`;
 
         // Check if store already exists
         if (storeRegistry.getStoreByFilePath(filePath)) {
@@ -109,7 +109,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
 
   const loadAllComponents = async () => {
     try {
-      const componentFiles = await vfs.listDirectory('/components');
+      const componentFiles = await vfs.listDirectory('/src/components');
 
       for (const fileInfo of componentFiles as any[]) {
         const fileName =
@@ -121,7 +121,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
           continue;
         }
 
-        const filePath = `/components/${fileName}`;
+        const filePath = `/src/components/${fileName}`;
 
         // Check if component already exists
         if (componentRegistry.getComponentByFilePath(filePath)) {

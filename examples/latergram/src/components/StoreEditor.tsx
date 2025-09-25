@@ -305,7 +305,7 @@ return create<${store.metadata.name}State>()(
     (set) => ({
       // Your state here
     }),
-    { path: '/stores/${store.metadata.name.toLowerCase()}-store.json' }
+    { path: '/src/stores/${store.metadata.name.toLowerCase()}-store.json' }
   )
 );`}
           className="w-full h-full p-4 font-mono text-sm border-0 resize-none focus:outline-none bg-gray-50"
