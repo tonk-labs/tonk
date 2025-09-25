@@ -12,7 +12,7 @@ export const StoreManager: React.FC = () => {
   const [selectedStoreId, setSelectedStoreId] = useState<string | null>(null);
 
   const { discoverFiles } = useVFSDiscovery({
-    directory: '/stores',
+    directory: '/src/stores',
     fileExtension: '.ts',
     extractName: extractStoreName,
     checkExisting: filePath => {
@@ -69,14 +69,14 @@ export const StoreManager: React.FC = () => {
           storeName.toLowerCase().replace(/store$/, '') + '-store';
         customizedCode = customizedCode.replace(
           /path: ['"][^'"]*['"]/,
-          `path: '/stores/${storeFileName}.json'`
+          `path: '/src/stores/${storeFileName}.json'`
         );
 
         // Update file path in metadata
         const store = storeRegistry.getStore(storeId);
         if (store) {
           storeRegistry.updateMetadata(storeId, {
-            filePath: `/stores/${storeId}.ts`,
+            filePath: `/src/stores/${storeId}.ts`,
           });
 
           // Create the file with template content

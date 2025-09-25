@@ -26,7 +26,7 @@ const useCounterStore = create<CounterState>()(
       reset: () => set({ count: 0 }),
       setCount: (value) => set({ count: value }),
     }),
-    { path: '/stores/counter-store.json' }
+    { path: '/src/stores/counter-store.json' }
   )
 );
 
@@ -98,7 +98,7 @@ const useAuthStore = create<AuthState>()(
         set({ isLoading: loading });
       },
     }),
-    { path: '/stores/auth-store.json' }
+    { path: '/src/stores/auth-store.json' }
   )
 );
 
@@ -189,7 +189,7 @@ const useTodoStore = create<TodoState>()(
         }
       },
     }),
-    { path: '/stores/todo-store.json' }
+    { path: '/src/stores/todo-store.json' }
   )
 );
 
@@ -255,7 +255,7 @@ const useThemeStore = create<ThemeState>()(
         return theme;
       },
     }),
-    { path: '/stores/theme-store.json' }
+    { path: '/src/stores/theme-store.json' }
   )
 );
 
@@ -363,7 +363,7 @@ const useNotificationStore = create<NotificationState>()(
         });
       },
     }),
-    { path: '/stores/notification-store.json' }
+    { path: '/src/stores/notification-store.json' }
   )
 );
 

@@ -30,7 +30,7 @@ class ComponentRegistry {
     const componentMetadata: ComponentMetadata = {
       id,
       name: metadata?.name || `Component-${id}`,
-      filePath: metadata?.filePath || `/components/${id}.tsx`,
+      filePath: metadata?.filePath || `/src/components/${id}.tsx`,
       created: metadata?.created || now,
       modified: metadata?.modified || now,
       status: 'success',
@@ -49,7 +49,7 @@ class ComponentRegistry {
     const metadata: ComponentMetadata = {
       id,
       name,
-      filePath: filePath || `/components/${id}.tsx`,
+      filePath: filePath || `/src/components/${id}.tsx`,
       created: new Date(),
       modified: new Date(),
       status: 'loading',

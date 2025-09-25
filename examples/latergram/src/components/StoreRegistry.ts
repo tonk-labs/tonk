@@ -30,7 +30,7 @@ class StoreRegistry {
     const storeMetadata: StoreMetadata = {
       id,
       name: metadata?.name || `Store-${id}`,
-      filePath: metadata?.filePath || `/stores/${id}.ts`,
+      filePath: metadata?.filePath || `/src/stores/${id}.ts`,
       created: metadata?.created || now,
       modified: metadata?.modified || now,
       status: 'success',
@@ -49,7 +49,7 @@ class StoreRegistry {
     const metadata: StoreMetadata = {
       id,
       name,
-      filePath: filePath || `/stores/${id}.ts`,
+      filePath: filePath || `/src/stores/${id}.ts`,
       created: new Date(),
       modified: new Date(),
       status: 'loading',
