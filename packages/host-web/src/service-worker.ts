@@ -123,9 +123,11 @@ async function loadTonk(): Promise<{ tonk: TonkCore; manifest: Manifest }> {
   const manifestResponse = await fetch('http://localhost:8081/.manifest.tonk');
   const manifestBytes = new Uint8Array(await manifestResponse.arrayBuffer());
 
+  // NOTE:
+  // This was going to be used for the entrypoint (to pull files out, but not doing that anymore)
+  // we still might want this manifest to configure networks
   const bundle = await Bundle.fromBytes(manifestBytes);
   const manifest = await bundle.getManifest();
-  console.log(manifest);
 
   const tonk = await TonkCore.fromBytes(manifestBytes);
   await tonk.connectWebsocket('ws://localhost:8081');
