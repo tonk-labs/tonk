@@ -10,6 +10,9 @@ export interface UseAgentReturn {
   sendMessage: (text: string) => Promise<void>;
   clearConversation: () => Promise<void>;
   streamingContent: string;
+  stopGeneration: () => void;
+  updateMessage: (messageId: string, newContent: string) => Promise<void>;
+  deleteMessage: (messageId: string) => Promise<void>;
 }
 
 export function useAgent(): UseAgentReturn {
@@ -148,6 +151,41 @@ export function useAgent(): UseAgentReturn {
     }
   }, [isReady]);
 
+  const stopGeneration = useCallback(() => {
+    agentService.current.stopGeneration();
+    setIsLoading(false);
+  }, []);
+
+  const updateMessage = useCallback(async (messageId: string, newContent: string) => {
+    if (!isReady) {
+      return;
+    }
+
+    try {
+      await agentService.current.updateMessage(messageId, newContent);
+      const updatedHistory = agentService.current.getHistory();
+      setMessages(updatedHistory);
+    } catch (err) {
+      console.error('Failed to update message:', err);
+      setError(err instanceof Error ? err.message : 'Failed to update message');
+    }
+  }, [isReady]);
+
+  const deleteMessage = useCallback(async (messageId: string) => {
+    if (!isReady) {
+      return;
+    }
+
+    try {
+      await agentService.current.regenerateFrom(messageId);
+      const updatedHistory = agentService.current.getHistory();
+      setMessages(updatedHistory);
+    } catch (err) {
+      console.error('Failed to delete message:', err);
+      setError(err instanceof Error ? err.message : 'Failed to delete message');
+    }
+  }, [isReady]);
+
   return {
     messages,
     isLoading,
@@ -156,5 +194,8 @@ export function useAgent(): UseAgentReturn {
     sendMessage,
     clearConversation,
     streamingContent,
+    stopGeneration,
+    updateMessage,
+    deleteMessage,
   };
 }

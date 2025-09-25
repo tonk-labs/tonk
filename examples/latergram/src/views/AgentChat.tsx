@@ -1,10 +1,12 @@
 import { FormEvent, useCallback, useState, useRef, useEffect } from 'react';
-import { Bot, Send, User, Trash2, AlertCircle, Loader2, Wrench } from 'lucide-react';
+import { Bot, Send, User, Trash2, AlertCircle, Loader2, Wrench, Edit2, X, Check, StopCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useAgent } from '../lib/agent/use-agent';
 const AgentChat: React.FC = () => {
   const [prompt, setPrompt] = useState('');
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -14,6 +16,9 @@ const AgentChat: React.FC = () => {
     isReady,
     sendMessage,
     clearConversation,
+    stopGeneration,
+    updateMessage,
+    deleteMessage,
   } = useAgent();
 
   const scrollToBottom = () => {
@@ -40,6 +45,32 @@ const AgentChat: React.FC = () => {
       await clearConversation();
     }
   }, [clearConversation]);
+
+  const handleStartEdit = useCallback((message: typeof messages[0]) => {
+    if (message.role === 'user') {
+      setEditingMessageId(message.id);
+      setEditContent(message.content);
+    }
+  }, []);
+
+  const handleSaveEdit = useCallback(async () => {
+    if (editingMessageId && editContent.trim()) {
+      await updateMessage(editingMessageId, editContent);
+      setEditingMessageId(null);
+      setEditContent('');
+    }
+  }, [editingMessageId, editContent, updateMessage]);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingMessageId(null);
+    setEditContent('');
+  }, []);
+
+  const handleDeleteMessage = useCallback(async (messageId: string) => {
+    if (window.confirm('Delete this message and all following messages?')) {
+      await deleteMessage(messageId);
+    }
+  }, [deleteMessage]);
 
   const renderMessageContent = (message: typeof messages[0]) => {
     // Check if content contains markdown formatting
@@ -192,7 +223,7 @@ const AgentChat: React.FC = () => {
                 key={message.id}
                 className={`flex ${
                   message.role === 'user' ? 'justify-end' : 'justify-start'
-                }`}
+                } group`}
               >
                 <div
                   className={`flex gap-3 max-w-[70%] ${
@@ -212,26 +243,76 @@ const AgentChat: React.FC = () => {
                       <Bot className="w-3 h-3 text-white" />
                     )}
                   </div>
-                  <div
-                    className={`px-3 py-1.5 rounded-lg ${
-                      message.role === 'user'
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-white border border-gray-200'
-                    }`}
-                  >
-                    {renderMessageContent(message)}
-                    <p
-                      className={`text-[10px] mt-0.5 ${
+                  <div className="flex-1">
+                    <div
+                      className={`px-3 py-1.5 rounded-lg ${
                         message.role === 'user'
-                          ? 'text-blue-100'
-                          : 'text-gray-500'
+                          ? 'bg-blue-500 text-white'
+                          : 'bg-white border border-gray-200'
                       }`}
                     >
-                      {new Date(message.timestamp).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </p>
+                      {editingMessageId === message.id ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editContent}
+                            onChange={e => setEditContent(e.target.value)}
+                            className="w-full p-2 border border-gray-300 rounded text-xs text-black"
+                            rows={3}
+                            autoFocus
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              onClick={handleSaveEdit}
+                              className="px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600"
+                            >
+                              <Check className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={handleCancelEdit}
+                              className="px-2 py-1 bg-gray-500 text-white rounded text-xs hover:bg-gray-600"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          {renderMessageContent(message)}
+                          <div className="flex items-center justify-between mt-1">
+                            <p
+                              className={`text-[10px] ${
+                                message.role === 'user'
+                                  ? 'text-blue-100'
+                                  : 'text-gray-500'
+                              }`}
+                            >
+                              {new Date(message.timestamp).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </p>
+                            {message.role === 'user' && (
+                              <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
+                                <button
+                                  onClick={() => handleStartEdit(message)}
+                                  className="p-0.5 hover:bg-blue-600 rounded"
+                                  title="Edit message"
+                                >
+                                  <Edit2 className="w-3 h-3" />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteMessage(message.id)}
+                                  className="p-0.5 hover:bg-red-600 rounded"
+                                  title="Delete from here"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -244,12 +325,21 @@ const AgentChat: React.FC = () => {
                 <div className="flex-shrink-0 w-6 h-6 rounded-full bg-gray-600 flex items-center justify-center">
                   <Bot className="w-4 h-4 text-white" />
                 </div>
-                <div className="px-3 py-1.5 rounded-lg bg-white border border-gray-200">
-                  <div className="flex gap-1">
-                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" />
-                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce delay-100" />
-                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce delay-200" />
+                <div className="flex items-center gap-2">
+                  <div className="px-3 py-1.5 rounded-lg bg-white border border-gray-200">
+                    <div className="flex gap-1">
+                      <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" />
+                      <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce delay-100" />
+                      <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce delay-200" />
+                    </div>
                   </div>
+                  <button
+                    onClick={stopGeneration}
+                    className="p-1.5 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors"
+                    title="Stop generation"
+                  >
+                    <StopCircle className="w-3 h-3" />
+                  </button>
                 </div>
               </div>
             </div>
