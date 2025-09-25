@@ -33,9 +33,9 @@ const AgentChat: React.FC = () => {
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       if (!prompt.trim() || !isReady || isLoading) return;
-
-      await sendMessage(prompt);
+      const _prompt = prompt.trim();
       setPrompt('');
+      await sendMessage(_prompt);
     },
     [prompt, sendMessage, isReady, isLoading]
   );

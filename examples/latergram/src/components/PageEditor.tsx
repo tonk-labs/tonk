@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { FileText, Save, RefreshCw, AlertCircle, File, Plus, Trash2 } from 'lucide-react';
+import { FileText, AlertCircle, File, RefreshCw, Clock } from 'lucide-react';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { getVFSService } from '../services/vfs-service';
 import { ViewRenderer } from './ViewRenderer';
+import { EditorSidebar, SearchInput, SidebarItem, EmptyState, useAutoSave } from './shared';
 
 interface PageFile {
   path: string;
@@ -54,18 +56,36 @@ const DEFAULT_PAGE_TEMPLATE = `export default function HomePage() {
 }`;
 
 export const PageEditor: React.FC = () => {
-  const [selectedPage, setSelectedPage] = useState<string>('/src/views/index.tsx');
+  const [searchParams] = useSearchParams();
+  const fileFromUrl = searchParams.get('file');
+
+  const [selectedPage, setSelectedPage] = useState<string>(fileFromUrl || '/src/views/index.tsx');
   const [pageContent, setPageContent] = useState<string>('');
-  const [originalContent, setOriginalContent] = useState<string>('');
   const [pages, setPages] = useState<PageFile[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'edit' | 'preview'>('preview');
   const [showNewPageDialog, setShowNewPageDialog] = useState(false);
   const [newPageName, setNewPageName] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
 
   const vfs = getVFSService();
+
+  // Handle URL parameter changes
+  useEffect(() => {
+    if (fileFromUrl && fileFromUrl !== selectedPage) {
+      setSelectedPage(fileFromUrl);
+      // Also ensure the file is in our pages list
+      if (!pages.some(p => p.path === fileFromUrl)) {
+        const pageName = fileFromUrl.replace('/src/views/', '').replace('.tsx', '');
+        setPages(prev => [...prev, {
+          path: fileFromUrl,
+          name: pageName === 'index' ? 'Home Page (index)' : pageName.replace(/-/g, ' '),
+          exists: true // Will be checked when loading
+        }]);
+      }
+    }
+  }, [fileFromUrl, selectedPage, pages]);
 
   // Discover available pages
   const discoverPages = useCallback(async () => {
@@ -124,11 +144,9 @@ export const PageEditor: React.FC = () => {
       const exists = await vfs.exists(pagePath);
       if (!exists) {
         setPageContent(DEFAULT_PAGE_TEMPLATE);
-        setOriginalContent('');
       } else {
         const content = await vfs.readFile(pagePath);
         setPageContent(content);
-        setOriginalContent(content);
       }
     } catch (error) {
       console.error('Failed to load page:', error);
@@ -140,27 +158,31 @@ export const PageEditor: React.FC = () => {
     }
   }, [vfs]);
 
-  // Save page content
-  const savePage = useCallback(async () => {
+  // Save page content function for auto-save
+  const savePage = useCallback(async (content: string) => {
     if (!vfs.isInitialized() || !selectedPage) return;
-
-    setIsSaving(true);
-    setError(null);
 
     try {
       const exists = await vfs.exists(selectedPage);
-      await vfs.writeFile(selectedPage, pageContent, !exists);
-      setOriginalContent(pageContent);
-
-      // Refresh pages list
-      await discoverPages();
+      await vfs.writeFile(selectedPage, content, !exists);
+      // Refresh pages list if new file
+      if (!exists) {
+        await discoverPages();
+      }
+      return true;
     } catch (error) {
       console.error('Failed to save page:', error);
-      setError(`Failed to save page: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
-      setIsSaving(false);
+      throw error;
     }
-  }, [vfs, selectedPage, pageContent, discoverPages]);
+  }, [vfs, selectedPage, discoverPages]);
+
+  // Use auto-save hook
+  const { isSaving, lastSaved, hasChanges } = useAutoSave({
+    content: pageContent,
+    onSave: savePage,
+    debounceMs: 1000,
+    enabled: true,
+  });
 
   // Create new page
   const createNewPage = useCallback(async () => {
@@ -231,86 +253,63 @@ export const PageEditor: React.FC = () => {
     }
   }, [selectedPage, loadPage, vfs]);
 
-  const hasChanges = pageContent !== originalContent;
+  // Filter pages based on search
+  const filteredPages = pages.filter(page =>
+    page.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    page.path.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   return (
     <>
     <div className="flex h-full bg-gray-100 overflow-hidden">
       {/* Sidebar - Pages List */}
-      <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
+      <EditorSidebar
+        title="Pages"
+        onCreateClick={() => setShowNewPageDialog(true)}
+      >
         <div className="p-4 border-b border-gray-200">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-gray-800">Pages</h3>
-            <button
-              onClick={() => setShowNewPageDialog(true)}
-              className="p-1 hover:bg-gray-100 rounded transition-colors"
-              title="Create new page"
-            >
-              <Plus className="w-4 h-4 text-gray-600" />
-            </button>
-          </div>
+          <SearchInput
+            value={searchTerm}
+            onChange={setSearchTerm}
+            placeholder="Search pages..."
+            focusColor="green"
+          />
         </div>
 
-        <div className="flex-1 overflow-y-auto p-2">
-          {pages.length === 0 ? (
-            <div className="text-center py-8 px-4">
-              <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <p className="text-sm text-gray-500 mb-4">No pages yet</p>
-              <button
-                onClick={() => setShowNewPageDialog(true)}
-                className="text-xs text-blue-500 hover:text-blue-600"
-              >
-                Create your first page
-              </button>
-            </div>
+        <div className="flex-1 overflow-y-auto">
+          {filteredPages.length === 0 ? (
+            <EmptyState
+              icon={<FileText className="w-12 h-12 text-gray-300" />}
+              title={pages.length === 0 ? "No pages yet" : "No pages match your search"}
+              subtitle={pages.length === 0 ? "Create your first page to get started" : undefined}
+              actionText={pages.length === 0 ? "Create your first page" : undefined}
+              onAction={pages.length === 0 ? () => setShowNewPageDialog(true) : undefined}
+            />
           ) : (
-            pages.map(page => (
-              <div
-                key={page.path}
-                onClick={() => setSelectedPage(page.path)}
-                className={`
-                  p-2 mb-1 rounded cursor-pointer transition-all group
-                  ${selectedPage === page.path
-                    ? 'bg-blue-50 border border-blue-200'
-                    : 'hover:bg-gray-50 border border-transparent'
-                  }
-                `}
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                    <File className={`w-4 h-4 ${page.exists ? 'text-blue-500' : 'text-gray-400'}`} />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-gray-800 truncate">
-                        {page.name}
-                      </div>
-                      <div className="text-xs text-gray-500 truncate">
-                        {page.path.replace('/src/views/', '')}
-                      </div>
+            <div className="p-2">
+              {filteredPages.map(page => (
+                <SidebarItem
+                  key={page.path}
+                  selected={selectedPage === page.path}
+                  onClick={() => setSelectedPage(page.path)}
+                  onDelete={page.path !== '/src/views/index.tsx' ? () => deletePage(page.path) : undefined}
+                  icon={<File className={`w-4 h-4 ${page.exists ? 'text-green-500' : 'text-gray-400'}`} />}
+                  title={page.name}
+                  subtitle={page.path.replace('/src/views/', '')}
+                  color="green"
+                  canDelete={page.exists && page.path !== '/src/views/index.tsx'}
+                >
+                  {!page.exists && (
+                    <div className="text-xs text-amber-600 mt-1 ml-6">
+                      Click to create
                     </div>
-                  </div>
-                  {page.exists && page.path !== '/src/views/index.tsx' && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deletePage(page.path);
-                      }}
-                      className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 rounded transition-all"
-                      title="Delete page"
-                    >
-                      <Trash2 className="w-3 h-3 text-red-500" />
-                    </button>
                   )}
-                </div>
-                {!page.exists && (
-                  <div className="text-xs text-amber-600 mt-1 ml-6">
-                    Click to create
-                  </div>
-                )}
-              </div>
-            ))
+                </SidebarItem>
+              ))}
+            </div>
           )}
-      </div>
-</div>
+        </div>
+      </EditorSidebar>
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
@@ -327,30 +326,23 @@ export const PageEditor: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2">
-              {hasChanges && (
-                <span className="text-xs text-amber-600 flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3" />
-                  Unsaved changes
+              {isSaving && (
+                <span className="text-xs text-blue-600 flex items-center gap-1">
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                  Saving...
                 </span>
               )}
-              <button
-                onClick={savePage}
-                disabled={!hasChanges || isSaving}
-                className={`
-                  flex items-center gap-2 px-4 py-2 rounded-lg transition-colors
-                  ${hasChanges
-                    ? 'bg-blue-500 text-white hover:bg-blue-600'
-                    : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                  }
-                `}
-              >
-                {isSaving ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Save className="w-4 h-4" />
-                )}
-                Save
-              </button>
+              {!isSaving && lastSaved && (
+                <span className="text-xs text-gray-500 flex items-center gap-1">
+                  <Clock className="w-3 h-3" />
+                  Auto-saved
+                </span>
+              )}
+              {hasChanges && !isSaving && (
+                <span className="text-xs text-amber-600">
+                  • Unsaved
+                </span>
+              )}
             </div>
           </div>
         </div>

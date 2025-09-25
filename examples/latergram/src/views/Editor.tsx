@@ -1,4 +1,4 @@
-import { Layers, Database, FileText } from 'lucide-react';
+import { Layers, Database, FileText, House } from 'lucide-react';
 import { Link, Routes, Route, useLocation } from 'react-router-dom';
 import { StoreManager } from '../components/StoreManager';
 import AgentChat from './AgentChat';
@@ -14,6 +14,12 @@ export default function Editor() {
         <nav className="bg-white border-b border-gray-200 px-6 py-3">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-1">
+              <Link to="/"
+                className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
+                  location.pathname === '/'}`}>
+                    <House className="w-4 h-4" />
+                    Home
+              </Link>
               <Link
                 to="/editor/components"
                 className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${

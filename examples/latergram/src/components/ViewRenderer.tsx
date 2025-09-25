@@ -232,7 +232,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
             The view at <code className="bg-gray-100 px-2 py-1 rounded text-sm">{viewPath}</code> doesn't exist yet.
           </p>
           <Link
-            to="/editor/components"
+            to={`/editor/pages?file=${encodeURIComponent(viewPath)}`}
             className="inline-flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
           >
             <Edit3 className="w-4 h-4" />
@@ -250,7 +250,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
         {showEditor && (
           <div className="absolute top-4 right-4 z-10">
             <Link
-              to="/editor/components"
+              to={`/editor/pages?file=${encodeURIComponent(viewPath)}`}
               className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"
             >
               <Edit3 className="w-4 h-4" />
@@ -283,7 +283,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
       {showEditor && (
         <div className="absolute top-4 right-4 z-10">
           <Link
-            to="/editor/components"
+            to={`/editor/pages?file=${encodeURIComponent(viewPath)}`}
             className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"
           >
             <Edit3 className="w-4 h-4" />
