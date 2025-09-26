@@ -13,11 +13,11 @@ export interface RefNode {
   timestamps: DocumentTimestamps;
 }
 
-export interface DirectoryUpdate {
+export interface DirectoryNode {
   /** Name of the file or directory */
   name: string;
   /** Type of the entry */
-  type: 'directory' | 'document';
+  type: 'directory';
   //the UUID of the automerge URL
   pointer: string;
   timestamps: DocumentTimestamps;
@@ -910,7 +910,7 @@ export class TonkCore {
    */
   async watchDirectory(
     path: string,
-    callback: (result: DirectoryUpdate) => void
+    callback: (result: DirectoryNode) => void
   ): Promise<DocumentWatcher> {
     try {
       const result = await this.#wasm.watchDirectory(path, callback);

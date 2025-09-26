@@ -9,7 +9,7 @@ import {
   // Types
   type DocumentData,
   type RefNode,
-  type DirectoryUpdate,
+  type DirectoryNode,
   type DocumentTimestamps,
   type BundleEntry,
 
@@ -73,7 +73,7 @@ export {
   type TonkConfig,
   type DocumentTimestamps,
   type RefNode,
-  type DirectoryUpdate,
+  type DirectoryNode,
 
   // Error classes
   TonkError,

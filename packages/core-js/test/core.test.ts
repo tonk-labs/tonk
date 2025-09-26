@@ -7,7 +7,6 @@ import {
   DocumentData,
   BundleError,
   ConnectionError,
-  DocumentTimestamps,
 } from '../dist/index.js';
 import { pngBytes } from './data.js';
 

@@ -33,7 +33,7 @@ export {
   type DocumentData,
   type Manifest,
   type RefNode,
-  type DirectoryUpdate,
+  type DirectoryNode,
   type DocumentTimestamps,
   type BundleEntry,
   type TonkConfig,
