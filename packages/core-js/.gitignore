@@ -9,6 +9,10 @@ generated/
 *.log
 npm-debug.log*
 
+# Playwright
+playwright-report
+test-results.json
+
 # TypeScript
 *.tsbuildinfo
 
