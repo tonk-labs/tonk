@@ -765,7 +765,7 @@ mod tests {
         // use automerge::ReadDoc;
         // let (value, _) = root_doc.get(automerge::ROOT, "type").unwrap().unwrap();
         // let doc_type = value.to_str().unwrap();
-        // assert_eq!(doc_type, "dir");
+        // assert_eq!(doc_type, "directory");
 
         // Check that the root document has a name
         // let (name_value, _) = root_doc.get(automerge::ROOT, "name").unwrap().unwrap();
