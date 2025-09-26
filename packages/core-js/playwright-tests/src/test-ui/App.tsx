@@ -1,46 +1,82 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { getVFSService } from './vfs-service';
 import { imageGenerator } from '../utils/image-generator';
 import { MetricsCollector } from '../utils/metrics-collector';
 
+interface ServerConfig {
+  port: number;
+  wsUrl: string;
+  manifestUrl: string;
+}
+
 interface TestState {
   connected: boolean;
-  serverUrl: string;
+  serverConfig: ServerConfig;
   operations: number;
   throughput: number;
   errors: number;
   memoryUsage: number;
 }
 
+// Helper function to get server configuration
+function getServerConfig(): ServerConfig {
+  // Check for injected config first (from tests)
+  const windowConfig = (window as any).serverConfig;
+  if (windowConfig) {
+    console.log('Using injected server config:', windowConfig);
+    return windowConfig;
+  }
+
+  // Check URL parameters
+  const params = new URLSearchParams(window.location.search);
+  const port = params.get('port') || '8081';
+  const portNum = parseInt(port, 10);
+
+  const config = {
+    port: portNum,
+    wsUrl: `ws://localhost:${portNum}`,
+    manifestUrl: `http://localhost:${portNum}/.manifest.tonk`,
+  };
+
+  console.log('Using URL/default server config:', config);
+  return config;
+}
+
 function App() {
-  const [state, setState] = useState<TestState>({
-    connected: false,
-    serverUrl: 'ws://localhost:8081',
-    operations: 0,
-    throughput: 0,
-    errors: 0,
-    memoryUsage: 0,
+  const [state, setState] = useState<TestState>(() => {
+    const serverConfig = getServerConfig();
+    return {
+      connected: false,
+      serverConfig,
+      operations: 0,
+      throughput: 0,
+      errors: 0,
+      memoryUsage: 0,
+    };
   });
 
   const [metrics] = useState(() => new MetricsCollector('ui-test'));
   const [vfs] = useState(() => getVFSService());
 
   useEffect(() => {
-    // Initialize connection
+    // Initialize connection using dynamic server config
     const initVFS = async () => {
       try {
-        const manifestUrl = 'http://localhost:8081/.manifest.tonk';
-        const wsUrl = 'ws://localhost:8081';
-
-        await vfs.initialize(manifestUrl, wsUrl);
+        console.log('Initializing VFS with config:', state.serverConfig);
+        await vfs.initialize(
+          state.serverConfig.manifestUrl,
+          state.serverConfig.wsUrl
+        );
         setState(prev => ({ ...prev, connected: true }));
+        console.log('VFS connection established successfully');
       } catch (error) {
         console.error('Failed to initialize VFS:', error);
+        setState(prev => ({ ...prev, connected: false }));
       }
     };
 
     initVFS();
-  }, [vfs]);
+  }, [vfs, state.serverConfig]);
 
   const runThroughputTest = async () => {
     if (!vfs.isInitialized()) return;
@@ -50,7 +86,11 @@ function App() {
     try {
       // Create a test file
       const testData = JSON.stringify({ test: 'data', timestamp: Date.now() });
-      await vfs.writeFile('/test-file.json', testData, true);
+      try {
+        await vfs.writeFile('/test-file.json', testData, true);
+      } catch {
+        await vfs.writeFile('/test-file.json', testData, false);
+      }
 
       // Read it back
       await vfs.readFile('/test-file.json');
@@ -124,7 +164,8 @@ function App() {
         <p data-testid="connection-status">
           Status: {state.connected ? 'Connected' : 'Disconnected'}
         </p>
-        <p>Server: {state.serverUrl}</p>
+        <p>Server: {state.serverConfig.wsUrl}</p>
+        <p data-testid="server-info">Port: {state.serverConfig.port}</p>
       </div>
 
       <div style={{ marginBottom: '20px' }}>

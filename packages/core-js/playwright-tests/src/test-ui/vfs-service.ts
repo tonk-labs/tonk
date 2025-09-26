@@ -82,9 +82,22 @@ export class VFSService {
       throw new Error('Worker not initialized');
     }
 
+    // Reset initialization state if reinitializing
+    this.initialized = false;
+
     try {
+      console.log(`[VFS] Fetching manifest from: ${manifestUrl}`);
       const response = await fetch(manifestUrl);
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch manifest: ${response.status} ${response.statusText}`
+        );
+      }
+
       const manifest = await response.arrayBuffer();
+      console.log(
+        `[VFS] Manifest fetched successfully, size: ${manifest.byteLength} bytes`
+      );
 
       const message: VFSWorkerMessage = {
         type: 'init',
@@ -120,18 +133,38 @@ export class VFSService {
         };
         checkInit();
 
-        // Timeout after 10 seconds
+        // Timeout after 15 seconds (increased for slower connections)
         setTimeout(() => {
           if (!this.initialized) {
-            reject(new Error('VFS initialization timeout'));
+            reject(
+              new Error(
+                `VFS initialization timeout after 15 seconds. Manifest URL: ${manifestUrl}, WebSocket URL: ${wsUrl}`
+              )
+            );
           }
-        }, 10000);
+        }, 15000);
       });
     } catch (error) {
-      throw new Error(
-        `Failed to initialize VFS: ${error instanceof Error ? error.message : String(error)}`
-      );
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      console.error('[VFS] Initialization failed:', errorMessage);
+      throw new Error(`Failed to initialize VFS: ${errorMessage}`);
     }
+  }
+
+  /**
+   * Reinitialize with new server configuration
+   */
+  async reinitialize(manifestUrl: string, wsUrl: string): Promise<void> {
+    console.log('[VFS] Reinitializing with new server configuration');
+
+    // Reset state
+    this.initialized = false;
+    this.pendingRequests.clear();
+    this.watchers.clear();
+
+    // Initialize with new configuration
+    await this.initialize(manifestUrl, wsUrl);
   }
 
   private generateId(): string {

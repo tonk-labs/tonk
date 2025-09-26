@@ -88,12 +88,12 @@ export class ServerManager {
     // Path to the server script and blank.tonk file
     const serverPath = path.resolve(
       __dirname,
-      '../../../../examples/latergram/server/src/index.ts'
+      '../../../../../examples/latergram/server/src/index.ts'
     );
 
     const blankTonkPath = path.resolve(
       __dirname,
-      '../../../../examples/latergram/server/blank.tonk'
+      '../../../../../examples/latergram/server/blank.tonk'
     );
 
     console.log(`Starting server for test ${testId} on port ${port}`);
