@@ -1,5 +1,5 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { tonkTools } from './tools/tonk-tools';
+import { validatedTonkTools as tonkTools } from './tools/validated-tonk-tools';
 
 // Get OpenRouter API key from environment
 const getOpenRouterApiKey = (): string => {

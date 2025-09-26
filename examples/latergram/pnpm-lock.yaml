@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@biomejs/wasm-web':
+        specifier: ^2.2.4
+        version: 2.2.4
       '@openrouter/ai-sdk-provider':
         specifier: ^1.2.0
         version: 1.2.0(ai@5.0.52(zod@3.25.76))(zod@3.25.76)
@@ -956,6 +959,9 @@ packages:
 
   '@bcoe/v8-coverage@0.2.3':
     resolution: {integrity: sha512-0hYQ8SB4Db5zvZB4axdMHGwEaQjkZzFjQiN9LVYvIFB2nSUHW9tYpxWriPrWDASIxiaXax83REcLxuSdnGPZtw==}
+
+  '@biomejs/wasm-web@2.2.4':
+    resolution: {integrity: sha512-5b9Fp+OXwP8v9f2SrZrtvAePtu/gOHJ+U4AdE+RNJ1GJdflaerBQLXBfJu6TkWNCaBRtP0qSZk1iE7zpuEne+A==}
 
   '@cbor-extract/cbor-extract-darwin-arm64@2.2.0':
     resolution: {integrity: sha512-P7swiOAdF7aSi0H+tHtHtr6zrpF3aAq/W9FXx5HektRvLTM2O89xCyXF3pk7pLc7QpaY7AoaE8UowVf9QBdh3w==}
@@ -7752,6 +7758,8 @@ snapshots:
       '@babel/helper-validator-identifier': 7.27.1
 
   '@bcoe/v8-coverage@0.2.3': {}
+
+  '@biomejs/wasm-web@2.2.4': {}
 
   '@cbor-extract/cbor-extract-darwin-arm64@2.2.0':
     optional: true
