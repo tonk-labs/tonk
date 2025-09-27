@@ -122,6 +122,14 @@ class StoreRegistry {
 
     this.notifyUpdate(id);
     this.notifyContextUpdate();
+
+    // If the store just became successful, trigger a re-render of components
+    if (status === 'success') {
+      // Notify all components that stores have been updated
+      setTimeout(() => {
+        this.notifyContextUpdate();
+      }, 50);
+    }
   }
 
   onUpdate(id: string, callback: () => void): () => void {

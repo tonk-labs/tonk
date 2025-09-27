@@ -220,6 +220,12 @@ class ComponentRegistry {
       comp => comp.metadata.filePath === filePath
     );
   }
+
+  getComponentByName(name: string): ProxiedComponent | undefined {
+    return Array.from(this.components.values()).find(
+      comp => comp.metadata.name === name
+    );
+  }
 }
 
 export const componentRegistry = new ComponentRegistry();

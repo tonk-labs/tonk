@@ -35,9 +35,12 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
           return;
         }
 
-        // Load all stores first
+        // Load all stores first and wait for them to complete
         setLoadingMessage('Loading stores...');
         await loadAllStores();
+
+        // Small delay to ensure store proxies are properly updated
+        await new Promise(resolve => setTimeout(resolve, 100));
 
         // Then load all components
         setLoadingMessage('Loading components...');
@@ -56,6 +59,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
   const loadAllStores = async () => {
     try {
       const storeFiles = await vfs.listDirectory('/src/stores');
+      const storePromises: Promise<void>[] = [];
 
       for (const fileInfo of storeFiles as any[]) {
         const fileName =
@@ -74,34 +78,42 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
           continue;
         }
 
-        try {
-          const content = await vfs.readFile(filePath);
-          const storeName = extractStoreName(content, fileName);
-          const storeId = fileName.replace('.ts', '') || `store-${Date.now()}`;
+        // Create a promise for each store compilation
+        const storePromise = (async () => {
+          try {
+            const content = await vfs.readFile(filePath);
+            const storeName = extractStoreName(content, fileName);
+            const storeId = fileName.replace('.ts', '') || `store-${Date.now()}`;
 
-          // Register placeholder store
-          storeRegistry.register(storeId, () => ({}), {
-            name: storeName,
-            filePath: filePath,
-            status: 'loading',
-          });
+            // Register placeholder store immediately so it's available in the registry
+            storeRegistry.register(storeId, () => ({}), {
+              name: storeName,
+              filePath: filePath,
+              status: 'loading',
+            });
 
-          // Compile the store
-          const result = await compileTSCode(content, {
-            moduleType: 'CommonJS',
-            outputFormat: 'module',
-            excludeStoreId: storeId,
-          });
+            // Compile the store
+            const result = await compileTSCode(content, {
+              moduleType: 'CommonJS',
+              outputFormat: 'module',
+              excludeStoreId: storeId,
+            });
 
-          if (result.success && typeof result.output === 'function') {
-            storeRegistry.update(storeId, result.output, 'success');
-          } else {
-            storeRegistry.update(storeId, null, 'error', result.error);
+            if (result.success && typeof result.output === 'function') {
+              storeRegistry.update(storeId, result.output, 'success');
+            } else {
+              storeRegistry.update(storeId, null, 'error', result.error);
+            }
+          } catch (error) {
+            console.warn(`Failed to load store ${filePath}:`, error);
           }
-        } catch (error) {
-          console.warn(`Failed to load store ${filePath}:`, error);
-        }
+        })();
+
+        storePromises.push(storePromise);
       }
+
+      // Wait for all stores to finish loading
+      await Promise.all(storePromises);
     } catch (error) {
       console.warn('Failed to discover stores:', error);
     }
@@ -110,7 +122,9 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
   const loadAllComponents = async () => {
     try {
       const componentFiles = await vfs.listDirectory('/src/components');
+      const componentPaths: { id: string; filePath: string; name: string }[] = [];
 
+      // First pass: Register all components so they're available in the registry
       for (const fileInfo of componentFiles as any[]) {
         const fileName =
           typeof fileInfo === 'string'
@@ -132,17 +146,47 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
           const content = await vfs.readFile(filePath);
           const componentName = extractComponentName(content, fileName);
 
-          // Create component in registry
+          // Create component in registry with loading status
           const componentId = componentRegistry.createComponent(
             componentName,
             filePath
           );
 
-          // Set up file watcher for the component
-          await watchComponent(componentId, filePath);
+          componentPaths.push({ id: componentId, filePath, name: componentName });
         } catch (error) {
-          console.warn(`Failed to load component ${filePath}:`, error);
+          console.warn(`Failed to register component ${filePath}:`, error);
         }
+      }
+
+      // Second pass: Compile all components with all other components available as placeholders
+      const compilationPromises = componentPaths.map(async ({ id, filePath }) => {
+        try {
+          await watchComponent(id, filePath);
+        } catch (error) {
+          console.warn(`Failed to compile component ${filePath}:`, error);
+        }
+      });
+
+      await Promise.all(compilationPromises);
+
+      // Third pass: Recompile any components that had errors due to missing dependencies
+      const failedComponents = componentRegistry.getComponentsByStatus('error');
+      if (failedComponents.length > 0) {
+        console.log(`Retrying ${failedComponents.length} failed components...`);
+
+        // Wait a bit for all components to be registered
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+        const retryPromises = failedComponents.map(async comp => {
+          try {
+            const content = await vfs.readFile(comp.metadata.filePath);
+            await watchComponent(comp.id, comp.metadata.filePath);
+          } catch (error) {
+            console.warn(`Retry failed for component ${comp.metadata.filePath}:`, error);
+          }
+        });
+
+        await Promise.all(retryPromises);
       }
     } catch (error) {
       console.warn('Failed to discover components:', error);
@@ -153,8 +197,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
     return (
       <div className="h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
-          <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-blue-500 border-r-transparent"></div>
-          <p className="mt-4 text-sm text-gray-600">{loadingMessage}</p>
+          <div className="inline-block animate-pulse"><div className="h-8 w-8 animate-spin rounded-full border-4 border-solid border-gray-500 border-r-transparent"/></div>
         </div>
       </div>
     );

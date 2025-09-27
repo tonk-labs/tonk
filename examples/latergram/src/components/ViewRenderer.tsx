@@ -25,7 +25,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
 
   const vfs = getVFSService();
 
-  const compileView = useCallback(async (code: string) => {
+  const compileView = useCallback(async (code: string, retryCount = 0): Promise<any> => {
     try {
       const ts = (window as any).ts;
       if (!ts) {
@@ -40,7 +40,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
         },
       });
 
-      // Get fresh context
+      // Get fresh context - this now includes safe proxies for loading stores
       const freshPackages = buildAvailablePackages();
       const contextKeys = Object.keys(freshPackages);
       const contextValues = Object.values(freshPackages);
@@ -61,6 +61,14 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
       return component;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Compilation failed';
+
+      // If it's a store-related error and we haven't retried too many times, try again
+      if (retryCount < 3 && errorMessage.includes('is not defined')) {
+        console.warn(`View compilation failed, retrying (attempt ${retryCount + 1}):`, errorMessage);
+        await new Promise(resolve => setTimeout(resolve, 200 * (retryCount + 1)));
+        return compileView(code, retryCount + 1);
+      }
+
       console.error('View compilation failed:', errorMessage);
       throw new Error(errorMessage);
     }
