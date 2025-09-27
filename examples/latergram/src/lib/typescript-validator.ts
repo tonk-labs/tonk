@@ -79,6 +79,47 @@ export class TypeScriptValidator {
    * Validate TypeScript syntax and get diagnostics
    */
   validateSyntax(code: string): TypeCheckResult {
+    const diagnostics: TypeCheckDiagnostic[] = [];
+
+    // Check for import statements (not allowed in Tonk components)
+    const importRegex = /^import\s+.+from\s+['"].+['"]/gm;
+    const importMatches = [...code.matchAll(importRegex)];
+
+    if (importMatches.length > 0) {
+      importMatches.forEach(match => {
+        const lines = code.substring(0, match.index).split('\n');
+        const line = lines.length;
+        diagnostics.push({
+          file: 'component.tsx',
+          line,
+          column: 1,
+          message: `Import statements are not allowed in Tonk components. All dependencies (React, hooks, components) are injected automatically. Remove: "${match[0]}"`,
+          category: 'error',
+          code: 1001,
+        });
+      });
+    }
+
+    // Check for require statements (also not allowed)
+    const requireRegex = /require\s*\(['"].+['"]\)/g;
+    const requireMatches = [...code.matchAll(requireRegex)];
+
+    if (requireMatches.length > 0) {
+      requireMatches.forEach(match => {
+        const lines = code.substring(0, match.index).split('\n');
+        const line = lines.length;
+        diagnostics.push({
+          file: 'component.tsx',
+          line,
+          column: 1,
+          message: `Require statements are not allowed in Tonk components. All dependencies are injected automatically. Remove: "${match[0]}"`,
+          category: 'error',
+          code: 1002,
+        });
+      });
+    }
+
+    // Parse TypeScript for syntax errors
     const fileName = 'component.tsx';
     const sourceFile = ts.createSourceFile(
       fileName,
@@ -87,19 +128,16 @@ export class TypeScriptValidator {
       true
     );
 
-    const diagnostics: ts.Diagnostic[] = [];
-
     // Get syntax errors only
-    sourceFile.parseDiagnostics.forEach(d => diagnostics.push(d));
-
-    // Convert to our format
-    const convertedDiagnostics = this.convertDiagnostics(diagnostics);
+    sourceFile.parseDiagnostics.forEach(d => {
+      diagnostics.push(...this.convertDiagnostics([d]));
+    });
 
     return {
-      valid: convertedDiagnostics.filter(d => d.category === 'error').length === 0,
-      diagnostics: convertedDiagnostics,
-      errorCount: convertedDiagnostics.filter(d => d.category === 'error').length,
-      warningCount: convertedDiagnostics.filter(d => d.category === 'warning').length,
+      valid: diagnostics.filter(d => d.category === 'error').length === 0,
+      diagnostics,
+      errorCount: diagnostics.filter(d => d.category === 'error').length,
+      warningCount: diagnostics.filter(d => d.category === 'warning').length,
     };
   }
 
