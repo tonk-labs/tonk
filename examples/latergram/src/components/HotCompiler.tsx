@@ -3,6 +3,7 @@ import { Code, AlertCircle, Circle } from 'lucide-react';
 import { componentRegistry } from './ComponentRegistry';
 import { useDebounce } from './hooks/useDebounce';
 import { buildAvailablePackages } from './contextBuilder';
+import { createInlineErrorBoundary } from './errors/createInlineErrorBoundary';
 
 interface CompilationResult {
   success: boolean;
@@ -142,88 +143,8 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
         throw new Error('Component not registered');
       }
 
-      // Create an error boundary for the hot-compiled component
-      class HotCompilerErrorBoundary extends React.Component {
-        constructor(props: any) {
-          super(props);
-          this.state = { hasError: false, error: null };
-        }
-
-        static getDerivedStateFromError(error: any) {
-          return { hasError: true, error };
-        }
-
-        componentDidCatch(error: any, errorInfo: any) {
-          console.error(`[HotCompiler] Runtime error:`, error, errorInfo);
-        }
-
-        render() {
-          if ((this.state as any).hasError) {
-            const error = (this.state as any).error;
-
-            return React.createElement(
-              'div',
-              { className: 'bg-red-50 border-2 border-red-500 rounded-lg p-4' },
-              React.createElement(
-                'div',
-                { className: 'flex items-start gap-3' },
-                [
-                  React.createElement(
-                    'div',
-                    { key: 'icon', className: 'flex-shrink-0' },
-                    React.createElement(
-                      'div',
-                      { className: 'w-8 h-8 bg-red-500 rounded flex items-center justify-center' },
-                      React.createElement(
-                        'span',
-                        { className: 'text-white font-bold' },
-                        '!'
-                      )
-                    )
-                  ),
-                  React.createElement(
-                    'div',
-                    { key: 'content', className: 'flex-1' },
-                    [
-                      React.createElement(
-                        'h3',
-                        { key: 'title', className: 'text-red-800 font-semibold text-sm mb-1' },
-                        'Component Runtime Error'
-                      ),
-                      React.createElement(
-                        'p',
-                        { key: 'message', className: 'text-red-700 text-xs font-mono mb-2' },
-                        error?.message || 'Unknown error'
-                      ),
-                      React.createElement(
-                        'details',
-                        { key: 'stack', className: 'text-xs' },
-                        [
-                          React.createElement(
-                            'summary',
-                            { key: 'summary', className: 'text-red-600 cursor-pointer hover:text-red-800' },
-                            'Show stack trace'
-                          ),
-                          React.createElement(
-                            'pre',
-                            {
-                              key: 'trace',
-                              className: 'mt-2 p-2 bg-red-100 rounded text-red-700 overflow-x-auto text-xs'
-                            },
-                            error?.stack || 'No stack trace available'
-                          )
-                        ]
-                      )
-                    ]
-                  )
-                ]
-              )
-            );
-          }
-
-          return (this.props as any).children;
-        }
-      }
+      // Use the shared error boundary creator
+      const HotCompilerErrorBoundary = createInlineErrorBoundary(React, 'HotCompiled Component');
 
       // Wrap the component with error boundary
       const element = React.createElement(

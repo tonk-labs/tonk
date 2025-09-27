@@ -62,36 +62,37 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       // Page-level errors get full-screen treatment
       if (isPageError || viewPath) {
         const viewName = viewPath?.split('/').pop()?.replace('.tsx', '') || componentName;
+        const styles = errorStyles.page;
 
         return (
-          <div className={`flex items-center justify-center min-h-screen bg-gray-50 p-8 ${className}`}>
-            <div className="w-full max-w-2xl">
-              <div className="bg-red-50 border-2 border-red-500 rounded-lg p-6">
-                <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0">
-                    <div className="w-10 h-10 bg-red-500 rounded flex items-center justify-center">
-                      <span className="text-white font-bold text-xl">!</span>
+          <div className={`${styles.container} ${className}`}>
+            <div className={styles.wrapper}>
+              <div className={styles.box}>
+                <div className={styles.content}>
+                  <div className={styles.iconWrapper}>
+                    <div className={styles.icon}>
+                      <span className={styles.iconText}>!</span>
                     </div>
                   </div>
-                  <div className="flex-1">
-                    <h2 className="text-red-800 font-bold text-lg mb-2">
+                  <div className={styles.body}>
+                    <h2 className={styles.title}>
                       Page Error: {viewName}
                     </h2>
                     {viewPath && (
-                      <p className="text-red-700 text-sm font-mono mb-3">
+                      <p className={styles.path}>
                         {viewPath}
                       </p>
                     )}
-                    <div className="bg-red-100 rounded p-3 mb-3">
-                      <p className="text-red-800 font-mono text-sm">
+                    <div className={styles.errorBox}>
+                      <p className={styles.errorMessage}>
                         {error?.message || 'Unknown error occurred'}
                       </p>
                     </div>
-                    <details className="text-sm">
-                      <summary className="text-red-600 cursor-pointer hover:text-red-800 font-medium">
+                    <details className={styles.details}>
+                      <summary className={styles.summary}>
                         Show stack trace
                       </summary>
-                      <pre className="mt-3 p-3 bg-white border border-red-200 rounded text-red-700 overflow-x-auto text-xs font-mono">
+                      <pre className={styles.stackTrace}>
                         {error?.stack || 'No stack trace available'}
                       </pre>
                     </details>
@@ -104,28 +105,29 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       }
 
       // Component-level errors get inline treatment
+      const styles = errorStyles.component;
       return (
-        <div className={`bg-red-50 border-2 border-red-500 rounded-lg p-4 ${className || 'm-2'}`}>
-          <div className="flex items-start gap-3">
-            <div className="flex-shrink-0">
-              <div className="w-8 h-8 bg-red-500 rounded flex items-center justify-center">
+        <div className={`${styles.containerWithMargin} ${className}`}>
+          <div className={styles.content}>
+            <div className={styles.iconWrapper}>
+              <div className={styles.icon}>
                 <AlertTriangle className="w-5 h-5 text-white" />
               </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <h3 className="text-red-800 font-semibold text-sm mb-1">
+            <div className={styles.body}>
+              <h3 className={styles.title}>
                 {componentName} Failed
               </h3>
               {error && (
                 <>
-                  <p className="text-red-700 text-xs font-mono mb-2">
+                  <p className={styles.errorMessage}>
                     {error.message}
                   </p>
-                  <details className="text-xs">
-                    <summary className="text-red-600 cursor-pointer hover:text-red-800">
+                  <details className={styles.details}>
+                    <summary className={styles.summary}>
                       Show stack trace
                     </summary>
-                    <pre className="mt-2 p-2 bg-red-100 rounded text-red-700 overflow-x-auto text-xs">
+                    <pre className={styles.stackTrace}>
                       {error.stack}
                     </pre>
                   </details>
