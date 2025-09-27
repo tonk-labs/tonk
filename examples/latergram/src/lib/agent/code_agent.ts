@@ -1,5 +1,6 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { tonkTools } from './tools/tonk-tools';
+import { tonkFileTools } from './tools/tonk-file-tools';
+import { tonkManualTool } from './tools/tonk-manpage';
 
 // Get OpenRouter API key from environment
 const getOpenRouterApiKey = (): string => {
@@ -55,6 +56,11 @@ To complete your task, you MUST call the 'finish' tool when you have completed t
 - A list of files you modified or created
 
 Remember: You MUST call the 'finish' tool when done with the task. Do not leave tasks incomplete.`;
+
+const tonkTools = {
+  ...tonkFileTools,
+  tonkManualTool: tonkManualTool,
+};
 
 // Export tools for use in agent service
 export { tonkTools };
