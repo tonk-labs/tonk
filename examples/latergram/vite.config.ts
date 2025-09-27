@@ -54,4 +54,5 @@ export default defineConfig({
   esbuild: {
     target: 'esnext',
   },
+  assetsInclude: ['**/*.md'],
 });

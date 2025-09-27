@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@biomejs/js-api':
+        specifier: ^3.0.0
+        version: 3.0.0(@biomejs/wasm-web@2.2.4)
       '@biomejs/wasm-web':
         specifier: ^2.2.4
         version: 2.2.4
@@ -959,6 +962,20 @@ packages:
 
   '@bcoe/v8-coverage@0.2.3':
     resolution: {integrity: sha512-0hYQ8SB4Db5zvZB4axdMHGwEaQjkZzFjQiN9LVYvIFB2nSUHW9tYpxWriPrWDASIxiaXax83REcLxuSdnGPZtw==}
+
+  '@biomejs/js-api@3.0.0':
+    resolution: {integrity: sha512-5QcGJFj9IO+yXl76ICjvkdE38uxRcTDsBzcCZHEZ+ma+Te/nbvJg4A3KtAds9HCrEF0JKLWiyjMhAbqazuJvYA==}
+    peerDependencies:
+      '@biomejs/wasm-bundler': ^2.2.0
+      '@biomejs/wasm-nodejs': ^2.2.0
+      '@biomejs/wasm-web': ^2.2.0
+    peerDependenciesMeta:
+      '@biomejs/wasm-bundler':
+        optional: true
+      '@biomejs/wasm-nodejs':
+        optional: true
+      '@biomejs/wasm-web':
+        optional: true
 
   '@biomejs/wasm-web@2.2.4':
     resolution: {integrity: sha512-5b9Fp+OXwP8v9f2SrZrtvAePtu/gOHJ+U4AdE+RNJ1GJdflaerBQLXBfJu6TkWNCaBRtP0qSZk1iE7zpuEne+A==}
@@ -7758,6 +7775,10 @@ snapshots:
       '@babel/helper-validator-identifier': 7.27.1
 
   '@bcoe/v8-coverage@0.2.3': {}
+
+  '@biomejs/js-api@3.0.0(@biomejs/wasm-web@2.2.4)':
+    optionalDependencies:
+      '@biomejs/wasm-web': 2.2.4
 
   '@biomejs/wasm-web@2.2.4': {}
 
