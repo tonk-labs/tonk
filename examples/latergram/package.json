@@ -44,6 +44,8 @@
     "@openrouter/ai-sdk-provider": "^1.2.0",
     "@tonk/cli": "^0.2.6",
     "@tonk/core": "file:../../packages/core-js",
+    "@twind/core": "^1.1.3",
+    "@twind/preset-tailwind": "^1.1.4",
     "ai": "^5.0.52",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",

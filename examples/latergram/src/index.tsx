@@ -5,8 +5,15 @@ import * as ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { getVFSService } from './services/vfs-service';
+import { getUserService } from './services/user-service';
 import * as zustand from 'zustand';
 import { sync } from './middleware';
+import { getAgentService } from './lib/agent/agent-service';
+import { install } from '@twind/core';
+import twConfig from './twind.config';
+
+// Using TWIND to get tailwind
+install(twConfig);
 
 // Make React available globally for hot injection
 (window as any).React = React;
@@ -25,16 +32,16 @@ const basename =
     ? import.meta.env.VITE_BASE_PATH?.replace(/\/$/, '')
     : '';
 
-const URL = 'localhost:8081';
+const URL = import.meta.env.VITE_BASE_URL || 'http://localhost:5173';
+const URL_LOCATION = URL.replace(/^https?:\/\//, '');
+const manifestUrl = `${URL}/.manifest.tonk`;
+const wsUrl = `ws://${URL_LOCATION}`;
 
 // Initialize VFS for sync middleware
 const initializeVFS = async () => {
   try {
     console.log('Initializing VFS service...');
     const vfs = getVFSService();
-    const manifestUrl = `http://${URL}/.manifest.tonk`;
-    const wsUrl = `ws://${URL}`;
-    // const wsUrl = `ws://localhost:8081`;
     await vfs.initialize(manifestUrl, wsUrl);
     console.log('VFS service initialized successfully');
   } catch (error) {
@@ -42,7 +49,15 @@ const initializeVFS = async () => {
   }
 };
 
-initializeVFS().then(() => {
+// Initialize everything
+const initialize = async () => {
+  // Initialize VFS first
+  await initializeVFS();
+  // Initialize dependents
+  await getUserService().initialize();
+  await getAgentService().initialize({ manifestUrl, wsUrl });
+
+  // Render the app
   root.render(
     <React.StrictMode>
       <BrowserRouter basename={basename}>
@@ -50,4 +65,6 @@ initializeVFS().then(() => {
       </BrowserRouter>
     </React.StrictMode>
   );
-});
+};
+
+initialize();

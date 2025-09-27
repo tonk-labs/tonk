@@ -1,6 +1,6 @@
 import { getVFSService } from '../../services/vfs-service';
+import { getUserService } from '../../services/user-service';
 
-const CHAT_HISTORY_PATH = '/etc/chat.json';
 const MAX_MESSAGES = 10;
 
 export interface ChatMessage {
@@ -30,6 +30,15 @@ export interface ChatHistoryData {
 export class ChatHistory {
   private messages: ChatMessage[] = [];
   private vfs = getVFSService();
+  private userService = getUserService();
+
+  private getChatHistoryPath(): string {
+    const userPath = this.userService.getChatHistoryPath();
+    if (!userPath) {
+      throw new Error('User service not initialized - cannot determine chat history path');
+    }
+    return userPath;
+  }
 
   async initialize(): Promise<void> {
     if (!this.vfs.isInitialized()) {
@@ -40,13 +49,14 @@ export class ChatHistory {
 
   async loadHistory(): Promise<void> {
     try {
-      const exists = await this.vfs.exists(CHAT_HISTORY_PATH);
+      const chatPath = this.getChatHistoryPath();
+      const exists = await this.vfs.exists(chatPath);
       if (!exists) {
         await this.createEmptyHistory();
         return;
       }
 
-      const content = await this.vfs.readFile(CHAT_HISTORY_PATH);
+      const content = await this.vfs.readFile(chatPath);
       const data: ChatHistoryData = JSON.parse(content);
 
       if (data.version === '1.0' && Array.isArray(data.messages)) {
@@ -69,9 +79,10 @@ export class ChatHistory {
     };
 
     try {
-      const exists = await this.vfs.exists(CHAT_HISTORY_PATH);
+      const chatPath = this.getChatHistoryPath();
+      const exists = await this.vfs.exists(chatPath);
       await this.vfs.writeFile(
-        CHAT_HISTORY_PATH,
+        chatPath,
         JSON.stringify(data, null, 2),
         !exists
       );

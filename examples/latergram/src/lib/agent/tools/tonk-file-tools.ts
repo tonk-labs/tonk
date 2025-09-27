@@ -80,7 +80,6 @@ export const tonkWriteFileTool = tool({
 
     // Step 2: TypeScript validation (only if it's a TS/TSX file and syntax is valid)
     const isTypeScriptFile = path.endsWith('.ts') || path.endsWith('.tsx');
-    let typeCheckPassed = true;
 
     if (isTypeScriptFile) {
       // Get all current files for context
@@ -119,6 +118,7 @@ export const tonkWriteFileTool = tool({
       if (typeCheckResult.warningCount > 0) {
         feedback += `\n\nTypeScript Warnings: ${typeCheckResult.warningCount} warning(s) found`;
       }
+      console.warn(`[TonkTool] Typescript validation failed:\n\n${feedback}`);
     }
 
     // Use formatted content if available

@@ -8,9 +8,15 @@ interface SyncOptions {
 export const sync =
   <T extends object>(
     config: StateCreator<T>,
-    options: SyncOptions
+    options?: SyncOptions
   ): StateCreator<T> =>
   (set, get, api) => {
+    // If no options provided, just return the config without sync
+    if (!options || !options.path) {
+      console.warn('Sync middleware called without path option, skipping sync functionality');
+      return config(set, get, api);
+    }
+
     console.log(`Sync middleware initializing for path: ${options.path}`);
     const vfs = getVFSService();
     let watchId: string | null = null;
