@@ -32,7 +32,7 @@ const basename =
     ? import.meta.env.VITE_BASE_PATH?.replace(/\/$/, '')
     : '';
 
-const URL = import.meta.env.VITE_BASE_URL || 'http://localhost:5173';
+const URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8081';
 const URL_LOCATION = URL.replace(/^https?:\/\//, '');
 const manifestUrl = `${URL}/.manifest.tonk`;
 const wsUrl = `ws://${URL_LOCATION}`;

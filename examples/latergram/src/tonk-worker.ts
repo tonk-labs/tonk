@@ -5,8 +5,10 @@ interface DocumentWatcher {
 }
 import type { VFSWorkerMessage, VFSWorkerResponse } from './types';
 
+console.log('[Worker] Worker script loading...');
+
 // Debug logging flag - set to true to enable comprehensive logging
-const DEBUG_LOGGING = false;
+const DEBUG_LOGGING = true;
 
 // Logger utility
 function log(
@@ -47,8 +49,18 @@ async function initializeTonk(manifest: ArrayBuffer, wsUrl: string) {
   });
 
   try {
+    log('info', 'About to create Uint8Array from manifest');
     const bytes = new Uint8Array(manifest);
-    log('info', 'Creating TonkCore from bytes', { bytesLength: bytes.length });
+    log(
+      'info',
+      'Successfully created Uint8Array, about to call TonkCore.fromBytes'
+    );
+    log('info', 'Creating TonkCore from bytes', {
+      bytesLength: bytes.length,
+      manifestByteLength: manifest.byteLength,
+      firstFewBytes: Array.from(bytes.slice(0, 10)),
+      lastFewBytes: Array.from(bytes.slice(-10)),
+    });
 
     tonk = await TonkCore.fromBytes(bytes, {
       storage: { type: 'indexeddb' },
@@ -105,9 +117,10 @@ async function initializeTonk(manifest: ArrayBuffer, wsUrl: string) {
 
 // Handle file operations
 async function handleMessage(message: VFSWorkerMessage) {
-  log('info', 'Received message', {
+  log('info', 'Worker received message', {
     type: message.type,
     id: 'id' in message ? message.id : 'N/A',
+    hasManifest: message.type === 'init' ? 'manifest' in message : false,
   });
 
   if (!tonk && message.type !== 'init') {
@@ -127,6 +140,10 @@ async function handleMessage(message: VFSWorkerMessage) {
 
   switch (message.type) {
     case 'init':
+      log('info', 'Received init message, calling initializeTonk', {
+        manifestSize: message.manifest.byteLength,
+        wsUrl: message.wsUrl,
+      });
       await initializeTonk(message.manifest, message.wsUrl);
       break;
 
@@ -478,6 +495,12 @@ self.postMessage({ type: 'ready' });
 
 // Listen for messages from main thread
 self.addEventListener('message', async event => {
+  console.log('[Worker] Raw message received:', event.type, event.data?.type);
+  log('info', 'Raw message event received', {
+    eventType: event.type,
+    messageType: event.data?.type,
+    hasData: !!event.data,
+  });
   try {
     await handleMessage(event.data as VFSWorkerMessage);
   } catch (error) {

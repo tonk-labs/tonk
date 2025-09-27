@@ -227,24 +227,24 @@ async fn test_bundle_preserves_timestamps() {
         .unwrap();
 
     // Get the original timestamps
-    let metadata1 = tonk1.vfs().metadata("/timed.txt").await.unwrap().unwrap();
-    let created1 = metadata1.1.created;
-    let modified1 = metadata1.1.modified;
+    let metadata1 = tonk1.vfs().metadata("/timed.txt").await.unwrap();
+    let created1 = metadata1.timestamps.created;
+    let modified1 = metadata1.timestamps.modified;
 
     // Save and load
     let bundle_bytes = tonk1.to_bytes(None).await.unwrap();
     let tonk2 = TonkCore::from_bytes(bundle_bytes).await.unwrap();
 
     // Get timestamps after load
-    let metadata2 = tonk2.vfs().metadata("/timed.txt").await.unwrap().unwrap();
+    let metadata2 = tonk2.vfs().metadata("/timed.txt").await.unwrap();
 
     // Timestamps should be preserved
     assert_eq!(
-        metadata2.1.created, created1,
+        metadata2.timestamps.created, created1,
         "Created timestamp should be preserved"
     );
     assert_eq!(
-        metadata2.1.modified, modified1,
+        metadata2.timestamps.modified, modified1,
         "Modified timestamp should be preserved"
     );
 }
@@ -1226,4 +1226,85 @@ async fn test_bundle_rapid_save_load_cycles() {
             assert_eq!(content_str, format!("\"{}\"", expected));
         });
     }
+}
+
+#[tokio::test]
+async fn test_load_bundle_from_blank_bundle_tonk_file() {
+    use tonk_core::StorageConfig;
+    
+    // Load the blank.tonk file from the test data directory
+    let bundle_bytes = std::fs::read("tests/data/blank.tonk")
+        .expect("Should be able to read tests/data/blank.tonk");
+    
+    // Test the TonkCore::builder().from_bytes() code path with different storage configs
+    
+    // Test with in-memory storage
+    let tonk_memory = TonkCore::builder()
+        .with_storage(StorageConfig::InMemory)
+        .from_bytes(bundle_bytes.clone())
+        .await
+        .expect("Should load blank.tonk with in-memory storage");
+    
+    // Verify the TonkCore instance was created successfully
+    let vfs = tonk_memory.vfs();
+    let root_id = vfs.root_id();
+    assert!(!root_id.to_string().is_empty(), "Root ID should not be empty");
+    
+    // Test with filesystem storage (non-WASM only)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use tempfile::tempdir;
+        let temp_dir = tempdir().expect("Should create temp directory");
+        
+        let tonk_filesystem = TonkCore::builder()
+            .with_storage(StorageConfig::Filesystem(temp_dir.path().to_path_buf()))
+            .from_bytes(bundle_bytes.clone())
+            .await
+            .expect("Should load blank.tonk with filesystem storage");
+        
+        // Verify the TonkCore instance was created successfully
+        let vfs_fs = tonk_filesystem.vfs();
+        let root_id_fs = vfs_fs.root_id();
+        assert!(!root_id_fs.to_string().is_empty(), "Root ID should not be empty");
+        
+        // Verify different instances have different peer IDs
+        assert_ne!(
+            tonk_memory.peer_id(), 
+            tonk_filesystem.peer_id(), 
+            "Different instances should have different peer IDs"
+        );
+    }
+    
+    // Test that we can use the VFS after loading
+    let entries = vfs.list_directory("/").await.expect("Should be able to list root directory");
+    // The blank.tonk file should have an empty or minimal structure
+    println!("Root directory entries: {:?}", entries);
+    
+    // Verify we can create new content in the loaded VFS
+    vfs.create_document("/test_after_load.txt", "Content added after loading blank.tonk".to_string())
+        .await
+        .expect("Should be able to create documents in loaded VFS");
+    
+    // Verify the document was created
+    assert!(vfs.exists("/test_after_load.txt").await.expect("Should be able to check existence"));
+    
+    // Test that we can save the modified state back to bytes
+    let new_bundle_bytes = tonk_memory.to_bytes(None).await
+        .expect("Should be able to export modified state to bytes");
+    
+    // Verify the new bundle is larger (contains our new document)
+    assert!(
+        new_bundle_bytes.len() > bundle_bytes.len(),
+        "Modified bundle should be larger than original slim bundle"
+    );
+    
+    // Test loading the modified bundle
+    let tonk_modified = TonkCore::builder()
+        .with_storage(StorageConfig::InMemory)
+        .from_bytes(new_bundle_bytes)
+        .await
+        .expect("Should load modified bundle");
+    
+    // Verify our added document exists in the reloaded bundle
+    assert!(tonk_modified.vfs().exists("/test_after_load.txt").await.expect("Should be able to check existence"));
 }

@@ -31,9 +31,11 @@ export class VFSService {
 
   private initWorker() {
     try {
+      console.log('[VFSService] Creating TonkWorker...');
       this.worker = new TonkWorker();
+      console.log('[VFSService] TonkWorker created successfully');
     } catch (error) {
-      verbose() && console.error('Failed to create worker:', error);
+      console.error('Failed to create worker:', error);
       return;
     }
 
@@ -123,9 +125,12 @@ export class VFSService {
         checkReady();
       });
 
-      verbose() && console.log('Worker is ready, sending init message...');
+      console.log('[VFSService] Worker is ready, sending init message...', {
+        manifestSize: manifest.byteLength,
+        wsUrl,
+      });
       this.worker.postMessage(message);
-      verbose() && console.log('Init message sent');
+      console.log('[VFSService] Init message sent');
 
       // Wait for initialization to complete
       return new Promise((resolve, reject) => {
@@ -261,7 +266,10 @@ export class VFSService {
     const documentData = await this.readFile(path);
 
     if (!documentData.bytes) {
-      throw new Error('File does not contain byte data');
+      console.warn(
+        `file ${path} was not stored as bytes, returning content instead`
+      );
+      return JSON.stringify(documentData.content);
     }
 
     // Decode base64 to bytes then to UTF-8 string

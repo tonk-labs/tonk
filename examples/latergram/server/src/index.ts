@@ -40,12 +40,14 @@ class Server {
 
     // Enable CORS for all routes to allow browser clients to fetch root document
 
-    app.use(cors({
-      origin: true, // Allow all origins
-      credentials: true, // Allow cookies/credentials
-      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization']
-    }));
+    app.use(
+      cors({
+        origin: true, // Allow all origins
+        credentials: true, // Allow cookies/credentials
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization'],
+      })
+    );
 
     app.use(express.static('public'));
     this.#storage = storage;
@@ -101,8 +103,14 @@ class Server {
 
     // Endpoint to get the manifest as a slim bundle (zip file with just manifest.json)
     app.get('/.manifest.tonk', async (_req, res) => {
+      console.log('Received request for /.manifest.tonk');
       try {
+        console.log('Creating slim bundle...');
         const slimBundle = await this.#storage.createSlimBundle();
+        console.log(
+          'Slim bundle created successfully, size:',
+          slimBundle.length
+        );
 
         // Set appropriate headers for zip file download
         res.setHeader('Content-Type', 'application/zip');
@@ -113,6 +121,7 @@ class Server {
         res.setHeader('Content-Length', slimBundle.length.toString());
 
         res.send(Buffer.from(slimBundle));
+        console.log('Slim bundle sent successfully');
       } catch (error) {
         console.error('Error creating slim bundle:', error);
         res.status(500).json({ error: 'Failed to create manifest bundle' });
