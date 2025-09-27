@@ -125,7 +125,6 @@ class ComponentRegistry {
 
     this.notifyUpdate(id);
     this.notifyContextUpdate();
-    this.notifyContextUpdate();
   }
 
   onUpdate(id: string, callback: () => void): () => void {

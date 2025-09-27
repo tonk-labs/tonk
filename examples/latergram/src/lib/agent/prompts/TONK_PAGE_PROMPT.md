@@ -15,7 +15,7 @@ module replacement and live editing.
   - `/src/views/Index.tsx` → `/` (homepage)
   - `/src/views/About.tsx` → `/about`
   - `/src/views/Products.tsx` → `/products`
-  - `/src/views/admin/dashboard.tsx` → `/admin/dashboard`
+  - `/src/views/admin/Dashboard.tsx` → `/admin/dashboard`
 - **MUST** use `.tsx` extension (TypeScript + JSX)
 
 ### 2. Page Component Structure
@@ -27,12 +27,6 @@ module replacement and live editing.
 const YourPageName: React.FC = () => {
   // Use hooks at the top level
   const [state, setState] = useState<string>('');
-  const navigate = useNavigate();
-  const params = useParams();
-
-  // Access stores
-  const { user, isAuthenticated } = useAuthStore();
-  const { theme } = useThemeStore();
 
   // Define handlers and effects
   useEffect(() => {
@@ -81,20 +75,6 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 <Link to="/products" className="text-blue-500 hover:underline">
   View Products
 </Link>
-
-// Programmatic navigation
-const navigate = useNavigate();
-
-const handleLogin = async () => {
-  // ... login logic
-  navigate('/dashboard');
-};
-
-// With state
-navigate('/checkout', { state: { cartItems } });
-
-// Go back
-navigate(-1);
 ```
 
 ## Styling Guidelines
