@@ -93,7 +93,7 @@ const createSafeComponentProxy = (componentName: string, componentId: string) =>
   return DynamicPlaceholder;
 };
 
-export const buildAvailablePackages = (excludeStoreId?: string) => {
+export const buildAvailablePackages = (excludeId?: string) => {
   const basePackages = {
     React: (window as any).React,
     useState: (window as any).React?.useState,
@@ -112,6 +112,11 @@ export const buildAvailablePackages = (excludeStoreId?: string) => {
   // Add all registered components, including loading ones with safe proxies
   const componentPackages: { [key: string]: any } = {};
   componentRegistry.getAllComponents().forEach(comp => {
+    // Skip if this is the component being compiled
+    if (comp.id === excludeId) {
+      return;
+    }
+
     const sanitizedName = sanitizeComponentName(comp.metadata.name);
     if (sanitizedName !== 'UnnamedComponent') {
       // If component is successfully loaded, use the real proxy
@@ -127,8 +132,9 @@ export const buildAvailablePackages = (excludeStoreId?: string) => {
   // Add all registered stores, including loading ones with safe proxies
   const storePackages: { [key: string]: any } = {};
   storeRegistry.getAllStores().forEach(store => {
-    if (store.id === excludeStoreId) {
-      return; // Skip the store being compiled
+    // Skip if this is the store being compiled
+    if (store.id === excludeId) {
+      return;
     }
 
     const storeName = store.metadata.name;

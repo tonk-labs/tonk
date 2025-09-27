@@ -32,7 +32,8 @@ export function useComponentWatcher(): ComponentWatcherHook {
         });
 
         // Always get fresh context to ensure all available components are included
-        const freshPackages = buildAvailablePackages();
+        // but exclude the current component being compiled to avoid duplicate identifiers
+        const freshPackages = buildAvailablePackages(componentId);
         const contextKeys = Object.keys(freshPackages);
         const contextValues = Object.values(freshPackages);
 
