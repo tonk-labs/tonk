@@ -55,7 +55,10 @@ To complete your task, you MUST call the 'finish' tool when you have completed t
 - A summary of what you accomplished
 - A list of files you modified or created
 
-Remember: You MUST call the 'finish' tool when done with the task. Do not leave tasks incomplete.`;
+Remember: You MUST call the 'finish' tool when done with the task. Do not leave tasks incomplete.
+
+ALWAYS START BY READING THE MANUAL BEFORE IMPLEMENTING ANY CODE
+`;
 
 const tonkTools = {
   ...tonkFileTools,
