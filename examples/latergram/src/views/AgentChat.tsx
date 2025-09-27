@@ -259,7 +259,7 @@ const AgentChat: React.FC = () => {
       <div className="flex-1 overflow-y-auto px-3 py-3 min-h-0">
         <div className="max-w-3xl mx-auto space-y-3">
           {messages.length === 0 ? (
-            <div className="text-center text-gray-500 text-xs mt-4">
+            <div className="text-center text-gray-500 text-xs ">
               {isReady
                 ? 'Start a conversation by sending a message below'
                 : 'Initializing agent service...'}
@@ -298,6 +298,16 @@ const AgentChat: React.FC = () => {
                     >
                       {editingMessageId === message.id ? (
                         <div className="space-y-2">
+                          {(() => {
+                            const messageIndex = messages.findIndex(m => m.id === message.id);
+                            const hasFollowingMessages = messageIndex !== -1 && messageIndex < messages.length - 1;
+                            return hasFollowingMessages ? (
+                              <div className="text-[10px] text-amber-600 bg-amber-50 p-1.5 rounded flex items-start gap-1">
+                                <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                                <span>Editing will delete all messages after this one and regenerate the response</span>
+                              </div>
+                            ) : null;
+                          })()}
                           <textarea
                             value={editContent}
                             onChange={e => setEditContent(e.target.value)}
@@ -319,10 +329,10 @@ const AgentChat: React.FC = () => {
                               type="button"
                               onClick={handleSaveEdit}
                               className="px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600 flex items-center gap-1"
-                              title="Save and regenerate (Enter)"
+                              title="Save edit and regenerate response (will delete all following messages)"
                             >
                               <Check className="w-3 h-3" />
-                              <span>Send</span>
+                              <span>Confirm Edit</span>
                             </button>
                             <button
                               type="button"
@@ -363,7 +373,7 @@ const AgentChat: React.FC = () => {
                                   type="button"
                                   onClick={() => handleStartEdit(message)}
                                   className="p-0.5 hover:bg-blue-600 rounded"
-                                  title="Edit message"
+                                  title="Edit and regenerate from here"
                                 >
                                   <Edit2 className="w-3 h-3" />
                                 </button>
@@ -424,15 +434,21 @@ const AgentChat: React.FC = () => {
       <div className="bg-white border-t border-gray-200 px-3 py-2">
         <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
           <div className="flex gap-2">
-            <input
-              type="text"
+            <textarea
               value={prompt}
               onChange={e => setPrompt(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit(e as any);
+                }
+              }}
               placeholder={
-                isReady ? 'Type a message...' : 'Waiting for initialization...'
+                isReady ? 'Type a message... (Shift+Enter for new line)' : 'Waiting for initialization...'
               }
-              className="flex-1 px-3 py-1.5 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs disabled:bg-gray-100"
+              className="flex-1 px-3 py-1.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs disabled:bg-gray-100 resize-none"
               disabled={!isReady || isLoading}
+              rows={1}
             />
             <button
               type="submit"

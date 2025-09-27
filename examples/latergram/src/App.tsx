@@ -2,6 +2,7 @@ import React from 'react';
 import { Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { AppInitializer } from './components/AppInitializer';
 import { ViewRenderer } from './components/ViewRenderer';
+import { PageLayout } from './components/PageLayout';
 import Editor from './views/Editor';
 
 // Dynamic view component that maps routes to view files
@@ -22,15 +23,18 @@ const DynamicView: React.FC<{ viewName?: string }> = ({ viewName }) => {
 };
 
 const App: React.FC = () => {
-  const location = useLocation();
-
   return (
     <AppInitializer>
       <Routes>
-        <Route path="/" element={<DynamicView viewName="index" />} />
+        {/* Editor route - has its own layout */}
         <Route path="/editor/*" element={<Editor />} />
-        {/* Catch all route for dynamic views */}
-        <Route path="/*" element={<DynamicView />} />
+
+        {/* Page routes with persistent drawer overlay */}
+        <Route element={<PageLayout />}>
+          <Route path="/" element={<DynamicView viewName="index" />} />
+          {/* Catch all route for dynamic views */}
+          <Route path="/*" element={<DynamicView />} />
+        </Route>
       </Routes>
     </AppInitializer>
   );

@@ -329,6 +329,7 @@ export const ComponentManager: React.FC = () => {
           <div className="bg-white border-b border-gray-200 px-6">
             <div className="flex gap-1">
               <button
+              type="button"
                 onClick={() => setActiveTab('preview')}
                 className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
                   activeTab === 'preview'
@@ -342,6 +343,7 @@ export const ComponentManager: React.FC = () => {
                 </div>
               </button>
               <button
+              type="button"
                 onClick={() => setActiveTab('edit')}
                 className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
                   activeTab === 'edit'
@@ -389,7 +391,8 @@ export const ComponentManager: React.FC = () => {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label 
+                className="block text-sm font-medium text-gray-700 mb-2">
                   Component Name
                 </label>
                 <input

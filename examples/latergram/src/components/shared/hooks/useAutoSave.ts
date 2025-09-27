@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 
 interface UseAutoSaveOptions {
   content: string;
-  onSave: (content: string) => Promise<void>;
+  onSave: (content: string) => Promise<boolean>;
   debounceMs?: number;
   enabled?: boolean;
 }
@@ -24,7 +24,7 @@ export function useAutoSave({
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [originalContent, setOriginalContent] = useState(content);
-  const timeoutRef = useRef<NodeJS.Timeout>();
+  const timeoutRef = useRef<NodeJS.Timeout>(null);
 
   const hasChanges = content !== originalContent;
 
