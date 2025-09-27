@@ -2,7 +2,6 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { getVFSService } from '../../../services/vfs-service';
 import { fileValidator } from '../../file-validator';
-import { agentFileHandler } from '../agent-file-handler';
 import { typeScriptValidator } from '../../typescript-validator';
 
 // Track all files written during this session
@@ -396,7 +395,7 @@ export const finishTool = tool({
   },
 });
 
-export const tonkTools = {
+export const tonkFileTools = {
   tonkReadFile: tonkReadFileTool,
   tonkWriteFile: tonkWriteFileTool,
   tonkDeleteFile: tonkDeleteFileTool,
