@@ -1,25 +1,28 @@
 import type { WasmTonkCore, WasmBundle } from './tonk_core.js';
 
 /**
- * Metadata for a file or directory node in the virtual file system
- */
-export interface NodeMetadata {
-  /** Type of the node - either 'directory' or 'document' */
-  nodeType: 'directory' | 'document';
-  /** Creation timestamp */
-  createdAt: Date;
-  /** Last modification timestamp */
-  modifiedAt: Date;
-}
-
-/**
  * Entry in a directory listing
  */
-export interface DirectoryEntry {
+export interface RefNode {
   /** Name of the file or directory */
   name: string;
   /** Type of the entry */
   type: 'directory' | 'document';
+  //the UUID of the automerge URL
+  pointer: string;
+  timestamps: DocumentTimestamps;
+}
+
+export interface DirectoryNode {
+  /** Name of the file or directory */
+  name: string;
+  /** Type of the entry */
+  type: 'directory';
+  //the UUID of the automerge URL
+  pointer: string;
+  timestamps: DocumentTimestamps;
+  // if it's a directory this will be populated
+  children?: RefNode[];
 }
 
 /**
@@ -46,7 +49,7 @@ export interface DocumentWatcher {
   stop(): Promise<void>;
 }
 
-export interface DocumentTimestaps {
+export interface DocumentTimestamps {
   created: number;
   modified: number;
 }
@@ -62,8 +65,8 @@ export type JsonValue =
 export interface DocumentData {
   content: JsonValue;
   name: string;
-  timestamps: DocumentTimestaps;
-  type: 'doc' | 'dir';
+  timestamps: DocumentTimestamps;
+  type: 'document' | 'directory';
   bytes?: string; // Base64-encoded binary data when file was created with bytes
 }
 
@@ -83,10 +86,10 @@ export interface Manifest {
   manifestVersion: number;
   /** Tonk version */
   version: Version;
-  rootId: String;
-  entrypoints: String[];
-  networkUris: String[];
-  xNotes?: String;
+  rootId: string;
+  entrypoints: string[];
+  networkUris: string[];
+  xNotes?: string;
   xVendor?: Object;
 }
 
@@ -303,7 +306,7 @@ export class Bundle {
     try {
       return await this.#wasm.getManifest();
     } catch (error) {
-      throw new BundleError(`Failed to retrive manifest: ${error}`);
+      throw new BundleError(`Failed to retrieve manifest: ${error}`);
     }
   }
 
@@ -632,7 +635,7 @@ export class TonkCore {
    * const doc = await readFile('/notes/todo');
    * console.log(doc.content);   // string
    * console.log(doc.name);      // string
-   * console.log(doc.type);      // 'doc' | 'dir'
+   * console.log(doc.type);      // 'document' | 'directory'
    * console.log(doc.timestamps.created);   // number
    * console.log(doc.timestamps.modified);  // number
    * ```
@@ -648,25 +651,7 @@ export class TonkCore {
       // For some reason, we seem to get different return types in different environments
       let normalizedBytes;
       if (intermediary.bytes) {
-        // Normalize bytes to always be base64 string
-        if (typeof intermediary.bytes === 'string') {
-          // Already a base64 string
-          normalizedBytes = intermediary.bytes;
-        } else if (Array.isArray(intermediary.bytes)) {
-          // Convert array of char codes to base64 string
-          // Process in chunks to avoid maximum call stack exceeded errors
-          const chunkSize = 8192; // Safe chunk size for String.fromCharCode
-          let binaryString = '';
-          for (let i = 0; i < intermediary.bytes.length; i += chunkSize) {
-            const chunk = intermediary.bytes.slice(i, i + chunkSize);
-            binaryString += String.fromCharCode(...chunk);
-          }
-          normalizedBytes = btoa(binaryString);
-        } else {
-          throw new FileSystemError(
-            `Unrecognized bytes type in readFile ${typeof intermediary.bytes}`
-          );
-        }
+        normalizedBytes = normalizeBytes(intermediary.bytes);
       }
 
       return {
@@ -793,16 +778,18 @@ export class TonkCore {
    * ```typescript
    * const entries = await listDirectory('/projects');
    * for (const entry of entries) {
-   *   console.log(`${entry.type}: ${entry.name}`);
+   *   console.log(`${entry.type}: ${entry.name} ${entry.timestamps} ${entry.pointer}`);
    * }
    * ```
    */
-  async listDirectory(path: string): Promise<DirectoryEntry[]> {
+  async listDirectory(path: string): Promise<RefNode[]> {
     try {
       const entries = await this.#wasm.listDirectory(path);
       return entries.map((entry: any) => ({
         name: entry.name,
         type: entry.type as 'directory' | 'document',
+        timestamps: entry.timestamps,
+        pointer: entry.pointer,
       }));
     } catch (error) {
       throw new FileSystemError(
@@ -831,30 +818,33 @@ export class TonkCore {
    * Get metadata for a file or directory.
    *
    * @param path - Absolute path to the file or directory
-   * @returns Metadata object or null if the path doesn't exist
-   * @throws {FileSystemError} If the metadata can't be retrieved
+   * @returns Metadata object containing file/directory information
+   * @throws {FileSystemError} If the file or directory doesn't exist, or if the metadata can't be retrieved
    *
    * @example
    * ```typescript
-   * const metadata = await getMetadata('/notes/todo');
-   * if (metadata) {
+   * try {
+   *   const metadata = await getMetadata('/notes/todo');
    *   console.log(`Type: ${metadata.nodeType}`);
    *   console.log(`Created: ${metadata.createdAt}`);
    *   console.log(`Modified: ${metadata.modifiedAt}`);
+   * } catch (error) {
+   *   if (error instanceof FileSystemError) {
+   *     console.error('File not found or access error:', error.message);
+   *   }
    * }
    * ```
    */
-  async getMetadata(path: string): Promise<NodeMetadata | null> {
+  async getMetadata(path: string): Promise<RefNode> {
     try {
       const result = await this.#wasm.getMetadata(path);
-      if (result === null) return null;
+      if (result === null) {
+        throw new FileSystemError(`File or directory not found: ${path}`);
+      }
 
-      return {
-        nodeType: result.node_type as 'directory' | 'document',
-        createdAt: new Date(result.created_at * 1000),
-        modifiedAt: new Date(result.modified_at * 1000),
-      };
+      return result;
     } catch (error) {
+      if (error instanceof FileSystemError) throw error;
       throw new FileSystemError(`Failed to get metadata for ${path}: ${error}`);
     }
   }
@@ -875,14 +865,27 @@ export class TonkCore {
    */
   async watchFile(
     path: string,
-    callback: Function
-  ): Promise<DocumentWatcher | null> {
+    callback: (result: DocumentData) => void
+  ): Promise<DocumentWatcher> {
     try {
-      const result = await this.#wasm.watchDocument(path, callback);
-      if (result === null) return null;
+      const result = await this.#wasm.watchDocument(path, (doc: any) => {
+        let normalizedBytes;
+        if (doc.bytes) {
+          normalizedBytes = normalizeBytes(doc.bytes);
+        }
+        callback({
+          ...doc,
+          content: JSON.parse(doc.content),
+          bytes: normalizedBytes,
+        });
+      });
+      if (result === null) {
+        throw new FileSystemError(`File not found: ${path}`);
+      }
 
       return result;
     } catch (error) {
+      if (error instanceof FileSystemError) throw error;
       throw new FileSystemError(
         `Failed to watch file at path ${path}: ${error}`
       );
@@ -890,7 +893,9 @@ export class TonkCore {
   }
 
   /**
-   * Watch a directory for changes at the specified path
+   * Watch a directory will update only whenever it's direct descendents change.
+   * You will need to keep track of the timestamps in the children entries to discover
+   * which child has changed.
    *
    * @param path - Absolute path to the directory
    * @param callback - Callback to run on change events
@@ -898,21 +903,24 @@ export class TonkCore {
    *
    * @example
    * ```typescript
-   * const watcher = await watchDirecotry('/documents', docState => {
-   *   console.log('Directory changed:', docState);
+   * const watcher = await watchDirectory('/documents', dirEntry => {
+   *   console.log('Directory changed:', dirEntry);
    * });
    * ```
    */
   async watchDirectory(
     path: string,
-    callback: Function
-  ): Promise<DocumentWatcher | null> {
+    callback: (result: DirectoryNode) => void
+  ): Promise<DocumentWatcher> {
     try {
       const result = await this.#wasm.watchDirectory(path, callback);
-      if (result === null) return null;
+      if (result === null) {
+        throw new FileSystemError(`Directory not found: ${path}`);
+      }
 
       return result;
     } catch (error) {
+      if (error instanceof FileSystemError) throw error;
       throw new FileSystemError(
         `Failed to watch directory at path ${path}: ${error}`
       );
@@ -962,7 +970,7 @@ export function createFactoryFunctions(wasmModule?: any) {
 
     /**
      * Create a Tonk Core from bundle data
-     * @param bundle - The Bundle data from which to load
+     * @param data - The Bundle data from which to load
      * @returns A new TonkCore instance
      * @throws {Error} If Tonk creation fails or bundle is invalid
      */
@@ -990,4 +998,32 @@ const extractBytes = (bytes: string) => {
     barr[i] = binaryString.charCodeAt(i);
   }
   return barr;
+};
+
+/**
+ * Normalizes bytes from different formats to a base64 string
+ * @param bytes - The bytes to normalize (can be string, array, or other format)
+ * @returns A base64 encoded string
+ * @throws FileSystemError if the bytes format is unrecognized
+ */
+const normalizeBytes = (bytes: any): string => {
+  // Normalize bytes to always be base64 string
+  if (typeof bytes === 'string') {
+    // Already a base64 string
+    return bytes;
+  } else if (Array.isArray(bytes)) {
+    // Convert array of char codes to base64 string
+    // Process in chunks to avoid maximum call stack exceeded errors
+    const chunkSize = 8192; // Safe chunk size for String.fromCharCode
+    let binaryString = '';
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.slice(i, i + chunkSize);
+      binaryString += String.fromCharCode(...chunk);
+    }
+    return btoa(binaryString);
+  } else {
+    throw new FileSystemError(
+      `Unrecognized bytes type in readFile ${typeof bytes}`
+    );
+  }
 };

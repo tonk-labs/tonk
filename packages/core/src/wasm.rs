@@ -1,10 +1,8 @@
 use crate::bundle::{Bundle, BundleConfig, BundlePath};
 use crate::tonk_core::TonkCore;
-use crate::vfs::NodeType;
 use crate::StorageConfig;
 use automerge::AutoSerde;
 use js_sys::{Array, Function, Promise, Uint8Array};
-use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::Serializer;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -318,26 +316,7 @@ impl WasmTonkCore {
 
             match vfs.list_directory(&path).await {
                 Ok(nodes) => {
-                    let array = Array::new();
-                    for node in nodes.iter() {
-                        let obj = js_sys::Object::new();
-                        match node.node_type {
-                            NodeType::Directory => {
-                                js_sys::Reflect::set(&obj, &"type".into(), &"directory".into())
-                                    .unwrap();
-                            }
-                            NodeType::Document => {
-                                js_sys::Reflect::set(&obj, &"type".into(), &"document".into())
-                                    .unwrap();
-                            }
-                        }
-
-                        js_sys::Reflect::set(&obj, &"name".into(), &node.name.clone().into())
-                            .unwrap();
-
-                        array.push(&obj);
-                    }
-                    Ok(JsValue::from(array))
+                    to_js_value(&nodes)
                 }
                 Err(e) => Err(js_error(e)),
             }
@@ -366,18 +345,9 @@ impl WasmTonkCore {
             let vfs = tonk.vfs();
 
             match vfs.metadata(&path).await {
-                Ok(Some((node_type, timestamps))) => {
-                    let metadata = WasmNodeMetadata {
-                        node_type: match node_type {
-                            NodeType::Directory => "directory".to_string(),
-                            NodeType::Document => "document".to_string(),
-                        },
-                        created_at: timestamps.created.timestamp(),
-                        modified_at: timestamps.modified.timestamp(),
-                    };
-                    Ok(to_js_value(&metadata)?)
+                Ok(ref_node) => {
+                    Ok(to_js_value(&ref_node)?)
                 }
-                Ok(None) => Ok(JsValue::NULL),
                 Err(e) => Err(js_error(e)),
             }
         })
@@ -400,13 +370,14 @@ impl WasmTonkCore {
                         futures::future::AbortHandle::new_pair();
 
                     // Create a channel for communication between the watcher and callback
-                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
 
                     // Spawn a task to receive document updates and call the JS callback
                     spawn_local(async move {
-                        while let Some(json_str) = rx.recv().await {
-                            let js_value = JsValue::from_str(&json_str);
-                            let _ = callback.call1(&JsValue::null(), &js_value);
+                        while let Some(json_value) = rx.recv().await {
+                            if let Ok(js_value) = to_js_value(&json_value) {
+                                let _ = callback.call1(&JsValue::null(), &js_value);
+                            }
                         }
                     });
 
@@ -414,11 +385,11 @@ impl WasmTonkCore {
                     spawn_local(async move {
                         let abortable = futures::future::Abortable::new(
                             watcher.on_change(move |doc| {
-                                // Convert document to JSON
+                                // Convert document to JSON value
                                 let auto_serde = AutoSerde::from(&*doc);
-                                if let Ok(json_str) = serde_json::to_string(&auto_serde) {
-                                    // Send the JSON through the channel
-                                    let _ = tx.send(json_str);
+                                if let Ok(json_value) = serde_json::to_value(&auto_serde) {
+                                    // Send the JSON value through the channel
+                                    let _ = tx.send(json_value);
                                 }
                             }),
                             abort_registration,
@@ -454,15 +425,16 @@ impl WasmTonkCore {
                         futures::future::AbortHandle::new_pair();
 
                     // Create a channel for communication between the watcher and callback
-                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
 
                     // Move the callback into the spawned task
 
                     // Spawn a task to receive document updates and call the JS callback
                     spawn_local(async move {
-                        while let Some(json_str) = rx.recv().await {
-                            let js_value = JsValue::from_str(&json_str);
-                            let _ = callback.call1(&JsValue::null(), &js_value);
+                        while let Some(json_value) = rx.recv().await {
+                            if let Ok(js_value) = to_js_value(&json_value) {
+                                let _ = callback.call1(&JsValue::null(), &js_value);
+                            }
                         }
                     });
 
@@ -470,11 +442,11 @@ impl WasmTonkCore {
                     spawn_local(async move {
                         let abortable = futures::future::Abortable::new(
                             watcher.on_change(move |doc| {
-                                // Convert document to JSON
+                                // Convert document to JSON value
                                 let auto_serde = AutoSerde::from(&*doc);
-                                if let Ok(json_str) = serde_json::to_string(&auto_serde) {
-                                    // Send the JSON through the channel
-                                    let _ = tx.send(json_str);
+                                if let Ok(json_value) = serde_json::to_value(&auto_serde) {
+                                    // Send the JSON value through the channel
+                                    let _ = tx.send(json_value);
                                 }
                             }),
                             abort_registration,
@@ -494,12 +466,6 @@ impl WasmTonkCore {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct WasmNodeMetadata {
-    pub node_type: String,
-    pub created_at: i64,
-    pub modified_at: i64,
-}
 
 #[wasm_bindgen]
 pub struct WasmBundle {

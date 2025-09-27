@@ -424,8 +424,16 @@ impl VirtualFileSystem {
             };
             Ok(dir_node.children)
         } else {
-            // Return children of the current directory node
-            Ok(result.node.children)
+            // target_ref is None - this could be root path or non-existent path
+            // If the path is root ("/"), return the root directory's children
+            let normalized_path = path.trim_start_matches('/').trim_end_matches('/');
+            if normalized_path.is_empty() {
+                // This is the root directory
+                Ok(result.node.children)
+            } else {
+                // This is a non-existent path
+                return Err(VfsError::PathNotFound(path.to_string()));
+            }
         }
     }
 
@@ -514,16 +522,25 @@ impl VirtualFileSystem {
     }
 
     /// Get metadata for a path
-    pub async fn metadata(&self, path: &str) -> Result<Option<(NodeType, Timestamps)>> {
+    pub async fn metadata(&self, path: &str) -> Result<RefNode> {
         let result = self
             .traverser
             .traverse(self.root_id.clone(), path, false)
             .await?;
 
         if let Some(target_ref) = result.target_ref {
-            Ok(Some((target_ref.node_type, target_ref.timestamps)))
+            Ok(target_ref)
         } else {
-            Ok(None)
+            // target_ref is None - this could be root path or non-existent path
+            let normalized_path = path.trim_start_matches('/').trim_end_matches('/');
+            if normalized_path.is_empty() {
+                // This is the root directory - create a RefNode for it
+                let root_ref = RefNode::new_directory("/".to_string(), self.root_id.clone());
+                Ok(root_ref)
+            } else {
+                // This is a non-existent path
+                Err(VfsError::PathNotFound(path.to_string()))
+            }
         }
     }
 

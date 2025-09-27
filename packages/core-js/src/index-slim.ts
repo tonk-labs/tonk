@@ -32,8 +32,9 @@ export {
   // Types
   type DocumentData,
   type Manifest,
-  type NodeMetadata,
-  type DirectoryEntry,
+  type RefNode,
+  type DirectoryNode,
+  type DocumentTimestamps,
   type BundleEntry,
   type TonkConfig,
 

@@ -8,8 +8,9 @@ import {
 
   // Types
   type DocumentData,
-  type NodeMetadata,
-  type DirectoryEntry,
+  type RefNode,
+  type DirectoryNode,
+  type DocumentTimestamps,
   type BundleEntry,
 
   // Error classes
@@ -68,10 +69,11 @@ export {
   // Types
   type DocumentData,
   type Manifest,
-  type NodeMetadata,
-  type DirectoryEntry,
   type BundleEntry,
   type TonkConfig,
+  type DocumentTimestamps,
+  type RefNode,
+  type DirectoryNode,
 
   // Error classes
   TonkError,

@@ -12,7 +12,7 @@ impl AutomergeHelpers {
     pub fn init_as_directory(handle: &DocHandle, name: &str) -> Result<()> {
         handle.with_document(|doc| {
             let mut tx = doc.transaction();
-            tx.put(automerge::ROOT, "type", "dir")?;
+            tx.put(automerge::ROOT, "type", "directory")?;
             tx.put(automerge::ROOT, "name", name)?;
 
             let now = chrono::Utc::now().timestamp_millis();
@@ -36,11 +36,11 @@ impl AutomergeHelpers {
                 .get(automerge::ROOT, "type")
                 .map_err(VfsError::AutomergeError)?
                 .and_then(|(value, _)| Self::extract_string_value(&value))
-                .unwrap_or_else(|| "dir".to_string());
+                .unwrap_or_else(|| "directory".to_string());
 
-            if node_type != "dir" {
+            if node_type != "directory" {
                 return Err(VfsError::NodeTypeMismatch {
-                    expected: "dir".to_string(),
+                    expected: "directory".to_string(),
                     actual: node_type,
                 });
             }
@@ -170,7 +170,7 @@ impl AutomergeHelpers {
     {
         handle.with_document(|doc| {
             let mut tx = doc.transaction();
-            tx.put(automerge::ROOT, "type", "doc")?;
+            tx.put(automerge::ROOT, "type", "document")?;
             tx.put(automerge::ROOT, "name", name)?;
 
             let now = chrono::Utc::now().timestamp_millis();
@@ -196,7 +196,7 @@ impl AutomergeHelpers {
     {
         handle.with_document(|doc| {
             let mut tx = doc.transaction();
-            tx.put(automerge::ROOT, "type", "doc")?;
+            tx.put(automerge::ROOT, "type", "document")?;
             tx.put(automerge::ROOT, "name", name)?;
 
             let now = chrono::Utc::now().timestamp_millis();
@@ -358,10 +358,10 @@ impl AutomergeHelpers {
             .ok()
             .flatten()
             .and_then(|(value, _)| Self::extract_string_value(&value))
-            .unwrap_or_else(|| "doc".to_string());
+            .unwrap_or_else(|| "document".to_string());
 
         let node_type = match node_type_str.as_str() {
-            "dir" => NodeType::Directory,
+            "directory" => NodeType::Directory,
             _ => NodeType::Document,
         };
 
@@ -402,10 +402,10 @@ impl AutomergeHelpers {
             .ok()
             .flatten()
             .and_then(|(value, _)| Self::extract_string_value(&value))
-            .unwrap_or_else(|| "doc".to_string());
+            .unwrap_or_else(|| "document".to_string());
 
         let node_type = match node_type_str.as_str() {
-            "dir" => NodeType::Directory,
+            "directory" => NodeType::Directory,
             _ => NodeType::Document,
         };
 
@@ -437,8 +437,8 @@ impl AutomergeHelpers {
     ) -> Result<()> {
         tx.put(obj_id.clone(), "name", ref_node.name.clone())?;
         let type_str = match ref_node.node_type {
-            NodeType::Directory => "dir",
-            NodeType::Document => "doc",
+            NodeType::Directory => "directory",
+            NodeType::Document => "document",
         };
         tx.put(obj_id.clone(), "type", type_str)?;
         tx.put(obj_id.clone(), "pointer", ref_node.pointer.to_string())?;
@@ -479,11 +479,11 @@ impl AutomergeHelpers {
                 .get(automerge::ROOT, "type")
                 .map_err(VfsError::AutomergeError)?
                 .and_then(|(value, _)| Self::extract_string_value(&value))
-                .unwrap_or_else(|| "doc".to_string());
+                .unwrap_or_else(|| "document".to_string());
 
-            if node_type != "doc" {
+            if node_type != "document" {
                 return Err(VfsError::NodeTypeMismatch {
-                    expected: "doc".to_string(),
+                    expected: "document".to_string(),
                     actual: node_type,
                 });
             }
@@ -530,11 +530,11 @@ impl AutomergeHelpers {
                 .get(automerge::ROOT, "type")
                 .map_err(VfsError::AutomergeError)?
                 .and_then(|(value, _)| Self::extract_string_value(&value))
-                .unwrap_or_else(|| "doc".to_string());
+                .unwrap_or_else(|| "document".to_string());
 
-            if node_type != "doc" {
+            if node_type != "document" {
                 return Err(VfsError::NodeTypeMismatch {
-                    expected: "doc".to_string(),
+                    expected: "document".to_string(),
                     actual: node_type,
                 });
             }
