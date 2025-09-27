@@ -1,4 +1,9 @@
-import type { VFSWorkerMessage, VFSWorkerResponse } from '../types';
+import type {
+  VFSWorkerMessage,
+  VFSWorkerResponse,
+  DocumentContent,
+} from '../types';
+import type { DocumentData, JsonValue } from '@tonk/core';
 import TonkWorker from '../tonk-worker.ts?worker';
 
 const verbose = () => false;
@@ -15,7 +20,7 @@ export class VFSService {
       reject: (error: Error) => void;
     }
   >();
-  private watchers = new Map<string, (content: string) => void>();
+  private watchers = new Map<string, (documentData: DocumentData) => void>();
   private directoryWatchers = new Map<string, (changeData: any) => void>();
 
   constructor() {
@@ -44,7 +49,8 @@ export class VFSService {
         verbose() && console.log('Received init response:', response);
         this.initialized = response.success;
         if (!response.success && response.error) {
-          verbose() && console.error('VFS Worker initialization failed:', response.error);
+          verbose() &&
+            console.error('VFS Worker initialization failed:', response.error);
         }
         return;
       }
@@ -52,7 +58,7 @@ export class VFSService {
       if (response.type === 'fileChanged' && 'watchId' in response) {
         const callback = this.watchers.get(response.watchId);
         if (callback) {
-          callback(response.content);
+          callback(response.documentData);
         }
         return;
       }
@@ -179,13 +185,13 @@ export class VFSService {
     });
   }
 
-  async readFile(path: string): Promise<string> {
+  async readFile(path: string): Promise<DocumentData> {
     if (!path) {
       console.error('[VFSService] readFile called with no path');
       throw new Error('Path is required for readFile');
     }
     const id = this.generateId();
-    return this.sendMessage<string>({
+    return this.sendMessage<DocumentData>({
       type: 'readFile',
       id,
       path,
@@ -194,7 +200,7 @@ export class VFSService {
 
   async writeFile(
     path: string,
-    content: string,
+    content: DocumentContent,
     create = false
   ): Promise<void> {
     if (!path) {
@@ -212,6 +218,21 @@ export class VFSService {
     });
 
     return result;
+  }
+
+  // Convenience method for writing files with bytes
+  async writeFileWithBytes(
+    path: string,
+    content: JsonValue,
+    //either base64 encoded byte data or bytes array
+    bytes: Uint8Array | string,
+    create = false
+  ): Promise<void> {
+    // Convert Uint8Array to base64 string if needed
+    const bytesData =
+      bytes instanceof Uint8Array ? btoa(String.fromCharCode(...bytes)) : bytes;
+
+    return this.writeFile(path, { content, bytes: bytesData }, create);
   }
 
   async deleteFile(path: string): Promise<void> {
@@ -246,7 +267,7 @@ export class VFSService {
 
   async watchFile(
     path: string,
-    callback: (content: string) => void
+    callback: (documentData: DocumentData) => void
   ): Promise<string> {
     const id = this.generateId();
     this.watchers.set(id, callback);

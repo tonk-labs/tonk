@@ -133,27 +133,19 @@ async function handleMessage(message: VFSWorkerMessage) {
     case 'readFile':
       log('info', 'Reading file', { path: message.path, id: message.id });
       try {
-        const content = await tonk!.readFile(message.path);
+        const documentData = await tonk!.readFile(message.path);
         log('info', 'File read successfully', {
           path: message.path,
-          contentType: typeof content,
-          contentConstructor: content?.constructor?.name,
-          isString: typeof content === 'string',
-        });
-
-        // Extract content from response
-        const stringContent = JSON.parse(content.content);
-
-        log('info', 'Sending file content response', {
-          contentLength: stringContent.length,
-          preview: stringContent.substring(0, 100),
+          documentType: documentData.type,
+          hasBytes: !!documentData.bytes,
+          contentType: typeof documentData.content,
         });
 
         postResponse({
           type: 'readFile',
           id: message.id,
           success: true,
-          data: stringContent,
+          data: documentData,
         });
       } catch (error) {
         log('error', 'Failed to read file', {
@@ -174,15 +166,42 @@ async function handleMessage(message: VFSWorkerMessage) {
         path: message.path,
         id: message.id,
         create: message.create,
-        contentLength: message.content.length,
+        hasBytes: !!message.documentContent.bytes,
+        contentType: typeof message.documentContent.content,
       });
       try {
         if (message.create) {
           log('info', 'Creating new file', { path: message.path });
-          await tonk!.createFile(message.path, message.content);
+          if (message.documentContent.bytes) {
+            // Create file with bytes
+            await tonk!.createFileWithBytes(
+              message.path,
+              message.documentContent.content,
+              message.documentContent.bytes
+            );
+          } else {
+            // Create file with content only
+            await tonk!.createFile(
+              message.path,
+              message.documentContent.content
+            );
+          }
         } else {
           log('info', 'Updating existing file', { path: message.path });
-          await tonk!.updateFile(message.path, message.content);
+          if (message.documentContent.bytes) {
+            // Update file with bytes
+            await tonk!.updateFileWithBytes(
+              message.path,
+              message.documentContent.content,
+              message.documentContent.bytes
+            );
+          } else {
+            // Update file with content only
+            await tonk!.updateFile(
+              message.path,
+              message.documentContent.content
+            );
+          }
         }
         log('info', 'File write completed successfully', {
           path: message.path,
@@ -297,27 +316,20 @@ async function handleMessage(message: VFSWorkerMessage) {
         id: message.id,
       });
       try {
-        const watcher = await tonk!.watchFile(
-          message.path,
-          (rawContent: string) => {
-            log('info', 'File change detected', {
-              watchId: message.id,
-              path: message.path,
-            });
+        const watcher = await tonk!.watchFile(message.path, documentData => {
+          log('info', 'File change detected', {
+            watchId: message.id,
+            path: message.path,
+            documentType: documentData.type,
+            hasBytes: !!documentData.bytes,
+          });
 
-            // Parse the JSON string to get the document object
-            const documentData = JSON.parse(rawContent);
-
-            // Extract the actual content from the document
-            const actualContent = JSON.parse(documentData.content);
-
-            postResponse({
-              type: 'fileChanged',
-              watchId: message.id,
-              content: actualContent,
-            });
-          }
-        );
+          postResponse({
+            type: 'fileChanged',
+            watchId: message.id,
+            documentData: documentData,
+          });
+        });
         watchers.set(message.id, watcher!);
         log('info', 'File watch started successfully', {
           path: message.path,
@@ -429,7 +441,9 @@ async function handleMessage(message: VFSWorkerMessage) {
       try {
         const watcher = watchers.get(message.id);
         if (watcher) {
-          log('info', 'Found directory watcher, stopping it', { watchId: message.id });
+          log('info', 'Found directory watcher, stopping it', {
+            watchId: message.id,
+          });
           watcher.stop();
           watchers.delete(message.id);
           log('info', 'Directory watch stopped successfully', {
@@ -437,7 +451,9 @@ async function handleMessage(message: VFSWorkerMessage) {
             remainingWatchers: watchers.size,
           });
         } else {
-          log('warn', 'No directory watcher found for ID', { watchId: message.id });
+          log('warn', 'No directory watcher found for ID', {
+            watchId: message.id,
+          });
         }
         postResponse({
           type: 'unwatchDirectory',

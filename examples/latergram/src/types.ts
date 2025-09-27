@@ -1,3 +1,10 @@
+import { JsonValue, DocumentData, RefNode } from '@tonk/core';
+
+export type DocumentContent = {
+  content: JsonValue;
+  bytes?: string;
+};
+
 // Message types for VFS Worker communication
 export type VFSWorkerMessage =
   | { type: 'init'; manifest: ArrayBuffer; wsUrl: string }
@@ -6,7 +13,7 @@ export type VFSWorkerMessage =
       type: 'writeFile';
       id: string;
       path: string;
-      content: string;
+      content: DocumentContent;
       create: boolean;
     }
   | { type: 'deleteFile'; id: string; path: string }
@@ -22,7 +29,7 @@ export type VFSWorkerResponse =
       type: 'readFile';
       id: string;
       success: boolean;
-      data?: string;
+      data?: DocumentData;
       error?: string;
     }
   | { type: 'writeFile'; id: string; success: boolean; error?: string }
@@ -31,7 +38,7 @@ export type VFSWorkerResponse =
       type: 'listDirectory';
       id: string;
       success: boolean;
-      data?: any[];
+      data?: RefNode[];
       error?: string;
     }
   | {
@@ -43,7 +50,12 @@ export type VFSWorkerResponse =
     }
   | { type: 'watchFile'; id: string; success: boolean; error?: string }
   | { type: 'unwatchFile'; id: string; success: boolean; error?: string }
-  | { type: 'fileChanged'; watchId: string; content: string }
+  | { type: 'fileChanged'; watchId: string; documentData: DocumentData }
   | { type: 'watchDirectory'; id: string; success: boolean; error?: string }
   | { type: 'unwatchDirectory'; id: string; success: boolean; error?: string }
-  | { type: 'directoryChanged'; watchId: string; path: string; changeData: any };
+  | {
+      type: 'directoryChanged';
+      watchId: string;
+      path: string;
+      changeData: any;
+    };

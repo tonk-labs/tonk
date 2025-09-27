@@ -37,6 +37,7 @@ export {
   type DocumentTimestamps,
   type BundleEntry,
   type TonkConfig,
+  type JsonValue,
 
   // Error classes
   TonkError,
