@@ -137,27 +137,9 @@ export const tonkWriteFileTool = tool({
 
     if (isTypeScriptFile) {
       try {
-        // Get all current files for context
-        const additionalFiles = new Map<string, string>();
-        for (const sessionFile of sessionFiles) {
-          if (sessionFile !== path) {
-            try {
-              const fileContent = await vfs.readFile(sessionFile);
-              additionalFiles.set(sessionFile, fileContent);
-            } catch {
-              // File might not exist yet
-            }
-          }
-        }
-
-        // Get available component names for better validation
-        const availableComponents = getAvailableComponentNames();
-
-        const typeCheckResult = await typeScriptValidator.validateFile(
-          path,
-          validationResult.formatted || content,
-          additionalFiles,
-          availableComponents
+        // Use the simplified validateSyntax method
+        const typeCheckResult = typeScriptValidator.validateSyntax(
+          validationResult.formatted || content
         );
 
         if (!typeCheckResult.valid) {
