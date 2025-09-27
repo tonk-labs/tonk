@@ -47,7 +47,7 @@ Always explain the actions you take and surface the resulting file paths so engi
 
 You are working within a React/TypeScript application with:
 - Only supports single file components and views, NO MANUAL IMPORTS
-- Only support inline styles for styling
+- You can use tailwind v3 styles
 - Zustand for state management
 - The Tonk virtual file system for code storage
 

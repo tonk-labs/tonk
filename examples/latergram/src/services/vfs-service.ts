@@ -1,6 +1,8 @@
 import type { VFSWorkerMessage, VFSWorkerResponse } from '../types';
 import TonkWorker from '../tonk-worker.ts?worker';
 
+const verbose = () => false;
+
 export class VFSService {
   private worker: Worker | null = null;
   private initialized = false;
@@ -24,25 +26,25 @@ export class VFSService {
     try {
       this.worker = new TonkWorker();
     } catch (error) {
-      console.error('Failed to create worker:', error);
+      verbose() && console.error('Failed to create worker:', error);
       return;
     }
 
     this.worker.onmessage = (event: MessageEvent<VFSWorkerResponse>) => {
       const response = event.data;
-      console.log('Received response from worker:', response);
+      verbose() && console.log('Received response from worker:', response);
 
       if ((response as { type: string }).type === 'ready') {
-        console.log('Worker is ready!');
+        verbose() && console.log('Worker is ready!');
         this.workerReady = true;
         return;
       }
 
       if (response.type === 'init') {
-        console.log('Received init response:', response);
+        verbose() && console.log('Received init response:', response);
         this.initialized = response.success;
         if (!response.success && response.error) {
-          console.error('VFS Worker initialization failed:', response.error);
+          verbose() && console.error('VFS Worker initialization failed:', response.error);
         }
         return;
       }
@@ -77,11 +79,11 @@ export class VFSService {
     };
 
     this.worker.onerror = error => {
-      console.error('VFS Worker error:', error);
+      verbose() && console.error('VFS Worker error:', error);
     };
 
     this.worker.onmessageerror = error => {
-      console.error('VFS Worker message error:', error);
+      verbose() && console.error('VFS Worker message error:', error);
     };
   }
 
@@ -101,7 +103,7 @@ export class VFSService {
       };
 
       // Wait for worker to be ready
-      console.log('Waiting for worker to be ready...');
+      verbose() && console.log('Waiting for worker to be ready...');
       await new Promise<void>(resolve => {
         const checkReady = () => {
           if (this.workerReady) {
@@ -113,9 +115,9 @@ export class VFSService {
         checkReady();
       });
 
-      console.log('Worker is ready, sending init message...');
+      verbose() && console.log('Worker is ready, sending init message...');
       this.worker.postMessage(message);
-      console.log('Init message sent');
+      verbose() && console.log('Init message sent');
 
       // Wait for initialization to complete
       return new Promise((resolve, reject) => {
@@ -175,6 +177,9 @@ export class VFSService {
   }
 
   async readFile(path: string): Promise<string> {
+    if (!path) {
+      throw new Error('Path is required for readFile');
+    }
     const id = this.generateId();
     return this.sendMessage<string>({
       type: 'readFile',
@@ -188,6 +193,9 @@ export class VFSService {
     content: string,
     create = false
   ): Promise<void> {
+    if (!path) {
+      throw new Error('Path is required for writeFile');
+    }
     const id = this.generateId();
 
     const result = await this.sendMessage<void>({
@@ -220,6 +228,9 @@ export class VFSService {
   }
 
   async exists(path: string): Promise<boolean> {
+    if (!path) {
+      throw new Error('Path is required for exists check');
+    }
     const id = this.generateId();
     return this.sendMessage<boolean>({
       type: 'exists',

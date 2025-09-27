@@ -16,7 +16,7 @@ export interface AgentServiceOptions {
 export class AgentService {
   private initialized = false;
   private vfs = getVFSService();
-  private chatHistory = getChatHistory();
+  private chatHistory: any = null; // Lazy load to avoid initialization issues
   private openrouter = createOpenRouterProvider();
   private abortController: AbortController | null = null;
 
@@ -27,25 +27,26 @@ export class AgentService {
 
     const manifestUrl = options.manifestUrl ||
       import.meta.env.VITE_TONK_MANIFEST_URL ||
-      'http://localhost:6080/.manifest.tonk';
+      'http://localhost:8081/.manifest.tonk';
 
     const wsUrl = options.wsUrl ||
       import.meta.env.VITE_TONK_WS_URL ||
-      'ws://localhost:6080';
+      'ws://localhost:8081';
 
     // Initialize VFS if not already initialized
     if (!this.vfs.isInitialized()) {
       await this.vfs.initialize(manifestUrl, wsUrl);
     }
 
-    // Initialize chat history
+    // Now get and initialize chat history after user service is ready
+    this.chatHistory = getChatHistory();
     await this.chatHistory.initialize();
 
     this.initialized = true;
   }
 //
   async sendMessage(prompt: string): Promise<ChatMessage> {
-    if (!this.initialized) {
+    if (!this.initialized || !this.chatHistory) {
       throw new Error('Agent service not initialized');
     }
 
@@ -568,5 +569,3 @@ export function getAgentService(): AgentService {
 export function resetAgentService(): void {
   agentServiceInstance = null;
 }
-
-const poop = ""

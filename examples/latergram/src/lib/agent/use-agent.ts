@@ -28,17 +28,29 @@ export function useAgent(): UseAgentReturn {
   // Initialize agent service with delay to avoid race condition
   useEffect(() => {
     const initializeAgent = async () => {
-      if (initializingRef.current || agentService.current.isInitialized()) {
+      if (initializingRef.current) {
         return;
       }
 
       initializingRef.current = true;
 
       try {
+        // Check if already initialized
+        if (agentService.current.isInitialized()) {
+          const history = agentService.current.getHistory();
+          setMessages(history);
+          setIsReady(true);
+          return;
+        }
+
         // Add a small delay to ensure VFS is ready
         await new Promise(resolve => setTimeout(resolve, 1000));
 
-        await agentService.current.initialize();
+        // Try to initialize if not already done
+        if (!agentService.current.isInitialized()) {
+          await agentService.current.initialize();
+        }
+
         const history = agentService.current.getHistory();
         setMessages(history);
         setIsReady(true);
