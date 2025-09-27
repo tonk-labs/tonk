@@ -1,6 +1,7 @@
 import React, { Component, ReactNode } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { errorStyles } from './errorBoundaryStyles';
+import { sendErrorToAgent } from './sendErrorToAgent';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -42,6 +43,9 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       error,
       errorInfo,
     });
+
+    // Send error to AI agent for automatic fixing (only for views)
+    sendErrorToAgent(error, errorInfo, componentName, viewPath);
   }
 
   render() {

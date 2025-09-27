@@ -1,4 +1,5 @@
 import { buildErrorUI } from './errorBoundaryStyles';
+import { sendErrorToAgent } from './sendErrorToAgent';
 
 /**
  * Creates an inline error boundary class for use in dynamic contexts
@@ -25,6 +26,9 @@ export function createInlineErrorBoundary(
     componentDidCatch(error: any, errorInfo: any) {
       const context = viewPath ? `[View: ${viewPath}]` : `[${componentName}]`;
       console.error(`${context} Error:`, error, errorInfo);
+
+      // Send error to AI agent for automatic fixing (only for views)
+      sendErrorToAgent(error, errorInfo, componentName, viewPath);
     }
 
     render() {
