@@ -28,7 +28,7 @@ export function useVFSComponent(filePath: string | null): VFSComponentHook {
       setError(null);
 
       try {
-        const fileContent = await vfs.readFile(path);
+        const fileContent = await vfs.readBytesAsString(path);
         setContent(fileContent);
       } catch (err) {
         const errorMessage =
@@ -50,7 +50,7 @@ export function useVFSComponent(filePath: string | null): VFSComponentHook {
       }
 
       try {
-        await vfs.writeFile(filePath, newContent, false);
+        await vfs.writeStringAsBytes(filePath, newContent, false);
         setContent(newContent);
         setError(null);
       } catch (err) {
@@ -71,7 +71,7 @@ export function useVFSComponent(filePath: string | null): VFSComponentHook {
       }
 
       try {
-        await vfs.writeFile(path, initialContent, true);
+        await vfs.writeStringAsBytes(path, initialContent, true);
         setError(null);
       } catch (err) {
         const errorMessage =

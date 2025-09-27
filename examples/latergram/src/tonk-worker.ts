@@ -166,41 +166,35 @@ async function handleMessage(message: VFSWorkerMessage) {
         path: message.path,
         id: message.id,
         create: message.create,
-        hasBytes: !!message.documentContent.bytes,
-        contentType: typeof message.documentContent.content,
+        hasBytes: !!message.content.bytes,
+        contentType: typeof message.content.content,
       });
       try {
         if (message.create) {
           log('info', 'Creating new file', { path: message.path });
-          if (message.documentContent.bytes) {
+          if (message.content.bytes) {
             // Create file with bytes
             await tonk!.createFileWithBytes(
               message.path,
-              message.documentContent.content,
-              message.documentContent.bytes
+              message.content.content,
+              message.content.bytes
             );
           } else {
             // Create file with content only
-            await tonk!.createFile(
-              message.path,
-              message.documentContent.content
-            );
+            await tonk!.createFile(message.path, message.content.content);
           }
         } else {
           log('info', 'Updating existing file', { path: message.path });
-          if (message.documentContent.bytes) {
+          if (message.content.bytes) {
             // Update file with bytes
             await tonk!.updateFileWithBytes(
               message.path,
-              message.documentContent.content,
-              message.documentContent.bytes
+              message.content.content,
+              message.content.bytes
             );
           } else {
             // Update file with content only
-            await tonk!.updateFile(
-              message.path,
-              message.documentContent.content
-            );
+            await tonk!.updateFile(message.path, message.content.content);
           }
         }
         log('info', 'File write completed successfully', {

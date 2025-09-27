@@ -85,7 +85,7 @@ export const StoreManager: React.FC = () => {
           ).getVFSService();
           if (vfsService.isInitialized()) {
             try {
-              await vfsService.writeFile(
+              await vfsService.writeStringAsBytes(
                 store.metadata.filePath,
                 customizedCode,
                 true

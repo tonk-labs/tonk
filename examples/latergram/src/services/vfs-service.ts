@@ -4,7 +4,9 @@ import type {
   DocumentContent,
 } from '../types';
 import type { DocumentData, JsonValue } from '@tonk/core';
+import { bytesToString, stringToBytes } from '../utils/vfs-utils';
 import TonkWorker from '../tonk-worker.ts?worker';
+import mime from 'mime';
 
 const verbose = () => false;
 
@@ -233,6 +235,37 @@ export class VFSService {
       bytes instanceof Uint8Array ? btoa(String.fromCharCode(...bytes)) : bytes;
 
     return this.writeFile(path, { content, bytes: bytesData }, create);
+  }
+
+  // Convenience method for writing string data as bytes
+  async writeStringAsBytes(
+    path: string,
+    stringData: string,
+    create = false
+  ): Promise<void> {
+    // Convert string to UTF-8 bytes then to base64
+    const base64Data = stringToBytes(stringData);
+
+    // Determine MIME type from file path
+    const mimeType = mime.getType(path) || 'application/octet-stream';
+
+    return this.writeFile(
+      path,
+      { content: { mime: mimeType }, bytes: base64Data },
+      create
+    );
+  }
+
+  // Convenience method for reading string data from bytes
+  async readBytesAsString(path: string): Promise<string> {
+    const documentData = await this.readFile(path);
+
+    if (!documentData.bytes) {
+      throw new Error('File does not contain byte data');
+    }
+
+    // Decode base64 to bytes then to UTF-8 string
+    return bytesToString(documentData);
   }
 
   async deleteFile(path: string): Promise<void> {

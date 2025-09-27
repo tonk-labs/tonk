@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getVFSService } from '../../services/vfs-service';
+import { DocumentData } from '@tonk/core';
+import { bytesToString } from '../../utils/vfs-utils';
 
 interface UseVFSStoreReturn {
   content: string;
@@ -26,7 +28,7 @@ export const useVFSStore = (filePath: string | null): UseVFSStoreReturn => {
     setError(null);
 
     try {
-      const fileContent = await vfs.readFile(filePath);
+      const fileContent = await vfs.readBytesAsString(filePath);
       setContent(fileContent || '');
     } catch (err) {
       const errorMessage =
@@ -45,7 +47,7 @@ export const useVFSStore = (filePath: string | null): UseVFSStoreReturn => {
       }
 
       try {
-        await vfs.writeFile(filePath, newContent, false);
+        await vfs.writeStringAsBytes(filePath, newContent, false);
         setContent(newContent);
         setError(null);
       } catch (err) {
@@ -65,7 +67,7 @@ export const useVFSStore = (filePath: string | null): UseVFSStoreReturn => {
       }
 
       try {
-        await vfs.writeFile(filePath, initialContent, true);
+        await vfs.writeStringAsBytes(filePath, initialContent, true);
         setContent(initialContent);
         setError(null);
       } catch (err) {
@@ -116,8 +118,9 @@ export const useVFSStore = (filePath: string | null): UseVFSStoreReturn => {
 
     const setupWatcher = async () => {
       try {
-        watchId = await vfs.watchFile(filePath, (newContent: string) => {
-          setContent(newContent);
+        watchId = await vfs.watchFile(filePath, (newContent: DocumentData) => {
+          const string = bytesToString(newContent);
+          setContent(string);
         });
       } catch (err) {
         console.warn('Failed to set up file watcher for store:', err);

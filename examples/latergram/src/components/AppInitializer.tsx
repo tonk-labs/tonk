@@ -75,7 +75,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
         }
 
         try {
-          const content = await vfs.readFile(filePath);
+          const content = await vfs.readBytesAsString(filePath);
           const storeName = extractStoreName(content, fileName);
           const storeId = fileName.replace('.ts', '') || `store-${Date.now()}`;
 
@@ -129,7 +129,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
         }
 
         try {
-          const content = await vfs.readFile(filePath);
+          const content = await vfs.readBytesAsString(filePath);
           const componentName = extractComponentName(content, fileName);
 
           // Create component in registry
