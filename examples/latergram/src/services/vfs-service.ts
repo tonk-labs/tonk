@@ -79,11 +79,11 @@ export class VFSService {
     };
 
     this.worker.onerror = error => {
-      verbose() && console.error('VFS Worker error:', error);
+      console.error('VFS Worker error:', error);
     };
 
     this.worker.onmessageerror = error => {
-      verbose() && console.error('VFS Worker message error:', error);
+      console.error('VFS Worker message error:', error);
     };
   }
 
@@ -133,6 +133,7 @@ export class VFSService {
         // Timeout after 10 seconds
         setTimeout(() => {
           if (!this.initialized) {
+            console.error('[VFSService] VFS initialization timeout');
             reject(new Error('VFS initialization timeout'));
           }
         }, 10000);
@@ -152,10 +153,12 @@ export class VFSService {
     message: VFSWorkerMessage & { id: string }
   ): Promise<T> {
     if (!this.worker) {
+      console.error('[VFSService] Worker not initialized');
       return Promise.reject(new Error('Worker not initialized'));
     }
 
     if (!this.initialized) {
+      console.error('[VFSService] VFS not initialized');
       return Promise.reject(new Error('VFS not initialized'));
     }
 
@@ -178,6 +181,7 @@ export class VFSService {
 
   async readFile(path: string): Promise<string> {
     if (!path) {
+      console.error('[VFSService] readFile called with no path');
       throw new Error('Path is required for readFile');
     }
     const id = this.generateId();
@@ -194,6 +198,7 @@ export class VFSService {
     create = false
   ): Promise<void> {
     if (!path) {
+      console.error('[VFSService] writeFile called with no path');
       throw new Error('Path is required for writeFile');
     }
     const id = this.generateId();
