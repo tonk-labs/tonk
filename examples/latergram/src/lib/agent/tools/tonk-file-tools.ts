@@ -3,9 +3,40 @@ import { z } from 'zod';
 import { getVFSService } from '../../../services/vfs-service';
 import { fileValidator } from '../../file-validator';
 import { typeScriptValidator } from '../../typescript-validator';
+import { componentRegistry } from '../../../components/ComponentRegistry';
+import { storeRegistry } from '../../../components/StoreRegistry';
+import { sanitizeComponentName, sanitizeStoreName } from '../../../components/contextBuilder';
 
 // Track all files written during this session
 const sessionFiles = new Set<string>();
+
+// Helper function to get available component names for TypeScript validation
+const getAvailableComponentNames = (): string[] => {
+  const componentNames: string[] = [];
+
+  // Get all registered components
+  componentRegistry.getAllComponents().forEach(comp => {
+    if (comp.metadata.status === 'success') {
+      const sanitizedName = sanitizeComponentName(comp.metadata.name);
+      if (sanitizedName !== 'UnnamedComponent') {
+        componentNames.push(sanitizedName);
+      }
+    }
+  });
+
+  // Get all registered stores
+  storeRegistry.getAllStores().forEach(store => {
+    if (store.metadata.status === 'success') {
+      const storeName = store.metadata.name;
+      const sanitizedName = storeName.replace(/[^a-zA-Z0-9]/g, '') || 'UnnamedStore';
+      if (sanitizedName !== 'UnnamedStore') {
+        componentNames.push(sanitizedName);
+      }
+    }
+  });
+
+  return componentNames;
+};
 
 export const tonkReadFileTool = tool({
   description: 'Read a file from the Tonk virtual file system.',
@@ -119,10 +150,14 @@ export const tonkWriteFileTool = tool({
           }
         }
 
+        // Get available component names for better validation
+        const availableComponents = getAvailableComponentNames();
+
         const typeCheckResult = await typeScriptValidator.validateFile(
           path,
           validationResult.formatted || content,
-          additionalFiles
+          additionalFiles,
+          availableComponents
         );
 
         if (!typeCheckResult.valid) {

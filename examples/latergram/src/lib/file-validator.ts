@@ -1,5 +1,8 @@
 // @ts-ignore - WASM imports
 import init, * as biomeWasm from '@biomejs/wasm-web';
+// Import WASM file directly with ?url to get the URL
+// @ts-ignore
+import biomeWasmUrl from '@biomejs/wasm-web/biome_wasm_bg.wasm?url';
 
 export interface ValidationResult {
   valid: boolean;
@@ -20,6 +23,9 @@ export interface ValidationError {
 
 export class FileValidator {
   private wasmInitialized = false;
+  private workspace: any = null;
+  private fileSystem: any = null;
+  private projectKey: any = null;
   private biomeConfig = {
     formatter: {
       enabled: true,
@@ -59,10 +65,27 @@ export class FileValidator {
 
     try {
       console.log('[FileValidator] Initializing Biome WASM...');
-      // Initialize WASM module
-      await init();
+      // Initialize WASM module with explicit URL using new object parameter format
+      await init({ module_or_path: biomeWasmUrl });
+
+      // Create workspace and file system
+      this.workspace = new biomeWasm.Workspace();
+      this.fileSystem = new biomeWasm.MemoryFileSystem();
+
+      // Open a project (uninitialized since we don't have a biome.json)
+      const openResult = this.workspace.openProject({
+        openUninitialized: true,
+        path: '/',
+        setAsCurrentProject: true,
+      });
+
+      if (!openResult || !openResult.projectKey) {
+        throw new Error('Failed to open Biome project');
+      }
+
+      this.projectKey = openResult.projectKey;
       this.wasmInitialized = true;
-      console.log('[FileValidator] Biome WASM initialized successfully');
+      console.log('[FileValidator] Biome WASM initialized successfully with project key:', this.projectKey);
     } catch (error) {
       console.error('[FileValidator] Failed to initialize Biome WASM:', error);
       throw error;
@@ -93,23 +116,43 @@ export class FileValidator {
 
     try {
       // Step 1: Format the code if autoFix is enabled
-      if (autoFix) {
+      if (autoFix && this.workspace && this.projectKey) {
         try {
-          // Use the WASM format function directly
-          const formatResult = biomeWasm.format(content, {
-            indent_style: 'space',
-            indent_width: 2,
-            line_width: 100,
-            quote_style: 'single',
-            trailing_comma: 'es5',
-            semicolons: 'always',
-            source_type: filePath.endsWith('.tsx') || filePath.endsWith('.jsx') ? 'jsx' : 'js',
+          // First open the file with the correct FileContent format
+          this.workspace.openFile({
+            path: filePath,
+            projectKey: this.projectKey,
+            content: {
+              type: 'fromClient',
+              content: content,
+              version: 0
+            },
           });
 
-          if (formatResult.code && formatResult.code !== content) {
+          // Update the file content in the workspace
+          this.workspace.changeFile({
+            path: filePath,
+            content: content,
+            projectKey: this.projectKey,
+            version: 1,
+          });
+
+          // Format the file
+          const formatResult = this.workspace.formatFile({
+            path: filePath,
+            projectKey: this.projectKey,
+          });
+
+          if (formatResult && formatResult.code && formatResult.code !== content) {
             formatted = formatResult.code;
             suggestions.push('Code was automatically formatted');
           }
+
+          // Close the file
+          this.workspace.closeFile({
+            path: filePath,
+            projectKey: this.projectKey,
+          });
         } catch (formatError) {
           // Formatting failed, continue with original
           console.warn('Formatting failed:', formatError);
