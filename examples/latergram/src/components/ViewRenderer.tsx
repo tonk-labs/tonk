@@ -6,6 +6,7 @@ import { bytesToString } from '../utils/vfs-utils';
 import { Link } from 'react-router-dom';
 import { createInlineErrorBoundary } from './errors/createInlineErrorBoundary';
 import { DocumentData } from '@tonk/core';
+import { cn } from '../lib/utils';
 
 interface ViewRendererProps {
   viewPath: string;
@@ -320,9 +321,10 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
 
   // Render the view
   return (
-    <div className={className}>
+    <div className={cn(className, 'relative')}>
+      <div ref={sandboxRef} className="min-h-screen -z-10" />
       {showEditor && (
-        <div className="absolute top-4 right-4 z-10">
+        <div className="absolute top-4 right-4 z-[100000]">
           <Link
             to={`/editor/pages?file=${encodeURIComponent(viewPath)}`}
             className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"
@@ -332,7 +334,6 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
           </Link>
         </div>
       )}
-      <div ref={sandboxRef} className="min-h-screen" />
     </div>
   );
 };
