@@ -52,7 +52,9 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
           const comp = componentRegistry.getComponent(componentId);
           if (comp && comp.metadata.filePath) {
             // Read the current source code
-            const sourceCode = await vfs.readFile(comp.metadata.filePath);
+            const sourceCode = await vfs.readBytesAsString(
+              comp.metadata.filePath
+            );
 
             // Recompile with latest context
             await compileAndUpdate(componentId, sourceCode);

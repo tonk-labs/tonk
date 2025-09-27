@@ -190,7 +190,7 @@ export const PageEditor: React.FC = () => {
         if (!exists) {
           setPageContent(DEFAULT_PAGE_TEMPLATE);
         } else {
-          const content = await vfs.readFile(pagePath);
+          const content = await vfs.readBytesAsString(pagePath);
           setPageContent(content);
         }
       } catch (error) {
@@ -214,7 +214,7 @@ export const PageEditor: React.FC = () => {
 
       try {
         const exists = await vfs.exists(selectedPage);
-        await vfs.writeFile(selectedPage, content, !exists);
+        await vfs.writeStringAsBytes(selectedPage, content, !exists);
         // Refresh pages list if new file
         if (!exists) {
           await discoverPages();
@@ -256,7 +256,7 @@ export const PageEditor: React.FC = () => {
         'HomePage',
         newPageName.replace(/\s+/g, '')
       );
-      await vfs.writeFile(filePath, customTemplate, true);
+      await vfs.writeStringAsBytes(filePath, customTemplate, true);
 
       // Refresh pages list and select the new page
       await discoverPages();

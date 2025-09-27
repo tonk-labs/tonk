@@ -2,8 +2,10 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { AlertCircle, FileX, Loader2, Edit3 } from 'lucide-react';
 import { getVFSService } from '../services/vfs-service';
 import { buildAvailablePackages } from './contextBuilder';
+import { bytesToString } from '../utils/vfs-utils';
 import { Link } from 'react-router-dom';
 import { createInlineErrorBoundary } from './errors/createInlineErrorBoundary';
+import { DocumentData } from '@tonk/core';
 
 interface ViewRendererProps {
   viewPath: string;
@@ -61,6 +63,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
       return component;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Compilation failed';
+        error instanceof Error ? error.message : 'Compilation failed';
 
       // If it's a store-related error and we haven't retried too many times, try again
       if (retryCount < 3 && errorMessage.includes('is not defined')) {
@@ -89,7 +92,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
       }
 
       // Read and compile the view
-      const sourceCode = await vfs.readFile(viewPath);
+      const sourceCode = await vfs.readBytesAsString(viewPath);
       const component = await compileView(sourceCode);
       setCompiledComponent(() => component);
 
@@ -114,15 +117,21 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
 
     const watchFile = async () => {
       try {
-        const watchId = await vfs.watchFile(viewPath, async (content: string) => {
-          try {
-            const component = await compileView(content);
-            setCompiledComponent(() => component);
-            setRenderError(null);
-          } catch (error) {
-            setRenderError(error instanceof Error ? error.message : 'Compilation failed');
+        const watchId = await vfs.watchFile(
+          viewPath,
+          async (content: DocumentData) => {
+            try {
+              const sourceCode = bytesToString(content);
+              const component = await compileView(sourceCode);
+              setCompiledComponent(() => component);
+              setRenderError(null);
+            } catch (error) {
+              setRenderError(
+                error instanceof Error ? error.message : 'Compilation failed'
+              );
+            }
           }
-        });
+        );
 
         return () => {
           vfs.unwatchFile(watchId).catch(console.error);
@@ -133,7 +142,9 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
     };
 
     let cleanup: (() => void) | undefined;
-    watchFile().then(fn => { cleanup = fn; });
+    watchFile().then(fn => {
+      cleanup = fn;
+    });
 
     return () => {
       if (cleanup) cleanup();
@@ -230,7 +241,9 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
   // Show loading state
   if (isLoading) {
     return (
-      <div className={`flex items-center justify-center h-screen bg-gray-50 ${className}`}>
+      <div
+        className={`flex items-center justify-center h-screen bg-gray-50 ${className}`}
+      >
         <div className="text-center">
           <Loader2 className="w-8 h-8 animate-spin text-blue-500 mx-auto mb-4" />
           <p className="text-gray-600">Loading view...</p>
@@ -242,12 +255,20 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
   // Show skeleton if view doesn't exist
   if (!viewExists) {
     return (
-      <div className={`flex items-center justify-center h-screen bg-gray-50 ${className}`}>
+      <div
+        className={`flex items-center justify-center h-screen bg-gray-50 ${className}`}
+      >
         <div className="text-center max-w-md mx-auto p-8">
           <FileX className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-          <h2 className="text-xl font-semibold text-gray-800 mb-2">No View Found</h2>
+          <h2 className="text-xl font-semibold text-gray-800 mb-2">
+            No View Found
+          </h2>
           <p className="text-gray-600 mb-6">
-            The view at <code className="bg-gray-100 px-2 py-1 rounded text-sm">{viewPath}</code> doesn't exist yet.
+            The view at{' '}
+            <code className="bg-gray-100 px-2 py-1 rounded text-sm">
+              {viewPath}
+            </code>{' '}
+            doesn't exist yet.
           </p>
           <Link
             to={`/editor/pages?file=${encodeURIComponent(viewPath)}`}
@@ -282,7 +303,9 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
               <div className="flex items-start gap-3">
                 <AlertCircle className="w-6 h-6 text-red-600 mt-0.5 flex-shrink-0" />
                 <div className="flex-1">
-                  <h3 className="font-semibold text-red-800 mb-2">View Error</h3>
+                  <h3 className="font-semibold text-red-800 mb-2">
+                    View Error
+                  </h3>
                   <div className="text-sm text-red-700 font-mono whitespace-pre-wrap">
                     {renderError}
                   </div>

@@ -51,7 +51,7 @@ export const useVFSDiscovery = (config: DiscoveryConfig) => {
         }
 
         try {
-          const content = await vfs.readFile(filePath);
+          const content = await vfs.readBytesAsString(filePath);
           const name = config.extractName(content, fileName);
           await config.onFileFound(filePath, name, content);
         } catch (fileError) {

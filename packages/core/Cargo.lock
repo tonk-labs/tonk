@@ -1597,12 +1597,13 @@ dependencies = [
 
 [[package]]
 name = "samod"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-channel",
  "automerge",
  "bytes",
  "chrono",
+ "console_error_panic_hook",
  "futures",
  "indexed_db_futures",
  "js-sys",
@@ -1613,6 +1614,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
+ "tracing-wasm",
  "tungstenite",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -1621,7 +1623,7 @@ dependencies = [
 
 [[package]]
 name = "samod-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "automerge",
  "base64 0.21.7",

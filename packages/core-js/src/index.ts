@@ -4,11 +4,15 @@ import {
   // Main classes
   TonkCore,
   Bundle,
+  Manifest,
 
   // Types
-  type NodeMetadata,
-  type DirectoryEntry,
+  type DocumentData,
+  type RefNode,
+  type DirectoryNode,
+  type DocumentTimestamps,
   type BundleEntry,
+  type JsonValue,
 
   // Error classes
   TonkError,
@@ -64,10 +68,14 @@ export {
   Bundle,
 
   // Types
-  type NodeMetadata,
-  type DirectoryEntry,
+  type DocumentData,
+  type Manifest,
   type BundleEntry,
   type TonkConfig,
+  type DocumentTimestamps,
+  type RefNode,
+  type DirectoryNode,
+  type JsonValue,
 
   // Error classes
   TonkError,

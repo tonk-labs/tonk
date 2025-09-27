@@ -105,7 +105,7 @@ pub async fn create_test_bundle(
             .await?;
     }
 
-    Ok(tonk.to_bytes().await?)
+    Ok(tonk.to_bytes(None).await?)
 }
 
 /// Helper to load a TonkCore from bundle bytes (uses in-memory storage)

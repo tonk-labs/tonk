@@ -35,7 +35,9 @@ export class ChatHistory {
   private getChatHistoryPath(): string {
     const userPath = this.userService.getChatHistoryPath();
     if (!userPath) {
-      throw new Error('User service not initialized - cannot determine chat history path');
+      throw new Error(
+        'User service not initialized - cannot determine chat history path'
+      );
     }
     return userPath;
   }
@@ -57,7 +59,7 @@ export class ChatHistory {
       }
 
       const content = await this.vfs.readFile(chatPath);
-      const data: ChatHistoryData = JSON.parse(content);
+      const data: ChatHistoryData = content.content as any;
 
       if (data.version === '1.0' && Array.isArray(data.messages)) {
         this.messages = data.messages;
@@ -81,18 +83,16 @@ export class ChatHistory {
     try {
       const chatPath = this.getChatHistoryPath();
       const exists = await this.vfs.exists(chatPath);
-      await this.vfs.writeFile(
-        chatPath,
-        JSON.stringify(data, null, 2),
-        !exists
-      );
+      await this.vfs.writeFile(chatPath, { content: data as any }, !exists);
     } catch (error) {
       console.error('Failed to save chat history:', error);
       throw error;
     }
   }
 
-  async addMessage(message: Omit<ChatMessage, 'id' | 'timestamp'>): Promise<ChatMessage> {
+  async addMessage(
+    message: Omit<ChatMessage, 'id' | 'timestamp'>
+  ): Promise<ChatMessage> {
     const newMessage: ChatMessage = {
       ...message,
       id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -129,7 +129,11 @@ export class ChatHistory {
   }
 
   // Helper to format messages for AI SDK - includes tool messages
-  formatForAI(): Array<{ role: 'user' | 'assistant' | 'system' | 'tool'; content: string; toolCallId?: string }> {
+  formatForAI(): Array<{
+    role: 'user' | 'assistant' | 'system' | 'tool';
+    content: string;
+    toolCallId?: string;
+  }> {
     return this.messages.map(msg => {
       // For tool messages, include the toolCallId
       if (msg.role === 'tool') {

@@ -4,16 +4,29 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum NodeType {
-    #[serde(rename = "doc")]
+    #[serde(rename = "document")]
     Document,
-    #[serde(rename = "dir")]
+    #[serde(rename = "directory")]
     Directory,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Timestamps {
     pub created: DateTime<Utc>,
     pub modified: DateTime<Utc>,
+}
+
+impl Serialize for Timestamps {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Timestamps", 2)?;
+        state.serialize_field("created", &self.created.timestamp_millis())?;
+        state.serialize_field("modified", &self.modified.timestamp_millis())?;
+        state.end()
+    }
 }
 
 impl Timestamps {

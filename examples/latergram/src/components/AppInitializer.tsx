@@ -81,9 +81,9 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
         // Create a promise for each store compilation
         const storePromise = (async () => {
           try {
-            const content = await vfs.readFile(filePath);
-            const storeName = extractStoreName(content, fileName);
-            const storeId = fileName.replace('.ts', '') || `store-${Date.now()}`;
+          const content = await vfs.readBytesAsString(filePath);
+          const storeName = extractStoreName(content, fileName);
+          const storeId = fileName.replace('.ts', '') || `store-${Date.now()}`;
 
             // Register placeholder store immediately so it's available in the registry
             storeRegistry.register(storeId, () => ({}), {
@@ -143,7 +143,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
         }
 
         try {
-          const content = await vfs.readFile(filePath);
+          const content = await vfs.readBytesAsString(filePath);
           const componentName = extractComponentName(content, fileName);
 
           // Create component in registry with loading status
@@ -152,6 +152,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
             filePath
           );
 
+          // Set up file watcher for the component
           componentPaths.push({ id: componentId, filePath, name: componentName });
         } catch (error) {
           console.warn(`Failed to register component ${filePath}:`, error);

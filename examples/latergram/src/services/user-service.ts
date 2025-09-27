@@ -28,8 +28,12 @@ class UserService {
       const userDirExists = await this.vfs.exists(userDir);
       if (!userDirExists) {
         console.log('Creating user directory:', userDir);
-        await this.vfs.writeFile(`${userDir}/.keep`, '', true);
-        await this.vfs.writeFile(`${chatHistoryDir}/.keep`, '', true);
+        await this.vfs.writeFile(`${userDir}/.keep`, { content: {} }, true);
+        await this.vfs.writeFile(
+          `${chatHistoryDir}/.keep`,
+          { content: {} },
+          true
+        );
 
         // Store user metadata
         const userMetadata = {
@@ -39,7 +43,7 @@ class UserService {
         };
         await this.vfs.writeFile(
           `${userDir}/metadata.json`,
-          JSON.stringify(userMetadata, null, 2),
+          { content: userMetadata },
           true
         );
       } else {
@@ -47,13 +51,9 @@ class UserService {
         try {
           const metadataPath = `${userDir}/metadata.json`;
           const metadataContent = await this.vfs.readFile(metadataPath);
-          const metadata = JSON.parse(metadataContent);
+          const metadata = metadataContent.content as any;
           metadata.lastSeen = Date.now();
-          await this.vfs.writeFile(
-            metadataPath,
-            JSON.stringify(metadata, null, 2),
-            false
-          );
+          await this.vfs.writeFile(metadataPath, metadata, false);
         } catch (error) {
           console.warn('Could not update user metadata:', error);
         }

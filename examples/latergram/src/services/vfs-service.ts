@@ -1,5 +1,12 @@
-import type { VFSWorkerMessage, VFSWorkerResponse } from '../types';
+import type {
+  VFSWorkerMessage,
+  VFSWorkerResponse,
+  DocumentContent,
+} from '../types';
+import type { DocumentData, JsonValue } from '@tonk/core';
+import { bytesToString, stringToBytes } from '../utils/vfs-utils';
 import TonkWorker from '../tonk-worker.ts?worker';
+import mime from 'mime';
 
 const verbose = () => false;
 
@@ -15,7 +22,7 @@ export class VFSService {
       reject: (error: Error) => void;
     }
   >();
-  private watchers = new Map<string, (content: string) => void>();
+  private watchers = new Map<string, (documentData: DocumentData) => void>();
   private directoryWatchers = new Map<string, (changeData: any) => void>();
 
   constructor() {
@@ -24,9 +31,11 @@ export class VFSService {
 
   private initWorker() {
     try {
+      console.log('[VFSService] Creating TonkWorker...');
       this.worker = new TonkWorker();
+      console.log('[VFSService] TonkWorker created successfully');
     } catch (error) {
-      verbose() && console.error('Failed to create worker:', error);
+      console.error('Failed to create worker:', error);
       return;
     }
 
@@ -44,7 +53,8 @@ export class VFSService {
         verbose() && console.log('Received init response:', response);
         this.initialized = response.success;
         if (!response.success && response.error) {
-          verbose() && console.error('VFS Worker initialization failed:', response.error);
+          verbose() &&
+            console.error('VFS Worker initialization failed:', response.error);
         }
         return;
       }
@@ -52,7 +62,7 @@ export class VFSService {
       if (response.type === 'fileChanged' && 'watchId' in response) {
         const callback = this.watchers.get(response.watchId);
         if (callback) {
-          callback(response.content);
+          callback(response.documentData);
         }
         return;
       }
@@ -115,9 +125,12 @@ export class VFSService {
         checkReady();
       });
 
-      verbose() && console.log('Worker is ready, sending init message...');
+      console.log('[VFSService] Worker is ready, sending init message...', {
+        manifestSize: manifest.byteLength,
+        wsUrl,
+      });
       this.worker.postMessage(message);
-      verbose() && console.log('Init message sent');
+      console.log('[VFSService] Init message sent');
 
       // Wait for initialization to complete
       return new Promise((resolve, reject) => {
@@ -179,13 +192,13 @@ export class VFSService {
     });
   }
 
-  async readFile(path: string): Promise<string> {
+  async readFile(path: string): Promise<DocumentData> {
     if (!path) {
       console.error('[VFSService] readFile called with no path');
       throw new Error('Path is required for readFile');
     }
     const id = this.generateId();
-    return this.sendMessage<string>({
+    return this.sendMessage<DocumentData>({
       type: 'readFile',
       id,
       path,
@@ -194,7 +207,7 @@ export class VFSService {
 
   async writeFile(
     path: string,
-    content: string,
+    content: DocumentContent,
     create = false
   ): Promise<void> {
     if (!path) {
@@ -212,6 +225,55 @@ export class VFSService {
     });
 
     return result;
+  }
+
+  // Convenience method for writing files with bytes
+  async writeFileWithBytes(
+    path: string,
+    content: JsonValue,
+    //either base64 encoded byte data or bytes array
+    bytes: Uint8Array | string,
+    create = false
+  ): Promise<void> {
+    // Convert Uint8Array to base64 string if needed
+    const bytesData =
+      bytes instanceof Uint8Array ? btoa(String.fromCharCode(...bytes)) : bytes;
+
+    return this.writeFile(path, { content, bytes: bytesData }, create);
+  }
+
+  // Convenience method for writing string data as bytes
+  async writeStringAsBytes(
+    path: string,
+    stringData: string,
+    create = false
+  ): Promise<void> {
+    // Convert string to UTF-8 bytes then to base64
+    const base64Data = stringToBytes(stringData);
+
+    // Determine MIME type from file path
+    const mimeType = mime.getType(path) || 'application/octet-stream';
+
+    return this.writeFile(
+      path,
+      { content: { mime: mimeType }, bytes: base64Data },
+      create
+    );
+  }
+
+  // Convenience method for reading string data from bytes
+  async readBytesAsString(path: string): Promise<string> {
+    const documentData = await this.readFile(path);
+
+    if (!documentData.bytes) {
+      console.warn(
+        `file ${path} was not stored as bytes, returning content instead`
+      );
+      return JSON.stringify(documentData.content);
+    }
+
+    // Decode base64 to bytes then to UTF-8 string
+    return bytesToString(documentData);
   }
 
   async deleteFile(path: string): Promise<void> {
@@ -246,7 +308,7 @@ export class VFSService {
 
   async watchFile(
     path: string,
-    callback: (content: string) => void
+    callback: (documentData: DocumentData) => void
   ): Promise<string> {
     const id = this.generateId();
     this.watchers.set(id, callback);

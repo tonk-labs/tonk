@@ -11,7 +11,7 @@ interface VFSFilePreviewProps {
 export const VFSFilePreview: React.FC<VFSFilePreviewProps> = ({
   filePath,
   onClose,
-  className = ''
+  className = '',
 }) => {
   const [content, setContent] = useState<string>('');
   const [loading, setLoading] = useState(false);
@@ -29,7 +29,7 @@ export const VFSFilePreview: React.FC<VFSFilePreviewProps> = ({
       setLoading(true);
       setError(null);
       try {
-        const fileContent = await vfs.readFile(filePath);
+        const fileContent = await vfs.readBytesAsString(filePath);
         setContent(fileContent);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load file');
@@ -55,7 +55,16 @@ export const VFSFilePreview: React.FC<VFSFilePreviewProps> = ({
 
   const fileName = filePath.split('/').pop() || filePath;
   const fileExtension = fileName.split('.').pop()?.toLowerCase();
-  const isCode = ['ts', 'tsx', 'js', 'jsx', 'css', 'html', 'json', 'md'].includes(fileExtension || '');
+  const isCode = [
+    'ts',
+    'tsx',
+    'js',
+    'jsx',
+    'css',
+    'html',
+    'json',
+    'md',
+  ].includes(fileExtension || '');
 
   return (
     <div className={`flex flex-col h-full ${className}`}>
@@ -82,7 +91,9 @@ export const VFSFilePreview: React.FC<VFSFilePreviewProps> = ({
         ) : error ? (
           <div className="text-red-500">Error: {error}</div>
         ) : (
-          <pre className={`text-sm ${isCode ? 'font-mono' : 'font-sans'} whitespace-pre-wrap`}>
+          <pre
+            className={`text-sm ${isCode ? 'font-mono' : 'font-sans'} whitespace-pre-wrap`}
+          >
             {content}
           </pre>
         )}

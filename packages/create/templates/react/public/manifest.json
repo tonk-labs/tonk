@@ -1,7 +1,7 @@
 {
-  "name": "Tonk App",
+  "name": "Tonk",
   "short_name": "Tonk",
-  "description": "A Tonk PWA application",
+  "description": "A tonk",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

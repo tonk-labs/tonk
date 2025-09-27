@@ -5,7 +5,10 @@ import { fileValidator } from '../../file-validator';
 import { typeScriptValidator } from '../../typescript-validator';
 import { componentRegistry } from '../../../components/ComponentRegistry';
 import { storeRegistry } from '../../../components/StoreRegistry';
-import { sanitizeComponentName, sanitizeStoreName } from '../../../components/contextBuilder';
+import {
+  sanitizeComponentName,
+  sanitizeStoreName,
+} from '../../../components/contextBuilder';
 
 // Track all files written during this session
 const sessionFiles = new Set<string>();
@@ -28,7 +31,8 @@ const getAvailableComponentNames = (): string[] => {
   storeRegistry.getAllStores().forEach(store => {
     if (store.metadata.status === 'success') {
       const storeName = store.metadata.name;
-      const sanitizedName = storeName.replace(/[^a-zA-Z0-9]/g, '') || 'UnnamedStore';
+      const sanitizedName =
+        storeName.replace(/[^a-zA-Z0-9]/g, '') || 'UnnamedStore';
       if (sanitizedName !== 'UnnamedStore') {
         componentNames.push(sanitizedName);
       }
@@ -54,8 +58,11 @@ export const tonkReadFileTool = tool({
     }
 
     try {
-      const content = await vfs.readFile(path);
-      console.log('[TonkTool] readFile success:', { path, contentLength: content.length });
+      const content = await vfs.readBytesAsString(path);
+      console.log('[TonkTool] readFile success:', {
+        path,
+        contentLength: content.length,
+      });
       return {
         path,
         content,
@@ -84,7 +91,11 @@ export const tonkWriteFileTool = tool({
     content: z.string().describe('Full file contents to persist.'),
   }),
   execute: async ({ path, content }) => {
-    console.log('[TonkTool] writeFile called with validation:', { path, contentLength: content.length, content });
+    console.log('[TonkTool] writeFile called with validation:', {
+      path,
+      contentLength: content.length,
+      content,
+    });
     const vfs = getVFSService();
     if (!vfs.isInitialized()) {
       throw new Error('VFS service is not initialized');
@@ -102,7 +113,7 @@ export const tonkWriteFileTool = tool({
       console.log('[TonkTool] Validation result:', {
         valid: validationResult.valid,
         errors: validationResult.errors.length,
-        warnings: validationResult.warnings.length
+        warnings: validationResult.warnings.length,
       });
 
       // Generate feedback
@@ -121,13 +132,16 @@ export const tonkWriteFileTool = tool({
         };
       }
     } catch (validationError) {
-      console.warn('[TonkTool] Biome validation failed, continuing without it:', validationError);
+      console.warn(
+        '[TonkTool] Biome validation failed, continuing without it:',
+        validationError
+      );
       validationResult = {
         valid: true,
         errors: [],
         warnings: [],
         formatted: content,
-        suggestions: []
+        suggestions: [],
       };
     }
 
@@ -143,7 +157,10 @@ export const tonkWriteFileTool = tool({
         );
 
         if (!typeCheckResult.valid) {
-          const tsFeedback = typeScriptValidator.generateAgentFeedback(typeCheckResult, path);
+          const tsFeedback = typeScriptValidator.generateAgentFeedback(
+            typeCheckResult,
+            path
+          );
           console.error('[TonkTool] TypeScript validation failed:', tsFeedback);
 
           return {
@@ -152,7 +169,9 @@ export const tonkWriteFileTool = tool({
             success: false,
             error: `TypeScript validation failed.\n\n${tsFeedback}`,
             typeErrors: typeCheckResult.diagnostics,
-            suggestions: [`Fix ${typeCheckResult.errorCount} TypeScript error(s) before saving`],
+            suggestions: [
+              `Fix ${typeCheckResult.errorCount} TypeScript error(s) before saving`,
+            ],
           };
         }
 
@@ -160,7 +179,10 @@ export const tonkWriteFileTool = tool({
           feedback += `\n\nTypeScript Warnings: ${typeCheckResult.warningCount} warning(s) found`;
         }
       } catch (tsError) {
-        console.warn('[TonkTool] TypeScript validation failed to run, continuing without TS validation:', tsError);
+        console.warn(
+          '[TonkTool] TypeScript validation failed to run, continuing without TS validation:',
+          tsError
+        );
       }
     }
 
@@ -169,7 +191,7 @@ export const tonkWriteFileTool = tool({
 
     try {
       const exists = await vfs.exists(path);
-      await vfs.writeFile(path, finalContent, !exists);
+      await vfs.writeStringAsBytes(path, finalContent, !exists);
 
       // Track this file for finish validation
       sessionFiles.add(path);
@@ -177,7 +199,7 @@ export const tonkWriteFileTool = tool({
       console.log('[TonkTool] writeFile success with validation:', {
         path,
         created: !exists,
-        wasFormatted: finalContent !== content
+        wasFormatted: finalContent !== content,
       });
 
       return {
@@ -254,7 +276,10 @@ export const tonkListDirectoryTool = tool({
 
     try {
       const entries = await vfs.listDirectory(path);
-      console.log('[TonkTool] listDirectory success:', { path, entriesCount: entries.length });
+      console.log('[TonkTool] listDirectory success:', {
+        path,
+        entriesCount: entries.length,
+      });
       return {
         path,
         entries,
@@ -266,7 +291,8 @@ export const tonkListDirectoryTool = tool({
         path,
         entries: [],
         success: false,
-        error: error instanceof Error ? error.message : 'Failed to list directory',
+        error:
+          error instanceof Error ? error.message : 'Failed to list directory',
       };
     }
   },
@@ -301,7 +327,6 @@ export const tonkExistsTool = tool({
         path,
         exists: false,
         success: false,
-        error: error instanceof Error ? error.message : 'Failed to check existence',
       };
     }
   },
@@ -309,18 +334,20 @@ export const tonkExistsTool = tool({
 
 // Enhanced finish tool - validates all files before completion
 export const finishTool = tool({
-  description: 'Call this tool when you have completed the requested task. This will validate all modified files before completion.',
+  description:
+    'Call this tool when you have completed the requested task. This will validate all modified files before completion.',
   inputSchema: z.object({
-    summary: z
-      .string()
-      .describe('A brief summary of what was accomplished'),
+    summary: z.string().describe('A brief summary of what was accomplished'),
     files_modified: z
       .array(z.string())
       .optional()
       .describe('List of file paths that were modified or created'),
   }),
   execute: async ({ summary, files_modified }) => {
-    console.log('[TonkTool] FINISH called with validation:', { summary, files_modified });
+    console.log('[TonkTool] FINISH called with validation:', {
+      summary,
+      files_modified,
+    });
 
     const vfs = getVFSService();
     if (!vfs.isInitialized()) {
@@ -332,12 +359,14 @@ export const finishTool = tool({
 
     // Collect all files for TypeScript project validation
     const allFiles = new Map<string, string>();
-    const jstsFiles = filesToValidate.filter(f => f.match(/\.(js|jsx|ts|tsx|mjs|cjs)$/));
+    const jstsFiles = filesToValidate.filter(f =>
+      f.match(/\.(js|jsx|ts|tsx|mjs|cjs)$/)
+    );
 
     // Read all files first
     for (const filePath of jstsFiles) {
       try {
-        const content = await vfs.readFile(filePath);
+        const content = await vfs.readBytesAsString(filePath);
         allFiles.set(filePath, content);
       } catch (error) {
         console.error(`Failed to read ${filePath}:`, error);
@@ -365,7 +394,10 @@ export const finishTool = tool({
         valid: result.valid,
         errors: result.errors.length,
         warnings: result.warnings.length,
-        feedback: result.errors.length > 0 ? fileValidator.generateAgentFeedback(result, filePath) : undefined,
+        feedback:
+          result.errors.length > 0
+            ? fileValidator.generateAgentFeedback(result, filePath)
+            : undefined,
       });
 
       if (result.errors.length > 0) {
@@ -375,11 +407,14 @@ export const finishTool = tool({
 
     // Step 2: TypeScript validation for the entire project (if no syntax errors)
     if (!hasErrors && allFiles.size > 0) {
-      const tsFiles = Array.from(allFiles.keys()).filter(f => f.endsWith('.ts') || f.endsWith('.tsx'));
+      const tsFiles = Array.from(allFiles.keys()).filter(
+        f => f.endsWith('.ts') || f.endsWith('.tsx')
+      );
 
       if (tsFiles.length > 0) {
         console.log('[TonkTool] Running TypeScript validation on project...');
-        const typeCheckResults = await typeScriptValidator.validateProject(allFiles);
+        const typeCheckResults =
+          await typeScriptValidator.validateProject(allFiles);
 
         // Update validation results with TypeScript errors
         for (const result of validationResults) {
@@ -387,7 +422,10 @@ export const finishTool = tool({
           if (tsResult && !tsResult.valid) {
             result.valid = false;
             result.typeErrors = tsResult.errorCount;
-            const tsFeedback = typeScriptValidator.generateAgentFeedback(tsResult, result.path);
+            const tsFeedback = typeScriptValidator.generateAgentFeedback(
+              tsResult,
+              result.path
+            );
             result.feedback = result.feedback
               ? `${result.feedback}\n\n${tsFeedback}`
               : tsFeedback;
@@ -419,7 +457,7 @@ export const finishTool = tool({
     // All validations passed
     console.log('[TonkTool] FINISH validation passed:', {
       filesValidated: validationResults.length,
-      totalWarnings: validationResults.reduce((sum, r) => sum + r.warnings, 0)
+      totalWarnings: validationResults.reduce((sum, r) => sum + r.warnings, 0),
     });
 
     // Clear session files after successful finish
@@ -431,9 +469,10 @@ export const finishTool = tool({
       files_modified: filesToValidate,
       timestamp: new Date().toISOString(),
       validationResults,
-      message: validationResults.length > 0
-        ? `✅ All ${validationResults.length} files validated successfully`
-        : '✅ Task completed',
+      message:
+        validationResults.length > 0
+          ? `✅ All ${validationResults.length} files validated successfully`
+          : '✅ Task completed',
     };
   },
 });

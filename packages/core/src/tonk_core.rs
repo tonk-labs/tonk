@@ -1,3 +1,4 @@
+use crate::bundle::BundleConfig;
 use crate::error::{Result, VfsError};
 use crate::vfs::VirtualFileSystem;
 use crate::Bundle;
@@ -27,6 +28,7 @@ pub enum StorageConfig {
     #[cfg(target_arch = "wasm32")]
     IndexedDB,
 }
+
 
 /// Builder for creating TonkCore instances with custom configurations
 pub struct TonkCoreBuilder {
@@ -416,7 +418,7 @@ impl TonkCore {
     }
 
     /// Export the current state to a bundle as bytes
-    pub async fn to_bytes(&self) -> Result<Vec<u8>> {
+    pub async fn to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
         use crate::bundle::{Manifest, Version};
         use std::io::{Cursor, Write};
         use zip::write::SimpleFileOptions;
@@ -425,20 +427,38 @@ impl TonkCore {
         // Get the root document from VFS
         let root_id = self.vfs.root_id();
 
-        // Create manifest
-        let manifest = Manifest {
-            manifest_version: 1,
-            version: Version { major: 1, minor: 0 },
-            root_id: root_id.to_string(),
-            entrypoints: vec![],
-            network_uris: vec![], // Could be populated from config
-            x_notes: None,
-            x_vendor: Some(serde_json::json!({
+        // Extract config values or use defaults
+        let config = config.unwrap_or_default();
+        
+        // Merge vendor metadata with default Tonk metadata
+        let vendor_metadata = match config.vendor_metadata {
+            Some(mut custom) => {
+                // Merge custom metadata with default xTonk metadata
+                if let Some(obj) = custom.as_object_mut() {
+                    obj.insert("xTonk".to_string(), serde_json::json!({
+                        "createdAt": chrono::Utc::now().to_rfc3339(),
+                        "exportedFrom": "tonk-core v0.1.0"
+                    }));
+                }
+                Some(custom)
+            }
+            None => Some(serde_json::json!({
                 "xTonk": {
                     "createdAt": chrono::Utc::now().to_rfc3339(),
                     "exportedFrom": "tonk-core v0.1.0"
                 }
             })),
+        };
+
+        // Create manifest
+        let manifest = Manifest {
+            manifest_version: 1,
+            version: Version { major: 1, minor: 0 },
+            root_id: root_id.to_string(),
+            entrypoints: config.entrypoints,
+            network_uris: config.network_uris,
+            x_notes: config.notes,
+            x_vendor: vendor_metadata,
         };
 
         let manifest_json =
@@ -514,7 +534,7 @@ impl TonkCore {
 
     /// Export the current state to a bundle file
     pub async fn to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
-        let bytes = self.to_bytes().await?;
+        let bytes = self.to_bytes(None).await?;
         std::fs::write(path, bytes).map_err(VfsError::IoError)?;
         Ok(())
     }
@@ -696,7 +716,7 @@ mod tests {
             .unwrap();
 
         // Export to bytes
-        let bundle_bytes = tonk.to_bytes().await.unwrap();
+        let bundle_bytes = tonk.to_bytes(None).await.unwrap();
 
         // Verify the bundle is valid by parsing it
         let bundle = Bundle::from_bytes(bundle_bytes).unwrap();
@@ -727,7 +747,7 @@ mod tests {
             .unwrap();
 
         // Export to bundle
-        let bundle_bytes = tonk1.to_bytes().await.unwrap();
+        let bundle_bytes = tonk1.to_bytes(None).await.unwrap();
 
         // Load from bundle into a new engine with temp storage for persistence
         let temp_dir2 = TempDir::new().unwrap();
@@ -745,7 +765,7 @@ mod tests {
         // use automerge::ReadDoc;
         // let (value, _) = root_doc.get(automerge::ROOT, "type").unwrap().unwrap();
         // let doc_type = value.to_str().unwrap();
-        // assert_eq!(doc_type, "dir");
+        // assert_eq!(doc_type, "directory");
 
         // Check that the root document has a name
         // let (name_value, _) = root_doc.get(automerge::ROOT, "name").unwrap().unwrap();
@@ -863,7 +883,7 @@ mod tests {
             .unwrap();
 
         // Export to bundle
-        let bundle_bytes = tonk1.to_bytes().await.unwrap();
+        let bundle_bytes = tonk1.to_bytes(None).await.unwrap();
         let bundle = Bundle::from_bytes(bundle_bytes).unwrap();
 
         // Load into an in-memory engine
