@@ -80,6 +80,19 @@ export class TypeScriptValidator {
    */
   validateSyntax(code: string): TypeCheckResult {
     const diagnostics: TypeCheckDiagnostic[] = [];
+    const lines = code.split('\n');
+
+    // Check file length (max 400 lines)
+    if (lines.length > 400) {
+      diagnostics.push({
+        file: 'component.tsx',
+        line: 1,
+        column: 1,
+        message: `Files Max Lines is 400 LOC, break down files into smaller components and use stores for data storage. Current: ${lines.length} lines`,
+        category: 'error',
+        code: 1000,
+      });
+    }
 
     // Check for import statements (not allowed in Tonk components)
     const importRegex = /^import\s+.+from\s+['"].+['"]/gm;
@@ -87,8 +100,8 @@ export class TypeScriptValidator {
 
     if (importMatches.length > 0) {
       importMatches.forEach(match => {
-        const lines = code.substring(0, match.index).split('\n');
-        const line = lines.length;
+        const linesBeforeMatch = code.substring(0, match.index).split('\n');
+        const line = linesBeforeMatch.length;
         diagnostics.push({
           file: 'component.tsx',
           line,
@@ -106,8 +119,8 @@ export class TypeScriptValidator {
 
     if (requireMatches.length > 0) {
       requireMatches.forEach(match => {
-        const lines = code.substring(0, match.index).split('\n');
-        const line = lines.length;
+        const linesBeforeMatch = code.substring(0, match.index).split('\n');
+        const line = linesBeforeMatch.length;
         diagnostics.push({
           file: 'component.tsx',
           line,
