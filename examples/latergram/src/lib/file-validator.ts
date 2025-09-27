@@ -1,4 +1,4 @@
-import init, { format, lint, type Diagnostic } from '@biomejs/wasm-web';
+import { Biome, Distribution } from '@biomejs/js-api';
 
 export interface ValidationResult {
   valid: boolean;
@@ -18,11 +18,11 @@ export interface ValidationError {
 }
 
 export class FileValidator {
-  private initialized = false;
+  private biome: Biome | null = null;
   private biomeConfig = {
     formatter: {
       enabled: true,
-      indentStyle: 'space',
+      indentStyle: 'space' as const,
       indentWidth: 2,
       lineWidth: 100,
     },
@@ -46,18 +46,28 @@ export class FileValidator {
     },
     javascript: {
       formatter: {
-        quoteStyle: 'single',
-        trailingComma: 'es5',
-        semicolons: 'always',
+        quoteStyle: 'single' as const,
+        trailingComma: 'es5' as const,
+        semicolons: 'always' as const,
       },
     },
   };
 
   async initialize(): Promise<void> {
-    if (this.initialized) return;
+    if (this.biome) return;
 
-    await init();
-    this.initialized = true;
+    this.biome = await Biome.create({
+      distribution: Distribution.NODE,
+    });
+
+    // Apply configuration
+    this.biome.applyConfiguration(0,{
+      configuration: {
+        formatter: this.biomeConfig.formatter,
+        linter: this.biomeConfig.linter,
+        javascript: this.biomeConfig.javascript,
+      },
+    });
   }
 
   async validateFile(
@@ -66,6 +76,10 @@ export class FileValidator {
     autoFix = true
   ): Promise<ValidationResult> {
     await this.initialize();
+
+    if (!this.biome) {
+      throw new Error('Biome not initialized');
+    }
 
     const fileType = this.getFileType(filePath);
     if (!this.isSupportedFile(fileType)) {
@@ -86,16 +100,13 @@ export class FileValidator {
       // Step 1: Format the code if autoFix is enabled
       if (autoFix) {
         try {
-          const formatResult = format(content, {
+          const formatResult = await this.biome.formatContent(0,content, {
             filePath,
-            ...this.biomeConfig,
           });
 
-          if (formatResult.code) {
-            formatted = formatResult.code;
-            if (formatted !== content) {
-              suggestions.push('Code was automatically formatted');
-            }
+          if (formatResult.content !== content) {
+            formatted = formatResult.content;
+            suggestions.push('Code was automatically formatted');
           }
         } catch (formatError) {
           // Formatting failed, continue with original
@@ -104,13 +115,12 @@ export class FileValidator {
       }
 
       // Step 2: Lint the code
-      const lintResult = lint(formatted, {
+      const lintResult = await this.biome.lintContent(0,formatted, {
         filePath,
-        ...this.biomeConfig,
       });
 
       // Parse diagnostics
-      if (lintResult.diagnostics) {
+      if (lintResult.diagnostics && lintResult.diagnostics.length > 0) {
         for (const diagnostic of lintResult.diagnostics) {
           const error = this.parseDiagnostic(diagnostic, formatted);
 
@@ -154,18 +164,19 @@ export class FileValidator {
     };
   }
 
-  private parseDiagnostic(diagnostic: Diagnostic, content: string): ValidationError {
+  private parseDiagnostic(diagnostic: any, content: string): ValidationError {
     const lines = content.split('\n');
-    const line = diagnostic.location?.line || 1;
-    const column = diagnostic.location?.column || 1;
+    const location = diagnostic.location?.span?.[0];
+    const line = location ? Math.floor(location / 1000) : 1;
+    const column = location ? (location % 1000) : 1;
 
     return {
       line,
       column,
       severity: diagnostic.severity === 'error' ? 'error' : 'warning',
-      message: diagnostic.message,
-      rule: diagnostic.code,
-      fix: diagnostic.hint,
+      message: diagnostic.message?.content || diagnostic.message || 'Unknown error',
+      rule: diagnostic.category,
+      fix: diagnostic.message?.advice?.[0] || undefined,
     };
   }
 

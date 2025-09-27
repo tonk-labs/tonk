@@ -1,4 +1,4 @@
-import { fileValidator, type ValidationResult } from './file-validator';
+import { fileValidator, type ValidationResult } from '../file-validator';
 
 interface FileOperation {
   action: 'save' | 'finish';

@@ -39,6 +39,7 @@
     "web-streams-polyfill": "^4.2.0"
   },
   "dependencies": {
+    "@biomejs/js-api": "^3.0.0",
     "@biomejs/wasm-web": "^2.2.4",
     "@openrouter/ai-sdk-provider": "^1.2.0",
     "@tonk/cli": "^0.2.6",

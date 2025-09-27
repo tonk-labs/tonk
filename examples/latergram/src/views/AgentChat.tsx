@@ -1,5 +1,17 @@
 import { FormEvent, useCallback, useState, useRef, useEffect } from 'react';
-import { Bot, Send, User, Trash2, AlertCircle, Loader2, Wrench, Edit2, X, Check, StopCircle } from 'lucide-react';
+import {
+  Bot,
+  Send,
+  User,
+  Trash2,
+  AlertCircle,
+  Loader2,
+  Wrench,
+  Edit2,
+  X,
+  Check,
+  StopCircle,
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useAgent } from '../lib/agent/use-agent';
@@ -21,13 +33,14 @@ const AgentChat: React.FC = () => {
     deleteMessage,
   } = useAgent();
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
   useEffect(() => {
+    messages;
     scrollToBottom();
-  }, [messages]);
+  }, [scrollToBottom, messages]);
 
   const handleSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -41,12 +54,14 @@ const AgentChat: React.FC = () => {
   );
 
   const handleClearConversation = useCallback(async () => {
-    if (window.confirm('Are you sure you want to clear the conversation history?')) {
+    if (
+      window.confirm('Are you sure you want to clear the conversation history?')
+    ) {
       await clearConversation();
     }
   }, [clearConversation]);
 
-  const handleStartEdit = useCallback((message: typeof messages[0]) => {
+  const handleStartEdit = useCallback((message: (typeof messages)[0]) => {
     if (message.role === 'user') {
       setEditingMessageId(message.id);
       setEditContent(message.content);
@@ -68,19 +83,23 @@ const AgentChat: React.FC = () => {
     setEditContent('');
   }, []);
 
-  const handleDeleteMessage = useCallback(async (messageId: string) => {
-    if (window.confirm('Delete this message and all following messages?')) {
-      await deleteMessage(messageId);
-    }
-  }, [deleteMessage]);
+  const handleDeleteMessage = useCallback(
+    async (messageId: string) => {
+      if (window.confirm('Delete this message and all following messages?')) {
+        await deleteMessage(messageId);
+      }
+    },
+    [deleteMessage]
+  );
 
-  const renderMessageContent = (message: typeof messages[0]) => {
+  const renderMessageContent = (message: (typeof messages)[0]) => {
     // Check if content contains markdown formatting
-    const hasMarkdown = message.content.includes('**') ||
-                       message.content.includes('`') ||
-                       message.content.includes('#') ||
-                       message.content.includes('🔧') ||
-                       message.content.includes('✅');
+    const hasMarkdown =
+      message.content.includes('**') ||
+      message.content.includes('`') ||
+      message.content.includes('#') ||
+      message.content.includes('🔧') ||
+      message.content.includes('✅');
 
     return (
       <>
@@ -89,39 +108,64 @@ const AgentChat: React.FC = () => {
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
-              pre: ({ children, ...props }) => (
-                <pre className="bg-gray-900 text-gray-100 p-2 rounded-md overflow-x-auto text-[10px] my-2" {...props}>
-                  {children}
-                </pre>
-              ),
-              code: ({ className, children, ...props }) => {
-                const match = /language-(\w+)/.exec(className || '');
-                return match ? (
-                  <code className="block bg-gray-900 text-gray-100 p-2 rounded-md overflow-x-auto text-[10px]" {...props}>
+                pre: ({ children, ...props }) => (
+                  <pre
+                    className="bg-gray-900 text-gray-100 p-2 rounded-md overflow-x-auto text-[10px] my-2"
+                    {...props}
+                  >
                     {children}
-                  </code>
-                ) : (
-                  <code className="bg-gray-100 px-1 rounded text-[11px]" {...props}>
+                  </pre>
+                ),
+                code: ({ className, children, ...props }) => {
+                  const match = /language-(\w+)/.exec(className || '');
+                  return match ? (
+                    <code
+                      className="block bg-gray-900 text-gray-100 p-2 rounded-md overflow-x-auto text-[10px]"
+                      {...props}
+                    >
+                      {children}
+                    </code>
+                  ) : (
+                    <code
+                      className="bg-gray-100 px-1 rounded text-[11px]"
+                      {...props}
+                    >
+                      {children}
+                    </code>
+                  );
+                },
+                p: ({ children, ...props }) => (
+                  <p className="text-xs my-1" {...props}>
                     {children}
-                  </code>
-                );
-              },
-              p: ({ children, ...props }) => (
-                <p className="text-xs my-1" {...props}>{children}</p>
-              ),
-              strong: ({ children, ...props }) => (
-                <strong className="font-semibold" {...props}>{children}</strong>
-              ),
-              ul: ({ children, ...props }) => (
-                <ul className="list-disc list-inside text-xs my-1 pl-2" {...props}>{children}</ul>
-              ),
-              ol: ({ children, ...props }) => (
-                <ol className="list-decimal list-inside text-xs my-1 pl-2" {...props}>{children}</ol>
-              ),
-              li: ({ children, ...props }) => (
-                <li className="text-xs" {...props}>{children}</li>
-              ),
-            }}
+                  </p>
+                ),
+                strong: ({ children, ...props }) => (
+                  <strong className="font-semibold" {...props}>
+                    {children}
+                  </strong>
+                ),
+                ul: ({ children, ...props }) => (
+                  <ul
+                    className="list-disc list-inside text-xs my-1 pl-2"
+                    {...props}
+                  >
+                    {children}
+                  </ul>
+                ),
+                ol: ({ children, ...props }) => (
+                  <ol
+                    className="list-decimal list-inside text-xs my-1 pl-2"
+                    {...props}
+                  >
+                    {children}
+                  </ol>
+                ),
+                li: ({ children, ...props }) => (
+                  <li className="text-xs" {...props}>
+                    {children}
+                  </li>
+                ),
+              }}
             >
               {message.content}
             </ReactMarkdown>
@@ -190,6 +234,7 @@ const AgentChat: React.FC = () => {
             )}
           </div>
           <button
+            type="button"
             onClick={handleClearConversation}
             className="p-1 hover:bg-gray-100 rounded transition-colors"
             title="Clear conversation"
@@ -234,9 +279,7 @@ const AgentChat: React.FC = () => {
                 >
                   <div
                     className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${
-                      message.role === 'user'
-                        ? 'bg-blue-500'
-                        : 'bg-gray-600'
+                      message.role === 'user' ? 'bg-blue-500' : 'bg-gray-600'
                     }`}
                   >
                     {message.role === 'user' ? (
@@ -269,11 +312,11 @@ const AgentChat: React.FC = () => {
                             }}
                             className="w-full p-2 border border-gray-300 rounded text-xs text-black"
                             rows={3}
-                            autoFocus
                             placeholder="Press Enter to send, Shift+Enter for new line, Esc to cancel"
                           />
                           <div className="flex gap-2 items-center">
                             <button
+                              type="button"
                               onClick={handleSaveEdit}
                               className="px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600 flex items-center gap-1"
                               title="Save and regenerate (Enter)"
@@ -282,6 +325,7 @@ const AgentChat: React.FC = () => {
                               <span>Send</span>
                             </button>
                             <button
+                              type="button"
                               onClick={handleCancelEdit}
                               className="px-2 py-1 bg-gray-500 text-white rounded text-xs hover:bg-gray-600 flex items-center gap-1"
                               title="Cancel (Esc)"
@@ -289,7 +333,9 @@ const AgentChat: React.FC = () => {
                               <X className="w-3 h-3" />
                               <span>Cancel</span>
                             </button>
-                            <span className="text-[10px] text-gray-500 ml-2">Enter to send • Esc to cancel</span>
+                            <span className="text-[10px] text-gray-500 ml-2">
+                              Enter to send • Esc to cancel
+                            </span>
                           </div>
                         </div>
                       ) : (
@@ -303,14 +349,18 @@ const AgentChat: React.FC = () => {
                                   : 'text-gray-500'
                               }`}
                             >
-                              {new Date(message.timestamp).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
+                              {new Date(message.timestamp).toLocaleTimeString(
+                                [],
+                                {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                }
+                              )}
                             </p>
                             {message.role === 'user' && (
                               <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
                                 <button
+                                  type="button"
                                   onClick={() => handleStartEdit(message)}
                                   className="p-0.5 hover:bg-blue-600 rounded"
                                   title="Edit message"
@@ -318,7 +368,10 @@ const AgentChat: React.FC = () => {
                                   <Edit2 className="w-3 h-3" />
                                 </button>
                                 <button
-                                  onClick={() => handleDeleteMessage(message.id)}
+                                  type="button"
+                                  onClick={() =>
+                                    handleDeleteMessage(message.id)
+                                  }
                                   className="p-0.5 hover:bg-red-600 rounded"
                                   title="Delete from here"
                                 >
@@ -351,6 +404,7 @@ const AgentChat: React.FC = () => {
                     </div>
                   </div>
                   <button
+                    type="button"
                     onClick={stopGeneration}
                     className="p-1.5 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors"
                     title="Stop generation"
@@ -375,9 +429,7 @@ const AgentChat: React.FC = () => {
               value={prompt}
               onChange={e => setPrompt(e.target.value)}
               placeholder={
-                isReady
-                  ? 'Type a message...'
-                  : 'Waiting for initialization...'
+                isReady ? 'Type a message...' : 'Waiting for initialization...'
               }
               className="flex-1 px-3 py-1.5 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs disabled:bg-gray-100"
               disabled={!isReady || isLoading}
