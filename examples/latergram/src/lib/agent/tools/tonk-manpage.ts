@@ -21,7 +21,7 @@ const printPages = ():string => {
 export const tonkManualTool = tool({
   description: `Man pages for building with Tonk - ${printPages()}`,
   inputSchema: z.object({
-    page: z.enum(['component', 'store']).describe('Page of manual to display'),
+    page: z.enum(['component', 'store', 'page']).describe('Type of manual to display'),
   }),
   execute: async ({ page }) => {
     console.log('[TonkTool] MANUAL called:', { page });

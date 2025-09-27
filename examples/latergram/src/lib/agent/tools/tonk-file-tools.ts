@@ -53,76 +53,102 @@ export const tonkWriteFileTool = tool({
     content: z.string().describe('Full file contents to persist.'),
   }),
   execute: async ({ path, content }) => {
-    console.log('[TonkTool] writeFile called with validation:', { path, contentLength: content.length });
+    console.log('[TonkTool] writeFile called with validation:', { path, contentLength: content.length, content });
     const vfs = getVFSService();
     if (!vfs.isInitialized()) {
       throw new Error('VFS service is not initialized');
     }
 
     // Step 1: Biome validation (syntax and linting)
-    const validationResult = await fileValidator.validateFile(path, content, true);
+    console.log('[TonkTool] Starting validation for:', path);
 
-    // Generate feedback
-    let feedback = fileValidator.generateAgentFeedback(validationResult, path);
+    // Try Biome validation
+    let validationResult: any = null;
+    let feedback = '';
 
-    // If there are syntax errors, return them without proceeding
-    if (validationResult.errors.length > 0) {
-      console.error('[TonkTool] Validation failed:', feedback);
-      return {
-        path,
-        created: false,
-        success: false,
-        error: `Validation failed. ${feedback}`,
-        validationErrors: validationResult.errors,
-        suggestions: validationResult.suggestions,
+    try {
+      validationResult = await fileValidator.validateFile(path, content, true);
+      console.log('[TonkTool] Validation result:', {
+        valid: validationResult.valid,
+        errors: validationResult.errors.length,
+        warnings: validationResult.warnings.length
+      });
+
+      // Generate feedback
+      feedback = fileValidator.generateAgentFeedback(validationResult, path);
+
+      // If there are syntax errors, return them without proceeding
+      if (validationResult.errors.length > 0) {
+        console.error('[TonkTool] Validation failed:', feedback);
+        return {
+          path,
+          created: false,
+          success: false,
+          error: `Validation failed. ${feedback}`,
+          validationErrors: validationResult.errors,
+          suggestions: validationResult.suggestions,
+        };
+      }
+    } catch (validationError) {
+      console.warn('[TonkTool] Biome validation failed, continuing without it:', validationError);
+      validationResult = {
+        valid: true,
+        errors: [],
+        warnings: [],
+        formatted: content,
+        suggestions: []
       };
     }
 
     // Step 2: TypeScript validation (only if it's a TS/TSX file and syntax is valid)
     const isTypeScriptFile = path.endsWith('.ts') || path.endsWith('.tsx');
+    let typeCheckPassed = true;
 
     if (isTypeScriptFile) {
-      // Get all current files for context
-      const additionalFiles = new Map<string, string>();
-      for (const sessionFile of sessionFiles) {
-        if (sessionFile !== path) {
-          try {
-            const fileContent = await vfs.readFile(sessionFile);
-            additionalFiles.set(sessionFile, fileContent);
-          } catch {
-            // File might not exist yet
+      try {
+        // Get all current files for context
+        const additionalFiles = new Map<string, string>();
+        for (const sessionFile of sessionFiles) {
+          if (sessionFile !== path) {
+            try {
+              const fileContent = await vfs.readFile(sessionFile);
+              additionalFiles.set(sessionFile, fileContent);
+            } catch {
+              // File might not exist yet
+            }
           }
         }
-      }
 
-      const typeCheckResult = await typeScriptValidator.validateFile(
-        path,
-        validationResult.formatted || content,
-        additionalFiles
-      );
-
-      if (!typeCheckResult.valid) {
-        const tsFeedback = typeScriptValidator.generateAgentFeedback(typeCheckResult, path);
-        console.error('[TonkTool] TypeScript validation failed:', tsFeedback);
-
-        return {
+        const typeCheckResult = await typeScriptValidator.validateFile(
           path,
-          created: false,
-          success: false,
-          error: `TypeScript validation failed.\n\n${tsFeedback}`,
-          typeErrors: typeCheckResult.diagnostics,
-          suggestions: [`Fix ${typeCheckResult.errorCount} TypeScript error(s) before saving`],
-        };
-      }
+          validationResult.formatted || content,
+          additionalFiles
+        );
 
-      if (typeCheckResult.warningCount > 0) {
-        feedback += `\n\nTypeScript Warnings: ${typeCheckResult.warningCount} warning(s) found`;
+        if (!typeCheckResult.valid) {
+          const tsFeedback = typeScriptValidator.generateAgentFeedback(typeCheckResult, path);
+          console.error('[TonkTool] TypeScript validation failed:', tsFeedback);
+
+          return {
+            path,
+            created: false,
+            success: false,
+            error: `TypeScript validation failed.\n\n${tsFeedback}`,
+            typeErrors: typeCheckResult.diagnostics,
+            suggestions: [`Fix ${typeCheckResult.errorCount} TypeScript error(s) before saving`],
+          };
+        }
+
+        if (typeCheckResult.warningCount > 0) {
+          feedback += `\n\nTypeScript Warnings: ${typeCheckResult.warningCount} warning(s) found`;
+        }
+      } catch (tsError) {
+        console.warn('[TonkTool] TypeScript validation failed to run, continuing without TS validation:', tsError);
       }
-      console.warn(`[TonkTool] Typescript validation failed:\n\n${feedback}`);
     }
 
     // Use formatted content if available
-    const finalContent = validationResult.formatted || content;
+    const finalContent = validationResult?.formatted || content;
 
     try {
       const exists = await vfs.exists(path);

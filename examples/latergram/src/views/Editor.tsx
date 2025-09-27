@@ -1,9 +1,10 @@
-import { Layers, Database, FileText, House } from 'lucide-react';
+import { Layers, Database, FileText, House, FolderOpen } from 'lucide-react';
 import { Link, Routes, Route, useLocation } from 'react-router-dom';
 import { StoreManager } from '../components/StoreManager';
 import AgentChat from './AgentChat';
 import { ComponentManager } from '../components/ComponentManager';
 import { PageEditor } from '../components/PageEditor';
+import { VFSManager } from '../components/VFSManager';
 
 export default function Editor() {
   const location = useLocation();
@@ -55,6 +56,18 @@ export default function Editor() {
                 <FileText className="w-4 h-4" />
                 Pages
               </Link>
+
+              <Link
+                to="/editor/files"
+                className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
+                  location.pathname === '/editor/files'
+                    ? 'bg-amber-100 text-amber-700'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                }`}
+              >
+                <FolderOpen className="w-4 h-4" />
+                Files
+              </Link>
             </div>
           </div>
         </nav>
@@ -67,6 +80,7 @@ export default function Editor() {
               <Route path="components" element={<ComponentManager />} />
               <Route path="stores" element={<StoreManager />} />
               <Route path="pages" element={<PageEditor />} />
+              <Route path="files" element={<VFSManager />} />
             </Routes>
           </div>
           <div className="overflow-hidden col-span-2 border-l border-gray-200">
