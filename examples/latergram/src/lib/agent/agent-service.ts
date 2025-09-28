@@ -193,6 +193,13 @@ export class AgentService {
     // Get conversation history for context
     const messages = this.chatHistory.formatForAI();
 
+    // Create the assistant message with streaming flag
+    const assistantMessage = await this.chatHistory.addMessage({
+      role: 'assistant',
+      content: '',
+      streaming: true,
+    });
+
     try {
       console.log('[AgentService] Starting streaming response with tools...');
 
@@ -215,6 +222,8 @@ export class AgentService {
       // First, stream the text content
       for await (const chunk of result.textStream) {
         fullContent += chunk;
+        // Update the streaming message in history immediately
+        await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent, true);
         yield { content: chunk, done: false, type: 'text' };
       }
 
@@ -329,14 +338,21 @@ export class AgentService {
         result: toolResults[index]?.result,
       })) : undefined;
 
-      console.log('[AgentService] Saving streamed message to history...');
+      console.log('[AgentService] Marking streamed message as complete...');
 
-      // Add complete assistant message to history (visible)
-      await this.chatHistory.addMessage({
-        role: 'assistant',
-        content: fullContent || 'Task completed.',
-        toolCalls: formattedToolCalls,
-      });
+      // Update the existing message to mark it as complete and add tool calls if any
+      await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent || 'Task completed.', false);
+
+      // If there were tool calls, update the message with them
+      if (formattedToolCalls) {
+        const messageIndex = this.chatHistory.getMessages().findIndex(m => m.id === assistantMessage.id);
+        if (messageIndex !== -1) {
+          const messages = this.chatHistory.getMessages();
+          messages[messageIndex].toolCalls = formattedToolCalls;
+          // Force save to persist tool calls
+          await this.chatHistory.saveHistory();
+        }
+      }
 
       console.log('[AgentService] Stream complete - message saved');
 
@@ -346,11 +362,8 @@ export class AgentService {
 
       const errorMsg = `I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}`;
 
-      // Add error message to history
-      await this.chatHistory.addMessage({
-        role: 'assistant',
-        content: errorMsg,
-      });
+      // Mark the streaming message as complete with error
+      await this.chatHistory.updateStreamingMessage(assistantMessage.id, errorMsg, false);
 
       yield { content: errorMsg, done: true, type: 'text' };
       throw error;
@@ -371,6 +384,10 @@ export class AgentService {
 
   isInitialized(): boolean {
     return this.initialized;
+  }
+
+  getChatHistory(): any {
+    return this.chatHistory;
   }
 
   stopGeneration(): void {
@@ -425,6 +442,13 @@ export class AgentService {
 
     console.log('[AgentService] Formatted messages for AI:', messages.length);
 
+    // Create the assistant message with streaming flag
+    const assistantMessage = await this.chatHistory.addMessage({
+      role: 'assistant',
+      content: '',
+      streaming: true,
+    });
+
     try {
       console.log('[AgentService] Regenerating response...');
 
@@ -446,6 +470,8 @@ export class AgentService {
       // Stream the text content
       for await (const chunk of result.textStream) {
         fullContent += chunk;
+        // Update the streaming message in history immediately
+        await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent, true);
         yield { content: chunk, done: false, type: 'text' };
       }
 
@@ -523,7 +549,7 @@ export class AgentService {
         }
       }
 
-      // Add the final assistant message
+      // Mark the message as complete
       const formattedToolCalls = toolCalls.length > 0 ? toolCalls.map((call, index) => ({
         id: call.toolCallId,
         name: call.toolName,
@@ -531,11 +557,18 @@ export class AgentService {
         result: toolResults[index] && ('result' in toolResults[index] ? (toolResults[index] as any).result : (toolResults[index] as any).output),
       })) : undefined;
 
-      await this.chatHistory.addMessage({
-        role: 'assistant',
-        content: fullContent || 'Task completed.',
-        toolCalls: formattedToolCalls,
-      });
+      // Update the existing message to mark it as complete
+      await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent || 'Task completed.', false);
+
+      // If there were tool calls, update the message with them
+      if (formattedToolCalls) {
+        const messageIndex = this.chatHistory.getMessages().findIndex(m => m.id === assistantMessage.id);
+        if (messageIndex !== -1) {
+          const messages = this.chatHistory.getMessages();
+          messages[messageIndex].toolCalls = formattedToolCalls;
+          await this.chatHistory.saveHistory();
+        }
+      }
 
       yield { content: '', done: true, type: 'text' };
     } catch (error) {
@@ -544,15 +577,15 @@ export class AgentService {
       // Don't add error message if aborted
       if (error instanceof Error && error.name === 'AbortError') {
         console.log('[AgentService] Generation was aborted');
+        // Mark the message as complete even if aborted
+        await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent || '', false);
         yield { content: '', done: true, type: 'text' };
         return;
       }
 
       const errorMsg = `I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      await this.chatHistory.addMessage({
-        role: 'assistant',
-        content: errorMsg,
-      });
+      // Update the streaming message with error
+      await this.chatHistory.updateStreamingMessage(assistantMessage.id, errorMsg, false);
 
       yield { content: errorMsg, done: true, type: 'text' };
       throw error;

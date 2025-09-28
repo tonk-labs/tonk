@@ -53,6 +53,22 @@ export function useAgentStore(): UseAgentStoreReturn {
         // Check if already initialized
         if (agentService.current.isInitialized()) {
           syncWithService();
+
+          // Check for incomplete streaming messages on remount
+          const messages = agentService.current.getHistory();
+          const streamingMessage = messages.find(msg => msg.streaming === true);
+          if (streamingMessage) {
+            console.log('[useAgentStore] Found incomplete streaming message on remount:', streamingMessage.id);
+            // Set loading state if there's an incomplete message
+            // The content is already persisted, so it will be displayed
+            // We just mark it as not streaming anymore since the stream was interrupted
+            const chatHistory = agentService.current.getChatHistory();
+            if (chatHistory) {
+              await chatHistory.updateStreamingMessage(streamingMessage.id, streamingMessage.content, false);
+              syncWithService();
+            }
+          }
+
           return;
         }
 
@@ -65,6 +81,19 @@ export function useAgentStore(): UseAgentStoreReturn {
         }
 
         syncWithService();
+
+        // Check for incomplete streaming messages after initialization
+        const messages = agentService.current.getHistory();
+        const streamingMessage = messages.find(msg => msg.streaming === true);
+        if (streamingMessage) {
+          console.log('[useAgentStore] Found incomplete streaming message after init:', streamingMessage.id);
+          // Mark incomplete streaming messages as complete
+          const chatHistory = agentService.current.getChatHistory();
+          if (chatHistory) {
+            await chatHistory.updateStreamingMessage(streamingMessage.id, streamingMessage.content, false);
+            syncWithService();
+          }
+        }
       } catch (err) {
         console.error('Failed to initialize agent:', err);
         setError(err instanceof Error ? err.message : 'Failed to initialize agent');

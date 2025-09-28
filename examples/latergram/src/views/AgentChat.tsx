@@ -1,13 +1,12 @@
 import React, { useCallback, useEffect } from 'react';
 import { useAgentStore } from '../lib/agent/use-agent-store';
-import ChatHeader from '../components/chat/ChatHeader';
 import ChatErrorBar from '../components/chat/ChatErrorBar';
 import ChatMessage from '../components/chat/ChatMessage';
 import ChatLoadingDots from '../components/chat/ChatLoadingDots';
 import ChatInputBar from '../components/chat/ChatInputBar';
 
 interface AgentChatProps {
-  inputRef: React.RefObject<HTMLTextAreaElement>;
+  inputRef: React.RefObject<HTMLInputElement>;
 }
 
 const AgentChat: React.FC<AgentChatProps> = ({

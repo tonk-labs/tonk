@@ -8,7 +8,7 @@ import { VFSManager } from '../components/VFSManager';
 import { createRef } from 'react';
 
 export default function Editor() {
-  const chatInputRef = createRef<HTMLTextAreaElement>();
+  const chatInputRef = createRef<HTMLInputElement>();
   const location = useLocation();
   return (
       <div className="h-screen flex flex-col">

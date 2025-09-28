@@ -1,14 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Folder, Lightbulb, Code, Eye } from 'lucide-react';
+import { Folder, Lightbulb, Code, Eye } from 'lucide-react';
 import { ComponentBrowser } from './ComponentBrowser';
 import { ComponentEditor } from './ComponentEditor';
 import { ComponentPreview } from './ComponentPreview';
-import { AvailableComponentsPanel } from './AvailableComponentsPanel';
 import { componentRegistry } from './ComponentRegistry';
 import { useVFSComponent } from './hooks/useVFSComponent';
 import { useComponentWatcher } from './hooks/useComponentWatcher';
 import { getVFSService } from '../services/vfs-service';
-import AgentChat from '../views/AgentChat';
 
 const DEFAULT_COMPONENT_TEMPLATE = `export default function MyComponent() {
   const [count, setCount] = useState(0);

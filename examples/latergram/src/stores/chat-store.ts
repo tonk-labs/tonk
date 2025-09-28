@@ -67,27 +67,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     set({ isLoading: true, error: null, streamingContent: '' });
 
-    // Optimistically add user message
-    const tempUserMessage: ChatMessage = {
-      id: `temp_${Date.now()}`,
-      role: 'user',
-      content: text,
-      timestamp: Date.now(),
-    };
-
-    set(state => ({ messages: [...state.messages, tempUserMessage] }));
-
     try {
-      // Create a temporary assistant message for streaming
-      const tempAssistantMessage: ChatMessage = {
-        id: `temp_assistant_${Date.now()}`,
-        role: 'assistant',
-        content: '',
-        timestamp: Date.now(),
-      };
-
-      set(state => ({ messages: [...state.messages, tempAssistantMessage] }));
-
       let accumulatedContent = '';
 
       // Stream the response
@@ -95,32 +75,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (chunk.content) {
           accumulatedContent += chunk.content;
           set({ streamingContent: accumulatedContent });
-
-          // Update the temporary assistant message
-          set(state => {
-            const newMessages = [...state.messages];
-            const lastMessage = newMessages[newMessages.length - 1];
-            if (lastMessage && lastMessage.id.startsWith('temp_assistant_')) {
-              lastMessage.content = accumulatedContent;
-            }
-            return { messages: newMessages };
-          });
         }
 
+        // Sync with service to get the updated messages including the streaming one
+        const updatedHistory = agentService.getHistory();
+        set({ messages: updatedHistory });
+
         if (chunk.done) {
-          // Update with the final history from the service
-          const updatedHistory = agentService.getHistory();
-          set({ messages: updatedHistory, streamingContent: '' });
+          // Clear streaming content when done
+          set({ streamingContent: '' });
         }
       }
     } catch (err) {
       console.error('Failed to send message:', err);
       set({ error: err instanceof Error ? err.message : 'Failed to send message' });
 
-      // Remove temporary messages on error
-      set(state => ({
-        messages: state.messages.filter(msg => !msg.id.startsWith('temp_'))
-      }));
+      // Sync messages even on error to show the error message
+      const updatedHistory = agentService.getHistory();
+      set({ messages: updatedHistory });
     } finally {
       set({ isLoading: false });
     }
@@ -151,18 +123,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ isLoading: true, error: null, streamingContent: '' });
 
     try {
-      // Create a temporary assistant message for streaming
-      const tempAssistantMessage: ChatMessage = {
-        id: `temp_assistant_${Date.now()}`,
-        role: 'assistant',
-        content: '',
-        timestamp: Date.now(),
-      };
-
-      // Update messages to show we're regenerating
-      const currentMessages = agentService.getHistory();
-      set({ messages: [...currentMessages, tempAssistantMessage] });
-
       let accumulatedContent = '';
 
       // Regenerate from this message with new content
@@ -170,22 +130,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (chunk.content) {
           accumulatedContent += chunk.content;
           set({ streamingContent: accumulatedContent });
-
-          // Update the temporary assistant message
-          set(state => {
-            const newMessages = [...state.messages];
-            const lastMessage = newMessages[newMessages.length - 1];
-            if (lastMessage && lastMessage.id.startsWith('temp_assistant_')) {
-              lastMessage.content = accumulatedContent;
-            }
-            return { messages: newMessages };
-          });
         }
 
+        // Sync with service to get the updated messages
+        const updatedHistory = agentService.getHistory();
+        set({ messages: updatedHistory });
+
         if (chunk.done) {
-          // Update with the final history from the service
-          const updatedHistory = agentService.getHistory();
-          set({ messages: updatedHistory, streamingContent: '' });
+          // Clear streaming content when done
+          set({ streamingContent: '' });
         }
       }
 
@@ -195,10 +148,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       console.error('Failed to update and regenerate:', err);
       set({ error: err instanceof Error ? err.message : 'Failed to update and regenerate' });
 
-      // Remove temporary message on error
-      set(state => ({
-        messages: state.messages.filter(msg => !msg.id.startsWith('temp_'))
-      }));
+      // Sync messages even on error
+      const updatedHistory = agentService.getHistory();
+      set({ messages: updatedHistory });
     } finally {
       set({ isLoading: false });
     }

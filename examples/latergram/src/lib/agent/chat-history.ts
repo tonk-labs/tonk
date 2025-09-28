@@ -19,6 +19,8 @@ export interface ChatMessage {
   toolCallId?: string;
   // Flag to hide from UI
   hidden?: boolean;
+  // Flag to indicate message is still streaming/incomplete
+  streaming?: boolean;
 }
 
 export interface ChatHistoryData {
@@ -164,6 +166,24 @@ export class ChatHistory {
       this.messages[messageIndex].timestamp = Date.now();
       await this.saveHistory();
     }
+  }
+
+  async updateStreamingMessage(messageId: string, content: string, streaming: boolean): Promise<void> {
+    const messageIndex = this.messages.findIndex(msg => msg.id === messageId);
+    if (messageIndex !== -1) {
+      this.messages[messageIndex].content = content;
+      this.messages[messageIndex].streaming = streaming;
+      if (!streaming) {
+        // If streaming is complete, update timestamp
+        this.messages[messageIndex].timestamp = Date.now();
+      }
+      await this.saveHistory();
+    }
+  }
+
+  getStreamingMessage(): ChatMessage | null {
+    // Find any message that is currently streaming
+    return this.messages.find(msg => msg.streaming === true) || null;
   }
 
   async deleteMessage(messageId: string): Promise<void> {
