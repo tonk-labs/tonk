@@ -6,7 +6,7 @@ When creating Zustand stores in the Tonk environment, you MUST follow this exact
 stores are built around a bespoke HMR (Hot Module Replacement) compilation solution that requires
 strict adherence to this pattern.
 
-Stores are stored as `tsx` files in `/src/stores/` and are automatically compiled and hot-reloaded.
+Stores are stored as `ts` files in `/src/stores/` and are automatically compiled and hot-reloaded.
 
 The data of the store should be persisted as JSON in the same folder, ideally with the same name as
 the store. You can read this to get the content of the store.
@@ -253,6 +253,7 @@ export default useChatStore;
 5. ❌ **DON'T** mutate state directly - always create new objects/arrays
 6. ❌ **DON'T** forget the comment at the top of the file
 7. ❌ **DON'T** use different formatting - the HMR system expects this exact pattern
+8. ❌ **DON'T** use the `tsx` extension for stores, only `ts` files work
 
 ## Validation Feedback
 
