@@ -199,7 +199,6 @@ export const PageEditor: React.FC = () => {
           `Failed to load page: ${error instanceof Error ? error.message : 'Unknown error'}`
         );
         setPageContent('');
-        setOriginalContent('');
       } finally {
         setIsLoading(false);
       }

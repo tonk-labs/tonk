@@ -6,7 +6,7 @@ import { useChatStore } from '../../stores/chat-store';
  */
 export function sendErrorToAgent(
   error: Error,
-  errorInfo: { componentStack: string },
+  errorInfo: { componentStack?: string },
   componentName: string,
   viewPath?: string
 ): void {

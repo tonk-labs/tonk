@@ -1,5 +1,4 @@
 import { useState, useCallback } from 'react';
-import { agentFileHandler } from '@/lib/agent-file-handler';
 
 interface ValidationState {
   isValidating: boolean;
@@ -23,10 +22,13 @@ export function useAgentFileValidation() {
       setState((prev) => ({ ...prev, isValidating: true, error: null }));
 
       try {
-        const result = await agentFileHandler.handleAgentFileOperation({
-          action,
+        // Placeholder implementation - replace with actual agent file handler
+        const result = await Promise.resolve({
+          success: false,
+          agentFeedback: 'Agent file handler not implemented',
           filePath,
-          content,
+          finalContent: content,
+          validationResult: { errors: [], warnings: [] }
         });
 
         setState({
@@ -73,11 +75,13 @@ export function useAgentFileValidation() {
   );
 
   const getStoredFile = useCallback((filePath: string) => {
-    return agentFileHandler.getFile(filePath);
+    // Placeholder implementation
+    return null;
   }, []);
 
   const listStoredFiles = useCallback(() => {
-    return agentFileHandler.listFiles();
+    // Placeholder implementation
+    return [];
   }, []);
 
   return {

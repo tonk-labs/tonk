@@ -142,9 +142,11 @@ export class TypeScriptValidator {
     );
 
     // Get syntax errors only
-    sourceFile.parseDiagnostics.forEach(d => {
-      diagnostics.push(...this.convertDiagnostics([d]));
-    });
+    // @ts-ignore - parseDiagnostics exists at runtime but not in types
+    const parseDiagnostics = (sourceFile as any).parseDiagnostics;
+    if (parseDiagnostics && parseDiagnostics.length > 0) {
+      diagnostics.push(...this.convertDiagnostics(parseDiagnostics));
+    }
 
     return {
       valid: diagnostics.filter(d => d.category === 'error').length === 0,

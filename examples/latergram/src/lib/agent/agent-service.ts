@@ -449,6 +449,8 @@ export class AgentService {
       streaming: true,
     });
 
+    let fullContent = '';
+
     try {
       console.log('[AgentService] Regenerating response...');
 
@@ -464,8 +466,6 @@ export class AgentService {
           return toolCalls?.some((call: any) => call.toolName === 'finish') ?? false;
         },
       });
-
-      let fullContent = '';
 
       // Stream the text content
       for await (const chunk of result.textStream) {

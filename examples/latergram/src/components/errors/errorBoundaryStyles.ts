@@ -55,15 +55,16 @@ export function buildErrorUI(
   const displayName = viewPath?.split('/').pop()?.replace('.tsx', '') || componentName;
 
   if (isPageError) {
+    const pageStyles = errorStyles.page;
     return React.createElement(
       'div',
-      { className: styles.container },
+      { className: pageStyles.container },
       React.createElement(
         'div',
-        { className: styles.wrapper },
+        { className: pageStyles.wrapper },
         React.createElement(
           'div',
-          { className: styles.box },
+          { className: pageStyles.box },
           React.createElement(
             'div',
             { className: styles.content },
@@ -90,12 +91,12 @@ export function buildErrorUI(
                   ),
                   viewPath && React.createElement(
                     'p',
-                    { key: 'path', className: styles.path },
+                    { key: 'path', className: pageStyles.path },
                     viewPath
                   ),
                   React.createElement(
                     'div',
-                    { key: 'error-box', className: styles.errorBox },
+                    { key: 'error-box', className: pageStyles.errorBox },
                     React.createElement(
                       'p',
                       { className: styles.errorMessage },
@@ -128,9 +129,10 @@ export function buildErrorUI(
   }
 
   // Component error
+  const componentStyles = errorStyles.component;
   return React.createElement(
     'div',
-    { className: styles.containerWithMargin },
+    { className: componentStyles.containerWithMargin },
     React.createElement(
       'div',
       { className: styles.content },

@@ -64,13 +64,13 @@ export const VFSFileBrowser: React.FC<VFSFileBrowserProps> = ({
         else if (item && typeof item === 'object') {
           const name = item.name || item.path?.split('/').pop() || 'unknown';
           const itemPath = item.path || (path === '/' ? `/${name}` : `${path}/${name}`);
-          const type = item.type === 'directory' || item.type === 'document' ? (item.type === 'directory' ? 'directory' : 'file') : 'file';
+          const type: 'directory' | 'file' = item.type === 'directory' || item.type === 'document' ? (item.type === 'directory' ? 'directory' : 'file') : 'file';
           return {
             name,
             path: itemPath,
             type,
             children: type === 'directory' ? [] : undefined
-          };
+          } as FileNode;
         }
         return null;
       }).filter((item: FileNode | null): item is FileNode => {
@@ -161,7 +161,7 @@ export const VFSFileBrowser: React.FC<VFSFileBrowserProps> = ({
     }
   };
 
-  const renderNode = (node: FileNode, depth: number = 0): JSX.Element => {
+  const renderNode = (node: FileNode, depth: number = 0): React.ReactElement => {
     const isExpanded = expandedFolders.has(node.path);
     const isSelected = selectedFile === node.path;
     const isDirectory = node.type === 'directory';

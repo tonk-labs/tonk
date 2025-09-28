@@ -53,7 +53,6 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
                 : 'Waiting for initialization...'
             }
             className="flex-1 px-3 py-1.5 border-0 border-gray-300 rounded-lg focus:outline-none text-sm disabled:bg-gray-100 ring-0 outline-none outline-0"
-            rows={1}
           />
           <div className="flex flex-row gap-2 group relative items-center justify-start">
             {!isLoading && (

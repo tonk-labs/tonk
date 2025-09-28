@@ -38,7 +38,7 @@ export function useAgentStore(): UseAgentStoreReturn {
 
   const agentService = useRef(getAgentService());
   const initializingRef = useRef(false);
-  const syncIntervalRef = useRef<NodeJS.Timeout>();
+  const syncIntervalRef = useRef<NodeJS.Timeout | undefined>(undefined);
 
   // Initialize agent service with delay to avoid race condition
   useEffect(() => {
