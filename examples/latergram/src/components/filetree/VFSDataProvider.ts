@@ -15,13 +15,20 @@ export class VFSDataProvider implements TreeDataProvider {
   private childrenCache = new Map<string, string[]>();
   private onDataChangedCallback?: () => void;
   private showHidden = false;
+  private rootPath = '/';
+  private searchQuery = '';
+  private watchHandles = new Map<string, string>();
 
-  constructor() {
+  constructor(rootPath = '/') {
+    this.rootPath = rootPath;
     // Bind methods to preserve context
     this.getTreeItem = this.getTreeItem.bind(this);
     this.getTreeItems = this.getTreeItems.bind(this);
     this.onRenameItem = this.onRenameItem.bind(this);
     this.onChangeItemChildren = this.onChangeItemChildren.bind(this);
+
+    // Start watching the root directory
+    this.watchDirectory(rootPath);
   }
 
   setOnDataChanged(callback: () => void) {
@@ -32,6 +39,13 @@ export class VFSDataProvider implements TreeDataProvider {
     if (this.showHidden !== show) {
       this.showHidden = show;
       this.refresh();
+    }
+  }
+
+  setSearchQuery(query: string) {
+    if (this.searchQuery !== query) {
+      this.searchQuery = query;
+      this.notifyDataChanged();
     }
   }
 
@@ -47,7 +61,7 @@ export class VFSDataProvider implements TreeDataProvider {
   }
 
   private getItemId(path: string): string {
-    return path === '/' ? 'root' : path;
+    return path === this.rootPath ? 'root' : path;
   }
 
   async getTreeItem(itemId: string): Promise<TreeItem<VFSTreeItemData>> {
@@ -59,9 +73,11 @@ export class VFSDataProvider implements TreeDataProvider {
     }
 
     try {
-      // For root directory
-      if (path === '/') {
-        const children = await this.loadDirectoryChildren('/');
+      // For root directory (could be custom root path)
+      if (itemId === 'root') {
+        const actualPath = this.rootPath;
+        const children = await this.loadDirectoryChildren(actualPath);
+        const rootName = this.rootPath === '/' ? 'Root' : this.rootPath.split('/').pop() || 'Root';
         const item: TreeItem<VFSTreeItemData> = {
           index: 'root',
           canMove: false,
@@ -69,13 +85,17 @@ export class VFSDataProvider implements TreeDataProvider {
           hasChildren: children.length > 0,
           children: children.map(child => this.getItemId(child)),
           data: {
-            name: 'Root',
-            path: '/',
+            name: rootName,
+            path: actualPath,
             type: 'directory'
           }
         };
         this.cache.set('root', item);
-        this.childrenCache.set('/', children);
+        this.childrenCache.set(actualPath, children);
+
+        // Watch this directory
+        this.watchDirectory(actualPath);
+
         return item;
       }
 
@@ -118,6 +138,8 @@ export class VFSDataProvider implements TreeDataProvider {
       this.cache.set(itemId, item);
       if (isDirectory) {
         this.childrenCache.set(path, children);
+        // Watch this directory for changes
+        this.watchDirectory(path);
       }
 
       return item;
@@ -172,7 +194,7 @@ export class VFSDataProvider implements TreeDataProvider {
       });
 
       // Process items to get their full paths
-      const children = uniqueItems.map((item: any) => {
+      let children = uniqueItems.map((item: any) => {
         if (typeof item === 'string') {
           return path === '/' ? `/${item}` : `${path}/${item}`;
         } else if (item && typeof item === 'object') {
@@ -183,7 +205,18 @@ export class VFSDataProvider implements TreeDataProvider {
       }).filter((path): path is string => {
         if (path === null) return false;
         const name = path.split('/').pop() || '';
-        return this.showHidden || !name.startsWith('.');
+
+        // Filter by hidden files
+        if (!this.showHidden && name.startsWith('.')) {
+          return false;
+        }
+
+        // Filter by search query
+        if (this.searchQuery && this.searchQuery.trim()) {
+          return name.toLowerCase().includes(this.searchQuery.toLowerCase());
+        }
+
+        return true;
       });
 
       return children;
@@ -302,5 +335,41 @@ export class VFSDataProvider implements TreeDataProvider {
     this.cache.clear();
     this.childrenCache.clear();
     this.notifyDataChanged();
+  }
+
+  // Watch a directory for changes
+  private async watchDirectory(path: string): Promise<void> {
+    try {
+      // If already watching this directory, skip
+      if (this.watchHandles.has(path)) {
+        return;
+      }
+
+      const watchId = await this.vfs.watchDirectory(path, (changeData) => {
+        console.log(`Directory ${path} changed:`, changeData);
+
+        // Clear cache for the changed directory
+        this.invalidateCache(path);
+
+        // Notify that data has changed
+        this.notifyDataChanged();
+      });
+
+      this.watchHandles.set(path, watchId);
+    } catch (error) {
+      console.error(`Failed to watch directory ${path}:`, error);
+    }
+  }
+
+  // Clean up watchers
+  async cleanup(): Promise<void> {
+    for (const [path, watchId] of this.watchHandles) {
+      try {
+        await this.vfs.unwatchDirectory(watchId);
+      } catch (error) {
+        console.error(`Failed to unwatch directory ${path}:`, error);
+      }
+    }
+    this.watchHandles.clear();
   }
 }

@@ -1,6 +1,6 @@
 import React from 'react';
-import { Folder, FolderOpen, File, Trash2, Plus, FilePlus, FolderPlus } from 'lucide-react';
-import { TreeItem, TreeItemRenderContext } from 'react-complex-tree';
+import { Folder, FolderOpen, File, Trash2, FilePlus, FolderPlus } from 'lucide-react';
+import type { TreeItem, TreeItemRenderContext } from 'react-complex-tree';
 import type { VFSTreeItemData } from './VFSDataProvider';
 
 interface FileTreeNodeProps {
@@ -18,7 +18,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
   onCreateFile,
   onCreateDirectory
 }) => {
-  const { isExpanded, isSelected, isFocused, isRenaming } = context;
+  const { isExpanded, isSelected, isRenaming } = context;
   const { name, path, type } = item.data;
 
   const getIcon = () => {
@@ -98,7 +98,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
         ${isRenaming ? 'bg-yellow-50' : ''}
       `}
       style={{
-        paddingLeft: `${(context.depth || 0) * 16 + 8}px`,
+        paddingLeft: `0px`,
       }}
     >
       {/* File/Folder Icon */}
@@ -124,6 +124,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
         {type === 'directory' && (
           <>
             <button
+            type="button"
               onClick={handleCreateFile}
               className="p-1 hover:bg-blue-100 rounded transition-colors"
               title="Create new file"
@@ -131,6 +132,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
               <FilePlus className="w-3 h-3 text-blue-600" />
             </button>
             <button
+            type="button"
               onClick={handleCreateDirectory}
               className="p-1 hover:bg-blue-100 rounded transition-colors"
               title="Create new directory"
@@ -143,6 +145,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
         {/* Delete button (not for root) */}
         {path !== '/' && (
           <button
+            type="button"
             onClick={handleDelete}
             className="p-1 hover:bg-red-100 rounded transition-colors"
             title={`Delete ${name}`}

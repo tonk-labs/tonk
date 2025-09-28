@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Eye, Code, Save, Clock, RefreshCw, AlertCircle } from 'lucide-react';
 import { MonacoCodeEditor } from './MonacoCodeEditor';
 import { PreviewPane } from './PreviewPane';
@@ -48,6 +48,7 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
   const { watchComponent, compileAndUpdate } = useComponentWatcher();
 
   const fileType = selectedFile ? getFileType(selectedFile) : 'generic';
+  const watchIdRef = useRef<string | null>(null);
 
   // Load file content
   const loadFile = useCallback(async (filePath: string) => {
@@ -90,11 +91,55 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
   }, [vfs]);
 
   // Handle file selection
-  const handleFileSelect = useCallback((filePath: string) => {
+  const handleFileSelect = useCallback(async (filePath: string) => {
+    // Unwatch previous file if any
+    if (watchIdRef.current) {
+      try {
+        await vfs.unwatchFile(watchIdRef.current);
+      } catch (error) {
+        console.error('Failed to unwatch previous file:', error);
+      }
+      watchIdRef.current = null;
+    }
+
     setSelectedFile(filePath);
     onFileChange?.(filePath);
     loadFile(filePath);
-  }, [loadFile, onFileChange]);
+
+    // Watch the new file for changes
+    try {
+      const watchId = await vfs.watchFile(filePath, async (changeData) => {
+        console.log(`File ${filePath} changed:`, changeData);
+
+        // Check if file was deleted
+        const exists = await vfs.exists(filePath);
+        if (!exists) {
+          // File was deleted
+          setSelectedFile(null);
+          setFileContent('');
+          setError(`File ${filePath} was deleted`);
+          setValidationErrors([]);
+
+          // Unwatch the deleted file
+          if (watchIdRef.current) {
+            try {
+              await vfs.unwatchFile(watchIdRef.current);
+            } catch (error) {
+              console.error('Failed to unwatch deleted file:', error);
+            }
+            watchIdRef.current = null;
+          }
+        } else {
+          // File was modified, reload it
+          loadFile(filePath);
+        }
+      });
+
+      watchIdRef.current = watchId;
+    } catch (error) {
+      console.error('Failed to watch file:', error);
+    }
+  }, [vfs, loadFile, onFileChange]);
 
   // Save file content
   const saveFile = useCallback(async (content: string) => {
@@ -188,6 +233,18 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
     }
   }, [selectedFile, fileContent, saveFile]);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      // Unwatch file when component unmounts
+      if (watchIdRef.current) {
+        vfs.unwatchFile(watchIdRef.current).catch(error => {
+          console.error('Failed to unwatch file on unmount:', error);
+        });
+      }
+    };
+  }, [vfs]);
+
   return (
     <div className="flex h-full bg-gray-100 overflow-hidden">
       {/* File Browser */}
@@ -195,6 +252,23 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
         <FileTree
           rootPath={fileFilter || '/'}
           onFileSelect={handleFileSelect}
+          onFileDelete={(deletedPath) => {
+            // If the deleted file is currently selected, clear the editor
+            if (deletedPath === selectedFile) {
+              setSelectedFile(null);
+              setFileContent('');
+              setError(`File ${deletedPath} was deleted`);
+              setValidationErrors([]);
+
+              // Unwatch the deleted file
+              if (watchIdRef.current) {
+                vfs.unwatchFile(watchIdRef.current).catch(error => {
+                  console.error('Failed to unwatch deleted file:', error);
+                });
+                watchIdRef.current = null;
+              }
+            }
+          }}
           className="h-full"
         />
       </div>

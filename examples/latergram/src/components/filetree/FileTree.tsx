@@ -4,7 +4,7 @@ import {
   Tree,
   TreeItemIndex,
   InteractionMode,
-  TreeItem
+  TreeItem,
 } from 'react-complex-tree';
 import 'react-complex-tree/lib/style-modern.css';
 import { VFSDataProvider, VFSTreeItemData } from './VFSDataProvider';
@@ -24,22 +24,102 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onFileSelect,
   onFileDelete,
   showHidden = false,
-  className = ''
+  className = '',
 }) => {
-  const [dataProvider] = useState(() => new VFSDataProvider());
+  // Recreate data provider when rootPath changes
+  const [dataProvider, setDataProvider] = useState(() => new VFSDataProvider(rootPath));
+
+  // Update data provider when rootPath changes
+  useEffect(() => {
+    const newProvider = new VFSDataProvider(rootPath);
+
+    // Clean up old provider
+    if (dataProvider && dataProvider !== newProvider) {
+      dataProvider.cleanup();
+    }
+
+    setDataProvider(newProvider);
+    // Reset expansion to show the new root
+    const base = ['root'];
+
+    // If a specific root path is provided, expand to that path
+    if (rootPath && rootPath !== '/') {
+      const pathParts = rootPath.split('/').filter(p => p);
+      let currentPath = '';
+
+      // Build path incrementally and add each level
+      pathParts.forEach(part => {
+        currentPath = currentPath + '/' + part;
+        base.push(currentPath);
+      });
+
+      // Also expand common subdirectories if in src
+      if (rootPath.startsWith('/src')) {
+        base.push('/src');
+        if (rootPath === '/src/components') {
+          base.push('/src/components');
+        } else if (rootPath === '/src/views') {
+          base.push('/src/views');
+        } else if (rootPath === '/src/stores') {
+          base.push('/src/stores');
+        }
+      }
+    } else {
+      // Default expansion for general browsing
+      base.push('/src', '/src/components', '/src/views', '/src/stores');
+    }
+
+    setExpandedItems(base);
+    setRefreshKey(prev => prev + 1);
+
+    // Cleanup function
+    return () => {
+      newProvider.cleanup();
+    };
+  }, [rootPath]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showHiddenFiles, setShowHiddenFiles] = useState(showHidden);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedItems, setSelectedItems] = useState<TreeItemIndex[]>([]);
-  // Expand common directories on first load
-  const [expandedItems, setExpandedItems] = useState<TreeItemIndex[]>([
-    'root',
-    '/src',
-    '/src/components',
-    '/src/views',
-    '/src/stores'
-  ]);
+
+  // Determine initial expanded items based on rootPath
+  const getInitialExpandedItems = () => {
+    const base = ['root'];
+
+    // If a specific root path is provided, expand to that path
+    if (rootPath && rootPath !== '/') {
+      const pathParts = rootPath.split('/').filter(p => p);
+      let currentPath = '';
+
+      // Build path incrementally and add each level
+      pathParts.forEach(part => {
+        currentPath = currentPath + '/' + part;
+        base.push(currentPath);
+      });
+
+      // Also expand common subdirectories if in src
+      if (rootPath.startsWith('/src')) {
+        base.push('/src');
+        if (rootPath === '/src/components') {
+          base.push('/src/components');
+        } else if (rootPath === '/src/views') {
+          base.push('/src/views');
+        } else if (rootPath === '/src/stores') {
+          base.push('/src/stores');
+        }
+      }
+    } else {
+      // Default expansion for general browsing
+      base.push('/src', '/src/components', '/src/views', '/src/stores');
+    }
+
+    return base;
+  };
+
+  const [expandedItems, setExpandedItems] = useState<TreeItemIndex[]>(
+    getInitialExpandedItems()
+  );
   const [focusedItem, setFocusedItem] = useState<TreeItemIndex | undefined>();
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -87,6 +167,11 @@ export const FileTree: React.FC<FileTreeProps> = ({
     dataProvider.setShowHidden(showHiddenFiles);
   }, [dataProvider, showHiddenFiles]);
 
+  // Update search query in data provider when it changes
+  useEffect(() => {
+    dataProvider.setSearchQuery(searchQuery);
+  }, [dataProvider, searchQuery]);
+
   const handlePrimaryAction = (item: TreeItem<VFSTreeItemData>) => {
     if (item.data.type === 'file') {
       onFileSelect?.(item.data.path);
@@ -101,14 +186,14 @@ export const FileTree: React.FC<FileTreeProps> = ({
       // Clean up state for deleted item and its children
       setSelectedItems(prev =>
         prev.filter(id => {
-          const itemPath = id === 'root' ? '/' : id as string;
+          const itemPath = id === 'root' ? '/' : (id as string);
           return itemPath !== path && !itemPath.startsWith(path + '/');
         })
       );
 
       setExpandedItems(prev =>
         prev.filter(id => {
-          const itemPath = id === 'root' ? '/' : id as string;
+          const itemPath = id === 'root' ? '/' : (id as string);
           return itemPath !== path && !itemPath.startsWith(path + '/');
         })
       );
@@ -117,7 +202,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
       await dataProvider.deleteItem(path);
       onFileDelete?.(path);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to delete file';
+      const errorMessage =
+        err instanceof Error ? err.message : 'Failed to delete file';
       setError(errorMessage);
       console.error('Delete error:', err);
     } finally {
@@ -134,7 +220,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
       setError(null);
       await dataProvider.createFile(parentPath, fileName.trim());
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to create file';
+      const errorMessage =
+        err instanceof Error ? err.message : 'Failed to create file';
       setError(errorMessage);
       console.error('Create file error:', err);
     } finally {
@@ -151,7 +238,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
       setError(null);
       await dataProvider.createDirectory(parentPath, dirName.trim());
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to create directory';
+      const errorMessage =
+        err instanceof Error ? err.message : 'Failed to create directory';
       setError(errorMessage);
       console.error('Create directory error:', err);
     } finally {
@@ -163,24 +251,21 @@ export const FileTree: React.FC<FileTreeProps> = ({
     setIsLoading(true);
     setError(null);
     dataProvider.refresh();
-    // Only reset to initial expanded state on manual refresh
-    setExpandedItems([
-      'root',
-      '/src',
-      '/src/components',
-      '/src/views',
-      '/src/stores'
-    ]);
+    // Reset to initial expanded state based on rootPath
+    setExpandedItems(getInitialExpandedItems());
     setSelectedItems([]);
     setFocusedItem(undefined);
   };
 
-  const filterItems = (items: TreeItemIndex[], query: string): TreeItemIndex[] => {
+  const filterItems = (
+    items: TreeItemIndex[],
+    query: string
+  ): TreeItemIndex[] => {
     if (!query.trim()) return items;
 
     // This is a simple implementation - in a real app you'd want more sophisticated filtering
     return items.filter(itemId => {
-      const itemPath = itemId === 'root' ? '/' : itemId as string;
+      const itemPath = itemId === 'root' ? '/' : (itemId as string);
       const fileName = itemPath.split('/').pop() || '';
       return fileName.toLowerCase().includes(query.toLowerCase());
     });
@@ -191,12 +276,17 @@ export const FileTree: React.FC<FileTreeProps> = ({
       {/* Header with controls */}
       <div className="flex-shrink-0 border-b border-gray-200 bg-gray-50">
         <div className="flex items-center justify-between p-2">
-          <h3 className="text-sm font-medium text-gray-700">Files</h3>
+          <h3 className="text-sm font-medium text-gray-700">
+            {rootPath && rootPath !== '/' ? `Files (${rootPath})` : 'Files'}
+          </h3>
           <div className="flex items-center gap-1">
             <button
+              type="button"
               onClick={() => setShowHiddenFiles(!showHiddenFiles)}
               className="p-1 hover:bg-gray-200 rounded transition-colors"
-              title={showHiddenFiles ? "Hide hidden files" : "Show hidden files"}
+              title={
+                showHiddenFiles ? 'Hide hidden files' : 'Show hidden files'
+              }
             >
               {showHiddenFiles ? (
                 <EyeOff className="w-4 h-4 text-gray-500" />
@@ -205,12 +295,15 @@ export const FileTree: React.FC<FileTreeProps> = ({
               )}
             </button>
             <button
+              type="button"
               onClick={handleRefresh}
               className="p-1 hover:bg-gray-200 rounded transition-colors"
               title="Refresh file tree"
               disabled={isLoading}
             >
-              <RotateCcw className={`w-4 h-4 text-gray-500 ${isLoading ? 'animate-spin' : ''}`} />
+              <RotateCcw
+                className={`w-4 h-4 text-gray-500 ${isLoading ? 'animate-spin' : ''}`}
+              />
             </button>
           </div>
         </div>
@@ -223,7 +316,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
               type="text"
               placeholder="Search files..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={e => setSearchQuery(e.target.value)}
               className="w-full pl-7 pr-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
@@ -249,13 +342,13 @@ export const FileTree: React.FC<FileTreeProps> = ({
         <UncontrolledTreeEnvironment
           key={refreshKey}
           dataProvider={dataProvider}
-          getItemTitle={(item) => item.data.name}
+          getItemTitle={item => item.data.name}
           viewState={{
             ['vfs-tree']: {
               selectedItems,
               expandedItems,
-              focusedItem
-            }
+              focusedItem,
+            },
           }}
           onSelectedItemsChange={(items, treeId) => {
             if (treeId === 'vfs-tree') {
@@ -289,7 +382,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
               setError(null);
               await dataProvider.onRenameItem(item, name);
             } catch (err) {
-              const errorMessage = err instanceof Error ? err.message : 'Failed to rename item';
+              const errorMessage =
+                err instanceof Error ? err.message : 'Failed to rename item';
               setError(errorMessage);
               console.error('Rename error:', err);
             } finally {
@@ -299,22 +393,9 @@ export const FileTree: React.FC<FileTreeProps> = ({
           interactionMode={InteractionMode.ClickItemToExpand}
         >
           <div className="h-full overflow-auto">
-            <Tree
-              treeId="vfs-tree"
-              rootItem="root"
-              treeLabel="File System"
-            />
+            <Tree treeId="vfs-tree" rootItem="root" treeLabel="File System" />
           </div>
         </UncontrolledTreeEnvironment>
-      </div>
-
-      {/* Status bar */}
-      <div className="flex-shrink-0 border-t border-gray-200 bg-gray-50 px-2 py-1">
-        <p className="text-xs text-gray-500">
-          {selectedItems.length > 0 && `${selectedItems.length} selected`}
-          {selectedItems.length > 0 && expandedItems.length > 1 && ' • '}
-          {expandedItems.length > 1 && `${expandedItems.length - 1} folders expanded`}
-        </p>
       </div>
     </div>
   );
