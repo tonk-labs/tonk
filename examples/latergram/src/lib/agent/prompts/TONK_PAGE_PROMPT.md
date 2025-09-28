@@ -74,8 +74,8 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 
 ```typescript
 // Link navigation
-<Link to="/about">About Us</Link> // goes to /src/views/about.tsx
-<Link to="/products" className="text-blue-500 hover:underline">
+<Link to="/latergram/about">About Us</Link> // goes to /src/views/about.tsx
+<Link to="/latergram/products" className="text-blue-500 hover:underline">
   View Products
 </Link>
 ```

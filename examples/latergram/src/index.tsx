@@ -27,10 +27,11 @@ const container = document.getElementById('root');
 if (!container) throw new Error('Failed to find the root element');
 const root = createRoot(container);
 
-const basename =
-  import.meta.env.VITE_BASE_PATH !== '/'
-    ? import.meta.env.VITE_BASE_PATH?.replace(/\/$/, '')
-    : '';
+const pathSegments = window.location.pathname.split('/');
+const basename = '/latergram/';
+// import.meta.env.VITE_BASE_PATH !== '/'
+//   ? import.meta.env.VITE_BASE_PATH?.replace(/\/$/, '')
+//   : '/latergram/';
 
 const URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8081';
 const URL_LOCATION = URL.replace(/^https?:\/\//, '');
@@ -40,31 +41,48 @@ const wsUrl = `ws://${URL_LOCATION}`;
 // Initialize VFS for sync middleware
 const initializeVFS = async () => {
   try {
-    console.log('Initializing VFS service...');
+    console.log('🔵 INIT: Starting VFS initialization...');
     const vfs = getVFSService();
     await vfs.initialize(manifestUrl, wsUrl);
-    console.log('VFS service initialized successfully');
+    console.log('✅ INIT: VFS service initialized successfully');
   } catch (error) {
-    console.error('Failed to initialize VFS service:', error);
+    console.error('❌ INIT: Failed to initialize VFS service:', error);
+    throw error; // Re-throw to see if this stops the chain
   }
 };
 
 // Initialize everything
 const initialize = async () => {
-  // Initialize VFS first
-  await initializeVFS();
-  // Initialize dependents
-  await getUserService().initialize();
-  await getAgentService().initialize({ manifestUrl, wsUrl });
+  try {
+    console.log('🚀 INIT: Starting full initialization...');
 
-  // Render the app
-  root.render(
-    <React.StrictMode>
-      <BrowserRouter basename={basename}>
-        <App />
-      </BrowserRouter>
-    </React.StrictMode>
-  );
+    // Initialize VFS first
+    console.log('🔵 INIT: About to initialize VFS...');
+    await initializeVFS();
+    console.log('✅ INIT: VFS initialization completed');
+
+    // Initialize dependents
+    console.log('🔵 INIT: About to initialize user service...');
+    await getUserService().initialize();
+    console.log('✅ INIT: User service initialized');
+
+    console.log('🔵 INIT: About to initialize agent service...');
+    await getAgentService().initialize({ manifestUrl, wsUrl });
+    console.log('✅ INIT: Agent service initialized');
+
+    // Render the app
+    console.log('🔵 INIT: About to render React app...');
+    root.render(
+      <React.StrictMode>
+        <BrowserRouter basename={basename}>
+          <App />
+        </BrowserRouter>
+      </React.StrictMode>
+    );
+    console.log('✅ INIT: React app rendered successfully!');
+  } catch (error) {
+    console.error('💥 INIT: Initialization failed at some point:', error);
+  }
 };
 
 initialize();

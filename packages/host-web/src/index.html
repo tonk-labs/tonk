@@ -2,46 +2,569 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Opening portal...</title>
+    <title>TONK BIOS</title>
+    <style>
+      @font-face {
+        font-family: 'VGA';
+        src: url('data:font/woff2;base64,') format('woff2');
+        font-display: block;
+      }
+      
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      
+      body {
+        background: rgb(73,24,79);
+        color: #fff;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 16px;
+        line-height: 1.4;
+        padding: 20px;
+        min-height: 100vh;
+        cursor: default;
+        -webkit-font-smoothing: none;
+        -moz-osx-font-smoothing: grayscale;
+        text-rendering: optimizeSpeed;
+      }
+      
+      .bios-container {
+        max-width: 800px;
+        margin: 0 auto;
+      }
+      
+      
+      .version-text {
+        text-align: center;
+        font-size: 14px;
+        font-weight: normal;
+        color: #ddd;
+        margin-bottom: 20px;
+      }
+      
+      .boot-menu {
+        border: 2px solid #fff;
+        padding: 15px;
+        margin-bottom: 20px;
+        min-height: 400px;
+      }
+      
+      .boot-menu-title {
+        color: #ddd;
+        margin-bottom: 10px;
+        font-size: 14px;
+      }
+      
+      .app-list {
+        list-style: none;
+      }
+      
+      .app-item {
+        padding: 5px 10px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        transition: none;
+        color: #fff;
+        background: transparent;
+        font-weight: 600;
+      }
+      
+      .app-item.selected {
+        background: #ddd;
+        color: #000;
+      }
+      
+      .app-item:not(.selected):hover {
+        background: #333;
+      }
+      
+      .app-status {
+        margin-left: auto;
+        font-size: 12px;
+        color: #fff;
+        font-weight: 600;
+      }
+      
+      .app-item.selected .app-status {
+        color: #000;
+      }
+      
+      .instructions {
+        color: #ddd;
+        font-size: 12px;
+        margin-top: 20px;
+        line-height: 1.6;
+      }
+      
+      .loading-message {
+        color: #0f0;
+        animation: blink 1s infinite;
+      }
+      
+      @keyframes blink {
+        0%, 50% { opacity: 1; }
+        51%, 100% { opacity: 0; }
+      }
+      
+      .error-message {
+        color: #f00;
+        margin-top: 10px;
+      }
+      
+      .confirmation-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #000;
+        border: 2px solid #666;
+        padding: 20px;
+        min-width: 400px;
+        display: none;
+        z-index: 1000;
+      }
+      
+      .confirmation-dialog.active {
+        display: block;
+      }
+      
+      .confirmation-title {
+        color: #fff;
+        margin-bottom: 15px;
+        font-size: 14px;
+      }
+      
+      .confirmation-message {
+        color: #999;
+        margin-bottom: 20px;
+        font-size: 14px;
+      }
+      
+      .confirmation-buttons {
+        display: flex;
+        gap: 10px;
+      }
+      
+      .btn {
+        padding: 5px 15px;
+        background: #333;
+        color: #fff;
+        border: 1px solid #666;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 14px;
+      }
+      
+      .btn:hover {
+        background: #444;
+      }
+      
+      .btn.primary {
+        background: #fff;
+        color: #000;
+      }
+      
+      .btn.primary:hover {
+        background: #ddd;
+      }
+      
+      .overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        display: none;
+        z-index: 999;
+      }
+      
+      .overlay.active {
+        display: block;
+      }
+    </style>
     <script>
-      async function handleRedirect() {
-        const redirectPath = sessionStorage.getItem("redirectPath")
-        if (redirectPath) {
-          console.log("Redirecting to:", redirectPath)
-          sessionStorage.removeItem("redirectPath")
-          window.location.href = redirectPath
+      // BIOS Boot Manager State
+      let selectedAppIndex = 0;
+      let availableApps = [];
+      let isConfirmationOpen = false;
+      
+      
+      // Show loading screen
+      function showLoadingScreen(message = 'Initializing TONK runtime...') {
+        document.getElementById('loading-screen').style.display = 'block';
+        document.getElementById('boot-screen').style.display = 'none';
+        document.getElementById('error-screen').style.display = 'none';
+        document.querySelector('.loading-message').textContent = message;
+      }
+      
+      // Show boot menu
+      function showBootMenu() {
+        document.getElementById('loading-screen').style.display = 'none';
+        document.getElementById('boot-screen').style.display = 'block';
+        document.getElementById('error-screen').style.display = 'none';
+      }
+      
+      // Show error screen
+      function showError(message) {
+        document.getElementById('loading-screen').style.display = 'none';
+        document.getElementById('boot-screen').style.display = 'none';
+        document.getElementById('error-screen').style.display = 'block';
+        document.querySelector('.error-message').textContent = message;
+      }
+      
+      // Render app list
+      function renderAppList() {
+        const appList = document.getElementById('app-list');
+        appList.innerHTML = '';
+        
+        if (availableApps.length === 0) {
+          const li = document.createElement('li');
+          li.className = 'app-item';
+          li.textContent = 'No applications found';
+          li.style.color = '#666';
+          appList.appendChild(li);
+          return;
+        }
+        
+        availableApps.forEach((app, index) => {
+          const li = document.createElement('li');
+          li.className = 'app-item';
+          if (index === selectedAppIndex) {
+            li.classList.add('selected');
+          }
+          
+          const appName = document.createElement('span');
+          appName.textContent = app.name || app;
+          li.appendChild(appName);
+          
+          const appStatus = document.createElement('span');
+          appStatus.className = 'app-status';
+          appStatus.textContent = app.status || 'Ready';
+          li.appendChild(appStatus);
+          
+          appList.appendChild(li);
+        });
+      }
+      
+      // Handle keyboard navigation
+      function handleKeyDown(e) {
+        if (isConfirmationOpen) {
+          if (e.key === 'Enter' || e.key === 'y' || e.key === 'Y') {
+            confirmBoot();
+          } else if (e.key === 'Escape' || e.key === 'n' || e.key === 'N') {
+            cancelBoot();
+          }
+          return;
+        }
+        
+        if (availableApps.length === 0) return;
+        
+        switch(e.key) {
+          case 'ArrowUp':
+            e.preventDefault();
+            selectedAppIndex = Math.max(0, selectedAppIndex - 1);
+            renderAppList();
+            break;
+          case 'ArrowDown':
+            e.preventDefault();
+            selectedAppIndex = Math.min(availableApps.length - 1, selectedAppIndex + 1);
+            renderAppList();
+            break;
+          case 'Enter':
+            e.preventDefault();
+            showConfirmation();
+            break;
         }
       }
       
-      (async () => {
-        if ("serviceWorker" in navigator) {
-          // If we already have a controller, we can redirect immediately
+      // Show confirmation dialog
+      function showConfirmation() {
+        if (availableApps.length === 0) return;
+        
+        const app = availableApps[selectedAppIndex];
+        const appName = typeof app === 'string' ? app : app.name;
+        
+        document.getElementById('confirmation-message').textContent = 
+          `Are you sure you want to boot "${appName}"?`;
+        document.getElementById('confirmation-dialog').classList.add('active');
+        document.getElementById('overlay').classList.add('active');
+        isConfirmationOpen = true;
+      }
+      
+      // Confirm boot
+      async function confirmBoot() {
+        const app = availableApps[selectedAppIndex];
+        const appSlug = typeof app === 'string' ? app : app.slug || app.name;
+        
+        console.log('Booting application:', appSlug);
+        
+        // Hide confirmation dialog
+        document.getElementById('confirmation-dialog').classList.remove('active');
+        document.getElementById('overlay').classList.remove('active');
+        isConfirmationOpen = false;
+        
+        // Show loading screen
+        showLoadingScreen(`Loading ${appSlug}...`);
+        
+        // Set the app slug in the service worker
+        if (navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({ 
+            type: "setAppSlug", 
+            slug: appSlug 
+          });
+          
+          // Save to localStorage for persistence
+          localStorage.setItem("appSlug", appSlug);
+          
+          // Wait a moment for the service worker to process
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          // Redirect to the app
+          window.location.href = `/${appSlug}/`;
+        } else {
+          showError('Service worker not ready. Please refresh the page.');
+        }
+      }
+      
+      // Cancel boot
+      function cancelBoot() {
+        document.getElementById('confirmation-dialog').classList.remove('active');
+        document.getElementById('overlay').classList.remove('active');
+        isConfirmationOpen = false;
+      }
+      
+      // Query available apps from service worker using standard messaging
+      async function queryAvailableApps() {
+        return new Promise((resolve, reject) => {
+          if (!navigator.serviceWorker.controller) {
+            console.log('No service worker controller, returning empty app list');
+            resolve([]);
+            return;
+          }
+          
+          const requestId = 'bios-app-query-' + Date.now();
+          
+          // Set up response handler
+          const messageHandler = (event) => {
+            console.log('Received message from service worker:', event.data);
+            if (event.data && event.data.type === 'listDirectory' && event.data.id === requestId) {
+              // Remove the listener since we got our response
+              navigator.serviceWorker.removeEventListener('message', messageHandler);
+              
+              if (event.data.success) {
+                // Extract app names from the directory listing
+                const files = event.data.data || [];
+                const apps = files.filter(file => file.type === 'directory').map(file => file.name);
+                console.log('Extracted apps from directory listing:', apps);
+                resolve(apps);
+              } else {
+                console.log('Failed to get app list, using fallback');
+                resolve(['latergram']); // Fallback to known app
+              }
+            }
+          };
+          
+          // Listen for messages from service worker
+          navigator.serviceWorker.addEventListener('message', messageHandler);
+          
+          // Send listDirectory message to service worker
+          console.log('Sending listDirectory message to service worker');
+          navigator.serviceWorker.controller.postMessage({
+            type: 'listDirectory',
+            path: '/app',
+            id: requestId
+          });
+          
+          // Timeout fallback
+          setTimeout(() => {
+            navigator.serviceWorker.removeEventListener('message', messageHandler);
+            console.log('App list query timed out, using fallback');
+            reject('Cannot query app list, it timed out');
+          }, 20000);
+        });
+      }
+      
+      // Wait for service worker to be ready
+      async function waitForServiceWorkerReady() {
+        return new Promise((resolve) => {
+          // If service worker is already controlling the page, assume it's ready
           if (navigator.serviceWorker.controller) {
-            console.log("Service worker is already controlling the page")
-            await handleRedirect()
+            console.log("Service worker is already controlling page, assuming ready");
+            resolve();
+            return;
+          }
+          
+          let timeoutId;
+          
+          const messageHandler = (event) => {
+            if (event.data && event.data.type === "ready") {
+              console.log("Service worker is ready to handle requests");
+              clearTimeout(timeoutId);
+              navigator.serviceWorker.removeEventListener("message", messageHandler);
+              resolve();
+            }
+          };
+          
+          // Listen for the ready message from service worker
+          navigator.serviceWorker.addEventListener("message", messageHandler);
+          
+          // Timeout fallback - if no ready message received in 10 seconds, proceed anyway
+          timeoutId = setTimeout(() => {
+            console.log("Service worker ready check timed out, proceeding anyway");
+            navigator.serviceWorker.removeEventListener("message", messageHandler);
+            resolve();
+          }, 10000);
+        });
+      }
+      
+      // Initialize BIOS boot manager
+      async function initializeBios() {
+        showLoadingScreen();
+        
+        // // Check for redirect path first (from 404.html)
+        // const redirectPath = sessionStorage.getItem("redirectPath");
+        // if (redirectPath) {
+        //   console.log("Found redirect path, handling redirect...");
+        //   sessionStorage.removeItem("redirectPath");
+          
+        //   // Wait for service worker to be ready
+        //   await waitForServiceWorkerReady();
+          
+        //   // Extract app slug from redirect path
+        //   const pathParts = redirectPath.replace(window.location.origin, '').split('/').filter(p => p);
+        //   if (pathParts.length > 0) {
+        //     const appSlug = pathParts[0];
+        //     console.log("Extracted app slug from redirect:", appSlug);
+            
+        //     if (navigator.serviceWorker.controller) {
+        //       navigator.serviceWorker.controller.postMessage({ 
+        //         type: "setAppSlug", 
+        //         slug: appSlug 
+        //       });
+        //       localStorage.setItem("appSlug", appSlug);
+        //     }
+            
+        //     // Redirect to the app
+        //     window.location.href = redirectPath;
+        //     return;
+        //   }
+        // }
+        
+        // Wait for service worker to be ready
+        await waitForServiceWorkerReady();
+        
+        // Query available apps
+        availableApps = await queryAvailableApps();
+        
+        // Render the boot menu
+        renderAppList();
+        showBootMenu();
+        
+        // Set up event listeners
+        document.addEventListener('keydown', handleKeyDown);
+        
+        // Set up button click handlers
+        document.getElementById('confirm-yes').addEventListener('click', confirmBoot);
+        document.getElementById('confirm-no').addEventListener('click', cancelBoot);
+        
+        // Handle app list clicks
+        document.getElementById('app-list').addEventListener('click', (e) => {
+          const appItem = e.target.closest('.app-item');
+          if (appItem) {
+            const index = Array.from(appItem.parentNode.children).indexOf(appItem);
+            if (index >= 0 && index < availableApps.length) {
+              selectedAppIndex = index;
+              renderAppList();
+              showConfirmation();
+            }
+          }
+        });
+      }
+      
+      // Main initialization
+      (async () => {
+        // Wait for DOM to be ready
+        if (document.readyState === 'loading') {
+          await new Promise(resolve => {
+            document.addEventListener('DOMContentLoaded', resolve);
+          });
+        }
+        
+        if ("serviceWorker" in navigator) {
+          // If we already have a controller, initialize immediately
+          if (navigator.serviceWorker.controller) {
+            console.log("Service worker is already controlling the page");
+            await initializeBios();
           } else {
             // Otherwise wait for a controller
+            const urlParams = new URLSearchParams(window.location.search);
+            const bundleParam = urlParams.get('bundle');
+            
+            let serviceWorkerUrl = "./service-worker-bundled.js";
+            if (bundleParam) {
+              serviceWorkerUrl += `?bundle=${encodeURIComponent(bundleParam)}`;
+            }
+            
             navigator.serviceWorker
-              .register("./service-worker-bundled.js", { type: "module" })
+              .register(serviceWorkerUrl, { type: "module" })
               .catch((err) => {
-                console.log("ServiceWorker registration failed: ", err)
-                document.body.innerHTML = `<h1>Trail-Runner proxy failed to load.</h1>
-                <p>If you're on Firefox, check this <a href="https://caniuse.com/mdn-api_serviceworker_ecmascript_modules">link</a> to see if support is available yet.</p>`
-                handleRedirect()
-              })
-            console.log("Waiting for service worker to take control...")
+                console.log("ServiceWorker registration failed: ", err);
+                showError("Service Worker failed to load. If you're on Firefox, check ES module support.");
+              });
+            
+            console.log("Waiting for service worker to take control...");
             navigator.serviceWorker.addEventListener("controllerchange", async () => {
-              console.log("Service worker now controlling the page")
-              await handleRedirect()
-            })
-
+              console.log("Service worker now controlling the page");
+              await initializeBios();
+            });
           }
+        } else {
+          showError("Service Workers are not supported in this browser.");
         }
       })()
     </script>
   </head>
   <body>
-    <h1>Trail-Runner: Booting...</h1>
-    <p>Standby for control of service worker...</p>
+    <div class="bios-container">
+      <div class="version-text">TONK HOST WEB version 0.1.0</div>
+      
+      <div id="boot-screen" style="display: none;">
+        <div class="boot-menu">
+          <div class="boot-menu-title"> Available Applications </div>
+          <ul class="app-list" id="app-list">
+            <!-- Apps will be dynamically loaded here -->
+          </ul>
+        </div>
+        
+        <div class="instructions">
+          Use the ↑ and ↓ keys to select which entry is highlighted.<br>
+          Press enter to boot the selected application<br>
+        </div>
+      </div>
+      
+      <div id="loading-screen">
+        <p class="loading-message">Initializing TONK runtime...</p>
+      </div>
+      
+      <div id="error-screen" style="display: none;">
+        <p class="error-message"></p>
+      </div>
+    </div>
+    
+    <div class="overlay" id="overlay"></div>
+    <div class="confirmation-dialog" id="confirmation-dialog">
+      <div class="confirmation-title">Boot Confirmation</div>
+      <div class="confirmation-message" id="confirmation-message">
+        Are you sure you want to boot this application?
+      </div>
+      <div class="confirmation-buttons">
+        <button class="btn primary" id="confirm-yes">Yes</button>
+        <button class="btn" id="confirm-no">No</button>
+      </div>
+    </div>
   </body>
 </html>

@@ -1,60 +1,61 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import wasm from 'vite-plugin-wasm';
-import { VitePWA } from 'vite-plugin-pwa';
-import topLevelAwait from 'vite-plugin-top-level-await';
+
+// Conditionally import dev-only plugins
+async function loadDevPlugins() {
+  const wasm = (await import('vite-plugin-wasm')).default;
+  const topLevelAwait = (await import('vite-plugin-top-level-await')).default;
+
+  return [wasm(), topLevelAwait()];
+}
 
 // https://vitejs.dev/config/
-export default defineConfig({
-  base: process.env.VITE_BASE_PATH || '/',
-  plugins: [
-    wasm(),
-    react(),
-    topLevelAwait(),
-    VitePWA({
-      registerType: 'autoUpdate',
-      devOptions: {
-        enabled: true,
-        
+export default defineConfig(async ({ mode }) => {
+  const isDev = mode === 'development';
+
+  // Only load these plugins in development
+  const plugins = [react()];
+
+  if (isDev) {
+    const devPlugins = await loadDevPlugins();
+    plugins.push(...devPlugins);
+  }
+
+  return {
+    base: process.env.VITE_BASE_PATH || '/',
+    plugins,
+    server: {
+      proxy: {
+        '/api': process.env.MANIFEST_URL || 'http://localhost:8081',
       },
-      manifest: {
-        name: 'Tonk App',
-        short_name: 'Tonk App',
-        description: 'My new Tonk App',
-      },
-      workbox: {
-        additionalManifestEntries: [
-          { url: '/ts-compiler-sw.js', revision: null },
-        ],
-        disableDevLogs: true
-      },
-    }),
-  ],
-  server: {
-    proxy: {
-      '/api': process.env.MANIFEST_URL || 'http://localhost:8081'
-    }
-  },
-  build: {
-    sourcemap: true,
-    outDir: 'dist',
-    assetsDir: 'assets',
-    rollupOptions: {
-      // Improves chunking to address the large file size warning
-      output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom', 'react-router-dom'],
+    },
+    build: {
+      sourcemap: isDev,
+      outDir: 'dist',
+      assetsDir: 'assets',
+      rollupOptions: {
+        // Improves chunking to address the large file size warning
+        output: {
+          manualChunks: {
+            vendor: ['react', 'react-dom', 'react-router-dom'],
+          },
         },
       },
     },
-  },
-  optimizeDeps: {
-    esbuildOptions: {
-      target: 'esnext',
+    worker: isDev
+      ? {
+          format: 'es',
+        }
+      : undefined,
+    optimizeDeps: {
+      esbuildOptions: {
+        target: isDev ? 'esnext' : 'es2020',
+      },
+      exclude: isDev ? [] : ['vite-plugin-wasm', 'vite-plugin-top-level-await'],
     },
-  },
-  esbuild: {
-    target: 'esnext',
-  },
-  assetsInclude: ['**/*.md'],
+    esbuild: {
+      target: isDev ? 'esnext' : 'es2020',
+    },
+    assetsInclude: ['**/*.md'],
+  };
 });

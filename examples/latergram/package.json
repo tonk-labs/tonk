@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "mprocs",
     "clean": "rm -rf dist bundle",
-    "build": "pnpm clean && tsc && vite build",
+    "build": "pnpm clean && vite build",
+    "build:check": "pnpm clean && tsc && vite build",
     "serve": "vite preview",
     "deployment": "tonk deploy",
     "lint": "oxlint ./src",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "bundle": "tsx scripts/bundleBuilder.ts"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",

@@ -5,8 +5,15 @@ import type {
 } from '../types';
 import type { DocumentData, JsonValue } from '@tonk/core';
 import { bytesToString, stringToBytes } from '../utils/vfs-utils';
-import TonkWorker from '../tonk-worker.ts?worker';
 import mime from 'mime';
+
+// Conditionally import the dev worker
+let TonkWorker: any = null;
+if (import.meta.env.DEV) {
+  import('../tonk-worker.ts?worker').then(module => {
+    TonkWorker = module.default;
+  });
+}
 
 const verbose = () => false;
 
@@ -14,7 +21,9 @@ export class VFSService {
   private worker: Worker | null = null;
   private initialized = false;
   private workerReady = false;
+  private workerInitPromise: Promise<void> | null = null;
   private messageId = 0;
+  private usingServiceWorkerProxy = false;
   private pendingRequests = new Map<
     string,
     {
@@ -26,14 +35,88 @@ export class VFSService {
   private directoryWatchers = new Map<string, (changeData: any) => void>();
 
   constructor() {
-    this.initWorker();
+    this.workerInitPromise = this.initWorker();
   }
 
-  private initWorker() {
+  private createServiceWorkerProxy(): Worker {
+    // Create a proxy object that mimics the Worker interface but communicates via service worker
+    const proxy = {
+      onmessage: null as
+        | ((event: MessageEvent<VFSWorkerResponse>) => void)
+        | null,
+      onerror: null as ((error: ErrorEvent) => void) | null,
+      onmessageerror: null as ((error: MessageEvent) => void) | null,
+
+      postMessage: (message: VFSWorkerMessage) => {
+        if (
+          'serviceWorker' in navigator &&
+          navigator.serviceWorker.controller
+        ) {
+          navigator.serviceWorker.controller.postMessage(message);
+        } else {
+          console.error(
+            '[VFSService] Service worker not available for communication'
+          );
+        }
+      },
+
+      terminate: () => {
+        // Service worker proxy doesn't need termination
+        console.log('[VFSService] Service worker proxy terminated');
+      },
+    } as Worker;
+
+    // Listen for messages from the service worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', event => {
+        console.log(
+          '[VFSService] Service worker message received:',
+          event.data
+        );
+        if (proxy.onmessage) {
+          proxy.onmessage(event as MessageEvent<VFSWorkerResponse>);
+        }
+      });
+    }
+
+    return proxy;
+  }
+
+  private async initWorker(): Promise<void> {
     try {
-      console.log('[VFSService] Creating TonkWorker...');
-      this.worker = new TonkWorker();
-      console.log('[VFSService] TonkWorker created successfully');
+      if (import.meta.env.DEV) {
+        // In development, use the local tonk-worker
+        if (!TonkWorker) {
+          // Wait for dynamic import to complete
+          const module = await import('../tonk-worker.ts?worker');
+          TonkWorker = module.default;
+        }
+        console.log('[VFSService] Creating TonkWorker (dev)...');
+        this.worker = new TonkWorker();
+        this.usingServiceWorkerProxy = false;
+      } else {
+        // In production, try to use service worker if available
+        if ('serviceWorker' in navigator) {
+          console.log('[VFSService] Using service worker for communication...');
+          // We'll use a custom worker-like object that communicates via service worker
+          this.worker = this.createServiceWorkerProxy();
+          this.usingServiceWorkerProxy = true;
+        } else if (
+          typeof Worker !== 'undefined' &&
+          (window as any).TonkWorker
+        ) {
+          console.log('[VFSService] Using runtime-provided worker...');
+          // @ts-ignore
+          this.worker = new (window as any).TonkWorker();
+          this.usingServiceWorkerProxy = false;
+        } else {
+          console.warn(
+            '[VFSService] No worker available, waiting for runtime to provide one...'
+          );
+          return;
+        }
+      }
+      console.log('[VFSService] Worker created successfully');
     } catch (error) {
       console.error('Failed to create worker:', error);
       return;
@@ -41,6 +124,7 @@ export class VFSService {
 
     this.worker.onmessage = (event: MessageEvent<VFSWorkerResponse>) => {
       const response = event.data;
+      console.log('[VFSService] Received response from worker:', response);
       verbose() && console.log('Received response from worker:', response);
 
       if ((response as { type: string }).type === 'ready') {
@@ -98,6 +182,11 @@ export class VFSService {
   }
 
   async initialize(manifestUrl: string, wsUrl: string): Promise<void> {
+    // Wait for worker initialization to complete
+    if (this.workerInitPromise) {
+      await this.workerInitPromise;
+    }
+
     if (!this.worker) {
       throw new Error('Worker not initialized');
     }
@@ -113,14 +202,57 @@ export class VFSService {
       };
 
       // Wait for worker to be ready
+      console.log('[VFSService] Waiting for worker to be ready...');
       verbose() && console.log('Waiting for worker to be ready...');
+
+      if (this.usingServiceWorkerProxy && 'serviceWorker' in navigator) {
+        try {
+          console.log(
+            '[VFSService] Awaiting navigator.serviceWorker.ready before continuing...'
+          );
+          await navigator.serviceWorker.ready;
+          if (!this.workerReady) {
+            console.log(
+              '[VFSService] Service worker ready; marking workerReady = true manually.'
+            );
+            this.workerReady = true;
+          }
+        } catch (readyError) {
+          console.warn(
+            '[VFSService] navigator.serviceWorker.ready rejected, continuing anyway:',
+            readyError
+          );
+        }
+      }
+
+      let readyPollAttempts = 0;
       await new Promise<void>(resolve => {
         const checkReady = () => {
-          if (this.workerReady) {
-            resolve();
+          readyPollAttempts += 1;
+          if (readyPollAttempts % 50 === 0) {
+            console.warn(
+              '[VFSService] Still waiting for worker ready state...',
+              { attempts: readyPollAttempts }
+            );
           } else {
-            setTimeout(checkReady, 10);
+            console.log(
+              '[VFSService] Checking worker ready state:',
+              this.workerReady
+            );
           }
+          if (this.workerReady) {
+            console.log('[VFSService] Worker is ready!');
+            resolve();
+            return;
+          }
+          if (readyPollAttempts >= 200) {
+            console.error(
+              '[VFSService] Worker ready polling exceeded limit, proceeding anyway.'
+            );
+            resolve();
+            return;
+          }
+          setTimeout(checkReady, 50);
         };
         checkReady();
       });
@@ -135,7 +267,12 @@ export class VFSService {
       // Wait for initialization to complete
       return new Promise((resolve, reject) => {
         const checkInit = () => {
+          console.log(
+            '[VFSService] Checking initialization state:',
+            this.initialized
+          );
           if (this.initialized) {
+            console.log('[VFSService] VFS initialization completed!');
             resolve();
           } else {
             setTimeout(checkInit, 100);

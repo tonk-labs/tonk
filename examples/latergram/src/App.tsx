@@ -9,16 +9,17 @@ import Editor from './components/unified-editor/Editor';
 const DynamicView: React.FC<{ viewName?: string }> = ({ viewName }) => {
   // If no viewName provided, it's a catch-all route, get from URL
   const params = useParams();
-  const pathSegments = params['*'] || viewName || 'index';
+  let pathSegments = params['*'] || viewName || 'index';
+
+  // Strip out 'route/' prefix if it exists
+  if (pathSegments.startsWith('route/')) {
+    pathSegments = pathSegments.slice(6); // Remove 'route/' (6 characters)
+  }
 
   // Construct the view path - map route to file path
   const viewPath = `/src/views/${pathSegments}.tsx`;
 
-  return (
-    <ViewRenderer
-      viewPath={viewPath}
-    />
-  );
+  return <ViewRenderer viewPath={viewPath} />;
 };
 
 const App: React.FC<{ viewName?: string }> = ({ viewName }) => {

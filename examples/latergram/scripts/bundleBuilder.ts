@@ -235,7 +235,10 @@ async function getAllFilesFromVfs(
 /**
  * Creates a bundle from the dist/ folder
  */
-async function createBundle(outputPath?: string) {
+async function createBundle(
+  outputPath?: string,
+  copyToServer: boolean = false
+) {
   try {
     console.log('Initializing TonkCore...');
 
@@ -289,6 +292,18 @@ async function createBundle(outputPath?: string) {
 
     console.log(`Bundle created successfully: ${bundlePath}`);
     console.log(`Bundle size: ${bytes.length} bytes`);
+
+    // Copy to server directory if requested
+    if (copyToServer) {
+      const serverDir = join(process.cwd(), 'server');
+      if (existsSync(serverDir)) {
+        const serverBundlePath = join(serverDir, `${projectName}.tonk`);
+        writeFileSync(serverBundlePath, bytes);
+        console.log(`Bundle copied to server directory: ${serverBundlePath}`);
+      } else {
+        console.warn('Server directory not found, skipping copy to server/');
+      }
+    }
   } catch (error) {
     console.error('Error creating bundle:', error);
     process.exit(1);
@@ -424,7 +439,7 @@ Usage:
 
 Commands:
   create [output]     Create a bundle from dist/ folder
-                      Optional: specify output path (default: test-wasm.tonk)
+                      Optional: specify output path (default: latergram.tonk)
   
   unpack <bundle> <output-dir>
                       Unpack a bundle into the specified directory
@@ -434,10 +449,13 @@ Commands:
 Examples:
   npm run bundle-builder create
   npm run bundle-builder create my-app.tonk
+  npm run bundle-builder create --copy-to-server
+  npm run bundle-builder create my-app.tonk --copy-to-server
   npm run bundle-builder unpack test-wasm.tonk ./unpacked
   npm run bundle-builder list test-wasm.tonk
 
 Options:
+  --copy-to-server   Copy the created bundle to the server/ directory
   --help, -h         Show this help message
 `);
 }
@@ -457,8 +475,12 @@ async function main() {
 
   switch (command) {
     case 'create':
-      const outputPath = args[1];
-      await createBundle(outputPath);
+      // Parse arguments for create command
+      const createArgs = args.slice(1);
+      const copyToServer = createArgs.includes('--copy-to-server');
+      const outputPath = createArgs.find(arg => !arg.startsWith('--'));
+
+      await createBundle(outputPath, copyToServer);
       break;
 
     case 'unpack':
