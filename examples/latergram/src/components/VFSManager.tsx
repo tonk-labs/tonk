@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { VFSFileBrowser } from './VFSFileBrowser';
+import { FileTree } from './filetree/FileTree';
 import { VFSFilePreview } from './VFSFilePreview';
 import { EditorSidebar } from './shared/EditorSidebar';
 import { FolderOpen } from 'lucide-react';
@@ -19,10 +19,11 @@ export const VFSManager: React.FC = () => {
 
   return (
     <div className="flex h-full bg-gray-50">
-      <EditorSidebar title="File Browser">
-        <VFSFileBrowser
+      <EditorSidebar>
+        <FileTree
           onFileSelect={handleFileSelect}
           onFileDelete={handleFileDelete}
+          showHidden={false}
           className="flex-1 overflow-hidden"
         />
       </EditorSidebar>

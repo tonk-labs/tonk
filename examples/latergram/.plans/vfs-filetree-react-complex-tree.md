@@ -13,7 +13,96 @@ Replace the current `VFSFileBrowser` component with a production-ready file tree
 - **No peer dependencies** - Clean installation
 - **Active maintenance** - Regular updates and good documentation
 
-## Implementation Plan
+## ⚠️ CRITICAL ISSUES FOUND IN INITIAL IMPLEMENTATION
+
+### 1. Nested Interactive Elements (Buttons inside Buttons)
+
+**Problem**: React-complex-tree renders tree items as buttons. Adding action buttons (delete,
+create) inside causes invalid HTML nesting and React warnings. **Solution**: Use `renderItemArrow`
+and `renderItemTitle` separately, or use click handlers on non-button elements with proper event
+stopping.
+
+### 2. Missing CSS Classes in Twind
+
+**Problem**: Twind runtime CSS doesn't recognize react-complex-tree classes (`rct-tree-root`,
+`rct-tree-item`, etc.) or Lucide icon classes. **Solution**: Either:
+
+- Import react-complex-tree CSS directly in index.html
+- Add the classes to Twind's style configuration
+- Use inline styles instead of CSS classes
+
+### 3. Folder Expansion Not Working
+
+**Problem**: Clicking folders doesn't expand them - tree state isn't updating properly.
+**Solution**: Ensure VFSDataProvider correctly implements `getTreeItem` with proper `children` and
+`isFolder` properties.
+
+### 4. Duplicate "users" Folders
+
+**Problem**: VFS is returning duplicate entries for some directories. **Solution**: Debug VFS
+service to ensure unique directory listings.
+
+## REVISED Implementation Plan (Fixing Critical Issues)
+
+### Phase 0: Fix Critical Issues First
+
+#### 1. Fix CSS Loading
+
+**Option A**: Add react-complex-tree CSS to index.html
+
+```html
+<link rel="stylesheet" href="https://unpkg.com/react-complex-tree/lib/style-modern.css" />
+```
+
+**Option B**: Use inline styles only (no CSS classes)
+
+```typescript
+// Use style props instead of className
+style={{ padding: '4px', backgroundColor: isSelected ? '#e0f2fe' : 'transparent' }}
+```
+
+#### 2. Fix Nested Buttons Issue
+
+```typescript
+// DON'T: Buttons inside the tree item (which is already a button)
+// DO: Use divs with onClick handlers that stopPropagation
+<div onClick={(e) => { e.stopPropagation(); handleAction(); }}>
+```
+
+#### 3. Fix Folder Expansion (ROOT CAUSE FOUND)
+
+The folders won't expand because of TWO critical missing pieces:
+
+**A. Missing `isFolder` property in TreeItem**
+
+```typescript
+// WRONG - Only hasChildren is not enough!
+const item: TreeItem = {
+  hasChildren: isDirectory,  // This alone doesn't work!
+  children: childIds,
+  ...
+}
+
+// CORRECT - Must include BOTH hasChildren AND isFolder
+const item: TreeItem = {
+  hasChildren: isDirectory,
+  isFolder: isDirectory,  // CRITICAL: This enables expand/collapse UI
+  children: isDirectory ? childIds : undefined,
+  ...
+}
+```
+
+**B. Wrong InteractionMode conflicts with button rendering**
+
+```typescript
+// WRONG - ClickItemToExpand doesn't work well with custom button rendering
+interactionMode={InteractionMode.ClickItemToExpand}
+
+// CORRECT - Use DoubleClick or ClickArrowToExpand
+interactionMode={InteractionMode.ClickArrowToExpand}
+// OR
+interactionMode={InteractionMode.DoubleClick}
+```
 
 ### Phase 1: Setup & Core Integration
 

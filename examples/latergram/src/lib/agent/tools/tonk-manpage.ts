@@ -11,7 +11,7 @@ const availablePages = {
 }
 
 const printPages = ():string => {
-  let result: string;
+  let result: string = "";
   Object.entries(availablePages).forEach(([key, value]) => {
     result += `${key}: ${value.description}\n`;
   });

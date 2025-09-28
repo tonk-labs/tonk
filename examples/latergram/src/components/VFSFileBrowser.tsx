@@ -1,5 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Folder, File, ChevronRight, ChevronDown, Trash2, Eye, EyeOff } from 'lucide-react';
+import {
+  Folder,
+  File,
+  ChevronRight,
+  ChevronDown,
+  Trash2,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
 import { getVFSService } from '../services/vfs-service';
 
 interface FileNode {
@@ -19,11 +27,13 @@ interface VFSFileBrowserProps {
 export const VFSFileBrowser: React.FC<VFSFileBrowserProps> = ({
   onFileSelect,
   onFileDelete,
-  className = ''
+  className = '',
 }) => {
   const [files, setFiles] = useState<FileNode[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['/']));
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
+    new Set(['/'])
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showHidden, setShowHidden] = useState(false);
@@ -38,7 +48,10 @@ export const VFSFileBrowser: React.FC<VFSFileBrowserProps> = ({
       // Deduplicate items based on name
       const seen = new Set<string>();
       const uniqueItems = items.filter((item: any) => {
-        const name = typeof item === 'string' ? item : (item?.name || item?.path?.split('/').pop());
+        const name =
+          typeof item === 'string'
+            ? item
+            : item?.name || item?.path?.split('/').pop();
         if (seen.has(name)) {
           return false;
         }
@@ -47,36 +60,44 @@ export const VFSFileBrowser: React.FC<VFSFileBrowserProps> = ({
       });
 
       // Handle different response formats from VFS
-      const processedItems = uniqueItems.map((item: any, index: number) => {
-        // If it's a string, assume it's just the filename
-        if (typeof item === 'string') {
-          const fullPath = path === '/' ? `/${item}` : `${path}/${item}`;
-          // Try to determine if it's a directory based on extension
-          const isDirectory = !item.includes('.');
-          return {
-            name: item,
-            path: fullPath,
-            type: isDirectory ? 'directory' : 'file',
-            children: isDirectory ? [] : undefined
-          };
-        }
-        // If it has name/path properties
-        else if (item && typeof item === 'object') {
-          const name = item.name || item.path?.split('/').pop() || 'unknown';
-          const itemPath = item.path || (path === '/' ? `/${name}` : `${path}/${name}`);
-          const type: 'directory' | 'file' = item.type === 'directory' || item.type === 'document' ? (item.type === 'directory' ? 'directory' : 'file') : 'file';
-          return {
-            name,
-            path: itemPath,
-            type,
-            children: type === 'directory' ? [] : undefined
-          } as FileNode;
-        }
-        return null;
-      }).filter((item: FileNode | null): item is FileNode => {
-        if (!item) return false;
-        return showHidden || !item.name.startsWith('.');
-      });
+      const processedItems = uniqueItems
+        .map((item: any, index: number) => {
+          // If it's a string, assume it's just the filename
+          if (typeof item === 'string') {
+            const fullPath = path === '/' ? `/${item}` : `${path}/${item}`;
+            // Try to determine if it's a directory based on extension
+            const isDirectory = !item.includes('.');
+            return {
+              name: item,
+              path: fullPath,
+              type: isDirectory ? 'directory' : 'file',
+              children: isDirectory ? [] : undefined,
+            };
+          }
+          // If it has name/path properties
+          else if (item && typeof item === 'object') {
+            const name = item.name || item.path?.split('/').pop() || 'unknown';
+            const itemPath =
+              item.path || (path === '/' ? `/${name}` : `${path}/${name}`);
+            const type: 'directory' | 'file' =
+              item.type === 'directory' || item.type === 'document'
+                ? item.type === 'directory'
+                  ? 'directory'
+                  : 'file'
+                : 'file';
+            return {
+              name,
+              path: itemPath,
+              type,
+              children: type === 'directory' ? [] : undefined,
+            } as FileNode;
+          }
+          return null;
+        })
+        .filter((item: FileNode | null): item is FileNode => {
+          if (!item) return false;
+          return showHidden || !item.name.startsWith('.');
+        });
 
       return processedItems;
     } catch (err) {
@@ -161,7 +182,10 @@ export const VFSFileBrowser: React.FC<VFSFileBrowserProps> = ({
     }
   };
 
-  const renderNode = (node: FileNode, depth: number = 0): React.ReactElement => {
+  const renderNode = (
+    node: FileNode,
+    depth: number = 0
+  ): React.ReactElement => {
     const isExpanded = expandedFolders.has(node.path);
     const isSelected = selectedFile === node.path;
     const isDirectory = node.type === 'directory';
@@ -194,7 +218,8 @@ export const VFSFileBrowser: React.FC<VFSFileBrowserProps> = ({
             {node.name}
           </span>
           <button
-            onClick={(e) => handleDelete(e, node.path)}
+            type="button"
+            onClick={e => handleDelete(e, node.path)}
             className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 rounded transition-opacity"
             title="Delete"
           >
@@ -202,9 +227,7 @@ export const VFSFileBrowser: React.FC<VFSFileBrowserProps> = ({
           </button>
         </div>
         {isDirectory && isExpanded && node.children && (
-          <div>
-            {node.children.map(child => renderNode(child, depth + 1))}
-          </div>
+          <div>{node.children.map(child => renderNode(child, depth + 1))}</div>
         )}
       </div>
     );
@@ -231,9 +254,10 @@ export const VFSFileBrowser: React.FC<VFSFileBrowserProps> = ({
       <div className="flex items-center justify-between p-2 border-b border-gray-200">
         <h3 className="text-sm font-medium text-gray-700">Files</h3>
         <button
+          type="button"
           onClick={() => setShowHidden(!showHidden)}
           className="p-1 hover:bg-gray-100 rounded transition-colors"
-          title={showHidden ? "Hide hidden files" : "Show hidden files"}
+          title={showHidden ? 'Hide hidden files' : 'Show hidden files'}
         >
           {showHidden ? (
             <EyeOff className="w-4 h-4 text-gray-500" />

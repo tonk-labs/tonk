@@ -3,44 +3,10 @@ import { z } from 'zod';
 import { getVFSService } from '../../../services/vfs-service';
 import { fileValidator } from '../../file-validator';
 import { typeScriptValidator } from '../../typescript-validator';
-import { componentRegistry } from '../../../components/ComponentRegistry';
-import { storeRegistry } from '../../../components/StoreRegistry';
-import {
-  sanitizeComponentName,
-  sanitizeStoreName,
-} from '../../../components/contextBuilder';
 
 // Track all files written during this session
 const sessionFiles = new Set<string>();
 
-// Helper function to get available component names for TypeScript validation
-const getAvailableComponentNames = (): string[] => {
-  const componentNames: string[] = [];
-
-  // Get all registered components
-  componentRegistry.getAllComponents().forEach(comp => {
-    if (comp.metadata.status === 'success') {
-      const sanitizedName = sanitizeComponentName(comp.metadata.name);
-      if (sanitizedName !== 'UnnamedComponent') {
-        componentNames.push(sanitizedName);
-      }
-    }
-  });
-
-  // Get all registered stores
-  storeRegistry.getAllStores().forEach(store => {
-    if (store.metadata.status === 'success') {
-      const storeName = store.metadata.name;
-      const sanitizedName =
-        storeName.replace(/[^a-zA-Z0-9]/g, '') || 'UnnamedStore';
-      if (sanitizedName !== 'UnnamedStore') {
-        componentNames.push(sanitizedName);
-      }
-    }
-  });
-
-  return componentNames;
-};
 
 export const tonkReadFileTool = tool({
   description: 'Read a file from the Tonk virtual file system.',
@@ -147,7 +113,6 @@ export const tonkWriteFileTool = tool({
 
     // Step 2: TypeScript validation (only if it's a TS/TSX file and syntax is valid)
     const isTypeScriptFile = path.endsWith('.ts') || path.endsWith('.tsx');
-    let typeCheckPassed = true;
 
     if (isTypeScriptFile) {
       try {
@@ -413,7 +378,6 @@ export const finishTool = tool({
 
       if (tsFiles.length > 0) {
         console.log('[TonkTool] Running TypeScript validation on project...');
-        // TODO: Implement validateProject method
         const typeCheckResults = new Map();
 
         // Update validation results with TypeScript errors

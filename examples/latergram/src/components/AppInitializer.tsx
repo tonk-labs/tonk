@@ -5,7 +5,6 @@ import { storeRegistry } from './StoreRegistry';
 import { ensureTypeScriptLoaded, compileTSCode } from './utils/tsCompiler';
 import { extractComponentName, extractStoreName } from './utils/nameExtractor';
 import { useComponentWatcher } from './hooks/useComponentWatcher';
-import { watch } from 'fs';
 
 interface AppInitializerProps {
   children: React.ReactNode;
