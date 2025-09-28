@@ -108,18 +108,22 @@ export class VFSDataProvider implements TreeDataProvider {
       // Extract name from path
       const name = path.split('/').pop() || path;
 
-      // Determine if it's a directory by trying to list it
+      // Determine if it's a directory by checking the extension and trying to list it
       let isDirectory = false;
       let children: string[] = [];
 
-      try {
-        children = await this.loadDirectoryChildren(path);
-        if (children.length > 0) {
-        isDirectory = true;
+      // Quick check: if it has a file extension, it's likely a file
+      const hasFileExtension = /\.[a-zA-Z0-9]+$/.test(path);
+
+      if (!hasFileExtension) {
+        // Only try to list if it doesn't have a file extension
+        try {
+          children = await this.loadDirectoryChildren(path);
+          isDirectory = true;
+        } catch {
+          // If listing fails and no extension, still assume it's a file
+          isDirectory = false;
         }
-      } catch {
-        // If listing fails, it's likely a file
-        isDirectory = false;
       }
 
       const item: TreeItem<VFSTreeItemData> = {

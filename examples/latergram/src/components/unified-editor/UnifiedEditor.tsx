@@ -315,6 +315,7 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
               )}
 
               <button
+                type="button"
                 onClick={handleManualSave}
                 className="px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors flex items-center gap-1"
                 disabled={!hasChanges || isSaving}
@@ -331,6 +332,7 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
           <div className="bg-white border-b border-gray-200 px-6">
             <div className="flex gap-1">
               <button
+                type="button"
                 onClick={() => setActiveTab('preview')}
                 className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors flex items-center gap-2 ${
                   activeTab === 'preview'
@@ -342,6 +344,7 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
                 Preview
               </button>
               <button
+                type="button"
                 onClick={() => setActiveTab('editor')}
                 className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors flex items-center gap-2 ${
                   activeTab === 'editor'
@@ -383,6 +386,7 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
               height={height}
               onSave={handleManualSave}
               errors={validationErrors}
+              filePath={selectedFile || undefined}
             />
           ) : (
             <PreviewPane

@@ -30,6 +30,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
       )}
       {actionText && onAction && (
         <button
+          type="button"
           onClick={onAction}
           className="text-xs text-blue-500 hover:text-blue-600 mt-4"
         >

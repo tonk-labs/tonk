@@ -76,6 +76,7 @@ export const VFSFilePreview: React.FC<VFSFilePreviewProps> = ({
         </div>
         {onClose && (
           <button
+          type="button"
             onClick={onClose}
             className="p-1 hover:bg-gray-200 rounded transition-colors"
             title="Close preview"

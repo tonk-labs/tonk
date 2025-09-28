@@ -44,6 +44,7 @@
     "clsx": "^2.1.1",
     "lucide-react": "^0.475.0",
     "mime": "^4.1.0",
+    "monaco-editor": "^0.53.0",
     "react": "^19.0.0",
     "react-complex-tree": "^2.6.0",
     "react-dom": "^19.0.0",

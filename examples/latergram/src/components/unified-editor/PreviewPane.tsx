@@ -1,6 +1,6 @@
 import React from 'react';
 import { Eye, Database, FileText, AlertCircle } from 'lucide-react';
-import { ComponentPreview } from '../ComponentPreview';
+import { ComponentPreview } from './ComponentPreview';
 import { ViewRenderer } from '../ViewRenderer';
 import { componentRegistry } from '../ComponentRegistry';
 import { storeRegistry } from '../StoreRegistry';

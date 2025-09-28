@@ -1,8 +1,8 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { AlertCircle, Eye, EyeOff } from 'lucide-react';
-import { componentRegistry, ProxiedComponent } from './ComponentRegistry';
-import { useComponentWatcher } from './hooks/useComponentWatcher';
-import { getVFSService } from '../services/vfs-service';
+import { componentRegistry, type ProxiedComponent } from '../ComponentRegistry';
+import { useComponentWatcher } from '../hooks/useComponentWatcher';
+import { getVFSService } from '../../services/vfs-service';
 
 interface ComponentPreviewProps {
   componentId: string | null;
@@ -179,6 +179,7 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
         </div>
 
         <button
+          type="button"
           onClick={() => setIsVisible(!isVisible)}
           className="p-1 hover:bg-gray-200 rounded transition-colors"
           title={isVisible ? 'Hide preview' : 'Show preview'}

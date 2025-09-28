@@ -78,13 +78,13 @@ export const SidebarItem: React.FC<SidebarItemProps> = ({
           </div>
         </div>
         {onDelete && canDelete && (
-          <button
+          <div
             onClick={handleDelete}
             className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 rounded transition-all"
             title="Delete"
           >
             <Trash2 className="w-3 h-3 text-red-500" />
-          </button>
+          </div>
         )}
       </div>
       {children}
