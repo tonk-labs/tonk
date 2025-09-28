@@ -8,7 +8,7 @@ import type { VFSWorkerMessage, VFSWorkerResponse } from './types';
 console.log('[Worker] Worker script loading...');
 
 // Debug logging flag - set to true to enable comprehensive logging
-const DEBUG_LOGGING = true;
+const DEBUG_LOGGING = false;
 
 // Logger utility
 function log(

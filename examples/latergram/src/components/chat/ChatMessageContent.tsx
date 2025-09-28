@@ -13,16 +13,16 @@ const ChatMessageContent: React.FC<ChatMessageContentProps> = ({ content, role }
 
   if (!hasMarkdown) {
     return (
-      <p className="text-xs whitespace-pre-wrap break-words">{content}</p>
+      <p className="text-sm whitespace-pre-wrap break-words">{content}</p>
     );
   }
 
   return (
-    <div className="text-xs prose prose-xs max-w-none prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-code:text-xs prose-code:bg-gray-100 prose-code:px-1 prose-code:rounded prose-strong:font-semibold prose-p:my-1">
+    <div className="text-sm prose prose-sm prose-p:font-regular overflow-hidden max-w-full w-full prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-code:text-sm prose-code:bg-gray-100 prose-code:px-1 prose-code:rounded prose-strong:font-semibold prose-p:my-1">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          pre: ({ children, jsx, ...props }) => (
+          pre: ({ children, ...props }) => (
             <pre
               className="bg-gray-900 text-gray-100 p-2 rounded-md overflow-x-auto text-[10px] my-2"
               {...props}
@@ -30,7 +30,7 @@ const ChatMessageContent: React.FC<ChatMessageContentProps> = ({ content, role }
               {children}
             </pre>
           ),
-          code: ({ className, children, jsx, ...props }) => {
+          code: ({ className, children, ...props }) => {
             const match = /language-(\w+)/.exec(className || '');
             return match ? (
               <code
@@ -48,34 +48,34 @@ const ChatMessageContent: React.FC<ChatMessageContentProps> = ({ content, role }
               </code>
             );
           },
-          p: ({ children, jsx, ...props }) => (
-            <p className="text-xs my-1" {...props}>
+          p: ({ children, ...props }) => (
+            <p className="text-sm my-1" {...props}>
               {children}
             </p>
           ),
-          strong: ({ children, jsx, ...props }) => (
+          strong: ({ children, ...props }) => (
             <strong className="font-semibold" {...props}>
               {children}
             </strong>
           ),
-          ul: ({ children, jsx, ...props }) => (
+          ul: ({ children, ...props }) => (
             <ul
-              className="list-disc list-inside text-xs my-1 pl-2"
+              className="list-disc list-inside text-sm my-1 pl-2"
               {...props}
             >
               {children}
             </ul>
           ),
-          ol: ({ children, jsx, ...props }) => (
+          ol: ({ children, ...props }) => (
             <ol
-              className="list-decimal list-inside text-xs my-1 pl-2"
+              className="list-decimal list-inside text-sm my-1 pl-2"
               {...props}
             >
               {children}
             </ol>
           ),
-          li: ({ children, jsx, ...props }) => (
-            <li className="text-xs" {...props}>
+          li: ({ children, ...props }) => (
+            <li className="text-sm" {...props}>
               {children}
             </li>
           ),

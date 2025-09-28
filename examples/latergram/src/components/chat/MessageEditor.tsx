@@ -3,7 +3,7 @@ import { Check, X, AlertCircle } from 'lucide-react';
 import { useKeyboardSubmit } from './hooks';
 
 interface MessageEditorProps {
-  initialContent: string;
+  content: string;
   onSave: () => void;
   onCancel: () => void;
   onChange: (content: string) => void;
@@ -12,7 +12,7 @@ interface MessageEditorProps {
 }
 
 const MessageEditor: React.FC<MessageEditorProps> = ({
-  initialContent,
+  content,
   onSave,
   onCancel,
   onChange,
@@ -38,13 +38,12 @@ const MessageEditor: React.FC<MessageEditorProps> = ({
         </div>
       )}
       <textarea
-        value={initialContent}
+        value={content}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
         className="w-full p-2 border border-gray-300 rounded text-xs text-black"
         rows={3}
         placeholder="Press Enter to send, Shift+Enter for new line, Esc to cancel"
-        autoFocus
       />
       <div className="flex gap-2 items-center">
         <button

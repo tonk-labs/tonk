@@ -537,7 +537,6 @@ export const PageEditor: React.FC = () => {
                 onChange={e => setNewPageName(e.target.value)}
                 placeholder="e.g., About Us"
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                autoFocus
               />
               <p className="text-xs text-gray-500 mt-1">
                 Will be saved as: /src/views/

@@ -57,6 +57,7 @@ const AgentChat: React.FC<AgentChatProps> = ({
   const handleSaveEdit = useCallback(async () => {
     if (editingMessageId && editContent.trim()) {
       await updateMessage(editingMessageId, editContent);
+      // Reset editing state after successful update
       setEditingMessage(null);
     }
   }, [editingMessageId, editContent, updateMessage, setEditingMessage]);
@@ -79,27 +80,21 @@ const AgentChat: React.FC<AgentChatProps> = ({
   );
 
   return (
-    <div className="flex flex-col h-full bg-gray-50">
-      <ChatHeader
-        isReady={isReady}
-        messageCount={messages.length}
-        onClear={clearConversation}
-      />
-
-      {error && <ChatErrorBar error={error} />}
-
-      <div className="flex-1 px-3 py-3 min-h-0 flex">
-        <div className="flex flex-col-reverse reverse h-full overflow-scroll gap-4">
+    <div className="flex flex-col h-full">
+      <div className="relative flex-1 px-3 min-h-0 flex">
+        {error && <ChatErrorBar error={error} />}
+        <div className="flex flex-col-reverse reverse h-full overflow-scroll gap-4 max-w-full py-4">
           <div className="flex-1 min-h-0" />
           
           {messages.length === 0 ? (
-            <div className="text-center text-gray-500 text-xs">
+            <div className="text-center text-gray-500 text-xs animate-pulse">
               {isReady
-                ? 'Start a conversation by sending a message below'
+                ? ''
                 : 'Initializing agent service...'}
             </div>
           ) : (
-            [...messages, isLoading && <ChatLoadingDots onStop={stopGeneration} />]
+            <>{isLoading && <ChatLoadingDots onStop={stopGeneration} />}
+            {[...messages]
               .reverse()
               .map(message => (
                 <ChatMessage
@@ -116,8 +111,8 @@ const AgentChat: React.FC<AgentChatProps> = ({
                   }
                   onDelete={() => handleDeleteMessage(message.id)}
                 />
-              ))
-          )}
+              ))}
+          </>)}
 
         </div>
       </div>
@@ -127,6 +122,8 @@ const AgentChat: React.FC<AgentChatProps> = ({
         isLoading={isLoading}
         isReady={isReady}
         inputRef={inputRef}
+        onStop={stopGeneration}
+        onClear={clearConversation}
       />
     </div>
   );

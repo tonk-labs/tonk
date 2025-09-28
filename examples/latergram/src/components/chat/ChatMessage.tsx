@@ -34,9 +34,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
   const warning = isEditing ? getMessageWarning(message.id, messages) : null;
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} group`}>
+    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} group `}>
       <div
-        className={`flex gap-3 max-w-[70%] ${
+        className={`flex gap-3 max-w-full w-[90%] ${
           isUser ? 'flex-row-reverse' : 'flex-row'
         }`}
       >
@@ -51,7 +51,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
             <Bot className="w-3 h-3 text-white" />
           )}
         </div>
-        <div className="flex-1">
+        <div className="flex-1 max-w-full">
           <div
             className={`px-3 py-1.5 rounded-lg ${
               isUser ? 'bg-blue-500 text-white' : 'bg-white border border-gray-200'
@@ -59,7 +59,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
           >
             {isEditing ? (
               <MessageEditor
-                initialContent={editContent}
+                content={editContent}
                 onSave={onSaveEdit}
                 onCancel={onCancelEdit}
                 onChange={onEditContentChange}

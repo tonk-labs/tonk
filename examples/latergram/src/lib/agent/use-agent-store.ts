@@ -75,12 +75,12 @@ export function useAgentStore(): UseAgentStoreReturn {
 
     initializeAgent();
 
-    // Set up periodic sync for background updates
-    syncIntervalRef.current = setInterval(() => {
-      if (agentService.current.isInitialized() && !isLoading) {
-        syncWithService();
-      }
-    }, 5000); // Sync every 5 seconds
+    // // Set up periodic sync for background updates
+    // syncIntervalRef.current = setInterval(() => {
+    //   if (agentService.current.isInitialized() && !isLoading) {
+    //     syncWithService();
+    //   }
+    // }, 5000); // Sync every 5 seconds
 
     return () => {
       if (syncIntervalRef.current) {

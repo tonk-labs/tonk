@@ -12,11 +12,14 @@ module replacement and live editing.
 
 - **MUST** be placed in `/src/views/` directory
 - File name determines the route:
-  - `/src/views/Index.tsx` → `/` (homepage)
-  - `/src/views/About.tsx` → `/about`
-  - `/src/views/Products.tsx` → `/products`
-  - `/src/views/admin/Dashboard.tsx` → `/admin/dashboard`
+  - `/src/views/index.tsx` → `/` (homepage)
+  - `/src/views/about.tsx` → `/about`
+  - `/src/views/products.tsx` → `/products`
+  - `/src/views/admin/dashboard.tsx` → `/admin/dashboard`
 - **MUST** use `.tsx` extension (TypeScript + JSX)
+
+IMPORTANT: the `index.tsx` page is the homepage, don't create alternative `homepage.tsx` or
+`Index.tsx` files.
 
 ### 2. Page Component Structure
 

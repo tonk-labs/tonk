@@ -134,7 +134,6 @@ export const StoreBrowser: React.FC<StoreBrowserProps> = ({
                   onChange={e => setNewStoreName(e.target.value)}
                   placeholder="e.g., UserStore, CartStore, etc."
                   className="w-full px-3 py-2 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  autoFocus
                 />
               </div>
 

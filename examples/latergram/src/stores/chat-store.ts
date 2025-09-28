@@ -188,6 +188,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           set({ messages: updatedHistory, streamingContent: '' });
         }
       }
+
+      // Reset editing state after successful update
+      set({ editingMessageId: null, editContent: '' });
     } catch (err) {
       console.error('Failed to update and regenerate:', err);
       set({ error: err instanceof Error ? err.message : 'Failed to update and regenerate' });
@@ -206,7 +209,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (!isReady) return;
 
     try {
-      await agentService.regenerateFrom(messageId);
+      await agentService.deleteMessageAndFollowing(messageId);
       const updatedHistory = agentService.getHistory();
       set({ messages: updatedHistory });
     } catch (err) {

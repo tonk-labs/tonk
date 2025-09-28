@@ -55,8 +55,45 @@
         animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
       }
 
+      #initial-loader .logo-container {
+        height: 6rem;
+        width: auto;
+        position: relative;
+        display: inline-block;
+      }
+
       #initial-loader .logo {
         height: 6rem;
+        display: block;
+      }
+
+      #initial-loader .rainbow-mask {
+        height: 6rem;
+        width: auto;
+        position: relative;
+        -webkit-mask: url('/logo.svg') no-repeat center;
+        -webkit-mask-size: contain;
+        mask: url('/logo.svg') no-repeat center;
+        mask-size: contain;
+        background: linear-gradient(
+          90deg,
+          #E6C767 0%,
+          #8DBEC8 25%,
+          #A8D8B9 50%,
+          #F4A7A7 75%,
+          #E6C767 100%
+        );
+        background-size: 300% 100%;
+        animation: scroll-rainbow 3s linear infinite;
+      }
+
+      @keyframes scroll-rainbow {
+        0% {
+          background-position: 0% 50%;
+        }
+        100% {
+          background-position: 100% 50%;
+        }
       }
 
       #initial-loader .dots-container {
@@ -116,12 +153,8 @@
       <div id="initial-loader">
         <div class="loader-container">
           <div class="loader-content">
-            <img src="/logo.svg" class="logo" alt="Tonk Logo" />
-            <div class="dots-container">
-              <div class="dot"></div>
-              <div class="dot"></div>
-              <div class="dot"></div>
-              <div class="dot"></div>
+            <div class="rainbow-mask">
+              <img src="/logo.svg" class="logo" alt="Tonk Logo" style="visibility: hidden;" />
             </div>
           </div>
         </div>

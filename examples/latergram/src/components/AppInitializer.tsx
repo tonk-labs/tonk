@@ -224,7 +224,31 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
       <div className="fixed w-screen h-screen flex items-center justify-center bg-gray-50 m-0 p-0 top-0 left-0">
         <div className="text-center">
           <div className="flex flex-col items-center justify-center animate-pulse">
-            <img src="/logo.svg" className="h-24" alt="Tonk Logo" />
+            <div className="rainbow-mask h-24 w-auto relative">
+              <img src="/logo.svg" className="h-24 invisible" alt="Tonk Logo" />
+            </div>
+            <style>{`
+              .rainbow-mask {
+                -webkit-mask: url('/logo.svg') no-repeat center;
+                -webkit-mask-size: contain;
+                mask: url('/logo.svg') no-repeat center;
+                mask-size: contain;
+                background: linear-gradient(
+                  90deg,
+                  #E6C767 0%,
+                  #8DBEC8 25%,
+                  #A8D8B9 50%,
+                  #F4A7A7 75%,
+                  #E6C767 100%
+                );
+                background-size: 300% 100%;
+                animation: scroll-rainbow 3s linear infinite;
+              }
+              @keyframes scroll-rainbow {
+                0% { background-position: 0% 50%; }
+                100% { background-position: 100% 50%; }
+              }
+            `}</style>
             <div className="flex gap-4 mt-6">
               <LoadingDot color="#E6C767" delay="-0s" />
               <LoadingDot color="#8DBEC8" delay="-0.35s" />

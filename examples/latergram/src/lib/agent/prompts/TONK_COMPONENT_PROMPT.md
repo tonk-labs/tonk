@@ -105,3 +105,10 @@ const MyComponent: React.FC<MyComponentProps> = ({ title }) => {
 
 export default MyComponent;
 ```
+
+# IMPORTANT
+
+## Forms and Inputs
+
+When you create input of forms that use a store- the input boxes MUST be managed or otherwise the
+input boxes will constantly reset after typing and the users can't use your forms.

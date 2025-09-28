@@ -22,7 +22,11 @@ const DynamicView: React.FC<{ viewName?: string }> = ({ viewName }) => {
   );
 };
 
-const App: React.FC = () => {
+const App: React.FC<{ viewName?: string }> = ({ viewName }) => {
+  const params = useParams();
+  const pathSegments = params['*'] || viewName || 'index';
+  const viewPath = `/src/views/${pathSegments}.tsx`;
+
   return (
     <AppInitializer>
       <Routes>
@@ -30,7 +34,7 @@ const App: React.FC = () => {
         <Route path="/editor/*" element={<Editor />} />
 
         {/* Page routes with persistent drawer overlay */}
-        <Route element={<PageLayout />}>
+        <Route element={<PageLayout viewPath={viewPath} />}>
           <Route path="/" element={<DynamicView viewName="index" />} />
           {/* Catch all route for dynamic views */}
           <Route path="/*" element={<DynamicView />} />

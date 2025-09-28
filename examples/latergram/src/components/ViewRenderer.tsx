@@ -324,7 +324,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
     <div className={cn(className, 'relative')}>
       <div ref={sandboxRef} className="min-h-screen -z-10" />
       {showEditor && (
-        <div className="absolute top-4 right-4 z-[100000]">
+        <div className="absolute top-4 right-4 z-[100000] hidden md:block">
           <Link
             to={`/editor/pages?file=${encodeURIComponent(viewPath)}`}
             className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"

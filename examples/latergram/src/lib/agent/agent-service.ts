@@ -389,6 +389,10 @@ export class AgentService {
     await this.chatHistory.deleteMessage(messageId);
   }
 
+  async deleteMessageAndFollowing(messageId: string): Promise<void> {
+    await this.chatHistory.deleteMessagesFrom(messageId);
+  }
+
   async* regenerateFrom(messageId: string, newContent?: string): AsyncGenerator<{ content: string; done: boolean; type?: 'text' | 'tool_call' | 'tool_result' }> {
     console.log('[AgentService] regenerateFrom called:', { messageId, newContent });
 
