@@ -1,10 +1,7 @@
 import { Layers, Database, FileText, House, FolderOpen } from 'lucide-react';
 import { Link, Routes, Route, useLocation } from 'react-router-dom';
-import { StoreManager } from '../components/StoreManager';
+import { UnifiedEditor } from '../components/unified-editor';
 import AgentChat from './AgentChat';
-import { ComponentManager } from '../components/ComponentManager';
-import { PageEditor } from '../components/PageEditor';
-import { VFSManager } from '../components/VFSManager';
 import { createRef } from 'react';
 
 export default function Editor() {
@@ -81,11 +78,11 @@ export default function Editor() {
         <div className="overflow-hidden grid-cols-8 grid h-full">
           <div className="overflow-hidden col-span-6 ">
             <Routes>
-              <Route path="/" element={<ComponentManager />} />
-              <Route path="components" element={<ComponentManager />} />
-              <Route path="stores" element={<StoreManager />} />
-              <Route path="pages" element={<PageEditor />} />
-              <Route path="files" element={<VFSManager />} />
+              <Route path="/" element={<UnifiedEditor fileFilter="/src/components" />} />
+              <Route path="components" element={<UnifiedEditor fileFilter="/src/components" />} />
+              <Route path="stores" element={<UnifiedEditor fileFilter="/src/stores" />} />
+              <Route path="pages" element={<UnifiedEditor fileFilter="/src/views" />} />
+              <Route path="files" element={<UnifiedEditor />} />
             </Routes>
           </div>
           <div className="overflow-hidden col-span-2 border-l border-gray-200">

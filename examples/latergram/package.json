@@ -34,6 +34,7 @@
   "dependencies": {
     "@biomejs/js-api": "^3.0.0",
     "@biomejs/wasm-web": "^2.2.4",
+    "@monaco-editor/react": "^4.7.0",
     "@openrouter/ai-sdk-provider": "^1.2.0",
     "@tonk/cli": "^0.2.6",
     "@tonk/core": "file:../../packages/core-js",
