@@ -57,6 +57,7 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
           <div className="flex flex-row gap-2 group relative items-center justify-start">
             {!isLoading && (
               <button
+                title="Send Message"
                 type="submit"
                 disabled={!prompt.trim() || !isReady || isLoading}
                 className="h-10 px-3 py-1.5 bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:bg-gray-500 disabled:cursor-not-allowed transition-colors"
@@ -66,14 +67,16 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
             )}
             {isLoading && (
               <button
+                title="Stop Agent"
                 type="button"
                 onClick={onStop}
-                className="h-10 px-3 py-1.5 bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="h-10 px-3 py-1.5 bg-red-500 text-white rounded-full hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 <StopCircle className="w-4 h-4" />
               </button>
             )}
             <button
+              title="Clear Conversation"
               type="button"
               onClick={handleClear}
               className="h-10 px-3 py-1.5 bg-red-500 text-white rounded-full hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors "

@@ -6,7 +6,55 @@ import { typeScriptValidator } from '../../typescript-validator';
 
 // Track all files written during this session
 const sessionFiles = new Set<string>();
+let hasUserConfirmedClearAll = false;
 
+export const tonkClearAllTool = tool({
+  description:
+    'Clear all Tonk files and folders. After first using it, you first need to ask the user to confirm this is their intention. DO NOT CONTINUE WITHOUT EXPLICIT PERMISSION AFTER CALLING THIS TOOL.',
+  inputSchema: z.object({
+    haveExplicitUserPermission: z
+      .boolean()
+      .describe(
+        'Has the user already given EXPLICIT permission to clear all Tonk files and folders -> "false" if still need to ask user.'
+      ),
+  }),
+  execute: async ({ haveExplicitUserPermission }) => {
+    console.log('[TonkTool] CLEAR ALL called:', { haveExplicitUserPermission });
+    const vfs = getVFSService();
+    if (!vfs.isInitialized()) {
+      throw new Error('VFS service is not initialized');
+    }
+    try {
+      if (!haveExplicitUserPermission || !hasUserConfirmedClearAll) {
+        hasUserConfirmedClearAll = true;
+        throw new Error('Confirmation is required');
+      }
+
+      // await vfs.deleteAll();
+      console.log('[TonkTool] CLEAR ALL success');
+      return {
+        success: true,
+      };
+    } catch (error) {
+      console.error('[TonkTool] CLEAR ALL error:', { error });
+      hasUserConfirmedClearAll = false;
+      return {
+        completed: true,
+        summary:
+          'Ask user to confirm that they want to clear all Tonk files and folders',
+        files_modified: [],
+        timestamp: new Date().toISOString(),
+        message:
+          `The user should explicitly confirm they understand that this will clear all Tonk files and folders. If they have given their explicit permission this tool can be called again..
+          Tell the user:
+          - This will clear all Tonk files and folders
+          - This will disconnect the Tonk from the previous group
+          - The user should confirm they understand this is their intention and give explicit permission
+          `,
+      };
+    }
+  },
+});
 
 export const tonkReadFileTool = tool({
   description: 'Read a file from the Tonk virtual file system.',
@@ -447,5 +495,6 @@ export const tonkFileTools = {
   tonkDeleteFile: tonkDeleteFileTool,
   tonkListDirectory: tonkListDirectoryTool,
   tonkExists: tonkExistsTool,
+  tonkClearAll: tonkClearAllTool,
   finish: finishTool,
 };

@@ -6,6 +6,11 @@ When creating Zustand stores in the Tonk environment, you MUST follow this exact
 stores are built around a bespoke HMR (Hot Module Replacement) compilation solution that requires
 strict adherence to this pattern.
 
+Stores are stored as `tsx` files in `/src/stores/` and are automatically compiled and hot-reloaded.
+
+The data of the store should be persisted as JSON in the same folder, ideally with the same name as
+the store. You can read this to get the content of the store.
+
 ## Mandatory Store Structure
 
 ```typescript
