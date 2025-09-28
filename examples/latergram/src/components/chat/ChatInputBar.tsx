@@ -19,6 +19,7 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
+    // Allow typing but prevent sending while loading
     if (!prompt.trim() || !isReady || isLoading) return;
     onSendMessage(prompt.trim());
     setPrompt('');
@@ -33,7 +34,7 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
             value={prompt}
             onChange={setPrompt}
             onSubmit={handleSubmit}
-            disabled={!isReady || isLoading}
+            disabled={!isReady}
             placeholder={
               isReady
                 ? 'Type a message... (Shift+Enter for new line)'

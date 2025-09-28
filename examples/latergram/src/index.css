@@ -4,5 +4,5 @@
 
 html,
 body {
-  @apply relative max-h-screen h-screen overflow-scroll z-10;
+  @apply m-0 p-0 relative max-h-screen h-screen overflow-scroll z-10;
 }

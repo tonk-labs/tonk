@@ -9,6 +9,7 @@ interface ChatInputProps {
   placeholder?: string;
   rows?: number;
   inputRef?: React.RefObject<HTMLTextAreaElement>;
+  isLoading?: boolean;
 }
 
 const ChatInput: React.FC<ChatInputProps> = ({

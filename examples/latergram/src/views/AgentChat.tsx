@@ -91,6 +91,7 @@ const AgentChat: React.FC<AgentChatProps> = ({
       <div className="flex-1 px-3 py-3 min-h-0 flex">
         <div className="flex flex-col-reverse reverse h-full overflow-scroll gap-4">
           <div className="flex-1 min-h-0" />
+          
           {messages.length === 0 ? (
             <div className="text-center text-gray-500 text-xs">
               {isReady
@@ -98,7 +99,7 @@ const AgentChat: React.FC<AgentChatProps> = ({
                 : 'Initializing agent service...'}
             </div>
           ) : (
-            messages
+            [...messages, isLoading && <ChatLoadingDots onStop={stopGeneration} />]
               .reverse()
               .map(message => (
                 <ChatMessage
@@ -118,7 +119,6 @@ const AgentChat: React.FC<AgentChatProps> = ({
               ))
           )}
 
-          {isLoading && <ChatLoadingDots onStop={stopGeneration} />}
         </div>
       </div>
 
