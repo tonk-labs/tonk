@@ -6,12 +6,14 @@ interface ChatInputBarProps {
   onSendMessage: (text: string) => void;
   isLoading: boolean;
   isReady: boolean;
+  inputRef: React.RefObject<HTMLTextAreaElement>;
 }
 
 const ChatInputBar: React.FC<ChatInputBarProps> = ({
   onSendMessage,
   isLoading,
   isReady,
+  inputRef,
 }) => {
   const [prompt, setPrompt] = useState('');
 
@@ -27,6 +29,7 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
       <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
         <div className="flex gap-2">
           <ChatInput
+            inputRef={inputRef}
             value={prompt}
             onChange={setPrompt}
             onSubmit={handleSubmit}

@@ -8,6 +8,7 @@ interface ChatInputProps {
   disabled?: boolean;
   placeholder?: string;
   rows?: number;
+  inputRef?: React.RefObject<HTMLTextAreaElement>;
 }
 
 const ChatInput: React.FC<ChatInputProps> = ({
@@ -17,11 +18,13 @@ const ChatInput: React.FC<ChatInputProps> = ({
   disabled = false,
   placeholder = 'Type a message... (Shift+Enter for new line)',
   rows = 1,
+  inputRef
 }) => {
   const { handleKeyDown } = useKeyboardSubmit(onSubmit);
 
   return (
     <textarea
+      ref={inputRef}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       onKeyDown={handleKeyDown}

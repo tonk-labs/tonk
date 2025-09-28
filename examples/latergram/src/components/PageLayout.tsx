@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { createRef, useCallback, useRef, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import { MessageCircle, X } from 'lucide-react';
 import { Drawer, DrawerContent, DrawerTrigger, DrawerClose } from './ui/drawer';
@@ -6,9 +6,20 @@ import AgentChat from '../views/AgentChat';
 
 export const PageLayout: React.FC = () => {
   const [open, setOpen] = useState(false);
+  const inputRef = createRef<HTMLTextAreaElement>();
+
+  const handleOpen = useCallback((shouldOpen: boolean) => {
+    setOpen(shouldOpen);
+    if (shouldOpen) {
+      setTimeout(() => {
+        console.log('focus');
+        inputRef.current?.focus();
+      }, 100);
+    };
+  }, [inputRef]);
 
   return (
-    <Drawer open={open} onOpenChange={setOpen} direction="bottom">
+    <Drawer open={open} onOpenChange={handleOpen} direction="bottom">
       {/* Page content */}
       <div className="min-h-screen">
         <Outlet />
@@ -26,7 +37,7 @@ export const PageLayout: React.FC = () => {
       </DrawerTrigger>
 
       {/* Drawer Content */}
-      <DrawerContent className="max-h-[85vh] h-[85vh] p-0 rounded-t-lg overflow-clip">
+      <DrawerContent className="max-h-[85vh] h-[85vh] p-0 rounded-t-lg overflow-clip" onWheel={(e)=>e.stopPropagation()} ono>
         <div className="flex flex-col h-full -mt-6">
           {/* Drawer Header with Close Button */}
           <div className="flex items-center justify-between border-b border-gray-200 bg-white">
@@ -45,7 +56,7 @@ export const PageLayout: React.FC = () => {
 
           {/* AgentChat Component */}
           <div className="flex-1 overflow-hidden">
-            <AgentChat />
+            <AgentChat inputRef={inputRef}/>
           </div>
         </div>
       </DrawerContent>

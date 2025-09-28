@@ -1,6 +1,6 @@
 import { StateCreator } from 'zustand';
 import { getVFSService } from './services/vfs-service';
-import { DocumentData } from '@tonk/core';
+import type { DocumentData } from '@tonk/core';
 
 interface SyncOptions {
   path: string;
