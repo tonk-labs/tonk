@@ -12,6 +12,7 @@ import { useComponentWatcher } from '../hooks/useComponentWatcher';
 
 interface UnifiedEditorProps {
   fileFilter?: string;
+  initialFile?: string | null;
   editorOnly?: boolean;
   defaultTab?: 'preview' | 'editor';
   onFileChange?: (path: string) => void;
@@ -30,6 +31,7 @@ const getFileType = (filePath: string): FileType => {
 
 export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
   fileFilter,
+  initialFile,
   editorOnly = false,
   defaultTab = 'preview',
   onFileChange,
@@ -111,6 +113,12 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
       const watchId = await vfs.watchFile(filePath, async (changeData) => {
         console.log(`File ${filePath} changed:`, changeData);
 
+        // Skip reload if we're the ones who just saved
+        if (isSavingRef.current) {
+          console.log('Skipping reload - file was saved by this editor');
+          return;
+        }
+
         // Check if file was deleted
         const exists = await vfs.exists(filePath);
         if (!exists) {
@@ -130,7 +138,8 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
             watchIdRef.current = null;
           }
         } else {
-          // File was modified, reload it
+          // File was modified externally, reload it
+          console.log('Reloading file - external change detected');
           loadFile(filePath);
         }
       });
@@ -141,11 +150,15 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
     }
   }, [vfs, loadFile, onFileChange]);
 
+  // Track if we're saving to prevent reload on our own saves
+  const isSavingRef = useRef<boolean>(false);
+
   // Save file content
   const saveFile = useCallback(async (content: string) => {
     if (!vfs.isInitialized() || !selectedFile) return;
 
     setCompilationStatus('compiling');
+    isSavingRef.current = true;
     try {
       // Save to VFS
       await vfs.writeStringAsBytes(selectedFile, content, false);
@@ -215,6 +228,11 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
       setError(`Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`);
       setCompilationStatus('error');
       throw error;
+    } finally {
+      // Reset saving flag after a short delay to account for file system propagation
+      setTimeout(() => {
+        isSavingRef.current = false;
+      }, 100);
     }
   }, [vfs, selectedFile, watchComponent, compileAndUpdate]);
 
@@ -232,6 +250,22 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
       saveFile(fileContent);
     }
   }, [selectedFile, fileContent, saveFile]);
+
+  // Handle initial file from URL parameter
+  useEffect(() => {
+    if (initialFile && vfs.isInitialized()) {
+      // Check if the file exists before trying to load it
+      vfs.exists(initialFile).then((exists) => {
+        if (exists) {
+          handleFileSelect(initialFile);
+        } else {
+          console.warn(`Initial file ${initialFile} does not exist`);
+        }
+      }).catch((error) => {
+        console.error('Error checking initial file:', error);
+      });
+    }
+  }, [initialFile, vfs, handleFileSelect]);
 
   // Cleanup on unmount
   useEffect(() => {

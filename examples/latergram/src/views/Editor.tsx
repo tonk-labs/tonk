@@ -1,12 +1,22 @@
 import { Layers, Database, FileText, House, FolderOpen } from 'lucide-react';
-import { Link, Routes, Route, useLocation } from 'react-router-dom';
+import { Link, Routes, Route, useLocation, useSearchParams, useNavigate } from 'react-router-dom';
 import { UnifiedEditor } from '../components/unified-editor';
 import AgentChat from './AgentChat';
-import { createRef } from 'react';
+import { createRef, useCallback } from 'react';
 
 export default function Editor() {
   const chatInputRef = createRef<HTMLInputElement>();
   const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const fileParam = searchParams.get('file');
+
+  // Handle file change - update URL with the selected file
+  const handleFileChange = useCallback((filePath: string) => {
+    const newSearchParams = new URLSearchParams(searchParams);
+    newSearchParams.set('file', filePath);
+    navigate(`${location.pathname}?${newSearchParams.toString()}`, { replace: true });
+  }, [location.pathname, searchParams, navigate]);
   return (
       <div className="h-screen flex flex-col">
         {/* Navigation */}
@@ -78,11 +88,11 @@ export default function Editor() {
         <div className="overflow-hidden grid-cols-8 grid h-full">
           <div className="overflow-hidden col-span-6 ">
             <Routes>
-              <Route path="/" element={<UnifiedEditor fileFilter="/src/components" />} />
-              <Route path="components" element={<UnifiedEditor fileFilter="/src/components" />} />
-              <Route path="stores" element={<UnifiedEditor fileFilter="/src/stores" />} />
-              <Route path="pages" element={<UnifiedEditor fileFilter="/src/views" />} />
-              <Route path="files" element={<UnifiedEditor />} />
+              <Route path="/" element={<UnifiedEditor fileFilter="/src/components" initialFile={fileParam} onFileChange={handleFileChange} />} />
+              <Route path="components" element={<UnifiedEditor fileFilter="/src/components" initialFile={fileParam} onFileChange={handleFileChange} />} />
+              <Route path="stores" element={<UnifiedEditor fileFilter="/src/stores" initialFile={fileParam} onFileChange={handleFileChange} />} />
+              <Route path="pages" element={<UnifiedEditor fileFilter="/src/views" initialFile={fileParam} onFileChange={handleFileChange} />} />
+              <Route path="files" element={<UnifiedEditor initialFile={fileParam} onFileChange={handleFileChange} />} />
             </Routes>
           </div>
           <div className="overflow-hidden col-span-2 border-l border-gray-200">
