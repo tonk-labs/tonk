@@ -1,9 +1,9 @@
-import React, { createRef, useCallback, useRef, useState } from 'react';
+import React, { createRef, useCallback, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import { MessageCircle, X } from 'lucide-react';
-import { Drawer, DrawerContent, DrawerTrigger, DrawerClose } from './ui/drawer';
+import { Drawer, DrawerContent, DrawerTrigger } from './ui/drawer';
 import AgentChat from '../views/AgentChat';
-import { useAgentStore } from '../lib/agent/use-agent-store';
+import { useAgentChat } from '../lib/agent/use-agent-chat';
 import { cn } from '../lib/utils';
 
 interface PageLayoutProps {
@@ -13,7 +13,7 @@ interface PageLayoutProps {
 export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
   const [open, setOpen] = useState(false);
   const inputRef = createRef<HTMLTextAreaElement>();
-  const { isLoading } = useAgentStore();
+  const { isLoading } = useAgentChat();
 
   const handleOpen = useCallback((shouldOpen: boolean) => {
     setOpen(shouldOpen);

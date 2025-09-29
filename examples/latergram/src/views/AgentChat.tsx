@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect } from 'react';
-import { useAgentStore } from '../lib/agent/use-agent-store';
+import { useAgentChat } from '../lib/agent/use-agent-chat';
 import ChatErrorBar from '../components/chat/ChatErrorBar';
 import ChatMessage from '../components/chat/ChatMessage';
 import ChatLoadingDots from '../components/chat/ChatLoadingDots';
@@ -25,7 +25,7 @@ const AgentChat: React.FC<AgentChatProps> = ({
     editingMessageId,
     editContent,
     setEditingMessage,
-  } = useAgentStore();
+  } = useAgentChat();
 
   // Auto-focus input when component mounts or when ready
   useEffect(() => {
@@ -83,7 +83,7 @@ const AgentChat: React.FC<AgentChatProps> = ({
     <div className="flex flex-col h-full">
       <div className="relative flex-1 px-3 min-h-0 flex justify-center">
         {error && <ChatErrorBar error={error} />}
-        <div className="flex flex-col-reverse reverse h-full overflow-scroll gap-4 max-w-[50rem] py-4">
+        <div className="flex flex-col-reverse reverse h-full overflow-scroll gap-4 max-w-[50rem] w-full py-4">
           <div className="flex-1 min-h-0" />
           
           {messages.length === 0 ? (

@@ -1,4 +1,4 @@
-import { useChatStore } from '../../stores/chat-store';
+import { agentChatStore } from '../../lib/agent/agent-chat-store';
 
 /**
  * Sends an error to the AI agent for automatic fixing.
@@ -20,15 +20,21 @@ export function sendErrorToAgent(
   }
 
   // Delay to ensure agent is ready
-  setTimeout(() => {
-    const chatStore = useChatStore.getState();
+  setTimeout(async () => {
+    const chatStore = agentChatStore.getState();
 
-    // Check if agent is ready and not already loading
+    // Initialize if not ready
     if (!chatStore.isReady) {
-      console.log('AI agent not ready to receive error report');
-      // Try again in 2 seconds
-      setTimeout(() => sendErrorToAgent(error, errorInfo, componentName, viewPath), 2000);
-      return;
+      console.log('AI agent not ready, initializing...');
+      await chatStore.initialize();
+
+      // Check again after initialization
+      if (!chatStore.isReady) {
+        console.log('AI agent still not ready to receive error report');
+        // Try again in 2 seconds
+        setTimeout(() => sendErrorToAgent(error, errorInfo, componentName, viewPath), 2000);
+        return;
+      }
     }
 
     if (chatStore.isLoading) {
