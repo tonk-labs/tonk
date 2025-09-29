@@ -58,6 +58,16 @@ function App() {
   const [metrics] = useState(() => new MetricsCollector('ui-test'));
   const [vfs] = useState(() => getVFSService());
 
+  // Expose VFS service to window for testing
+  useEffect(() => {
+    (window as any).vfsService = vfs;
+    console.log('VFS service exposed to window');
+
+    return () => {
+      delete (window as any).vfsService;
+    };
+  }, [vfs]);
+
   useEffect(() => {
     // Initialize connection using dynamic server config
     const initVFS = async () => {

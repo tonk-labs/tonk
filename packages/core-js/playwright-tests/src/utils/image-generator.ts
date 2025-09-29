@@ -1,16 +1,32 @@
 import { ImageSpec, TestImage } from '../test-ui/types';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 /**
  * Synthetic image generator for stress testing
  * Creates realistic test data without requiring DOM APIs
  */
 export class ImageGenerator {
+  private cacheDir = '.image-cache';
   /**
    * Generate synthetic image data with specified characteristics
    */
   async generateImage(spec: ImageSpec): Promise<Uint8Array> {
-    const targetSizeBytes = Math.floor(spec.sizeInMB * 1024 * 1024);
-    return this.generateSyntheticImageData(targetSizeBytes, spec);
+    const filename = `${spec.width}x${spec.height}-${spec.sizeInMB}MB-${spec.format}.bin`;
+    const cachePath = path.join(this.cacheDir, filename);
+
+    try {
+      const data = await fs.readFile(cachePath);
+      return new Uint8Array(data);
+    } catch {
+      const targetSizeBytes = Math.floor(spec.sizeInMB * 1024 * 1024);
+      const data = this.generateSyntheticImageData(targetSizeBytes, spec);
+
+      await fs.mkdir(this.cacheDir, { recursive: true });
+      await fs.writeFile(cachePath, data);
+
+      return data;
+    }
   }
 
   /**

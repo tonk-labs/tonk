@@ -1,4 +1,11 @@
-// VFS Worker message types - matching the latergram example structure
+import { JsonValue, DocumentData, RefNode } from '@tonk/core';
+
+export type DocumentContent = {
+  content: JsonValue;
+  bytes?: string;
+};
+
+// Message types for VFS Worker communication
 export type VFSWorkerMessage =
   | { type: 'init'; manifest: ArrayBuffer; wsUrl: string }
   | { type: 'readFile'; id: string; path: string }
@@ -6,23 +13,23 @@ export type VFSWorkerMessage =
       type: 'writeFile';
       id: string;
       path: string;
-      content: string;
+      content: DocumentContent;
       create: boolean;
     }
   | { type: 'deleteFile'; id: string; path: string }
   | { type: 'listDirectory'; id: string; path: string }
   | { type: 'exists'; id: string; path: string }
   | { type: 'watchFile'; id: string; path: string }
-  | { type: 'unwatchFile'; id: string };
-
+  | { type: 'unwatchFile'; id: string; path: string }
+  | { type: 'watchDirectory'; id: string; path: string }
+  | { type: 'unwatchDirectory'; id: string; path: string };
 export type VFSWorkerResponse =
-  | { type: 'ready' }
   | { type: 'init'; success: boolean; error?: string }
   | {
       type: 'readFile';
       id: string;
       success: boolean;
-      data?: string;
+      data?: DocumentData;
       error?: string;
     }
   | { type: 'writeFile'; id: string; success: boolean; error?: string }
@@ -31,7 +38,7 @@ export type VFSWorkerResponse =
       type: 'listDirectory';
       id: string;
       success: boolean;
-      data?: unknown[];
+      data?: RefNode[];
       error?: string;
     }
   | {
@@ -43,79 +50,12 @@ export type VFSWorkerResponse =
     }
   | { type: 'watchFile'; id: string; success: boolean; error?: string }
   | { type: 'unwatchFile'; id: string; success: boolean; error?: string }
-  | { type: 'fileChanged'; watchId: string; content: string };
-
-// Performance metrics types
-export interface BenchmarkMetrics {
-  testName: string;
-  timestamp: number;
-
-  throughput: {
-    operationsPerSecond: number;
-    bytesPerSecond: number;
-    totalOperations: number;
-    totalBytes: number;
-  };
-
-  latency: {
-    min: number;
-    max: number;
-    mean: number;
-    median: number;
-    p50: number;
-    p95: number;
-    p99: number;
-  };
-
-  memory: {
-    heapUsed: number;
-    heapTotal: number;
-    wasmMemory: number;
-    indexedDBSize: number;
-  };
-
-  errors: {
-    count: number;
-    types: Map<string, number>;
-    lastError?: string;
-  };
-}
-
-// Test image specifications
-export interface TestImage {
-  name: string;
-  data: Uint8Array;
-  size: number;
-  metadata?: {
-    width: number;
-    height: number;
-    format: string;
-  };
-}
-
-export interface ImageSpec {
-  width: number;
-  height: number;
-  sizeInMB: number;
-  format: 'jpeg' | 'png' | 'webp';
-  quality?: number;
-}
-
-// Server instance management
-export interface ServerInstance {
-  process: any;
-  port: number;
-  wsUrl: string;
-  manifestUrl: string;
-}
-
-// UI State
-export interface UIState {
-  connected: boolean;
-  operations: number;
-  throughput: number;
-  errors: number;
-  memoryUsage: number;
-  files: string[];
-  uploadProgress: number;
-}
+  | { type: 'fileChanged'; watchId: string; documentData: DocumentData }
+  | { type: 'watchDirectory'; id: string; success: boolean; error?: string }
+  | { type: 'unwatchDirectory'; id: string; success: boolean; error?: string }
+  | {
+      type: 'directoryChanged';
+      watchId: string;
+      path: string;
+      changeData: any;
+    };

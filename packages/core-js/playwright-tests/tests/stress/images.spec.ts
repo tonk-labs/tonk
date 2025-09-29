@@ -35,7 +35,11 @@ test.describe('Image Stress Tests', () => {
           const vfsService = (window as any).vfsService;
           if (!vfsService) throw new Error('VFS service not available');
 
-          await vfsService.writeFile(imageName, new Uint8Array(imageData));
+          await vfsService.createFileWithBytes(
+            imageName,
+            { type: 'image', size: imageData.length },
+            new Uint8Array(imageData)
+          );
         },
         { imageData: Array.from(image.data), imageName: image.name }
       );
@@ -108,7 +112,11 @@ test.describe('Image Stress Tests', () => {
               const vfsService = (window as any).vfsService;
               if (!vfsService) throw new Error('VFS service not available');
 
-              await vfsService.writeFile(imageName, new Uint8Array(imageData));
+              await vfsService.createFileWithBytes(
+                imageName,
+                { type: 'image', size: imageData.length },
+                new Uint8Array(imageData)
+              );
             },
             { imageData: Array.from(image.data), imageName: image.name }
           );
@@ -181,7 +189,11 @@ test.describe('Image Stress Tests', () => {
               const vfsService = (window as any).vfsService;
               if (!vfsService) throw new Error('VFS service not available');
 
-              await vfsService.writeFile(imageName, new Uint8Array(imageData));
+              await vfsService.createFileWithBytes(
+                imageName,
+                { type: 'image', size: imageData.length },
+                new Uint8Array(imageData)
+              );
             },
             { imageData: Array.from(image.data), imageName: image.name }
           );
@@ -206,7 +218,11 @@ test.describe('Image Stress Tests', () => {
               const vfsService = (window as any).vfsService;
               if (!vfsService) throw new Error('VFS service not available');
 
-              await vfsService.writeFile(imageName, new Uint8Array(imageData));
+              await vfsService.createFileWithBytes(
+                imageName,
+                { type: 'image', size: imageData.length },
+                new Uint8Array(imageData)
+              );
             },
             { imageData: Array.from(image.data), imageName: image.name }
           );
@@ -231,7 +247,11 @@ test.describe('Image Stress Tests', () => {
               const vfsService = (window as any).vfsService;
               if (!vfsService) throw new Error('VFS service not available');
 
-              await vfsService.writeFile(imageName, new Uint8Array(imageData));
+              await vfsService.createFileWithBytes(
+                imageName,
+                { type: 'image', size: imageData.length },
+                new Uint8Array(imageData)
+              );
             },
             { imageData: Array.from(image.data), imageName: image.name }
           );
@@ -313,8 +333,9 @@ test.describe('Image Stress Tests', () => {
                 const vfsService = (window as any).vfsService;
                 if (!vfsService) throw new Error('VFS service not available');
 
-                await vfsService.writeFile(
+                await vfsService.createFileWithBytes(
                   imageName,
+                  { type: 'image', size: imageData.length },
                   new Uint8Array(imageData)
                 );
               },
