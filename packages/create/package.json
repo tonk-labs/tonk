@@ -1,7 +1,7 @@
 {
   "name": "@tonk/create",
-  "version": "0.5.2",
-  "description": "Bootstrap apps on the Tonk stack",
+  "version": "0.6.0",
+  "description": "Utility to scaffold boilerplate for platform-specific tonks",
   "type": "module",
   "bin": {
     "tonk-create": "./bin/create.js"

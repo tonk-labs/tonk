@@ -6,10 +6,30 @@ import ora from 'ora';
 import path from 'path';
 import process from 'process';
 import { fileURLToPath } from 'url';
-import { createReactTemplate } from './templates/react';
-import { createFeedTemplate } from './templates/feed';
-import { ProjectPlan, TemplateType } from './types';
-import { createTravelTemplate } from './templates/travel';
+
+/**
+ * Gets available templates by scanning the templates directory
+ * @returns Array of template names
+ */
+async function getAvailableTemplates(): Promise<string[]> {
+  try {
+    // Get the directory where this script is running from
+    const moduleUrl = import.meta.url;
+    const moduleDirPath = path.dirname(fileURLToPath(moduleUrl));
+
+    // Templates are in the package root, so go up from src or dist
+    const templatesPath = path.resolve(moduleDirPath, '..', 'templates');
+
+    const items = await fs.readdir(templatesPath, { withFileTypes: true });
+    return items
+      .filter(item => item.isDirectory())
+      .map(item => item.name)
+      .sort();
+  } catch (error) {
+    console.error('Error reading templates directory:', error);
+    return [];
+  }
+}
 
 /**
  * Resolves a package path by checking both local development and global installation paths
@@ -71,49 +91,13 @@ try {
 
 const program = new Command();
 
-// Questions to understand project requirements
-const projectQuestions = [
-  {
-    type: 'list',
-    name: 'platform',
-    message: 'What type of project would you like to create?',
-    choices: [
-      {
-        name: 'React - blank Tonk app',
-        value: 'react',
-      },
-      {
-        name: 'Social Feed - share and comment on posts',
-        value: 'social-feed',
-      },
-      {
-        name: 'Travel Planner - plan trips with friends',
-        value: 'travel-planner',
-      },
-    ],
-    default: 'react',
-  },
-  {
-    type: 'input',
-    name: 'projectName',
-    message: 'What is your project named?',
-    default: 'my-tonk-app',
-  },
-  {
-    type: 'input',
-    name: 'description',
-    message: 'Briefly describe your project:',
-  },
-];
-
 // Function to create project structure
 export async function createProject(
   projectName: string,
-  plan: ProjectPlan,
-  templateName: TemplateType,
+  templateName: string,
   _projectPath: string | null = null
 ) {
-  const spinner = ora('Creating project structure...').start();
+  const spinner = ora(`Creating ${templateName} project...`).start();
   let projectPath = _projectPath;
 
   try {
@@ -124,7 +108,7 @@ export async function createProject(
     } catch {
       spinner.text = 'Installing pnpm...';
       execSync('npm install -g pnpm', { stdio: 'inherit' });
-      spinner.text = 'Creating project structure...';
+      spinner.text = `Creating ${templateName} project...`;
     }
 
     // Create project directory
@@ -132,19 +116,14 @@ export async function createProject(
     await fs.ensureDir(projectPath);
 
     // Find template path
-    let templatePath;
-
-    try {
-      templatePath = await resolvePackagePath(`templates/${templateName}`);
-    } catch (error) {
-      console.error(
-        `Error resolving template path for "${templateName}":`,
-        error
-      );
-      throw new Error(
-        `Could not locate template "${templateName}". Please ensure the package is installed correctly and the template exists.`
-      );
-    }
+    const moduleUrl = import.meta.url;
+    const moduleDirPath = path.dirname(fileURLToPath(moduleUrl));
+    const templatePath = path.resolve(
+      moduleDirPath,
+      '..',
+      'templates',
+      templateName
+    );
 
     // Ensure templatePath is defined before using it
     if (!templatePath || !(await fs.pathExists(templatePath))) {
@@ -153,29 +132,51 @@ export async function createProject(
       );
     }
 
-    // Switch on template type and call appropriate template creator
-    switch (templateName) {
-      case 'react': {
-        await createReactTemplate(projectPath, projectName, templatePath, plan);
-        break;
-      }
-      case 'social-feed': {
-        await createFeedTemplate(projectPath, projectName, templatePath, plan);
-        break;
-      }
-      case 'travel-planner': {
-        await createTravelTemplate(
-          projectPath,
-          projectName,
-          templatePath,
-          plan
-        );
-        break;
-      }
-      default: {
-        throw new Error(`Unknown template type: ${templateName}`);
-      }
+    // Copy template files
+    spinner.text = 'Copying template files...';
+    await fs.copy(templatePath, projectPath, {
+      filter: (src: string) => {
+        // Get the relative path from the template directory
+        const relativePath = path.relative(templatePath, src);
+        // Only filter out node_modules and .git within the template
+        return !relativePath
+          .split(path.sep)
+          .some(part => part === 'node_modules' || part === '.git');
+      },
+      overwrite: true,
+      errorOnExist: false,
+    });
+
+    // Update package.json name
+    const packageJsonPath = path.join(projectPath, 'package.json');
+    if (await fs.pathExists(packageJsonPath)) {
+      const packageJson = await fs.readJson(packageJsonPath);
+      packageJson.name = projectName;
+      await fs.writeJson(packageJsonPath, packageJson, { spaces: 2 });
     }
+
+    spinner.succeed(`${templateName} project created successfully!`);
+
+    // Install dependencies
+    spinner.start('Installing dependencies...');
+    process.chdir(projectPath);
+    execSync('pnpm install', { stdio: 'inherit' });
+    spinner.succeed('Dependencies installed successfully!');
+
+    // Print success message and next steps
+    console.log(
+      '\n' + chalk.bold(`🎉 Your ${templateName} project is ready! 🎉`)
+    );
+    console.log('\n' + chalk.bold('Next:'));
+    console.log(
+      '  • ' +
+        chalk.cyan(`cd ${projectName}`) +
+        ' - Navigate to your new project'
+    );
+    console.log(
+      '  • ' + chalk.cyan('pnpm dev') + ' - Start the development server'
+    );
+    console.log('  • Open your favourite editor to get started.\n');
   } catch (error) {
     spinner.fail('Failed to setup project');
     console.error(error);
@@ -184,80 +185,68 @@ export async function createProject(
     }
     throw error;
   }
-  spinner.stop();
 }
 
 const createApp = async (options: {
   init: boolean;
-  template?: TemplateType;
+  template?: string;
   name?: string;
-  description?: string;
 }) => {
   try {
     console.log('Scaffolding tonk code...');
 
-    let answers: any;
+    // Get available templates
+    const availableTemplates = await getAvailableTemplates();
 
-    // Check if all required options are provided for non-interactive mode
-    const isNonInteractive =
-      options.template && (!options.init || options.name);
-
-    if (isNonInteractive) {
-      // Non-interactive mode - use provided options
-      answers = {
-        platform: options.template,
-        projectName: options.name || 'my-tonk-app',
-        description: options.description || '',
-      };
-    } else {
-      // Interactive mode - prompt for missing information
-      const questions = options.init
-        ? [...projectQuestions.slice(1)]
-        : projectQuestions;
-
-      // Filter out questions for options that were already provided
-      const filteredQuestions = questions.filter(q => {
-        if (q.name === 'platform' && options.template) return false;
-        if (q.name === 'projectName' && options.name) return false;
-        if (q.name === 'description' && options.description) return false;
-        return true;
-      });
-
-      const promptAnswers = await inquirer.prompt(filteredQuestions);
-
-      // Merge provided options with prompted answers
-      answers = {
-        platform:
-          options.template ||
-          (promptAnswers ? promptAnswers.platform : undefined),
-        projectName:
-          options.name ||
-          (promptAnswers ? promptAnswers.projectName : undefined),
-        description:
-          options.description ||
-          (promptAnswers ? promptAnswers.description : undefined),
-      };
+    if (availableTemplates.length === 0) {
+      throw new Error('No templates found in templates directory');
     }
 
-    // Generate project plan
-    const plan = answers;
+    let templateName = options.template;
+    let projectName = options.name;
 
-    // Create project with generated plan and template
-    const finalProjectName = options.init
-      ? path.basename(process.cwd())
-      : answers.projectName || 'my-tonk-app';
-
-    const templateName = answers.platform as TemplateType;
-
-    // Validate that we have a template before proceeding
+    // If template not provided, prompt for selection
     if (!templateName) {
+      const templateAnswer = await inquirer.prompt([
+        {
+          type: 'list',
+          name: 'template',
+          message: 'Select a template:',
+          choices: availableTemplates,
+        },
+      ]);
+      templateName = templateAnswer.template;
+    }
+
+    // Validate template exists
+    if (!templateName || !availableTemplates.includes(templateName)) {
       throw new Error(
-        'Template type is required. Please provide a template type using --template option or run in interactive mode.'
+        `Template "${templateName}" not found. Available templates: ${availableTemplates.join(', ')}`
       );
     }
 
+    // If project name not provided, prompt for it
+    if (!projectName && !options.init) {
+      const nameAnswer = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'projectName',
+          message: 'Project name:',
+          default: 'my-new-tonk',
+        },
+      ]);
+      projectName = nameAnswer.projectName;
+    }
+
+    // Determine final project name and path
+    const finalProjectName = options.init
+      ? path.basename(process.cwd())
+      : projectName || 'my-new-tonk';
+
     const projectPath = options.init ? process.cwd() : null;
-    await createProject(finalProjectName, plan, templateName, projectPath);
+
+    // TypeScript now knows templateName is defined due to the validation above
+    await createProject(finalProjectName, templateName as string, projectPath);
   } catch (error) {
     console.error(chalk.red('Error:'), error);
     if (!process.env.VITEST) {
@@ -271,13 +260,9 @@ program
   .name('create')
   .description('Scaffold code for your Tonk projects')
   .version(packageJson.version, '-v, --version', 'Output the current version')
-  .option('-i, --init', 'initialize in the folder')
-  .option(
-    '-t, --template <type>',
-    'template type (react, social feed, travel planner)'
-  )
+  .option('-i, --init', 'initialize in the current folder')
+  .option('-t, --template <type>', 'template type (e.g., react, node)')
   .option('-n, --name <name>', 'project name')
-  .option('-d, --description <description>', 'project description')
   .action(async options => {
     try {
       console.log(chalk.bold('\nWelcome to Tonk! 🚀\n'));
@@ -285,7 +270,6 @@ program
         init: options.init ?? false,
         template: options.template,
         name: options.name,
-        description: options.description,
       });
     } catch (error) {
       console.error(chalk.red('CLI Error:'), error);

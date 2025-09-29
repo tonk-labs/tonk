@@ -1,0 +1,8 @@
+procs:
+  frontend:
+    shell: "vite"
+    autostart: true
+
+  server:
+    shell: "cd server && pnpm run dev"
+    autostart: true

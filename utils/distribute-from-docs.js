@@ -183,8 +183,6 @@ async function generateAdditionalFiles(targetFile, content, sourceFile) {
 // Define project subdirectories that should get their own .cursor/rules
 const PROJECT_SUBDIRS = [
   'packages/create/templates/react',
-  'packages/create/templates/social-feed',
-  'packages/create/templates/travel-planner',
 ];
 
 function generateMDCName(dirPath) {

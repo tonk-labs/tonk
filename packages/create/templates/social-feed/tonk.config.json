@@ -1,9 +1,0 @@
-{
-  "name": "social-feed",
-  "plan": {
-    "platform": "react",
-    "projectName": "social-feed",
-    "description": "A Tonk social feed template"
-  },
-  "template": "react"
-}

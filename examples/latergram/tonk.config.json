@@ -1,0 +1,9 @@
+{
+  "name": "tonk-core-template",
+  "plan": {
+    "platform": "react",
+    "projectName": "tonk-core-template",
+    "description": ""
+  },
+  "template": "react"
+}
