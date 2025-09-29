@@ -33,7 +33,8 @@ test.describe('Concurrent Operations Tests', () => {
       }
 
       // Generate test images for all clients
-      const images = await imageGenerator.generateBatch(
+      const images = await imageGenerator.generateBatchForTest(
+        `concurrent-${clientCount}clients-${operationsPerClient}ops`,
         clientCount * operationsPerClient,
         [0.5, 2]
       );
@@ -55,16 +56,13 @@ test.describe('Concurrent Operations Tests', () => {
           try {
             // Write operation
             await client.page.evaluate(
-              async (params: { imageData: number[]; imageName: string }) => {
+              async ({ image }: { image: any }) => {
                 const vfsService = (window as any).vfsService;
                 if (!vfsService) throw new Error('VFS service not available');
 
-                await vfsService.writeFile(
-                  params.imageName,
-                  new Uint8Array(params.imageData)
-                );
+                await vfsService.writeFile(image.name, image.data);
               },
-              { imageData: Array.from(image.data), imageName: image.name }
+              { image }
             );
 
             // Read operation to verify
@@ -278,7 +276,8 @@ test.describe('Concurrent Operations Tests', () => {
         }
 
         // Generate test data
-        const images = await imageGenerator.generateBatch(
+        const images = await imageGenerator.generateBatchForTest(
+          `scalability-${clientCount}clients`,
           clientCount * operationsPerClient,
           [0.5, 1]
         );
@@ -297,16 +296,13 @@ test.describe('Concurrent Operations Tests', () => {
 
             try {
               await client.page.evaluate(
-                async (params: { imageData: number[]; imageName: string }) => {
+                async ({ image }: { image: any }) => {
                   const vfsService = (window as any).vfsService;
                   if (!vfsService) throw new Error('VFS service not available');
 
-                  await vfsService.writeFile(
-                    params.imageName,
-                    new Uint8Array(params.imageData)
-                  );
+                  await vfsService.writeFile(image.name, image.data);
                 },
-                { imageData: Array.from(image.data), imageName: image.name }
+                { image }
               );
 
               endOperation();
@@ -393,22 +389,20 @@ test.describe('Concurrent Operations Tests', () => {
 
         switch (operationType) {
           case 0: // Heavy write operations
-            const images = await imageGenerator.generateBatch(15, [2, 5]);
+            const images = await imageGenerator.generateBatchForTest(
+              `mixed-ops-heavy-write-client${clientIndex}`,
+              15,
+              [2, 5]
+            );
             for (const image of images) {
               const endOperation = metricsCollector.startOperation();
               try {
                 await client.page.evaluate(
-                  async (params: {
-                    imageData: number[];
-                    imageName: string;
-                  }) => {
+                  async ({ image }: { image: any }) => {
                     const vfsService = (window as any).vfsService;
-                    await vfsService.writeFile(
-                      params.imageName,
-                      new Uint8Array(params.imageData)
-                    );
+                    await vfsService.writeFile(image.name, image.data);
                   },
-                  { imageData: Array.from(image.data), imageName: image.name }
+                  { image }
                 );
                 endOperation();
                 metricsCollector.recordBytes(image.size);

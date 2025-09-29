@@ -13,6 +13,7 @@ test.describe('Sequential Operations Throughput Tests', () => {
 
     const targetOpsPerSec = 100;
     const testDurationSec = 60; // 1 minute test
+    const batchSize = 20; // Number of operations to batch together
 
     console.log(
       `Starting sequential throughput test: target ${targetOpsPerSec} ops/sec for ${testDurationSec} seconds`
@@ -22,48 +23,75 @@ test.describe('Sequential Operations Throughput Tests', () => {
     const startTime = Date.now();
     let operationCount = 0;
 
-    // Generate test data upfront
-    const batchSize = 50;
-    let currentBatch = await imageGenerator.generateBatch(
-      batchSize,
+    // Pre-generate enough test data upfront to avoid mid-test regeneration
+    const totalExpectedOps = targetOpsPerSec * testDurationSec * 1.2; // 20% buffer
+    console.log(`Pre-generating ${totalExpectedOps} images...`);
+    const allImages = await imageGenerator.generateBatchForTest(
+      'sequential-throughput-batch',
+      totalExpectedOps,
       [0.5, 1.5]
     );
-    let batchIndex = 0;
+    let imageIndex = 0;
 
     while (Date.now() - startTime < testDurationSec * 1000) {
-      // Refresh batch if needed
-      if (batchIndex >= currentBatch.length) {
-        currentBatch = await imageGenerator.generateBatch(
-          batchSize,
-          [0.5, 1.5]
-        );
-        batchIndex = 0;
+      // Prepare batch of operations
+      const batchOperations = [];
+      for (let i = 0; i < batchSize && imageIndex < allImages.length; i++) {
+        const image = allImages[imageIndex++];
+        batchOperations.push({
+          image,
+          imageName: `seq-${operationCount + i}.jpg`,
+        });
       }
 
-      const image = currentBatch[batchIndex++];
-      const endOperation = metricsCollector.startOperation();
+      if (batchOperations.length === 0) {
+        // Reset and reuse images if we run out
+        imageIndex = 0;
+        continue;
+      }
+
+      const batchStartTime = Date.now();
 
       try {
-        // Sequential write operation
-        await page.evaluate(
-          async (params: { imageData: number[]; imageName: string }) => {
+        // Execute batch of writes in a single page.evaluate call
+        const results = await page.evaluate(
+          async ({ operations }) => {
             const vfsService = (window as any).vfsService;
             if (!vfsService) throw new Error('VFS service not available');
 
-            await vfsService.writeFile(
-              params.imageName,
-              new Uint8Array(params.imageData)
-            );
+            const metrics = [];
+            for (const op of operations) {
+              const opStart = performance.now();
+              try {
+                await vfsService.writeFile(op.imageName, op.image.data);
+                metrics.push({
+                  success: true,
+                  duration: performance.now() - opStart,
+                  bytes: op.image.size,
+                });
+              } catch (error) {
+                metrics.push({
+                  success: false,
+                  duration: performance.now() - opStart,
+                  error: String(error),
+                });
+              }
+            }
+            return metrics;
           },
-          {
-            imageData: Array.from(image.data),
-            imageName: `seq-${operationCount}.jpg`,
-          }
+          { operations: batchOperations }
         );
 
-        endOperation();
-        metricsCollector.recordBytes(image.size);
-        operationCount++;
+        // Record metrics for each operation in the batch
+        results.forEach(result => {
+          if (result.success) {
+            metricsCollector.recordBytes(result.bytes);
+            operationCount++;
+          } else {
+            metricsCollector.recordError('sequential-write');
+            console.error('Operation failed:', result.error);
+          }
+        });
 
         // Log progress every 100 operations
         if (operationCount % 100 === 0) {
@@ -74,9 +102,8 @@ test.describe('Sequential Operations Throughput Tests', () => {
           );
         }
       } catch (error) {
-        endOperation();
-        metricsCollector.recordError('sequential-write');
-        console.error('Sequential operation failed:', error);
+        metricsCollector.recordError('sequential-write-batch');
+        console.error('Batch operation failed:', error);
       }
     }
 
@@ -114,6 +141,7 @@ test.describe('Sequential Operations Throughput Tests', () => {
 
     const intervalSec = 30; // Measure every 30 seconds
     const totalIntervals = 6; // 3 minutes total
+    const batchSize = 15; // Batch operations together
     const results: Array<{
       interval: number;
       throughput: number;
@@ -124,6 +152,16 @@ test.describe('Sequential Operations Throughput Tests', () => {
       `Starting consistency test: ${totalIntervals} intervals of ${intervalSec}s each`
     );
 
+    // Pre-generate all images for all intervals upfront
+    const imagesPerInterval = 100 * intervalSec; // Estimate ~100 ops/sec
+    console.log(`Pre-generating ${imagesPerInterval * totalIntervals} images...`);
+    const allImages = await imageGenerator.generateBatchForTest(
+      'consistency-interval-batch',
+      imagesPerInterval * totalIntervals,
+      [0.5, 1.5]
+    );
+    let globalImageIndex = 0;
+
     for (let interval = 1; interval <= totalIntervals; interval++) {
       console.log(`Starting interval ${interval}/${totalIntervals}`);
 
@@ -133,42 +171,60 @@ test.describe('Sequential Operations Throughput Tests', () => {
       const startTime = Date.now();
       let operationCount = 0;
 
-      // Generate batch for this interval
-      const images = await imageGenerator.generateBatch(100, [0.5, 1.5]);
-      let imageIndex = 0;
-
       while (Date.now() - startTime < intervalSec * 1000) {
-        if (imageIndex >= images.length) {
-          // Regenerate if we run out
-          const newImages = await imageGenerator.generateBatch(100, [0.5, 1.5]);
-          images.splice(0, images.length, ...newImages);
-          imageIndex = 0;
+        // Prepare batch of operations
+        const batchOperations = [];
+        for (let i = 0; i < batchSize && globalImageIndex < allImages.length; i++) {
+          const image = allImages[globalImageIndex++];
+          batchOperations.push({
+            image,
+            imageName: `consistency-${interval}-${operationCount + i}.jpg`,
+          });
         }
 
-        const image = images[imageIndex++];
-        const endOperation = metricsCollector.startOperation();
+        if (batchOperations.length === 0) {
+          // Reset if we run out (shouldn't happen with proper pre-generation)
+          globalImageIndex = 0;
+          continue;
+        }
 
         try {
-          await page.evaluate(
-            async (params: { imageData: number[]; imageName: string }) => {
+          // Execute batch in browser
+          const results = await page.evaluate(
+            async ({ operations }) => {
               const vfsService = (window as any).vfsService;
-              await vfsService.writeFile(
-                params.imageName,
-                new Uint8Array(params.imageData)
-              );
+              const metrics = [];
+              for (const op of operations) {
+                const opStart = performance.now();
+                try {
+                  await vfsService.writeFile(op.imageName, op.image.data);
+                  metrics.push({
+                    success: true,
+                    duration: performance.now() - opStart,
+                    bytes: op.image.size,
+                  });
+                } catch (error) {
+                  metrics.push({
+                    success: false,
+                    duration: performance.now() - opStart,
+                  });
+                }
+              }
+              return metrics;
             },
-            {
-              imageData: Array.from(image.data),
-              imageName: `consistency-${interval}-${operationCount}.jpg`,
-            }
+            { operations: batchOperations }
           );
 
-          endOperation();
-          metricsCollector.recordBytes(image.size);
-          operationCount++;
+          results.forEach(result => {
+            if (result.success) {
+              metricsCollector.recordBytes(result.bytes);
+              operationCount++;
+            } else {
+              metricsCollector.recordError('consistency-test');
+            }
+          });
         } catch (error) {
-          endOperation();
-          metricsCollector.recordError('consistency-test');
+          metricsCollector.recordError('consistency-test-batch');
         }
       }
 
@@ -216,10 +272,10 @@ test.describe('Sequential Operations Throughput Tests', () => {
     await waitForVFSConnection(page);
 
     const fileSizeConfigs = [
-      { name: 'tiny', range: [0.1, 0.3] as [number, number], target: 200 },
-      { name: 'small', range: [0.5, 1.0] as [number, number], target: 150 },
-      { name: 'medium', range: [1.0, 3.0] as [number, number], target: 100 },
-      { name: 'large', range: [3.0, 8.0] as [number, number], target: 50 },
+      { name: 'tiny', range: [0.1, 0.3] as [number, number], target: 200, batchSize: 25 },
+      { name: 'small', range: [0.5, 1.0] as [number, number], target: 150, batchSize: 20 },
+      { name: 'medium', range: [1.0, 3.0] as [number, number], target: 100, batchSize: 15 },
+      { name: 'large', range: [3.0, 8.0] as [number, number], target: 50, batchSize: 10 },
     ];
 
     const results: Array<{
@@ -240,40 +296,71 @@ test.describe('Sequential Operations Throughput Tests', () => {
       let operationCount = 0;
       let totalBytes = 0;
 
-      // Generate test images for this size category
-      const images = await imageGenerator.generateBatch(50, config.range);
+      // Pre-generate enough test images for this size category
+      const estimatedOps = config.target * testDuration * 1.5; // 50% buffer
+      console.log(`Pre-generating ${estimatedOps} ${config.name} images...`);
+      const images = await imageGenerator.generateBatchForTest(
+        `size-test-${config.name}`,
+        estimatedOps,
+        config.range
+      );
       let imageIndex = 0;
 
       while (Date.now() - startTime < testDuration * 1000) {
-        if (imageIndex >= images.length) {
-          imageIndex = 0; // Cycle through images
+        // Prepare batch
+        const batchOperations = [];
+        for (let i = 0; i < config.batchSize && imageIndex < images.length; i++) {
+          const image = images[imageIndex++];
+          batchOperations.push({
+            image,
+            imageName: `size-${config.name}-${operationCount + i}.jpg`,
+          });
         }
 
-        const image = images[imageIndex++];
-        const endOperation = metricsCollector.startOperation();
+        if (batchOperations.length === 0) {
+          // Reset and reuse if we run out
+          imageIndex = 0;
+          continue;
+        }
 
         try {
-          await page.evaluate(
-            async (params: { imageData: number[]; imageName: string }) => {
+          // Execute batch in browser
+          const results = await page.evaluate(
+            async ({ operations }) => {
               const vfsService = (window as any).vfsService;
-              await vfsService.writeFile(
-                params.imageName,
-                new Uint8Array(params.imageData)
-              );
+              const metrics = [];
+              for (const op of operations) {
+                const opStart = performance.now();
+                try {
+                  await vfsService.writeFile(op.imageName, op.image.data);
+                  metrics.push({
+                    success: true,
+                    duration: performance.now() - opStart,
+                    bytes: op.image.size,
+                  });
+                } catch (error) {
+                  metrics.push({
+                    success: false,
+                    duration: performance.now() - opStart,
+                  });
+                }
+              }
+              return metrics;
             },
-            {
-              imageData: Array.from(image.data),
-              imageName: `size-${config.name}-${operationCount}.jpg`,
-            }
+            { operations: batchOperations }
           );
 
-          endOperation();
-          metricsCollector.recordBytes(image.size);
-          totalBytes += image.size;
-          operationCount++;
+          results.forEach(result => {
+            if (result.success) {
+              metricsCollector.recordBytes(result.bytes);
+              totalBytes += result.bytes;
+              operationCount++;
+            } else {
+              metricsCollector.recordError(`size-test-${config.name}`);
+            }
+          });
         } catch (error) {
-          endOperation();
-          metricsCollector.recordError(`size-test-${config.name}`);
+          metricsCollector.recordError(`size-test-${config.name}-batch`);
         }
       }
 
@@ -323,10 +410,10 @@ test.describe('Sequential Operations Throughput Tests', () => {
     await waitForVFSConnection(page);
 
     const patterns = [
-      { name: 'write-only', writeRatio: 1.0 },
-      { name: 'read-heavy', writeRatio: 0.2 },
-      { name: 'balanced', writeRatio: 0.5 },
-      { name: 'write-heavy', writeRatio: 0.8 },
+      { name: 'write-only', writeRatio: 1.0, batchSize: 20 },
+      { name: 'read-heavy', writeRatio: 0.2, batchSize: 25 },
+      { name: 'balanced', writeRatio: 0.5, batchSize: 20 },
+      { name: 'write-heavy', writeRatio: 0.8, batchSize: 18 },
     ];
 
     const results: Array<{
@@ -348,54 +435,59 @@ test.describe('Sequential Operations Throughput Tests', () => {
       let writeOps = 0;
       let readOps = 0;
 
-      // Pre-populate some files for reading
-      const initialFiles = await imageGenerator.generateBatch(20, [0.5, 1.5]);
-      for (let i = 0; i < initialFiles.length; i++) {
-        const image = initialFiles[i];
+      // Pre-populate some files for reading - using batched approach
+      const initialFiles = await imageGenerator.generateBatchForTest(
+        `pattern-${pattern.name}-initial`,
+        100,
+        [0.5, 1.5]
+      );
+
+      console.log(`Pre-populating ${initialFiles.length} initial files...`);
+      // Batch the initial file writes
+      const initBatchSize = 10;
+      for (let i = 0; i < initialFiles.length; i += initBatchSize) {
+        const batch = initialFiles.slice(i, i + initBatchSize).map((image, idx) => ({
+          image,
+          imageName: `initial-${i + idx}.jpg`,
+        }));
+
         await page.evaluate(
-          async (params: { imageData: number[]; imageName: string }) => {
+          async ({ operations }) => {
             const vfsService = (window as any).vfsService;
-            await vfsService.writeFile(
-              params.imageName,
-              new Uint8Array(params.imageData)
-            );
+            for (const op of operations) {
+              await vfsService.writeFile(op.imageName, op.image.data);
+            }
           },
-          { imageData: Array.from(image.data), imageName: `initial-${i}.jpg` }
+          { operations: batch }
         );
       }
 
-      // Generate additional images for writing during test
-      const writeImages = await imageGenerator.generateBatch(100, [0.5, 1.5]);
+      // Pre-generate all images for writing during test
+      const estimatedWrites = Math.ceil((100 * testDuration * pattern.writeRatio) * 1.2);
+      console.log(`Pre-generating ${estimatedWrites} write images...`);
+      const writeImages = await imageGenerator.generateBatchForTest(
+        `pattern-${pattern.name}-writes`,
+        estimatedWrites,
+        [0.5, 1.5]
+      );
       let writeImageIndex = 0;
 
       while (Date.now() - startTime < testDuration * 1000) {
-        const shouldWrite = Math.random() < pattern.writeRatio;
-        const endOperation = metricsCollector.startOperation();
+        // Build a batch of mixed read/write operations
+        const batchOps = [];
+        for (let i = 0; i < pattern.batchSize; i++) {
+          const shouldWrite = Math.random() < pattern.writeRatio;
 
-        try {
           if (shouldWrite) {
-            // Write operation
             if (writeImageIndex >= writeImages.length) {
               writeImageIndex = 0; // Cycle through images
             }
-
             const image = writeImages[writeImageIndex++];
-            await page.evaluate(
-              async (params: { imageData: number[]; imageName: string }) => {
-                const vfsService = (window as any).vfsService;
-                await vfsService.writeFile(
-                  params.imageName,
-                  new Uint8Array(params.imageData)
-                );
-              },
-              {
-                imageData: Array.from(image.data),
-                imageName: `pattern-${pattern.name}-${writeOps}.jpg`,
-              }
-            );
-
-            metricsCollector.recordBytes(image.size);
-            writeOps++;
+            batchOps.push({
+              type: 'write',
+              image,
+              imageName: `pattern-${pattern.name}-${writeOps + batchOps.filter(op => op.type === 'write').length}.jpg`,
+            });
           } else {
             // Read operation
             const fileIndex = Math.floor(
@@ -406,29 +498,71 @@ test.describe('Sequential Operations Throughput Tests', () => {
                 ? `initial-${fileIndex}.jpg`
                 : `pattern-${pattern.name}-${fileIndex - initialFiles.length}.jpg`;
 
-            const content = await page.evaluate(
-              async (params: { fileName: string }) => {
-                const vfsService = (window as any).vfsService;
-                try {
-                  return await vfsService.readFile(params.fileName);
-                } catch (error) {
-                  return null; // File might not exist yet
-                }
-              },
-              { fileName }
-            );
-
-            if (content) {
-              metricsCollector.recordBytes((content as Uint8Array).length);
-            }
-            readOps++;
+            batchOps.push({
+              type: 'read',
+              fileName,
+            });
           }
+        }
 
-          endOperation();
-          totalOperations++;
+        try {
+          // Execute batch of mixed operations in browser
+          const results = await page.evaluate(
+            async ({ operations }) => {
+              const vfsService = (window as any).vfsService;
+              const metrics = [];
+
+              for (const op of operations) {
+                const opStart = performance.now();
+                try {
+                  if (op.type === 'write') {
+                    await vfsService.writeFile(op.imageName, op.image.data);
+                    metrics.push({
+                      type: 'write',
+                      success: true,
+                      duration: performance.now() - opStart,
+                      bytes: op.image.size,
+                    });
+                  } else {
+                    const content = await vfsService.readFile(op.fileName);
+                    metrics.push({
+                      type: 'read',
+                      success: true,
+                      duration: performance.now() - opStart,
+                      bytes: content ? content.length : 0,
+                    });
+                  }
+                } catch (error) {
+                  metrics.push({
+                    type: op.type,
+                    success: false,
+                    duration: performance.now() - opStart,
+                    error: String(error),
+                  });
+                }
+              }
+              return metrics;
+            },
+            { operations: batchOps }
+          );
+
+          // Process results
+          results.forEach(result => {
+            if (result.success) {
+              metricsCollector.recordBytes(result.bytes);
+              if (result.type === 'write') {
+                writeOps++;
+              } else {
+                readOps++;
+              }
+              totalOperations++;
+            } else {
+              metricsCollector.recordError(`pattern-${pattern.name}-${result.type}`);
+            }
+          });
         } catch (error) {
-          endOperation();
-          metricsCollector.recordError(`pattern-${pattern.name}`);
+          metricsCollector.recordError(`pattern-${pattern.name}-batch`);
+          console.error('Batch operation failed:', error);
         }
       }
 

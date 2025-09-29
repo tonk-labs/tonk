@@ -39,7 +39,7 @@ test.describe('Large File Handling Tests', () => {
       try {
         // Upload large file
         await page.evaluate(
-          async ({ image, imageName }: { image: any; imageName: string }) => {
+          async (params: { imageData: number[]; imageName: string }) => {
             const vfsService = (window as any).vfsService;
             if (!vfsService) throw new Error('VFS service not available');
 
@@ -148,7 +148,7 @@ test.describe('Large File Handling Tests', () => {
       try {
         // Write large file
         await page.evaluate(
-          async ({ image, imageName }: { image: any; imageName: string }) => {
+          async (params: { imageData: number[]; imageName: string }) => {
             const vfsService = (window as any).vfsService;
             await vfsService.writeFile(
               imageName,
@@ -232,7 +232,7 @@ test.describe('Large File Handling Tests', () => {
 
       try {
         await page.evaluate(
-          async ({ image, imageName }: { image: any; imageName: string }) => {
+          async (params: { imageData: number[]; imageName: string }) => {
             const vfsService = (window as any).vfsService;
             await vfsService.writeFile(
               imageName,

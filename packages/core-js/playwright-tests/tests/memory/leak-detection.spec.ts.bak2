@@ -349,7 +349,7 @@ test.describe('Memory Leak Detection Tests', () => {
               const image = images[0];
 
               await page.evaluate(
-                async ({ image, imageName }: { image: any; imageName: string }) => {
+                async (params: { imageData: number[]; imageName: string }) => {
                   const vfsService = (window as any).vfsService;
                   await vfsService.writeFile(
                     imageName,

@@ -25,26 +25,23 @@ test.describe('Throughput Benchmarks', () => {
     await expect(serverInfo).toContainText(`Port: ${serverInstance.port}`);
   });
 
-  test('should have test control buttons', async ({ page, serverInstance }) => {
+  test('should have test control buttons', async ({ page }) => {
     // Wait for connection first
     await waitForVFSConnection(page);
 
     // Check for test buttons
     const throughputBtn = page.getByTestId('throughput-test-btn');
-    const imageBtn = page.getByTestId('image-test-btn');
     const batchBtn = page.getByTestId('batch-operations-btn');
 
     await expect(throughputBtn).toBeVisible();
-    await expect(imageBtn).toBeVisible();
     await expect(batchBtn).toBeVisible();
 
     // Buttons should be enabled when connected
     await expect(throughputBtn).toBeEnabled();
-    await expect(imageBtn).toBeEnabled();
     await expect(batchBtn).toBeEnabled();
   });
 
-  test('should display metrics', async ({ page, serverInstance }) => {
+  test('should display metrics', async ({ page }) => {
     // Wait for connection first
     await waitForVFSConnection(page);
 
@@ -88,33 +85,6 @@ test.describe('Throughput Benchmarks', () => {
 
     console.log(
       `Throughput test completed successfully on port ${serverInstance.port}`
-    );
-  });
-
-  test('should run image test with server', async ({
-    page,
-    serverInstance,
-  }) => {
-    // Wait for connection
-    await waitForVFSConnection(page);
-
-    // Get the image test button
-    const imageBtn = page.getByTestId('image-test-btn');
-    await expect(imageBtn).toBeEnabled();
-
-    // Run the test
-    await imageBtn.click();
-
-    // Check that operations count increases
-    await expect(page.getByTestId('operations-count')).not.toContainText('0', {
-      timeout: 15000,
-    });
-
-    // Verify no errors occurred
-    await expect(page.getByTestId('error-count')).toContainText('0');
-
-    console.log(
-      `Image test completed successfully on port ${serverInstance.port}`
     );
   });
 

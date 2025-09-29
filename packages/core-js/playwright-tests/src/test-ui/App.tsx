@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { getVFSService } from './vfs-service';
-import { imageGenerator } from '../utils/image-generator';
 
 interface ServerConfig {
   port: number;
@@ -153,41 +152,17 @@ function App() {
     if (!vfs.isInitialized()) return;
 
     try {
-      // Create a test file
+      const testPath = '/test-file.json';
       const testData = { test: 'data', timestamp: Date.now() };
-      try {
-        await vfs.writeFile('/test-file.json', { content: testData }, true);
-      } catch {
-        await vfs.writeFile('/test-file.json', { content: testData }, false);
-      }
+
+      // Check if file exists to determine if we need to create
+      const exists = await vfs.exists(testPath);
+      await vfs.writeFile(testPath, { content: testData }, !exists);
 
       // Read it back
-      await vfs.readFile('/test-file.json');
+      await vfs.readFile(testPath);
     } catch (error) {
       console.error('Test operation failed:', error);
-    }
-  };
-
-  const runImageTest = async () => {
-    if (!vfs.isInitialized()) return;
-
-    try {
-      // Generate a small test image
-      const image = await imageGenerator.generateImage({
-        width: 400,
-        height: 300,
-        sizeInMB: 0.1,
-        format: 'jpeg',
-      });
-
-      // Save to VFS using writeFileWithBytes
-      await vfs.writeFileWithBytes(
-        '/test-image.jpg',
-        { type: 'image', size: image.byteLength },
-        image
-      );
-    } catch (error) {
-      console.error('Image test failed:', error);
     }
   };
 
@@ -237,14 +212,6 @@ function App() {
           style={{ marginRight: '10px' }}
         >
           Run Throughput Test
-        </button>
-        <button
-          data-testid="image-test-btn"
-          onClick={runImageTest}
-          disabled={!state.connected}
-          style={{ marginRight: '10px' }}
-        >
-          Run Image Test
         </button>
       </div>
 

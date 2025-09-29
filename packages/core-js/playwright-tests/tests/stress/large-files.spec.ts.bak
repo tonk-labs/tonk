@@ -39,17 +39,17 @@ test.describe('Large File Handling Tests', () => {
       try {
         // Upload large file
         await page.evaluate(
-          async ({ image, imageName }: { image: any; imageName: string }) => {
+          async (params: { imageData: number[]; imageName: string }) => {
             const vfsService = (window as any).vfsService;
             if (!vfsService) throw new Error('VFS service not available');
 
             await vfsService.writeFile(
-              imageName,
-              image.data
+              params.imageName,
+              new Uint8Array(params.imageData)
             );
           },
           {
-            image,
+            imageData: Array.from(image.data),
             imageName: `large-${sizeMB}MB.jpg`,
           }
         );
@@ -148,15 +148,15 @@ test.describe('Large File Handling Tests', () => {
       try {
         // Write large file
         await page.evaluate(
-          async ({ image, imageName }: { image: any; imageName: string }) => {
+          async (params: { imageData: number[]; imageName: string }) => {
             const vfsService = (window as any).vfsService;
             await vfsService.writeFile(
-              imageName,
-              image.data
+              params.imageName,
+              new Uint8Array(params.imageData)
             );
           },
           {
-            image,
+            imageData: Array.from(image.data),
             imageName: `memory-test-${i}.jpg`,
           }
         );
@@ -232,15 +232,15 @@ test.describe('Large File Handling Tests', () => {
 
       try {
         await page.evaluate(
-          async ({ image, imageName }: { image: any; imageName: string }) => {
+          async (params: { imageData: number[]; imageName: string }) => {
             const vfsService = (window as any).vfsService;
             await vfsService.writeFile(
-              imageName,
-              image.data
+              params.imageName,
+              new Uint8Array(params.imageData)
             );
           },
           {
-            image,
+            imageData: Array.from(image.data),
             imageName: `streaming-${index}.jpg`,
           }
         );
