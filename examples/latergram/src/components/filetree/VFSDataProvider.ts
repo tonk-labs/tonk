@@ -18,6 +18,8 @@ export class VFSDataProvider implements TreeDataProvider {
   private rootPath = '/';
   private searchQuery = '';
   private watchHandles = new Map<string, string>();
+  private searchResults = new Set<string>();
+  private allFilesCache: string[] = [];
 
   constructor(rootPath = '/') {
     this.rootPath = rootPath;
@@ -42,9 +44,20 @@ export class VFSDataProvider implements TreeDataProvider {
     }
   }
 
-  setSearchQuery(query: string) {
+  async setSearchQuery(query: string) {
     if (this.searchQuery !== query) {
       this.searchQuery = query;
+
+      if (query.trim()) {
+        // Perform recursive search
+        this.searchResults = await this.searchRecursive(this.rootPath, query);
+      } else {
+        this.searchResults.clear();
+      }
+
+      // Clear caches to force refresh with new search results
+      this.cache.clear();
+      this.childrenCache.clear();
       this.notifyDataChanged();
     }
   }
@@ -215,9 +228,21 @@ export class VFSDataProvider implements TreeDataProvider {
           return false;
         }
 
-        // Filter by search query
-        if (this.searchQuery && this.searchQuery.trim()) {
-          return name.toLowerCase().includes(this.searchQuery.toLowerCase());
+        // If we have search results, only show items that match or are parents of matches
+        if (this.searchQuery && this.searchQuery.trim() && this.searchResults.size > 0) {
+          // Check if this path is in search results or is a parent of any result
+          if (this.searchResults.has(path)) {
+            return true;
+          }
+
+          // Check if this is a parent directory of any search result
+          for (const resultPath of this.searchResults) {
+            if (resultPath.startsWith(path + '/')) {
+              return true;
+            }
+          }
+
+          return false;
         }
 
         return true;
@@ -375,5 +400,63 @@ export class VFSDataProvider implements TreeDataProvider {
       }
     }
     this.watchHandles.clear();
+  }
+
+  // Recursive search through the file system
+  private async searchRecursive(path: string, query: string): Promise<Set<string>> {
+    const results = new Set<string>();
+    const searchLower = query.toLowerCase();
+
+    async function search(currentPath: string, vfs: any): Promise<void> {
+      try {
+        const items = await vfs.listDirectory(currentPath);
+
+        for (const item of items) {
+          const itemName = typeof item === 'string' ? item : (item?.name || item?.path?.split('/').pop());
+          if (!itemName) continue;
+
+          const fullPath = currentPath === '/' ? `/${itemName}` : `${currentPath}/${itemName}`;
+          const nameLower = itemName.toLowerCase();
+
+          // Check if this item matches the search
+          if (nameLower.includes(searchLower)) {
+            results.add(fullPath);
+          }
+
+          // If it doesn't have a file extension, try to search its children
+          const hasFileExtension = /\.[a-zA-Z0-9]+$/.test(itemName);
+          if (!hasFileExtension) {
+            try {
+              await search(fullPath, vfs);
+            } catch {
+              // If we can't list it, it's probably a file
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Search error in ${currentPath}:`, error);
+      }
+    }
+
+    await search(path, this.vfs);
+    return results;
+  }
+
+  // Get expanded items needed to show search results
+  getSearchExpandedItems(): string[] {
+    const expandedItems = new Set<string>(['root']);
+
+    // For each search result, add all parent directories to expanded items
+    for (const resultPath of this.searchResults) {
+      const parts = resultPath.split('/').filter(p => p);
+      let currentPath = '';
+
+      for (let i = 0; i < parts.length - 1; i++) {
+        currentPath = currentPath + '/' + parts[i];
+        expandedItems.add(currentPath);
+      }
+    }
+
+    return Array.from(expandedItems);
   }
 }

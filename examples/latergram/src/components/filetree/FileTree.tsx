@@ -169,7 +169,22 @@ export const FileTree: React.FC<FileTreeProps> = ({
 
   // Update search query in data provider when it changes
   useEffect(() => {
-    dataProvider.setSearchQuery(searchQuery);
+    const updateSearch = async () => {
+      await dataProvider.setSearchQuery(searchQuery);
+
+      // If there's a search query, expand directories to show results
+      if (searchQuery.trim()) {
+        const searchExpandedItems = dataProvider.getSearchExpandedItems();
+        if (searchExpandedItems.length > 0) {
+          setExpandedItems(prev => {
+            const combined = new Set([...prev, ...searchExpandedItems]);
+            return Array.from(combined);
+          });
+        }
+      }
+    };
+
+    updateSearch();
   }, [dataProvider, searchQuery]);
 
   const handlePrimaryAction = (item: TreeItem<VFSTreeItemData>) => {
@@ -257,18 +272,11 @@ export const FileTree: React.FC<FileTreeProps> = ({
     setFocusedItem(undefined);
   };
 
-  const filterItems = (
-    items: TreeItemIndex[],
-    query: string
-  ): TreeItemIndex[] => {
-    if (!query.trim()) return items;
-
-    // This is a simple implementation - in a real app you'd want more sophisticated filtering
-    return items.filter(itemId => {
-      const itemPath = itemId === 'root' ? '/' : (itemId as string);
-      const fileName = itemPath.split('/').pop() || '';
-      return fileName.toLowerCase().includes(query.toLowerCase());
-    });
+  // Helper to clear search
+  const clearSearch = () => {
+    setSearchQuery('');
+    // Reset to initial expanded state
+    setExpandedItems(getInitialExpandedItems());
   };
 
   return (
@@ -317,8 +325,20 @@ export const FileTree: React.FC<FileTreeProps> = ({
               placeholder="Search files..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="w-full pl-7 pr-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full pl-7 pr-7 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
             />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={clearSearch}
+                className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                title="Clear search"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
       </div>
