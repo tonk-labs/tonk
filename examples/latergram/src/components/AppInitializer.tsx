@@ -68,6 +68,7 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
               name: storeName,
               filePath: filePath,
               status: 'loading',
+              source: content, // Store source code from the beginning
             });
 
             // Compile the store
@@ -79,6 +80,8 @@ export const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
 
             if (result.success && typeof result.output === 'function') {
               storeRegistry.update(storeId, result.output, 'success');
+              // Store the source code in metadata
+              storeRegistry.updateMetadata(storeId, { source: content });
             } else {
               storeRegistry.update(storeId, null, 'error', result.error);
             }

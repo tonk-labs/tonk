@@ -26,6 +26,15 @@ interface MonacoCodeEditorProps {
 const generateMonacoTypes = (): string => {
   const packages = buildAvailablePackages();
 
+  // Debug: log all package keys
+  console.log('Available packages:', Object.keys(packages));
+  console.log('Store registry:', storeRegistry.getAllStores().map(s => ({
+    id: s.id,
+    name: s.metadata.name,
+    sanitized: s.metadata.name.replace(/[^a-zA-Z0-9]/g, ''),
+    status: s.metadata.status
+  })));
+
   // Generate type declarations programmatically from the packages object
   const generateDeclarations = (obj: any): string => {
     const declarations: string[] = [];
@@ -45,8 +54,8 @@ const generateMonacoTypes = (): string => {
     useReducer: <S, A>(reducer: (state: S, action: A) => S, initialState: S) => [S, (action: A) => void];
     useContext: <T>(context: any) => T;
   };`);
-      } else if (key.startsWith('use')) {
-        // React hooks
+      } else if (key.startsWith('use') && !key.toLowerCase().includes('store')) {
+        // React hooks (but not stores that start with 'use')
         declarations.push(`  const ${key}: typeof React.${key};`);
       } else if (key === 'Fragment') {
         declarations.push(`  const Fragment: typeof React.Fragment;`);
@@ -66,12 +75,27 @@ const generateMonacoTypes = (): string => {
           s.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key
         );
 
+        // Debug: log store detection
+        if (key.toLowerCase().includes('store')) {
+          console.log(`Store check for ${key}:`, {
+            isStore,
+            registryStores: storeRegistry.getAllStores().map(s => ({
+              name: s.metadata.name,
+              sanitized: s.metadata.name.replace(/[^a-zA-Z0-9]/g, '')
+            }))
+          });
+        }
+
         // Also check if it looks like a Zustand store (returns an object with state/functions)
         let looksLikeStore = false;
         if (!isComponent && !isStore) {
           try {
             const result = value();
             looksLikeStore = result && typeof result === 'object' && !React.isValidElement(result);
+
+            if (key.toLowerCase().includes('store') && looksLikeStore) {
+              console.log(`${key} looks like a store! Result:`, result);
+            }
           } catch (e) {
             // Not a store if calling it throws
           }
@@ -139,12 +163,21 @@ const generateMonacoTypes = (): string => {
             s.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key
           );
 
+          console.log(`Processing store ${key}:`, {
+            found: !!store,
+            hasSource: !!store?.metadata?.source,
+            sourceLength: store?.metadata?.source?.length
+          });
+
           // Try to extract store interface from source code
           if (store?.metadata?.source) {
             const source = store.metadata.source;
+            console.log(`Source for ${key} (first 500 chars):`, source.substring(0, 500));
 
             // Look for store interface or type definition
-            const storeInterfaceMatch = source.match(/(?:interface|type)\s+(\w+Store)\s*=?\s*\{([^}]+)\}/);
+            // Match interfaces/types ending in Store or State
+            const storeInterfaceMatch = source.match(/(?:interface|type)\s+(\w+(?:Store|State))\s*=?\s*\{([^}]+)\}/);
+            console.log(`Interface match for ${key}:`, storeInterfaceMatch);
 
             if (storeInterfaceMatch) {
               const storeContent = storeInterfaceMatch[2];
