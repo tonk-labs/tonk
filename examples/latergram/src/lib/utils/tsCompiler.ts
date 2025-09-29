@@ -1,4 +1,4 @@
-import { buildAvailablePackages } from '../contextBuilder';
+import { buildAvailablePackages } from '../../components/contextBuilder';
 
 export interface CompilationResult {
   success: boolean;

@@ -190,7 +190,7 @@ export class AgentService {
       content: prompt,
     });
 
-    yield { content: '', done: true, type: 'text' };
+    yield { content: '', done: false, type: 'text' };
 
     // Get conversation history for context
     const messages = this.chatHistory.formatForAI();

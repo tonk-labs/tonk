@@ -2,7 +2,7 @@ import { useEffect, useCallback, useRef } from 'react';
 import { getVFSService } from '../../services/vfs-service';
 import { componentRegistry } from '../ComponentRegistry';
 import { buildAvailablePackages } from '../contextBuilder';
-import { DocumentData } from '@tonk/core';
+import type { DocumentData } from '@tonk/core';
 import { bytesToString } from '../../utils/vfs-utils';
 
 export interface ComponentWatcherHook {

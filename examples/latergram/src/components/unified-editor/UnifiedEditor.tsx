@@ -4,7 +4,7 @@ import { MonacoCodeEditor } from './MonacoCodeEditor';
 import { PreviewPane } from './PreviewPane';
 import { FileTree } from '../filetree/FileTree';
 import { getVFSService } from '../../services/vfs-service';
-import { useAutoSave } from '../shared/hooks/useAutoSave';
+import { useAutoSave } from './hooks/useAutoSave';
 import { typeScriptValidator } from '../../lib/typescript-validator';
 import { componentRegistry } from '../ComponentRegistry';
 import { storeRegistry } from '../StoreRegistry';

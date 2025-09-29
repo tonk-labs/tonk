@@ -1,8 +1,8 @@
 import { Layers, Database, FileText, House, FolderOpen } from 'lucide-react';
 import { Link, Routes, Route, useLocation, useSearchParams, useNavigate } from 'react-router-dom';
-import { UnifiedEditor } from '../components/unified-editor';
-import AgentChat from './AgentChat';
 import { createRef, useCallback } from 'react';
+import AgentChat from '../chat/AgentChat';
+import { UnifiedEditor } from './UnifiedEditor';
 
 export default function Editor() {
   const chatInputRef = createRef<HTMLTextAreaElement>();

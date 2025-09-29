@@ -3,7 +3,7 @@ import { Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { AppInitializer } from './components/AppInitializer';
 import { ViewRenderer } from './components/ViewRenderer';
 import { PageLayout } from './components/PageLayout';
-import Editor from './views/Editor';
+import Editor from './components/unified-editor/Editor';
 
 // Dynamic view component that maps routes to view files
 const DynamicView: React.FC<{ viewName?: string }> = ({ viewName }) => {

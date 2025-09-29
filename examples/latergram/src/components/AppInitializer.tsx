@@ -2,8 +2,8 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { getVFSService } from '../services/vfs-service';
 import { componentRegistry } from './ComponentRegistry';
 import { storeRegistry } from './StoreRegistry';
-import { ensureTypeScriptLoaded, compileTSCode } from './utils/tsCompiler';
-import { extractComponentName, extractStoreName } from './utils/nameExtractor';
+import { ensureTypeScriptLoaded, compileTSCode } from '../lib/utils/tsCompiler';
+import { extractComponentName, extractStoreName } from '../lib/utils/nameExtractor';
 import { useComponentWatcher } from './hooks/useComponentWatcher';
 
 interface AppInitializerProps {

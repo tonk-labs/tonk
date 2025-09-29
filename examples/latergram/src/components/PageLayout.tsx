@@ -2,7 +2,7 @@ import React, { createRef, useCallback, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import { MessageCircle, X } from 'lucide-react';
 import { Drawer, DrawerContent, DrawerTrigger } from './ui/drawer';
-import AgentChat from '../views/AgentChat';
+import AgentChat from './chat/AgentChat';
 import { useAgentChat } from '../lib/agent/use-agent-chat';
 import { cn } from '../lib/utils';
 
