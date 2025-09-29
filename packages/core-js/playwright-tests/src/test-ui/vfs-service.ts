@@ -5,10 +5,16 @@ import type {
 } from './types';
 import type { DocumentData, JsonValue } from '@tonk/core';
 import { bytesToString, stringToBytes } from './vfs-utils';
-import TonkWorker from '../tonk-worker.ts?worker';
+import TonkWorker from './tonk-worker.ts?worker';
 import mime from 'mime';
 
 const verbose = () => false;
+
+interface OperationStats {
+  totalOperations: number;
+  totalErrors: number;
+  recentTimings: number[];
+}
 
 export class VFSService {
   private worker: Worker | null = null;
@@ -25,8 +31,59 @@ export class VFSService {
   private watchers = new Map<string, (documentData: DocumentData) => void>();
   private directoryWatchers = new Map<string, (changeData: any) => void>();
 
+  // Operation tracking properties
+  private operationCount = 0;
+  private errorCount = 0;
+  private operationTimings: number[] = [];
+  private operationListeners = new Set<(stats: OperationStats) => void>();
+
   constructor() {
     this.initWorker();
+  }
+
+  // Operation tracking methods
+  public getOperationStats(): OperationStats {
+    return {
+      totalOperations: this.operationCount,
+      totalErrors: this.errorCount,
+      recentTimings: [...this.operationTimings],
+    };
+  }
+
+  public onOperationComplete(
+    callback: (stats: OperationStats) => void
+  ): () => void {
+    this.operationListeners.add(callback);
+    return () => this.operationListeners.delete(callback);
+  }
+
+  private async trackOperation<T>(promise: Promise<T>): Promise<T> {
+    const startTime = performance.now();
+
+    return promise
+      .then(result => {
+        const duration = performance.now() - startTime;
+        this.operationCount++;
+        this.operationTimings.push(duration);
+
+        // Keep only last 100 timings to avoid memory issues
+        if (this.operationTimings.length > 100) {
+          this.operationTimings.shift();
+        }
+
+        this.notifyListeners();
+        return result;
+      })
+      .catch(error => {
+        this.errorCount++;
+        this.notifyListeners();
+        throw error;
+      });
+  }
+
+  private notifyListeners(): void {
+    const stats = this.getOperationStats();
+    this.operationListeners.forEach(callback => callback(stats));
   }
 
   private initWorker() {
@@ -216,28 +273,34 @@ export class VFSService {
     }
     const id = this.generateId();
 
-    const result = await this.sendMessage<void>({
-      type: 'writeFile',
-      id,
-      path,
-      content,
-      create,
-    });
-
-    return result;
+    return this.trackOperation(
+      this.sendMessage<void>({
+        type: 'writeFile',
+        id,
+        path,
+        content,
+        create,
+      })
+    );
   }
 
   // Convenience method for writing files with bytes
   async writeFileWithBytes(
     path: string,
     content: JsonValue,
-    //either base64 encoded byte data or bytes array
     bytes: Uint8Array | string,
     create = false
   ): Promise<void> {
-    // Convert Uint8Array to base64 string if needed
-    const bytesData =
-      bytes instanceof Uint8Array ? btoa(String.fromCharCode(...bytes)) : bytes;
+    let bytesData: string;
+
+    if (bytes instanceof Uint8Array) {
+      const base64 = btoa(
+        bytes.reduce((data, byte) => data + String.fromCharCode(byte), '')
+      );
+      bytesData = base64;
+    } else {
+      bytesData = bytes;
+    }
 
     return this.writeFile(path, { content, bytes: bytesData }, create);
   }
@@ -278,11 +341,13 @@ export class VFSService {
 
   async deleteFile(path: string): Promise<void> {
     const id = this.generateId();
-    return this.sendMessage<void>({
-      type: 'deleteFile',
-      id,
-      path,
-    });
+    return this.trackOperation(
+      this.sendMessage<void>({
+        type: 'deleteFile',
+        id,
+        path,
+      })
+    );
   }
 
   async listDirectory(path: string): Promise<unknown[]> {

@@ -1,9 +1,29 @@
-import { JsonValue, DocumentData, RefNode } from '@tonk/core';
+import type { DocumentData, RefNode, JsonValue } from '../../../src/core.js';
 
 export type DocumentContent = {
   content: JsonValue;
   bytes?: string;
 };
+
+// Image generator types
+export interface ImageSpec {
+  width: number;
+  height: number;
+  sizeInMB: number;
+  format: 'jpeg' | 'png' | 'webp';
+  quality?: number;
+}
+
+export interface TestImage {
+  name: string;
+  data: Uint8Array;
+  size: number;
+  metadata: {
+    width: number;
+    height: number;
+    format: string;
+  };
+}
 
 // Message types for VFS Worker communication
 export type VFSWorkerMessage =
@@ -59,3 +79,43 @@ export type VFSWorkerResponse =
       path: string;
       changeData: any;
     };
+
+// Performance metrics types
+export interface MemoryMetrics {
+  heapUsed: number;
+  heapTotal: number;
+  wasmMemory: number;
+  indexedDBSize: number;
+}
+
+export interface LatencyMetrics {
+  min: number;
+  max: number;
+  mean: number;
+  median: number;
+  p50: number;
+  p95: number;
+  p99: number;
+}
+
+export interface ThroughputMetrics {
+  operationsPerSecond: number;
+  bytesPerSecond: number;
+  totalOperations: number;
+  totalBytes: number;
+}
+
+export interface ErrorMetrics {
+  count: number;
+  types: Map<string, number>;
+  lastError?: string;
+}
+
+export interface BenchmarkMetrics {
+  testName: string;
+  timestamp: number;
+  throughput: ThroughputMetrics;
+  latency: LatencyMetrics;
+  memory: MemoryMetrics;
+  errors: ErrorMetrics;
+}

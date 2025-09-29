@@ -157,6 +157,103 @@ export class ImageGenerator {
   }
 
   /**
+   * Generate or load cached test images for a specific test
+   */
+  async generateBatchForTest(
+    testName: string,
+    count: number,
+    sizeRangeMB: [number, number] = [1, 10],
+    formats: ('jpeg' | 'png' | 'webp')[] = ['jpeg', 'png']
+  ): Promise<TestImage[]> {
+    const testCacheDir = path.join(this.cacheDir, testName);
+
+    try {
+      await fs.access(testCacheDir);
+      const cachedImages = await this.loadCachedImages(testCacheDir, count);
+      if (cachedImages.length === count) {
+        console.log(`Loaded ${count} cached images for test: ${testName}`);
+        return cachedImages;
+      }
+    } catch {
+      console.log(
+        `No cache found for test: ${testName}, generating ${count} images...`
+      );
+    }
+
+    const images = await this.generateBatch(count, sizeRangeMB, formats);
+    await this.saveBatchToCache(testCacheDir, images);
+    console.log(`Generated and cached ${count} images for test: ${testName}`);
+    return images;
+  }
+
+  /**
+   * Load cached images from a test directory
+   */
+  private async loadCachedImages(
+    cacheDir: string,
+    expectedCount: number
+  ): Promise<TestImage[]> {
+    const files = await fs.readdir(cacheDir);
+    const imageFiles = files
+      .filter(f => f.endsWith('.bin'))
+      .slice(0, expectedCount);
+
+    if (imageFiles.length < expectedCount) {
+      throw new Error(
+        `Not enough cached images: found ${imageFiles.length}, need ${expectedCount}`
+      );
+    }
+
+    const images: TestImage[] = [];
+    for (const file of imageFiles) {
+      const filePath = path.join(cacheDir, file);
+      const data = await fs.readFile(filePath);
+      const metadata = this.parseImageMetadataFromFilename(file);
+
+      images.push({
+        name: file.replace('.bin', ''),
+        data: new Uint8Array(data),
+        size: data.byteLength,
+        metadata,
+      });
+    }
+
+    return images;
+  }
+
+  /**
+   * Save a batch of images to cache directory
+   */
+  private async saveBatchToCache(
+    cacheDir: string,
+    images: TestImage[]
+  ): Promise<void> {
+    await fs.mkdir(cacheDir, { recursive: true });
+
+    for (let i = 0; i < images.length; i++) {
+      const image = images[i];
+      const filename = `${i}_${image.metadata.width}x${image.metadata.height}_${(image.size / (1024 * 1024)).toFixed(2)}MB_${image.metadata.format}.bin`;
+      const filePath = path.join(cacheDir, filename);
+      await fs.writeFile(filePath, image.data);
+    }
+  }
+
+  /**
+   * Parse image metadata from cached filename
+   */
+  private parseImageMetadataFromFilename(filename: string) {
+    const match = filename.match(/(\d+)_(\d+)x(\d+)_[\d.]+MB_(\w+)\.bin/);
+    if (match) {
+      return {
+        width: parseInt(match[2]),
+        height: parseInt(match[3]),
+        format: match[4] as 'jpeg' | 'png' | 'webp',
+      };
+    }
+    return { width: 1920, height: 1080, format: 'jpeg' as const };
+  }
+
+  /**
    * Get random dimensions similar to iPhone photos
    */
   private getRandomDimensions(): { width: number; height: number } {

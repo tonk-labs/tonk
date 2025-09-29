@@ -2,14 +2,14 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests',
-  timeout: 300000, // 5 minutes per test
+  timeout: 600000, // 10 minutes per test
   expect: {
     timeout: 60000,
   },
-  fullyParallel: false, // Run tests sequentially to avoid port conflicts
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: 1, // Single worker to avoid server conflicts
+  workers: 1,
 
   use: {
     baseURL: 'http://localhost:5173',

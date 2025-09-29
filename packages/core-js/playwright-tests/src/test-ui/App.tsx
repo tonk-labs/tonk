@@ -1,12 +1,18 @@
 import { useState, useEffect } from 'react';
 import { getVFSService } from './vfs-service';
 import { imageGenerator } from '../utils/image-generator';
-import { MetricsCollector } from '../utils/metrics-collector';
 
 interface ServerConfig {
   port: number;
   wsUrl: string;
   manifestUrl: string;
+}
+
+interface BrowserMetrics {
+  heapUsed: number;
+  heapTotal: number;
+  heapLimit: number;
+  indexedDBSize: number;
 }
 
 interface TestState {
@@ -16,6 +22,9 @@ interface TestState {
   throughput: number;
   errors: number;
   memoryUsage: number;
+  browserMetrics: BrowserMetrics;
+  operationTimings: number[];
+  startTime: number;
 }
 
 // Helper function to get server configuration
@@ -52,19 +61,71 @@ function App() {
       throughput: 0,
       errors: 0,
       memoryUsage: 0,
+      browserMetrics: {
+        heapUsed: 0,
+        heapTotal: 0,
+        heapLimit: 0,
+        indexedDBSize: 0,
+      },
+      operationTimings: [],
+      startTime: Date.now(),
     };
   });
 
-  const [metrics] = useState(() => new MetricsCollector('ui-test'));
   const [vfs] = useState(() => getVFSService());
+
+  // Browser metrics collection function
+  const collectBrowserMetrics = async (): Promise<BrowserMetrics> => {
+    const metrics: BrowserMetrics = {
+      heapUsed: 0,
+      heapTotal: 0,
+      heapLimit: 0,
+      indexedDBSize: 0,
+    };
+
+    // Get JavaScript heap memory
+    if (typeof performance !== 'undefined' && 'memory' in performance) {
+      const memInfo = (performance as any).memory;
+      metrics.heapUsed = memInfo.usedJSHeapSize || 0;
+      metrics.heapTotal = memInfo.totalJSHeapSize || 0;
+      metrics.heapLimit = memInfo.jsHeapSizeLimit || 0;
+    }
+
+    // Get IndexedDB size
+    if (
+      typeof navigator !== 'undefined' &&
+      'storage' in navigator &&
+      'estimate' in navigator.storage
+    ) {
+      try {
+        const estimate = await navigator.storage.estimate();
+        metrics.indexedDBSize = estimate.usage || 0;
+      } catch (error) {
+        console.warn('Failed to estimate IndexedDB size:', error);
+      }
+    }
+
+    return metrics;
+  };
 
   // Expose VFS service to window for testing
   useEffect(() => {
     (window as any).vfsService = vfs;
     console.log('VFS service exposed to window');
 
+    // Subscribe to operation updates
+    const unsubscribe = vfs.onOperationComplete(stats => {
+      setState(prev => ({
+        ...prev,
+        operations: stats.totalOperations,
+        errors: stats.totalErrors,
+        operationTimings: stats.recentTimings,
+      }));
+    });
+
     return () => {
       delete (window as any).vfsService;
+      unsubscribe();
     };
   }, [vfs]);
 
@@ -91,33 +152,24 @@ function App() {
   const runThroughputTest = async () => {
     if (!vfs.isInitialized()) return;
 
-    const endOperation = metrics.startOperation();
-
     try {
       // Create a test file
-      const testData = JSON.stringify({ test: 'data', timestamp: Date.now() });
+      const testData = { test: 'data', timestamp: Date.now() };
       try {
-        await vfs.writeFile('/test-file.json', testData, true);
+        await vfs.writeFile('/test-file.json', { content: testData }, true);
       } catch {
-        await vfs.writeFile('/test-file.json', testData, false);
+        await vfs.writeFile('/test-file.json', { content: testData }, false);
       }
 
       // Read it back
       await vfs.readFile('/test-file.json');
-
-      endOperation();
-      setState(prev => ({ ...prev, operations: prev.operations + 1 }));
     } catch (error) {
       console.error('Test operation failed:', error);
-      metrics.recordError('operation-failed');
-      setState(prev => ({ ...prev, errors: prev.errors + 1 }));
     }
   };
 
   const runImageTest = async () => {
     if (!vfs.isInitialized()) return;
-
-    const endOperation = metrics.startOperation();
 
     try {
       // Generate a small test image
@@ -128,31 +180,29 @@ function App() {
         format: 'jpeg',
       });
 
-      metrics.recordBytes(image.byteLength);
-
-      // Save to VFS
-      await vfs.createFileWithBytes(
+      // Save to VFS using writeFileWithBytes
+      await vfs.writeFileWithBytes(
         '/test-image.jpg',
-        { type: 'image' },
+        { type: 'image', size: image.byteLength },
         image
       );
-
-      endOperation();
-      setState(prev => ({ ...prev, operations: prev.operations + 1 }));
     } catch (error) {
       console.error('Image test failed:', error);
-      metrics.recordError('image-test-failed');
-      setState(prev => ({ ...prev, errors: prev.errors + 1 }));
     }
   };
 
   const updateMetrics = async () => {
     try {
-      const currentMetrics = await metrics.getMetrics();
+      const browserMetrics = await collectBrowserMetrics();
+      const elapsedSeconds = (Date.now() - state.startTime) / 1000;
+      const throughput =
+        elapsedSeconds > 0 ? state.operations / elapsedSeconds : 0;
+
       setState(prev => ({
         ...prev,
-        throughput: currentMetrics.throughput.operationsPerSecond,
-        memoryUsage: currentMetrics.memory.heapUsed / (1024 * 1024), // MB
+        browserMetrics,
+        throughput,
+        memoryUsage: browserMetrics.heapUsed / (1024 * 1024), // MB
       }));
     } catch (error) {
       console.error('Failed to update metrics:', error);
@@ -205,6 +255,7 @@ function App() {
             display: 'grid',
             gridTemplateColumns: 'repeat(2, 1fr)',
             gap: '10px',
+            marginBottom: '15px',
           }}
         >
           <div>
@@ -225,6 +276,41 @@ function App() {
             <strong>Memory:</strong>
             <span data-testid="memory-usage">
               {state.memoryUsage.toFixed(2)} MB
+            </span>
+          </div>
+        </div>
+
+        <h3>Browser Memory Details</h3>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, 1fr)',
+            gap: '10px',
+          }}
+        >
+          <div>
+            <strong>Heap Used:</strong>
+            <span data-testid="heap-used">
+              {(state.browserMetrics.heapUsed / (1024 * 1024)).toFixed(2)} MB
+            </span>
+          </div>
+          <div>
+            <strong>Heap Total:</strong>
+            <span data-testid="heap-total">
+              {(state.browserMetrics.heapTotal / (1024 * 1024)).toFixed(2)} MB
+            </span>
+          </div>
+          <div>
+            <strong>Heap Limit:</strong>
+            <span data-testid="heap-limit">
+              {(state.browserMetrics.heapLimit / (1024 * 1024)).toFixed(2)} MB
+            </span>
+          </div>
+          <div>
+            <strong>IndexedDB Size:</strong>
+            <span data-testid="indexeddb-size">
+              {(state.browserMetrics.indexedDBSize / (1024 * 1024)).toFixed(2)}{' '}
+              MB
             </span>
           </div>
         </div>

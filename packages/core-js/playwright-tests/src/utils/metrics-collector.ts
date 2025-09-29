@@ -1,21 +1,8 @@
-import { BenchmarkMetrics } from '../test-ui/types';
-
-interface MemoryMetrics {
-  heapUsed: number;
-  heapTotal: number;
-  wasmMemory: number;
-  indexedDBSize: number;
-}
-
-interface LatencyMetrics {
-  min: number;
-  max: number;
-  mean: number;
-  median: number;
-  p50: number;
-  p95: number;
-  p99: number;
-}
+import {
+  BenchmarkMetrics,
+  MemoryMetrics,
+  LatencyMetrics,
+} from '../test-ui/types';
 
 /**
  * Collects and analyzes performance metrics during tests
@@ -83,8 +70,8 @@ export class MetricsCollector {
       indexedDBSize: 0,
     };
 
-    // Get JavaScript heap memory
-    if ('memory' in performance) {
+    // Get JavaScript heap memory (check if we're in browser context)
+    if (typeof performance !== 'undefined' && 'memory' in performance) {
       const memInfo = (performance as any).memory;
       metrics.heapUsed = memInfo.usedJSHeapSize;
       metrics.heapTotal = memInfo.totalJSHeapSize;
@@ -108,7 +95,8 @@ export class MetricsCollector {
   private async estimateWasmMemory(): Promise<number> {
     // This is a placeholder - in production, you'd query the actual WASM module
     // For now, return a rough estimate based on heap usage
-    if ('memory' in performance) {
+    // Check if we're in browser context
+    if (typeof performance !== 'undefined' && 'memory' in performance) {
       const memInfo = (performance as any).memory;
       // Assume WASM uses about 20% of total memory
       return Math.floor(memInfo.totalJSHeapSize * 0.2);
@@ -120,7 +108,12 @@ export class MetricsCollector {
    * Get IndexedDB storage size
    */
   private async getIndexedDBSize(): Promise<number> {
-    if ('storage' in navigator && 'estimate' in navigator.storage) {
+    // Check if we're in a browser environment
+    if (
+      typeof navigator !== 'undefined' &&
+      'storage' in navigator &&
+      'estimate' in navigator.storage
+    ) {
       try {
         const estimate = await navigator.storage.estimate();
         return estimate.usage || 0;
@@ -235,7 +228,7 @@ MEMORY:
 ERRORS:
 - Total: ${metrics.errors.count}
 ${Array.from(metrics.errors.types.entries())
-  .map(([type, count]) => `  - ${type}: ${count}`)
+  .map(entry => `  - ${entry[0]}: ${entry[1]}`)
   .join('\n')}
 `;
 
