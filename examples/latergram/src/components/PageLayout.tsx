@@ -1,6 +1,6 @@
 import React, { createRef, useCallback, useState } from 'react';
-import { Outlet } from 'react-router-dom';
-import { MessageCircle, X } from 'lucide-react';
+import { Link, Outlet } from 'react-router-dom';
+import { Code2Icon, MessageCircle } from 'lucide-react';
 import { Drawer, DrawerContent, DrawerTrigger } from './ui/drawer';
 import AgentChat from './chat/AgentChat';
 import { useAgentChat } from '../lib/agent/use-agent-chat';
@@ -26,12 +26,15 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
         <Outlet />
       </div>
 
-      {/* Floating Action Button */}
+      {/* Floating Bottom Bar Buttons */}
       <DrawerTrigger asChild>
-        <div className="fixed bottom-6 right-6 w-16 h-16 z-[1000]">
+        <div className="fixed bottom-6 right-6 z-[1000] flex flex-row gap-2">
           <button
             type="button"
-            className={cn("relative w-full h-full hover:scale-110 transition-all flex items-center justify-center", isLoading && 'animate-bounce')}
+            className={cn(
+              'w-16 h-16 relative hover:scale-110 transition-all flex items-center justify-center',
+              isLoading && 'animate-bounce'
+            )}
             aria-label="Open AI Assistant"
           >
             {/* Star burst background with rainbow gradient */}
@@ -59,19 +62,26 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
             {/* Message icon on top */}
             <MessageCircle className="w-7 h-7 text-white relative z-10 drop-shadow-md" />
           </button>
+          <Link
+            title="Open Page Editor"
+            to={`/editor/pages?file=${encodeURIComponent(viewPath)}`}
+            className="w-16 h-16 items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-full hover:bg-gray-50 transition-colors shadow-sm hidden lg:inline-flex"
+          >
+            <Code2Icon className="w-full h-full" />
+          </Link>
         </div>
       </DrawerTrigger>
 
       {/* Drawer Content */}
       <DrawerContent
-        title='Agent Chat'
+        title="Agent Chat"
         className="max-h-[85vh] h-[85vh] p-0 rounded-t-lg overflow-clip z-[1000000]"
         onWheel={e => e.stopPropagation()}
       >
         <div className="flex flex-col h-full -mt-6 bg-white">
           {/* AgentChat Component */}
           {/* <div className="flex-1 overflow-hidden"> */}
-            <AgentChat inputRef={inputRef} />
+          <AgentChat inputRef={inputRef} />
           {/* </div> */}
         </div>
       </DrawerContent>

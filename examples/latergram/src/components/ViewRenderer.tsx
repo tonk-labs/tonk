@@ -11,13 +11,11 @@ import { cn } from '../lib/utils';
 interface ViewRendererProps {
   viewPath: string;
   className?: string;
-  showEditor?: boolean;
 }
 
 export const ViewRenderer: React.FC<ViewRendererProps> = ({
   viewPath,
   className = '',
-  showEditor = false,
 }) => {
   const sandboxRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<any>(null);
@@ -287,17 +285,6 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
   if (renderError) {
     return (
       <div className={`h-screen bg-gray-50 ${className}`}>
-        {showEditor && (
-          <div className="absolute top-4 right-4 z-10">
-            <Link
-              to={`/editor/pages?file=${encodeURIComponent(viewPath)}`}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"
-            >
-              <Edit3 className="w-4 h-4" />
-              Edit in Editor
-            </Link>
-          </div>
-        )}
         <div className="flex items-center justify-center h-full">
           <div className="max-w-2xl mx-auto p-8">
             <div className="bg-red-50 border border-red-200 rounded-lg p-6">
@@ -323,17 +310,6 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
   return (
     <div className={cn(className, 'relative')}>
       <div ref={sandboxRef} className="min-h-screen -z-10" />
-      {showEditor && (
-        <div className="absolute top-4 right-4 z-[100000] hidden md:block">
-          <Link
-            to={`/editor/pages?file=${encodeURIComponent(viewPath)}`}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"
-          >
-            <Edit3 className="w-4 h-4" />
-            Open Editor
-          </Link>
-        </div>
-      )}
     </div>
   );
 };

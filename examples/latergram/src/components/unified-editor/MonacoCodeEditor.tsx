@@ -708,6 +708,10 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
           acceptSuggestionOnEnter: 'on',
           tabCompletion: 'on',
           wordBasedSuggestions: "allDocuments",
+          padding: {
+            top: 20,
+            bottom: 20
+          }
         }}
       />
     </div>

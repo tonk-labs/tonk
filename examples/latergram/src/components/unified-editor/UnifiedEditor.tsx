@@ -253,6 +253,11 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
 
   // Handle initial file from URL parameter
   useEffect(() => {
+    if (!initialFile) {
+      console.log('No initial file provided, resetting selection');
+      setSelectedFile(null);
+      setActiveTab('preview');
+    }
     if (initialFile && vfs.isInitialized()) {
       // Check if the file exists before trying to load it
       vfs.exists(initialFile).then((exists) => {
@@ -363,7 +368,7 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
 
         {/* Tab Bar */}
         {!editorOnly && (
-          <div className="bg-white border-0 border-gray-200 px-6 pt-2">
+          <div className="bg-gray-100 px-6 pt-2">
             <div className="flex gap-1">
               <button
                 type="button"
@@ -423,11 +428,11 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
               filePath={selectedFile || undefined}
             />
           ) : (
-            <PreviewPane
+            <div className="border-5 bg-gray-300 border-gray-400 p-4 min-h-full"><PreviewPane
               filePath={selectedFile}
               fileType={fileType}
-              className="h-full"
-            />
+              className="h-full shadow-lg rounded-lg border-b-1 border-gray-400/20 overflow-y-scroll"
+            /></div>
           )}
         </div>
       </div>

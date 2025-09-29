@@ -8,6 +8,26 @@ import {
   tonkTools
 } from './code_agent';
 
+// Type definitions for better type safety
+interface ToolCall {
+  toolCallId: string;
+  toolName: string;
+  args?: any;
+  arguments?: any;
+}
+
+interface ToolResult {
+  result?: any;
+  output?: any;
+}
+
+interface FormattedToolCall {
+  id: string;
+  name: string;
+  args: any;
+  result: any;
+}
+
 export interface AgentServiceOptions {
   manifestUrl?: string;
   wsUrl?: string;
@@ -19,6 +39,113 @@ export class AgentService {
   private chatHistory: any = null; // Lazy load to avoid initialization issues
   private openrouter = createOpenRouterProvider();
   private abortController: AbortController | null = null;
+
+  // Utility methods for consistent tool handling
+  private getToolArgs(call: ToolCall): any {
+    return 'args' in call ? call.args : call.arguments;
+  }
+
+  private getToolResult(result: ToolResult): any {
+    return result && ('result' in result ? result.result : result.output);
+  }
+
+  private formatToolCalls(toolCalls: ToolCall[], toolResults: ToolResult[]): FormattedToolCall[] {
+    return toolCalls.map((call, index) => ({
+      id: call.toolCallId,
+      name: call.toolName,
+      args: this.getToolArgs(call),
+      result: toolResults[index] ? this.getToolResult(toolResults[index]) : null,
+    }));
+  }
+
+  private createAbortController(): AbortController {
+    // Clean up existing controller first
+    this.cleanupAbortController();
+    this.abortController = new AbortController();
+    return this.abortController;
+  }
+
+  private cleanupAbortController(): void {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+  }
+
+  private async storeToolExecutions(toolCalls: ToolCall[], toolResults: ToolResult[]): Promise<void> {
+    for (let i = 0; i < toolCalls.length; i++) {
+      const call = toolCalls[i];
+      const result = toolResults[i];
+      const args = this.getToolArgs(call);
+      const resultData = this.getToolResult(result);
+
+      // Store the tool call as a hidden assistant message
+      await this.chatHistory.addMessage({
+        role: 'assistant',
+        content: `Calling tool: ${call.toolName}\nArguments: ${JSON.stringify(args, null, 2)}`,
+        hidden: true,
+        toolCalls: [{
+          id: call.toolCallId,
+          name: call.toolName,
+          args: args,
+          result: null,
+        }],
+      });
+
+      // Store the tool result as a tool message
+      if (result) {
+        await this.chatHistory.addMessage({
+          role: 'tool',
+          content: JSON.stringify(resultData, null, 2),
+          hidden: true,
+          toolName: call.toolName,
+          toolCallId: call.toolCallId,
+        });
+      }
+    }
+  }
+
+  private async* streamToolResults(toolCalls: ToolCall[], toolResults: ToolResult[], hasTextContent: boolean): AsyncGenerator<{ content: string; done: boolean; type?: 'text' | 'tool_call' | 'tool_result' }> {
+    if (toolCalls.length === 0) return;
+
+    // Add spacing if there was text before
+    if (hasTextContent) {
+      yield { content: '\n\n---\n\n', done: false, type: 'text' };
+    }
+
+    for (let i = 0; i < toolCalls.length; i++) {
+      const call = toolCalls[i];
+      const result = toolResults[i];
+
+      // Show tool call
+      const toolInfo = `🔧 **Tool called:** \`${call.toolName}\`\n`;
+      yield { content: toolInfo, done: false, type: 'tool_call' };
+
+      // Show simplified args (not full JSON for readability)
+      const args = this.getToolArgs(call);
+      if (args && Object.keys(args).length > 0) {
+        const argsPreview = JSON.stringify(args, null, 2);
+        const argsText = argsPreview.length > 300 ?
+          argsPreview.substring(0, 300) + '...' :
+          argsPreview;
+        yield { content: `\`\`\`json\n${argsText}\n\`\`\`\n`, done: false, type: 'tool_call' };
+      }
+
+      // Show result if available
+      if (result) {
+        const resultData = this.getToolResult(result);
+        if (resultData !== undefined && resultData !== null) {
+          const resultStr = typeof resultData === 'string' ?
+            resultData :
+            JSON.stringify(resultData, null, 2);
+          const resultPreview = resultStr.length > 200 ?
+            '(result truncated)' :
+            resultStr;
+          yield { content: `✅ **Result:** ${resultPreview}\n\n`, done: false, type: 'tool_result' };
+        }
+      }
+    }
+  }
 
   async initialize(options: AgentServiceOptions = {}): Promise<void> {
     if (this.initialized) {
@@ -50,27 +177,28 @@ export class AgentService {
       throw new Error('Agent service not initialized');
     }
 
-    // Add user message to history
-    await this.chatHistory.addMessage({
-      role: 'user',
-      content: prompt,
-    });
-
-    // Get conversation history for context
-    const messages = this.chatHistory.formatForAI();
+    // Create abort controller for this request
+    const abortController = this.createAbortController();
 
     try {
+      // Add user message and get conversation history in single operation
+      await this.chatHistory.addMessage({
+        role: 'user',
+        content: prompt,
+      });
+      const messages = this.chatHistory.formatForAI();
+
       console.log('[AgentService] Generating response with tools...');
 
       // Generate response with tools - stop when finish tool is called
       const result = await generateText({
         model: this.openrouter(MODEL),
         system: AGENT_SYSTEM_PROMPT,
-        messages: messages as any, // Type assertion needed due to AI SDK type limitations
+        messages: messages,
         tools: tonkTools,
         maxRetries: 5,
-        stopWhen: ({ toolCalls }: any) => {
-          // Stop when the finish tool is called
+        abortSignal: abortController.signal,
+        stopWhen: ({ toolCalls }) => {
           return toolCalls?.some((call: any) => call.toolName === 'finish') ?? false;
         },
       });
@@ -85,75 +213,29 @@ export class AgentService {
         toolCallsCount: toolCalls?.length || 0,
       });
 
-      // Format tool calls for storage - ensure toolCalls is an array
-      const calls = Array.isArray(toolCalls) ? toolCalls : [];
-      const results = Array.isArray(toolResults) ? toolResults : [];
-
-      console.log('[AgentService] Tool processing:', {
-        callsCount: calls.length,
-        resultsCount: results.length,
-        hasText: !!text,
-      });
-
-      if (calls.length > 0) {
-        console.log('[AgentService] Tool calls made:', calls.map(c => ({
+      if (toolCalls.length > 0) {
+        console.log('[AgentService] Tool calls made:', toolCalls.map(c => ({
           name: c.toolName,
-          args: 'args' in c ? c.args : (c as any).arguments,
+          args: this.getToolArgs(c),
         })));
 
-        console.log('[AgentService] Tool results:', results.map((r, i) => ({
-          toolName: calls[i]?.toolName,
-          result: 'result' in r ? r.result : r.output,
+        console.log('[AgentService] Tool results:', toolResults.map((r, i) => ({
+          toolName: toolCalls[i]?.toolName,
+          result: this.getToolResult(r),
         })));
 
         // Check if finish tool was called
-        const finishCall = calls.find(c => c.toolName === 'finish');
+        const finishCall = toolCalls.find(c => c.toolName === 'finish');
         if (finishCall) {
-          console.log('[AgentService] ✅ FINISH tool called - task complete!', 'args' in finishCall ? finishCall.args : (finishCall as any).arguments);
+          console.log('[AgentService] ✅ FINISH tool called - task complete!', this.getToolArgs(finishCall));
         }
+
+        // Store tool executions using utility method
+        await this.storeToolExecutions(toolCalls, toolResults);
       }
 
-      // Store tool calls and results as separate hidden messages for context
-      if (calls.length > 0) {
-        for (let i = 0; i < calls.length; i++) {
-          const call = calls[i];
-          const result = results[i];
-
-          const args = 'args' in call ? call.args : (call as any).arguments;
-          const resultData = result && ('result' in result ? result.result : result.output);
-
-          // Store the tool call as a hidden assistant message
-          await this.chatHistory.addMessage({
-            role: 'assistant',
-            content: `Calling tool: ${call.toolName}\nArguments: ${JSON.stringify(args, null, 2)}`,
-            hidden: true,
-            toolCalls: [{
-              id: call.toolCallId,
-              name: call.toolName,
-              args: args,
-              result: null,
-            }],
-          });
-
-          // Store the tool result as a tool message
-          if (result) {
-            await this.chatHistory.addMessage({
-              role: 'tool',
-              content: JSON.stringify(resultData, null, 2),
-              hidden: true,
-              toolName: call.toolName,
-              toolCallId: call.toolCallId,
-            });
-          }
-        }
-      }
-
-      const formattedToolCalls = calls.length > 0 ? calls.map((call, index) => ({
-        id: call.toolCallId,
-        name: call.toolName,
-        args: 'args' in call ? call.args : (call as any).arguments,
-        result: results[index] && ('result' in results[index] ? (results[index] as any).result : (results[index] as any).output),
-      })) : undefined;
+      // Format tool calls using utility method
+      const formattedToolCalls = toolCalls.length > 0 ? this.formatToolCalls(toolCalls, toolResults) : undefined;
 
       // Add the final assistant message (visible)
       const assistantMessage = await this.chatHistory.addMessage({
@@ -166,6 +248,12 @@ export class AgentService {
     } catch (error) {
       console.error('Error generating response:', error);
 
+      // Don't add error message if aborted
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log('[AgentService] Generation was aborted');
+        throw error;
+      }
+
       // Add error message to history
       await this.chatHistory.addMessage({
         role: 'assistant',
@@ -173,6 +261,9 @@ export class AgentService {
       });
 
       throw error;
+    } finally {
+      // Always clean up abort controller
+      this.cleanupAbortController();
     }
   }
 
@@ -182,17 +273,17 @@ export class AgentService {
     }
 
     // Create new abort controller for this request
-    this.abortController = new AbortController();
+    const abortController = this.createAbortController();
 
-    // Add user message to history
+    // Add user message and get conversation history in single operation
     await this.chatHistory.addMessage({
       role: 'user',
       content: prompt,
     });
 
+    // Yield so chat will update correctly
     yield { content: '', done: false, type: 'text' };
 
-    // Get conversation history for context
     const messages = this.chatHistory.formatForAI();
 
     // Create the assistant message with streaming flag
@@ -209,12 +300,11 @@ export class AgentService {
       const result = await streamText({
         model: this.openrouter(MODEL),
         system: AGENT_SYSTEM_PROMPT,
-        messages: messages as any, // Type assertion needed due to AI SDK type limitations
+        messages: messages,
         tools: tonkTools,
         maxRetries: 5,
-        abortSignal: this.abortController.signal,
-        stopWhen: ({ toolCalls }: any) => {
-          // Stop when the finish tool is called
+        abortSignal: abortController.signal,
+        stopWhen: ({ toolCalls }) => {
           return toolCalls?.some((call: any) => call.toolName === 'finish') ?? false;
         },
       });
@@ -244,101 +334,27 @@ export class AgentService {
       const toolCalls = steps.flatMap(step => step.toolCalls || []);
       const toolResults = steps.flatMap(step => step.toolResults || []);
 
-      // If there were tool calls, append them to the output
-      if (toolCalls.length > 0) {
-        // Add spacing if there was text before
-        if (fullContent.trim()) {
-          yield { content: '\n\n---\n\n', done: false, type: 'text' };
-        }
-
-        for (let i = 0; i < toolCalls.length; i++) {
-          const call = toolCalls[i];
-          const result = toolResults[i];
-
-          // Show tool call
-          const toolInfo = `🔧 **Tool called:** \`${call.toolName}\`\n`;
-          yield { content: toolInfo, done: false, type: 'tool_call' };
-
-          // Show simplified args (not full JSON for readability)
-          const args = 'args' in call ? call.args : (call as any).arguments;
-          if (args && Object.keys(args).length > 0) {
-            const argsPreview = JSON.stringify(args, null, 2);
-            const argsText = argsPreview.length > 300 ?
-              argsPreview.substring(0, 300) + '...' :
-              argsPreview;
-            yield { content: `\`\`\`json\n${argsText}\n\`\`\`\n`, done: false, type: 'tool_call' };
-          }
-
-          // Show result if available
-          if (result) {
-            const resultData = 'result' in result ? result.result : result.output;
-            if (resultData !== undefined && resultData !== null) {
-              const resultStr = typeof resultData === 'string' ?
-                resultData :
-                JSON.stringify(resultData, null, 2);
-              const resultPreview = resultStr.length > 200 ?
-                '(result truncated)' :
-                resultStr;
-              yield { content: `✅ **Result:** ${resultPreview}\n\n`, done: false, type: 'tool_result' };
-            }
-          }
-        }
-      }
+      // Stream tool results using utility method
+      yield* this.streamToolResults(toolCalls, toolResults, !!fullContent.trim());
 
       if (toolCalls.length > 0) {
         console.log('[AgentService] Tool calls made during stream:', toolCalls.map(c => ({
           name: c.toolName,
-          args: 'args' in c ? c.args : (c as any).arguments,
+          args: this.getToolArgs(c),
         })));
 
         // Check if finish tool was called
         const finishCall = toolCalls.find(c => c.toolName === 'finish');
         if (finishCall) {
-          console.log('[AgentService] ✅ FINISH tool called - task complete!', 'args' in finishCall ? finishCall.args : (finishCall as any).arguments);
+          console.log('[AgentService] ✅ FINISH tool called - task complete!', this.getToolArgs(finishCall));
         }
+
+        // Store tool executions using utility method
+        await this.storeToolExecutions(toolCalls, toolResults);
       }
 
-      // Store tool calls and results as separate hidden messages for context
-      if (toolCalls.length > 0) {
-        for (let i = 0; i < toolCalls.length; i++) {
-          const call = toolCalls[i];
-          const result = toolResults[i];
-
-          const args = 'args' in call ? call.args : (call as any).arguments;
-          const resultData = result && ('result' in result ? result.result : result.output);
-
-          // Store the tool call as a hidden assistant message
-          await this.chatHistory.addMessage({
-            role: 'assistant',
-            content: `Calling tool: ${call.toolName}\nArguments: ${JSON.stringify(args, null, 2)}`,
-            hidden: true,
-            toolCalls: [{
-              id: call.toolCallId,
-              name: call.toolName,
-              args: args,
-              result: null,
-            }],
-          });
-
-          // Store the tool result as a tool message
-          if (result) {
-            await this.chatHistory.addMessage({
-              role: 'tool',
-              content: JSON.stringify(resultData, null, 2),
-              hidden: true,
-              toolName: call.toolName,
-              toolCallId: call.toolCallId,
-            });
-          }
-        }
-      }
-
-      const formattedToolCalls = toolCalls.length > 0 ? toolCalls.map((call, index) => ({
-        id: call.toolCallId,
-        name: call.toolName,
-        args: call.args,
-        result: toolResults[index]?.result,
-      })) : undefined;
+      // Format tool calls using utility method
+      const formattedToolCalls = toolCalls.length > 0 ? this.formatToolCalls(toolCalls, toolResults) : undefined;
 
       console.log('[AgentService] Marking streamed message as complete...');
 
@@ -362,6 +378,14 @@ export class AgentService {
     } catch (error) {
       console.error('Error streaming response:', error);
 
+      // Don't add error message if aborted
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log('[AgentService] Generation was aborted');
+        await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent || '', false);
+        yield { content: '', done: true, type: 'text' };
+        return;
+      }
+
       const errorMsg = `I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}`;
 
       // Mark the streaming message as complete with error
@@ -369,6 +393,9 @@ export class AgentService {
 
       yield { content: errorMsg, done: true, type: 'text' };
       throw error;
+    } finally {
+      // Always clean up abort controller
+      this.cleanupAbortController();
     }
   }
 
@@ -392,12 +419,17 @@ export class AgentService {
     return this.chatHistory;
   }
 
+  // Cleanup method for proper resource management
+  destroy(): void {
+    console.log('[AgentService] Destroying service...');
+    this.cleanupAbortController();
+    this.initialized = false;
+    this.chatHistory = null;
+  }
+
   stopGeneration(): void {
-    if (this.abortController) {
-      console.log('[AgentService] Stopping generation...');
-      this.abortController.abort();
-      this.abortController = null;
-    }
+    console.log('[AgentService] Stopping generation...');
+    this.cleanupAbortController();
   }
 
   async updateMessage(messageId: string, newContent: string): Promise<void> {
@@ -437,7 +469,7 @@ export class AgentService {
     }
 
     // Create new abort controller for this request
-    this.abortController = new AbortController();
+    const abortController = this.createAbortController();
 
     // Get conversation history for context (already includes the edited message)
     const messages = this.chatHistory.formatForAI();
@@ -460,11 +492,11 @@ export class AgentService {
       const result = await streamText({
         model: this.openrouter(MODEL),
         system: AGENT_SYSTEM_PROMPT,
-        messages: messages as any,
+        messages: messages,
         tools: tonkTools,
         maxRetries: 5,
-        abortSignal: this.abortController.signal,
-        stopWhen: ({ toolCalls }: any) => {
+        abortSignal: abortController.signal,
+        stopWhen: ({ toolCalls }) => {
           return toolCalls?.some((call: any) => call.toolName === 'finish') ?? false;
         },
       });
@@ -486,78 +518,15 @@ export class AgentService {
       const toolResults = steps.flatMap(step => step.toolResults || []);
 
       if (toolCalls.length > 0) {
-        if (fullContent.trim()) {
-          yield { content: '\n\n---\n\n', done: false, type: 'text' };
-        }
+        // Stream tool results using utility method
+        yield* this.streamToolResults(toolCalls, toolResults, !!fullContent.trim());
 
-        for (let i = 0; i < toolCalls.length; i++) {
-          const call = toolCalls[i];
-          const result = toolResults[i];
-
-          const toolInfo = `🔧 **Tool called:** \`${call.toolName}\`\n`;
-          yield { content: toolInfo, done: false, type: 'tool_call' };
-
-          const args = 'args' in call ? call.args : (call as any).arguments;
-          if (args && Object.keys(args).length > 0) {
-            const argsPreview = JSON.stringify(args, null, 2);
-            const argsText = argsPreview.length > 300 ?
-              argsPreview.substring(0, 300) + '...' :
-              argsPreview;
-            yield { content: `\`\`\`json\n${argsText}\n\`\`\`\n`, done: false, type: 'tool_call' };
-          }
-
-          if (result) {
-            const resultData = 'result' in result ? result.result : result.output;
-            if (resultData !== undefined && resultData !== null) {
-              const resultStr = typeof resultData === 'string' ?
-                resultData :
-                JSON.stringify(resultData, null, 2);
-              const resultPreview = resultStr.length > 200 ?
-                '(result truncated)' :
-                resultStr;
-              yield { content: `✅ **Result:** ${resultPreview}\n\n`, done: false, type: 'tool_result' };
-            }
-          }
-        }
-
-        // Store tool calls in history
-        for (let i = 0; i < toolCalls.length; i++) {
-          const call = toolCalls[i];
-          const result = toolResults[i];
-          const args = 'args' in call ? call.args : (call as any).arguments;
-          const resultData = result && ('result' in result ? result.result : result.output);
-
-          await this.chatHistory.addMessage({
-            role: 'assistant',
-            content: `Calling tool: ${call.toolName}\nArguments: ${JSON.stringify(args, null, 2)}`,
-            hidden: true,
-            toolCalls: [{
-              id: call.toolCallId,
-              name: call.toolName,
-              args: args,
-              result: null,
-            }],
-          });
-
-          if (result) {
-            await this.chatHistory.addMessage({
-              role: 'tool',
-              content: JSON.stringify(resultData, null, 2),
-              hidden: true,
-              toolName: call.toolName,
-              toolCallId: call.toolCallId,
-            });
-          }
-        }
+        // Store tool executions using utility method
+        await this.storeToolExecutions(toolCalls, toolResults);
       }
 
-      // Mark the message as complete
-      const formattedToolCalls = toolCalls.length > 0 ? toolCalls.map((call, index) => ({
-        id: call.toolCallId,
-        name: call.toolName,
-        args: 'args' in call ? call.args : (call as any).arguments,
-        result: toolResults[index] && ('result' in toolResults[index] ? (toolResults[index] as any).result : (toolResults[index] as any).output),
-      })) : undefined;
+      // Format tool calls using utility method
+      const formattedToolCalls = toolCalls.length > 0 ? this.formatToolCalls(toolCalls, toolResults) : undefined;
 
       // Update the existing message to mark it as complete
       await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent || 'Task completed.', false);
@@ -591,6 +560,9 @@ export class AgentService {
 
       yield { content: errorMsg, done: true, type: 'text' };
       throw error;
+    } finally {
+      // Always clean up abort controller
+      this.cleanupAbortController();
     }
   }
 }
@@ -606,5 +578,8 @@ export function getAgentService(): AgentService {
 }
 
 export function resetAgentService(): void {
+  if (agentServiceInstance) {
+    agentServiceInstance.destroy();
+  }
   agentServiceInstance = null;
 }

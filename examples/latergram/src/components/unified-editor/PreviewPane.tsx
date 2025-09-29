@@ -38,7 +38,7 @@ export const PreviewPane: React.FC<PreviewPaneProps> = ({
   const renderPreview = () => {
     if (!filePath) {
       return (
-        <div className="flex items-center justify-center h-full bg-gray-50">
+        <div className="flex items-center justify-center h-full bg-gray-50 p-10 rounded-lg">
           <div className="text-center text-gray-500">
             <Eye className="w-12 h-12 mx-auto mb-3 text-gray-300" />
             <p className="text-sm">Select a file to preview</p>
@@ -75,7 +75,7 @@ export const PreviewPane: React.FC<PreviewPaneProps> = ({
               zIndex: 0,
             }}
           >
-            <ViewRenderer viewPath={filePath} className="min-h-full" showEditor={false} />
+            <ViewRenderer viewPath={filePath} className="min-h-full"/>
           </div>
         );
       }

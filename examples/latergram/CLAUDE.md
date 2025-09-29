@@ -16,14 +16,15 @@ state management and real-time updates.
 - **Frontend**: React 19 with TypeScript, Vite for bundling
 - **State Management**: Zustand stores, Automerge for CRDT-based collaboration
 - **Virtual File System**: TonkCore with WebSocket sync to server
-- **Styling**: Tailwind CSS via Twind runtime compilation
+- **Styling**: Dual styling system with Twind runtime compilation and standard Tailwind CSS
+- **Code Editor**: Monaco Editor for in-browser code editing
 - **Server**: Express server with WebSocket support for Automerge sync
 
 ### Key Architectural Components
 
 1. **Virtual File System (VFS)**
    - Managed through Web Worker (`src/tonk-worker.ts`) for non-blocking operations
-   - All file operations (read/write/watch) go through VFS service (`src/services/vfs.ts`)
+   - All file operations (read/write/watch) go through VFS service (`src/services/vfs-service.ts`)
    - Supports real-time file watching and directory monitoring
 
 2. **Dynamic Component System**
@@ -46,10 +47,27 @@ state management and real-time updates.
    - Compiles and validates code before execution
    - Provides diagnostics for error reporting
 
+6. **Error Handling System**
+   - Comprehensive error boundaries (`src/components/errors/`)
+   - Inline error boundary creation for dynamic components
+   - Error reporting to AI agent for debugging assistance
+
+7. **AI Agent Integration**
+   - Built-in AI chat interface (`src/components/chat/`)
+   - Agent service for code assistance (`src/lib/agent/`)
+   - Tool integration for VFS file operations
+   - Real-time error reporting to agent
+
+8. **Editor Integration**
+   - Monaco Editor for code editing (`src/components/unified-editor/`)
+   - Syntax highlighting and IntelliSense
+   - Auto-save functionality
+   - Preview pane for component visualization
+
 ## Development Commands
 
 ```bash
-# Start development (frontend + server)
+# Start development (frontend + server concurrently)
 pnpm dev
 
 # Build for production
@@ -63,13 +81,22 @@ pnpm clean
 
 # Deploy to Tonk platform
 pnpm deployment
+
+# Run linter
+pnpm lint
+
+# Run tests
+pnpm test
+
+# Watch tests
+pnpm test:watch
 ```
 
 ### Server Commands (in `/server` directory)
 
 ```bash
 cd server
-pnpm dev  # Starts server on port 8081
+pnpm dev  # Starts server on port 8081 with blank.tonk manifest
 ```
 
 ## Important Patterns
@@ -83,8 +110,10 @@ pnpm dev  # Starts server on port 8081
 ### Component Development
 
 - Components must export a default React component
+- Supports both `.tsx` and `.ts` file extensions
 - Available packages are injected via `contextBuilder.ts`
-- Components have access to: React, Lucide icons, React Router, Zustand stores
+- Components have access to: React, Lucide icons, React Router, Zustand stores, Monaco Editor, AI
+  SDK, and more
 
 ### Store Integration
 
@@ -98,16 +127,47 @@ pnpm dev  # Starts server on port 8081
 - JSX is supported with React runtime
 - Module resolution uses CommonJS pattern for dynamic execution
 
-## Project Structure Notes
+## Project Structure
 
-- `/src/components/` - Reusable UI components (stored in VFS)
-- `/src/views/` - Page views mapped to routes (stored in VFS)
-- `/src/stores/` - Zustand state stores (stored in VFS)
-- `/src/services/` - Core services (VFS, stores, etc.)
-- `/src/lib/` - Utilities (TypeScript validator, file validator)
+### VFS (Virtual File System) Locations
+
+- `/src/components/` - Reusable UI components
+- `/src/views/` - Page views mapped to routes
+- `/src/stores/` - Zustand state stores
+
+### Local File System
+
+- `/src/services/` - Core services (VFS, user service)
+- `/src/lib/` - Utilities (TypeScript validator, file validator, agent)
+- `/src/components/` - UI infrastructure (error handling, chat, editor, file tree)
 - `/server/` - Express server for Automerge sync
 
-## Current Branch Context
+## Development Workflow
 
-Working on branch: `ramram/feat/latergram-temp` Modified file: `src/lib/typescript-validator.ts` -
-TypeScript validation functionality
+### When modifying VFS files
+
+1. Use VFS service methods to read/write files
+2. Changes auto-sync via Automerge to server
+3. File watchers trigger hot recompilation
+
+### When creating new components
+
+1. Create TypeScript file in VFS at `/src/components/`
+2. Export default React component
+3. Component auto-registers for use in views
+
+### When adding routes
+
+1. Create view file at `/src/views/{route-name}.tsx`
+2. View is automatically available at `/{route-name}` URL
+3. Use React Router hooks for navigation
+
+## Key Configuration Files
+
+- `vite.config.ts` - Vite bundler configuration with PWA support, optimized chunking
+- `tsconfig.json` - TypeScript compiler options (target: ESNext, module: ESNext)
+- `mprocs.yaml` - Concurrent process configuration for dev server
+- `package.json` - Dependencies and scripts
+- `tailwind.config.cjs` - Tailwind CSS configuration
+- `postcss.config.cjs` - PostCSS configuration for Tailwind
+- `src/twind.config.ts` - Twind runtime styling configuration

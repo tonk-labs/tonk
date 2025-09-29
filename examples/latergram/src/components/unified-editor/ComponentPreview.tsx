@@ -156,7 +156,7 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
   if (!componentId || !component) {
     return (
       <div
-        className={`flex items-center justify-center bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg ${className}`}
+        className={`flex items-center justify-center bg-gray-50 ${className}`}
       >
         <div className="text-center text-gray-500 p-8">
           <Eye className="w-12 h-12 mx-auto mb-3 text-gray-300" />
@@ -168,15 +168,9 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
 
   return (
     <div
-      className={`bg-white border border-gray-200 rounded-lg overflow-hidden ${className}`}
+      className={`bg-white overflow-hidden ${className}`}
     >
-      <div className="flex items-center justify-between p-3 border-b border-gray-200 bg-gray-50">
-        <div className="flex items-center gap-2">
-          <h4 className="text-sm font-medium text-gray-700">Preview</h4>
-          <span className="text-xs text-gray-500">
-            {component.metadata.name}
-          </span>
-        </div>
+      {/* <div className="flex items-center justify-between p-3 bg-gray-50">
 
         <button
           type="button"
@@ -190,7 +184,7 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
             <Eye className="w-4 h-4 text-gray-600" />
           )}
         </button>
-      </div>
+      </div> */}
 
       <div className="relative h-full">
         {(component.metadata.status === 'loading' || isRecompiling) && (
@@ -236,7 +230,7 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
 
         <div
           ref={sandboxRef}
-          className="p-4 min-h-[300px] overflow-scroll overflow-y-scroll"
+          className="p-4 overflow-scroll overflow-y-scroll min-h-full"
           style={{
             display: isVisible ? 'block' : 'none',
             background:

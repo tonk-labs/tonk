@@ -1,5 +1,5 @@
 import React from 'react';
-import { Route, Routes, useLocation, useParams } from 'react-router-dom';
+import { Route, Routes, useParams } from 'react-router-dom';
 import { AppInitializer } from './components/AppInitializer';
 import { ViewRenderer } from './components/ViewRenderer';
 import { PageLayout } from './components/PageLayout';
@@ -17,7 +17,6 @@ const DynamicView: React.FC<{ viewName?: string }> = ({ viewName }) => {
   return (
     <ViewRenderer
       viewPath={viewPath}
-      showEditor={true}
     />
   );
 };
