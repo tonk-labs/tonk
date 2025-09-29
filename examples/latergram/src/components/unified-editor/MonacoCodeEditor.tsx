@@ -4,6 +4,7 @@ import * as monaco from 'monaco-editor';
 import { buildAvailablePackages } from '../contextBuilder';
 import { componentRegistry } from '../ComponentRegistry';
 import { storeRegistry } from '../StoreRegistry';
+import { JSX_NAMESPACE } from './jsx_namespace';
 
 interface MonacoCodeEditorProps {
   value: string;
@@ -21,110 +22,285 @@ interface MonacoCodeEditorProps {
   filePath?: string;
 }
 
-// Generate TypeScript declarations for Tonk globals (minimal, since DOM types come from lib.dom.d.ts)
+// Generate TypeScript declarations for Tonk globals
 const generateMonacoTypes = (): string => {
   const packages = buildAvailablePackages();
+
+  // Generate type declarations programmatically from the packages object
+  const generateDeclarations = (obj: any): string => {
+    const declarations: string[] = [];
+
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === 'React') {
+        // React gets special handling with proper types
+        declarations.push(`
+  const React: {
+    createElement: (type: any, props?: any, ...children: any[]) => any;
+    Fragment: any;
+    useState: <S>(initialState: S | (() => S)) => [S, (value: S | ((prev: S) => S)) => void];
+    useEffect: (effect: () => void | (() => void), deps?: any[]) => void;
+    useCallback: <T extends (...args: any[]) => any>(callback: T, deps: any[]) => T;
+    useMemo: <T>(factory: () => T, deps: any[]) => T;
+    useRef: <T>(initialValue: T) => { current: T };
+    useReducer: <S, A>(reducer: (state: S, action: A) => S, initialState: S) => [S, (action: A) => void];
+    useContext: <T>(context: any) => T;
+  };`);
+      } else if (key.startsWith('use')) {
+        // React hooks
+        declarations.push(`  const ${key}: typeof React.${key};`);
+      } else if (key === 'Fragment') {
+        declarations.push(`  const Fragment: typeof React.Fragment;`);
+      } else if (key === 'create') {
+        // Zustand create function
+        declarations.push(`  const create: <T>(initializer: (set: any, get: any, api: any) => T) => () => T;`);
+      } else if (key === 'sync') {
+        // Sync middleware
+        declarations.push(`  const sync: (config?: any) => any;`);
+      } else if (value && typeof value === 'function') {
+        // Try to extract more type information from components and stores
+        const isComponent = componentRegistry.getAllComponents().some(c =>
+          c.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key
+        );
+
+        const isStore = storeRegistry.getAllStores().some(s =>
+          s.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key
+        );
+
+        // Also check if it looks like a Zustand store (returns an object with state/functions)
+        let looksLikeStore = false;
+        if (!isComponent && !isStore) {
+          try {
+            const result = value();
+            looksLikeStore = result && typeof result === 'object' && !React.isValidElement(result);
+          } catch (e) {
+            // Not a store if calling it throws
+          }
+        }
+
+        if (isComponent) {
+          // It's a React component
+          const component = componentRegistry.getAllComponents().find(c =>
+            c.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key
+          );
+
+          // Try to extract props from the component's source code if available
+          if (component?.metadata?.source) {
+            const source = component.metadata.source;
+
+            // Look for interface or type definitions for props
+            const propsInterfaceMatch = source.match(/(?:interface|type)\s+(\w+Props)\s*=?\s*\{([^}]+)\}/);
+
+            if (propsInterfaceMatch) {
+              const propsContent = propsInterfaceMatch[2];
+              // Parse the props
+              const propLines = propsContent.split(/[;\n]/).filter(line => line.trim());
+              const props = propLines.map(line => {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('//')) return null;
+
+                // Keep the original type definition
+                return trimmed;
+              }).filter(Boolean).join('; ');
+
+              if (props) {
+                declarations.push(`  const ${key}: React.FC<{ ${props} }>;`);
+              } else {
+                declarations.push(`  const ${key}: React.FC<{}>;`);
+              }
+            } else {
+              // Try to extract props from function signature
+              const funcMatch = source.match(/(?:const|function)\s+\w+[^(]*\(\s*\{([^}]+)\}/);
+              if (funcMatch) {
+                const props = funcMatch[1]
+                  .split(',')
+                  .map(p => p.trim())
+                  .filter(p => p && !p.includes('...'))
+                  .map(p => {
+                    const propName = p.split(/[=:]/ )[0].trim();
+                    // Try to find type annotation in source
+                    const typeMatch = source.match(new RegExp(`${propName}\\s*:\\s*([^,;}]+)`));
+                    const type = typeMatch ? typeMatch[1].trim() : 'any';
+                    return `${propName}?: ${type}`;
+                  })
+                  .join('; ');
+
+                declarations.push(`  const ${key}: React.FC<{ ${props} }>;`);
+              } else {
+                declarations.push(`  const ${key}: React.FC<{}>;`);
+              }
+            }
+          } else {
+            // No source available, use runtime introspection as fallback
+            declarations.push(`  const ${key}: React.FC<{}>;`);
+          }
+        } else if (isStore || looksLikeStore) {
+          // It's a Zustand store
+          const store = storeRegistry.getAllStores().find(s =>
+            s.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key
+          );
+
+          // Try to extract store interface from source code
+          if (store?.metadata?.source) {
+            const source = store.metadata.source;
+
+            // Look for store interface or type definition
+            const storeInterfaceMatch = source.match(/(?:interface|type)\s+(\w+Store)\s*=?\s*\{([^}]+)\}/);
+
+            if (storeInterfaceMatch) {
+              const storeContent = storeInterfaceMatch[2];
+              const storeProps = storeContent.split(/[;\n]/)
+                .filter(line => line.trim())
+                .map(line => {
+                  const trimmed = line.trim();
+                  if (!trimmed || trimmed.startsWith('//')) return null;
+                  return trimmed;
+                })
+                .filter(Boolean)
+                .join('; ');
+
+              if (storeProps) {
+                declarations.push(`  const ${key}: () => { ${storeProps} };`);
+              } else {
+                declarations.push(`  const ${key}: () => {};`);
+              }
+            } else {
+              // Try runtime introspection as fallback
+              try {
+                const storeInstance = value();
+                const storeShape: string[] = [];
+
+                for (const [prop, val] of Object.entries(storeInstance)) {
+                  if (typeof val === 'function') {
+                    // It's a method - try to extract parameter info
+                    const funcStr = val.toString();
+
+                    // Try to parse the function signature
+                    const argsMatch = funcStr.match(/\(([^)]*)\)/);
+                    if (argsMatch && argsMatch[1]) {
+                      const args = argsMatch[1];
+
+                      // Parse argument names
+                      const argNames = args.split(',').map(a => {
+                        const cleaned = a.trim();
+                        // Handle destructured args
+                        if (cleaned.includes('{')) return '...args: any[]';
+                        // Handle default values
+                        const argName = cleaned.split('=')[0].trim();
+                        return argName ? `${argName}: any` : '';
+                      }).filter(a => a).join(', ');
+
+                      storeShape.push(`${prop}: (${argNames}) => any`);
+                    } else {
+                      storeShape.push(`${prop}: () => any`);
+                    }
+                  } else {
+                    // It's a state property - provide better type inference
+                    let type = 'any';
+                    if (val === null) {
+                      type = 'null';
+                    } else if (val === undefined) {
+                      type = 'undefined';
+                    } else if (Array.isArray(val)) {
+                      // Try to infer array element type from first element
+                      if (val.length > 0) {
+                        const firstElem = val[0];
+                        const elemType = typeof firstElem === 'object' ? 'any' : typeof firstElem;
+                        type = `${elemType}[]`;
+                      } else {
+                        type = 'any[]';
+                      }
+                    } else if (typeof val === 'object') {
+                      // Could be more specific but keeping it simple
+                      type = 'object';
+                    } else {
+                      type = typeof val;
+                    }
+                    storeShape.push(`${prop}: ${type}`);
+                  }
+                }
+
+                if (storeShape.length > 0) {
+                  declarations.push(`  const ${key}: () => { ${storeShape.join('; ')} };`);
+                } else {
+                  declarations.push(`  const ${key}: () => {};`);
+                }
+              } catch (e) {
+                // Fallback to generic store type
+                declarations.push(`  const ${key}: () => { [key: string]: any };`);
+              }
+            }
+          } else {
+            // No source code, try runtime introspection anyway
+            try {
+              const storeInstance = value();
+              const storeShape: string[] = [];
+
+              for (const [prop, val] of Object.entries(storeInstance)) {
+                if (typeof val === 'function') {
+                  storeShape.push(`${prop}: (...args: any[]) => any`);
+                } else {
+                  const type = typeof val === 'object' ? 'any' : typeof val;
+                  storeShape.push(`${prop}: ${type}`);
+                }
+              }
+
+              declarations.push(`  const ${key}: () => { ${storeShape.join('; ')} };`);
+            } catch (e) {
+              declarations.push(`  const ${key}: () => { [key: string]: any };`);
+            }
+          }
+        } else {
+          // Unknown function type
+          declarations.push(`  const ${key}: (...args: any[]) => any;`);
+        }
+      } else {
+        // Other types - try to preserve type information
+        if (value === null) {
+          declarations.push(`  const ${key}: null;`);
+        } else if (value === undefined) {
+          declarations.push(`  const ${key}: undefined;`);
+        } else if (typeof value === 'boolean') {
+          declarations.push(`  const ${key}: boolean;`);
+        } else if (typeof value === 'number') {
+          declarations.push(`  const ${key}: number;`);
+        } else if (typeof value === 'string') {
+          declarations.push(`  const ${key}: string;`);
+        } else if (typeof value === 'object') {
+          declarations.push(`  const ${key}: object;`);
+        } else {
+          declarations.push(`  const ${key}: any;`);
+        }
+      }
+    }
+
+    return declarations.join('\n');
+  };
 
   let declarations = `
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 /// <reference lib="es2020" />
 
-// React namespace with minimal types (DOM types come from lib.dom.d.ts)
+// React type definitions - namespace for types
 declare namespace React {
-  type FC<P = {}> = (props: P) => ReactElement | null;
-  type FunctionComponent<P = {}> = FC<P>;
-  type ComponentType<P = {}> = FC<P> | any;
-  type ReactNode = ReactElement | string | number | boolean | null | undefined;
+  type ReactNode = any;
   type ReactElement = any;
-  type RefObject<T> = { current: T | null };
-  type MutableRefObject<T> = { current: T };
-  type SetStateAction<S> = S | ((prevState: S) => S);
-  type Dispatch<A> = (value: A) => void;
-  type EffectCallback = () => (void | (() => void));
-  type DependencyList = ReadonlyArray<any>;
-  type Reducer<S, A> = (prevState: S, action: A) => S;
-  type Context<T> = any;
-
-  interface CSSProperties {
-    [key: string]: any;
-  }
-
-  interface HTMLAttributes<T = any> {
-    className?: string;
-    id?: string;
-    style?: CSSProperties;
-    onClick?: (event: MouseEvent) => void;
-    onChange?: (event: ChangeEvent<T>) => void;
-    onSubmit?: (event: FormEvent) => void;
-    children?: ReactNode;
-    [key: string]: any;
-  }
-
-  interface ChangeEvent<T = HTMLInputElement> extends Event {
-    target: EventTarget & T;
-    currentTarget: EventTarget & T;
-  }
-
-  interface MouseEvent<T = HTMLElement> extends Event {
-    clientX: number;
-    clientY: number;
-  }
-
-  interface FormEvent<T = HTMLFormElement> extends Event {
-    target: EventTarget & T;
-  }
+  type Component<P = {}> = any;
+  type FC<P = {}> = (props: P) => ReactElement | null;
+  type ComponentType<P = {}> = FC<P> | any;
+  type Attributes = { key?: string | number };
+  type ClassAttributes<T> = Attributes;
 }
 
-declare const React: {
-  createElement: (type: any, props?: any, ...children: any[]) => React.ReactElement;
-  Fragment: React.ComponentType;
-  useState: <S>(initialState: S | (() => S)) => [S, React.Dispatch<React.SetStateAction<S>>];
-  useEffect: (effect: React.EffectCallback, deps?: React.DependencyList) => void;
-  useCallback: <T extends (...args: any[]) => any>(callback: T, deps: React.DependencyList) => T;
-  useMemo: <T>(factory: () => T, deps: React.DependencyList) => T;
-  useRef: <T>(initialValue: T) => React.MutableRefObject<T>;
-  useReducer: <R extends React.Reducer<any, any>>(
-    reducer: R,
-    initialState: Parameters<R>[0]
-  ) => [Parameters<R>[0], React.Dispatch<Parameters<R>[1]>];
-  useContext: <T>(context: React.Context<T>) => T;
-};
+${JSX_NAMESPACE}
 
-// Export all React hooks as globals for Tonk
-declare const useState: typeof React.useState;
-declare const useEffect: typeof React.useEffect;
-declare const useCallback: typeof React.useCallback;
-declare const useMemo: typeof React.useMemo;
-declare const useRef: typeof React.useRef;
-declare const useReducer: typeof React.useReducer;
-declare const useContext: typeof React.useContext;
-declare const Fragment: typeof React.Fragment;
+// Global value declarations for runtime
+${generateDeclarations(packages)}
 
-// Zustand imports
-declare const create: any;
-declare const sync: any;
-
-// Export default is required for Tonk components
+// Module exports for Tonk components
 declare const exports: { default?: React.ComponentType<any> };
 declare const module: { exports: typeof exports };
 `;
-
-  // Add component declarations
-  componentRegistry.getAllComponents().forEach(comp => {
-    const name = comp.metadata.name.replace(/[^a-zA-Z0-9]/g, '') || 'UnnamedComponent';
-    if (name !== 'UnnamedComponent') {
-      declarations += `declare const ${name}: React.ComponentType<any>;\n`;
-    }
-  });
-
-  // Add store declarations
-  storeRegistry.getAllStores().forEach(store => {
-    const name = store.metadata.name.replace(/[^a-zA-Z0-9]/g, '') || 'UnnamedStore';
-    if (name !== 'UnnamedStore') {
-      declarations += `declare const ${name}: any;\n`;
-    }
-  });
 
   return declarations;
 };

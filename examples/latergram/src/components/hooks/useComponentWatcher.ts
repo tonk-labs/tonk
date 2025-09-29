@@ -52,6 +52,8 @@ export function useComponentWatcher(): ComponentWatcherHook {
         const component = moduleFactory(...contextValues);
 
         componentRegistry.update(componentId, component, 'success');
+        // Store the source code in metadata
+        componentRegistry.updateMetadata(componentId, { source: code });
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : 'Compilation failed';

@@ -6,6 +6,7 @@ export interface StoreMetadata {
   modified: Date;
   status: 'loading' | 'success' | 'error';
   error?: string;
+  source?: string; // Store the TypeScript source code
 }
 
 export interface ProxiedStore {

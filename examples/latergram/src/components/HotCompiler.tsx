@@ -97,8 +97,10 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
 
         if (existingComponent) {
           componentRegistry.update(componentId, component);
+          // Update the source code in metadata
+          componentRegistry.updateMetadata(componentId, { source: code });
         } else {
-          componentRegistry.register(componentId, component);
+          componentRegistry.register(componentId, component, { source: code });
         }
 
         const endTime = performance.now();
