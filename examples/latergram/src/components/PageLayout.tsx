@@ -4,6 +4,7 @@ import { MessageCircle, X } from 'lucide-react';
 import { Drawer, DrawerContent, DrawerTrigger, DrawerClose } from './ui/drawer';
 import AgentChat from '../views/AgentChat';
 import { useAgentStore } from '../lib/agent/use-agent-store';
+import { cn } from '../lib/utils';
 
 interface PageLayoutProps {
   viewPath: string;
@@ -11,7 +12,7 @@ interface PageLayoutProps {
 
 export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
   const [open, setOpen] = useState(false);
-  const inputRef = createRef<HTMLInputElement>();
+  const inputRef = createRef<HTMLTextAreaElement>();
   const { isLoading } = useAgentStore();
 
   const handleOpen = useCallback((shouldOpen: boolean) => {
@@ -30,7 +31,7 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
         <div className="fixed bottom-6 right-6 w-16 h-16 z-[1000]">
           <button
             type="button"
-            className="relative w-full h-full hover:scale-110 transition-all flex items-center justify-center"
+            className={cn("relative w-full h-full hover:scale-110 transition-all flex items-center justify-center", isLoading && 'animate-bounce')}
             aria-label="Open AI Assistant"
           >
             {/* Star burst background with rainbow gradient */}

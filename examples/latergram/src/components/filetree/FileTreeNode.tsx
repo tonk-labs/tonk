@@ -94,7 +94,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
   return (
     <div
       className={`
-        flex items-center gap-2 px-2 py-1 text-sm cursor-pointer group relative
+        flex items-center gap-2 pl-2 py-1 text-sm cursor-pointer group relative w-full
         ${isRenaming ? 'bg-yellow-50' : ''}
       `}
       style={{
@@ -119,7 +119,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
       </span>
 
       {/* Action Buttons */}
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
         {/* Create actions for directories */}
         {type === 'directory' && (
           <>
@@ -141,6 +141,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
             </button>
           </>
         )}
+        <div className="flex flex-grow"/>
 
         {/* Delete button (not for root) */}
         {path !== '/' && (

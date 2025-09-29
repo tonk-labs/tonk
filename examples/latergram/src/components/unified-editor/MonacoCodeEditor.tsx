@@ -500,7 +500,7 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
   }, []);
 
   return (
-    <div className="w-full h-full border border-gray-200 rounded-lg overflow-hidden">
+    <div className="w-full h-full overflow-hidden">
       <Editor
         height={height}
         language={language}
@@ -510,6 +510,7 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
         beforeMount={handleEditorWillMount}
         theme="vs-dark"
         path={filePath || 'file:///tonk-component.tsx'}
+        className="border-0"
         options={{
           readOnly,
           minimap: { enabled: false },

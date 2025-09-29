@@ -5,7 +5,7 @@ import AgentChat from './AgentChat';
 import { createRef, useCallback } from 'react';
 
 export default function Editor() {
-  const chatInputRef = createRef<HTMLInputElement>();
+  const chatInputRef = createRef<HTMLTextAreaElement>();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();

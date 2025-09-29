@@ -6,7 +6,7 @@ import ChatLoadingDots from '../components/chat/ChatLoadingDots';
 import ChatInputBar from '../components/chat/ChatInputBar';
 
 interface AgentChatProps {
-  inputRef: React.RefObject<HTMLInputElement>;
+  inputRef: React.RefObject<HTMLTextAreaElement>;
 }
 
 const AgentChat: React.FC<AgentChatProps> = ({
@@ -54,10 +54,11 @@ const AgentChat: React.FC<AgentChatProps> = ({
   );
 
   const handleSaveEdit = useCallback(async () => {
-    if (editingMessageId && editContent.trim()) {
-      await updateMessage(editingMessageId, editContent);
-      // Reset editing state after successful update
-      setEditingMessage(null);
+    const id = editingMessageId;
+    const content = editContent.trim();
+    setEditingMessage(null);
+    if (id && content) {
+      await updateMessage(id, content);
     }
   }, [editingMessageId, editContent, updateMessage, setEditingMessage]);
 
@@ -80,9 +81,9 @@ const AgentChat: React.FC<AgentChatProps> = ({
 
   return (
     <div className="flex flex-col h-full">
-      <div className="relative flex-1 px-3 min-h-0 flex">
+      <div className="relative flex-1 px-3 min-h-0 flex justify-center">
         {error && <ChatErrorBar error={error} />}
-        <div className="flex flex-col-reverse reverse h-full overflow-scroll gap-4 max-w-full py-4">
+        <div className="flex flex-col-reverse reverse h-full overflow-scroll gap-4 max-w-[50rem] py-4">
           <div className="flex-1 min-h-0" />
           
           {messages.length === 0 ? (

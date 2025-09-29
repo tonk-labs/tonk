@@ -6,7 +6,7 @@ interface ChatInputBarProps {
   onSendMessage: (text: string) => void;
   isLoading: boolean;
   isReady: boolean;
-  inputRef: React.RefObject<HTMLInputElement>;
+  inputRef: React.RefObject<HTMLTextAreaElement>;
   onClear: () => Promise<void>;
   onStop: () => void;
 }
@@ -20,14 +20,17 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
   onStop,
 }) => {
   const [prompt, setPrompt] = useState('');
-  
-  const handleSubmit = useCallback((e?: React.FormEvent) => {
-    e?.preventDefault();
-    // Allow typing but prevent sending while loading
-    if (!prompt.trim() || !isReady || isLoading) return;
-    onSendMessage(prompt.trim());
-    setPrompt('');
-  }, [prompt, isReady, isLoading, onSendMessage]);
+
+  const handleSubmit = useCallback(
+    (e?: React.FormEvent) => {
+      e?.preventDefault();
+      // Allow typing but prevent sending while loading
+      if (!prompt.trim() || !isReady || isLoading) return;
+      onSendMessage(prompt.trim());
+      setPrompt('');
+    },
+    [prompt, isReady, isLoading, onSendMessage]
+  );
 
   const { handleKeyDown } = useKeyboardSubmit(handleSubmit);
 
@@ -40,19 +43,21 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
   return (
     <div className="bg-white border-t border-gray-200 px-3 py-2">
       <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
-        <div className="flex gap-2">
-          <input
+        <div className="flex gap-2 items-center justify-center">
+          <textarea
+            style={{
+              resize: 'none',
+            }}
             ref={inputRef}
             value={prompt}
             onChange={e => setPrompt(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={!isReady}
             placeholder={
-              isReady
-                ? 'Type a message...'
-                : 'Waiting for initialization...'
+              isReady ? 'Type a message...' : 'Waiting for initialization...'
             }
             className="flex-1 px-3 py-1.5 border-0 border-gray-300 rounded-lg focus:outline-none text-sm disabled:bg-gray-100 ring-0 outline-none outline-0"
+            rows={1}
           />
           <div className="flex flex-row gap-2 group relative items-center justify-start">
             {!isLoading && (

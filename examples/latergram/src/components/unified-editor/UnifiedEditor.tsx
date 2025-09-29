@@ -363,14 +363,14 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
 
         {/* Tab Bar */}
         {!editorOnly && (
-          <div className="bg-white border-b border-gray-200 px-6">
+          <div className="bg-white border-0 border-gray-200 px-6 pt-2">
             <div className="flex gap-1">
               <button
                 type="button"
                 onClick={() => setActiveTab('preview')}
-                className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors flex items-center gap-2 ${
+                className={`px-4 py-2 font-medium text-sm transition-colors flex items-center gap-2 ${
                   activeTab === 'preview'
-                    ? 'border-blue-500 text-blue-600'
+                    ? 'bg-blue-500 text-white rounded-t-lg'
                     : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
               >
@@ -380,9 +380,9 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
               <button
                 type="button"
                 onClick={() => setActiveTab('editor')}
-                className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors flex items-center gap-2 ${
+                className={`px-4 py-2 font-medium text-sm transition-colors flex items-center gap-2 ${
                   activeTab === 'editor'
-                    ? 'border-blue-500 text-blue-600'
+                    ? 'bg-blue-500 text-white rounded-t-lg'
                     : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
               >
