@@ -8,6 +8,27 @@ import { typeScriptValidator } from '../../typescript-validator';
 const sessionFiles = new Set<string>();
 let hasUserConfirmedClearAll = false;
 
+// Allowed directories for agent file operations
+const ALLOWED_WRITE_PATHS = ['/src/stores/', '/src/components/', '/src/views/'];
+
+/**
+ * Validates that a path is within allowed directories for agent operations
+ */
+function validateWritePath(path: string): { valid: boolean; error?: string } {
+  const isAllowed = ALLOWED_WRITE_PATHS.some(allowedPath =>
+    path.startsWith(allowedPath)
+  );
+
+  if (!isAllowed) {
+    return {
+      valid: false,
+      error: `Access denied: Agent can only write to ${ALLOWED_WRITE_PATHS.join(', ')}. Attempted path: ${path}`,
+    };
+  }
+
+  return { valid: true };
+}
+
 export const tonkClearAllTool = tool({
   description:
     'Clear all Tonk files and folders. After first using it, you first need to ask the user to confirm this is their intention. DO NOT CONTINUE WITHOUT EXPLICIT PERMISSION AFTER CALLING THIS TOOL.',
@@ -112,6 +133,21 @@ export const tonkWriteFileTool = tool({
     const vfs = getVFSService();
     if (!vfs.isInitialized()) {
       throw new Error('VFS service is not initialized');
+    }
+
+    // Validate write path
+    const pathValidation = validateWritePath(path);
+    if (!pathValidation.valid) {
+      console.error(
+        '[TonkTool] writeFile path validation failed:',
+        pathValidation.error
+      );
+      return {
+        path,
+        created: false,
+        success: false,
+        error: pathValidation.error,
+      };
     }
 
     // Step 1: Biome validation (syntax and linting)
@@ -247,6 +283,20 @@ export const tonkDeleteFileTool = tool({
     const vfs = getVFSService();
     if (!vfs.isInitialized()) {
       throw new Error('VFS service is not initialized');
+    }
+
+    // Validate delete path
+    const pathValidation = validateWritePath(path);
+    if (!pathValidation.valid) {
+      console.error(
+        '[TonkTool] deleteFile path validation failed:',
+        pathValidation.error
+      );
+      return {
+        path,
+        success: false,
+        error: pathValidation.error,
+      };
     }
 
     try {
