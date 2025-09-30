@@ -1,5 +1,3 @@
-import { getVFSService } from './vfs-service';
-
 export interface UserData {
   id: string;
   createdAt: number;
@@ -8,86 +6,65 @@ export interface UserData {
 
 class UserService {
   private userData: UserData | null = null;
-  private vfs = getVFSService();
   private readonly STORAGE_KEY = 'latergram_user_id';
+  private readonly METADATA_KEY = 'latergram_user_metadata';
 
   private generateUserId(): string {
     return crypto.randomUUID();
   }
 
-  private async ensureUserDirectories(userId: string): Promise<void> {
-    if (!this.vfs.isInitialized()) {
-      console.warn('VFS not initialized, skipping user directory creation');
-      return;
-    }
-
-    const userDir = `/users/${userId}`;
-    const chatHistoryDir = `${userDir}/chat-history`;
-
+  private loadMetadata(): Omit<UserData, 'id'> | null {
     try {
-      const userDirExists = await this.vfs.exists(userDir);
-      if (!userDirExists) {
-        console.log('Creating user directory:', userDir);
-        await this.vfs.writeFile(`${userDir}/.keep`, { content: {} }, true);
-        await this.vfs.writeFile(
-          `${chatHistoryDir}/.keep`,
-          { content: {} },
-          true
-        );
-
-        // Store user metadata
-        const userMetadata = {
-          id: userId,
-          createdAt: Date.now(),
-          lastSeen: Date.now(),
-        };
-        await this.vfs.writeFile(
-          `${userDir}/metadata.json`,
-          { content: userMetadata },
-          true
-        );
-      } else {
-        // Update last seen
-        try {
-          const metadataPath = `${userDir}/metadata.json`;
-          const metadataContent = await this.vfs.readFile(metadataPath);
-          const metadata = metadataContent.content as any;
-          metadata.lastSeen = Date.now();
-          await this.vfs.writeFile(metadataPath, metadata, false);
-        } catch (error) {
-          console.warn('Could not update user metadata:', error);
-        }
-      }
+      const metadata = localStorage.getItem(this.METADATA_KEY);
+      return metadata ? JSON.parse(metadata) : null;
     } catch (error) {
-      console.error('Error setting up user directory:', error);
+      console.error('Failed to load user metadata:', error);
+      return null;
+    }
+  }
+
+  private saveMetadata(metadata: Omit<UserData, 'id'>): void {
+    try {
+      localStorage.setItem(this.METADATA_KEY, JSON.stringify(metadata));
+    } catch (error) {
+      console.error('Failed to save user metadata:', error);
     }
   }
 
   async initialize(): Promise<UserData> {
-    // Check localStorage for existing user ID
     let userId = localStorage.getItem(this.STORAGE_KEY);
+    let metadata = this.loadMetadata();
 
     if (!userId) {
-      // Generate new user ID
       userId = this.generateUserId();
       localStorage.setItem(this.STORAGE_KEY, userId);
       console.log('New user ID generated:', userId);
+
+      metadata = {
+        createdAt: Date.now(),
+        lastSeen: Date.now(),
+      };
+      this.saveMetadata(metadata);
     } else {
       console.log('Existing user ID retrieved:', userId);
+
+      if (!metadata) {
+        metadata = {
+          createdAt: Date.now(),
+          lastSeen: Date.now(),
+        };
+      } else {
+        metadata.lastSeen = Date.now();
+      }
+      this.saveMetadata(metadata);
     }
 
-    // Create user data
     this.userData = {
       id: userId,
-      createdAt: Date.now(),
-      lastSeen: Date.now(),
+      ...metadata,
     };
 
-    // Make userData available globally
     (window as any).userData = this.userData;
-
-    // Ensure user directories exist in VFS
-    await this.ensureUserDirectories(userId);
 
     return this.userData;
   }
@@ -100,18 +77,9 @@ class UserService {
     return this.userData?.id || null;
   }
 
-  getUserPath(subpath?: string): string | null {
-    if (!this.userData) return null;
-    const basePath = `/users/${this.userData.id}`;
-    return subpath ? `${basePath}/${subpath}` : basePath;
-  }
-
-  getChatHistoryPath(): string | null {
-    return this.getUserPath('chat-history/chat.json');
-  }
-
   reset(): void {
     localStorage.removeItem(this.STORAGE_KEY);
+    localStorage.removeItem(this.METADATA_KEY);
     this.userData = null;
     (window as any).userData = undefined;
   }
