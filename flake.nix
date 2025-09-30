@@ -35,7 +35,7 @@
             rustToolchain
 
             # Node.js and package managers
-            nodejs_20
+            nodejs_22
             pnpm_9
 
             # TypeScript and build tools

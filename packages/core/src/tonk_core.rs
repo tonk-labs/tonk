@@ -416,128 +416,6 @@ impl TonkCore {
             .await
     }
 
-    pub async fn vfs_to_bytes(
-        &self,
-        config: Option<BundleConfig>,
-        vfs: &VirtualFileSystem,
-        samod: &Arc<Repo>,
-    ) -> Result<Vec<u8>> {
-        use crate::bundle::{Manifest, Version};
-        use std::io::{Cursor, Write};
-        use zip::ZipWriter;
-        use zip::write::SimpleFileOptions;
-
-        // Get the root document from VFS
-        let root_id = vfs.root_id();
-
-        // Extract config values or use defaults
-        let config = config.unwrap_or_default();
-
-        // Merge vendor metadata with default Tonk metadata
-        let vendor_metadata = match config.vendor_metadata {
-            Some(mut custom) => {
-                // Merge custom metadata with default xTonk metadata
-                if let Some(obj) = custom.as_object_mut() {
-                    obj.insert(
-                        "xTonk".to_string(),
-                        serde_json::json!({
-                            "createdAt": chrono::Utc::now().to_rfc3339(),
-                            "exportedFrom": "tonk-core v0.1.0"
-                        }),
-                    );
-                }
-                Some(custom)
-            }
-            None => Some(serde_json::json!({
-                "xTonk": {
-                    "createdAt": chrono::Utc::now().to_rfc3339(),
-                    "exportedFrom": "tonk-core v0.1.0"
-                }
-            })),
-        };
-
-        // Create manifest
-        let manifest = Manifest {
-            manifest_version: 1,
-            version: Version { major: 1, minor: 0 },
-            root_id: root_id.to_string(),
-            entrypoints: config.entrypoints,
-            network_uris: config.network_uris,
-            x_notes: config.notes,
-            x_vendor: vendor_metadata,
-        };
-
-        let manifest_json =
-            serde_json::to_string_pretty(&manifest).map_err(VfsError::SerializationError)?;
-
-        // Create ZIP bundle in memory
-        let mut zip_data = Vec::new();
-        {
-            let mut zip_writer = ZipWriter::new(Cursor::new(&mut zip_data));
-
-            // Add manifest
-            zip_writer
-                .start_file("manifest.json", SimpleFileOptions::default())
-                .map_err(|e| VfsError::IoError(e.into()))?;
-            zip_writer
-                .write_all(manifest_json.as_bytes())
-                .map_err(VfsError::IoError)?;
-
-            // Export all storage data directly from samod's storage
-            // Iterate through all documents and export their storage data
-            let all_doc_ids = vfs.collect_all_document_ids().await?;
-
-            for doc_id in &all_doc_ids {
-                // Export the document as a snapshot with proper CompactionHash
-                if let Ok(Some(doc_handle)) = samod.find(doc_id.clone()).await {
-                    let doc_bytes = doc_handle.with_document(|doc| doc.save());
-
-                    // Create a storage key for the snapshot
-                    // Using a fixed snapshot name for simplicity
-                    let storage_key = StorageKey::from_parts(vec![
-                        doc_id.to_string(),
-                        "snapshot".to_string(),
-                        "bundle_export".to_string(),
-                    ])
-                    .map_err(|e| {
-                        VfsError::Other(anyhow::anyhow!("Failed to create storage key: {}", e))
-                    })?;
-
-                    // Convert storage key to bundle path using samod's key_to_path logic
-                    let mut path_components = Vec::new();
-                    for (index, component) in storage_key.into_iter().enumerate() {
-                        if index == 0 {
-                            // Apply splaying to first component (document ID)
-                            if component.len() >= 2 {
-                                let (first_two, rest) = component.split_at(2);
-                                path_components.push(first_two.to_string());
-                                path_components.push(rest.to_string());
-                            } else {
-                                path_components.push(component);
-                            }
-                        } else {
-                            path_components.push(component);
-                        }
-                    }
-                    let storage_path = format!("storage/{}", path_components.join("/"));
-
-                    zip_writer
-                        .start_file(&storage_path, SimpleFileOptions::default())
-                        .map_err(|e| VfsError::IoError(e.into()))?;
-                    zip_writer
-                        .write_all(&doc_bytes)
-                        .map_err(VfsError::IoError)?;
-                }
-            }
-
-            zip_writer
-                .finish()
-                .map_err(|e| VfsError::IoError(e.into()))?;
-        }
-
-        Ok(zip_data)
-    }
-
     /// Export the current state to a bundle as bytes
     pub async fn fork_to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
         // Create a new samod instance with in-memory storage for the copied VFS to avoid conflicts
@@ -579,7 +457,7 @@ impl TonkCore {
             .await?;
 
         // Export the copied VFS to bytes
-        self.vfs_to_bytes(config, &copied_vfs, &new_samod).await
+        copied_vfs.to_bytes(config).await
     }
 
     /// Recursively copy a directory and its contents from source VFS to destination VFS
@@ -655,7 +533,7 @@ impl TonkCore {
 
     /// Export the current state to a bundle as bytes
     pub async fn to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
-        self.vfs_to_bytes(config, &self.vfs, &self.samod).await
+        self.vfs.to_bytes(config).await
     }
 
     /// Export the current state to a bundle file

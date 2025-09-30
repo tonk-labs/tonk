@@ -1,15 +1,16 @@
-use crate::bundle::RandomAccess;
+use crate::Bundle;
+use crate::bundle::{BundleConfig, RandomAccess};
 use crate::error::{Result, VfsError};
 use crate::vfs::backend::AutomergeHelpers;
 use crate::vfs::traversal::PathTraverser;
 use crate::vfs::types::*;
 use crate::vfs::watcher::DocumentWatcher;
-use crate::Bundle;
 use automerge::Automerge;
+use bytes::Bytes;
+use samod::storage::StorageKey;
 use samod::{DocHandle, DocumentId, Repo};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use bytes::Bytes;
 
 pub struct VirtualFileSystem {
     samod: Arc<Repo>,
@@ -73,6 +74,123 @@ impl VirtualFileSystem {
         })
     }
 
+    pub async fn to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
+        use crate::bundle::{Manifest, Version};
+        use std::io::{Cursor, Write};
+        use zip::ZipWriter;
+        use zip::write::SimpleFileOptions;
+
+        // Get the root document from VFS
+        let root_id = self.root_id();
+
+        // Extract config values or use defaults
+        let config = config.unwrap_or_default();
+
+        // Merge vendor metadata with default Tonk metadata
+        let vendor_metadata = match config.vendor_metadata {
+            Some(mut custom) => {
+                // Merge custom metadata with default xTonk metadata
+                if let Some(obj) = custom.as_object_mut() {
+                    obj.insert(
+                        "xTonk".to_string(),
+                        serde_json::json!({
+                            "createdAt": chrono::Utc::now().to_rfc3339(),
+                            "exportedFrom": "tonk-core v0.1.0"
+                        }),
+                    );
+                }
+                Some(custom)
+            }
+            None => Some(serde_json::json!({
+                "xTonk": {
+                    "createdAt": chrono::Utc::now().to_rfc3339(),
+                    "exportedFrom": "tonk-core v0.1.0"
+                }
+            })),
+        };
+
+        // Create manifest
+        let manifest = Manifest {
+            manifest_version: 1,
+            version: Version { major: 1, minor: 0 },
+            root_id: root_id.to_string(),
+            entrypoints: config.entrypoints,
+            network_uris: config.network_uris,
+            x_notes: config.notes,
+            x_vendor: vendor_metadata,
+        };
+
+        let manifest_json =
+            serde_json::to_string_pretty(&manifest).map_err(VfsError::SerializationError)?;
+
+        // Create ZIP bundle in memory
+        let mut zip_data = Vec::new();
+        {
+            let mut zip_writer = ZipWriter::new(Cursor::new(&mut zip_data));
+
+            // Add manifest
+            zip_writer
+                .start_file("manifest.json", SimpleFileOptions::default())
+                .map_err(|e| VfsError::IoError(e.into()))?;
+            zip_writer
+                .write_all(manifest_json.as_bytes())
+                .map_err(VfsError::IoError)?;
+
+            // Export all storage data directly from samod's storage
+            // Iterate through all documents and export their storage data
+            let all_doc_ids = self.collect_all_document_ids().await?;
+
+            for doc_id in &all_doc_ids {
+                // Export the document as a snapshot with proper CompactionHash
+                if let Ok(Some(doc_handle)) = self.samod.find(doc_id.clone()).await {
+                    let doc_bytes = doc_handle.with_document(|doc| doc.save());
+
+                    // Create a storage key for the snapshot
+                    // Using a fixed snapshot name for simplicity
+                    let storage_key = StorageKey::from_parts(vec![
+                        doc_id.to_string(),
+                        "snapshot".to_string(),
+                        "bundle_export".to_string(),
+                    ])
+                    .map_err(|e| {
+                        VfsError::Other(anyhow::anyhow!("Failed to create storage key: {}", e))
+                    })?;
+
+                    // Convert storage key to bundle path using samod's key_to_path logic
+                    let mut path_components = Vec::new();
+                    for (index, component) in storage_key.into_iter().enumerate() {
+                        if index == 0 {
+                            // Apply splaying to first component (document ID)
+                            if component.len() >= 2 {
+                                let (first_two, rest) = component.split_at(2);
+                                path_components.push(first_two.to_string());
+                                path_components.push(rest.to_string());
+                            } else {
+                                path_components.push(component);
+                            }
+                        } else {
+                            path_components.push(component);
+                        }
+                    }
+                    let storage_path = format!("storage/{}", path_components.join("/"));
+
+                    zip_writer
+                        .start_file(&storage_path, SimpleFileOptions::default())
+                        .map_err(|e| VfsError::IoError(e.into()))?;
+                    zip_writer
+                        .write_all(&doc_bytes)
+                        .map_err(VfsError::IoError)?;
+                }
+            }
+
+            zip_writer
+                .finish()
+                .map_err(|e| VfsError::IoError(e.into()))?;
+        }
+
+        Ok(zip_data)
+    }
+
     /// Get the root document ID
     pub fn root_id(&self) -> DocumentId {
         self.root_id.clone()
@@ -101,11 +219,17 @@ impl VirtualFileSystem {
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
     {
-        self.create_document_inner(path, content, Bytes::new(), false).await
+        self.create_document_inner(path, content, Bytes::new(), false)
+            .await
     }
 
-    /// Create a document at the specified path using bytes 
-    pub async fn create_document_with_bytes<T>(&self, path: &str, content: T, bytes: Bytes) -> Result<DocHandle>
+    /// Create a document at the specified path using bytes
+    pub async fn create_document_with_bytes<T>(
+        &self,
+        path: &str,
+        content: T,
+        bytes: Bytes,
+    ) -> Result<DocHandle>
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
     {
@@ -113,7 +237,13 @@ impl VirtualFileSystem {
     }
 
     /// Create a document at the specified path
-    async fn create_document_inner<T>(&self, path: &str, content: T, bytes: Bytes, use_bytes: bool) -> Result<DocHandle>
+    async fn create_document_inner<T>(
+        &self,
+        path: &str,
+        content: T,
+        bytes: Bytes,
+        use_bytes: bool,
+    ) -> Result<DocHandle>
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
     {
@@ -197,11 +327,17 @@ impl VirtualFileSystem {
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
     {
-        self.update_document_inner(path, content, Bytes::new(), false).await
+        self.update_document_inner(path, content, Bytes::new(), false)
+            .await
     }
 
-    /// Update a document at the specified path using bytes 
-    pub async fn update_document_with_bytes<T>(&self, path: &str, content: T, bytes: Bytes) -> Result<bool>
+    /// Update a document at the specified path using bytes
+    pub async fn update_document_with_bytes<T>(
+        &self,
+        path: &str,
+        content: T,
+        bytes: Bytes,
+    ) -> Result<bool>
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
     {
@@ -209,7 +345,13 @@ impl VirtualFileSystem {
     }
 
     /// Update an existing document at the specified path
-    async fn update_document_inner<T>(&self, path: &str, content: T, bytes: Bytes, use_bytes: bool) -> Result<bool>
+    async fn update_document_inner<T>(
+        &self,
+        path: &str,
+        content: T,
+        bytes: Bytes,
+        use_bytes: bool,
+    ) -> Result<bool>
     where
         T: serde::Serialize + Send + 'static,
     {
@@ -222,9 +364,12 @@ impl VirtualFileSystem {
             Some(doc_handle) => {
                 // Update the document content (conditional)
                 if use_bytes {
-                    AutomergeHelpers::update_document_content_with_bytes(&doc_handle, content, bytes)?;
-                }
-                else { 
+                    AutomergeHelpers::update_document_content_with_bytes(
+                        &doc_handle,
+                        content,
+                        bytes,
+                    )?;
+                } else {
                     AutomergeHelpers::update_document_content(&doc_handle, content)?;
                 }
 
@@ -257,7 +402,9 @@ impl VirtualFileSystem {
                     self.samod
                         .find(target_ref.pointer.clone())
                         .await
-                        .map_err(|e| VfsError::SamodError(format!("Failed to find parent directory: {e}")))?
+                        .map_err(|e| {
+                            VfsError::SamodError(format!("Failed to find parent directory: {e}"))
+                        })?
                         .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
                 } else {
                     result.node_handle.clone()
@@ -661,12 +808,12 @@ mod tests {
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         let mut rx = vfs.subscribe_events();
-        
+
         // Create a document
         vfs.create_document("/test.txt", "Initial".to_string())
             .await
             .unwrap();
-        
+
         // Check for create event
         if let Ok(event) = rx.try_recv() {
             match event {
@@ -676,12 +823,12 @@ mod tests {
                 _ => panic!("Expected DocumentCreated event"),
             }
         }
-        
+
         // Update the document
         vfs.update_document("/test.txt", "Updated".to_string())
             .await
             .unwrap();
-        
+
         // Check for update event
         if let Ok(event) = rx.try_recv() {
             match event {

@@ -138,6 +138,7 @@ async fn test_bundle_with_complex_structure() {
 }
 
 #[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
 async fn test_bundle_file_persistence() {
     use tempfile::NamedTempFile;
 
@@ -451,8 +452,8 @@ async fn test_load_empty_bundle_data() {
 #[tokio::test]
 async fn test_bundle_without_manifest() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP without manifest.json
     let mut zip_data = Vec::new();
@@ -475,8 +476,8 @@ async fn test_bundle_without_manifest() {
 #[tokio::test]
 async fn test_bundle_with_invalid_manifest() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with invalid manifest
     let mut zip_data = Vec::new();
@@ -505,8 +506,8 @@ async fn test_bundle_with_invalid_manifest() {
 #[tokio::test]
 async fn test_bundle_with_unsupported_manifest_version() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with unsupported manifest version
     let mut zip_data = Vec::new();
@@ -542,8 +543,8 @@ async fn test_bundle_with_unsupported_manifest_version() {
 #[tokio::test]
 async fn test_bundle_without_root_document() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with manifest but no root document
     let mut zip_data = Vec::new();
@@ -578,8 +579,8 @@ async fn test_bundle_without_root_document() {
 #[tokio::test]
 async fn test_bundle_with_corrupted_root_document() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with corrupted root document
     let mut zip_data = Vec::new();
@@ -706,6 +707,7 @@ async fn test_bundle_with_deep_nesting() {
 }
 
 #[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
 async fn test_bundle_partial_write_recovery() {
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -827,17 +829,21 @@ async fn test_offline_bundle_online_workflow() {
     let online_tonk = TonkCore::from_bytes(bundle_bytes).await.unwrap();
 
     // Verify all offline work is preserved
-    assert!(online_tonk
-        .vfs()
-        .exists("/project/README.md")
-        .await
-        .unwrap());
+    assert!(
+        online_tonk
+            .vfs()
+            .exists("/project/README.md")
+            .await
+            .unwrap()
+    );
     assert!(online_tonk.vfs().exists("/project/main.js").await.unwrap());
-    assert!(online_tonk
-        .vfs()
-        .exists("/project/src/utils.js")
-        .await
-        .unwrap());
+    assert!(
+        online_tonk
+            .vfs()
+            .exists("/project/src/utils.js")
+            .await
+            .unwrap()
+    );
 
     // Phase 4: Continue working online
     online_tonk
@@ -1176,11 +1182,13 @@ async fn test_bundle_concurrent_modifications() {
 
     // Verify all files exist
     for i in 0..20 {
-        assert!(tonk2
-            .vfs()
-            .exists(&format!("/concurrent/task_{}.txt", i))
-            .await
-            .unwrap());
+        assert!(
+            tonk2
+                .vfs()
+                .exists(&format!("/concurrent/task_{}.txt", i))
+                .await
+                .unwrap()
+        );
     }
 }
 
@@ -1231,80 +1239,104 @@ async fn test_bundle_rapid_save_load_cycles() {
 #[tokio::test]
 async fn test_load_bundle_from_blank_bundle_tonk_file() {
     use tonk_core::StorageConfig;
-    
+
     // Load the blank.tonk file from the test data directory
     let bundle_bytes = std::fs::read("tests/data/blank.tonk")
         .expect("Should be able to read tests/data/blank.tonk");
-    
+
     // Test the TonkCore::builder().from_bytes() code path with different storage configs
-    
+
     // Test with in-memory storage
     let tonk_memory = TonkCore::builder()
         .with_storage(StorageConfig::InMemory)
         .from_bytes(bundle_bytes.clone())
         .await
         .expect("Should load blank.tonk with in-memory storage");
-    
+
     // Verify the TonkCore instance was created successfully
     let vfs = tonk_memory.vfs();
     let root_id = vfs.root_id();
-    assert!(!root_id.to_string().is_empty(), "Root ID should not be empty");
-    
+    assert!(
+        !root_id.to_string().is_empty(),
+        "Root ID should not be empty"
+    );
+
     // Test with filesystem storage (non-WASM only)
     #[cfg(not(target_arch = "wasm32"))]
     {
         use tempfile::tempdir;
         let temp_dir = tempdir().expect("Should create temp directory");
-        
+
         let tonk_filesystem = TonkCore::builder()
             .with_storage(StorageConfig::Filesystem(temp_dir.path().to_path_buf()))
             .from_bytes(bundle_bytes.clone())
             .await
             .expect("Should load blank.tonk with filesystem storage");
-        
+
         // Verify the TonkCore instance was created successfully
         let vfs_fs = tonk_filesystem.vfs();
         let root_id_fs = vfs_fs.root_id();
-        assert!(!root_id_fs.to_string().is_empty(), "Root ID should not be empty");
-        
+        assert!(
+            !root_id_fs.to_string().is_empty(),
+            "Root ID should not be empty"
+        );
+
         // Verify different instances have different peer IDs
         assert_ne!(
-            tonk_memory.peer_id(), 
-            tonk_filesystem.peer_id(), 
+            tonk_memory.peer_id(),
+            tonk_filesystem.peer_id(),
             "Different instances should have different peer IDs"
         );
     }
-    
+
     // Test that we can use the VFS after loading
-    let entries = vfs.list_directory("/").await.expect("Should be able to list root directory");
+    let entries = vfs
+        .list_directory("/")
+        .await
+        .expect("Should be able to list root directory");
     // The blank.tonk file should have an empty or minimal structure
     println!("Root directory entries: {:?}", entries);
-    
+
     // Verify we can create new content in the loaded VFS
-    vfs.create_document("/test_after_load.txt", "Content added after loading blank.tonk".to_string())
-        .await
-        .expect("Should be able to create documents in loaded VFS");
-    
+    vfs.create_document(
+        "/test_after_load.txt",
+        "Content added after loading blank.tonk".to_string(),
+    )
+    .await
+    .expect("Should be able to create documents in loaded VFS");
+
     // Verify the document was created
-    assert!(vfs.exists("/test_after_load.txt").await.expect("Should be able to check existence"));
-    
+    assert!(
+        vfs.exists("/test_after_load.txt")
+            .await
+            .expect("Should be able to check existence")
+    );
+
     // Test that we can save the modified state back to bytes
-    let new_bundle_bytes = tonk_memory.to_bytes(None).await
+    let new_bundle_bytes = tonk_memory
+        .to_bytes(None)
+        .await
         .expect("Should be able to export modified state to bytes");
-    
+
     // Verify the new bundle is larger (contains our new document)
     assert!(
         new_bundle_bytes.len() > bundle_bytes.len(),
         "Modified bundle should be larger than original slim bundle"
     );
-    
+
     // Test loading the modified bundle
     let tonk_modified = TonkCore::builder()
         .with_storage(StorageConfig::InMemory)
         .from_bytes(new_bundle_bytes)
         .await
         .expect("Should load modified bundle");
-    
+
     // Verify our added document exists in the reloaded bundle
-    assert!(tonk_modified.vfs().exists("/test_after_load.txt").await.expect("Should be able to check existence"));
+    assert!(
+        tonk_modified
+            .vfs()
+            .exists("/test_after_load.txt")
+            .await
+            .expect("Should be able to check existence")
+    );
 }
