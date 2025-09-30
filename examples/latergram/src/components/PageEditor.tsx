@@ -1,27 +1,28 @@
-import React, { useState, useEffect, useCallback } from 'react';
 import {
-  FileText,
   AlertCircle,
-  File,
-  RefreshCw,
   Clock,
   Eye,
+  File,
+  FileText,
+  RefreshCw,
 } from 'lucide-react';
+import type React from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
-  useLocation,
-  useSearchParams,
-  useNavigate,
   Link,
+  useLocation,
+  useNavigate,
+  useSearchParams,
 } from 'react-router-dom';
 import { getVFSService } from '../services/vfs-service';
-import { ViewRenderer } from './ViewRenderer';
 import {
   EditorSidebar,
+  EmptyState,
   SearchInput,
   SidebarItem,
-  EmptyState,
   useAutoSave,
 } from './shared';
+import { ViewRenderer } from './ViewRenderer';
 
 interface PageFile {
   path: string;

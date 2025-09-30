@@ -1,8 +1,8 @@
-import React, { useRef, useCallback, useEffect } from 'react';
-import Editor, { OnChange, OnMount } from '@monaco-editor/react';
+import Editor, { type OnChange, type OnMount } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
-import { buildAvailablePackages } from '../contextBuilder';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { componentRegistry } from '../ComponentRegistry';
+import { buildAvailablePackages } from '../contextBuilder';
 import { storeRegistry } from '../StoreRegistry';
 import { JSX_NAMESPACE } from './jsx_namespace';
 
@@ -26,7 +26,6 @@ interface MonacoCodeEditorProps {
 const generateMonacoTypes = (): string => {
   const packages = buildAvailablePackages();
 
-
   // Generate type declarations programmatically from the packages object
   const generateDeclarations = (obj: any): string => {
     const declarations: string[] = [];
@@ -46,33 +45,41 @@ const generateMonacoTypes = (): string => {
     useReducer: <S, A>(reducer: (state: S, action: A) => S, initialState: S) => [S, (action: A) => void];
     useContext: <T>(context: any) => T;
   };`);
-      } else if (key.startsWith('use') && !key.toLowerCase().includes('store')) {
+      } else if (
+        key.startsWith('use') &&
+        !key.toLowerCase().includes('store')
+      ) {
         // React hooks (but not stores that start with 'use')
         declarations.push(`  const ${key}: typeof React.${key};`);
       } else if (key === 'Fragment') {
         declarations.push(`  const Fragment: typeof React.Fragment;`);
       } else if (key === 'create') {
         // Zustand create function
-        declarations.push(`  const create: <T>(initializer: (set: any, get: any, api: any) => T) => () => T;`);
+        declarations.push(
+          `  const create: <T>(initializer: (set: any, get: any, api: any) => T) => () => T;`
+        );
       } else if (key === 'sync') {
         // Sync middleware
         declarations.push(`  const sync: (config?: any) => any;`);
       } else if (value && typeof value === 'function') {
         // Try to extract more type information from components and stores
-        const isComponent = componentRegistry.getAllComponents().some(c =>
-          c.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key
-        );
+        const isComponent = componentRegistry
+          .getAllComponents()
+          .some(c => c.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key);
 
-        const isStore = storeRegistry.getAllStores().some(s =>
-          s.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key
-        );
+        const isStore = storeRegistry
+          .getAllStores()
+          .some(s => s.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key);
 
         // Also check if it looks like a Zustand store (returns an object with state/functions)
         let looksLikeStore = false;
         if (!isComponent && !isStore) {
           try {
             const result = value();
-            looksLikeStore = result && typeof result === 'object' && !React.isValidElement(result);
+            looksLikeStore =
+              result &&
+              typeof result === 'object' &&
+              !React.isValidElement(result);
           } catch (e) {
             // Not a store if calling it throws
           }
@@ -80,28 +87,35 @@ const generateMonacoTypes = (): string => {
 
         if (isComponent) {
           // It's a React component
-          const component = componentRegistry.getAllComponents().find(c =>
-            c.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key
-          );
+          const component = componentRegistry
+            .getAllComponents()
+            .find(c => c.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key);
 
           // Try to extract props from the component's source code if available
           if (component?.metadata?.source) {
             const source = component.metadata.source;
 
             // Look for interface or type definitions for props
-            const propsInterfaceMatch = source.match(/(?:interface|type)\s+(\w+Props)\s*=?\s*\{([^}]+)\}/);
+            const propsInterfaceMatch = source.match(
+              /(?:interface|type)\s+(\w+Props)\s*=?\s*\{([^}]+)\}/
+            );
 
             if (propsInterfaceMatch) {
               const propsContent = propsInterfaceMatch[2];
               // Parse the props
-              const propLines = propsContent.split(/[;\n]/).filter(line => line.trim());
-              const props = propLines.map(line => {
-                const trimmed = line.trim();
-                if (!trimmed || trimmed.startsWith('//')) return null;
+              const propLines = propsContent
+                .split(/[;\n]/)
+                .filter(line => line.trim());
+              const props = propLines
+                .map(line => {
+                  const trimmed = line.trim();
+                  if (!trimmed || trimmed.startsWith('//')) return null;
 
-                // Keep the original type definition
-                return trimmed;
-              }).filter(Boolean).join('; ');
+                  // Keep the original type definition
+                  return trimmed;
+                })
+                .filter(Boolean)
+                .join('; ');
 
               if (props) {
                 declarations.push(`  const ${key}: React.FC<{ ${props} }>;`);
@@ -110,16 +124,20 @@ const generateMonacoTypes = (): string => {
               }
             } else {
               // Try to extract props from function signature
-              const funcMatch = source.match(/(?:const|function)\s+\w+[^(]*\(\s*\{([^}]+)\}/);
+              const funcMatch = source.match(
+                /(?:const|function)\s+\w+[^(]*\(\s*\{([^}]+)\}/
+              );
               if (funcMatch) {
                 const props = funcMatch[1]
                   .split(',')
                   .map(p => p.trim())
                   .filter(p => p && !p.includes('...'))
                   .map(p => {
-                    const propName = p.split(/[=:]/ )[0].trim();
+                    const propName = p.split(/[=:]/)[0].trim();
                     // Try to find type annotation in source
-                    const typeMatch = source.match(new RegExp(`${propName}\\s*:\\s*([^,;}]+)`));
+                    const typeMatch = source.match(
+                      new RegExp(`${propName}\\s*:\\s*([^,;}]+)`)
+                    );
                     const type = typeMatch ? typeMatch[1].trim() : 'any';
                     return `${propName}?: ${type}`;
                   })
@@ -136,9 +154,9 @@ const generateMonacoTypes = (): string => {
           }
         } else if (isStore || looksLikeStore) {
           // It's a Zustand store
-          const store = storeRegistry.getAllStores().find(s =>
-            s.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key
-          );
+          const store = storeRegistry
+            .getAllStores()
+            .find(s => s.metadata.name.replace(/[^a-zA-Z0-9]/g, '') === key);
 
           // Try to extract store interface from source code
           if (store?.metadata?.source) {
@@ -146,11 +164,14 @@ const generateMonacoTypes = (): string => {
 
             // Look for store interface or type definition
             // Match interfaces/types ending in Store or State
-            const storeInterfaceMatch = source.match(/(?:interface|type)\s+(\w+(?:Store|State))\s*=?\s*\{([^}]+)\}/);
+            const storeInterfaceMatch = source.match(
+              /(?:interface|type)\s+(\w+(?:Store|State))\s*=?\s*\{([^}]+)\}/
+            );
 
             if (storeInterfaceMatch) {
               const storeContent = storeInterfaceMatch[2];
-              const storeProps = storeContent.split(/[;\n]/)
+              const storeProps = storeContent
+                .split(/[;\n]/)
                 .filter(line => line.trim())
                 .map(line => {
                   const trimmed = line.trim();
@@ -182,14 +203,18 @@ const generateMonacoTypes = (): string => {
                       const args = argsMatch[1];
 
                       // Parse argument names
-                      const argNames = args.split(',').map(a => {
-                        const cleaned = a.trim();
-                        // Handle destructured args
-                        if (cleaned.includes('{')) return '...args: any[]';
-                        // Handle default values
-                        const argName = cleaned.split('=')[0].trim();
-                        return argName ? `${argName}: any` : '';
-                      }).filter(a => a).join(', ');
+                      const argNames = args
+                        .split(',')
+                        .map(a => {
+                          const cleaned = a.trim();
+                          // Handle destructured args
+                          if (cleaned.includes('{')) return '...args: any[]';
+                          // Handle default values
+                          const argName = cleaned.split('=')[0].trim();
+                          return argName ? `${argName}: any` : '';
+                        })
+                        .filter(a => a)
+                        .join(', ');
 
                       storeShape.push(`${prop}: (${argNames}) => any`);
                     } else {
@@ -206,7 +231,10 @@ const generateMonacoTypes = (): string => {
                       // Try to infer array element type from first element
                       if (val.length > 0) {
                         const firstElem = val[0];
-                        const elemType = typeof firstElem === 'object' ? 'any' : typeof firstElem;
+                        const elemType =
+                          typeof firstElem === 'object'
+                            ? 'any'
+                            : typeof firstElem;
                         type = `${elemType}[]`;
                       } else {
                         type = 'any[]';
@@ -222,13 +250,17 @@ const generateMonacoTypes = (): string => {
                 }
 
                 if (storeShape.length > 0) {
-                  declarations.push(`  const ${key}: () => { ${storeShape.join('; ')} };`);
+                  declarations.push(
+                    `  const ${key}: () => { ${storeShape.join('; ')} };`
+                  );
                 } else {
                   declarations.push(`  const ${key}: () => {};`);
                 }
               } catch (e) {
                 // Fallback to generic store type
-                declarations.push(`  const ${key}: () => { [key: string]: any };`);
+                declarations.push(
+                  `  const ${key}: () => { [key: string]: any };`
+                );
               }
             }
           } else {
@@ -246,9 +278,13 @@ const generateMonacoTypes = (): string => {
                 }
               }
 
-              declarations.push(`  const ${key}: () => { ${storeShape.join('; ')} };`);
+              declarations.push(
+                `  const ${key}: () => { ${storeShape.join('; ')} };`
+              );
             } catch (e) {
-              declarations.push(`  const ${key}: () => { [key: string]: any };`);
+              declarations.push(
+                `  const ${key}: () => { [key: string]: any };`
+              );
             }
           }
         } else {
@@ -278,7 +314,7 @@ const generateMonacoTypes = (): string => {
     return declarations.join('\n');
   };
 
-  let declarations = `
+  const declarations = `
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 /// <reference lib="es2020" />
@@ -354,7 +390,11 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
       const currentValue = editor.getValue();
 
       // Only update if value changed externally and user is not actively editing
-      if (value !== currentValue && value !== lastExternalValueRef.current && !isUserEditingRef.current) {
+      if (
+        value !== currentValue &&
+        value !== lastExternalValueRef.current &&
+        !isUserEditingRef.current
+      ) {
         // Save cursor position and selection
         const position = editor.getPosition();
         const selection = editor.getSelection();
@@ -368,7 +408,10 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
           const lineCount = model.getLineCount();
           const validPosition = {
             lineNumber: Math.min(position.lineNumber, lineCount),
-            column: Math.min(position.column, model.getLineMaxColumn(Math.min(position.lineNumber, lineCount)))
+            column: Math.min(
+              position.column,
+              model.getLineMaxColumn(Math.min(position.lineNumber, lineCount))
+            ),
           };
           editor.setPosition(validPosition);
 
@@ -376,9 +419,19 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
           if (selection && !selection.isEmpty()) {
             const validSelection = {
               startLineNumber: Math.min(selection.startLineNumber, lineCount),
-              startColumn: Math.min(selection.startColumn, model.getLineMaxColumn(Math.min(selection.startLineNumber, lineCount))),
+              startColumn: Math.min(
+                selection.startColumn,
+                model.getLineMaxColumn(
+                  Math.min(selection.startLineNumber, lineCount)
+                )
+              ),
               endLineNumber: Math.min(selection.endLineNumber, lineCount),
-              endColumn: Math.min(selection.endColumn, model.getLineMaxColumn(Math.min(selection.endLineNumber, lineCount)))
+              endColumn: Math.min(
+                selection.endColumn,
+                model.getLineMaxColumn(
+                  Math.min(selection.endLineNumber, lineCount)
+                )
+              ),
             };
             editor.setSelection(validSelection);
           }
@@ -398,174 +451,209 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
     if (!model) return;
 
     // Get TypeScript worker and check diagnostics
-    monacoRef.current.languages.typescript.getTypeScriptWorker().then(worker => {
-      worker(model.uri).then(client => {
-        Promise.all([
-          client.getSemanticDiagnostics(model.uri.toString()),
-          client.getSyntacticDiagnostics(model.uri.toString()),
-        ]).then(([semanticDiagnostics, syntacticDiagnostics]) => {
-          const allDiagnostics = [...semanticDiagnostics, ...syntacticDiagnostics];
+    monacoRef.current.languages.typescript
+      .getTypeScriptWorker()
+      .then(worker => {
+        worker(model.uri)
+          .then(client => {
+            Promise.all([
+              client.getSemanticDiagnostics(model.uri.toString()),
+              client.getSyntacticDiagnostics(model.uri.toString()),
+            ])
+              .then(([semanticDiagnostics, syntacticDiagnostics]) => {
+                const allDiagnostics = [
+                  ...semanticDiagnostics,
+                  ...syntacticDiagnostics,
+                ];
 
-          const tsMarkers = allDiagnostics
-            .filter(d => {
-              // Filter out module/import related errors
-              const code = d.code;
-              const ignoreCodes = [2792, 2307, 1192, 2686]; // Removed 2304 from here
+                const tsMarkers = allDiagnostics
+                  .filter(d => {
+                    // Filter out module/import related errors
+                    const code = d.code;
+                    const ignoreCodes = [2792, 2307, 1192, 2686]; // Removed 2304 from here
 
-              // Special handling for "Cannot find name" errors (2304)
-              if (code === 2304 && d.messageText) {
-                const message = typeof d.messageText === 'string' ? d.messageText : d.messageText.messageText;
-                // Only ignore if it's about imports or modules
-                if (message && (
-                  message.includes('import') ||
-                  message.includes('require') ||
-                  message.includes('module') ||
-                  message.includes('Cannot find namespace')
-                )) {
-                  return false;
-                }
-                // Keep the error if it's about undefined variables
-                return true;
-              }
+                    // Special handling for "Cannot find name" errors (2304)
+                    if (code === 2304 && d.messageText) {
+                      const message =
+                        typeof d.messageText === 'string'
+                          ? d.messageText
+                          : d.messageText.messageText;
+                      // Only ignore if it's about imports or modules
+                      if (
+                        message &&
+                        (message.includes('import') ||
+                          message.includes('require') ||
+                          message.includes('module') ||
+                          message.includes('Cannot find namespace'))
+                      ) {
+                        return false;
+                      }
+                      // Keep the error if it's about undefined variables
+                      return true;
+                    }
 
-              return !ignoreCodes.includes(code);
-            })
-            .map(d => {
-              const start = d.start || 0;
-              const length = d.length || 1;
-              const startPos = model.getPositionAt(start);
-              const endPos = model.getPositionAt(start + length);
+                    return !ignoreCodes.includes(code);
+                  })
+                  .map(d => {
+                    const start = d.start || 0;
+                    const length = d.length || 1;
+                    const startPos = model.getPositionAt(start);
+                    const endPos = model.getPositionAt(start + length);
 
-              return {
-                severity: d.category === 1 ? monacoRef.current.MarkerSeverity.Error :
-                         d.category === 0 ? monacoRef.current.MarkerSeverity.Warning :
-                         monacoRef.current.MarkerSeverity.Info,
-                startLineNumber: startPos.lineNumber,
-                startColumn: startPos.column,
-                endLineNumber: endPos.lineNumber,
-                endColumn: endPos.column,
-                message: typeof d.messageText === 'string' ? d.messageText :
-                        (d.messageText?.messageText || 'Type error'),
-                source: 'TypeScript',
-                code: d.code?.toString()
-              };
-            });
+                    return {
+                      severity:
+                        d.category === 1
+                          ? monacoRef.current.MarkerSeverity.Error
+                          : d.category === 0
+                            ? monacoRef.current.MarkerSeverity.Warning
+                            : monacoRef.current.MarkerSeverity.Info,
+                      startLineNumber: startPos.lineNumber,
+                      startColumn: startPos.column,
+                      endLineNumber: endPos.lineNumber,
+                      endColumn: endPos.column,
+                      message:
+                        typeof d.messageText === 'string'
+                          ? d.messageText
+                          : d.messageText?.messageText || 'Type error',
+                      source: 'TypeScript',
+                      code: d.code?.toString(),
+                    };
+                  });
 
-          // Set TypeScript markers
-          monacoRef.current.editor.setModelMarkers(model, 'typescript', tsMarkers);
-        }).catch(err => {
-          console.error('Error getting TypeScript diagnostics:', err);
-        });
-      }).catch(err => {
-        console.error('Error getting TypeScript worker:', err);
+                // Set TypeScript markers
+                monacoRef.current.editor.setModelMarkers(
+                  model,
+                  'typescript',
+                  tsMarkers
+                );
+              })
+              .catch(err => {
+                console.error('Error getting TypeScript diagnostics:', err);
+              });
+          })
+          .catch(err => {
+            console.error('Error getting TypeScript worker:', err);
+          });
+      })
+      .catch(err => {
+        console.error('Error accessing TypeScript language features:', err);
       });
-    }).catch(err => {
-      console.error('Error accessing TypeScript language features:', err);
-    });
   }, []);
 
-  const handleEditorDidMount: OnMount = useCallback((editor, monaco) => {
-    editorRef.current = editor;
-    monacoRef.current = monaco;
-    lastExternalValueRef.current = value;
+  const handleEditorDidMount: OnMount = useCallback(
+    (editor, monaco) => {
+      editorRef.current = editor;
+      monacoRef.current = monaco;
+      lastExternalValueRef.current = value;
 
-    // Add save keyboard shortcut
-    if (onSave) {
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-        onSave();
-      });
-    }
+      // Add save keyboard shortcut
+      if (onSave) {
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+          onSave();
+        });
+      }
 
-    // Listen for content changes and re-check types
-    const model = editor.getModel();
-    if (model) {
-      model.onDidChangeContent(() => {
-        // Debounce type checking on content change
-        setTimeout(() => {
-          checkForTypeErrors();
-        }, 300);
-      });
-    }
+      // Listen for content changes and re-check types
+      const model = editor.getModel();
+      if (model) {
+        model.onDidChangeContent(() => {
+          // Debounce type checking on content change
+          setTimeout(() => {
+            checkForTypeErrors();
+          }, 300);
+        });
+      }
 
-    // Configure TypeScript compiler options for strict type checking
-    const compilerOptions = {
-      target: monaco.languages.typescript.ScriptTarget.ES2020,
-      module: monaco.languages.typescript.ModuleKind.ESNext,
-      jsx: monaco.languages.typescript.JsxEmit.React,
-      jsxFactory: 'React.createElement',
-      jsxFragmentFactory: 'React.Fragment',
-      esModuleInterop: true,
-      skipLibCheck: true,
-      noEmit: true,
-      allowSyntheticDefaultImports: true,
-      strict: true,
-      noImplicitAny: true,
-      strictNullChecks: true,
-      strictFunctionTypes: true,
-      strictBindCallApply: true,
-      noImplicitThis: true,
-      alwaysStrict: true,
-      noUnusedLocals: false, // Don't warn about unused locals in Tonk
-      noUnusedParameters: false, // Don't warn about unused parameters
-      noImplicitReturns: true,
-      noFallthroughCasesInSwitch: true,
-      allowJs: true,
-      checkJs: false,
-      moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
-    };
+      // Configure TypeScript compiler options for strict type checking
+      const compilerOptions = {
+        target: monaco.languages.typescript.ScriptTarget.ES2020,
+        module: monaco.languages.typescript.ModuleKind.ESNext,
+        jsx: monaco.languages.typescript.JsxEmit.React,
+        jsxFactory: 'React.createElement',
+        jsxFragmentFactory: 'React.Fragment',
+        esModuleInterop: true,
+        skipLibCheck: true,
+        noEmit: true,
+        allowSyntheticDefaultImports: true,
+        strict: true,
+        noImplicitAny: true,
+        strictNullChecks: true,
+        strictFunctionTypes: true,
+        strictBindCallApply: true,
+        noImplicitThis: true,
+        alwaysStrict: true,
+        noUnusedLocals: false, // Don't warn about unused locals in Tonk
+        noUnusedParameters: false, // Don't warn about unused parameters
+        noImplicitReturns: true,
+        noFallthroughCasesInSwitch: true,
+        allowJs: true,
+        checkJs: false,
+        moduleResolution:
+          monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+      };
 
-    // Apply to both TypeScript and JavaScript
-    monaco.languages.typescript.typescriptDefaults.setCompilerOptions(compilerOptions);
-    monaco.languages.typescript.javascriptDefaults.setCompilerOptions(compilerOptions);
+      // Apply to both TypeScript and JavaScript
+      monaco.languages.typescript.typescriptDefaults.setCompilerOptions(
+        compilerOptions
+      );
+      monaco.languages.typescript.javascriptDefaults.setCompilerOptions(
+        compilerOptions
+      );
 
-    // Configure diagnostics options - enable all checks
-    const diagnosticsOptions = {
-      noSemanticValidation: false,  // Enable semantic validation (type checking)
-      noSyntaxValidation: false,     // Enable syntax validation
-      noSuggestionDiagnostics: false, // Enable suggestions
-      diagnosticCodesToIgnore: [
-        2792, // Cannot find module - Tonk handles imports differently
-        2307, // Cannot find module
-        1192, // Module has no default export
-        2686, // Refers to UMD global
-        2304, // Cannot find name (only for imports)
-      ]
-    };
+      // Configure diagnostics options - enable all checks
+      const diagnosticsOptions = {
+        noSemanticValidation: false, // Enable semantic validation (type checking)
+        noSyntaxValidation: false, // Enable syntax validation
+        noSuggestionDiagnostics: false, // Enable suggestions
+        diagnosticCodesToIgnore: [
+          2792, // Cannot find module - Tonk handles imports differently
+          2307, // Cannot find module
+          1192, // Module has no default export
+          2686, // Refers to UMD global
+          2304, // Cannot find name (only for imports)
+        ],
+      };
 
-    monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
-    monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
+      monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions(
+        diagnosticsOptions
+      );
+      monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions(
+        diagnosticsOptions
+      );
 
-    // Set eager model sync for better performance with dynamic models
-    monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
-    monaco.languages.typescript.javascriptDefaults.setEagerModelSync(true);
+      // Set eager model sync for better performance with dynamic models
+      monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
+      monaco.languages.typescript.javascriptDefaults.setEagerModelSync(true);
 
-    // Add Tonk global type declarations
-    const tonkTypes = generateMonacoTypes();
+      // Add Tonk global type declarations
+      const tonkTypes = generateMonacoTypes();
 
-    // Clear existing libs and add new ones
-    monaco.languages.typescript.typescriptDefaults.setExtraLibs([]);
-    monaco.languages.typescript.javascriptDefaults.setExtraLibs([]);
+      // Clear existing libs and add new ones
+      monaco.languages.typescript.typescriptDefaults.setExtraLibs([]);
+      monaco.languages.typescript.javascriptDefaults.setExtraLibs([]);
 
-    monaco.languages.typescript.typescriptDefaults.addExtraLib(
-      tonkTypes,
-      'ts:tonk-globals.d.ts'
-    );
-    monaco.languages.typescript.javascriptDefaults.addExtraLib(
-      tonkTypes,
-      'ts:tonk-globals.d.ts'
-    );
+      monaco.languages.typescript.typescriptDefaults.addExtraLib(
+        tonkTypes,
+        'ts:tonk-globals.d.ts'
+      );
+      monaco.languages.typescript.javascriptDefaults.addExtraLib(
+        tonkTypes,
+        'ts:tonk-globals.d.ts'
+      );
 
-    // Force initial validation
-    if (model) {
-      // Trigger validation by making a small change and reverting it
-      const originalValue = model.getValue();
-      model.setValue(originalValue + ' ');
-      model.setValue(originalValue);
-    }
+      // Force initial validation
+      if (model) {
+        // Trigger validation by making a small change and reverting it
+        const originalValue = model.getValue();
+        model.setValue(originalValue + ' ');
+        model.setValue(originalValue);
+      }
 
-    // Set up error checking
-    checkForTypeErrors();
-  }, [onSave, value, checkForTypeErrors]);
+      // Set up error checking
+      checkForTypeErrors();
+    },
+    [onSave, value, checkForTypeErrors]
+  );
 
   // Update error markers and check types when content changes
   useEffect(() => {
@@ -574,11 +662,12 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
       if (model) {
         // Set Tonk validation errors
         const tonkMarkers = errors.map(err => ({
-          severity: err.severity === 'error'
-            ? monacoRef.current.MarkerSeverity.Error
-            : err.severity === 'warning'
-              ? monacoRef.current.MarkerSeverity.Warning
-              : monacoRef.current.MarkerSeverity.Info,
+          severity:
+            err.severity === 'error'
+              ? monacoRef.current.MarkerSeverity.Error
+              : err.severity === 'warning'
+                ? monacoRef.current.MarkerSeverity.Warning
+                : monacoRef.current.MarkerSeverity.Info,
           startLineNumber: err.line,
           startColumn: err.column,
           endLineNumber: err.line,
@@ -604,8 +693,12 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
       const tonkTypes = generateMonacoTypes();
 
       // Clear and re-add libs
-      monacoRef.current.languages.typescript.typescriptDefaults.setExtraLibs([]);
-      monacoRef.current.languages.typescript.javascriptDefaults.setExtraLibs([]);
+      monacoRef.current.languages.typescript.typescriptDefaults.setExtraLibs(
+        []
+      );
+      monacoRef.current.languages.typescript.javascriptDefaults.setExtraLibs(
+        []
+      );
 
       monacoRef.current.languages.typescript.typescriptDefaults.addExtraLib(
         tonkTypes,
@@ -624,7 +717,9 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
     const unsubComponents = componentRegistry.onContextUpdate(() => {
       if (monacoRef.current) {
         const tonkTypes = generateMonacoTypes();
-        monacoRef.current.languages.typescript.typescriptDefaults.setExtraLibs([]);
+        monacoRef.current.languages.typescript.typescriptDefaults.setExtraLibs(
+          []
+        );
         monacoRef.current.languages.typescript.typescriptDefaults.addExtraLib(
           tonkTypes,
           'ts:tonk-globals.d.ts'
@@ -636,7 +731,9 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
     const unsubStores = storeRegistry.onContextUpdate(() => {
       if (monacoRef.current) {
         const tonkTypes = generateMonacoTypes();
-        monacoRef.current.languages.typescript.typescriptDefaults.setExtraLibs([]);
+        monacoRef.current.languages.typescript.typescriptDefaults.setExtraLibs(
+          []
+        );
         monacoRef.current.languages.typescript.typescriptDefaults.addExtraLib(
           tonkTypes,
           'ts:tonk-globals.d.ts'
@@ -651,9 +748,12 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
     };
   }, [checkForTypeErrors]);
 
-  const handleChange: OnChange = useCallback((value) => {
-    onChange(value || '');
-  }, [onChange]);
+  const handleChange: OnChange = useCallback(
+    value => {
+      onChange(value || '');
+    },
+    [onChange]
+  );
 
   // Configure Monaco before mount
   const handleEditorWillMount = useCallback((monaco: any) => {
@@ -699,19 +799,19 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
           quickSuggestions: {
             other: true,
             comments: true,
-            strings: true
+            strings: true,
           },
           parameterHints: {
-            enabled: true
+            enabled: true,
           },
           suggestOnTriggerCharacters: true,
           acceptSuggestionOnEnter: 'on',
           tabCompletion: 'on',
-          wordBasedSuggestions: "allDocuments",
+          wordBasedSuggestions: 'allDocuments',
           padding: {
             top: 20,
-            bottom: 20
-          }
+            bottom: 20,
+          },
         }}
       />
     </div>

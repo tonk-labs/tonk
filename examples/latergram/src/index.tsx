@@ -1,15 +1,15 @@
 import React from 'react';
 import './index.css';
-import { createRoot } from 'react-dom/client';
-import * as ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import App from './App';
-import { getVFSService } from './services/vfs-service';
-import { getUserService } from './services/user-service';
-import * as zustand from 'zustand';
-import { sync } from './middleware';
-import { getAgentService } from './lib/agent/agent-service';
 import { install } from '@twind/core';
+import * as ReactDOM from 'react-dom/client';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import * as zustand from 'zustand';
+import App from './App';
+import { getAgentService } from './lib/agent/agent-service';
+import { sync } from './middleware';
+import { getUserService } from './services/user-service';
+import { getVFSService } from './services/vfs-service';
 import twConfig from './twind.config';
 
 // Using TWIND to get tailwind

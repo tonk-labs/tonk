@@ -1,17 +1,16 @@
-import React, { useCallback, useEffect } from 'react';
+import type React from 'react';
+import { useCallback, useEffect } from 'react';
 import { useAgentChat } from '../../lib/agent/use-agent-chat';
 import ChatErrorBar from './ChatErrorBar';
-import ChatMessage from './ChatMessage';
-import ChatLoadingDots from './ChatLoadingDots';
 import ChatInputBar from './ChatInputBar';
+import ChatLoadingDots from './ChatLoadingDots';
+import ChatMessage from './ChatMessage';
 
 interface AgentChatProps {
   inputRef: React.RefObject<HTMLTextAreaElement>;
 }
 
-const AgentChat: React.FC<AgentChatProps> = ({
-  inputRef,
-}) => {
+const AgentChat: React.FC<AgentChatProps> = ({ inputRef }) => {
   const {
     messages,
     isLoading,
@@ -85,18 +84,15 @@ const AgentChat: React.FC<AgentChatProps> = ({
         {error && <ChatErrorBar error={error} />}
         <div className="flex flex-col-reverse reverse h-full overflow-scroll gap-4 max-w-[50rem] w-full py-4">
           <div className="flex-1 min-h-0" />
-          
+
           {messages.length === 0 ? (
             <div className="text-center text-gray-500 text-xs animate-pulse">
-              {isReady
-                ? ''
-                : 'Initializing agent service...'}
+              {isReady ? '' : 'Initializing agent service...'}
             </div>
           ) : (
-            <>{isLoading && <ChatLoadingDots onStop={stopGeneration} />}
-            {[...messages]
-              .reverse()
-              .map(message => (
+            <>
+              {isLoading && <ChatLoadingDots onStop={stopGeneration} />}
+              {[...messages].reverse().map(message => (
                 <ChatMessage
                   key={message.id}
                   message={message}
@@ -112,8 +108,8 @@ const AgentChat: React.FC<AgentChatProps> = ({
                   onDelete={() => handleDeleteMessage(message.id)}
                 />
               ))}
-          </>)}
-
+            </>
+          )}
         </div>
       </div>
 

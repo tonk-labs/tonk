@@ -1,11 +1,11 @@
 import { generateText, streamText } from 'ai';
 import { getVFSService } from '../../services/vfs-service';
-import { getChatHistory, type ChatMessage } from './chat-history';
+import { type ChatMessage, getChatHistory } from './chat-history';
 import {
+  AGENT_SYSTEM_PROMPT,
   createOpenRouterProvider,
   MODEL,
-  AGENT_SYSTEM_PROMPT,
-  tonkTools
+  tonkTools,
 } from './code_agent';
 
 // Type definitions for better type safety
@@ -49,12 +49,17 @@ export class AgentService {
     return result && ('result' in result ? result.result : result.output);
   }
 
-  private formatToolCalls(toolCalls: ToolCall[], toolResults: ToolResult[]): FormattedToolCall[] {
+  private formatToolCalls(
+    toolCalls: ToolCall[],
+    toolResults: ToolResult[]
+  ): FormattedToolCall[] {
     return toolCalls.map((call, index) => ({
       id: call.toolCallId,
       name: call.toolName,
       args: this.getToolArgs(call),
-      result: toolResults[index] ? this.getToolResult(toolResults[index]) : null,
+      result: toolResults[index]
+        ? this.getToolResult(toolResults[index])
+        : null,
     }));
   }
 
@@ -72,7 +77,10 @@ export class AgentService {
     }
   }
 
-  private async storeToolExecutions(toolCalls: ToolCall[], toolResults: ToolResult[]): Promise<void> {
+  private async storeToolExecutions(
+    toolCalls: ToolCall[],
+    toolResults: ToolResult[]
+  ): Promise<void> {
     for (let i = 0; i < toolCalls.length; i++) {
       const call = toolCalls[i];
       const result = toolResults[i];
@@ -84,12 +92,14 @@ export class AgentService {
         role: 'assistant',
         content: `Calling tool: ${call.toolName}\nArguments: ${JSON.stringify(args, null, 2)}`,
         hidden: true,
-        toolCalls: [{
-          id: call.toolCallId,
-          name: call.toolName,
-          args: args,
-          result: null,
-        }],
+        toolCalls: [
+          {
+            id: call.toolCallId,
+            name: call.toolName,
+            args: args,
+            result: null,
+          },
+        ],
       });
 
       // Store the tool result as a tool message
@@ -105,7 +115,15 @@ export class AgentService {
     }
   }
 
-  private async* streamToolResults(toolCalls: ToolCall[], toolResults: ToolResult[], hasTextContent: boolean): AsyncGenerator<{ content: string; done: boolean; type?: 'text' | 'tool_call' | 'tool_result' }> {
+  private async *streamToolResults(
+    toolCalls: ToolCall[],
+    toolResults: ToolResult[],
+    hasTextContent: boolean
+  ): AsyncGenerator<{
+    content: string;
+    done: boolean;
+    type?: 'text' | 'tool_call' | 'tool_result';
+  }> {
     if (toolCalls.length === 0) return;
 
     // Add spacing if there was text before
@@ -125,23 +143,32 @@ export class AgentService {
       const args = this.getToolArgs(call);
       if (args && Object.keys(args).length > 0) {
         const argsPreview = JSON.stringify(args, null, 2);
-        const argsText = argsPreview.length > 300 ?
-          argsPreview.substring(0, 300) + '...' :
-          argsPreview;
-        yield { content: `\`\`\`json\n${argsText}\n\`\`\`\n`, done: false, type: 'tool_call' };
+        const argsText =
+          argsPreview.length > 300
+            ? argsPreview.substring(0, 300) + '...'
+            : argsPreview;
+        yield {
+          content: `\`\`\`json\n${argsText}\n\`\`\`\n`,
+          done: false,
+          type: 'tool_call',
+        };
       }
 
       // Show result if available
       if (result) {
         const resultData = this.getToolResult(result);
         if (resultData !== undefined && resultData !== null) {
-          const resultStr = typeof resultData === 'string' ?
-            resultData :
-            JSON.stringify(resultData, null, 2);
-          const resultPreview = resultStr.length > 200 ?
-            '(result truncated)' :
-            resultStr;
-          yield { content: `✅ **Result:** ${resultPreview}\n\n`, done: false, type: 'tool_result' };
+          const resultStr =
+            typeof resultData === 'string'
+              ? resultData
+              : JSON.stringify(resultData, null, 2);
+          const resultPreview =
+            resultStr.length > 200 ? '(result truncated)' : resultStr;
+          yield {
+            content: `✅ **Result:** ${resultPreview}\n\n`,
+            done: false,
+            type: 'tool_result',
+          };
         }
       }
     }
@@ -152,11 +179,13 @@ export class AgentService {
       return;
     }
 
-    const manifestUrl = options.manifestUrl ||
+    const manifestUrl =
+      options.manifestUrl ||
       import.meta.env.VITE_TONK_MANIFEST_URL ||
       'http://localhost:8081/.manifest.tonk';
 
-    const wsUrl = options.wsUrl ||
+    const wsUrl =
+      options.wsUrl ||
       import.meta.env.VITE_TONK_WS_URL ||
       'ws://localhost:8081';
 
@@ -171,7 +200,7 @@ export class AgentService {
 
     this.initialized = true;
   }
-//
+  //
   async sendMessage(prompt: string): Promise<ChatMessage> {
     if (!this.initialized || !this.chatHistory) {
       throw new Error('Agent service not initialized');
@@ -199,7 +228,9 @@ export class AgentService {
         maxRetries: 5,
         abortSignal: abortController.signal,
         stopWhen: ({ toolCalls }) => {
-          return toolCalls?.some((call: any) => call.toolName === 'finish') ?? false;
+          return (
+            toolCalls?.some((call: any) => call.toolName === 'finish') ?? false
+          );
         },
       });
 
@@ -214,20 +245,29 @@ export class AgentService {
       });
 
       if (toolCalls.length > 0) {
-        console.log('[AgentService] Tool calls made:', toolCalls.map(c => ({
-          name: c.toolName,
-          args: this.getToolArgs(c),
-        })));
+        console.log(
+          '[AgentService] Tool calls made:',
+          toolCalls.map(c => ({
+            name: c.toolName,
+            args: this.getToolArgs(c),
+          }))
+        );
 
-        console.log('[AgentService] Tool results:', toolResults.map((r, i) => ({
-          toolName: toolCalls[i]?.toolName,
-          result: this.getToolResult(r),
-        })));
+        console.log(
+          '[AgentService] Tool results:',
+          toolResults.map((r, i) => ({
+            toolName: toolCalls[i]?.toolName,
+            result: this.getToolResult(r),
+          }))
+        );
 
         // Check if finish tool was called
         const finishCall = toolCalls.find(c => c.toolName === 'finish');
         if (finishCall) {
-          console.log('[AgentService] ✅ FINISH tool called - task complete!', this.getToolArgs(finishCall));
+          console.log(
+            '[AgentService] ✅ FINISH tool called - task complete!',
+            this.getToolArgs(finishCall)
+          );
         }
 
         // Store tool executions using utility method
@@ -235,7 +275,10 @@ export class AgentService {
       }
 
       // Format tool calls using utility method
-      const formattedToolCalls = toolCalls.length > 0 ? this.formatToolCalls(toolCalls, toolResults) : undefined;
+      const formattedToolCalls =
+        toolCalls.length > 0
+          ? this.formatToolCalls(toolCalls, toolResults)
+          : undefined;
 
       // Add the final assistant message (visible)
       const assistantMessage = await this.chatHistory.addMessage({
@@ -267,7 +310,11 @@ export class AgentService {
     }
   }
 
-  async* streamMessage(prompt: string): AsyncGenerator<{ content: string; done: boolean; type?: 'text' | 'tool_call' | 'tool_result' }> {
+  async *streamMessage(prompt: string): AsyncGenerator<{
+    content: string;
+    done: boolean;
+    type?: 'text' | 'tool_call' | 'tool_result';
+  }> {
     if (!this.initialized) {
       throw new Error('Agent service not initialized');
     }
@@ -305,7 +352,9 @@ export class AgentService {
         maxRetries: 5,
         abortSignal: abortController.signal,
         stopWhen: ({ toolCalls }) => {
-          return toolCalls?.some((call: any) => call.toolName === 'finish') ?? false;
+          return (
+            toolCalls?.some((call: any) => call.toolName === 'finish') ?? false
+          );
         },
       });
 
@@ -315,7 +364,11 @@ export class AgentService {
       for await (const chunk of result.textStream) {
         fullContent += chunk;
         // Update the streaming message in history immediately
-        await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent, true);
+        await this.chatHistory.updateStreamingMessage(
+          assistantMessage.id,
+          fullContent,
+          true
+        );
         yield { content: chunk, done: false, type: 'text' };
       }
 
@@ -335,18 +388,28 @@ export class AgentService {
       const toolResults = steps.flatMap(step => step.toolResults || []);
 
       // Stream tool results using utility method
-      yield* this.streamToolResults(toolCalls, toolResults, !!fullContent.trim());
+      yield* this.streamToolResults(
+        toolCalls,
+        toolResults,
+        !!fullContent.trim()
+      );
 
       if (toolCalls.length > 0) {
-        console.log('[AgentService] Tool calls made during stream:', toolCalls.map(c => ({
-          name: c.toolName,
-          args: this.getToolArgs(c),
-        })));
+        console.log(
+          '[AgentService] Tool calls made during stream:',
+          toolCalls.map(c => ({
+            name: c.toolName,
+            args: this.getToolArgs(c),
+          }))
+        );
 
         // Check if finish tool was called
         const finishCall = toolCalls.find(c => c.toolName === 'finish');
         if (finishCall) {
-          console.log('[AgentService] ✅ FINISH tool called - task complete!', this.getToolArgs(finishCall));
+          console.log(
+            '[AgentService] ✅ FINISH tool called - task complete!',
+            this.getToolArgs(finishCall)
+          );
         }
 
         // Store tool executions using utility method
@@ -354,16 +417,25 @@ export class AgentService {
       }
 
       // Format tool calls using utility method
-      const formattedToolCalls = toolCalls.length > 0 ? this.formatToolCalls(toolCalls, toolResults) : undefined;
+      const formattedToolCalls =
+        toolCalls.length > 0
+          ? this.formatToolCalls(toolCalls, toolResults)
+          : undefined;
 
       console.log('[AgentService] Marking streamed message as complete...');
 
       // Update the existing message to mark it as complete and add tool calls if any
-      await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent || 'Task completed.', false);
+      await this.chatHistory.updateStreamingMessage(
+        assistantMessage.id,
+        fullContent || 'Task completed.',
+        false
+      );
 
       // If there were tool calls, update the message with them
       if (formattedToolCalls) {
-        const messageIndex = this.chatHistory.getMessages().findIndex(m => m.id === assistantMessage.id);
+        const messageIndex = this.chatHistory
+          .getMessages()
+          .findIndex(m => m.id === assistantMessage.id);
         if (messageIndex !== -1) {
           const messages = this.chatHistory.getMessages();
           messages[messageIndex].toolCalls = formattedToolCalls;
@@ -381,7 +453,11 @@ export class AgentService {
       // Don't add error message if aborted
       if (error instanceof Error && error.name === 'AbortError') {
         console.log('[AgentService] Generation was aborted');
-        await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent || '', false);
+        await this.chatHistory.updateStreamingMessage(
+          assistantMessage.id,
+          fullContent || '',
+          false
+        );
         yield { content: '', done: true, type: 'text' };
         return;
       }
@@ -389,7 +465,11 @@ export class AgentService {
       const errorMsg = `I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}`;
 
       // Mark the streaming message as complete with error
-      await this.chatHistory.updateStreamingMessage(assistantMessage.id, errorMsg, false);
+      await this.chatHistory.updateStreamingMessage(
+        assistantMessage.id,
+        errorMsg,
+        false
+      );
 
       yield { content: errorMsg, done: true, type: 'text' };
       throw error;
@@ -444,8 +524,18 @@ export class AgentService {
     await this.chatHistory.deleteMessagesFrom(messageId);
   }
 
-  async* regenerateFrom(messageId: string, newContent?: string): AsyncGenerator<{ content: string; done: boolean; type?: 'text' | 'tool_call' | 'tool_result' }> {
-    console.log('[AgentService] regenerateFrom called:', { messageId, newContent });
+  async *regenerateFrom(
+    messageId: string,
+    newContent?: string
+  ): AsyncGenerator<{
+    content: string;
+    done: boolean;
+    type?: 'text' | 'tool_call' | 'tool_result';
+  }> {
+    console.log('[AgentService] regenerateFrom called:', {
+      messageId,
+      newContent,
+    });
 
     // If new content provided, update the message
     if (newContent) {
@@ -457,11 +547,14 @@ export class AgentService {
 
     // Check what messages we have now
     const currentMessages = this.chatHistory.getMessages();
-    console.log('[AgentService] Messages after deletion:', currentMessages.map(m => ({
-      id: m.id,
-      role: m.role,
-      content: m.content.substring(0, 50) + '...'
-    })));
+    console.log(
+      '[AgentService] Messages after deletion:',
+      currentMessages.map(m => ({
+        id: m.id,
+        role: m.role,
+        content: m.content.substring(0, 50) + '...',
+      }))
+    );
 
     // Now generate a new response without adding the user message again
     if (!this.initialized) {
@@ -497,7 +590,9 @@ export class AgentService {
         maxRetries: 5,
         abortSignal: abortController.signal,
         stopWhen: ({ toolCalls }) => {
-          return toolCalls?.some((call: any) => call.toolName === 'finish') ?? false;
+          return (
+            toolCalls?.some((call: any) => call.toolName === 'finish') ?? false
+          );
         },
       });
 
@@ -505,7 +600,11 @@ export class AgentService {
       for await (const chunk of result.textStream) {
         fullContent += chunk;
         // Update the streaming message in history immediately
-        await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent, true);
+        await this.chatHistory.updateStreamingMessage(
+          assistantMessage.id,
+          fullContent,
+          true
+        );
         yield { content: chunk, done: false, type: 'text' };
       }
 
@@ -519,21 +618,34 @@ export class AgentService {
 
       if (toolCalls.length > 0) {
         // Stream tool results using utility method
-        yield* this.streamToolResults(toolCalls, toolResults, !!fullContent.trim());
+        yield* this.streamToolResults(
+          toolCalls,
+          toolResults,
+          !!fullContent.trim()
+        );
 
         // Store tool executions using utility method
         await this.storeToolExecutions(toolCalls, toolResults);
       }
 
       // Format tool calls using utility method
-      const formattedToolCalls = toolCalls.length > 0 ? this.formatToolCalls(toolCalls, toolResults) : undefined;
+      const formattedToolCalls =
+        toolCalls.length > 0
+          ? this.formatToolCalls(toolCalls, toolResults)
+          : undefined;
 
       // Update the existing message to mark it as complete
-      await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent || 'Task completed.', false);
+      await this.chatHistory.updateStreamingMessage(
+        assistantMessage.id,
+        fullContent || 'Task completed.',
+        false
+      );
 
       // If there were tool calls, update the message with them
       if (formattedToolCalls) {
-        const messageIndex = this.chatHistory.getMessages().findIndex(m => m.id === assistantMessage.id);
+        const messageIndex = this.chatHistory
+          .getMessages()
+          .findIndex(m => m.id === assistantMessage.id);
         if (messageIndex !== -1) {
           const messages = this.chatHistory.getMessages();
           messages[messageIndex].toolCalls = formattedToolCalls;
@@ -549,14 +661,22 @@ export class AgentService {
       if (error instanceof Error && error.name === 'AbortError') {
         console.log('[AgentService] Generation was aborted');
         // Mark the message as complete even if aborted
-        await this.chatHistory.updateStreamingMessage(assistantMessage.id, fullContent || '', false);
+        await this.chatHistory.updateStreamingMessage(
+          assistantMessage.id,
+          fullContent || '',
+          false
+        );
         yield { content: '', done: true, type: 'text' };
         return;
       }
 
       const errorMsg = `I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}`;
       // Update the streaming message with error
-      await this.chatHistory.updateStreamingMessage(assistantMessage.id, errorMsg, false);
+      await this.chatHistory.updateStreamingMessage(
+        assistantMessage.id,
+        errorMsg,
+        false
+      );
 
       yield { content: errorMsg, done: true, type: 'text' };
       throw error;

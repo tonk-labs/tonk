@@ -1,9 +1,9 @@
-import React from 'react';
+import type React from 'react';
 import { Route, Routes, useParams } from 'react-router-dom';
 import { AppInitializer } from './components/AppInitializer';
-import { ViewRenderer } from './components/ViewRenderer';
 import { PageLayout } from './components/PageLayout';
 import Editor from './components/unified-editor/Editor';
+import { ViewRenderer } from './components/ViewRenderer';
 
 // Dynamic view component that maps routes to view files
 const DynamicView: React.FC<{ viewName?: string }> = ({ viewName }) => {

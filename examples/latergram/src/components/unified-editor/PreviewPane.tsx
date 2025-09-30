@@ -1,9 +1,9 @@
-import React from 'react';
-import { Eye, Database, FileText, AlertCircle } from 'lucide-react';
-import { ComponentPreview } from './ComponentPreview';
-import { ViewRenderer } from '../ViewRenderer';
+import { AlertCircle, Database, Eye, FileText } from 'lucide-react';
+import type React from 'react';
 import { componentRegistry } from '../ComponentRegistry';
 import { storeRegistry } from '../StoreRegistry';
+import { ViewRenderer } from '../ViewRenderer';
+import { ComponentPreview } from './ComponentPreview';
 
 interface PreviewPaneProps {
   filePath: string | null;
@@ -61,7 +61,9 @@ export const PreviewPane: React.FC<PreviewPaneProps> = ({
             </div>
           );
         }
-        return <ComponentPreview componentId={componentId} className="h-full" />;
+        return (
+          <ComponentPreview componentId={componentId} className="h-full" />
+        );
       }
 
       case 'page': {
@@ -75,7 +77,7 @@ export const PreviewPane: React.FC<PreviewPaneProps> = ({
               zIndex: 0,
             }}
           >
-            <ViewRenderer viewPath={filePath} className="min-h-full"/>
+            <ViewRenderer viewPath={filePath} className="min-h-full" />
           </div>
         );
       }
@@ -97,25 +99,35 @@ export const PreviewPane: React.FC<PreviewPaneProps> = ({
               {store ? (
                 <div className="space-y-4">
                   <div className="bg-gray-50 rounded-lg p-4">
-                    <h4 className="text-sm font-medium text-gray-700 mb-2">Store Information</h4>
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">
+                      Store Information
+                    </h4>
                     <div className="space-y-2 text-sm">
                       <div className="flex justify-between">
                         <span className="text-gray-500">Name:</span>
-                        <span className="font-mono text-gray-900">{store.metadata.name}</span>
+                        <span className="font-mono text-gray-900">
+                          {store.metadata.name}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-500">Status:</span>
-                        <span className={`font-medium ${
-                          store.metadata.status === 'success' ? 'text-green-600' :
-                          store.metadata.status === 'error' ? 'text-red-600' :
-                          'text-blue-600'
-                        }`}>
+                        <span
+                          className={`font-medium ${
+                            store.metadata.status === 'success'
+                              ? 'text-green-600'
+                              : store.metadata.status === 'error'
+                                ? 'text-red-600'
+                                : 'text-blue-600'
+                          }`}
+                        >
                           {store.metadata.status}
                         </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-500">Hook:</span>
-                        <span className="font-mono text-gray-900">use{store.metadata.name}</span>
+                        <span className="font-mono text-gray-900">
+                          use{store.metadata.name}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -125,8 +137,12 @@ export const PreviewPane: React.FC<PreviewPaneProps> = ({
                       <div className="flex items-start gap-2">
                         <AlertCircle className="w-5 h-5 text-red-600 mt-0.5" />
                         <div>
-                          <h4 className="font-medium text-red-800 mb-1">Store Error</h4>
-                          <p className="text-sm text-red-700 font-mono">{store.metadata.error}</p>
+                          <h4 className="font-medium text-red-800 mb-1">
+                            Store Error
+                          </h4>
+                          <p className="text-sm text-red-700 font-mono">
+                            {store.metadata.error}
+                          </p>
                         </div>
                       </div>
                     </div>
@@ -135,7 +151,8 @@ export const PreviewPane: React.FC<PreviewPaneProps> = ({
                   {store.metadata.status === 'success' && (
                     <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                       <p className="text-sm text-green-800">
-                        Store compiled successfully and is available for use in components.
+                        Store compiled successfully and is available for use in
+                        components.
                       </p>
                     </div>
                   )}
@@ -162,7 +179,9 @@ export const PreviewPane: React.FC<PreviewPaneProps> = ({
                 </h3>
               </div>
               <div className="text-center text-gray-500 mt-8">
-                <p className="text-sm">Preview not available for this file type</p>
+                <p className="text-sm">
+                  Preview not available for this file type
+                </p>
                 <p className="text-xs text-gray-400 mt-2">{filePath}</p>
               </div>
             </div>
@@ -171,9 +190,5 @@ export const PreviewPane: React.FC<PreviewPaneProps> = ({
     }
   };
 
-  return (
-    <div className={`h-full ${className}`}>
-      {renderPreview()}
-    </div>
-  );
+  return <div className={`h-full ${className}`}>{renderPreview()}</div>;
 };

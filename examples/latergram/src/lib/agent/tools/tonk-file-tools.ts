@@ -44,8 +44,7 @@ export const tonkClearAllTool = tool({
           'Ask user to confirm that they want to clear all Tonk files and folders',
         files_modified: [],
         timestamp: new Date().toISOString(),
-        message:
-          `The user should explicitly confirm they understand that this will clear all Tonk files and folders. If they have given their explicit permission this tool can be called again..
+        message: `The user should explicitly confirm they understand that this will clear all Tonk files and folders. If they have given their explicit permission this tool can be called again..
           Tell the user:
           - This will clear all Tonk files and folders
           - This will disconnect the Tonk from the previous group

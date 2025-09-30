@@ -1,5 +1,6 @@
-import React, { useCallback, useState } from 'react';
 import { SendHorizonal, StopCircle, Trash } from 'lucide-react';
+import type React from 'react';
+import { useCallback, useState } from 'react';
 import { useKeyboardSubmit } from './hooks';
 
 interface ChatInputBarProps {

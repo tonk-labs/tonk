@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Code, AlertCircle, Circle } from 'lucide-react';
+import { AlertCircle, Circle, Code } from 'lucide-react';
+import type React from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { componentRegistry } from './ComponentRegistry';
-import { useDebounce } from './hooks/useDebounce';
 import { buildAvailablePackages } from './contextBuilder';
 import { createInlineErrorBoundary } from './errors/createInlineErrorBoundary';
+import { useDebounce } from './hooks/useDebounce';
 
 interface CompilationResult {
   success: boolean;
@@ -146,7 +147,10 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
       }
 
       // Use the shared error boundary creator
-      const HotCompilerErrorBoundary = createInlineErrorBoundary(React, 'HotCompiled Component');
+      const HotCompilerErrorBoundary = createInlineErrorBoundary(
+        React,
+        'HotCompiled Component'
+      );
 
       // Wrap the component with error boundary
       const element = React.createElement(

@@ -1,9 +1,9 @@
-import { useEffect, useCallback, useRef } from 'react';
+import type { DocumentData } from '@tonk/core';
+import { useCallback, useEffect, useRef } from 'react';
 import { getVFSService } from '../../services/vfs-service';
+import { bytesToString } from '../../utils/vfs-utils';
 import { componentRegistry } from '../ComponentRegistry';
 import { buildAvailablePackages } from '../contextBuilder';
-import type { DocumentData } from '@tonk/core';
-import { bytesToString } from '../../utils/vfs-utils';
 
 export interface ComponentWatcherHook {
   watchComponent: (componentId: string, filePath: string) => Promise<void>;

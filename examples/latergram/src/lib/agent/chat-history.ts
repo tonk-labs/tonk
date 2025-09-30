@@ -1,5 +1,5 @@
-import { getVFSService } from '../../services/vfs-service';
 import { getUserService } from '../../services/user-service';
+import { getVFSService } from '../../services/vfs-service';
 
 const MAX_MESSAGES = 10;
 
@@ -168,7 +168,11 @@ export class ChatHistory {
     }
   }
 
-  async updateStreamingMessage(messageId: string, content: string, streaming: boolean): Promise<void> {
+  async updateStreamingMessage(
+    messageId: string,
+    content: string,
+    streaming: boolean
+  ): Promise<void> {
     const messageIndex = this.messages.findIndex(msg => msg.id === messageId);
     if (messageIndex !== -1) {
       this.messages[messageIndex].content = content;
