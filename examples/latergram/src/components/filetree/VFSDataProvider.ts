@@ -1,4 +1,4 @@
-import { TreeDataProvider, TreeItem } from 'react-complex-tree';
+import type { TreeDataProvider, TreeItem } from 'react-complex-tree';
 import { getVFSService } from '../../services/vfs-service';
 
 export interface VFSTreeItemData {
@@ -90,7 +90,10 @@ export class VFSDataProvider implements TreeDataProvider {
       if (itemId === 'root') {
         const actualPath = this.rootPath;
         const children = await this.loadDirectoryChildren(actualPath);
-        const rootName = this.rootPath === '/' ? 'Root' : this.rootPath.split('/').pop() || 'Root';
+        const rootName =
+          this.rootPath === '/'
+            ? 'Root'
+            : this.rootPath.split('/').pop() || 'Root';
         const item: TreeItem<VFSTreeItemData> = {
           index: 'root',
           canMove: false,
@@ -100,8 +103,8 @@ export class VFSDataProvider implements TreeDataProvider {
           data: {
             name: rootName,
             path: actualPath,
-            type: 'directory'
-          }
+            type: 'directory',
+          },
         };
         this.cache.set('root', item);
         this.childrenCache.set(actualPath, children);
@@ -144,12 +147,14 @@ export class VFSDataProvider implements TreeDataProvider {
         canMove: true,
         canRename: true,
         isFolder: isDirectory,
-        children: isDirectory ? children.map(child => this.getItemId(child)) : undefined,
+        children: isDirectory
+          ? children.map(child => this.getItemId(child))
+          : undefined,
         data: {
           name,
           path,
-          type: isDirectory ? 'directory' : 'file'
-        }
+          type: isDirectory ? 'directory' : 'file',
+        },
       };
 
       this.cache.set(itemId, item);
@@ -172,8 +177,8 @@ export class VFSDataProvider implements TreeDataProvider {
         data: {
           name,
           path,
-          type: 'file'
-        }
+          type: 'file',
+        },
       };
       return item;
     }
@@ -181,7 +186,7 @@ export class VFSDataProvider implements TreeDataProvider {
 
   async getTreeItems(itemIds: string[]): Promise<TreeItem<VFSTreeItemData>[]> {
     const items = await Promise.all(
-      itemIds.map(async (id) => {
+      itemIds.map(async id => {
         try {
           return await this.getTreeItem(id);
         } catch (error) {
@@ -191,7 +196,9 @@ export class VFSDataProvider implements TreeDataProvider {
       })
     );
 
-    return items.filter((item): item is TreeItem<VFSTreeItemData> => item !== null);
+    return items.filter(
+      (item): item is TreeItem<VFSTreeItemData> => item !== null
+    );
   }
 
   private async loadDirectoryChildren(path: string): Promise<string[]> {
@@ -202,7 +209,10 @@ export class VFSDataProvider implements TreeDataProvider {
       // Deduplicate items based on name
       const seen = new Set<string>();
       const uniqueItems = items.filter((item: any) => {
-        const name = typeof item === 'string' ? item : (item?.name || item?.path?.split('/').pop());
+        const name =
+          typeof item === 'string'
+            ? item
+            : item?.name || item?.path?.split('/').pop();
         if (seen.has(name)) {
           return false;
         }
@@ -211,42 +221,48 @@ export class VFSDataProvider implements TreeDataProvider {
       });
 
       // Process items to get their full paths
-      let children = uniqueItems.map((item: any) => {
-        if (typeof item === 'string') {
-          return path === '/' ? `/${item}` : `${path}/${item}`;
-        } else if (item && typeof item === 'object') {
-          const name = item.name || item.path?.split('/').pop() || 'unknown';
-          return path === '/' ? `/${name}` : `${path}/${name}`;
-        }
-        return null;
-      }).filter((path): path is string => {
-        if (path === null) return false;
-        const name = path.split('/').pop() || '';
+      const children = uniqueItems
+        .map((item: any) => {
+          if (typeof item === 'string') {
+            return path === '/' ? `/${item}` : `${path}/${item}`;
+          } else if (item && typeof item === 'object') {
+            const name = item.name || item.path?.split('/').pop() || 'unknown';
+            return path === '/' ? `/${name}` : `${path}/${name}`;
+          }
+          return null;
+        })
+        .filter((path): path is string => {
+          if (path === null) return false;
+          const name = path.split('/').pop() || '';
 
-        // Filter by hidden files
-        if (!this.showHidden && name.startsWith('.')) {
-          return false;
-        }
-
-        // If we have search results, only show items that match or are parents of matches
-        if (this.searchQuery && this.searchQuery.trim() && this.searchResults.size > 0) {
-          // Check if this path is in search results or is a parent of any result
-          if (this.searchResults.has(path)) {
-            return true;
+          // Filter by hidden files
+          if (!this.showHidden && name.startsWith('.')) {
+            return false;
           }
 
-          // Check if this is a parent directory of any search result
-          for (const resultPath of this.searchResults) {
-            if (resultPath.startsWith(path + '/')) {
+          // If we have search results, only show items that match or are parents of matches
+          if (
+            this.searchQuery &&
+            this.searchQuery.trim() &&
+            this.searchResults.size > 0
+          ) {
+            // Check if this path is in search results or is a parent of any result
+            if (this.searchResults.has(path)) {
               return true;
             }
+
+            // Check if this is a parent directory of any search result
+            for (const resultPath of this.searchResults) {
+              if (resultPath.startsWith(path + '/')) {
+                return true;
+              }
+            }
+
+            return false;
           }
 
-          return false;
-        }
-
-        return true;
-      });
+          return true;
+        });
 
       return children;
     } catch (error) {
@@ -255,7 +271,10 @@ export class VFSDataProvider implements TreeDataProvider {
     }
   }
 
-  async onRenameItem(item: TreeItem<VFSTreeItemData>, name: string): Promise<void> {
+  async onRenameItem(
+    item: TreeItem<VFSTreeItemData>,
+    name: string
+  ): Promise<void> {
     const oldPath = item.data.path;
     const parentPath = oldPath.substring(0, oldPath.lastIndexOf('/')) || '/';
     const newPath = parentPath === '/' ? `/${name}` : `${parentPath}/${name}`;
@@ -282,7 +301,10 @@ export class VFSDataProvider implements TreeDataProvider {
     }
   }
 
-  async onChangeItemChildren(itemId: string, newChildren: string[]): Promise<void> {
+  async onChangeItemChildren(
+    itemId: string,
+    newChildren: string[]
+  ): Promise<void> {
     // This would handle drag & drop operations
     // For now, we'll just update the cache
     const path = this.normalizePath(itemId);
@@ -311,8 +333,13 @@ export class VFSDataProvider implements TreeDataProvider {
     }
   }
 
-  async createFile(parentPath: string, fileName: string, content: string = ''): Promise<void> {
-    const filePath = parentPath === '/' ? `/${fileName}` : `${parentPath}/${fileName}`;
+  async createFile(
+    parentPath: string,
+    fileName: string,
+    content: string = ''
+  ): Promise<void> {
+    const filePath =
+      parentPath === '/' ? `/${fileName}` : `${parentPath}/${fileName}`;
 
     try {
       await this.vfs.writeFile(filePath, { content }, true);
@@ -325,7 +352,8 @@ export class VFSDataProvider implements TreeDataProvider {
   }
 
   async createDirectory(parentPath: string, dirName: string): Promise<void> {
-    const dirPath = parentPath === '/' ? `/${dirName}` : `${parentPath}/${dirName}`;
+    const dirPath =
+      parentPath === '/' ? `/${dirName}` : `${parentPath}/${dirName}`;
 
     try {
       // Create a placeholder file to establish the directory
@@ -374,7 +402,7 @@ export class VFSDataProvider implements TreeDataProvider {
         return;
       }
 
-      const watchId = await this.vfs.watchDirectory(path, (changeData) => {
+      const watchId = await this.vfs.watchDirectory(path, changeData => {
         console.log(`Directory ${path} changed:`, changeData);
 
         // Clear cache for the changed directory
@@ -403,7 +431,10 @@ export class VFSDataProvider implements TreeDataProvider {
   }
 
   // Recursive search through the file system
-  private async searchRecursive(path: string, query: string): Promise<Set<string>> {
+  private async searchRecursive(
+    path: string,
+    query: string
+  ): Promise<Set<string>> {
     const results = new Set<string>();
     const searchLower = query.toLowerCase();
 
@@ -412,10 +443,14 @@ export class VFSDataProvider implements TreeDataProvider {
         const items = await vfs.listDirectory(currentPath);
 
         for (const item of items) {
-          const itemName = typeof item === 'string' ? item : (item?.name || item?.path?.split('/').pop());
+          const itemName =
+            typeof item === 'string'
+              ? item
+              : item?.name || item?.path?.split('/').pop();
           if (!itemName) continue;
 
-          const fullPath = currentPath === '/' ? `/${itemName}` : `${currentPath}/${itemName}`;
+          const fullPath =
+            currentPath === '/' ? `/${itemName}` : `${currentPath}/${itemName}`;
           const nameLower = itemName.toLowerCase();
 
           // Check if this item matches the search

@@ -70,7 +70,8 @@ export class TypeScriptValidator {
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown compilation error',
+        error:
+          error instanceof Error ? error.message : 'Unknown compilation error',
       };
     }
   }
@@ -142,7 +143,7 @@ export class TypeScriptValidator {
     );
 
     // Get syntax errors only
-    // @ts-ignore - parseDiagnostics exists at runtime but not in types
+    // @ts-expect-error - parseDiagnostics exists at runtime but not in types
     const parseDiagnostics = (sourceFile as any).parseDiagnostics;
     if (parseDiagnostics && parseDiagnostics.length > 0) {
       diagnostics.push(...this.convertDiagnostics(parseDiagnostics));
@@ -156,14 +157,18 @@ export class TypeScriptValidator {
     };
   }
 
-  private convertDiagnostics(diagnostics: readonly ts.Diagnostic[]): TypeCheckDiagnostic[] {
+  private convertDiagnostics(
+    diagnostics: readonly ts.Diagnostic[]
+  ): TypeCheckDiagnostic[] {
     return diagnostics.map(diagnostic => {
       const file = diagnostic.file;
       let line = 1;
       let column = 1;
 
       if (file && diagnostic.start !== undefined) {
-        const { line: l, character } = file.getLineAndCharacterOfPosition(diagnostic.start);
+        const { line: l, character } = file.getLineAndCharacterOfPosition(
+          diagnostic.start
+        );
         line = l + 1;
         column = character + 1;
       }
@@ -179,7 +184,10 @@ export class TypeScriptValidator {
           break;
       }
 
-      const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
+      const message = ts.flattenDiagnosticMessageText(
+        diagnostic.messageText,
+        '\n'
+      );
 
       return {
         file: file?.fileName || 'unknown',

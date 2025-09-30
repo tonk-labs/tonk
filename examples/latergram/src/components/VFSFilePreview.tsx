@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
 import { File, X } from 'lucide-react';
+import type React from 'react';
+import { useEffect, useState } from 'react';
 import { getVFSService } from '../services/vfs-service';
 
 interface VFSFilePreviewProps {
@@ -76,7 +77,7 @@ export const VFSFilePreview: React.FC<VFSFilePreviewProps> = ({
         </div>
         {onClose && (
           <button
-          type="button"
+            type="button"
             onClick={onClose}
             className="p-1 hover:bg-gray-200 rounded transition-colors"
             title="Close preview"

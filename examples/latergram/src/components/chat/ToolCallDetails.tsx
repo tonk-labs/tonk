@@ -1,5 +1,5 @@
-import React from 'react';
 import { Wrench } from 'lucide-react';
+import type React from 'react';
 import type { ToolCall } from './types';
 
 interface ToolCallDetailsProps {
@@ -15,7 +15,7 @@ const ToolCallDetails: React.FC<ToolCallDetailsProps> = ({ toolCalls }) => {
         View tool call details ({toolCalls.length} calls)
       </summary>
       <div className="mt-2 space-y-1">
-        {toolCalls.map((tool) => (
+        {toolCalls.map(tool => (
           <div
             key={tool.id}
             className="bg-gray-50 border border-gray-200 rounded p-1.5"

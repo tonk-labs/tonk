@@ -1,23 +1,26 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  extractComponentName,
+  extractStoreName,
+} from '../lib/utils/nameExtractor';
+import { compileTSCode, ensureTypeScriptLoaded } from '../lib/utils/tsCompiler';
 import { getVFSService } from '../services/vfs-service';
 import { componentRegistry } from './ComponentRegistry';
-import { storeRegistry } from './StoreRegistry';
-import { ensureTypeScriptLoaded, compileTSCode } from '../lib/utils/tsCompiler';
-import { extractComponentName, extractStoreName } from '../lib/utils/nameExtractor';
 import { useComponentWatcher } from './hooks/useComponentWatcher';
+import { storeRegistry } from './StoreRegistry';
 
 interface AppInitializerProps {
   children: React.ReactNode;
 }
 
-const LoadingDot = ({color, delay}: {color: string, delay: string}) => {
+const LoadingDot = ({ color, delay }: { color: string; delay: string }) => {
   return (
     <div
       className="w-5 h-5 rounded-full animate-bounce"
       style={{
         backgroundColor: color,
         animationDelay: delay,
-        animationDuration: '1.4s'
+        animationDuration: '1.4s',
       }}
     />
   );

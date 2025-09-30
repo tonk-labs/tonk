@@ -1,15 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import type React from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  UncontrolledTreeEnvironment,
-  Tree,
-  TreeItemIndex,
   InteractionMode,
-  TreeItem,
+  Tree,
+  type TreeItem,
+  type TreeItemIndex,
+  UncontrolledTreeEnvironment,
 } from 'react-complex-tree';
 import 'react-complex-tree/lib/style-modern.css';
-import { VFSDataProvider, VFSTreeItemData } from './VFSDataProvider';
-import { renderFileTreeNode } from './FileTreeNode';
 import { Eye, EyeOff, RotateCcw, Search } from 'lucide-react';
+import { renderFileTreeNode } from './FileTreeNode';
+import { VFSDataProvider, type VFSTreeItemData } from './VFSDataProvider';
 
 interface FileTreeProps {
   rootPath?: string;
@@ -27,7 +28,9 @@ export const FileTree: React.FC<FileTreeProps> = ({
   className = '',
 }) => {
   // Recreate data provider when rootPath changes
-  const [dataProvider, setDataProvider] = useState(() => new VFSDataProvider(rootPath));
+  const [dataProvider, setDataProvider] = useState(
+    () => new VFSDataProvider(rootPath)
+  );
 
   // Update data provider when rootPath changes
   useEffect(() => {
@@ -334,8 +337,18 @@ export const FileTree: React.FC<FileTreeProps> = ({
                 className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
                 title="Clear search"
               >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <svg
+                  className="w-3 h-3"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
                 </svg>
               </button>
             )}

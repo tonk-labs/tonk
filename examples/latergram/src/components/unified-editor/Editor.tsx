@@ -1,13 +1,13 @@
-import { Layers, Database, FileText, House, FolderOpen } from 'lucide-react';
+import { Database, FileText, FolderOpen, House, Layers } from 'lucide-react';
+import { createRef, useCallback } from 'react';
 import {
   Link,
-  Routes,
   Route,
+  Routes,
   useLocation,
-  useSearchParams,
   useNavigate,
+  useSearchParams,
 } from 'react-router-dom';
-import { createRef, useCallback } from 'react';
 import AgentChat from '../chat/AgentChat';
 import { UnifiedEditor } from './UnifiedEditor';
 

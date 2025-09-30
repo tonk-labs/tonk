@@ -150,4 +150,4 @@ export const JSX_NAMESPACE = `
       use: React.SVGProps<SVGUseElement>;
     }
   }
-`
+`;

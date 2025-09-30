@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getAgentService, type AgentService } from './agent-service';
+import { type AgentService, getAgentService } from './agent-service';
 import type { ChatMessage } from './chat-history';
 
 export interface AgentChatState {
@@ -56,15 +56,16 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
   editContent: '',
 
   // Internal setters
-  setMessages: (messages) => set({ messages }),
-  setLoading: (loading) => set({ isLoading: loading }),
-  setError: (error) => set({ error }),
-  setReady: (ready) => set({ isReady: ready }),
-  setStreamingContent: (content) => set({ streamingContent: content }),
-  setEditingMessage: (id, content = '') => set({
-    editingMessageId: id,
-    editContent: content
-  }),
+  setMessages: messages => set({ messages }),
+  setLoading: loading => set({ isLoading: loading }),
+  setError: error => set({ error }),
+  setReady: ready => set({ isReady: ready }),
+  setStreamingContent: content => set({ streamingContent: content }),
+  setEditingMessage: (id, content = '') =>
+    set({
+      editingMessageId: id,
+      editContent: content,
+    }),
 
   // Initialize the agent service
   initialize: async () => {
@@ -83,10 +84,17 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
       // Check for incomplete streaming messages
       const streamingMessage = history.find(msg => msg.streaming === true);
       if (streamingMessage) {
-        console.log('[AgentChatStore] Found incomplete streaming message:', streamingMessage.id);
+        console.log(
+          '[AgentChatStore] Found incomplete streaming message:',
+          streamingMessage.id
+        );
         const chatHistory = service.getChatHistory();
         if (chatHistory) {
-          await chatHistory.updateStreamingMessage(streamingMessage.id, streamingMessage.content, false);
+          await chatHistory.updateStreamingMessage(
+            streamingMessage.id,
+            streamingMessage.content,
+            false
+          );
           const updatedHistory = service.getHistory();
           set({ messages: updatedHistory });
         }
@@ -109,17 +117,27 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
         // Handle incomplete streaming messages
         const streamingMessage = history.find(msg => msg.streaming === true);
         if (streamingMessage) {
-          console.log('[AgentChatStore] Found incomplete streaming message after init:', streamingMessage.id);
+          console.log(
+            '[AgentChatStore] Found incomplete streaming message after init:',
+            streamingMessage.id
+          );
           const chatHistory = service.getChatHistory();
           if (chatHistory) {
-            await chatHistory.updateStreamingMessage(streamingMessage.id, streamingMessage.content, false);
+            await chatHistory.updateStreamingMessage(
+              streamingMessage.id,
+              streamingMessage.content,
+              false
+            );
             const updatedHistory = service.getHistory();
             set({ messages: updatedHistory });
           }
         }
       } catch (err) {
         console.error('Failed to initialize agent:', err);
-        set({ error: err instanceof Error ? err.message : 'Failed to initialize agent' });
+        set({
+          error:
+            err instanceof Error ? err.message : 'Failed to initialize agent',
+        });
       } finally {
         initializationPromise = null;
       }
@@ -138,7 +156,7 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
   },
 
   // Send a message
-  sendMessage: async (text) => {
+  sendMessage: async text => {
     const { isReady, isLoading } = get();
     if (!text.trim() || !isReady || isLoading) {
       return;
@@ -167,7 +185,9 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
       }
     } catch (err) {
       console.error('Failed to send message:', err);
-      set({ error: err instanceof Error ? err.message : 'Failed to send message' });
+      set({
+        error: err instanceof Error ? err.message : 'Failed to send message',
+      });
 
       // Sync messages even on error
       const updatedHistory = service.getHistory();
@@ -188,7 +208,10 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
       set({ messages: [], error: null, streamingContent: '' });
     } catch (err) {
       console.error('Failed to clear conversation:', err);
-      set({ error: err instanceof Error ? err.message : 'Failed to clear conversation' });
+      set({
+        error:
+          err instanceof Error ? err.message : 'Failed to clear conversation',
+      });
     }
   },
 
@@ -230,7 +253,12 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
       set({ editingMessageId: null, editContent: '' });
     } catch (err) {
       console.error('Failed to update and regenerate:', err);
-      set({ error: err instanceof Error ? err.message : 'Failed to update and regenerate' });
+      set({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Failed to update and regenerate',
+      });
 
       // Sync messages even on error
       const updatedHistory = service.getHistory();
@@ -241,7 +269,7 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
   },
 
   // Delete message and following
-  deleteMessage: async (messageId) => {
+  deleteMessage: async messageId => {
     const { isReady } = get();
     if (!isReady) return;
 
@@ -252,7 +280,9 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
       set({ messages: updatedHistory });
     } catch (err) {
       console.error('Failed to delete message:', err);
-      set({ error: err instanceof Error ? err.message : 'Failed to delete message' });
+      set({
+        error: err instanceof Error ? err.message : 'Failed to delete message',
+      });
     }
   },
 }));

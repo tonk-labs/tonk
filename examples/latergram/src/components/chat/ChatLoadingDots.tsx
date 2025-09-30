@@ -1,5 +1,5 @@
-import React from 'react';
 import { Bot, StopCircle } from 'lucide-react';
+import type React from 'react';
 
 interface ChatLoadingDotsProps {
   onStop?: () => void;

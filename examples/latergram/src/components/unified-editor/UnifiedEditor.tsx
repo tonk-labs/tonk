@@ -1,14 +1,15 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Eye, Code, Save, Clock, RefreshCw, AlertCircle } from 'lucide-react';
+import { AlertCircle, Clock, Code, Eye, RefreshCw, Save } from 'lucide-react';
+import type React from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { typeScriptValidator } from '../../lib/typescript-validator';
+import { getVFSService } from '../../services/vfs-service';
+import { componentRegistry } from '../ComponentRegistry';
+import { FileTree } from '../filetree/FileTree';
+import { useComponentWatcher } from '../hooks/useComponentWatcher';
+import { storeRegistry } from '../StoreRegistry';
+import { useAutoSave } from './hooks/useAutoSave';
 import { MonacoCodeEditor } from './MonacoCodeEditor';
 import { PreviewPane } from './PreviewPane';
-import { FileTree } from '../filetree/FileTree';
-import { getVFSService } from '../../services/vfs-service';
-import { useAutoSave } from './hooks/useAutoSave';
-import { typeScriptValidator } from '../../lib/typescript-validator';
-import { componentRegistry } from '../ComponentRegistry';
-import { storeRegistry } from '../StoreRegistry';
-import { useComponentWatcher } from '../hooks/useComponentWatcher';
 
 interface UnifiedEditorProps {
   fileFilter?: string;
@@ -42,9 +43,13 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
   const [fileContent, setFileContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'preview' | 'editor'>(editorOnly ? 'editor' : defaultTab);
+  const [activeTab, setActiveTab] = useState<'preview' | 'editor'>(
+    editorOnly ? 'editor' : defaultTab
+  );
   const [validationErrors, setValidationErrors] = useState<any[]>([]);
-  const [compilationStatus, setCompilationStatus] = useState<'idle' | 'compiling' | 'success' | 'error'>('idle');
+  const [compilationStatus, setCompilationStatus] = useState<
+    'idle' | 'compiling' | 'success' | 'error'
+  >('idle');
 
   const vfs = getVFSService();
   const { watchComponent, compileAndUpdate } = useComponentWatcher();
@@ -53,188 +58,228 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
   const watchIdRef = useRef<string | null>(null);
 
   // Load file content
-  const loadFile = useCallback(async (filePath: string) => {
-    if (!vfs.isInitialized()) return;
+  const loadFile = useCallback(
+    async (filePath: string) => {
+      if (!vfs.isInitialized()) return;
 
-    setIsLoading(true);
-    setError(null);
+      setIsLoading(true);
+      setError(null);
 
-    try {
-      const exists = await vfs.exists(filePath);
-      if (!exists) {
-        setFileContent('');
-        setError(`File not found: ${filePath}`);
-      } else {
-        const content = await vfs.readBytesAsString(filePath);
-        setFileContent(content);
-
-        // Validate TypeScript if it's a TS/TSX file
-        if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
-          const validation = typeScriptValidator.validateSyntax(content);
-          if (!validation.valid && validation.diagnostics) {
-            setValidationErrors(validation.diagnostics.map(d => ({
-              line: d.line || 1,
-              column: d.column || 1,
-              message: d.message,
-              severity: d.category === 'error' ? 'error' : d.category === 'warning' ? 'warning' : 'info',
-            })));
-          } else {
-            setValidationErrors([]);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Failed to load file:', error);
-      setError(`Failed to load file: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      setFileContent('');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [vfs]);
-
-  // Handle file selection
-  const handleFileSelect = useCallback(async (filePath: string) => {
-    // Unwatch previous file if any
-    if (watchIdRef.current) {
       try {
-        await vfs.unwatchFile(watchIdRef.current);
-      } catch (error) {
-        console.error('Failed to unwatch previous file:', error);
-      }
-      watchIdRef.current = null;
-    }
-
-    setSelectedFile(filePath);
-    onFileChange?.(filePath);
-    loadFile(filePath);
-
-    // Watch the new file for changes
-    try {
-      const watchId = await vfs.watchFile(filePath, async (changeData) => {
-        console.log(`File ${filePath} changed:`, changeData);
-
-        // Skip reload if we're the ones who just saved
-        if (isSavingRef.current) {
-          console.log('Skipping reload - file was saved by this editor');
-          return;
-        }
-
-        // Check if file was deleted
         const exists = await vfs.exists(filePath);
         if (!exists) {
-          // File was deleted
-          setSelectedFile(null);
           setFileContent('');
-          setError(`File ${filePath} was deleted`);
-          setValidationErrors([]);
-
-          // Unwatch the deleted file
-          if (watchIdRef.current) {
-            try {
-              await vfs.unwatchFile(watchIdRef.current);
-            } catch (error) {
-              console.error('Failed to unwatch deleted file:', error);
-            }
-            watchIdRef.current = null;
-          }
+          setError(`File not found: ${filePath}`);
         } else {
-          // File was modified externally, reload it
-          console.log('Reloading file - external change detected');
-          loadFile(filePath);
-        }
-      });
+          const content = await vfs.readBytesAsString(filePath);
+          setFileContent(content);
 
-      watchIdRef.current = watchId;
-    } catch (error) {
-      console.error('Failed to watch file:', error);
-    }
-  }, [vfs, loadFile, onFileChange]);
+          // Validate TypeScript if it's a TS/TSX file
+          if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
+            const validation = typeScriptValidator.validateSyntax(content);
+            if (!validation.valid && validation.diagnostics) {
+              setValidationErrors(
+                validation.diagnostics.map(d => ({
+                  line: d.line || 1,
+                  column: d.column || 1,
+                  message: d.message,
+                  severity:
+                    d.category === 'error'
+                      ? 'error'
+                      : d.category === 'warning'
+                        ? 'warning'
+                        : 'info',
+                }))
+              );
+            } else {
+              setValidationErrors([]);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load file:', error);
+        setError(
+          `Failed to load file: ${error instanceof Error ? error.message : 'Unknown error'}`
+        );
+        setFileContent('');
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [vfs]
+  );
+
+  // Handle file selection
+  const handleFileSelect = useCallback(
+    async (filePath: string) => {
+      // Unwatch previous file if any
+      if (watchIdRef.current) {
+        try {
+          await vfs.unwatchFile(watchIdRef.current);
+        } catch (error) {
+          console.error('Failed to unwatch previous file:', error);
+        }
+        watchIdRef.current = null;
+      }
+
+      setSelectedFile(filePath);
+      onFileChange?.(filePath);
+      loadFile(filePath);
+
+      // Watch the new file for changes
+      try {
+        const watchId = await vfs.watchFile(filePath, async changeData => {
+          console.log(`File ${filePath} changed:`, changeData);
+
+          // Skip reload if we're the ones who just saved
+          if (isSavingRef.current) {
+            console.log('Skipping reload - file was saved by this editor');
+            return;
+          }
+
+          // Check if file was deleted
+          const exists = await vfs.exists(filePath);
+          if (!exists) {
+            // File was deleted
+            setSelectedFile(null);
+            setFileContent('');
+            setError(`File ${filePath} was deleted`);
+            setValidationErrors([]);
+
+            // Unwatch the deleted file
+            if (watchIdRef.current) {
+              try {
+                await vfs.unwatchFile(watchIdRef.current);
+              } catch (error) {
+                console.error('Failed to unwatch deleted file:', error);
+              }
+              watchIdRef.current = null;
+            }
+          } else {
+            // File was modified externally, reload it
+            console.log('Reloading file - external change detected');
+            loadFile(filePath);
+          }
+        });
+
+        watchIdRef.current = watchId;
+      } catch (error) {
+        console.error('Failed to watch file:', error);
+      }
+    },
+    [vfs, loadFile, onFileChange]
+  );
 
   // Track if we're saving to prevent reload on our own saves
   const isSavingRef = useRef<boolean>(false);
 
   // Save file content
-  const saveFile = useCallback(async (content: string) => {
-    if (!vfs.isInitialized() || !selectedFile) return;
+  const saveFile = useCallback(
+    async (content: string) => {
+      if (!vfs.isInitialized() || !selectedFile) return;
 
-    setCompilationStatus('compiling');
-    isSavingRef.current = true;
-    try {
-      // Save to VFS
-      await vfs.writeStringAsBytes(selectedFile, content, false);
+      setCompilationStatus('compiling');
+      isSavingRef.current = true;
+      try {
+        // Save to VFS
+        await vfs.writeStringAsBytes(selectedFile, content, false);
 
-      // Handle specific file types
-      const type = getFileType(selectedFile);
+        // Handle specific file types
+        const type = getFileType(selectedFile);
 
-      if (type === 'component') {
-        // Find or create component in registry
-        let componentId: string | null = null;
-        const components = componentRegistry.getAllComponents();
-        const existingComponent = components.find(c => c.metadata.filePath === selectedFile);
+        if (type === 'component') {
+          // Find or create component in registry
+          let componentId: string | null = null;
+          const components = componentRegistry.getAllComponents();
+          const existingComponent = components.find(
+            c => c.metadata.filePath === selectedFile
+          );
 
-        if (existingComponent) {
-          componentId = existingComponent.id;
-        } else {
-          // Extract component name from file path
-          const fileName = selectedFile.split('/').pop()?.replace('.tsx', '') || 'Component';
-          componentId = componentRegistry.createComponent(fileName);
-          const component = componentRegistry.getComponent(componentId);
-          if (component) {
-            // Watch the component file
-            await watchComponent(componentId, selectedFile);
+          if (existingComponent) {
+            componentId = existingComponent.id;
+          } else {
+            // Extract component name from file path
+            const fileName =
+              selectedFile.split('/').pop()?.replace('.tsx', '') || 'Component';
+            componentId = componentRegistry.createComponent(fileName);
+            const component = componentRegistry.getComponent(componentId);
+            if (component) {
+              // Watch the component file
+              await watchComponent(componentId, selectedFile);
+            }
+          }
+
+          // Compile and update component
+          if (componentId) {
+            await compileAndUpdate(componentId, content);
+          }
+        } else if (type === 'store') {
+          // Handle store compilation
+          const stores = storeRegistry.getAllStores();
+          const existingStore = stores.find(
+            s => s.metadata.filePath === selectedFile
+          );
+
+          if (!existingStore) {
+            // Extract store name from file path
+            const fileName =
+              selectedFile
+                .split('/')
+                .pop()
+                ?.replace('.ts', '')
+                .replace('.tsx', '') || 'Store';
+            const storeName = fileName
+              .replace(/-store$/i, '')
+              .replace(/store$/i, '');
+            const capitalizedName =
+              storeName.charAt(0).toUpperCase() + storeName.slice(1);
+            storeRegistry.createStore(capitalizedName);
           }
         }
 
-        // Compile and update component
-        if (componentId) {
-          await compileAndUpdate(componentId, content);
-        }
-      } else if (type === 'store') {
-        // Handle store compilation
-        const stores = storeRegistry.getAllStores();
-        const existingStore = stores.find(s => s.metadata.filePath === selectedFile);
-
-        if (!existingStore) {
-          // Extract store name from file path
-          const fileName = selectedFile.split('/').pop()?.replace('.ts', '').replace('.tsx', '') || 'Store';
-          const storeName = fileName.replace(/-store$/i, '').replace(/store$/i, '');
-          const capitalizedName = storeName.charAt(0).toUpperCase() + storeName.slice(1);
-          storeRegistry.createStore(capitalizedName);
-        }
-      }
-
-      // Validate TypeScript
-      if (selectedFile.endsWith('.ts') || selectedFile.endsWith('.tsx')) {
-        const validation = typeScriptValidator.validateSyntax(content);
-        if (!validation.valid && validation.diagnostics) {
-          setValidationErrors(validation.diagnostics.map(d => ({
-            line: d.line || 1,
-            column: d.column || 1,
-            message: d.message,
-            severity: d.category === 'error' ? 'error' : d.category === 'warning' ? 'warning' : 'info',
-          })));
-          setCompilationStatus('error');
+        // Validate TypeScript
+        if (selectedFile.endsWith('.ts') || selectedFile.endsWith('.tsx')) {
+          const validation = typeScriptValidator.validateSyntax(content);
+          if (!validation.valid && validation.diagnostics) {
+            setValidationErrors(
+              validation.diagnostics.map(d => ({
+                line: d.line || 1,
+                column: d.column || 1,
+                message: d.message,
+                severity:
+                  d.category === 'error'
+                    ? 'error'
+                    : d.category === 'warning'
+                      ? 'warning'
+                      : 'info',
+              }))
+            );
+            setCompilationStatus('error');
+          } else {
+            setValidationErrors([]);
+            setCompilationStatus('success');
+          }
         } else {
-          setValidationErrors([]);
           setCompilationStatus('success');
         }
-      } else {
-        setCompilationStatus('success');
-      }
 
-      return true;
-    } catch (error) {
-      console.error('Failed to save file:', error);
-      setError(`Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      setCompilationStatus('error');
-      throw error;
-    } finally {
-      // Reset saving flag after a short delay to account for file system propagation
-      setTimeout(() => {
-        isSavingRef.current = false;
-      }, 100);
-    }
-  }, [vfs, selectedFile, watchComponent, compileAndUpdate]);
+        return true;
+      } catch (error) {
+        console.error('Failed to save file:', error);
+        setError(
+          `Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`
+        );
+        setCompilationStatus('error');
+        throw error;
+      } finally {
+        // Reset saving flag after a short delay to account for file system propagation
+        setTimeout(() => {
+          isSavingRef.current = false;
+        }, 100);
+      }
+    },
+    [vfs, selectedFile, watchComponent, compileAndUpdate]
+  );
 
   // Use auto-save hook
   const { isSaving, lastSaved, hasChanges } = useAutoSave({
@@ -260,15 +305,18 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
     }
     if (initialFile && vfs.isInitialized()) {
       // Check if the file exists before trying to load it
-      vfs.exists(initialFile).then((exists) => {
-        if (exists) {
-          handleFileSelect(initialFile);
-        } else {
-          console.warn(`Initial file ${initialFile} does not exist`);
-        }
-      }).catch((error) => {
-        console.error('Error checking initial file:', error);
-      });
+      vfs
+        .exists(initialFile)
+        .then(exists => {
+          if (exists) {
+            handleFileSelect(initialFile);
+          } else {
+            console.warn(`Initial file ${initialFile} does not exist`);
+          }
+        })
+        .catch(error => {
+          console.error('Error checking initial file:', error);
+        });
     }
   }, [initialFile, vfs, handleFileSelect]);
 
@@ -291,7 +339,7 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
         <FileTree
           rootPath={fileFilter || '/'}
           onFileSelect={handleFileSelect}
-          onFileDelete={(deletedPath) => {
+          onFileDelete={deletedPath => {
             // If the deleted file is currently selected, clear the editor
             if (deletedPath === selectedFile) {
               setSelectedFile(null);
@@ -421,18 +469,22 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
             <MonacoCodeEditor
               value={fileContent}
               onChange={setFileContent}
-              language={selectedFile?.endsWith('.tsx') ? 'typescript' : 'typescript'}
+              language={
+                selectedFile?.endsWith('.tsx') ? 'typescript' : 'typescript'
+              }
               height={height}
               onSave={handleManualSave}
               errors={validationErrors}
               filePath={selectedFile || undefined}
             />
           ) : (
-            <div className="border-5 bg-gray-300 border-gray-400 p-4 min-h-full"><PreviewPane
-              filePath={selectedFile}
-              fileType={fileType}
-              className="h-full shadow-lg rounded-lg border-b-1 border-gray-400/20 overflow-y-scroll"
-            /></div>
+            <div className="border-5 bg-gray-300 border-gray-400 p-4 min-h-full">
+              <PreviewPane
+                filePath={selectedFile}
+                fileType={fileType}
+                className="h-full shadow-lg rounded-lg border-b-1 border-gray-400/20 overflow-y-scroll"
+              />
+            </div>
           )}
         </div>
       </div>

@@ -1,7 +1,7 @@
-// @ts-ignore - WASM imports
+// @ts-expect-error - WASM imports
 import init, * as biomeWasm from '@biomejs/wasm-web';
 // Import WASM file directly with ?url to get the URL
-// @ts-ignore
+// @ts-expect-error
 import biomeWasmUrl from '@biomejs/wasm-web/biome_wasm_bg.wasm?url';
 
 export interface ValidationResult {
@@ -85,7 +85,10 @@ export class FileValidator {
 
       this.projectKey = openResult.projectKey;
       this.wasmInitialized = true;
-      console.log('[FileValidator] Biome WASM initialized successfully with project key:', this.projectKey);
+      console.log(
+        '[FileValidator] Biome WASM initialized successfully with project key:',
+        this.projectKey
+      );
     } catch (error) {
       console.error('[FileValidator] Failed to initialize Biome WASM:', error);
       throw error;
@@ -125,7 +128,7 @@ export class FileValidator {
             content: {
               type: 'fromClient',
               content: content,
-              version: 0
+              version: 0,
             },
           });
 
@@ -143,7 +146,11 @@ export class FileValidator {
             projectKey: this.projectKey,
           });
 
-          if (formatResult && formatResult.code && formatResult.code !== content) {
+          if (
+            formatResult &&
+            formatResult.code &&
+            formatResult.code !== content
+          ) {
             formatted = formatResult.code;
             suggestions.push('Code was automatically formatted');
           }
@@ -162,7 +169,6 @@ export class FileValidator {
       // Step 2: Lint the code (if WASM linting is available)
       // Note: @biomejs/wasm-web might not have full linting capabilities
       // For now, we'll focus on formatting which is the main benefit
-
     } catch (error) {
       // Parse error - likely syntax issue
       errors.push({
@@ -193,19 +199,23 @@ export class FileValidator {
     const lines = content.split('\n');
     const location = diagnostic.location?.span?.[0];
     const line = location ? Math.floor(location / 1000) : 1;
-    const column = location ? (location % 1000) : 1;
+    const column = location ? location % 1000 : 1;
 
     return {
       line,
       column,
       severity: diagnostic.severity === 'error' ? 'error' : 'warning',
-      message: diagnostic.message?.content || diagnostic.message || 'Unknown error',
+      message:
+        diagnostic.message?.content || diagnostic.message || 'Unknown error',
       rule: diagnostic.category,
       fix: diagnostic.message?.advice?.[0] || undefined,
     };
   }
 
-  private generateSuggestion(error: ValidationError, content: string): string | null {
+  private generateSuggestion(
+    error: ValidationError,
+    content: string
+  ): string | null {
     const lines = content.split('\n');
     const errorLine = lines[error.line - 1] || '';
 
@@ -281,7 +291,7 @@ export class FileValidator {
     // Add suggestions
     if (result.suggestions.length > 0) {
       feedback += `**Suggestions:**\n`;
-      result.suggestions.forEach((suggestion) => {
+      result.suggestions.forEach(suggestion => {
         feedback += `- ${suggestion}\n`;
       });
     }

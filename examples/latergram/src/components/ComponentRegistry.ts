@@ -167,24 +167,25 @@ class ComponentRegistry {
     component: React.ComponentType<any>,
     metadata: ComponentMetadata
   ): ProxiedComponent {
-    const registry = this;
-
-    const ProxyComponent = function (props: any) {
+    const ProxyComponent = (props: any) => {
       const React = (window as any).React;
       const [, forceUpdate] = React.useState(0);
 
       React.useEffect(() => {
-        const unsubscribe = registry.onUpdate(id, () => {
+        const unsubscribe = this.onUpdate(id, () => {
           forceUpdate((v: number) => v + 1);
         });
         return unsubscribe;
       }, []);
 
-      const current = registry.components.get(id);
+      const current = this.components.get(id);
       const Component = current?.original || component;
 
       // Use the shared error boundary creator
-      const ErrorBoundaryClass = createInlineErrorBoundary(React, metadata.name);
+      const ErrorBoundaryClass = createInlineErrorBoundary(
+        React,
+        metadata.name
+      );
 
       // Wrap the component with error boundary
       return React.createElement(

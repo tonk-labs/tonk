@@ -1,8 +1,9 @@
-import React, { useRef, useEffect, useState } from 'react';
 import { AlertCircle, Eye, EyeOff } from 'lucide-react';
+import type React from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { getVFSService } from '../../services/vfs-service';
 import { componentRegistry, type ProxiedComponent } from '../ComponentRegistry';
 import { useComponentWatcher } from '../hooks/useComponentWatcher';
-import { getVFSService } from '../../services/vfs-service';
 
 interface ComponentPreviewProps {
   componentId: string | null;
@@ -167,9 +168,7 @@ export const ComponentPreview: React.FC<ComponentPreviewProps> = ({
   }
 
   return (
-    <div
-      className={`bg-white overflow-hidden ${className}`}
-    >
+    <div className={`bg-white overflow-hidden ${className}`}>
       {/* <div className="flex items-center justify-between p-3 bg-gray-50">
 
         <button

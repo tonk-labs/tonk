@@ -1,4 +1,4 @@
-import React from 'react';
+import type React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { detectMarkdown } from './helpers';
@@ -8,13 +8,14 @@ interface ChatMessageContentProps {
   role: 'user' | 'assistant' | 'system' | 'tool';
 }
 
-const ChatMessageContent: React.FC<ChatMessageContentProps> = ({ content, role }) => {
+const ChatMessageContent: React.FC<ChatMessageContentProps> = ({
+  content,
+  role,
+}) => {
   const hasMarkdown = detectMarkdown(content);
 
   if (!hasMarkdown) {
-    return (
-      <p className="text-sm whitespace-pre-wrap break-words">{content}</p>
-    );
+    return <p className="text-sm whitespace-pre-wrap break-words">{content}</p>;
   }
 
   return (
@@ -40,10 +41,7 @@ const ChatMessageContent: React.FC<ChatMessageContentProps> = ({ content, role }
                 {children}
               </code>
             ) : (
-              <code
-                className="bg-gray-100 px-1 rounded text-[11px]"
-                {...props}
-              >
+              <code className="bg-gray-100 px-1 rounded text-[11px]" {...props}>
                 {children}
               </code>
             );
@@ -59,10 +57,7 @@ const ChatMessageContent: React.FC<ChatMessageContentProps> = ({ content, role }
             </strong>
           ),
           ul: ({ children, ...props }) => (
-            <ul
-              className="list-disc list-inside text-sm my-1 pl-2"
-              {...props}
-            >
+            <ul className="list-disc list-inside text-sm my-1 pl-2" {...props}>
               {children}
             </ul>
           ),

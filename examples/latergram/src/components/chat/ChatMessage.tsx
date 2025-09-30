@@ -1,10 +1,10 @@
-import React from 'react';
 import { Bot, User } from 'lucide-react';
-import ChatMessageContent from './ChatMessageContent';
+import type React from 'react';
 import ChatMessageActions from './ChatMessageActions';
+import ChatMessageContent from './ChatMessageContent';
+import { formatTimestamp, getMessageWarning } from './helpers';
 import MessageEditor from './MessageEditor';
 import ToolCallDetails from './ToolCallDetails';
-import { formatTimestamp, getMessageWarning } from './helpers';
 import type { ChatMessage as ChatMessageType } from './types';
 
 interface ChatMessageProps {
@@ -54,7 +54,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         <div className="flex-1 max-w-full">
           <div
             className={`px-3 py-1.5 rounded-lg ${
-              isUser ? 'bg-blue-500 text-white' : 'bg-white border border-gray-200'
+              isUser
+                ? 'bg-blue-500 text-white'
+                : 'bg-white border border-gray-200'
             }`}
           >
             {isEditing ? (
@@ -68,7 +70,10 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
               />
             ) : (
               <>
-                <ChatMessageContent content={message.content} role={message.role} />
+                <ChatMessageContent
+                  content={message.content}
+                  role={message.role}
+                />
                 {message.toolCalls && message.toolCalls.length > 0 && (
                   <ToolCallDetails toolCalls={message.toolCalls} />
                 )}

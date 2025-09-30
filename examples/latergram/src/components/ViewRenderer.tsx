@@ -1,12 +1,13 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { AlertCircle, FileX, Loader2, Edit3 } from 'lucide-react';
-import { getVFSService } from '../services/vfs-service';
-import { buildAvailablePackages } from './contextBuilder';
-import { bytesToString } from '../utils/vfs-utils';
+import type { DocumentData } from '@tonk/core';
+import { AlertCircle, Edit3, FileX, Loader2 } from 'lucide-react';
+import type React from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { createInlineErrorBoundary } from './errors/createInlineErrorBoundary';
-import { DocumentData } from '@tonk/core';
 import { cn } from '../lib/utils';
+import { getVFSService } from '../services/vfs-service';
+import { bytesToString } from '../utils/vfs-utils';
+import { buildAvailablePackages } from './contextBuilder';
+import { createInlineErrorBoundary } from './errors/createInlineErrorBoundary';
 
 interface ViewRendererProps {
   viewPath: string;
@@ -22,33 +23,35 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [viewExists, setViewExists] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
-  const [compiledComponent, setCompiledComponent] = useState<React.ComponentType | null>(null);
+  const [compiledComponent, setCompiledComponent] =
+    useState<React.ComponentType | null>(null);
 
   const vfs = getVFSService();
 
-  const compileView = useCallback(async (code: string, retryCount = 0): Promise<any> => {
-    try {
-      const ts = (window as any).ts;
-      if (!ts) {
-        throw new Error('TypeScript compiler not loaded');
-      }
+  const compileView = useCallback(
+    async (code: string, retryCount = 0): Promise<any> => {
+      try {
+        const ts = (window as any).ts;
+        if (!ts) {
+          throw new Error('TypeScript compiler not loaded');
+        }
 
-      const compiled = ts.transpileModule(code, {
-        compilerOptions: {
-          jsx: ts.JsxEmit.React,
-          module: ts.ModuleKind.CommonJS,
-          target: ts.ScriptTarget.ES2020,
-        },
-      });
+        const compiled = ts.transpileModule(code, {
+          compilerOptions: {
+            jsx: ts.JsxEmit.React,
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES2020,
+          },
+        });
 
-      // Get fresh context - this now includes safe proxies for loading stores
-      const freshPackages = buildAvailablePackages();
-      const contextKeys = Object.keys(freshPackages);
-      const contextValues = Object.values(freshPackages);
+        // Get fresh context - this now includes safe proxies for loading stores
+        const freshPackages = buildAvailablePackages();
+        const contextKeys = Object.keys(freshPackages);
+        const contextValues = Object.values(freshPackages);
 
-      const moduleFactory = new Function(
-        ...contextKeys,
-        `
+        const moduleFactory = new Function(
+          ...contextKeys,
+          `
         const exports = {};
         const module = { exports };
 
@@ -56,25 +59,33 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
 
         return module.exports.default || module.exports;
       `
-      );
+        );
 
-      const component = moduleFactory(...contextValues);
-      return component;
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Compilation failed';
+        const component = moduleFactory(...contextValues);
+        return component;
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Compilation failed';
         error instanceof Error ? error.message : 'Compilation failed';
 
-      // If it's a store-related error and we haven't retried too many times, try again
-      if (retryCount < 3 && errorMessage.includes('is not defined')) {
-        console.warn(`View compilation failed, retrying (attempt ${retryCount + 1}):`, errorMessage);
-        await new Promise(resolve => setTimeout(resolve, 200 * (retryCount + 1)));
-        return compileView(code, retryCount + 1);
-      }
+        // If it's a store-related error and we haven't retried too many times, try again
+        if (retryCount < 3 && errorMessage.includes('is not defined')) {
+          console.warn(
+            `View compilation failed, retrying (attempt ${retryCount + 1}):`,
+            errorMessage
+          );
+          await new Promise(resolve =>
+            setTimeout(resolve, 200 * (retryCount + 1))
+          );
+          return compileView(code, retryCount + 1);
+        }
 
-      console.error('View compilation failed:', errorMessage);
-      throw new Error(errorMessage);
-    }
-  }, []);
+        console.error('View compilation failed:', errorMessage);
+        throw new Error(errorMessage);
+      }
+    },
+    []
+  );
 
   const loadView = useCallback(async () => {
     setIsLoading(true);
@@ -94,10 +105,11 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
       const sourceCode = await vfs.readBytesAsString(viewPath);
       const component = await compileView(sourceCode);
       setCompiledComponent(() => component);
-
     } catch (error) {
       console.error('Failed to load view:', error);
-      setRenderError(error instanceof Error ? error.message : 'Failed to load view');
+      setRenderError(
+        error instanceof Error ? error.message : 'Failed to load view'
+      );
     } finally {
       setIsLoading(false);
     }
@@ -181,8 +193,13 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
         setRenderError(null);
 
         // Use the shared error boundary creator for page/view errors
-        const viewName = viewPath.split('/').pop()?.replace('.tsx', '') || 'View';
-        const PageErrorBoundary = createInlineErrorBoundary(React, viewName, viewPath);
+        const viewName =
+          viewPath.split('/').pop()?.replace('.tsx', '') || 'View';
+        const PageErrorBoundary = createInlineErrorBoundary(
+          React,
+          viewName,
+          viewPath
+        );
 
         // Wrap the component with the error boundary
         const element = React.createElement(
@@ -207,7 +224,8 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
           rootRef.current.render(element);
         }
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Render failed';
+        const errorMessage =
+          error instanceof Error ? error.message : 'Render failed';
         setRenderError(errorMessage);
         console.error('View render error:', error);
       }

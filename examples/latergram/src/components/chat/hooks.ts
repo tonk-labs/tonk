@@ -1,4 +1,10 @@
-import { useEffect, useRef, useCallback, useState, KeyboardEvent } from 'react';
+import {
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 
 export function useScrollToBottom(deps: any[] = []) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -6,7 +12,7 @@ export function useScrollToBottom(deps: any[] = []) {
 
   const scrollToBottom = useCallback((instant = false) => {
     messagesEndRef.current?.scrollIntoView({
-      behavior: instant ? 'instant' : 'smooth'
+      behavior: instant ? 'instant' : 'smooth',
     });
   }, []);
 

@@ -1,11 +1,11 @@
+import type { DocumentData, JsonValue } from '@tonk/core';
+import mime from 'mime';
 import type {
+  DocumentContent,
   VFSWorkerMessage,
   VFSWorkerResponse,
-  DocumentContent,
 } from '../types';
-import type { DocumentData, JsonValue } from '@tonk/core';
 import { bytesToString, stringToBytes } from '../utils/vfs-utils';
-import mime from 'mime';
 
 // Conditionally import the dev worker
 let TonkWorker: any = null;
@@ -106,7 +106,7 @@ export class VFSService {
           (window as any).TonkWorker
         ) {
           console.log('[VFSService] Using runtime-provided worker...');
-          // @ts-ignore
+          // @ts-expect-error
           this.worker = new (window as any).TonkWorker();
           this.usingServiceWorkerProxy = false;
         } else {

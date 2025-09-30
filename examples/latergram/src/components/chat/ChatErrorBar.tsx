@@ -1,5 +1,5 @@
-import React from 'react';
 import { AlertCircle } from 'lucide-react';
+import type React from 'react';
 
 interface ChatErrorBarProps {
   error: string;

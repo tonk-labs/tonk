@@ -1,5 +1,5 @@
-import React, { Component, ReactNode } from 'react';
 import { AlertTriangle } from 'lucide-react';
+import React, { Component, type ReactNode } from 'react';
 import { errorStyles } from './errorBoundaryStyles';
 import { sendErrorToAgent } from './sendErrorToAgent';
 
@@ -18,7 +18,10 @@ interface ErrorBoundaryState {
   errorInfo: React.ErrorInfo | null;
 }
 
-export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+export class ErrorBoundary extends Component<
+  ErrorBoundaryProps,
+  ErrorBoundaryState
+> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = {
@@ -56,7 +59,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         viewPath,
         isPageError,
         className = '',
-        fallback
+        fallback,
       } = this.props;
 
       if (fallback && error && this.state.errorInfo) {
@@ -65,7 +68,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
       // Page-level errors get full-screen treatment
       if (isPageError || viewPath) {
-        const viewName = viewPath?.split('/').pop()?.replace('.tsx', '') || componentName;
+        const viewName =
+          viewPath?.split('/').pop()?.replace('.tsx', '') || componentName;
         const styles = errorStyles.page;
 
         return (
@@ -79,14 +83,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                     </div>
                   </div>
                   <div className={styles.body}>
-                    <h2 className={styles.title}>
-                      Page Error: {viewName}
-                    </h2>
-                    {viewPath && (
-                      <p className={styles.path}>
-                        {viewPath}
-                      </p>
-                    )}
+                    <h2 className={styles.title}>Page Error: {viewName}</h2>
+                    {viewPath && <p className={styles.path}>{viewPath}</p>}
                     <div className={styles.errorBox}>
                       <p className={styles.errorMessage}>
                         {error?.message || 'Unknown error occurred'}
@@ -119,21 +117,15 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               </div>
             </div>
             <div className={styles.body}>
-              <h3 className={styles.title}>
-                {componentName} Failed
-              </h3>
+              <h3 className={styles.title}>{componentName} Failed</h3>
               {error && (
                 <>
-                  <p className={styles.errorMessage}>
-                    {error.message}
-                  </p>
+                  <p className={styles.errorMessage}>{error.message}</p>
                   <details className={styles.details}>
                     <summary className={styles.summary}>
                       Show stack trace
                     </summary>
-                    <pre className={styles.stackTrace}>
-                      {error.stack}
-                    </pre>
+                    <pre className={styles.stackTrace}>{error.stack}</pre>
                   </details>
                 </>
               )}
@@ -152,7 +144,9 @@ export const withErrorBoundary = <P extends object>(
   componentName?: string
 ) => {
   const WrappedComponent = React.forwardRef<any, P>((props, ref) => (
-    <ErrorBoundary componentName={componentName || Component.displayName || Component.name}>
+    <ErrorBoundary
+      componentName={componentName || Component.displayName || Component.name}
+    >
       <Component {...(props as P)} ref={ref} />
     </ErrorBoundary>
   ));

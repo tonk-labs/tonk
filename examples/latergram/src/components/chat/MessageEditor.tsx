@@ -1,5 +1,5 @@
-import React from 'react';
-import { Check, X, AlertCircle } from 'lucide-react';
+import { AlertCircle, Check, X } from 'lucide-react';
+import type React from 'react';
 import { useKeyboardSubmit } from './hooks';
 
 interface MessageEditorProps {
@@ -39,7 +39,7 @@ const MessageEditor: React.FC<MessageEditorProps> = ({
       )}
       <textarea
         value={content}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={e => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
         className="w-full p-2 border border-gray-300 rounded text-xs text-black"
         rows={3}

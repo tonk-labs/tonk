@@ -19,18 +19,25 @@ export const sanitizeStoreName = (name: string): string => {
 const createSafeStoreProxy = (storeName: string) => {
   return new Proxy(() => undefined, {
     get: (target, prop) => {
-      console.warn(`Store '${storeName}' is still loading. Property '${String(prop)}' accessed.`);
+      console.warn(
+        `Store '${storeName}' is still loading. Property '${String(prop)}' accessed.`
+      );
       return undefined;
     },
     apply: () => {
-      console.warn(`Store '${storeName}' is still loading. Returning undefined.`);
+      console.warn(
+        `Store '${storeName}' is still loading. Returning undefined.`
+      );
       return undefined;
-    }
+    },
   });
 };
 
 // Create a safe component proxy that returns a placeholder component
-const createSafeComponentProxy = (componentName: string, componentId: string) => {
+const createSafeComponentProxy = (
+  componentName: string,
+  componentId: string
+) => {
   // This creates a dynamic proxy that checks if the real component is available
   const DynamicPlaceholder = () => {
     const React = (window as any).React;
@@ -83,8 +90,8 @@ const createSafeComponentProxy = (componentName: string, componentId: string) =>
           border: '1px dashed #999',
           borderRadius: '4px',
           fontSize: '12px',
-          color: '#666'
-        }
+          color: '#666',
+        },
       },
       `Loading ${componentName}...`
     );
@@ -124,7 +131,10 @@ export const buildAvailablePackages = (excludeId?: string) => {
         componentPackages[sanitizedName] = comp.proxy;
       } else {
         // If component is still loading or has errors, provide a safe placeholder
-        componentPackages[sanitizedName] = createSafeComponentProxy(sanitizedName, comp.id);
+        componentPackages[sanitizedName] = createSafeComponentProxy(
+          sanitizedName,
+          comp.id
+        );
       }
     }
   });

@@ -1,8 +1,10 @@
 import { TonkCore } from '@tonk/core';
+
 // DocumentWatcher type
 interface DocumentWatcher {
   stop: () => void;
 }
+
 import type { VFSWorkerMessage, VFSWorkerResponse } from './types';
 
 console.log('[Worker] Worker script loading...');
@@ -509,6 +511,3 @@ self.addEventListener('message', async event => {
     });
   }
 });
-
-// Export for TypeScript
-export {};

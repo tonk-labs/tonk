@@ -1,5 +1,12 @@
-import React from 'react';
-import { Folder, FolderOpen, File, Trash2, FilePlus, FolderPlus } from 'lucide-react';
+import {
+  File,
+  FilePlus,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  Trash2,
+} from 'lucide-react';
+import type React from 'react';
 import type { TreeItem, TreeItemRenderContext } from 'react-complex-tree';
 import type { VFSTreeItemData } from './VFSDataProvider';
 
@@ -16,7 +23,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
   context,
   onDelete,
   onCreateFile,
-  onCreateDirectory
+  onCreateDirectory,
 }) => {
   const { isExpanded, isSelected, isRenaming } = context;
   const { name, path, type } = item.data;
@@ -43,7 +50,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
     }
 
     const extension = getFileExtension(name);
-    const iconClass = "w-4 h-4";
+    const iconClass = 'w-4 h-4';
 
     // Different colors based on file type
     switch (extension) {
@@ -102,9 +109,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
       }}
     >
       {/* File/Folder Icon */}
-      <span className="flex-shrink-0">
-        {getFileIcon()}
-      </span>
+      <span className="flex-shrink-0">{getFileIcon()}</span>
 
       {/* File/Folder Name */}
       <span
@@ -124,7 +129,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
         {type === 'directory' && (
           <>
             <button
-            type="button"
+              type="button"
               onClick={handleCreateFile}
               className="p-1 hover:bg-blue-100 rounded transition-colors"
               title="Create new file"
@@ -132,7 +137,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
               <FilePlus className="w-3 h-3 text-blue-600" />
             </button>
             <button
-            type="button"
+              type="button"
               onClick={handleCreateDirectory}
               className="p-1 hover:bg-blue-100 rounded transition-colors"
               title="Create new directory"
@@ -141,7 +146,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
             </button>
           </>
         )}
-        <div className="flex flex-grow"/>
+        <div className="flex flex-grow" />
 
         {/* Delete button (not for root) */}
         {path !== '/' && (
@@ -165,7 +170,10 @@ export const renderFileTreeNode = (
   onCreateFile?: (parentPath: string) => void,
   onCreateDirectory?: (parentPath: string) => void
 ) => {
-  return ({ item, context }: {
+  return ({
+    item,
+    context,
+  }: {
     item: TreeItem<VFSTreeItemData>;
     context: TreeItemRenderContext;
   }) => (

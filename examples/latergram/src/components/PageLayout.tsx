@@ -1,10 +1,11 @@
-import React, { createRef, useCallback, useState } from 'react';
-import { Link, Outlet } from 'react-router-dom';
 import { Code2Icon, MessageCircle } from 'lucide-react';
-import { Drawer, DrawerContent, DrawerTrigger } from './ui/drawer';
-import AgentChat from './chat/AgentChat';
+import type React from 'react';
+import { createRef, useCallback, useState } from 'react';
+import { Link, Outlet } from 'react-router-dom';
 import { useAgentChat } from '../lib/agent/use-agent-chat';
 import { cn } from '../lib/utils';
+import AgentChat from './chat/AgentChat';
+import { Drawer, DrawerContent, DrawerTrigger } from './ui/drawer';
 
 interface PageLayoutProps {
   viewPath: string;

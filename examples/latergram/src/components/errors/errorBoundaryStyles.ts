@@ -20,7 +20,8 @@ export const errorStyles = {
     errorMessage: 'text-red-800 font-mono text-sm',
     details: 'text-sm',
     summary: 'text-red-600 cursor-pointer hover:text-red-800 font-medium',
-    stackTrace: 'mt-3 p-3 bg-white border border-red-200 rounded text-red-700 overflow-x-auto text-xs font-mono'
+    stackTrace:
+      'mt-3 p-3 bg-white border border-red-200 rounded text-red-700 overflow-x-auto text-xs font-mono',
   },
 
   // Component-level error styles
@@ -36,8 +37,9 @@ export const errorStyles = {
     errorMessage: 'text-red-700 text-xs font-mono mb-2',
     details: 'text-xs',
     summary: 'text-red-600 cursor-pointer hover:text-red-800',
-    stackTrace: 'mt-2 p-2 bg-red-100 rounded text-red-700 overflow-x-auto text-xs'
-  }
+    stackTrace:
+      'mt-2 p-2 bg-red-100 rounded text-red-700 overflow-x-auto text-xs',
+  },
 };
 
 /**
@@ -52,7 +54,8 @@ export function buildErrorUI(
   viewPath?: string
 ) {
   const styles = isPageError ? errorStyles.page : errorStyles.component;
-  const displayName = viewPath?.split('/').pop()?.replace('.tsx', '') || componentName;
+  const displayName =
+    viewPath?.split('/').pop()?.replace('.tsx', '') || componentName;
 
   if (isPageError) {
     const pageStyles = errorStyles.page;
@@ -65,64 +68,61 @@ export function buildErrorUI(
         React.createElement(
           'div',
           { className: pageStyles.box },
-          React.createElement(
-            'div',
-            { className: styles.content },
-            [
-              // Icon
+          React.createElement('div', { className: styles.content }, [
+            // Icon
+            React.createElement(
+              'div',
+              { key: 'icon', className: styles.iconWrapper },
               React.createElement(
                 'div',
-                { key: 'icon', className: styles.iconWrapper },
+                { className: styles.icon },
+                React.createElement('span', { className: styles.iconText }, '!')
+              )
+            ),
+            // Content
+            React.createElement(
+              'div',
+              { key: 'content', className: styles.body },
+              [
                 React.createElement(
-                  'div',
-                  { className: styles.icon },
-                  React.createElement('span', { className: styles.iconText }, '!')
-                )
-              ),
-              // Content
-              React.createElement(
-                'div',
-                { key: 'content', className: styles.body },
-                [
+                  'h2',
+                  { key: 'title', className: styles.title },
+                  `Page Error: ${displayName}`
+                ),
+                viewPath &&
                   React.createElement(
-                    'h2',
-                    { key: 'title', className: styles.title },
-                    `Page Error: ${displayName}`
-                  ),
-                  viewPath && React.createElement(
                     'p',
                     { key: 'path', className: pageStyles.path },
                     viewPath
                   ),
+                React.createElement(
+                  'div',
+                  { key: 'error-box', className: pageStyles.errorBox },
                   React.createElement(
-                    'div',
-                    { key: 'error-box', className: pageStyles.errorBox },
-                    React.createElement(
-                      'p',
-                      { className: styles.errorMessage },
-                      error?.message || 'Unknown error occurred'
-                    )
-                  ),
-                  React.createElement(
-                    'details',
-                    { key: 'stack', className: styles.details },
-                    [
-                      React.createElement(
-                        'summary',
-                        { key: 'summary', className: styles.summary },
-                        'Show stack trace'
-                      ),
-                      React.createElement(
-                        'pre',
-                        { key: 'trace', className: styles.stackTrace },
-                        error?.stack || 'No stack trace available'
-                      )
-                    ]
+                    'p',
+                    { className: styles.errorMessage },
+                    error?.message || 'Unknown error occurred'
                   )
-                ]
-              )
-            ]
-          )
+                ),
+                React.createElement(
+                  'details',
+                  { key: 'stack', className: styles.details },
+                  [
+                    React.createElement(
+                      'summary',
+                      { key: 'summary', className: styles.summary },
+                      'Show stack trace'
+                    ),
+                    React.createElement(
+                      'pre',
+                      { key: 'trace', className: styles.stackTrace },
+                      error?.stack || 'No stack trace available'
+                    ),
+                  ]
+                ),
+              ]
+            ),
+          ])
         )
       )
     );
@@ -133,54 +133,46 @@ export function buildErrorUI(
   return React.createElement(
     'div',
     { className: componentStyles.containerWithMargin },
-    React.createElement(
-      'div',
-      { className: styles.content },
-      [
-        // Icon
+    React.createElement('div', { className: styles.content }, [
+      // Icon
+      React.createElement(
+        'div',
+        { key: 'icon', className: styles.iconWrapper },
         React.createElement(
           'div',
-          { key: 'icon', className: styles.iconWrapper },
-          React.createElement(
-            'div',
-            { className: styles.icon },
-            React.createElement('span', { className: styles.iconText }, '!')
-          )
+          { className: styles.icon },
+          React.createElement('span', { className: styles.iconText }, '!')
+        )
+      ),
+      // Content
+      React.createElement('div', { key: 'content', className: styles.body }, [
+        React.createElement(
+          'h3',
+          { key: 'title', className: styles.title },
+          `${componentName} Failed`
         ),
-        // Content
         React.createElement(
-          'div',
-          { key: 'content', className: styles.body },
+          'p',
+          { key: 'message', className: styles.errorMessage },
+          error?.message || 'Unknown error'
+        ),
+        React.createElement(
+          'details',
+          { key: 'stack', className: styles.details },
           [
             React.createElement(
-              'h3',
-              { key: 'title', className: styles.title },
-              `${componentName} Failed`
+              'summary',
+              { key: 'summary', className: styles.summary },
+              'Show stack trace'
             ),
             React.createElement(
-              'p',
-              { key: 'message', className: styles.errorMessage },
-              error?.message || 'Unknown error'
+              'pre',
+              { key: 'trace', className: styles.stackTrace },
+              error?.stack || 'No stack trace available'
             ),
-            React.createElement(
-              'details',
-              { key: 'stack', className: styles.details },
-              [
-                React.createElement(
-                  'summary',
-                  { key: 'summary', className: styles.summary },
-                  'Show stack trace'
-                ),
-                React.createElement(
-                  'pre',
-                  { key: 'trace', className: styles.stackTrace },
-                  error?.stack || 'No stack trace available'
-                )
-              ]
-            )
           ]
-        )
-      ]
-    )
+        ),
+      ]),
+    ])
   );
 }

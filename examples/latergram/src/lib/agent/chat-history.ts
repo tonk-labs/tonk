@@ -1,7 +1,5 @@
-import { getVFSService } from '../../services/vfs-service';
-import { getUserService } from '../../services/user-service';
-
 const MAX_MESSAGES = 10;
+const STORAGE_KEY = 'latergram_chat_history';
 
 export interface ChatMessage {
   id: string;
@@ -14,12 +12,9 @@ export interface ChatMessage {
     args: any;
     result: any;
   }>;
-  // For tool messages
   toolName?: string;
   toolCallId?: string;
-  // Flag to hide from UI
   hidden?: boolean;
-  // Flag to indicate message is still streaming/incomplete
   streaming?: boolean;
 }
 
@@ -31,37 +26,20 @@ export interface ChatHistoryData {
 
 export class ChatHistory {
   private messages: ChatMessage[] = [];
-  private vfs = getVFSService();
-  private userService = getUserService();
-
-  private getChatHistoryPath(): string {
-    const userPath = this.userService.getChatHistoryPath();
-    if (!userPath) {
-      throw new Error(
-        'User service not initialized - cannot determine chat history path'
-      );
-    }
-    return userPath;
-  }
 
   async initialize(): Promise<void> {
-    if (!this.vfs.isInitialized()) {
-      throw new Error('VFS service must be initialized before ChatHistory');
-    }
     await this.loadHistory();
   }
 
   async loadHistory(): Promise<void> {
     try {
-      const chatPath = this.getChatHistoryPath();
-      const exists = await this.vfs.exists(chatPath);
-      if (!exists) {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (!stored) {
         await this.createEmptyHistory();
         return;
       }
 
-      const content = await this.vfs.readFile(chatPath);
-      const data: ChatHistoryData = content.content as any;
+      const data: ChatHistoryData = JSON.parse(stored);
 
       if (data.version === '1.0' && Array.isArray(data.messages)) {
         this.messages = data.messages;
@@ -83,9 +61,7 @@ export class ChatHistory {
     };
 
     try {
-      const chatPath = this.getChatHistoryPath();
-      const exists = await this.vfs.exists(chatPath);
-      await this.vfs.writeFile(chatPath, { content: data as any }, !exists);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch (error) {
       console.error('Failed to save chat history:', error);
       throw error;
@@ -168,7 +144,11 @@ export class ChatHistory {
     }
   }
 
-  async updateStreamingMessage(messageId: string, content: string, streaming: boolean): Promise<void> {
+  async updateStreamingMessage(
+    messageId: string,
+    content: string,
+    streaming: boolean
+  ): Promise<void> {
     const messageIndex = this.messages.findIndex(msg => msg.id === messageId);
     if (messageIndex !== -1) {
       this.messages[messageIndex].content = content;

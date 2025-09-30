@@ -172,11 +172,9 @@ class StoreRegistry {
     storeHook: any,
     metadata: StoreMetadata
   ): ProxiedStore {
-    const registry = this;
-
     // Create a proxied store hook that always uses the latest version
-    const ProxyStoreHook = function (...args: any[]) {
-      const current = registry.stores.get(id);
+    const ProxyStoreHook = (...args: any[]) => {
+      const current = this.stores.get(id);
       const StoreHook = current?.original || storeHook;
       return StoreHook(...args);
     };
