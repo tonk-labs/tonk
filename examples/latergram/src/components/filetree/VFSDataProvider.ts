@@ -19,7 +19,6 @@ export class VFSDataProvider implements TreeDataProvider {
   private searchQuery = '';
   private watchHandles = new Map<string, string>();
   private searchResults = new Set<string>();
-  private allFilesCache: string[] = [];
 
   constructor(rootPath = '/') {
     this.rootPath = rootPath;
@@ -400,6 +399,16 @@ export class VFSDataProvider implements TreeDataProvider {
       // If already watching this directory, skip
       if (this.watchHandles.has(path)) {
         return;
+      }
+
+      // Check if directory exists, create if not
+      if (path !== '/') {
+        const exists = await this.vfs.exists(path);
+        if (!exists) {
+          console.log(`Directory ${path} does not exist, creating it...`);
+          const placeholderPath = `${path}/.gitkeep`;
+          await this.vfs.writeFile(placeholderPath, { content: '' }, true);
+        }
       }
 
       const watchId = await this.vfs.watchDirectory(path, changeData => {
