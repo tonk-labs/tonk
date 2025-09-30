@@ -24,7 +24,8 @@ RUSTFLAGS="--cfg getrandom_backend=\"wasm_js\"" \
 
 # Build for Node.js
 echo "Building for Node.js target..."
-wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node
+RUSTFLAGS="--cfg getrandom_backend=\"wasm_js\"" \
+  wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node
 
 echo "WASM build completed successfully!"
 echo ""
