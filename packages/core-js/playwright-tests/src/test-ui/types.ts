@@ -1,9 +1,18 @@
 import type { DocumentData, RefNode, JsonValue } from '../../../src/core.js';
+import type { ChildProcess } from 'child_process';
 
 export type DocumentContent = {
   content: JsonValue;
   bytes?: string;
 };
+
+// Server instance types
+export interface ServerInstance {
+  process: ChildProcess;
+  port: number;
+  wsUrl: string;
+  manifestUrl: string;
+}
 
 // Image generator types
 export interface ImageSpec {
