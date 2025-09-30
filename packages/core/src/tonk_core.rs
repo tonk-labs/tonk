@@ -1,15 +1,15 @@
+use crate::Bundle;
 use crate::bundle::BundleConfig;
 use crate::error::{Result, VfsError};
 use crate::vfs::VirtualFileSystem;
-use crate::Bundle;
 use rand::rng;
+#[cfg(not(target_arch = "wasm32"))]
+use samod::RepoBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 use samod::storage::TokioFilesystemStorage as FilesystemStorage;
 use samod::storage::{InMemoryStorage, StorageKey};
 #[cfg(target_arch = "wasm32")]
 use samod::storage::{IndexedDbStorage, LocalStorage};
-#[cfg(not(target_arch = "wasm32"))]
-use samod::RepoBuilder;
 use samod::{DocHandle, DocumentId, PeerId, Repo};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
@@ -28,7 +28,6 @@ pub enum StorageConfig {
     #[cfg(target_arch = "wasm32")]
     IndexedDB,
 }
-
 
 /// Builder for creating TonkCore instances with custom configurations
 pub struct TonkCoreBuilder {
@@ -418,118 +417,123 @@ impl TonkCore {
     }
 
     /// Export the current state to a bundle as bytes
-    pub async fn to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
-        use crate::bundle::{Manifest, Version};
-        use std::io::{Cursor, Write};
-        use zip::write::SimpleFileOptions;
-        use zip::ZipWriter;
-
-        // Get the root document from VFS
-        let root_id = self.vfs.root_id();
-
-        // Extract config values or use defaults
-        let config = config.unwrap_or_default();
-        
-        // Merge vendor metadata with default Tonk metadata
-        let vendor_metadata = match config.vendor_metadata {
-            Some(mut custom) => {
-                // Merge custom metadata with default xTonk metadata
-                if let Some(obj) = custom.as_object_mut() {
-                    obj.insert("xTonk".to_string(), serde_json::json!({
-                        "createdAt": chrono::Utc::now().to_rfc3339(),
-                        "exportedFrom": "tonk-core v0.1.0"
-                    }));
-                }
-                Some(custom)
-            }
-            None => Some(serde_json::json!({
-                "xTonk": {
-                    "createdAt": chrono::Utc::now().to_rfc3339(),
-                    "exportedFrom": "tonk-core v0.1.0"
-                }
-            })),
+    pub async fn fork_to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
+        // Create a new samod instance with in-memory storage for the copied VFS to avoid conflicts
+        #[cfg(not(target_arch = "wasm32"))]
+        let new_samod = {
+            let runtime = tokio::runtime::Handle::current();
+            let storage = InMemoryStorage::new();
+            let mut rng = rand::rng();
+            let peer_id = PeerId::new_with_rng(&mut rng);
+            Arc::new(
+                RepoBuilder::new(runtime)
+                    .with_storage(storage)
+                    .with_peer_id(peer_id)
+                    .with_concurrency(samod::ConcurrencyConfig::Threadpool(
+                        rayon::ThreadPoolBuilder::new().build().unwrap(),
+                    ))
+                    .load()
+                    .await,
+            )
         };
 
-        // Create manifest
-        let manifest = Manifest {
-            manifest_version: 1,
-            version: Version { major: 1, minor: 0 },
-            root_id: root_id.to_string(),
-            entrypoints: config.entrypoints,
-            network_uris: config.network_uris,
-            x_notes: config.notes,
-            x_vendor: vendor_metadata,
+        #[cfg(target_arch = "wasm32")]
+        let new_samod = {
+            let mut rng = rand::rng();
+            let peer_id = PeerId::new_with_rng(&mut rng);
+            Arc::new(
+                Repo::build_wasm()
+                    .with_peer_id(peer_id)
+                    .with_storage(InMemoryStorage::new())
+                    .load()
+                    .await,
+            )
         };
 
-        let manifest_json =
-            serde_json::to_string_pretty(&manifest).map_err(VfsError::SerializationError)?;
+        let copied_vfs = Arc::new(VirtualFileSystem::new(new_samod.clone()).await?);
 
-        // Create ZIP bundle in memory
-        let mut zip_data = Vec::new();
-        {
-            let mut zip_writer = ZipWriter::new(Cursor::new(&mut zip_data));
+        // Recursively copy all files and directories from /app
+        self.copy_directory_recursive(&self.vfs, &copied_vfs, "/app")
+            .await?;
 
-            // Add manifest
-            zip_writer
-                .start_file("manifest.json", SimpleFileOptions::default())
-                .map_err(|e| VfsError::IoError(e.into()))?;
-            zip_writer
-                .write_all(manifest_json.as_bytes())
-                .map_err(VfsError::IoError)?;
+        // Export the copied VFS to bytes
+        copied_vfs.to_bytes(config).await
+    }
 
-            // Export all storage data directly from samod's storage
-            // Iterate through all documents and export their storage data
-            let all_doc_ids = self.vfs.collect_all_document_ids().await?;
+    /// Recursively copy a directory and its contents from source VFS to destination VFS
+    fn copy_directory_recursive<'a>(
+        &'a self,
+        source_vfs: &'a VirtualFileSystem,
+        dest_vfs: &'a VirtualFileSystem,
+        path: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            use crate::vfs::backend::AutomergeHelpers;
+            use crate::vfs::types::NodeType;
+            use bytes::Bytes;
 
-            for doc_id in &all_doc_ids {
-                // Export the document as a snapshot with proper CompactionHash
-                if let Ok(Some(doc_handle)) = self.samod.find(doc_id.clone()).await {
-                    let doc_bytes = doc_handle.with_document(|doc| doc.save());
+            // List all entries in the current directory
+            let entries = source_vfs.list_directory(path).await?;
 
-                    // Create a storage key for the snapshot
-                    // Using a fixed snapshot name for simplicity
-                    let storage_key = StorageKey::from_parts(vec![
-                        doc_id.to_string(),
-                        "snapshot".to_string(),
-                        "bundle_export".to_string(),
-                    ])
-                    .map_err(|e| {
-                        VfsError::Other(anyhow::anyhow!("Failed to create storage key: {}", e))
-                    })?;
+            for entry in entries {
+                // Construct the full path for this entry
+                let entry_path = if path == "/" {
+                    format!("/{}", entry.name)
+                } else {
+                    format!("{}/{}", path, entry.name)
+                };
 
-                    // Convert storage key to bundle path using samod's key_to_path logic
-                    let mut path_components = Vec::new();
-                    for (index, component) in storage_key.into_iter().enumerate() {
-                        if index == 0 {
-                            // Apply splaying to first component (document ID)
-                            if component.len() >= 2 {
-                                let (first_two, rest) = component.split_at(2);
-                                path_components.push(first_two.to_string());
-                                path_components.push(rest.to_string());
+                match entry.node_type {
+                    NodeType::Directory => {
+                        // Create the directory in the destination VFS
+                        dest_vfs.create_directory(&entry_path).await?;
+
+                        // Recursively copy the directory's contents
+                        self.copy_directory_recursive(source_vfs, dest_vfs, &entry_path)
+                            .await?;
+                    }
+                    NodeType::Document => {
+                        // Find the document in the source VFS
+                        if let Some(doc_handle) = source_vfs.find_document(&entry_path).await? {
+                            // Try to read the document with bytes first
+                            let has_bytes = doc_handle.with_document(|doc| {
+                                use automerge::ReadDoc;
+                                matches!(doc.get(automerge::ROOT, "bytes"), Ok(Some(_)))
+                            });
+
+                            if has_bytes {
+                                // Read the document content with bytes
+                                let doc_node = AutomergeHelpers::read_bytes_document::<
+                                    serde_json::Value,
+                                >(&doc_handle)?;
+                                dest_vfs
+                                    .create_document_with_bytes(
+                                        &entry_path,
+                                        doc_node.content,
+                                        Bytes::from(doc_node.bytes.unwrap_or_default()),
+                                    )
+                                    .await?;
                             } else {
-                                path_components.push(component);
+                                // Read the document content without bytes
+                                let doc_node = AutomergeHelpers::read_document::<serde_json::Value>(
+                                    &doc_handle,
+                                )?;
+                                dest_vfs
+                                    .create_document(&entry_path, doc_node.content)
+                                    .await?;
                             }
-                        } else {
-                            path_components.push(component);
                         }
                     }
-                    let storage_path = format!("storage/{}", path_components.join("/"));
-
-                    zip_writer
-                        .start_file(&storage_path, SimpleFileOptions::default())
-                        .map_err(|e| VfsError::IoError(e.into()))?;
-                    zip_writer
-                        .write_all(&doc_bytes)
-                        .map_err(VfsError::IoError)?;
                 }
             }
 
-            zip_writer
-                .finish()
-                .map_err(|e| VfsError::IoError(e.into()))?;
-        }
+            Ok(())
+        })
+    }
 
-        Ok(zip_data)
+    /// Export the current state to a bundle as bytes
+    pub async fn to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
+        self.vfs.to_bytes(config).await
     }
 
     /// Export the current state to a bundle file
@@ -644,7 +648,7 @@ mod tests {
     use super::*;
     #[cfg(not(target_arch = "wasm32"))]
     use tempfile::TempDir;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     #[tokio::test]
     async fn test_sync_engine_creation() {
@@ -909,5 +913,174 @@ mod tests {
             }
         });
         assert_eq!(content, "\"bundle test\"");
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn test_fork_to_bytes() {
+        // Create a TonkCore instance with some data
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = tonk.vfs();
+
+        // Get the original root ID
+        let original_root_id = vfs.root_id();
+
+        // Create a directory structure under /app
+        vfs.create_directory("/app").await.unwrap();
+        vfs.create_directory("/app/subdir").await.unwrap();
+        vfs.create_directory("/app/subdir/nested").await.unwrap();
+
+        // Create some documents with content
+        vfs.create_document("/app/file1.txt", "content 1".to_string())
+            .await
+            .unwrap();
+        vfs.create_document("/app/file2.txt", "content 2".to_string())
+            .await
+            .unwrap();
+        vfs.create_document("/app/subdir/file3.txt", "content 3".to_string())
+            .await
+            .unwrap();
+        vfs.create_document("/app/subdir/nested/file4.txt", "content 4".to_string())
+            .await
+            .unwrap();
+
+        // Create a document with bytes
+        use bytes::Bytes;
+        vfs.create_document_with_bytes(
+            "/app/binary.dat",
+            serde_json::json!({"type": "binary"}),
+            Bytes::from(vec![1, 2, 3, 4, 5]),
+        )
+        .await
+        .unwrap();
+
+        // Fork to bytes
+        let forked_bytes = tonk.fork_to_bytes(None).await.unwrap();
+        let bundle = Bundle::from_bytes(forked_bytes).unwrap();
+
+        // Load the forked bundle into a new TonkCore
+        let tonk_forked = TonkCore::from_bundle(bundle, StorageConfig::InMemory)
+            .await
+            .unwrap();
+        let vfs_forked = tonk_forked.vfs();
+
+        // Get the forked root ID
+        let forked_root_id = vfs_forked.root_id();
+
+        // Verify the root IDs are different
+        assert_ne!(
+            original_root_id.to_string(),
+            forked_root_id.to_string(),
+            "Root IDs should be different between source and forked VFS"
+        );
+
+        // Verify all documents exist in the forked VFS
+        assert!(
+            vfs_forked.exists("/app").await.unwrap(),
+            "/app should exist"
+        );
+        assert!(
+            vfs_forked.exists("/app/file1.txt").await.unwrap(),
+            "/app/file1.txt should exist"
+        );
+        assert!(
+            vfs_forked.exists("/app/file2.txt").await.unwrap(),
+            "/app/file2.txt should exist"
+        );
+        assert!(
+            vfs_forked.exists("/app/subdir").await.unwrap(),
+            "/app/subdir should exist"
+        );
+        assert!(
+            vfs_forked.exists("/app/subdir/file3.txt").await.unwrap(),
+            "/app/subdir/file3.txt should exist"
+        );
+        assert!(
+            vfs_forked.exists("/app/subdir/nested").await.unwrap(),
+            "/app/subdir/nested should exist"
+        );
+        assert!(
+            vfs_forked
+                .exists("/app/subdir/nested/file4.txt")
+                .await
+                .unwrap(),
+            "/app/subdir/nested/file4.txt should exist"
+        );
+        assert!(
+            vfs_forked.exists("/app/binary.dat").await.unwrap(),
+            "/app/binary.dat should exist"
+        );
+
+        // Verify document contents
+        let handle1 = vfs_forked
+            .find_document("/app/file1.txt")
+            .await
+            .unwrap()
+            .unwrap();
+        let content1: String = handle1.with_document(|doc| {
+            use automerge::ReadDoc;
+            match doc.get(automerge::ROOT, "content") {
+                Ok(Some((value, _))) => {
+                    if let Some(s) = value.to_str() {
+                        s.to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => String::new(),
+            }
+        });
+        assert_eq!(content1, "\"content 1\"");
+
+        let handle4 = vfs_forked
+            .find_document("/app/subdir/nested/file4.txt")
+            .await
+            .unwrap()
+            .unwrap();
+        let content4: String = handle4.with_document(|doc| {
+            use automerge::ReadDoc;
+            match doc.get(automerge::ROOT, "content") {
+                Ok(Some((value, _))) => {
+                    if let Some(s) = value.to_str() {
+                        s.to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => String::new(),
+            }
+        });
+        assert_eq!(content4, "\"content 4\"");
+
+        // Verify the binary document has bytes
+        let handle_binary = vfs_forked
+            .find_document("/app/binary.dat")
+            .await
+            .unwrap()
+            .unwrap();
+        let has_bytes = handle_binary.with_document(|doc| {
+            use automerge::ReadDoc;
+            doc.get(automerge::ROOT, "bytes").is_ok()
+        });
+        assert!(has_bytes, "Binary document should have bytes field");
+
+        // Verify that documents NOT in /app are NOT copied
+        vfs.create_document("/outside.txt", "outside content".to_string())
+            .await
+            .unwrap();
+
+        // Fork again with the new document
+        let forked_bytes2 = tonk.fork_to_bytes(None).await.unwrap();
+        let bundle2 = Bundle::from_bytes(forked_bytes2).unwrap();
+        let tonk_forked2 = TonkCore::from_bundle(bundle2, StorageConfig::InMemory)
+            .await
+            .unwrap();
+        let vfs_forked2 = tonk_forked2.vfs();
+
+        // This document should NOT exist in the forked VFS
+        assert!(
+            !vfs_forked2.exists("/outside.txt").await.unwrap(),
+            "/outside.txt should NOT exist in fork"
+        );
     }
 }

@@ -555,6 +555,21 @@ export class TonkCore {
   }
 
   /**
+   * Serialize the Tonk Core /app data to a fresh binary with a new root.
+   *
+   * @param config Optional configuration for bundle export
+   * @returns The serialized bundle data
+   * @throws {TonkError} If serialization fails
+   */
+  async forkToBytes(config?: BundleConfig): Promise<Uint8Array> {
+    try {
+      return await this.#wasm.forkToBytes(config);
+    } catch (error) {
+      throw new TonkError(`Failed to serialize to bundle data: ${error}`);
+    }
+  }
+
+  /**
    * Serialize the Tonk Core to bundle binary data.
    *
    * @param config Optional configuration for bundle export
