@@ -51,3 +51,5 @@ Thumbs.db
 *.tmp
 *.bak
 *.orig
+
+Cargo.lock
