@@ -376,11 +376,6 @@ export class BundleStorageAdapter implements StorageAdapterInterface {
 
     // Create updated manifest
     const manifest: Manifest = {
-      manifestVersion: 1,
-      version: { major: 1, minor: 0 },
-      rootId: this.#manifest.rootId,
-      entrypoints: [],
-      networkUris: [],
       ...this.#manifest,
       ...newManifest,
     };
@@ -390,13 +385,19 @@ export class BundleStorageAdapter implements StorageAdapterInterface {
 
     // Get the first two letters of rootId for the storage folder prefix
     const rootIdPrefix = this.#manifest.rootId.substring(0, 2);
-    // const storageFolderPrefix = `storage/${rootIdPrefix}`;
+    const storageFolderPrefix = `storage/${rootIdPrefix}`;
 
     // Add all files from the storage folder that matches the rootId prefix
     // if (this.#bundleZip) {
-    //   for (const [relativePath, file] of Object.entries(this.#bundleZip.files)) {
+    //   for (const [relativePath, file] of Object.entries(
+    //     this.#bundleZip.files
+    //   )) {
     //     const zipFile = file as JSZip.JSZipObject;
-    //     if (!zipFile.dir && relativePath !== 'manifest.json' && relativePath.startsWith(storageFolderPrefix)) {
+    //     if (
+    //       !zipFile.dir &&
+    //       relativePath !== 'manifest.json' &&
+    //       relativePath.startsWith(storageFolderPrefix)
+    //     ) {
     //       // Check if this file has been updated in memory
     //       if (this.#memoryData.has(relativePath)) {
     //         // Use the updated version from memory
@@ -416,11 +417,11 @@ export class BundleStorageAdapter implements StorageAdapterInterface {
     // }
 
     // Also add any memory-only files that match the storage folder prefix
-    // for (const [keyStr, data] of this.#memoryData.entries()) {
-    //   if (keyStr.startsWith(storageFolderPrefix) && !zip.file(keyStr)) {
-    //     zip.file(keyStr, data);
-    //   }
-    // }
+    for (const [keyStr, data] of this.#memoryData.entries()) {
+      if (keyStr.startsWith(storageFolderPrefix) && !zip.file(keyStr)) {
+        zip.file(keyStr, data);
+      }
+    }
 
     // Generate the slim ZIP bundle
     const bundleBytes = await zip.generateAsync({

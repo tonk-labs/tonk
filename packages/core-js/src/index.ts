@@ -12,6 +12,7 @@ import {
   type DirectoryNode,
   type DocumentTimestamps,
   type BundleEntry,
+  type JsonValue,
 
   // Error classes
   TonkError,
@@ -74,6 +75,7 @@ export {
   type DocumentTimestamps,
   type RefNode,
   type DirectoryNode,
+  type JsonValue,
 
   // Error classes
   TonkError,

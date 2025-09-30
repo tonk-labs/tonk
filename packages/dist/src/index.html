@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Opening portal...</title>
+    <script>
+      // Global state to track if we encountered a 404
+      let invalidPath = false;
+      
+      function updatePageContent() {
+        const body = document.body;
+        if (invalidPath) {
+          body.innerHTML = `
+            <h1>Invalid Path</h1>
+            <p>The requested path was not found (404). Please check the URL and try again.</p>
+            <p><a href="/">Return to home</a></p>
+          `;
+        } else {
+          body.innerHTML = `
+            <h1>Trail-Runner: Booting...</h1>
+            <p>Standby for control of service worker...</p>
+          `;
+        }
+      }
+      
+      async function handleRedirect() {
+        
+        const redirectPath = sessionStorage.getItem("redirectPath")
+        if (redirectPath) {
+          console.log("Checking redirect path:", redirectPath)
+          
+          try {
+            // First try to fetch the redirectPath to see if it exists
+            const response = await fetch(redirectPath, { method: 'HEAD' })
+            
+            if (response.ok) {
+              console.log("Redirecting to:", redirectPath)
+              sessionStorage.removeItem("redirectPath")
+              window.location.href = redirectPath
+            } else if (response.status === 404) {
+              console.log("Redirect path not found (404), staying on current page")
+              invalidPath = true;
+              updatePageContent();
+              sessionStorage.removeItem("redirectPath")
+            } else {
+              console.log("Redirect path returned status:", response.status, "- not redirecting")
+              sessionStorage.removeItem("redirectPath")
+            }
+          } catch (error) {
+            console.log("Error checking redirect path:", error, "- not redirecting")
+            sessionStorage.removeItem("redirectPath")
+          }
+        }
+      }
+      
+      (async () => {
+        if ("serviceWorker" in navigator) {
+          // If we already have a controller, we can redirect immediately
+          if (navigator.serviceWorker.controller) {
+            console.log("Service worker is already controlling the page")
+            await handleRedirect()
+        } else {
+          // Otherwise wait for a controller
+          // Parse bundle parameter from URL and pass it to service worker
+          const urlParams = new URLSearchParams(window.location.search);
+          const bundleParam = urlParams.get('bundle');
+          
+          let serviceWorkerUrl = "./service-worker-bundled.js";
+          if (bundleParam) {
+            serviceWorkerUrl += `?bundle=${encodeURIComponent(bundleParam)}`;
+          }
+          
+          navigator.serviceWorker
+            .register(serviceWorkerUrl, { type: "module" })
+            .catch((err) => {
+                console.log("ServiceWorker registration failed: ", err)
+                document.body.innerHTML = `<h1>Trail-Runner proxy failed to load.</h1>
+                <p>If you're on Firefox, check this <a href="https://caniuse.com/mdn-api_serviceworker_ecmascript_modules">link</a> to see if support is available yet.</p>`
+                handleRedirect()
+              })
+            console.log("Waiting for service worker to take control...")
+            navigator.serviceWorker.addEventListener("controllerchange", async () => {
+              console.log("Service worker now controlling the page")
+              await handleRedirect()
+            })
+            
+            // Listen for messages from service worker to confirm it's working
+            navigator.serviceWorker.addEventListener("message", (event) => {
+              console.log("Main thread received message from service worker:", event.data)
+            })
+            
+            // Test service worker communication after a delay
+            setTimeout(() => {
+              if (navigator.serviceWorker.controller) {
+                console.log("Testing service worker communication...")
+                navigator.serviceWorker.controller.postMessage({ type: "test", message: "Hello from main thread" })
+              }
+            }, 2000)
+
+          }
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <h1>Trail-Runner: Booting...</h1>
+    <p>Standby for control of service worker...</p>
+  </body>
+</html>

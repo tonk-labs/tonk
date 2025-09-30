@@ -5,6 +5,12 @@
     <title>Tonk Host-Web Intercept</title>
     <script>
       sessionStorage.setItem("redirectPath", window.location.href)
+      // Extract and store the slug (first path segment)
+      const pathname = window.location.pathname;
+      const slug = pathname.split('/').filter(Boolean)[0];
+      if (slug) {
+        localStorage.setItem("appSlug", slug);
+      }
       window.location.href = "/"
     </script>
   </head>

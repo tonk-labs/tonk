@@ -5,8 +5,15 @@ import * as ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { getVFSService } from './services/vfs-service';
+import { getUserService } from './services/user-service';
 import * as zustand from 'zustand';
 import { sync } from './middleware';
+import { getAgentService } from './lib/agent/agent-service';
+import { install } from '@twind/core';
+import twConfig from './twind.config';
+
+// Using TWIND to get tailwind
+install(twConfig);
 
 // Make React available globally for hot injection
 (window as any).React = React;
@@ -20,34 +27,62 @@ const container = document.getElementById('root');
 if (!container) throw new Error('Failed to find the root element');
 const root = createRoot(container);
 
-const basename =
-  import.meta.env.VITE_BASE_PATH !== '/'
-    ? import.meta.env.VITE_BASE_PATH?.replace(/\/$/, '')
-    : '';
+const pathSegments = window.location.pathname.split('/');
+const basename = '/latergram/';
+// import.meta.env.VITE_BASE_PATH !== '/'
+//   ? import.meta.env.VITE_BASE_PATH?.replace(/\/$/, '')
+//   : '/latergram/';
 
-const URL = 'localhost:8081';
+const URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8081';
+const URL_LOCATION = URL.replace(/^https?:\/\//, '');
+const manifestUrl = `${URL}/.manifest.tonk`;
+const wsUrl = `ws://${URL_LOCATION}`;
 
 // Initialize VFS for sync middleware
 const initializeVFS = async () => {
   try {
-    console.log('Initializing VFS service...');
+    console.log('🔵 INIT: Starting VFS initialization...');
     const vfs = getVFSService();
-    const manifestUrl = `http://${URL}/.manifest.tonk`;
-    const wsUrl = `ws://${URL}`;
-    // const wsUrl = `ws://localhost:8081`;
     await vfs.initialize(manifestUrl, wsUrl);
-    console.log('VFS service initialized successfully');
+    console.log('✅ INIT: VFS service initialized successfully');
   } catch (error) {
-    console.error('Failed to initialize VFS service:', error);
+    console.error('❌ INIT: Failed to initialize VFS service:', error);
+    throw error; // Re-throw to see if this stops the chain
   }
 };
 
-initializeVFS().then(() => {
-  root.render(
-    <React.StrictMode>
-      <BrowserRouter basename={basename}>
-        <App />
-      </BrowserRouter>
-    </React.StrictMode>
-  );
-});
+// Initialize everything
+const initialize = async () => {
+  try {
+    console.log('🚀 INIT: Starting full initialization...');
+
+    // Initialize VFS first
+    console.log('🔵 INIT: About to initialize VFS...');
+    await initializeVFS();
+    console.log('✅ INIT: VFS initialization completed');
+
+    // Initialize dependents
+    console.log('🔵 INIT: About to initialize user service...');
+    await getUserService().initialize();
+    console.log('✅ INIT: User service initialized');
+
+    console.log('🔵 INIT: About to initialize agent service...');
+    await getAgentService().initialize({ manifestUrl, wsUrl });
+    console.log('✅ INIT: Agent service initialized');
+
+    // Render the app
+    console.log('🔵 INIT: About to render React app...');
+    root.render(
+      <React.StrictMode>
+        <BrowserRouter basename={basename}>
+          <App />
+        </BrowserRouter>
+      </React.StrictMode>
+    );
+    console.log('✅ INIT: React app rendered successfully!');
+  } catch (error) {
+    console.error('💥 INIT: Initialization failed at some point:', error);
+  }
+};
+
+initialize();

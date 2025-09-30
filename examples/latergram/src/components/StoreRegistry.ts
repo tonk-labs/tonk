@@ -6,6 +6,7 @@ export interface StoreMetadata {
   modified: Date;
   status: 'loading' | 'success' | 'error';
   error?: string;
+  source?: string; // Store the TypeScript source code
 }
 
 export interface ProxiedStore {
@@ -30,7 +31,7 @@ class StoreRegistry {
     const storeMetadata: StoreMetadata = {
       id,
       name: metadata?.name || `Store-${id}`,
-      filePath: metadata?.filePath || `/stores/${id}.ts`,
+      filePath: metadata?.filePath || `/src/stores/${id}.ts`,
       created: metadata?.created || now,
       modified: metadata?.modified || now,
       status: 'success',
@@ -49,7 +50,7 @@ class StoreRegistry {
     const metadata: StoreMetadata = {
       id,
       name,
-      filePath: filePath || `/stores/${id}.ts`,
+      filePath: filePath || `/src/stores/${id}.ts`,
       created: new Date(),
       modified: new Date(),
       status: 'loading',
@@ -122,6 +123,14 @@ class StoreRegistry {
 
     this.notifyUpdate(id);
     this.notifyContextUpdate();
+
+    // If the store just became successful, trigger a re-render of components
+    if (status === 'success') {
+      // Notify all components that stores have been updated
+      setTimeout(() => {
+        this.notifyContextUpdate();
+      }, 50);
+    }
   }
 
   onUpdate(id: string, callback: () => void): () => void {

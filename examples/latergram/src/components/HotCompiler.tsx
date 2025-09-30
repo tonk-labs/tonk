@@ -3,6 +3,7 @@ import { Code, AlertCircle, Circle } from 'lucide-react';
 import { componentRegistry } from './ComponentRegistry';
 import { useDebounce } from './hooks/useDebounce';
 import { buildAvailablePackages } from './contextBuilder';
+import { createInlineErrorBoundary } from './errors/createInlineErrorBoundary';
 
 interface CompilationResult {
   success: boolean;
@@ -96,8 +97,10 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
 
         if (existingComponent) {
           componentRegistry.update(componentId, component);
+          // Update the source code in metadata
+          componentRegistry.updateMetadata(componentId, { source: code });
         } else {
-          componentRegistry.register(componentId, component);
+          componentRegistry.register(componentId, component, { source: code });
         }
 
         const endTime = performance.now();
@@ -142,7 +145,15 @@ export const HotCompiler: React.FC<HotCompilerProps> = ({
         throw new Error('Component not registered');
       }
 
-      const element = React.createElement(proxiedComponent.proxy);
+      // Use the shared error boundary creator
+      const HotCompilerErrorBoundary = createInlineErrorBoundary(React, 'HotCompiled Component');
+
+      // Wrap the component with error boundary
+      const element = React.createElement(
+        HotCompilerErrorBoundary,
+        {},
+        React.createElement(proxiedComponent.proxy)
+      );
 
       if (!rootRef.current) {
         if (ReactDOM.createRoot) {

@@ -3,13 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Getting Started</title>
-    <link rel="manifest" href="/manifest.json" />
-    <meta name="theme-color" content="#000000" />
-    <meta name="description" content="A Tonk PWA application" />
-    <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <title>Latergram</title>
+    <meta name="description" content="Latergram - A Tonk" />
     <!-- Development-only script to clean up any existing service workers -->
     <!-- <script> -->
     <!--   // Only run this in development mode -->
@@ -24,10 +19,142 @@
     <!--     } -->
     <!--   } -->
     <!-- </script> -->
+    <style>
+
+      html, body {
+        margin: 0;
+        padding: 0;
+      }
+
+      #initial-loader {
+        left: 0px;
+        right: 0px;
+        height: 100vh;
+        width: 100vw;
+        position: fixed;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: rgb(249 250 251);
+      }
+
+      #initial-loader .loader-container {
+        text-align: center;
+      }
+
+      #initial-loader .loader-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      }
+
+      #initial-loader .logo-container {
+        height: 6rem;
+        width: auto;
+        position: relative;
+        display: inline-block;
+      }
+
+      #initial-loader .logo {
+        height: 6rem;
+        display: block;
+      }
+
+      #initial-loader .rainbow-mask {
+        height: 6rem;
+        width: auto;
+        position: relative;
+        -webkit-mask: url('/logo.svg') no-repeat center;
+        -webkit-mask-size: contain;
+        mask: url('/logo.svg') no-repeat center;
+        mask-size: contain;
+        background: linear-gradient(
+          90deg,
+          #E6C767 0%,
+          #8DBEC8 25%,
+          #A8D8B9 50%,
+          #F4A7A7 75%,
+          #E6C767 100%
+        );
+        background-size: 300% 100%;
+        animation: scroll-rainbow 3s linear infinite;
+      }
+
+      @keyframes scroll-rainbow {
+        0% {
+          background-position: 0% 50%;
+        }
+        100% {
+          background-position: 100% 50%;
+        }
+      }
+
+      #initial-loader .dots-container {
+        display: flex;
+        gap: 1rem;
+        margin-top: 1.5rem;
+        align-items: center;
+        justify-content: center;
+      }
+
+      #initial-loader .dot {
+        width: 1.25rem;
+        height: 1.25rem;
+        border-radius: 50%;
+        animation: bounce 1.4s ease-in-out infinite;
+      }
+
+      #initial-loader .dot:nth-child(1) {
+        background-color: #E6C767; /* Yellow */
+        animation-delay: -0s;
+      }
+
+      #initial-loader .dot:nth-child(2) {
+        background-color: #8DBEC8; /* Blue */
+        animation-delay: -0.35s;
+      }
+
+      #initial-loader .dot:nth-child(3) {
+        background-color: #A8D8B9; /* Green */
+        animation-delay: -0.7s;
+      }
+
+      #initial-loader .dot:nth-child(4) {
+        background-color: #F4A7A7; /* Pink */
+        animation-delay: -1.05s;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+
+      @keyframes bounce {
+        0%, 80%, 100% {
+          transform: translateY(0);
+        }
+        40% {
+          transform: translateY(-20px);
+        }
+      }
+    </style>
   </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- This will be replaced by React, but shows immediately on page load -->
+      <div id="initial-loader">
+        <div class="loader-container">
+          <div class="loader-content">
+            <div class="rainbow-mask">
+              <img src="/logo.svg" class="logo" alt="Tonk Logo" style="visibility: hidden;" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/index.tsx"></script>
   </body>
 </html>

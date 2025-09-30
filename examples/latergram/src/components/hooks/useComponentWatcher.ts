@@ -2,6 +2,8 @@ import { useEffect, useCallback, useRef } from 'react';
 import { getVFSService } from '../../services/vfs-service';
 import { componentRegistry } from '../ComponentRegistry';
 import { buildAvailablePackages } from '../contextBuilder';
+import type { DocumentData } from '@tonk/core';
+import { bytesToString } from '../../utils/vfs-utils';
 
 export interface ComponentWatcherHook {
   watchComponent: (componentId: string, filePath: string) => Promise<void>;
@@ -30,7 +32,8 @@ export function useComponentWatcher(): ComponentWatcherHook {
         });
 
         // Always get fresh context to ensure all available components are included
-        const freshPackages = buildAvailablePackages();
+        // but exclude the current component being compiled to avoid duplicate identifiers
+        const freshPackages = buildAvailablePackages(componentId);
         const contextKeys = Object.keys(freshPackages);
         const contextValues = Object.values(freshPackages);
 
@@ -49,6 +52,8 @@ export function useComponentWatcher(): ComponentWatcherHook {
         const component = moduleFactory(...contextValues);
 
         componentRegistry.update(componentId, component, 'success');
+        // Store the source code in metadata
+        componentRegistry.updateMetadata(componentId, { source: code });
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : 'Compilation failed';
@@ -100,14 +105,18 @@ export function useComponentWatcher(): ComponentWatcherHook {
       }
 
       try {
-        const watchId = await vfs.watchFile(filePath, (content: string) => {
-          compileAndUpdate(componentId, content);
-        });
+        const watchId = await vfs.watchFile(
+          filePath,
+          (content: DocumentData) => {
+            const codeString = bytesToString(content);
+            compileAndUpdate(componentId, codeString);
+          }
+        );
 
         watchersRef.current.set(componentId, watchId);
 
         try {
-          const initialContent = await vfs.readFile(filePath);
+          const initialContent = await vfs.readBytesAsString(filePath);
           await compileAndUpdate(componentId, initialContent);
         } catch (err) {
           console.warn(

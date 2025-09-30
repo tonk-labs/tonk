@@ -1,3 +1,5 @@
+import { createInlineErrorBoundary } from './errors/createInlineErrorBoundary';
+
 export interface ComponentMetadata {
   id: string;
   name: string;
@@ -6,6 +8,7 @@ export interface ComponentMetadata {
   modified: Date;
   status: 'loading' | 'success' | 'error';
   error?: string;
+  source?: string; // Store the TypeScript source code
 }
 
 export interface ProxiedComponent {
@@ -30,7 +33,7 @@ class ComponentRegistry {
     const componentMetadata: ComponentMetadata = {
       id,
       name: metadata?.name || `Component-${id}`,
-      filePath: metadata?.filePath || `/components/${id}.tsx`,
+      filePath: metadata?.filePath || `/src/components/${id}.tsx`,
       created: metadata?.created || now,
       modified: metadata?.modified || now,
       status: 'success',
@@ -49,7 +52,7 @@ class ComponentRegistry {
     const metadata: ComponentMetadata = {
       id,
       name,
-      filePath: filePath || `/components/${id}.tsx`,
+      filePath: filePath || `/src/components/${id}.tsx`,
       created: new Date(),
       modified: new Date(),
       status: 'loading',
@@ -123,7 +126,6 @@ class ComponentRegistry {
 
     this.notifyUpdate(id);
     this.notifyContextUpdate();
-    this.notifyContextUpdate();
   }
 
   onUpdate(id: string, callback: () => void): () => void {
@@ -170,50 +172,26 @@ class ComponentRegistry {
     const ProxyComponent = function (props: any) {
       const React = (window as any).React;
       const [, forceUpdate] = React.useState(0);
-      const [error, setError] = React.useState(null);
 
       React.useEffect(() => {
         const unsubscribe = registry.onUpdate(id, () => {
           forceUpdate((v: number) => v + 1);
-          setError(null);
         });
         return unsubscribe;
       }, []);
 
-      if (error) {
-        return React.createElement(
-          'div',
-          {
-            style: {
-              padding: '20px',
-              backgroundColor: '#fee',
-              border: '1px solid #fcc',
-              borderRadius: '4px',
-              color: '#c00',
-            },
-          },
-          [
-            React.createElement('h3', { key: 'title' }, 'Component Error'),
-            React.createElement(
-              'pre',
-              {
-                key: 'error',
-                style: { marginTop: '10px', fontSize: '12px' },
-              },
-              (error as any).message
-            ),
-          ]
-        );
-      }
+      const current = registry.components.get(id);
+      const Component = current?.original || component;
 
-      try {
-        const current = registry.components.get(id);
-        const Component = current?.original || component;
-        return React.createElement(Component, props);
-      } catch (err) {
-        setError(err as any);
-        return null;
-      }
+      // Use the shared error boundary creator
+      const ErrorBoundaryClass = createInlineErrorBoundary(React, metadata.name);
+
+      // Wrap the component with error boundary
+      return React.createElement(
+        ErrorBoundaryClass,
+        {},
+        React.createElement(Component, props)
+      );
     };
 
     ProxyComponent.displayName = `HotProxy(${component.displayName || component.name || 'Component'})`;
@@ -240,6 +218,12 @@ class ComponentRegistry {
   getComponentByFilePath(filePath: string): ProxiedComponent | undefined {
     return Array.from(this.components.values()).find(
       comp => comp.metadata.filePath === filePath
+    );
+  }
+
+  getComponentByName(name: string): ProxiedComponent | undefined {
+    return Array.from(this.components.values()).find(
+      comp => comp.metadata.name === name
     );
   }
 }

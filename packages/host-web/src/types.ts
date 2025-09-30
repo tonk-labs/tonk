@@ -1,30 +1,35 @@
-// Types for VFS Worker messaging
+import { JsonValue, DocumentData, RefNode } from '@tonk/core';
 
+export type DocumentContent = {
+  content: JsonValue;
+  bytes?: string;
+};
+
+// Message types for VFS Worker communication
 export type VFSWorkerMessage =
-  | { type: 'init'; wsUrl: string }
+  | { type: 'init'; manifest: ArrayBuffer; wsUrl: string }
   | { type: 'readFile'; id: string; path: string }
   | {
       type: 'writeFile';
       id: string;
       path: string;
-      content: string;
-      bytes: string; //base64 encoded string
+      content: DocumentContent;
       create: boolean;
     }
   | { type: 'deleteFile'; id: string; path: string }
   | { type: 'listDirectory'; id: string; path: string }
   | { type: 'exists'; id: string; path: string }
   | { type: 'watchFile'; id: string; path: string }
-  | { type: 'unwatchFile'; id: string };
-
+  | { type: 'unwatchFile'; id: string; path: string }
+  | { type: 'watchDirectory'; id: string; path: string }
+  | { type: 'unwatchDirectory'; id: string; path: string };
 export type VFSWorkerResponse =
-  | { type: 'ready' }
   | { type: 'init'; success: boolean; error?: string }
   | {
       type: 'readFile';
       id: string;
       success: boolean;
-      data?: string;
+      data?: DocumentData;
       error?: string;
     }
   | { type: 'writeFile'; id: string; success: boolean; error?: string }
@@ -33,7 +38,7 @@ export type VFSWorkerResponse =
       type: 'listDirectory';
       id: string;
       success: boolean;
-      data?: any;
+      data?: RefNode[];
       error?: string;
     }
   | {
@@ -45,9 +50,12 @@ export type VFSWorkerResponse =
     }
   | { type: 'watchFile'; id: string; success: boolean; error?: string }
   | { type: 'unwatchFile'; id: string; success: boolean; error?: string }
-  | { type: 'fileChanged'; watchId: string; content: string };
-
-// DocumentWatcher interface
-export interface DocumentWatcher {
-  stop: () => void;
-}
+  | { type: 'fileChanged'; watchId: string; documentData: DocumentData }
+  | { type: 'watchDirectory'; id: string; success: boolean; error?: string }
+  | { type: 'unwatchDirectory'; id: string; success: boolean; error?: string }
+  | {
+      type: 'directoryChanged';
+      watchId: string;
+      path: string;
+      changeData: any;
+    };

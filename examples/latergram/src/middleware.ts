@@ -1,5 +1,6 @@
 import { StateCreator } from 'zustand';
 import { getVFSService } from './services/vfs-service';
+import type { DocumentData } from '@tonk/core';
 
 interface SyncOptions {
   path: string;
@@ -8,19 +9,27 @@ interface SyncOptions {
 export const sync =
   <T extends object>(
     config: StateCreator<T>,
-    options: SyncOptions
+    options?: SyncOptions
   ): StateCreator<T> =>
   (set, get, api) => {
+    // If no options provided, just return the config without sync
+    if (!options || !options.path) {
+      console.warn(
+        'Sync middleware called without path option, skipping sync functionality'
+      );
+      return config(set, get, api);
+    }
+
     console.log(`Sync middleware initializing for path: ${options.path}`);
     const vfs = getVFSService();
     let watchId: string | null = null;
     let isInitialized = false;
 
     // Helper to serialize state for storage
-    const serializeState = (state: T): string => {
+    const serializeState = (state: T): any => {
       // Remove functions and non-serializable values
       const serializable = JSON.parse(JSON.stringify(state));
-      return JSON.stringify(serializable);
+      return serializable;
     };
 
     // Helper to save state to file
@@ -31,10 +40,10 @@ export const sync =
         const content = serializeState(state);
         // Try to update first, create if it doesn't exist
         try {
-          await vfs.writeFile(options.path, content, create);
+          await vfs.writeFile(options.path, { content }, create);
         } catch (error) {
           // If update fails, try creating the file
-          await vfs.writeFile(options.path, content, true);
+          await vfs.writeFile(options.path, { content }, true);
         }
       } catch (error) {
         console.warn(`Error saving state to ${options.path}:`, error);
@@ -48,7 +57,7 @@ export const sync =
       try {
         const content = await vfs.readFile(options.path);
         if (content) {
-          return JSON.parse(content) as Partial<T>;
+          return content.content as Partial<T>;
         }
       } catch (error) {
         // File might not exist yet, that's okay
@@ -64,9 +73,9 @@ export const sync =
       if (!vfs.isInitialized()) return;
 
       try {
-        watchId = await vfs.watchFile(options.path, (content: string) => {
+        watchId = await vfs.watchFile(options.path, (content: DocumentData) => {
           try {
-            const parsedState = JSON.parse(content) as Partial<T>;
+            const parsedState = content.content as Partial<T>;
             // Merge external changes into current state
             const currentState = get();
             const mergedState = { ...currentState, ...parsedState };
