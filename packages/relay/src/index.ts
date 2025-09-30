@@ -1,6 +1,4 @@
 import {
-  AnyDocumentId,
-  DocHandle,
   Repo,
   type RepoConfig,
 } from '@automerge/automerge-repo';

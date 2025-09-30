@@ -1,12 +1,12 @@
 {
-  "name": "server",
+  "name": "@tonk/relay",
   "version": "0.1.0",
-  "description": "Server for Tonk application",
+  "description": "A relay for Tonks",
   "type": "module",
   "main": "src/index.ts",
   "private": true,
   "scripts": {
-    "dev": "tsx watch src/index.ts 8081 blank.tonk",
+    "dev": "tsx watch src/index.ts 8081 dev.tonk",
     "build": "tsc",
     "start": "node dist/index.js"
   },

@@ -1,5 +1,5 @@
 {
-  "name": "host-web",
+  "name": "@tonk/host-web",
   "version": "0.0.1",
   "description": "Host shell to bootstrap a tonk on the web",
   "scripts": {
