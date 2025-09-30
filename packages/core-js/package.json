@@ -35,7 +35,7 @@
     "clean": "rm -rf dist",
     "prebuild": "npm run clean && mkdir -p dist",
     "prepublishOnly": "npm run build",
-    "test": "npm run build && tsx --test test/*.test.ts"
+    "test": "npm run build && node --experimental-strip-types --test test/*.test.ts"
   },
   "repository": {
     "type": "git",

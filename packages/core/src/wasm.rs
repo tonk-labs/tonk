@@ -1,15 +1,15 @@
+use crate::StorageConfig;
 use crate::bundle::{Bundle, BundleConfig, BundlePath};
 use crate::tonk_core::TonkCore;
-use crate::StorageConfig;
 use automerge::AutoSerde;
+use bytes::Bytes;
 use js_sys::{Array, Function, Promise, Uint8Array};
 use serde_wasm_bindgen::Serializer;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
-use bytes::Bytes;
+use wasm_bindgen_futures::{JsFuture, future_to_promise, spawn_local};
 
 #[cfg(feature = "wee_alloc")]
 #[global_allocator]
@@ -148,12 +148,12 @@ impl WasmTonkCore {
         })
     }
 
-    #[wasm_bindgen(js_name = toBytes)]
-    pub fn to_bytes(&self, config: JsValue) -> Promise {
+    #[wasm_bindgen(js_name = forkToBytes)]
+    pub fn fork_to_bytes(&self, config: JsValue) -> Promise {
         let tonk = Arc::clone(&self.tonk);
         future_to_promise(async move {
             let tonk = tonk.lock().await;
-            
+
             // Convert JsValue config to BundleConfig if provided
             let bundle_config = if config.is_undefined() || config.is_null() {
                 None
@@ -166,7 +166,40 @@ impl WasmTonkCore {
                     }
                 }
             };
-            
+
+            match tonk.fork_to_bytes(bundle_config).await {
+                Ok(bytes) => {
+                    let array = Uint8Array::new_with_length(bytes.len() as u32);
+                    array.copy_from(&bytes);
+                    Ok(JsValue::from(array))
+                }
+                Err(e) => {
+                    console_error!("Failed to export TonkCore to bytes: {}", e);
+                    Err(js_error(e))
+                }
+            }
+        })
+    }
+
+    #[wasm_bindgen(js_name = toBytes)]
+    pub fn to_bytes(&self, config: JsValue) -> Promise {
+        let tonk = Arc::clone(&self.tonk);
+        future_to_promise(async move {
+            let tonk = tonk.lock().await;
+
+            // Convert JsValue config to BundleConfig if provided
+            let bundle_config = if config.is_undefined() || config.is_null() {
+                None
+            } else {
+                match serde_wasm_bindgen::from_value::<BundleConfig>(config) {
+                    Ok(config) => Some(config),
+                    Err(e) => {
+                        console_error!("Failed to parse bundle config: {}", e);
+                        return Err(JsValue::from_str(&format!("Invalid bundle config: {}", e)));
+                    }
+                }
+            };
+
             match tonk.to_bytes(bundle_config).await {
                 Ok(bytes) => {
                     let array = Uint8Array::new_with_length(bytes.len() as u32);
@@ -209,8 +242,11 @@ impl WasmTonkCore {
             let vfs = tonk.vfs();
             // Deserialize JsValue to serde_json::Value
             let content_value: serde_json::Value = serde_wasm_bindgen::from_value(content)
-            .map_err(|e| js_error(format!("Invalid content value: {}", e)))?;
-            match vfs.create_document_with_bytes(&path, content_value, bytes_parsed).await {
+                .map_err(|e| js_error(format!("Invalid content value: {}", e)))?;
+            match vfs
+                .create_document_with_bytes(&path, content_value, bytes_parsed)
+                .await
+            {
                 Ok(_) => Ok(JsValue::TRUE),
                 Err(e) => Err(js_error(e)),
             }
@@ -272,7 +308,10 @@ impl WasmTonkCore {
             let content_value: serde_json::Value = serde_wasm_bindgen::from_value(content)
                 .map_err(|e| js_error(format!("Invalid content value: {}", e)))?;
 
-            match vfs.update_document_with_bytes(&path, content_value, bytes_parsed).await {
+            match vfs
+                .update_document_with_bytes(&path, content_value, bytes_parsed)
+                .await
+            {
                 Ok(updated) => Ok(JsValue::from_bool(updated)),
                 Err(e) => Err(js_error(e)),
             }
@@ -315,9 +354,7 @@ impl WasmTonkCore {
             let vfs = tonk.vfs();
 
             match vfs.list_directory(&path).await {
-                Ok(nodes) => {
-                    to_js_value(&nodes)
-                }
+                Ok(nodes) => to_js_value(&nodes),
                 Err(e) => Err(js_error(e)),
             }
         })
@@ -345,9 +382,7 @@ impl WasmTonkCore {
             let vfs = tonk.vfs();
 
             match vfs.metadata(&path).await {
-                Ok(ref_node) => {
-                    Ok(to_js_value(&ref_node)?)
-                }
+                Ok(ref_node) => Ok(to_js_value(&ref_node)?),
                 Err(e) => Err(js_error(e)),
             }
         })
@@ -466,7 +501,6 @@ impl WasmTonkCore {
     }
 }
 
-
 #[wasm_bindgen]
 pub struct WasmBundle {
     bundle: Arc<Mutex<Bundle<Cursor<Vec<u8>>>>>,
@@ -573,7 +607,7 @@ impl WasmBundle {
         let bundle = Arc::clone(&self.bundle);
         future_to_promise(async move {
             let mut bundle = bundle.lock().await;
-            
+
             // Convert JsValue config to BundleConfig
             let bundle_config = if config.is_undefined() || config.is_null() {
                 BundleConfig::default()
@@ -586,7 +620,7 @@ impl WasmBundle {
                     }
                 }
             };
-            
+
             match bundle.set_manifest(bundle_config) {
                 Ok(()) => Ok(JsValue::UNDEFINED),
                 Err(e) => {
