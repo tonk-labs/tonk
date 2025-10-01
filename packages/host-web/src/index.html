@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -692,17 +692,86 @@
 
         // Show loader
         document.getElementById('share-loader').classList.add('active');
+        document.querySelector('.share-loader p').textContent =
+          'Uploading bundle to server...';
 
         try {
-          // Dynamically import QR code library from esm.sh
+          // Step 1: Get bundle bytes from service worker
+          if (!navigator.serviceWorker.controller) {
+            throw new Error('No service worker controller available');
+          }
+
+          const toBytesRequestId = 'to-bytes-' + Date.now();
+
+          const toBytesResponse = await new Promise((resolve, reject) => {
+            const messageHandler = event => {
+              if (
+                event.data &&
+                event.data.type === 'toBytes' &&
+                event.data.id === toBytesRequestId
+              ) {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                resolve(event.data);
+              }
+            };
+
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+
+            navigator.serviceWorker.controller.postMessage({
+              type: 'toBytes',
+              id: toBytesRequestId,
+            });
+
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              reject(new Error('Timeout waiting for toBytes response'));
+            }, 30000);
+          });
+
+          if (!toBytesResponse.success || !toBytesResponse.data) {
+            throw new Error(
+              toBytesResponse.error || 'Failed to get bundle bytes'
+            );
+          }
+
+          // Step 2: Upload bundle to server
+          const serverUrl = getServerBaseUrl();
+          const uploadResponse = await fetch(`${serverUrl}/api/bundles`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/octet-stream',
+            },
+            body: toBytesResponse.data,
+          });
+
+          if (!uploadResponse.ok) {
+            const errorData = await uploadResponse.json().catch(() => ({}));
+            throw new Error(
+              errorData.error || `Upload failed: ${uploadResponse.statusText}`
+            );
+          }
+
+          const uploadData = await uploadResponse.json();
+          const bundleId = uploadData.id;
+
+          // Step 3: Generate shareable URL with bundle ID
+          const baseUrl = window.location.origin + window.location.pathname;
+          const shareUrl = `${baseUrl}?b=${bundleId}`;
+
+          console.log('Bundle uploaded successfully, share URL:', shareUrl);
+
+          // Step 4: Generate QR code
+          document.querySelector('.share-loader p').textContent =
+            'Generating QR code...';
+
           const QRCode = await import('https://esm.sh/qrcode@1.5.3');
-
-          // Wait 1 second for visual feedback
-          await new Promise(resolve => setTimeout(resolve, 1000));
-
-          // Generate QR code with current URL
-          const currentUrl = window.location.href;
-          const qrDataUrl = await QRCode.toDataURL(currentUrl, {
+          const qrDataUrl = await QRCode.toDataURL(shareUrl, {
             width: 200,
             margin: 2,
             color: {
@@ -717,10 +786,19 @@
           // Hide loader
           document.getElementById('share-loader').classList.remove('active');
 
-          // Show QR code
+          // Show QR code with URL
+          document.getElementById('qr-code-container').innerHTML = `
+            <img src="${qrDataUrl}" class="qr-code-image" alt="QR Code" />
+            <div style="color: #999; margin-bottom: 15px">Scan to access Tonk</div>
+            <div style="background: #333; padding: 10px; margin-bottom: 15px; word-break: break-all; font-size: 12px; color: #ddd;">
+              ${shareUrl}
+            </div>
+            <button class="btn primary" onclick="navigator.clipboard.writeText('${shareUrl}').then(() => alert('URL copied to clipboard!')).catch(() => alert('Failed to copy URL'))" style="width: 100%; margin-bottom: 10px;">Copy URL</button>
+            <button class="btn" onclick="closeShareDialog()" style="width: 100%;">Close</button>
+          `;
           document.getElementById('qr-code-container').classList.add('active');
         } catch (error) {
-          console.error('Failed to generate QR code:', error);
+          console.error('Failed to share as URL:', error);
 
           // Hide loader
           document.getElementById('share-loader').classList.remove('active');
@@ -728,7 +806,7 @@
           // Show error in dialog
           document.getElementById('share-options-view').innerHTML = `
             <div style="color: #f00; margin-bottom: 15px;">
-              Failed to generate QR code. No internet connection or library failed to load.
+              Failed to upload bundle: ${error.message}
             </div>
             <button class="btn" onclick="closeShareDialog(); showShareDialog();" style="width: 100%;">Try Again</button>
             <button class="btn" onclick="closeShareDialog()" style="width: 100%; margin-top: 10px;">Close</button>
@@ -2051,23 +2129,48 @@
         }
       }
 
+      // Get server base URL from environment or use default
+      function getServerBaseUrl() {
+        // You can set this via build-time environment variable or detect from current URL
+        return window.TONK_SERVER_URL || 'http://localhost:8080';
+      }
+
+      // Resolve bundle parameter to full manifest URL
+      function resolveBundleUrl(bundleParam) {
+        // If it looks like a full URL, use it directly
+        if (
+          bundleParam.startsWith('http://') ||
+          bundleParam.startsWith('https://')
+        ) {
+          return bundleParam;
+        }
+
+        // Otherwise, treat it as a bundle ID and resolve to manifest URL
+        const serverUrl = getServerBaseUrl();
+        return `${serverUrl}/api/bundles/${bundleParam}/manifest`;
+      }
+
       // Initialize BIOS boot manager
       async function initializeBios() {
-        // Check for bundle URL parameter
+        // Check for bundle URL parameter (supports both 'bundle' and 'b')
         const urlParams = new URLSearchParams(window.location.search);
-        const bundleUrl = urlParams.get('bundle');
+        const bundleParam = urlParams.get('bundle') || urlParams.get('b');
 
         // Wait for service worker to be ready
         await waitForServiceWorkerReady();
 
-        if (bundleUrl) {
+        if (bundleParam) {
           // Scenario A: URL parameter provided - load from URL
-          showLoadingScreen('Loading bundle from URL...');
+          showLoadingScreen('Loading bundle...');
 
           try {
             if (!navigator.serviceWorker.controller) {
               throw new Error('No service worker controller available');
             }
+
+            // Resolve bundle parameter to full manifest URL
+            const manifestUrl = resolveBundleUrl(bundleParam);
+            console.log('Resolved bundle URL:', manifestUrl);
 
             const requestId = 'init-url-' + Date.now();
 
@@ -2096,7 +2199,7 @@
               navigator.serviceWorker.controller.postMessage({
                 type: 'initializeFromUrl',
                 id: requestId,
-                manifestUrl: bundleUrl,
+                manifestUrl: manifestUrl,
                 // Could add wasmUrl and wsUrl params here if needed
               });
 
@@ -2111,14 +2214,14 @@
             });
 
             if (response.success) {
-              console.log('Bundle loaded successfully from URL');
+              console.log('Bundle loaded successfully');
               await proceedToBiosMenu();
             } else {
-              console.error('Failed to load bundle from URL:', response.error);
+              console.error('Failed to load bundle:', response.error);
               showError(`Failed to load bundle: ${response.error}`);
             }
           } catch (error) {
-            console.error('Error loading bundle from URL:', error);
+            console.error('Error loading bundle:', error);
             showError(`Error loading bundle: ${error.message}`);
           }
         } else {

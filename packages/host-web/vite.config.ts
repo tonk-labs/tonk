@@ -26,6 +26,9 @@ export default defineConfig({
   define: {
     'process.env': {},
     global: 'globalThis',
+    'window.TONK_SERVER_URL': JSON.stringify(
+      process.env.VITE_TONK_SERVER_URL || 'http://localhost:8080'
+    ),
   },
   resolve: {
     alias: {
