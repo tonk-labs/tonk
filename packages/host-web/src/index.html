@@ -192,6 +192,97 @@
       .overlay.active {
         display: block;
       }
+      
+      .share-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #000;
+        border: 2px solid #666;
+        padding: 20px;
+        min-width: 400px;
+        display: none;
+        z-index: 1000;
+      }
+      
+      .share-dialog.active {
+        display: block;
+      }
+      
+      .share-title {
+        color: #fff;
+        margin-bottom: 15px;
+        font-size: 14px;
+      }
+      
+      .share-options {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      
+      .share-loader {
+        display: none;
+        text-align: center;
+        padding: 20px;
+      }
+      
+      .share-loader.active {
+        display: block;
+      }
+      
+      .spinner {
+        border: 4px solid #333;
+        border-top: 4px solid #fff;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 10px;
+      }
+      
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      
+      .qr-code-container {
+        display: none;
+        text-align: center;
+        padding: 20px;
+      }
+      
+      .qr-code-container.active {
+        display: block;
+      }
+      
+      .qr-code-image {
+        width: 200px;
+        height: 200px;
+        margin: 0 auto 15px;
+        background: #fff;
+        padding: 10px;
+        display: block;
+      }
+      
+      .download-spinner-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #000;
+        border: 2px solid #666;
+        padding: 30px;
+        min-width: 300px;
+        display: none;
+        z-index: 1001;
+        text-align: center;
+      }
+      
+      .download-spinner-dialog.active {
+        display: block;
+      }
     </style>
     <script>
       // BIOS Boot Manager State
@@ -355,6 +446,107 @@
         isConfirmationOpen = false;
       }
       
+      // Show share dialog
+      function showShareDialog() {
+        document.getElementById('share-dialog').classList.add('active');
+        document.getElementById('overlay').classList.add('active');
+        
+        // Reset to options view
+        document.getElementById('share-options-view').style.display = 'block';
+        document.getElementById('share-loader').classList.remove('active');
+        document.getElementById('qr-code-container').classList.remove('active');
+      }
+      
+      // Close share dialog
+      function closeShareDialog() {
+        document.getElementById('share-dialog').classList.remove('active');
+        document.getElementById('overlay').classList.remove('active');
+      }
+      
+      // Handle share as URL
+      async function shareAsUrl() {
+        // Hide options
+        document.getElementById('share-options-view').style.display = 'none';
+        
+        // Show loader
+        document.getElementById('share-loader').classList.add('active');
+        
+        try {
+          // Dynamically import QR code library from esm.sh
+          const QRCode = await import('https://esm.sh/qrcode@1.5.3');
+          
+          // Wait 1 second for visual feedback
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          // Generate QR code with current URL
+          const currentUrl = window.location.href;
+          const qrDataUrl = await QRCode.toDataURL(currentUrl, {
+            width: 200,
+            margin: 2,
+            color: {
+              dark: '#000000',
+              light: '#ffffff'
+            }
+          });
+          
+          // Update the QR code image
+          document.getElementById('qr-code-image').src = qrDataUrl;
+          
+          // Hide loader
+          document.getElementById('share-loader').classList.remove('active');
+          
+          // Show QR code
+          document.getElementById('qr-code-container').classList.add('active');
+        } catch (error) {
+          console.error('Failed to generate QR code:', error);
+          
+          // Hide loader
+          document.getElementById('share-loader').classList.remove('active');
+          
+          // Show error in dialog
+          document.getElementById('share-options-view').innerHTML = `
+            <div style="color: #f00; margin-bottom: 15px;">
+              Failed to generate QR code. No internet connection or library failed to load.
+            </div>
+            <button class="btn" onclick="closeShareDialog(); showShareDialog();" style="width: 100%;">Try Again</button>
+            <button class="btn" onclick="closeShareDialog()" style="width: 100%; margin-top: 10px;">Close</button>
+          `;
+          document.getElementById('share-options-view').style.display = 'block';
+        }
+      }
+      
+      // Show download spinner
+      function showDownloadSpinner() {
+        document.getElementById('download-spinner-dialog').classList.add('active');
+        document.getElementById('overlay').classList.add('active');
+      }
+      
+      // Hide download spinner
+      function hideDownloadSpinner() {
+        document.getElementById('download-spinner-dialog').classList.remove('active');
+        // Only remove overlay if share dialog is also closed
+        if (!document.getElementById('share-dialog').classList.contains('active')) {
+          document.getElementById('overlay').classList.remove('active');
+        }
+      }
+      
+      // Handle share as file (download)
+      async function shareAsFile() {
+        // Close the share dialog
+        closeShareDialog();
+        
+        // Show download spinner
+        showDownloadSpinner();
+        
+        // Call the existing download function
+        try {
+          await downloadTonk();
+        } finally {
+          // Hide spinner after download completes or fails
+          hideDownloadSpinner();
+        }
+      }
+      
       // Download Tonk
       async function downloadTonk() {
         console.log('Downloading tonk bundle...');
@@ -420,6 +612,9 @@
       async function newTonk() {
         console.log('Creating new forked tonk bundle...');
         
+        // Show download spinner
+        showDownloadSpinner();
+        
         try {
           if (!navigator.serviceWorker.controller) {
             throw new Error('No service worker controller available');
@@ -474,6 +669,9 @@
         } catch (error) {
           console.error('Error creating forked tonk bundle:', error);
           showError(`Error creating forked bundle: ${error.message}`);
+        } finally {
+          // Hide spinner after download completes or fails
+          hideDownloadSpinner();
         }
       }
       
@@ -851,8 +1049,8 @@
         </div>
         
         <div style="margin-top: 20px;">
-          <button class="btn primary" onclick="downloadTonk()" style="font-size: 16px; padding: 10px 20px; margin-right: 10px;">
-            Download Tonk
+          <button class="btn primary" onclick="showShareDialog()" style="font-size: 16px; padding: 10px 20px; margin-right: 10px;">
+            Share Tonk
           </button>
           <button class="btn primary" onclick="newTonk()" style="font-size: 16px; padding: 10px 20px;">
             New Tonk
@@ -893,6 +1091,36 @@
         <button class="btn primary" id="confirm-yes">Yes</button>
         <button class="btn" id="confirm-no">No</button>
       </div>
+    </div>
+    
+    <div class="share-dialog" id="share-dialog">
+      <div class="share-title">Share Tonk</div>
+      
+      <div id="share-options-view">
+        <div class="share-options">
+          <button class="btn primary" onclick="shareAsFile()" style="width: 100%;">Share as File</button>
+          <button class="btn primary" onclick="shareAsUrl()" style="width: 100%;">Share as URL</button>
+        </div>
+        <div style="margin-top: 15px;">
+          <button class="btn" onclick="closeShareDialog()" style="width: 100%;">Cancel</button>
+        </div>
+      </div>
+      
+      <div class="share-loader" id="share-loader">
+        <div class="spinner"></div>
+        <div style="color: #999;">Generating URL...</div>
+      </div>
+      
+      <div class="qr-code-container" id="qr-code-container">
+        <img id="qr-code-image" class="qr-code-image" alt="QR Code" />
+        <div style="color: #999; margin-bottom: 15px;">Scan to access Tonk</div>
+        <button class="btn" onclick="closeShareDialog()" style="width: 100%;">Close</button>
+      </div>
+    </div>
+    
+    <div class="download-spinner-dialog" id="download-spinner-dialog">
+      <div class="spinner"></div>
+      <div style="color: #999; margin-top: 15px;">Preparing download...</div>
     </div>
   </body>
 </html>
