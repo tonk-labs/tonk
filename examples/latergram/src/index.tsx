@@ -28,10 +28,9 @@ if (!container) throw new Error('Failed to find the root element');
 const root = createRoot(container);
 
 const pathSegments = window.location.pathname.split('/');
-const basename = '/latergram/';
-// import.meta.env.VITE_BASE_PATH !== '/'
-//   ? import.meta.env.VITE_BASE_PATH?.replace(/\/$/, '')
-//   : '/latergram/';
+// check to see if appSlug exists, this should be the basename
+const slug = localStorage.getItem('appSlug');
+const basename = slug !== null ? `/${slug}/` : '';
 
 const URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8081';
 const URL_LOCATION = URL.replace(/^https?:\/\//, '');

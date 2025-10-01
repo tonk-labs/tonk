@@ -49,6 +49,12 @@
         padding: 15px;
         margin-bottom: 20px;
         min-height: 400px;
+        transition: border-color 0.2s ease;
+      }
+      
+      .boot-menu.drag-over {
+        border-color: #0f0;
+        background: rgba(0, 255, 0, 0.1);
       }
       
       .boot-menu-title {
@@ -165,6 +171,7 @@
       .btn.primary {
         background: #fff;
         color: #000;
+        font-weight: 600;
       }
       
       .btn.primary:hover {
@@ -337,6 +344,248 @@
         isConfirmationOpen = false;
       }
       
+      // Download Tonk
+      async function downloadTonk() {
+        console.log('Downloading tonk bundle...');
+        
+        try {
+          if (!navigator.serviceWorker.controller) {
+            throw new Error('No service worker controller available');
+          }
+          
+          const requestId = 'to-bytes-' + Date.now();
+          
+          // Set up response handler
+          const response = await new Promise((resolve, reject) => {
+            const messageHandler = (event) => {
+              if (event.data && event.data.type === 'toBytes' && event.data.id === requestId) {
+                navigator.serviceWorker.removeEventListener('message', messageHandler);
+                resolve(event.data);
+              }
+            };
+            
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+            
+            // Send the toBytes message
+            navigator.serviceWorker.controller.postMessage({
+              type: 'toBytes',
+              id: requestId
+            });
+            
+            // Timeout after 30 seconds
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener('message', messageHandler);
+              reject(new Error('Timeout waiting for toBytes response'));
+            }, 30000);
+          });
+          
+          if (response.success && response.data) {
+            // Create a Blob from the Uint8Array
+            const blob = new Blob([response.data], { type: 'application/octet-stream' });
+            
+            // Create a download link
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${response.rootId}.tonk`;
+            document.body.appendChild(a);
+            a.click();
+            
+            // Clean up
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+          } else {
+            console.error('Failed to get bundle bytes:', response.error);
+            showError(`Failed to download bundle: ${response.error}`);
+          }
+        } catch (error) {
+          console.error('Error downloading tonk bundle:', error);
+          showError(`Error downloading bundle: ${error.message}`);
+        }
+      }
+      
+      // New Tonk
+      async function newTonk() {
+        console.log('Creating new forked tonk bundle...');
+        
+        try {
+          if (!navigator.serviceWorker.controller) {
+            throw new Error('No service worker controller available');
+          }
+          
+          const requestId = 'fork-to-bytes-' + Date.now();
+          
+          // Set up response handler
+          const response = await new Promise((resolve, reject) => {
+            const messageHandler = (event) => {
+              if (event.data && event.data.type === 'forkToBytes' && event.data.id === requestId) {
+                navigator.serviceWorker.removeEventListener('message', messageHandler);
+                resolve(event.data);
+              }
+            };
+            
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+            
+            // Send the forkToBytes message
+            navigator.serviceWorker.controller.postMessage({
+              type: 'forkToBytes',
+              id: requestId
+            });
+            
+            // Timeout after 30 seconds
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener('message', messageHandler);
+              reject(new Error('Timeout waiting for forkToBytes response'));
+            }, 30000);
+          });
+          
+          if (response.success && response.data) {
+            // Create a Blob from the Uint8Array
+            const blob = new Blob([response.data], { type: 'application/octet-stream' });
+            
+            // Create a download link
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${response.rootId}.tonk`;
+            document.body.appendChild(a);
+            a.click();
+            
+            // Clean up
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+          } else {
+            console.error('Failed to get forked bundle bytes:', response.error);
+            showError(`Failed to create forked bundle: ${response.error}`);
+          }
+        } catch (error) {
+          console.error('Error creating forked tonk bundle:', error);
+          showError(`Error creating forked bundle: ${error.message}`);
+        }
+      }
+      
+      // Drag and drop handlers
+      function setupDragAndDrop() {
+        const bootMenu = document.querySelector('.boot-menu');
+        
+        // Prevent default drag behaviors
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+          bootMenu.addEventListener(eventName, preventDefaults, false);
+          document.body.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        // Highlight drop area when item is dragged over it
+        ['dragenter', 'dragover'].forEach(eventName => {
+          bootMenu.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+          bootMenu.addEventListener(eventName, unhighlight, false);
+        });
+        
+        // Handle dropped files
+        bootMenu.addEventListener('drop', handleDrop, false);
+      }
+      
+      function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      
+      function highlight(e) {
+        document.querySelector('.boot-menu').classList.add('drag-over');
+      }
+      
+      function unhighlight(e) {
+        document.querySelector('.boot-menu').classList.remove('drag-over');
+      }
+      
+      async function handleDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        
+        if (files.length === 0) return;
+        
+        // Filter for .tonk files
+        const tonkFiles = Array.from(files).filter(file => 
+          file.name.toLowerCase().endsWith('.tonk')
+        );
+        
+        if (tonkFiles.length === 0) {
+          showError('Please drop only .tonk files');
+          return;
+        }
+        
+        // Process each .tonk file
+        for (const file of tonkFiles) {
+          await processTonkFile(file);
+        }
+        
+        // Refresh the app list
+        availableApps = await queryAvailableApps();
+        renderAppList();
+      }
+      
+      async function processTonkFile(file) {
+        console.log('Processing .tonk file:', file.name);
+        
+        try {
+          // Read the file as ArrayBuffer
+          const arrayBuffer = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = e => resolve(e.target.result);
+            reader.onerror = e => reject(e);
+            reader.readAsArrayBuffer(file);
+          });
+          
+          console.log('File read as ArrayBuffer, size:', arrayBuffer.byteLength);
+          
+          // Send loadBundle message to service worker
+          if (!navigator.serviceWorker.controller) {
+            throw new Error('No service worker controller available');
+          }
+          
+          const requestId = 'load-bundle-' + Date.now();
+          
+          // Set up response handler
+          const response = await new Promise((resolve, reject) => {
+            const messageHandler = (event) => {
+              if (event.data && event.data.type === 'loadBundle' && event.data.id === requestId) {
+                navigator.serviceWorker.removeEventListener('message', messageHandler);
+                resolve(event.data);
+              }
+            };
+            
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+            
+            // Send the loadBundle message
+            navigator.serviceWorker.controller.postMessage({
+              type: 'loadBundle',
+              id: requestId,
+              bundleBytes: arrayBuffer
+            });
+            
+            // Timeout after 30 seconds
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener('message', messageHandler);
+              reject(new Error('Timeout waiting for loadBundle response'));
+            }, 30000);
+          });
+          
+          if (response.success) {
+            console.log('Bundle loaded successfully:', file.name);
+          } else {
+            console.error('Failed to load bundle:', response.error);
+            showError(`Failed to load bundle: ${response.error}`);
+          }
+        } catch (error) {
+          console.error('Error processing tonk file:', error);
+          showError(`Error processing ${file.name}: ${error.message}`);
+        }
+      }
+      
       // Query available apps from service worker using standard messaging
       async function queryAvailableApps() {
         return new Promise((resolve, reject) => {
@@ -471,6 +720,9 @@
         document.getElementById('confirm-yes').addEventListener('click', confirmBoot);
         document.getElementById('confirm-no').addEventListener('click', cancelBoot);
         
+        // Set up drag and drop
+        setupDragAndDrop();
+        
         // Handle app list clicks
         document.getElementById('app-list').addEventListener('click', (e) => {
           const appItem = e.target.closest('.app-item');
@@ -543,6 +795,17 @@
         <div class="instructions">
           Use the ↑ and ↓ keys to select which entry is highlighted.<br>
           Press enter to boot the selected application<br>
+          <br>
+          Drag a .tonk file onto the applications box to load it.
+        </div>
+        
+        <div style="margin-top: 20px;">
+          <button class="btn primary" onclick="downloadTonk()" style="font-size: 16px; padding: 10px 20px; margin-right: 10px;">
+            Download Tonk
+          </button>
+          <button class="btn primary" onclick="newTonk()" style="font-size: 16px; padding: 10px 20px;">
+            New Tonk
+          </button>
         </div>
       </div>
       

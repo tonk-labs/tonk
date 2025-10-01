@@ -1,7 +1,4 @@
-import {
-  Repo,
-  type RepoConfig,
-} from '@automerge/automerge-repo';
+import { Repo, type RepoConfig } from '@automerge/automerge-repo';
 import { NodeWSServerAdapter } from '@automerge/automerge-repo-network-websocket';
 import cors from 'cors';
 import express from 'express';
@@ -73,7 +70,6 @@ class Server {
         const __dirname = dirname(__filename);
         const wasmPath = join(
           __dirname,
-          '..',
           '..',
           '..',
           '..',

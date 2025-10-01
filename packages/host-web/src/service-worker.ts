@@ -875,6 +875,146 @@ async function handleMessage(
         });
       }
       break;
+
+    case 'toBytes':
+      log('info', 'Converting tonk to bytes', { id: message.id });
+      try {
+        const { tonk, manifest } = getTonk()!;
+        const bytes = await tonk.toBytes();
+        const rootId = manifest.rootId;
+        log('info', 'Tonk converted to bytes successfully', {
+          id: message.id,
+          byteLength: bytes.length,
+          rootId,
+          manifestKeys: Object.keys(manifest),
+        });
+        postResponse({
+          type: 'toBytes',
+          id: message.id,
+          success: true,
+          data: bytes,
+          rootId,
+        });
+      } catch (error) {
+        log('error', 'Failed to convert tonk to bytes', {
+          id: message.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'toBytes',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'forkToBytes':
+      log('info', 'Forking tonk to bytes', { id: message.id });
+      try {
+        const { tonk } = getTonk()!;
+        const bytes = await tonk.forkToBytes();
+
+        // Create a new bundle from the forked bytes to get the new rootId
+        const forkedBundle = await Bundle.fromBytes(bytes);
+        const forkedManifest = await forkedBundle.getManifest();
+        const rootId = forkedManifest.rootId;
+
+        log('info', 'Tonk forked to bytes successfully', {
+          id: message.id,
+          byteLength: bytes.length,
+          rootId,
+          manifestKeys: Object.keys(forkedManifest),
+        });
+        postResponse({
+          type: 'forkToBytes',
+          id: message.id,
+          success: true,
+          data: bytes,
+          rootId,
+        });
+      } catch (error) {
+        log('error', 'Failed to fork tonk to bytes', {
+          id: message.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'forkToBytes',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'loadBundle':
+      log('info', 'Loading new bundle', {
+        id: message.id,
+        byteLength: message.bundleBytes.byteLength,
+      });
+      try {
+        // Convert ArrayBuffer to Uint8Array
+        const bundleBytes = new Uint8Array(message.bundleBytes);
+        log('info', 'Creating bundle from bytes', {
+          byteLength: bundleBytes.length,
+        });
+
+        // Create new bundle and manifest
+        const bundle = await Bundle.fromBytes(bundleBytes);
+        const manifest = await bundle.getManifest();
+        log('info', 'Bundle and manifest created successfully');
+
+        // Create new TonkCore instance
+        log('info', 'Creating new TonkCore from bundle bytes');
+        const newTonk = await TonkCore.fromBytes(bundleBytes);
+        log('info', 'New TonkCore created successfully');
+
+        // Get the websocket URL from the current config
+        const urlParams = new URLSearchParams(self.location.search);
+        const bundleParam = urlParams.get('bundle');
+        let wsUrl = 'ws://localhost:8081';
+
+        if (bundleParam) {
+          try {
+            const decoded = atob(bundleParam);
+            const bundleConfig = JSON.parse(decoded);
+            if (bundleConfig.wsUrl) {
+              wsUrl = bundleConfig.wsUrl;
+            }
+          } catch (error) {
+            log('warn', 'Could not parse bundle config for wsUrl', {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
+        // Connect to websocket
+        log('info', 'Connecting new tonk to websocket', { wsUrl });
+        await newTonk.connectWebsocket(wsUrl);
+        log('info', 'Websocket connection established');
+
+        // Update the global tonk state
+        tonkState = { status: 'ready', tonk: newTonk, manifest };
+        log('info', 'Tonk state updated with new instance');
+
+        postResponse({
+          type: 'loadBundle',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to load bundle', {
+          id: message.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'loadBundle',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
   }
 }
 
