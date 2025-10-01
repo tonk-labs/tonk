@@ -663,4 +663,15 @@ impl AutomergeHelpers {
             Ok(found)
         })
     }
+
+    /// Update the name field of a document or directory
+    pub fn update_document_name(handle: &DocHandle, new_name: &str) -> Result<()> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "name", new_name)?;
+            Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+            tx.commit();
+            Ok(())
+        })
+    }
 }

@@ -565,6 +565,359 @@ describe('TonkCore', () => {
     }
   });
 
+  test('should rename files successfully', async () => {
+    // Create a test file
+    const content = { message: 'Hello, World!', count: 42 };
+    await tonk.createFile('/original-file.txt', content);
+
+    // Verify file exists at original location
+    assert.ok(
+      await tonk.exists('/original-file.txt'),
+      'Original file should exist'
+    );
+    assert.ok(
+      !(await tonk.exists('/renamed-file.txt')),
+      'New file should not exist yet'
+    );
+
+    // Rename the file
+    const result = await tonk.rename('/original-file.txt', '/renamed-file.txt');
+    assert.strictEqual(
+      result,
+      true,
+      'Rename should return true for successful operation'
+    );
+
+    // Verify file no longer exists at original location
+    assert.ok(
+      !(await tonk.exists('/original-file.txt')),
+      'Original file should no longer exist'
+    );
+    assert.ok(
+      await tonk.exists('/renamed-file.txt'),
+      'File should exist at new location'
+    );
+
+    // Verify content is preserved
+    const renamedFile = await tonk.readFile('/renamed-file.txt');
+    assert.deepStrictEqual(
+      renamedFile.content,
+      content,
+      'Content should be preserved after rename'
+    );
+    assert.strictEqual(
+      renamedFile.name,
+      'renamed-file.txt',
+      'Name should be updated'
+    );
+  });
+
+  test('should rename directories successfully', async () => {
+    // Create a test directory with files
+    await tonk.createDirectory('/original-dir');
+    await tonk.createFile('/original-dir/file1.txt', { content: 'File 1' });
+    await tonk.createFile('/original-dir/file2.json', { data: [1, 2, 3] });
+    await tonk.createDirectory('/original-dir/subdir');
+    await tonk.createFile('/original-dir/subdir/nested.txt', { nested: true });
+
+    // Verify directory exists at original location
+    assert.ok(
+      await tonk.exists('/original-dir'),
+      'Original directory should exist'
+    );
+    assert.ok(
+      !(await tonk.exists('/renamed-dir')),
+      'New directory should not exist yet'
+    );
+
+    // Rename the directory
+    const result = await tonk.rename('/original-dir', '/renamed-dir');
+    assert.strictEqual(
+      result,
+      true,
+      'Rename should return true for successful operation'
+    );
+
+    // Verify directory no longer exists at original location
+    assert.ok(
+      !(await tonk.exists('/original-dir')),
+      'Original directory should no longer exist'
+    );
+    assert.ok(
+      await tonk.exists('/renamed-dir'),
+      'Directory should exist at new location'
+    );
+
+    // Verify all nested files are accessible at new location
+    const file1 = await tonk.readFile('/renamed-dir/file1.txt');
+    assert.deepStrictEqual(
+      file1.content,
+      { content: 'File 1' },
+      'Nested file 1 should be accessible'
+    );
+
+    const file2 = await tonk.readFile('/renamed-dir/file2.json');
+    assert.deepStrictEqual(
+      file2.content,
+      { data: [1, 2, 3] },
+      'Nested file 2 should be accessible'
+    );
+
+    const nestedFile = await tonk.readFile('/renamed-dir/subdir/nested.txt');
+    assert.deepStrictEqual(
+      nestedFile.content,
+      { nested: true },
+      'Deeply nested file should be accessible'
+    );
+
+    // Verify old paths no longer work
+    try {
+      await tonk.readFile('/original-dir/file1.txt');
+      assert.fail('Should not be able to read from old path');
+    } catch (error) {
+      assert.ok(
+        error instanceof FileSystemError,
+        'Should throw FileSystemError for old path'
+      );
+    }
+  });
+
+  test('should rename files with bytes successfully', async () => {
+    // Create a file with bytes
+    const content = { mime: 'image/png', description: 'Test image' };
+    await tonk.createFileWithBytes('/original-image.png', content, pngBytes);
+
+    // Verify file exists at original location
+    assert.ok(
+      await tonk.exists('/original-image.png'),
+      'Original file should exist'
+    );
+
+    // Rename the file
+    const result = await tonk.rename(
+      '/original-image.png',
+      '/renamed-image.png'
+    );
+    assert.strictEqual(
+      result,
+      true,
+      'Rename should return true for successful operation'
+    );
+
+    // Verify file exists at new location and bytes are preserved
+    const renamedFile = await tonk.readFile('/renamed-image.png');
+    assert.deepStrictEqual(
+      renamedFile.content,
+      content,
+      'Content should be preserved'
+    );
+    assert.strictEqual(
+      renamedFile.name,
+      'renamed-image.png',
+      'Name should be updated'
+    );
+    assert.ok(renamedFile.bytes, 'Bytes should be preserved');
+
+    // Verify bytes are correct
+    const retrievedBytes = new Uint8Array(
+      Buffer.from(renamedFile.bytes!, 'base64')
+    );
+    assert.deepStrictEqual(
+      retrievedBytes,
+      pngBytes,
+      'Bytes should match original'
+    );
+  });
+
+  test('should throw error when trying to rename non-existent file', async () => {
+    // Try to rename a file that doesn't exist
+    try {
+      await tonk.rename('/non-existent-file.txt', '/new-name.txt');
+      assert.fail('Should throw error for non-existent file');
+    } catch (error) {
+      assert.ok(
+        error instanceof FileSystemError,
+        'Should throw FileSystemError'
+      );
+      assert.ok(
+        error.message.includes('Path not found'),
+        'Error message should mention path not found'
+      );
+    }
+
+    // Verify target file was not created
+    assert.ok(
+      !(await tonk.exists('/new-name.txt')),
+      'Target file should not be created'
+    );
+  });
+
+  test('should throw error when trying to rename non-existent directory', async () => {
+    // Try to rename a directory that doesn't exist
+    try {
+      await tonk.rename('/non-existent-dir', '/new-dir');
+      assert.fail('Should throw error for non-existent directory');
+    } catch (error) {
+      assert.ok(
+        error instanceof FileSystemError,
+        'Should throw FileSystemError'
+      );
+      assert.ok(
+        error.message.includes('Path not found'),
+        'Error message should mention path not found'
+      );
+    }
+
+    // Verify target directory was not created
+    assert.ok(
+      !(await tonk.exists('/new-dir')),
+      'Target directory should not be created'
+    );
+  });
+
+  test('should throw error when trying to rename to existing file', async () => {
+    // Create two files
+    await tonk.createFile('/file1.txt', { content: 'File 1' });
+    await tonk.createFile('/file2.txt', { content: 'File 2' });
+
+    // Try to rename file1 to file2 (which already exists)
+    try {
+      await tonk.rename('/file1.txt', '/file2.txt');
+      assert.fail('Should throw error when renaming to existing file');
+    } catch (error) {
+      assert.ok(
+        error instanceof FileSystemError,
+        'Should throw FileSystemError'
+      );
+      assert.ok(
+        error.message.includes('Failed to rename'),
+        'Error message should mention rename failure'
+      );
+    }
+
+    // Verify both files still exist with original content
+    const file1 = await tonk.readFile('/file1.txt');
+    assert.deepStrictEqual(
+      file1.content,
+      { content: 'File 1' },
+      'File 1 should be unchanged'
+    );
+
+    const file2 = await tonk.readFile('/file2.txt');
+    assert.deepStrictEqual(
+      file2.content,
+      { content: 'File 2' },
+      'File 2 should be unchanged'
+    );
+  });
+
+  test('should throw error when trying to rename to existing directory', async () => {
+    // Create two directories
+    await tonk.createDirectory('/dir1');
+    await tonk.createDirectory('/dir2');
+
+    // Try to rename dir1 to dir2 (which already exists)
+    try {
+      await tonk.rename('/dir1', '/dir2');
+      assert.fail('Should throw error when renaming to existing directory');
+    } catch (error) {
+      assert.ok(
+        error instanceof FileSystemError,
+        'Should throw FileSystemError'
+      );
+      assert.ok(
+        error.message.includes('Failed to rename'),
+        'Error message should mention rename failure'
+      );
+    }
+
+    // Verify both directories still exist
+    assert.ok(await tonk.exists('/dir1'), 'Directory 1 should still exist');
+    assert.ok(await tonk.exists('/dir2'), 'Directory 2 should still exist');
+  });
+
+  test('should throw error for invalid paths', async () => {
+    // Create a test file
+    await tonk.createFile('/test-file.txt', { content: 'test' });
+
+    // Test invalid old path
+    try {
+      await tonk.rename('invalid-path-without-slash', '/new-name.txt');
+      assert.fail('Should throw error for invalid old path');
+    } catch (error) {
+      assert.ok(
+        error instanceof FileSystemError,
+        'Should throw FileSystemError for invalid old path'
+      );
+    }
+
+    // Test invalid new path
+    try {
+      await tonk.rename('/test-file.txt', 'invalid-path-without-slash');
+      assert.fail('Should throw error for invalid new path');
+    } catch (error) {
+      assert.ok(
+        error instanceof FileSystemError,
+        'Should throw FileSystemError for invalid new path'
+      );
+      assert.ok(
+        error.message.includes('must start with') ||
+          error.message.includes('InvalidPath'),
+        'Error message should mention invalid path'
+      );
+    }
+
+    // Test empty paths
+    try {
+      await tonk.rename('', '/new-name.txt');
+      assert.fail('Should throw error for empty old path');
+    } catch (error) {
+      assert.ok(
+        error instanceof FileSystemError,
+        'Should throw FileSystemError for empty old path'
+      );
+    }
+
+    try {
+      await tonk.rename('/test-file.txt', '');
+      assert.fail('Should throw error for empty new path');
+    } catch (error) {
+      assert.ok(
+        error instanceof FileSystemError,
+        'Should throw FileSystemError for empty new path'
+      );
+    }
+  });
+
+  test('should throw error when trying to rename file to itself', async () => {
+    // Create a test file
+    await tonk.createFile('/test-file.txt', { content: 'test' });
+
+    // Try to rename file to itself - this should throw an error
+    try {
+      await tonk.rename('/test-file.txt', '/test-file.txt');
+      assert.fail('Should throw error when renaming file to itself');
+    } catch (error) {
+      assert.ok(
+        error instanceof FileSystemError,
+        'Should throw FileSystemError'
+      );
+      assert.ok(
+        error.message.includes('Cannot move'),
+        'Error message should mention cannot move'
+      );
+    }
+
+    // Verify file still exists and is unchanged
+    assert.ok(await tonk.exists('/test-file.txt'), 'File should still exist');
+    const file = await tonk.readFile('/test-file.txt');
+    assert.deepStrictEqual(
+      file.content,
+      { content: 'test' },
+      'Content should be unchanged'
+    );
+  });
+
   test('Bundle.forkToBytes should create a new fork with same contents', async () => {
     // Prepare some data in the filesystem
     await tonk.createDirectory('/app');

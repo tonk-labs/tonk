@@ -17,12 +17,23 @@ export type VFSWorkerMessage =
       create: boolean;
     }
   | { type: 'deleteFile'; id: string; path: string }
+  | { type: 'rename'; id: string; oldPath: string; newPath: string }
   | { type: 'listDirectory'; id: string; path: string }
   | { type: 'exists'; id: string; path: string }
   | { type: 'watchFile'; id: string; path: string }
   | { type: 'unwatchFile'; id: string; path: string }
   | { type: 'watchDirectory'; id: string; path: string }
-  | { type: 'unwatchDirectory'; id: string; path: string };
+  | { type: 'unwatchDirectory'; id: string; path: string }
+  | { type: 'toBytes'; id: string }
+  | { type: 'forkToBytes'; id: string }
+  | { type: 'loadBundle'; id: string; bundleBytes: ArrayBuffer }
+  | {
+      type: 'initializeFromUrl';
+      id: string;
+      manifestUrl?: string;
+      wasmUrl?: string;
+      wsUrl?: string;
+    };
 export type VFSWorkerResponse =
   | { type: 'init'; success: boolean; error?: string }
   | {
@@ -34,6 +45,7 @@ export type VFSWorkerResponse =
     }
   | { type: 'writeFile'; id: string; success: boolean; error?: string }
   | { type: 'deleteFile'; id: string; success: boolean; error?: string }
+  | { type: 'rename'; id: string; success: boolean; error?: string }
   | {
       type: 'listDirectory';
       id: string;
@@ -58,4 +70,32 @@ export type VFSWorkerResponse =
       watchId: string;
       path: string;
       changeData: any;
+    }
+  | {
+      type: 'toBytes';
+      id: string;
+      success: boolean;
+      data?: Uint8Array;
+      rootId?: string;
+      error?: string;
+    }
+  | {
+      type: 'forkToBytes';
+      id: string;
+      success: boolean;
+      data?: Uint8Array;
+      rootId?: string;
+      error?: string;
+    }
+  | {
+      type: 'loadBundle';
+      id: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: 'initializeFromUrl';
+      id: string;
+      success: boolean;
+      error?: string;
     };
