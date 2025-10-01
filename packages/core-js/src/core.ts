@@ -830,6 +830,33 @@ export class TonkCore {
   }
 
   /**
+   * Rename a file or directory.
+   *
+   * @param oldPath - Absolute path of the file or directory to rename
+   * @param newPath - Absolute path of the new name
+   * @returns true if the rename was successful, false if the source doesn't exist
+   * @throws {FileSystemError} If the rename fails or paths are invalid
+   *
+   * @example
+   * ```typescript
+   * // Rename a file
+   * await rename('/old-name.txt', '/new-name.txt');
+   *
+   * // Rename a directory
+   * await rename('/old-folder', '/new-folder');
+   * ```
+   */
+  async rename(oldPath: string, newPath: string): Promise<boolean> {
+    try {
+      return await this.#wasm.rename(oldPath, newPath);
+    } catch (error) {
+      throw new FileSystemError(
+        `Failed to rename ${oldPath} to ${newPath}: ${error}`
+      );
+    }
+  }
+
+  /**
    * Get metadata for a file or directory.
    *
    * @param path - Absolute path to the file or directory

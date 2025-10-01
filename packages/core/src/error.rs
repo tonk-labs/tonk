@@ -14,6 +14,9 @@ pub enum VfsError {
     #[error("Cannot create document at root path")]
     RootPathError,
 
+    #[error("Cannot move directory into itself or its subdirectory: {0}")]
+    CircularMove(String),
+
     #[error("Node type mismatch: expected {expected}, got {actual}")]
     NodeTypeMismatch { expected: String, actual: String },
 

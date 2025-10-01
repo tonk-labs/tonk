@@ -360,6 +360,20 @@ impl WasmTonkCore {
         })
     }
 
+    #[wasm_bindgen(js_name = rename)]
+    pub fn rename(&self, from_path: String, to_path: String) -> Promise {
+        let tonk = Arc::clone(&self.tonk);
+        future_to_promise(async move {
+            let tonk = tonk.lock().await;
+            let vfs = tonk.vfs();
+
+            match vfs.move_document(&from_path, &to_path).await {
+                Ok(moved) => Ok(JsValue::from_bool(moved)),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
     #[wasm_bindgen(js_name = exists)]
     pub fn exists(&self, path: String) -> Promise {
         let tonk = Arc::clone(&self.tonk);

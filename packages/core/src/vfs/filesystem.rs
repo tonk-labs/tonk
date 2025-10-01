@@ -425,6 +425,186 @@ impl VirtualFileSystem {
         }
     }
 
+    /// Move a document or directory from one path to another
+    /// 
+    /// # Arguments
+    /// * `from_path` - The current path of the document or directory
+    /// * `to_path` - The destination path (can include a new name)
+    /// 
+    /// # Example
+    /// ```no_run
+    /// // Move a file
+    /// vfs.move_document("/old/file.txt", "/new/file.txt").await?;
+    /// 
+    /// // Move a directory
+    /// vfs.move_document("/old/dir", "/new/dir").await?;
+    /// 
+    /// // Move and rename
+    /// vfs.move_document("/old/file.txt", "/new/renamed.txt").await?;
+    /// ```
+    pub async fn move_document(&self, from_path: &str, to_path: &str) -> Result<bool> {
+        // Check for empty paths
+        if from_path.is_empty() {
+            return Err(VfsError::InvalidPath("Source path cannot be empty".to_string()));
+        }
+        if to_path.is_empty() {
+            return Err(VfsError::InvalidPath("Destination path cannot be empty".to_string()));
+        }
+
+        // Check that paths start with '/'
+        if !from_path.starts_with('/') {
+            return Err(VfsError::InvalidPath(format!("Source path must start with '/': {}", from_path)));
+        }
+        if !to_path.starts_with('/') {
+            return Err(VfsError::InvalidPath(format!("Destination path must start with '/': {}", to_path)));
+        }
+
+        if from_path == "/" || to_path == "/" {
+            return Err(VfsError::RootPathError);
+        }
+
+        // Normalize paths to ensure consistent comparison
+        let normalized_from = from_path.trim_end_matches('/');
+        let normalized_to = to_path.trim_end_matches('/');
+
+        // Check for circular move: prevent moving a directory into itself or its subdirectory
+        // This happens when to_path starts with from_path followed by a slash
+        if normalized_to.starts_with(&format!("{}/", normalized_from)) || normalized_from == normalized_to {
+            return Err(VfsError::CircularMove(format!(
+                "Cannot move '{}' to '{}'",
+                from_path, to_path
+            )));
+        }
+
+        // Extract source name and parent path
+        let from_name = from_path
+            .rsplit('/')
+            .next()
+            .ok_or_else(|| VfsError::InvalidPath(from_path.to_string()))?;
+
+        let from_parent_path = if from_path.contains('/') {
+            let last_slash = from_path.rfind('/').unwrap();
+            if last_slash == 0 {
+                "/"
+            } else {
+                &from_path[..last_slash]
+            }
+        } else {
+            "/"
+        };
+
+        // Extract destination name and parent path
+        let to_name = to_path
+            .rsplit('/')
+            .next()
+            .ok_or_else(|| VfsError::InvalidPath(to_path.to_string()))?;
+
+        let to_parent_path = if to_path.contains('/') {
+            let last_slash = to_path.rfind('/').unwrap();
+            if last_slash == 0 {
+                "/"
+            } else {
+                &to_path[..last_slash]
+            }
+        } else {
+            "/"
+        };
+
+        // Verify source exists
+        let from_result = self
+            .traverser
+            .traverse(self.root_id.clone(), from_path, false)
+            .await?;
+
+        let source_ref = from_result
+            .target_ref
+            .ok_or_else(|| VfsError::PathNotFound(from_path.to_string()))?;
+
+        // Get source parent directory handle
+        let from_parent_result = self
+            .traverser
+            .traverse(self.root_id.clone(), from_parent_path, false)
+            .await?;
+
+        let from_parent_handle = if let Some(ref target_ref) = from_parent_result.target_ref {
+            self.samod
+                .find(target_ref.pointer.clone())
+                .await
+                .map_err(|e| VfsError::SamodError(format!("Failed to find source parent directory: {e}")))?
+                .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
+        } else {
+            from_parent_result.node_handle.clone()
+        };
+
+        // Get destination parent directory handle (create if needed)
+        let to_parent_result = self
+            .traverser
+            .traverse(self.root_id.clone(), to_parent_path, true)
+            .await?;
+
+        let to_parent_handle = if let Some(ref target_ref) = to_parent_result.target_ref {
+            self.samod
+                .find(target_ref.pointer.clone())
+                .await
+                .map_err(|e| VfsError::SamodError(format!("Failed to find destination parent directory: {e}")))?
+                .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
+        } else {
+            to_parent_result.node_handle.clone()
+        };
+
+        // Check if destination already exists
+        let to_parent_dir = AutomergeHelpers::read_directory(&to_parent_handle)?;
+        if to_parent_dir.find_child(to_name).is_some() {
+            return Err(VfsError::DocumentExists(to_path.to_string()));
+        }
+
+        // Remove from source parent
+        AutomergeHelpers::remove_child_from_directory(&from_parent_handle, from_name)?;
+
+        // Create new ref with potentially new name for destination
+        let mut moved_ref = source_ref.clone();
+        moved_ref.name = to_name.to_string();
+        moved_ref.timestamps.update_modified();
+
+        // Add to destination parent
+        AutomergeHelpers::add_child_to_directory(&to_parent_handle, &moved_ref)?;
+
+        // Update the internal document name if the name changed
+        if from_name != to_name {
+            let doc_handle = self
+                .samod
+                .find(moved_ref.pointer.clone())
+                .await
+                .map_err(|e| VfsError::SamodError(format!("Failed to find moved document: {e}")))?
+                .ok_or_else(|| VfsError::DocumentNotFound(moved_ref.pointer.to_string()))?;
+            
+            AutomergeHelpers::update_document_name(&doc_handle, to_name)?;
+        }
+
+        // Emit events
+        let _ = self.event_tx.send(VfsEvent::DocumentDeleted {
+            path: from_path.to_string(),
+        });
+        
+        // Emit appropriate creation event based on node type
+        match moved_ref.node_type {
+            NodeType::Directory => {
+                let _ = self.event_tx.send(VfsEvent::DirectoryCreated {
+                    path: to_path.to_string(),
+                    doc_id: moved_ref.pointer.clone(),
+                });
+            }
+            NodeType::Document => {
+                let _ = self.event_tx.send(VfsEvent::DocumentCreated {
+                    path: to_path.to_string(),
+                    doc_id: moved_ref.pointer.clone(),
+                });
+            }
+        }
+
+        Ok(true)
+    }
+
     /// Find a document at the specified path
     pub async fn find_document(&self, path: &str) -> Result<Option<DocHandle>> {
         let result = self
@@ -1130,5 +1310,459 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(result, Err(VfsError::NodeTypeMismatch { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_move_document_file() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create directories
+        vfs.create_directory("/old").await.unwrap();
+        vfs.create_directory("/new").await.unwrap();
+
+        // Create a file in /old
+        let doc_handle = vfs
+            .create_document("/old/file.txt", "Content".to_string())
+            .await
+            .unwrap();
+        let doc_id = doc_handle.document_id().clone();
+
+        // Move the file to /new
+        let moved = vfs.move_document("/old/file.txt", "/new/file.txt").await.unwrap();
+        assert!(moved);
+
+        // Verify file no longer exists in old location
+        let old_file = vfs.find_document("/old/file.txt").await.unwrap();
+        assert!(old_file.is_none());
+
+        // Verify file exists in new location with same doc_id
+        let new_file = vfs.find_document("/new/file.txt").await.unwrap();
+        assert!(new_file.is_some());
+        assert_eq!(new_file.unwrap().document_id(), &doc_id);
+
+        // Verify directory listings
+        let old_children = vfs.list_directory("/old").await.unwrap();
+        assert_eq!(old_children.len(), 0);
+
+        let new_children = vfs.list_directory("/new").await.unwrap();
+        assert_eq!(new_children.len(), 1);
+        assert_eq!(new_children[0].name, "file.txt");
+        assert_eq!(new_children[0].node_type, NodeType::Document);
+    }
+
+    #[tokio::test]
+    async fn test_move_document_directory() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create nested structure: /source/mydir/file.txt
+        vfs.create_document("/source/mydir/file.txt", "Content".to_string())
+            .await
+            .unwrap();
+        vfs.create_directory("/dest").await.unwrap();
+
+        // Get the directory's doc_id before moving
+        let metadata = vfs.metadata("/source/mydir").await.unwrap();
+        let dir_doc_id = metadata.pointer.clone();
+
+        // Move the directory
+        let moved = vfs.move_document("/source/mydir", "/dest/mydir").await.unwrap();
+        assert!(moved);
+
+        // Verify directory no longer exists in old location
+        let old_exists = vfs.exists("/source/mydir").await.unwrap();
+        assert!(!old_exists);
+
+        // Verify directory exists in new location with same doc_id
+        let new_metadata = vfs.metadata("/dest/mydir").await.unwrap();
+        assert_eq!(new_metadata.pointer, dir_doc_id);
+        assert_eq!(new_metadata.node_type, NodeType::Directory);
+
+        // Verify the file inside the moved directory is still accessible
+        let file = vfs.find_document("/dest/mydir/file.txt").await.unwrap();
+        assert!(file.is_some());
+
+        // Verify directory listings
+        let source_children = vfs.list_directory("/source").await.unwrap();
+        assert_eq!(source_children.len(), 0);
+
+        let dest_children = vfs.list_directory("/dest").await.unwrap();
+        assert_eq!(dest_children.len(), 1);
+        assert_eq!(dest_children[0].name, "mydir");
+    }
+
+    #[tokio::test]
+    async fn test_move_document_with_rename() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create a file
+        let doc_handle = vfs
+            .create_document("/oldname.txt", "Content".to_string())
+            .await
+            .unwrap();
+        let doc_id = doc_handle.document_id().clone();
+
+        // Move and rename
+        let moved = vfs.move_document("/oldname.txt", "/newname.txt").await.unwrap();
+        assert!(moved);
+
+        // Verify old name doesn't exist
+        let old_file = vfs.find_document("/oldname.txt").await.unwrap();
+        assert!(old_file.is_none());
+
+        // Verify new name exists with same doc_id
+        let new_file = vfs.find_document("/newname.txt").await.unwrap();
+        assert!(new_file.is_some());
+        assert_eq!(new_file.unwrap().document_id(), &doc_id);
+
+        // Test moving directory with rename
+        vfs.create_directory("/olddir").await.unwrap();
+        let moved = vfs.move_document("/olddir", "/newdir").await.unwrap();
+        assert!(moved);
+
+        let old_exists = vfs.exists("/olddir").await.unwrap();
+        assert!(!old_exists);
+
+        let new_exists = vfs.exists("/newdir").await.unwrap();
+        assert!(new_exists);
+    }
+
+    #[tokio::test]
+    async fn test_move_document_to_nested_path() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create a file at root
+        let doc_handle = vfs
+            .create_document("/file.txt", "Content".to_string())
+            .await
+            .unwrap();
+        let doc_id = doc_handle.document_id().clone();
+
+        // Move to a deeply nested path that doesn't exist yet
+        let moved = vfs.move_document("/file.txt", "/a/b/c/d/file.txt").await.unwrap();
+        assert!(moved);
+
+        // Verify the nested directories were created
+        assert!(vfs.exists("/a").await.unwrap());
+        assert!(vfs.exists("/a/b").await.unwrap());
+        assert!(vfs.exists("/a/b/c").await.unwrap());
+        assert!(vfs.exists("/a/b/c/d").await.unwrap());
+
+        // Verify file exists in new location
+        let file = vfs.find_document("/a/b/c/d/file.txt").await.unwrap();
+        assert!(file.is_some());
+        assert_eq!(file.unwrap().document_id(), &doc_id);
+    }
+
+    #[tokio::test]
+    async fn test_move_document_root_error() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Try to move root
+        let result = vfs.move_document("/", "/newroot").await;
+        assert!(matches!(result, Err(VfsError::RootPathError)));
+
+        // Try to move to root
+        vfs.create_document("/file.txt", "Content".to_string())
+            .await
+            .unwrap();
+        let result = vfs.move_document("/file.txt", "/").await;
+        assert!(matches!(result, Err(VfsError::RootPathError)));
+    }
+
+    #[tokio::test]
+    async fn test_move_document_to_existing_path() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create two files
+        vfs.create_document("/file1.txt", "Content1".to_string())
+            .await
+            .unwrap();
+        vfs.create_document("/file2.txt", "Content2".to_string())
+            .await
+            .unwrap();
+
+        // Try to move file1 to file2's location
+        let result = vfs.move_document("/file1.txt", "/file2.txt").await;
+        assert!(matches!(result, Err(VfsError::DocumentExists(_))));
+
+        // Verify both files still exist
+        assert!(vfs.find_document("/file1.txt").await.unwrap().is_some());
+        assert!(vfs.find_document("/file2.txt").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_move_document_non_existent() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Try to move a non-existent file
+        let result = vfs.move_document("/nonexistent.txt", "/destination.txt").await;
+        assert!(matches!(result, Err(VfsError::PathNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_move_document_events() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        let mut rx = vfs.subscribe_events();
+
+        // Create and move a file
+        vfs.create_document("/file.txt", "Content".to_string())
+            .await
+            .unwrap();
+
+        // Clear creation event
+        let _ = rx.try_recv();
+
+        // Move the file
+        vfs.move_document("/file.txt", "/moved.txt").await.unwrap();
+
+        // Check for delete event
+        if let Ok(event) = rx.try_recv() {
+            match event {
+                VfsEvent::DocumentDeleted { path } => {
+                    assert_eq!(path, "/file.txt");
+                }
+                _ => panic!("Expected DocumentDeleted event"),
+            }
+        }
+
+        // Check for create event
+        if let Ok(event) = rx.try_recv() {
+            match event {
+                VfsEvent::DocumentCreated { path, .. } => {
+                    assert_eq!(path, "/moved.txt");
+                }
+                _ => panic!("Expected DocumentCreated event"),
+            }
+        }
+
+        // Test directory move events
+        vfs.create_directory("/dir").await.unwrap();
+        let _ = rx.try_recv(); // Clear directory creation event
+
+        vfs.move_document("/dir", "/moveddir").await.unwrap();
+
+        // Check for delete event
+        if let Ok(event) = rx.try_recv() {
+            match event {
+                VfsEvent::DocumentDeleted { path } => {
+                    assert_eq!(path, "/dir");
+                }
+                _ => panic!("Expected DocumentDeleted event"),
+            }
+        }
+
+        // Check for directory creation event
+        if let Ok(event) = rx.try_recv() {
+            match event {
+                VfsEvent::DirectoryCreated { path, .. } => {
+                    assert_eq!(path, "/moveddir");
+                }
+                _ => panic!("Expected DirectoryCreated event"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_move_document_circular_move_prevention() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create nested structure: /parent/child/grandchild
+        vfs.create_document("/parent/child/grandchild/file.txt", "Content".to_string())
+            .await
+            .unwrap();
+
+        // Try to move parent into its own child (circular)
+        let result = vfs.move_document("/parent", "/parent/child/parent").await;
+        assert!(matches!(result, Err(VfsError::CircularMove(_))));
+
+        // Try to move into grandchild (also circular)
+        let result = vfs.move_document("/parent", "/parent/child/grandchild/parent").await;
+        assert!(matches!(result, Err(VfsError::CircularMove(_))));
+
+        // Try to move into itself
+        let result = vfs.move_document("/parent/child", "/parent/child").await;
+        assert!(matches!(result, Err(VfsError::CircularMove(_))));
+
+        // Verify structure is unchanged
+        assert!(vfs.exists("/parent").await.unwrap());
+        assert!(vfs.exists("/parent/child").await.unwrap());
+        assert!(vfs.exists("/parent/child/grandchild").await.unwrap());
+
+        // Valid sibling move should still work
+        let result = vfs.move_document("/parent/child", "/parent/sibling").await;
+        assert!(result.is_ok());
+        assert!(vfs.exists("/parent/sibling").await.unwrap());
+        assert!(!vfs.exists("/parent/child").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_move_document_updates_internal_name() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create a document
+        vfs.create_document("/original.txt", "Content".to_string())
+            .await
+            .unwrap();
+
+        // Read the internal name before move
+        let doc_handle = vfs.find_document("/original.txt").await.unwrap().unwrap();
+        let original_internal_name: String = doc_handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            doc.get(automerge::ROOT, "name")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| {
+                    if let automerge::Value::Scalar(s) = value {
+                        Some(s.to_string().trim_matches('"').to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default()
+        });
+        assert_eq!(original_internal_name, "original.txt");
+
+        // Move and rename the document
+        vfs.move_document("/original.txt", "/renamed.txt").await.unwrap();
+
+        // Read the internal name after move
+        let doc_handle = vfs.find_document("/renamed.txt").await.unwrap().unwrap();
+        let new_internal_name: String = doc_handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            doc.get(automerge::ROOT, "name")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| {
+                    if let automerge::Value::Scalar(s) = value {
+                        Some(s.to_string().trim_matches('"').to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default()
+        });
+        assert_eq!(new_internal_name, "renamed.txt");
+
+        // Test with directory
+        vfs.create_directory("/olddir").await.unwrap();
+        vfs.move_document("/olddir", "/newdir").await.unwrap();
+
+        // Verify directory internal name was updated
+        let dir_metadata = vfs.metadata("/newdir").await.unwrap();
+        let dir_handle = vfs
+            .samod
+            .find(dir_metadata.pointer.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        let dir_internal_name: String = dir_handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            doc.get(automerge::ROOT, "name")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| {
+                    if let automerge::Value::Scalar(s) = value {
+                        Some(s.to_string().trim_matches('"').to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default()
+        });
+        assert_eq!(dir_internal_name, "newdir");
+    }
+
+    #[tokio::test]
+    async fn test_move_document_without_rename_no_internal_update() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create directories and a file
+        vfs.create_directory("/dir1").await.unwrap();
+        vfs.create_directory("/dir2").await.unwrap();
+        vfs.create_document("/dir1/file.txt", "Content".to_string())
+            .await
+            .unwrap();
+
+        // Get the document handle and read timestamps
+        let doc_handle = vfs.find_document("/dir1/file.txt").await.unwrap().unwrap();
+        let original_modified_time = doc_handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            doc.get(automerge::ROOT, "timestamps")
+                .ok()
+                .flatten()
+                .and_then(|(value, ts_obj_id)| {
+                    if let automerge::Value::Object(_) = value {
+                        doc.get(ts_obj_id, "modified")
+                            .ok()
+                            .flatten()
+                            .and_then(|(ts_val, _)| match ts_val {
+                                automerge::Value::Scalar(s) => s.to_string().parse::<i64>().ok(),
+                                _ => None,
+                            })
+                    } else {
+                        None
+                    }
+                })
+        });
+
+        // Small delay to ensure time difference would be detectable
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        // Move without renaming (same filename, different parent)
+        vfs.move_document("/dir1/file.txt", "/dir2/file.txt").await.unwrap();
+
+        // When moved without renaming, the internal name should stay the same
+        // and the document's internal timestamp should NOT be updated
+        let doc_handle = vfs.find_document("/dir2/file.txt").await.unwrap().unwrap();
+        let internal_name: String = doc_handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            doc.get(automerge::ROOT, "name")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| {
+                    if let automerge::Value::Scalar(s) = value {
+                        Some(s.to_string().trim_matches('"').to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default()
+        });
+        assert_eq!(internal_name, "file.txt");
+
+        let new_modified_time = doc_handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            doc.get(automerge::ROOT, "timestamps")
+                .ok()
+                .flatten()
+                .and_then(|(value, ts_obj_id)| {
+                    if let automerge::Value::Object(_) = value {
+                        doc.get(ts_obj_id, "modified")
+                            .ok()
+                            .flatten()
+                            .and_then(|(ts_val, _)| match ts_val {
+                                automerge::Value::Scalar(s) => s.to_string().parse::<i64>().ok(),
+                                _ => None,
+                            })
+                    } else {
+                        None
+                    }
+                })
+        });
+
+        // Timestamps should be the same since we didn't update the document
+        assert_eq!(original_modified_time, new_modified_time);
     }
 }
