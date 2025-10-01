@@ -18,4 +18,5 @@ This server provides development functionality for the application.
 
 ## How it works
 
-The server provides development functionality for the application. API proxy functionality has been removed from this system.
+The server provides development functionality for the application. API proxy functionality has been
+removed from this system.
