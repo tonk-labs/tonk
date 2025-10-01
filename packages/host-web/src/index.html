@@ -106,7 +106,7 @@
       }
       
       .loading-message {
-        color: #0f0;
+        color: #fff;
         animation: blink 1s infinite;
       }
       
@@ -205,6 +205,7 @@
         document.getElementById('loading-screen').style.display = 'block';
         document.getElementById('boot-screen').style.display = 'none';
         document.getElementById('error-screen').style.display = 'none';
+        document.getElementById('prompt-screen').style.display = 'none';
         document.querySelector('.loading-message').textContent = message;
       }
       
@@ -213,6 +214,7 @@
         document.getElementById('loading-screen').style.display = 'none';
         document.getElementById('boot-screen').style.display = 'block';
         document.getElementById('error-screen').style.display = 'none';
+        document.getElementById('prompt-screen').style.display = 'none';
       }
       
       // Show error screen
@@ -220,7 +222,16 @@
         document.getElementById('loading-screen').style.display = 'none';
         document.getElementById('boot-screen').style.display = 'none';
         document.getElementById('error-screen').style.display = 'block';
+        document.getElementById('prompt-screen').style.display = 'none';
         document.querySelector('.error-message').textContent = message;
+      }
+      
+      // Show prompt screen (no bundle loaded)
+      function showPromptScreen() {
+        document.getElementById('loading-screen').style.display = 'none';
+        document.getElementById('boot-screen').style.display = 'none';
+        document.getElementById('error-screen').style.display = 'none';
+        document.getElementById('prompt-screen').style.display = 'block';
       }
       
       // Render app list
@@ -468,25 +479,31 @@
       
       // Drag and drop handlers
       function setupDragAndDrop() {
-        const bootMenu = document.querySelector('.boot-menu');
-        
-        // Prevent default drag behaviors
+        // Set up on the entire body for better UX
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-          bootMenu.addEventListener(eventName, preventDefaults, false);
           document.body.addEventListener(eventName, preventDefaults, false);
         });
         
-        // Highlight drop area when item is dragged over it
+        // Highlight active screen when item is dragged over it
         ['dragenter', 'dragover'].forEach(eventName => {
-          bootMenu.addEventListener(eventName, highlight, false);
+          document.body.addEventListener(eventName, () => {
+            const activeMenu = document.querySelector('#prompt-screen:not([style*="display: none"]) .boot-menu, #boot-screen:not([style*="display: none"]) .boot-menu');
+            if (activeMenu) {
+              activeMenu.classList.add('drag-over');
+            }
+          }, false);
         });
         
         ['dragleave', 'drop'].forEach(eventName => {
-          bootMenu.addEventListener(eventName, unhighlight, false);
+          document.body.addEventListener(eventName, () => {
+            document.querySelectorAll('.boot-menu').forEach(menu => {
+              menu.classList.remove('drag-over');
+            });
+          }, false);
         });
         
-        // Handle dropped files
-        bootMenu.addEventListener('drop', handleDrop, false);
+        // Handle dropped files on body
+        document.body.addEventListener('drop', handleDrop, false);
       }
       
       function preventDefaults(e) {
@@ -518,18 +535,16 @@
           return;
         }
         
-        // Process each .tonk file
-        for (const file of tonkFiles) {
-          await processTonkFile(file);
+        // Process the first .tonk file (only support one bundle at a time)
+        if (tonkFiles.length > 0) {
+          await processTonkFile(tonkFiles[0]);
         }
-        
-        // Refresh the app list
-        availableApps = await queryAvailableApps();
-        renderAppList();
       }
       
       async function processTonkFile(file) {
         console.log('Processing .tonk file:', file.name);
+        
+        showLoadingScreen('Loading bundle from file...');
         
         try {
           // Read the file as ArrayBuffer
@@ -576,6 +591,9 @@
           
           if (response.success) {
             console.log('Bundle loaded successfully:', file.name);
+            
+            // After successful load, proceed to BIOS menu
+            await proceedToBiosMenu();
           } else {
             console.error('Failed to load bundle:', response.error);
             showError(`Failed to load bundle: ${response.error}`);
@@ -611,8 +629,14 @@
                 console.log('Extracted apps from directory listing:', apps);
                 resolve(apps);
               } else {
-                console.log('Failed to get app list, using fallback');
-                resolve(['latergram']); // Fallback to known app
+                // If VFS not initialized, return empty array instead of failing
+                if (event.data.error && event.data.error.includes('not initialized')) {
+                  console.log('VFS not initialized yet, returning empty app list');
+                  resolve([]);
+                } else {
+                  console.log('Failed to get app list:', event.data.error);
+                  reject(event.data.error);
+                }
               }
             }
           };
@@ -631,7 +655,7 @@
           // Timeout fallback
           setTimeout(() => {
             navigator.serviceWorker.removeEventListener('message', messageHandler);
-            console.log('App list query timed out, using fallback');
+            console.log('App list query timed out');
             reject('Cannot query app list, it timed out');
           }, 20000);
         });
@@ -670,58 +694,92 @@
         });
       }
       
+      // Helper function to proceed to BIOS menu after bundle is loaded
+      async function proceedToBiosMenu() {
+        showLoadingScreen('Loading applications...');
+        
+        // Query available apps
+        try {
+          availableApps = await queryAvailableApps();
+          
+          // Render the boot menu
+          renderAppList();
+          showBootMenu();
+        } catch (error) {
+          console.error('Failed to query available apps:', error);
+          showError(`Failed to load applications: ${error.message}`);
+        }
+      }
+      
       // Initialize BIOS boot manager
       async function initializeBios() {
-        showLoadingScreen();
-        
-        // // Check for redirect path first (from 404.html)
-        // const redirectPath = sessionStorage.getItem("redirectPath");
-        // if (redirectPath) {
-        //   console.log("Found redirect path, handling redirect...");
-        //   sessionStorage.removeItem("redirectPath");
-          
-        //   // Wait for service worker to be ready
-        //   await waitForServiceWorkerReady();
-          
-        //   // Extract app slug from redirect path
-        //   const pathParts = redirectPath.replace(window.location.origin, '').split('/').filter(p => p);
-        //   if (pathParts.length > 0) {
-        //     const appSlug = pathParts[0];
-        //     console.log("Extracted app slug from redirect:", appSlug);
-            
-        //     if (navigator.serviceWorker.controller) {
-        //       navigator.serviceWorker.controller.postMessage({ 
-        //         type: "setAppSlug", 
-        //         slug: appSlug 
-        //       });
-        //       localStorage.setItem("appSlug", appSlug);
-        //     }
-            
-        //     // Redirect to the app
-        //     window.location.href = redirectPath;
-        //     return;
-        //   }
-        // }
+        // Check for bundle URL parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const bundleUrl = urlParams.get('bundle');
         
         // Wait for service worker to be ready
         await waitForServiceWorkerReady();
         
-        // Query available apps
-        availableApps = await queryAvailableApps();
+        if (bundleUrl) {
+          // Scenario A: URL parameter provided - load from URL
+          showLoadingScreen('Loading bundle from URL...');
+          
+          try {
+            if (!navigator.serviceWorker.controller) {
+              throw new Error('No service worker controller available');
+            }
+            
+            const requestId = 'init-url-' + Date.now();
+            
+            // Set up response handler
+            const response = await new Promise((resolve, reject) => {
+              const messageHandler = (event) => {
+                if (event.data && event.data.type === 'initializeFromUrl' && event.data.id === requestId) {
+                  navigator.serviceWorker.removeEventListener('message', messageHandler);
+                  resolve(event.data);
+                }
+              };
+              
+              navigator.serviceWorker.addEventListener('message', messageHandler);
+              
+              // Send initializeFromUrl message
+              navigator.serviceWorker.controller.postMessage({
+                type: 'initializeFromUrl',
+                id: requestId,
+                manifestUrl: bundleUrl,
+                // Could add wasmUrl and wsUrl params here if needed
+              });
+              
+              // Timeout after 30 seconds
+              setTimeout(() => {
+                navigator.serviceWorker.removeEventListener('message', messageHandler);
+                reject(new Error('Timeout waiting for initialization'));
+              }, 30000);
+            });
+            
+            if (response.success) {
+              console.log('Bundle loaded successfully from URL');
+              await proceedToBiosMenu();
+            } else {
+              console.error('Failed to load bundle from URL:', response.error);
+              showError(`Failed to load bundle: ${response.error}`);
+            }
+          } catch (error) {
+            console.error('Error loading bundle from URL:', error);
+            showError(`Error loading bundle: ${error.message}`);
+          }
+        } else {
+          // Scenario B/C: No URL parameter - show prompt and wait for drag-drop
+          showPromptScreen();
+          
+          // Set up drag and drop (so user can drop a bundle)
+          setupDragAndDrop();
+        }
         
-        // Render the boot menu
-        renderAppList();
-        showBootMenu();
-        
-        // Set up event listeners
+        // Set up event listeners (do this regardless of scenario)
         document.addEventListener('keydown', handleKeyDown);
-        
-        // Set up button click handlers
         document.getElementById('confirm-yes').addEventListener('click', confirmBoot);
         document.getElementById('confirm-no').addEventListener('click', cancelBoot);
-        
-        // Set up drag and drop
-        setupDragAndDrop();
         
         // Handle app list clicks
         document.getElementById('app-list').addEventListener('click', (e) => {
@@ -752,17 +810,10 @@
             console.log("Service worker is already controlling the page");
             await initializeBios();
           } else {
-            // Otherwise wait for a controller
-            const urlParams = new URLSearchParams(window.location.search);
-            const bundleParam = urlParams.get('bundle');
-            
-            let serviceWorkerUrl = "./service-worker-bundled.js";
-            if (bundleParam) {
-              serviceWorkerUrl += `?bundle=${encodeURIComponent(bundleParam)}`;
-            }
-            
+            // Register service worker without bundle parameter
+            // Bundle will be loaded via message after registration
             navigator.serviceWorker
-              .register(serviceWorkerUrl, { type: "module" })
+              .register("./service-worker-bundled.js", { type: "module" })
               .catch((err) => {
                 console.log("ServiceWorker registration failed: ", err);
                 showError("Service Worker failed to load. If you're on Firefox, check ES module support.");
@@ -815,6 +866,20 @@
       
       <div id="error-screen" style="display: none;">
         <p class="error-message"></p>
+      </div>
+      
+      <div id="prompt-screen" style="display: none;">
+        <div class="boot-menu" style="border-color: #f90;">
+          <div class="boot-menu-title">⚠ NO BUNDLE LOADED</div>
+          <p style="margin: 20px 0; color: #ddd;">Please provide a Tonk bundle to continue:</p>
+          <ul style="list-style: none; padding-left: 20px;">
+            <li style="margin: 10px 0; color: #ddd;">→ Drag a .tonk file onto this window</li>
+            <li style="margin: 10px 0; color: #ddd;">→ Or add URL parameter: <code style="background: #333; padding: 2px 6px;">?bundle=&lt;url&gt;</code></li>
+          </ul>
+          <p style="margin-top: 30px; color: #999; font-size: 12px;">
+            Example: <code style="background: #333; padding: 2px 6px;">?bundle=http://localhost:8081/.manifest.tonk</code>
+          </p>
+        </div>
       </div>
     </div>
     

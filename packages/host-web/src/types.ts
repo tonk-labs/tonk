@@ -25,7 +25,14 @@ export type VFSWorkerMessage =
   | { type: 'unwatchDirectory'; id: string; path: string }
   | { type: 'toBytes'; id: string }
   | { type: 'forkToBytes'; id: string }
-  | { type: 'loadBundle'; id: string; bundleBytes: ArrayBuffer };
+  | { type: 'loadBundle'; id: string; bundleBytes: ArrayBuffer }
+  | {
+      type: 'initializeFromUrl';
+      id: string;
+      manifestUrl?: string;
+      wasmUrl?: string;
+      wsUrl?: string;
+    };
 export type VFSWorkerResponse =
   | { type: 'init'; success: boolean; error?: string }
   | {
@@ -80,6 +87,12 @@ export type VFSWorkerResponse =
     }
   | {
       type: 'loadBundle';
+      id: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: 'initializeFromUrl';
       id: string;
       success: boolean;
       error?: string;

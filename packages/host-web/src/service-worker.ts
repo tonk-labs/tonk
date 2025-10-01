@@ -71,170 +71,21 @@ async function postResponse(response) {
   });
 }
 
-async function loadTonk(): Promise<{ tonk: TonkCore; manifest: Manifest }> {
-  console.log('🔄 SERVICE WORKER: loadTonk() function called');
-  log('info', 'Starting loadTonk() function');
+// Don't auto-load Tonk on service worker startup
+// Keep it uninitialized until a bundle is provided
+log('info', 'Service worker installed, waiting for bundle');
+console.log('🚀 SERVICE WORKER: Installed, waiting for bundle');
+tonkState = { status: 'uninitialized' };
 
-  // Parse query parameters from the service worker's URL
-  const urlParams = new URLSearchParams(self.location.search);
-  const bundleParam = urlParams.get('bundle');
-  log('info', 'Parsed URL parameters', {
-    hasBundleParam: !!bundleParam,
-    bundleParamLength: bundleParam?.length || 0,
-    allParams: Object.fromEntries(urlParams.entries()),
+// Notify clients that service worker is ready but needs a bundle
+self.addEventListener('activate', async event => {
+  log('info', 'Service worker activated');
+  console.log('🚀 SERVICE WORKER: Activated');
+  const clients = await (self as any).clients.matchAll();
+  clients.forEach(client => {
+    client.postMessage({ type: 'ready', needsBundle: true });
   });
-
-  let config = {
-    wasmPath: 'http://localhost:8081/tonk_core_bg.wasm',
-    manifestPath: 'http://localhost:8081/.manifest.tonk',
-    wsUrl: 'ws://localhost:8081',
-  };
-  log('info', 'Default configuration', config);
-
-  // If bundle parameter exists, decode it and merge with default config
-  if (bundleParam) {
-    try {
-      log('info', 'Decoding bundle parameter', {
-        bundleParam: bundleParam.substring(0, 50) + '...',
-      });
-      const decoded = atob(bundleParam);
-      log('info', 'Decoded bundle parameter', {
-        decoded: decoded.substring(0, 100) + '...',
-      });
-      const bundleConfig = JSON.parse(decoded);
-      log('info', 'Parsed bundle configuration', bundleConfig);
-      config = { ...config, ...bundleConfig };
-      log('info', 'Final merged configuration', config);
-    } catch (error) {
-      log('error', 'Failed to decode bundle parameter', {
-        error: error instanceof Error ? error.message : String(error),
-        bundleParam: bundleParam.substring(0, 50) + '...',
-      });
-    }
-  }
-
-  // Initialize WASM with the dynamic path
-  log('info', 'Initializing Tonk with WASM path', {
-    wasmPath: config.wasmPath,
-  });
-
-  // Debug: Let's fetch the WASM file directly to verify what we're getting
-  // Add cache-busting to avoid browser cache issues
-  const cacheBustUrl = `${config.wasmPath}?t=${Date.now()}`;
-  console.log('🔍 DEBUGGING: About to fetch WASM from:', cacheBustUrl);
-  const wasmResponse = await fetch(cacheBustUrl);
-  console.log(
-    '🔍 DEBUGGING: WASM fetch response:',
-    wasmResponse.status,
-    wasmResponse.headers.get('content-length')
-  );
-  const wasmBytes = await wasmResponse.arrayBuffer();
-  console.log('🔍 DEBUGGING: WASM bytes length:', wasmBytes.byteLength);
-
-  await initializeTonk({ wasmPath: `${config.wasmPath}?t=${Date.now()}` });
-  log('info', 'Tonk WASM initialization completed');
-
-  // Fetch the manifest data
-  log('info', 'Fetching manifest', { manifestPath: config.manifestPath });
-  const manifestResponse = await fetch(config.manifestPath);
-  log('info', 'Manifest fetch response', {
-    status: manifestResponse.status,
-    statusText: manifestResponse.statusText,
-    ok: manifestResponse.ok,
-  });
-
-  const manifestBytes = new Uint8Array(await manifestResponse.arrayBuffer());
-  log('info', 'Manifest bytes loaded', { byteLength: manifestBytes.length });
-
-  // NOTE:
-  // This was going to be used for the entrypoint (to pull files out, but not doing that anymore)
-  // we still might want this manifest to configure networks
-  log('info', 'Creating bundle from manifest bytes');
-  const bundle = await Bundle.fromBytes(manifestBytes);
-  const manifest = await bundle.getManifest();
-  log('info', 'Bundle and manifest created successfully');
-
-  log('info', 'Creating TonkCore from manifest bytes');
-  const tonk = await TonkCore.fromBytes(manifestBytes);
-  log('info', 'TonkCore created successfully');
-
-  log('info', 'Connecting to websocket', { wsUrl: config.wsUrl });
-  await tonk.connectWebsocket(config.wsUrl);
-  log('info', 'Websocket connection established');
-
-  log('info', 'loadTonk() completed successfully');
-  return { tonk, manifest };
-}
-
-try {
-  log('info', 'Service worker starting initialization');
-  console.log('🚀 SERVICE WORKER: Starting Tonk initialization');
-  console.log('🚀 SERVICE WORKER: Before registration');
-  const promise = loadTonk();
-  tonkState = { status: 'loading', promise };
-  console.log('🚀 SERVICE WORKER: Tonk state set to loading');
-  log('info', 'Tonk state set to loading', { status: tonkState.status });
-
-  promise
-    .then(async ({ tonk, manifest }) => {
-      console.log('✅ SERVICE WORKER: Tonk initialization SUCCESS');
-      log('info', 'Tonk initialization promise resolved successfully');
-      tonkState = { status: 'ready', tonk, manifest };
-      console.log('✅ SERVICE WORKER: Tonk state updated to ready');
-      log('info', 'Tonk state updated to ready', {
-        status: tonkState.status,
-        hasTonk: !!tonk,
-        hasManifest: !!manifest,
-      });
-      console.log('Tonk core service worker initialized');
-
-      // Signal to main thread that worker is ready for VFS operations
-      log('info', 'Notifying clients that service worker is ready');
-      const clients = await (self as any).clients.matchAll();
-      log('info', 'Found clients to notify', { clientCount: clients.length });
-      clients.forEach(client => {
-        log('info', 'Posting ready message to client', { clientId: client.id });
-        client.postMessage({ type: 'ready' });
-      });
-    })
-    .catch(async error => {
-      console.log('❌ SERVICE WORKER: Tonk initialization FAILED', error);
-      log('error', 'Tonk initialization promise rejected', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-      tonkState = { status: 'failed', error };
-      console.log('❌ SERVICE WORKER: Tonk state updated to failed');
-      log('info', 'Tonk state updated to failed', { status: tonkState.status });
-      console.log(`tonk error when initialising: `, error);
-
-      // Still signal ready so the main thread knows we're operational (just without VFS)
-      log(
-        'info',
-        'Notifying clients that service worker is ready (without Tonk)'
-      );
-      const clients = await (self as any).clients.matchAll();
-      log('info', 'Found clients to notify (without Tonk)', {
-        clientCount: clients.length,
-      });
-      clients.forEach(client => {
-        log('info', 'Posting ready message to client (without Tonk)', {
-          clientId: client.id,
-        });
-        client.postMessage({ type: 'ready', tonkAvailable: false });
-      });
-    });
-} catch (error) {
-  log('error', 'Synchronous error during Tonk initialization', {
-    error: error instanceof Error ? error.message : String(error),
-    stack: error instanceof Error ? error.stack : undefined,
-  });
-  console.log(`tonk error when initialising: `, error);
-  tonkState = { status: 'failed', error };
-  log('info', 'Tonk state set to failed due to sync error', {
-    status: tonkState.status,
-  });
-}
+});
 
 self.addEventListener('install', () => {
   log('info', 'Service worker installing');
@@ -487,7 +338,12 @@ async function handleMessage(
     return;
   }
 
-  if (tonkState.status !== 'ready' && message.type !== 'init') {
+  // Allow init, loadBundle, and initializeFromUrl operations when not ready
+  const allowedWhenUninitialized = ['init', 'loadBundle', 'initializeFromUrl'];
+  if (
+    tonkState.status !== 'ready' &&
+    !allowedWhenUninitialized.includes(message.type)
+  ) {
     log('error', 'Operation attempted before VFS initialization', {
       type: message.type,
       status: tonkState.status,
@@ -497,7 +353,7 @@ async function handleMessage(
         type: message.type,
         id: message.id,
         success: false,
-        error: 'VFS not initialized',
+        error: 'VFS not initialized. Please load a bundle first.',
       });
     }
     return;
@@ -953,6 +809,15 @@ async function handleMessage(
         byteLength: message.bundleBytes.byteLength,
       });
       try {
+        // Initialize WASM if not already initialized
+        if (tonkState.status === 'uninitialized') {
+          log('info', 'WASM not initialized, initializing now');
+          const wasmUrl = 'http://localhost:8081/tonk_core_bg.wasm';
+          const cacheBustUrl = `${wasmUrl}?t=${Date.now()}`;
+          await initializeTonk({ wasmPath: cacheBustUrl });
+          log('info', 'WASM initialization completed for bundle loading');
+        }
+
         // Convert ArrayBuffer to Uint8Array
         const bundleBytes = new Uint8Array(message.bundleBytes);
         log('info', 'Creating bundle from bytes', {
@@ -993,6 +858,30 @@ async function handleMessage(
         await newTonk.connectWebsocket(wsUrl);
         log('info', 'Websocket connection established');
 
+        // Wait for initial data sync by polling until root is accessible
+        log('info', 'Waiting for initial data sync');
+        let syncAttempts = 0;
+        const maxAttempts = 20; // 10 seconds max
+        while (syncAttempts < maxAttempts) {
+          try {
+            // Try to list the root directory to verify data is synced
+            await newTonk.listDirectory('/app');
+            log('info', 'Initial data sync confirmed');
+            break;
+          } catch (error) {
+            syncAttempts++;
+            if (syncAttempts >= maxAttempts) {
+              log('warn', 'Initial sync timeout, proceeding anyway', {
+                attempts: syncAttempts,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            } else {
+              // Wait 500ms before trying again
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+          }
+        }
+
         // Update the global tonk state
         tonkState = { status: 'ready', tonk: newTonk, manifest };
         log('info', 'Tonk state updated with new instance');
@@ -1009,6 +898,100 @@ async function handleMessage(
         });
         postResponse({
           type: 'loadBundle',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'initializeFromUrl':
+      log('info', 'Initializing from URL', {
+        id: message.id,
+        manifestUrl: message.manifestUrl,
+        wasmUrl: message.wasmUrl,
+      });
+      try {
+        // Extract URLs from message, with defaults
+        const wasmUrl =
+          message.wasmUrl || 'http://localhost:8081/tonk_core_bg.wasm';
+        const manifestUrl =
+          message.manifestUrl || 'http://localhost:8081/.manifest.tonk';
+        const wsUrl = message.wsUrl || 'ws://localhost:8081';
+
+        log('info', 'Fetching WASM from URL', { wasmUrl });
+
+        // Initialize WASM with cache-busting
+        const cacheBustUrl = `${wasmUrl}?t=${Date.now()}`;
+        await initializeTonk({ wasmPath: cacheBustUrl });
+        log('info', 'WASM initialization completed');
+
+        // Fetch the manifest data
+        log('info', 'Fetching manifest from URL', { manifestUrl });
+        const manifestResponse = await fetch(manifestUrl);
+        const manifestBytes = new Uint8Array(
+          await manifestResponse.arrayBuffer()
+        );
+        log('info', 'Manifest bytes loaded', {
+          byteLength: manifestBytes.length,
+        });
+
+        // Create bundle and manifest
+        const bundle = await Bundle.fromBytes(manifestBytes);
+        const manifest = await bundle.getManifest();
+        log('info', 'Bundle and manifest created successfully');
+
+        // Create TonkCore instance
+        log('info', 'Creating TonkCore from manifest bytes');
+        const tonk = await TonkCore.fromBytes(manifestBytes);
+        log('info', 'TonkCore created successfully');
+
+        // Connect to websocket
+        log('info', 'Connecting to websocket', { wsUrl });
+        await tonk.connectWebsocket(wsUrl);
+        log('info', 'Websocket connection established');
+
+        // Wait for initial data sync by polling until root is accessible
+        log('info', 'Waiting for initial data sync');
+        let syncAttempts = 0;
+        const maxAttempts = 20; // 10 seconds max
+        while (syncAttempts < maxAttempts) {
+          try {
+            // Try to list the root directory to verify data is synced
+            await tonk.listDirectory('/app');
+            log('info', 'Initial data sync confirmed');
+            break;
+          } catch (error) {
+            syncAttempts++;
+            if (syncAttempts >= maxAttempts) {
+              log('warn', 'Initial sync timeout, proceeding anyway', {
+                attempts: syncAttempts,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            } else {
+              // Wait 500ms before trying again
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+          }
+        }
+
+        // Update the global tonk state
+        tonkState = { status: 'ready', tonk, manifest };
+        log('info', 'Tonk state updated to ready from URL');
+
+        postResponse({
+          type: 'initializeFromUrl',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to initialize from URL', {
+          id: message.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        tonkState = { status: 'failed', error: error as Error };
+        postResponse({
+          type: 'initializeFromUrl',
           id: message.id,
           success: false,
           error: error instanceof Error ? error.message : String(error),
