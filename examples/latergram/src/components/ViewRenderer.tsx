@@ -2,7 +2,7 @@ import type { DocumentData } from '@tonk/core';
 import { AlertCircle, Edit3, FileX, Loader2 } from 'lucide-react';
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { cn } from '../lib/utils';
 import { getVFSService } from '../services/vfs-service';
 import { bytesToString } from '../utils/vfs-utils';
@@ -28,6 +28,11 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
 
   const vfs = getVFSService();
 
+  // Extract router context to bridge into the sandbox
+  const navigate = useNavigate();
+  const location = useLocation();
+  const params = useParams();
+
   const compileView = useCallback(
     async (code: string, retryCount = 0): Promise<any> => {
       try {
@@ -44,8 +49,14 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
           },
         });
 
-        // Get fresh context - this now includes safe proxies for loading stores
-        const freshPackages = buildAvailablePackages();
+        // Get fresh context with bridged router context
+        const routerContext = {
+          navigate,
+          location,
+          params,
+        };
+
+        const freshPackages = buildAvailablePackages(undefined, routerContext);
         const contextKeys = Object.keys(freshPackages);
         const contextValues = Object.values(freshPackages);
 
@@ -84,7 +95,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
         throw new Error(errorMessage);
       }
     },
-    []
+    [navigate, location, params]
   );
 
   const loadView = useCallback(async () => {

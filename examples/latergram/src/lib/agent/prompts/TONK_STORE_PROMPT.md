@@ -183,6 +183,55 @@ The Tonk system enforces these validation rules:
 6. Single quotes for strings
 7. 2-space indentation
 
+## Navigation Integration in Stores
+
+When stores need to trigger navigation, use the React Router APIs:
+
+```typescript
+// create and sync are available in the compilation context
+interface NavigationStore {
+  currentPage: string;
+  navigateToPage: (path: string) => void;
+  goBack: () => void;
+}
+
+const useNavigationStore = create<NavigationStore>()(
+  sync(
+    (set, get) => ({
+      currentPage: '/',
+
+      navigateToPage: (path: string) => {
+        // Validate path is absolute
+        if (!path.startsWith('/')) {
+          console.error('Navigation paths must be absolute (start with "/")');
+          return;
+        }
+
+        set({ currentPage: path });
+
+        // Note: Actual navigation should be handled in components
+        // using the navigate function from useNavigate()
+      },
+
+      goBack: () => {
+        // Note: Actual back navigation should be handled in components
+        // using navigate(-1) from useNavigate()
+        set({ currentPage: '/' });
+      },
+    }),
+    { path: '/src/stores/navigation-store.json' }
+  )
+);
+
+export default useNavigationStore;
+```
+
+**Important:** Stores should NOT directly call navigation functions. Instead:
+
+- Store actions should update state
+- Components should listen to store changes and call `navigate()` from `useNavigate()`
+- This keeps navigation logic in the UI layer where React Router context is available
+
 ## Example: Complete Chat Store
 
 ```typescript
