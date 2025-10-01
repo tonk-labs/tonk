@@ -17,6 +17,7 @@ export type VFSWorkerMessage =
       create: boolean;
     }
   | { type: 'deleteFile'; id: string; path: string }
+  | { type: 'rename'; id: string; oldPath: string; newPath: string }
   | { type: 'listDirectory'; id: string; path: string }
   | { type: 'exists'; id: string; path: string }
   | { type: 'watchFile'; id: string; path: string }
@@ -44,6 +45,7 @@ export type VFSWorkerResponse =
     }
   | { type: 'writeFile'; id: string; success: boolean; error?: string }
   | { type: 'deleteFile'; id: string; success: boolean; error?: string }
+  | { type: 'rename'; id: string; success: boolean; error?: string }
   | {
       type: 'listDirectory';
       id: string;

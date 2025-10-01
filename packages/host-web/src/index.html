@@ -266,6 +266,60 @@
         display: block;
       }
       
+      .name-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #000;
+        border: 2px solid #666;
+        padding: 20px;
+        min-width: 400px;
+        display: none;
+        z-index: 1000;
+      }
+      
+      .name-dialog.active {
+        display: block;
+      }
+      
+      .name-title {
+        color: #fff;
+        margin-bottom: 15px;
+        font-size: 14px;
+      }
+      
+      .name-message {
+        color: #ddd;
+        margin-bottom: 15px;
+        font-size: 12px;
+      }
+      
+      .name-input-container {
+        margin-bottom: 20px;
+      }
+      
+      .name-input-container input {
+        width: 100%;
+        padding: 8px;
+        background: #222;
+        border: 1px solid #666;
+        color: #fff;
+        font-size: 12px;
+        box-sizing: border-box;
+      }
+      
+      .name-input-container input:focus {
+        outline: none;
+        border-color: #f90;
+      }
+      
+      .name-buttons {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+      }
+      
       .download-spinner-dialog {
         position: fixed;
         top: 50%;
@@ -612,7 +666,40 @@
       async function newTonk() {
         console.log('Creating new forked tonk bundle...');
         
-        // Show download spinner
+        // Pre-populate with first app name if available
+        const defaultName = availableApps.length > 0 ? availableApps[0] : 'new-tonk';
+        
+        // Show name dialog
+        showNameDialog(defaultName);
+      }
+      
+      // Show name dialog for new tonk
+      function showNameDialog(defaultName) {
+        const dialog = document.getElementById('name-dialog');
+        const input = document.getElementById('tonk-name-input');
+        
+        input.value = defaultName;
+        input.select(); // Select all text for easy editing
+        
+        dialog.classList.add('active');
+        document.getElementById('overlay').style.display = 'block';
+        
+        // Focus the input
+        setTimeout(() => input.focus(), 100);
+      }
+      
+      // Hide name dialog
+      function hideNameDialog() {
+        const dialog = document.getElementById('name-dialog');
+        dialog.classList.remove('active');
+        document.getElementById('overlay').style.display = 'none';
+      }
+      
+      // Create new tonk with the specified name
+      async function createNewTonk(tonkName) {
+        console.log('Creating new tonk with name:', tonkName);
+        
+        // Show loading spinner
         showDownloadSpinner();
         
         try {
@@ -620,12 +707,11 @@
             throw new Error('No service worker controller available');
           }
           
-          const requestId = 'fork-to-bytes-' + Date.now();
-          
-          // Set up response handler
-          const response = await new Promise((resolve, reject) => {
+          // Step 1: Fork to bytes
+          const forkRequestId = 'fork-to-bytes-' + Date.now();
+          const forkResponse = await new Promise((resolve, reject) => {
             const messageHandler = (event) => {
-              if (event.data && event.data.type === 'forkToBytes' && event.data.id === requestId) {
+              if (event.data && event.data.type === 'forkToBytes' && event.data.id === forkRequestId) {
                 navigator.serviceWorker.removeEventListener('message', messageHandler);
                 resolve(event.data);
               }
@@ -633,44 +719,93 @@
             
             navigator.serviceWorker.addEventListener('message', messageHandler);
             
-            // Send the forkToBytes message
             navigator.serviceWorker.controller.postMessage({
               type: 'forkToBytes',
-              id: requestId
+              id: forkRequestId
             });
             
-            // Timeout after 30 seconds
             setTimeout(() => {
               navigator.serviceWorker.removeEventListener('message', messageHandler);
               reject(new Error('Timeout waiting for forkToBytes response'));
             }, 30000);
           });
           
-          if (response.success && response.data) {
-            // Create a Blob from the Uint8Array
-            const blob = new Blob([response.data], { type: 'application/octet-stream' });
-            
-            // Create a download link
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${response.rootId}.tonk`;
-            document.body.appendChild(a);
-            a.click();
-            
-            // Clean up
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            
-          } else {
-            console.error('Failed to get forked bundle bytes:', response.error);
-            showError(`Failed to create forked bundle: ${response.error}`);
+          if (!forkResponse.success || !forkResponse.data) {
+            throw new Error(forkResponse.error || 'Failed to fork tonk');
           }
+          
+          // Step 2: Load the forked bundle
+          const loadRequestId = 'load-bundle-' + Date.now();
+          const loadResponse = await new Promise((resolve, reject) => {
+            const messageHandler = (event) => {
+              if (event.data && event.data.type === 'loadBundle' && event.data.id === loadRequestId) {
+                navigator.serviceWorker.removeEventListener('message', messageHandler);
+                resolve(event.data);
+              }
+            };
+            
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+            
+            // Convert Uint8Array to ArrayBuffer
+            const arrayBuffer = forkResponse.data.buffer.slice(
+              forkResponse.data.byteOffset,
+              forkResponse.data.byteOffset + forkResponse.data.byteLength
+            );
+            
+            navigator.serviceWorker.controller.postMessage({
+              type: 'loadBundle',
+              id: loadRequestId,
+              bundleBytes: arrayBuffer
+            });
+            
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener('message', messageHandler);
+              reject(new Error('Timeout waiting for loadBundle response'));
+            }, 30000);
+          });
+          
+          if (!loadResponse.success) {
+            throw new Error(loadResponse.error || 'Failed to load forked bundle');
+          }
+          
+          // Step 3: Rename the app directory
+          const oldName = availableApps.length > 0 ? availableApps[0] : 'app';
+          const renameRequestId = 'rename-' + Date.now();
+          const renameResponse = await new Promise((resolve, reject) => {
+            const messageHandler = (event) => {
+              if (event.data && event.data.type === 'rename' && event.data.id === renameRequestId) {
+                navigator.serviceWorker.removeEventListener('message', messageHandler);
+                resolve(event.data);
+              }
+            };
+            
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+            
+            navigator.serviceWorker.controller.postMessage({
+              type: 'rename',
+              id: renameRequestId,
+              oldPath: `/app/${oldName}`,
+              newPath: `/app/${tonkName}`
+            });
+            
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener('message', messageHandler);
+              reject(new Error('Timeout waiting for rename response'));
+            }, 30000);
+          });
+          
+          if (!renameResponse.success) {
+            console.warn('Failed to rename app directory:', renameResponse.error);
+            // Continue anyway, the tonk was created successfully
+          }
+          
+          // Step 4: Refresh the app list and show the new tonk
+          await proceedToBiosMenu();
+          
         } catch (error) {
-          console.error('Error creating forked tonk bundle:', error);
-          showError(`Error creating forked bundle: ${error.message}`);
+          console.error('Error creating new tonk:', error);
+          showError(`Error creating new tonk: ${error.message}`);
         } finally {
-          // Hide spinner after download completes or fails
           hideDownloadSpinner();
         }
       }
@@ -979,6 +1114,31 @@
         document.getElementById('confirm-yes').addEventListener('click', confirmBoot);
         document.getElementById('confirm-no').addEventListener('click', cancelBoot);
         
+        // Name dialog event listeners
+        document.getElementById('name-confirm').addEventListener('click', () => {
+          const input = document.getElementById('tonk-name-input');
+          const tonkName = input.value.trim();
+          if (tonkName) {
+            hideNameDialog();
+            createNewTonk(tonkName);
+          }
+        });
+        
+        document.getElementById('name-cancel').addEventListener('click', hideNameDialog);
+        
+        // Handle Enter key in name input
+        document.getElementById('tonk-name-input').addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            const tonkName = e.target.value.trim();
+            if (tonkName) {
+              hideNameDialog();
+              createNewTonk(tonkName);
+            }
+          } else if (e.key === 'Escape') {
+            hideNameDialog();
+          }
+        });
+        
         // Handle app list clicks
         document.getElementById('app-list').addEventListener('click', (e) => {
           const appItem = e.target.closest('.app-item');
@@ -1108,8 +1268,27 @@
       
       <div class="share-loader" id="share-loader">
         <div class="spinner"></div>
-        <div style="color: #999;">Generating URL...</div>
+        <p>Generating share link...</p>
       </div>
+      
+      <div class="qr-code-container" id="qr-code-container">
+        <img id="qr-code-image" class="qr-code-image" alt="QR Code" />
+        <div style="color: #999; margin-bottom: 15px;">Scan to access Tonk</div>
+        <button class="btn" onclick="closeShareDialog()" style="width: 100%;">Close</button>
+      </div>
+    </div>
+    
+    <div class="name-dialog" id="name-dialog">
+      <div class="name-title">New Tonk Name</div>
+      <div class="name-message">Enter a name for your new Tonk:</div>
+      <div class="name-input-container">
+        <input type="text" id="tonk-name-input" placeholder="Enter tonk name..." maxlength="50">
+      </div>
+      <div class="name-buttons">
+        <button class="btn primary" id="name-confirm">Create</button>
+        <button class="btn" id="name-cancel">Cancel</button>
+      </div>
+    </div>
       
       <div class="qr-code-container" id="qr-code-container">
         <img id="qr-code-image" class="qr-code-image" alt="QR Code" />
@@ -1120,7 +1299,7 @@
     
     <div class="download-spinner-dialog" id="download-spinner-dialog">
       <div class="spinner"></div>
-      <div style="color: #999; margin-top: 15px;">Preparing download...</div>
+      <div style="color: #999; margin-top: 15px;">Preparing tonk...</div>
     </div>
   </body>
 </html>

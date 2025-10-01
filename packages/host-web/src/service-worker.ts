@@ -8,7 +8,6 @@ import {
   initializeTonk,
   DocumentData,
 } from '@tonk/core/slim';
-import mime from 'mime';
 import type { VFSWorkerMessage } from './types';
 
 interface FetchEvent extends Event {
@@ -542,6 +541,39 @@ async function handleMessage(
         });
         postResponse({
           type: 'deleteFile',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'rename':
+      log('info', 'Renaming file or directory', {
+        oldPath: message.oldPath,
+        newPath: message.newPath,
+        id: message.id,
+      });
+      try {
+        const { tonk } = getTonk()!;
+        await tonk.rename(message.oldPath, message.newPath);
+        log('info', 'Rename completed successfully', {
+          oldPath: message.oldPath,
+          newPath: message.newPath,
+        });
+        postResponse({
+          type: 'rename',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to rename', {
+          oldPath: message.oldPath,
+          newPath: message.newPath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'rename',
           id: message.id,
           success: false,
           error: error instanceof Error ? error.message : String(error),
