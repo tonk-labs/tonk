@@ -100,7 +100,60 @@ const createSafeComponentProxy = (
   return DynamicPlaceholder;
 };
 
-export const buildAvailablePackages = (excludeId?: string) => {
+export interface RouterContext {
+  navigate: (
+    to: string | number,
+    options?: { replace?: boolean; state?: any }
+  ) => void;
+  location: {
+    pathname: string;
+    search: string;
+    hash: string;
+    state: any;
+    key: string;
+  };
+  params: Record<string, string | undefined>;
+}
+
+export const buildAvailablePackages = (
+  excludeId?: string,
+  routerContext?: RouterContext
+) => {
+  // Create bridged router functions/components if context is provided
+  const createBridgedLink = () => {
+    if (!routerContext) {
+      return (window as any).ReactRouterDOM?.Link;
+    }
+
+    const React = (window as any).React;
+    return (props: any) => {
+      const { to, replace, state, onClick, children, ...rest } = props;
+
+      const handleClick = (e: any) => {
+        // Call custom onClick first if it exists
+        if (onClick) {
+          onClick(e);
+        }
+
+        // Only navigate if the custom onClick didn't prevent default
+        if (!e.defaultPrevented) {
+          e.preventDefault(); // Prevent the default <a> behavior
+          routerContext.navigate(to, { replace, state });
+        }
+      };
+
+      return React.createElement(
+        'a',
+        {
+          ...rest,
+          href: to,
+          onClick: handleClick,
+        },
+        children
+      );
+    };
+  };
+
   const basePackages = {
     React: (window as any).React,
     useState: (window as any).React?.useState,
@@ -114,6 +167,21 @@ export const buildAvailablePackages = (excludeId?: string) => {
     // Add zustand imports for store creation
     create: (window as any).zustand?.create,
     sync: (window as any).sync, // Our custom sync middleware
+    // Add React Router imports - bridged if context provided
+    Link: createBridgedLink(),
+    NavLink: routerContext
+      ? createBridgedLink()
+      : (window as any).ReactRouterDOM?.NavLink,
+    useNavigate: routerContext
+      ? () => routerContext.navigate
+      : (window as any).ReactRouterDOM?.useNavigate,
+    useLocation: routerContext
+      ? () => routerContext.location
+      : (window as any).ReactRouterDOM?.useLocation,
+    useParams: routerContext
+      ? () => routerContext.params
+      : (window as any).ReactRouterDOM?.useParams,
+    useSearchParams: (window as any).ReactRouterDOM?.useSearchParams,
   };
 
   // Add all registered components, including loading ones with safe proxies

@@ -106,6 +106,56 @@ const MyComponent: React.FC<MyComponentProps> = ({ title }) => {
 export default MyComponent;
 ```
 
+### 6. Navigation with React Router
+
+For navigation between pages, use React Router APIs that are available in the Tonk environment:
+
+```tsx
+const NavigationComponent: React.FC = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const params = useParams();
+
+  const handleNavigation = () => {
+    // Programmatic navigation - MUST use absolute paths starting with '/'
+    navigate('/about');
+    navigate('/products', { replace: true });
+  };
+
+  return (
+    <div>
+      {/* Link navigation - MUST use absolute paths starting with '/' */}
+      <Link to="/about" className="text-blue-500 hover:underline">
+        About Us
+      </Link>
+
+      <Link to="/products" className="px-4 py-2 bg-blue-500 text-white rounded">
+        View Products
+      </Link>
+
+      {/* NavLink for active state styling */}
+      <NavLink
+        to="/dashboard"
+        className={({ isActive }) => (isActive ? 'text-blue-600 font-bold' : 'text-gray-600')}
+      >
+        Dashboard
+      </NavLink>
+
+      <button onClick={handleNavigation}>Go to About</button>
+    </div>
+  );
+};
+```
+
+**CRITICAL Navigation Rules:**
+
+- ✅ **ALWAYS** use absolute paths starting with `/` (e.g., `/about`, `/products`)
+- ✅ **NEVER** use relative paths without `/` (e.g., `about`, `products`)
+- ✅ **USE** `<Link>` for internal navigation instead of `<a>` tags
+- ✅ **USE** `useNavigate()` for programmatic navigation
+- ❌ **NEVER** use `window.location` for navigation
+- ❌ **NEVER** use `<a href="/path">` for internal links
+
 # IMPORTANT
 
 ## Forms and Inputs

@@ -4,6 +4,7 @@ import { install } from '@twind/core';
 import * as ReactDOM from 'react-dom/client';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
+import * as ReactRouterDOM from 'react-router-dom';
 import * as zustand from 'zustand';
 import App from './App';
 import { getAgentService } from './lib/agent/agent-service';
@@ -18,6 +19,9 @@ install(twConfig);
 // Make React available globally for hot injection
 (window as any).React = React;
 (window as any).ReactDOM = ReactDOM;
+
+// Make React Router available globally for dynamic component navigation
+(window as any).ReactRouterDOM = ReactRouterDOM;
 
 // Make zustand and middleware available globally for store compilation
 (window as any).zustand = zustand;

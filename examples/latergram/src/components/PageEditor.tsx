@@ -56,7 +56,7 @@ const DEFAULT_PAGE_TEMPLATE = `export default function HomePage() {
           Build amazing experiences with components
         </p>
         <button
-          onClick={() => window.location.href = '/latergram/editor/components'}
+          onClick={() => navigate('/editor/components')}
           style={{
             padding: '0.75rem 2rem',
             backgroundColor: '#3b82f6',

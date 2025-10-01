@@ -45,6 +45,36 @@ const generateMonacoTypes = (): string => {
     useReducer: <S, A>(reducer: (state: S, action: A) => S, initialState: S) => [S, (action: A) => void];
     useContext: <T>(context: any) => T;
   };`);
+      } else if (key === 'Link') {
+        // React Router Link component
+        declarations.push(
+          `  const Link: React.FC<{ to: string; children?: React.ReactNode; className?: string; style?: any; replace?: boolean; state?: any; onClick?: (e: any) => void; }>;`
+        );
+      } else if (key === 'NavLink') {
+        // React Router NavLink component
+        declarations.push(
+          `  const NavLink: React.FC<{ to: string; children?: React.ReactNode; className?: string | ((props: { isActive: boolean }) => string); style?: any; replace?: boolean; state?: any; }>;`
+        );
+      } else if (key === 'useNavigate') {
+        // React Router useNavigate hook
+        declarations.push(
+          `  const useNavigate: () => (to: string | number, options?: { replace?: boolean; state?: any; }) => void;`
+        );
+      } else if (key === 'useLocation') {
+        // React Router useLocation hook
+        declarations.push(
+          `  const useLocation: () => { pathname: string; search: string; hash: string; state: any; key: string; };`
+        );
+      } else if (key === 'useParams') {
+        // React Router useParams hook
+        declarations.push(
+          `  const useParams: <T extends Record<string, string | undefined> = Record<string, string | undefined>>() => T;`
+        );
+      } else if (key === 'useSearchParams') {
+        // React Router useSearchParams hook
+        declarations.push(
+          `  const useSearchParams: () => [URLSearchParams, (params: URLSearchParams | Record<string, string>) => void];`
+        );
       } else if (
         key.startsWith('use') &&
         !key.toLowerCase().includes('store')
