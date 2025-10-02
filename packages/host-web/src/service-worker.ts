@@ -246,10 +246,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                ? 'loading'
-                : tonkState.status === 'failed'
-                ? 'failed'
-                : 'uninitialized',
+                  ? 'loading'
+                  : tonkState.status === 'failed'
+                    ? 'failed'
+                    : 'uninitialized',
           });
 
           if (!tonkInstance) {
@@ -994,6 +994,16 @@ async function handleMessage(
           error: error instanceof Error ? error.message : String(error),
         });
       }
+      break;
+
+    case 'getServerUrl':
+      log('info', 'Getting server URL', { id: message.id });
+      postResponse({
+        type: 'getServerUrl',
+        id: message.id,
+        success: true,
+        data: TONK_SERVER_URL,
+      });
       break;
 
     case 'initializeFromUrl':
