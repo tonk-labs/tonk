@@ -735,6 +735,54 @@ async function handleMessage(
       }
       break;
 
+    case 'watchDirectory':
+      log('info', 'Starting directory watch', {
+        path: message.path,
+        id: message.id,
+      });
+      try {
+        const { tonk } = getTonk()!;
+        const watcher = await tonk!.watchDirectory(
+          message.path,
+          (changeData: any) => {
+            log('info', 'Directory change detected', {
+              watchId: message.id,
+              path: message.path,
+            });
+
+            postResponse({
+              type: 'directoryChanged',
+              watchId: message.id,
+              path: message.path,
+              changeData,
+            });
+          }
+        );
+        watchers.set(message.id, watcher!);
+        log('info', 'Directory watch started successfully', {
+          path: message.path,
+          watchId: message.id,
+          totalWatchers: watchers.size,
+        });
+        postResponse({
+          type: 'watchDirectory',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to start directory watch', {
+          path: message.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'watchDirectory',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
     case 'unwatchDirectory':
       log('info', 'Stopping directory watch', { watchId: message.id });
       try {
