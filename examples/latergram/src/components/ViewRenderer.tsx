@@ -8,6 +8,8 @@ import { getVFSService } from '../services/vfs-service';
 import { bytesToString } from '../utils/vfs-utils';
 import { buildAvailablePackages } from './contextBuilder';
 import { createInlineErrorBoundary } from './errors/createInlineErrorBoundary';
+import { errorStyles } from './errors/errorBoundaryStyles';
+import { sendErrorToAgent } from './errors/sendErrorToAgent';
 
 interface ViewRendererProps {
   viewPath: string;
@@ -25,6 +27,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
   const [renderError, setRenderError] = useState<string | null>(null);
   const [compiledComponent, setCompiledComponent] =
     useState<React.ComponentType | null>(null);
+  const [errorSent, setErrorSent] = useState(false);
 
   const vfs = getVFSService();
 
@@ -101,6 +104,7 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
   const loadView = useCallback(async () => {
     setIsLoading(true);
     setRenderError(null);
+    setErrorSent(false);
 
     try {
       // Check if view file exists
@@ -312,21 +316,43 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
 
   // Show error state
   if (renderError) {
+    const handleSendToAgent = () => {
+      setErrorSent(true);
+      const error = new Error(renderError);
+      const errorInfo = { componentStack: '' };
+      const viewName = viewPath.split('/').pop()?.replace('.tsx', '') || 'View';
+      sendErrorToAgent(error, errorInfo, viewName, viewPath);
+    };
+
+    const styles = errorStyles.page;
+    const viewName = viewPath.split('/').pop()?.replace('.tsx', '') || 'View';
+
     return (
-      <div className={`h-screen bg-gray-50 ${className}`}>
-        <div className="flex items-center justify-center h-full">
-          <div className="max-w-2xl mx-auto p-8">
-            <div className="bg-red-50 border border-red-200 rounded-lg p-6">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-6 h-6 text-red-600 mt-0.5 flex-shrink-0" />
-                <div className="flex-1">
-                  <h3 className="font-semibold text-red-800 mb-2">
-                    View Error
-                  </h3>
-                  <div className="text-sm text-red-700 font-mono whitespace-pre-wrap">
-                    {renderError}
-                  </div>
+      <div className={`${styles.container} ${className}`}>
+        <div className={styles.wrapper}>
+          <div className={styles.box}>
+            <div className={styles.content}>
+              <div className={styles.iconWrapper}>
+                <div className={styles.icon}>
+                  <span className={styles.iconText}>!</span>
                 </div>
+              </div>
+              <div className={styles.body}>
+                <h2 className={styles.title}>Page Error: {viewName}</h2>
+                <p className={styles.path}>{viewPath}</p>
+                <div className={styles.errorBox}>
+                  <p className={styles.errorMessage}>{renderError}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSendToAgent}
+                  disabled={errorSent}
+                  className={styles.sendButton}
+                >
+                  {errorSent
+                    ? '✓ Sent to AI Agent'
+                    : 'Ask AI to Fix This Error'}
+                </button>
               </div>
             </div>
           </div>
