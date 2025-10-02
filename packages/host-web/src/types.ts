@@ -33,7 +33,8 @@ export type VFSWorkerMessage =
       manifestUrl?: string;
       wasmUrl?: string;
       wsUrl?: string;
-    };
+    }
+  | { type: 'getServerUrl'; id: string };
 export type VFSWorkerResponse =
   | { type: 'init'; success: boolean; error?: string }
   | {
@@ -97,5 +98,12 @@ export type VFSWorkerResponse =
       type: 'initializeFromUrl';
       id: string;
       success: boolean;
+      error?: string;
+    }
+  | {
+      type: 'getServerUrl';
+      id: string;
+      success: boolean;
+      data?: string;
       error?: string;
     };

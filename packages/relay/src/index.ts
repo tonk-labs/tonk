@@ -7,6 +7,8 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import { BundleStorageAdapter } from './bundleStorageAdapter.js';
+import { S3Storage } from './s3-storage.js';
+import JSZip from 'jszip';
 
 class Server {
   #socket: WebSocketServer;
@@ -45,6 +47,8 @@ class Server {
     );
 
     app.use(express.static('public'));
+    app.use(express.raw({ type: 'application/octet-stream', limit: '100mb' }));
+    app.use(express.json());
     this.#storage = storage;
 
     const config: RepoConfig = {
@@ -119,6 +123,156 @@ class Server {
       } catch (error) {
         console.error('Error creating slim bundle:', error);
         res.status(500).json({ error: 'Failed to create manifest bundle' });
+      }
+    });
+
+    // Initialize S3 storage if configured
+    const s3Storage = new S3Storage({
+      bucket: 'host-web-bundle-storage',
+      region: 'eu-north-1',
+    });
+
+    // API endpoint to upload a bundle
+    app.post('/api/bundles', async (req, res) => {
+      if (!s3Storage) {
+        return res.status(503).json({ error: 'S3 storage not configured' });
+      }
+
+      try {
+        const bundleData = req.body;
+
+        if (!Buffer.isBuffer(bundleData) || bundleData.length === 0) {
+          return res.status(400).json({ error: 'Invalid bundle data' });
+        }
+
+        // Extract bundle ID from manifest
+        const zip = new JSZip();
+        const zipContent = await zip.loadAsync(bundleData);
+        const manifestFile = zipContent.file('manifest.json');
+
+        if (!manifestFile) {
+          return res
+            .status(400)
+            .json({ error: 'Invalid bundle: manifest.json not found' });
+        }
+
+        const manifestContent = await manifestFile.async('text');
+        const manifest = JSON.parse(manifestContent);
+        const bundleId = manifest.rootId;
+
+        if (!bundleId) {
+          return res
+            .status(400)
+            .json({ error: 'Invalid bundle: rootId not found in manifest' });
+        }
+
+        // Upload to S3
+        await s3Storage.uploadBundle(bundleId, bundleData);
+
+        res.json({
+          id: bundleId,
+          message: 'Bundle uploaded successfully',
+        });
+      } catch (error) {
+        console.error('Error uploading bundle:', error);
+        res.status(500).json({ error: 'Failed to upload bundle' });
+      }
+    });
+
+    // API endpoint to download a bundle manifest (slim bundle)
+    app.get('/api/bundles/:id/manifest', async (req, res) => {
+      if (!s3Storage) {
+        return res.status(503).json({ error: 'S3 storage not configured' });
+      }
+
+      try {
+        const bundleId = req.params.id;
+
+        // Download from S3
+        const bundleData = await s3Storage.downloadBundle(bundleId);
+
+        // Return slim bundle (just manifest + root document storage)
+        const zip = new JSZip();
+        const zipContent = await zip.loadAsync(bundleData!);
+
+        // Create new slim bundle
+        const slimZip = new JSZip();
+
+        // Add manifest
+        const manifestFile = zipContent.file('manifest.json');
+        if (manifestFile) {
+          const manifestContent = await manifestFile.async('uint8array');
+          slimZip.file('manifest.json', manifestContent);
+        }
+
+        // Add storage files for the root document
+        const rootIdPrefix = bundleId.substring(0, 2);
+        const storageFolderPrefix = `storage/${rootIdPrefix}`;
+
+        for (const [relativePath, file] of Object.entries(zipContent.files)) {
+          const zipFile = file as any;
+          if (
+            !zipFile.dir &&
+            relativePath !== 'manifest.json' &&
+            relativePath.startsWith(storageFolderPrefix)
+          ) {
+            const content = await zipFile.async('uint8array');
+            slimZip.file(relativePath, content);
+          }
+        }
+
+        // Generate slim bundle
+        const slimBundleData = await slimZip.generateAsync({
+          type: 'uint8array',
+          compression: 'DEFLATE',
+          compressionOptions: { level: 6 },
+        });
+
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${bundleId}.tonk"`
+        );
+        res.setHeader('Content-Length', slimBundleData.length.toString());
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        res.send(Buffer.from(slimBundleData));
+      } catch (error: any) {
+        console.error('Error downloading bundle:', error);
+        if (error.message?.includes('not found')) {
+          res.status(404).json({ error: 'Bundle not found' });
+        } else {
+          res.status(500).json({ error: 'Failed to download bundle' });
+        }
+      }
+    });
+
+    // API endpoint to download full bundle
+    app.get('/api/bundles/:id', async (req, res) => {
+      if (!s3Storage) {
+        return res.status(503).json({ error: 'S3 storage not configured' });
+      }
+
+      try {
+        const bundleId = req.params.id;
+
+        // Download from S3
+        const bundleData = await s3Storage.downloadBundle(bundleId);
+
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${bundleId}.tonk"`
+        );
+        res.setHeader('Content-Length', bundleData!.length.toString());
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        res.send(bundleData);
+      } catch (error: any) {
+        console.error('Error downloading bundle:', error);
+        if (error.message?.includes('not found')) {
+          res.status(404).json({ error: 'Bundle not found' });
+        } else {
+          res.status(500).json({ error: 'Failed to download bundle' });
+        }
       }
     });
 
