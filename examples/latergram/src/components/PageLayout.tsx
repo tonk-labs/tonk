@@ -1,6 +1,6 @@
 import { Code2Icon, MessageCircle } from 'lucide-react';
 import type React from 'react';
-import { createRef, useCallback, useState } from 'react';
+import { createRef, useCallback, useEffect, useState } from 'react';
 import { Link, Outlet } from 'react-router-dom';
 import { useAgentChat } from '../lib/agent/use-agent-chat';
 import { cn } from '../lib/utils';
@@ -13,15 +13,30 @@ interface PageLayoutProps {
 
 export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
   const [open, setOpen] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
   const inputRef = createRef<HTMLTextAreaElement>();
   const { isLoading } = useAgentChat();
+
+  useEffect(() => {
+    const checkScreenSize = () => {
+      setIsDesktop(window.innerWidth >= 1024); // lg breakpoint
+    };
+
+    checkScreenSize();
+    window.addEventListener('resize', checkScreenSize);
+    return () => window.removeEventListener('resize', checkScreenSize);
+  }, []);
 
   const handleOpen = useCallback((shouldOpen: boolean) => {
     setOpen(shouldOpen);
   }, []);
 
   return (
-    <Drawer open={open} onOpenChange={handleOpen} direction="bottom">
+    <Drawer
+      open={open}
+      onOpenChange={handleOpen}
+      direction={isDesktop ? 'right' : 'bottom'}
+    >
       {/* Page content */}
       <div className="min-h-screen">
         <Outlet />
@@ -29,7 +44,12 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
 
       {/* Floating Bottom Bar Buttons */}
       <DrawerTrigger asChild>
-        <div className="fixed bottom-6 right-6 z-[1000] flex flex-row gap-2">
+        <div
+          className={cn(
+            'fixed bottom-6 z-[1000] flex flex-row gap-2 transition-all duration-300',
+            isDesktop && open ? 'right-[450px]' : 'right-6'
+          )}
+        >
           <button
             type="button"
             className={cn(
@@ -76,14 +96,19 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
       {/* Drawer Content */}
       <DrawerContent
         title="Agent Chat"
-        className="max-h-[85vh] h-[85vh] p-0 rounded-t-lg overflow-clip z-[1000000]"
+        className={cn(
+          'p-0 overflow-clip z-[1000000]',
+          isDesktop
+            ? 'w-[600px] h-full rounded-l-lg'
+            : 'max-h-[85vh] h-[85vh] rounded-t-lg'
+        )}
         onWheel={e => e.stopPropagation()}
       >
-        <div className="flex flex-col h-full -mt-6 bg-white">
+        <div
+          className={cn('flex flex-col h-full bg-white', !isDesktop && '-mt-6')}
+        >
           {/* AgentChat Component */}
-          {/* <div className="flex-1 overflow-hidden"> */}
           <AgentChat inputRef={inputRef} />
-          {/* </div> */}
         </div>
       </DrawerContent>
     </Drawer>
