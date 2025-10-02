@@ -42,23 +42,33 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
   };
 
   return (
-    <div className="bg-white border-t border-gray-200 px-3 py-2">
+    <div className="bg-white border-t border-gray-200 px-3 py-2 safe-area-bottom">
       <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
         <div className="flex gap-2 items-center justify-center">
           <textarea
             style={{
               resize: 'none',
+              fontSize: 'max(16px, 1rem)',
             }}
             ref={inputRef}
             value={prompt}
             onChange={e => setPrompt(e.target.value)}
             onKeyDown={handleKeyDown}
+            onFocus={e => {
+              setTimeout(() => {
+                e.target.scrollIntoView({
+                  behavior: 'smooth',
+                  block: 'center',
+                });
+              }, 300);
+            }}
             disabled={!isReady}
             placeholder={
               isReady ? 'Type a message...' : 'Waiting for initialization...'
             }
-            className="flex-1 px-3 py-1.5 border-0 border-gray-300 rounded-lg focus:outline-none text-sm disabled:bg-gray-100 ring-0 outline-none outline-0"
+            className="flex-1 px-3 py-1.5 border-0 border-gray-300 rounded-lg focus:outline-none disabled:bg-gray-100 ring-0 outline-none outline-0"
             rows={1}
+            inputMode="text"
           />
           <div className="flex flex-row gap-2 group relative items-center justify-start">
             {!isLoading && (

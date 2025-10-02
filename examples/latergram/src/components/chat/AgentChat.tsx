@@ -1,6 +1,8 @@
 import type React from 'react';
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { X } from 'lucide-react';
 import { useAgentChat } from '../../lib/agent/use-agent-chat';
+import { isMobile } from '../../lib/utils';
 import ChatErrorBar from './ChatErrorBar';
 import ChatInputBar from './ChatInputBar';
 import ChatLoadingDots from './ChatLoadingDots';
@@ -8,9 +10,11 @@ import ChatMessage from './ChatMessage';
 
 interface AgentChatProps {
   inputRef: React.RefObject<HTMLTextAreaElement>;
+  onClose?: () => void;
 }
 
-const AgentChat: React.FC<AgentChatProps> = ({ inputRef }) => {
+const AgentChat: React.FC<AgentChatProps> = ({ inputRef, onClose }) => {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const {
     messages,
     isLoading,
@@ -26,19 +30,20 @@ const AgentChat: React.FC<AgentChatProps> = ({ inputRef }) => {
     setEditingMessage,
   } = useAgentChat();
 
-  // Auto-focus input when component mounts or when ready
   useEffect(() => {
-    if (isReady && inputRef?.current) {
-      // Small delay to ensure the drawer is fully open
+    const isMobileDevice = isMobile();
+
+    if (!isMobileDevice && isReady && inputRef?.current) {
       setTimeout(() => {
         inputRef.current?.focus();
       }, 100);
     }
   }, [isReady, inputRef]);
 
-  // Focus input after sending a message
   useEffect(() => {
-    if (!isLoading && inputRef?.current) {
+    const isMobileDevice = isMobile();
+
+    if (!isMobileDevice && !isLoading && inputRef?.current) {
       inputRef.current?.focus();
     }
   }, [isLoading, inputRef]);
@@ -78,11 +83,30 @@ const AgentChat: React.FC<AgentChatProps> = ({ inputRef }) => {
     [deleteMessage]
   );
 
+  const isMobileDevice = isMobile();
+
   return (
     <div className="flex flex-col h-full">
+      {isMobileDevice && onClose && (
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+          <h2 className="text-lg font-semibold">Assistant</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+            aria-label="Close chat"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+      )}
       <div className="relative flex-1 px-3 min-h-0 flex justify-center">
         {error && <ChatErrorBar error={error} />}
-        <div className="flex flex-col-reverse reverse h-full overflow-scroll gap-4 max-w-[50rem] w-full py-4">
+        <div
+          ref={scrollContainerRef}
+          className="flex flex-col-reverse h-full overflow-scroll gap-4 max-w-[50rem] w-full py-4 overscroll-contain"
+          style={{ overscrollBehavior: 'contain' }}
+        >
           <div className="flex-1 min-h-0" />
 
           {messages.length === 0 ? (

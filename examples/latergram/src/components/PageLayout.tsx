@@ -3,9 +3,10 @@ import type React from 'react';
 import { createRef, useCallback, useEffect, useState } from 'react';
 import { Link, Outlet } from 'react-router-dom';
 import { useAgentChat } from '../lib/agent/use-agent-chat';
-import { cn } from '../lib/utils';
+import { cn, isMobile } from '../lib/utils';
 import AgentChat from './chat/AgentChat';
 import { Drawer, DrawerContent, DrawerTrigger } from './ui/drawer';
+import { useVisualViewport } from './hooks/useVisualViewport';
 
 interface PageLayoutProps {
   viewPath: string;
@@ -16,10 +17,16 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
   const [isDesktop, setIsDesktop] = useState(false);
   const inputRef = createRef<HTMLTextAreaElement>();
   const { isLoading } = useAgentChat();
+  const {
+    height: viewportHeight,
+    isKeyboardOpen,
+    keyboardHeight,
+  } = useVisualViewport();
+  const isMobileDevice = isMobile();
 
   useEffect(() => {
     const checkScreenSize = () => {
-      setIsDesktop(window.innerWidth >= 1024); // lg breakpoint
+      setIsDesktop(window.innerWidth >= 1024);
     };
 
     checkScreenSize();
@@ -31,24 +38,40 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
     setOpen(shouldOpen);
   }, []);
 
+  const drawerMaxHeight =
+    isMobileDevice && isKeyboardOpen
+      ? `${viewportHeight}px`
+      : isDesktop
+        ? '100vh'
+        : '85vh';
+
+  const buttonBottomPosition =
+    isMobileDevice && isKeyboardOpen && open
+      ? `${keyboardHeight + 16}px`
+      : '1.5rem';
+
   return (
     <Drawer
       open={open}
       onOpenChange={handleOpen}
       direction={isDesktop ? 'right' : 'bottom'}
+      shouldScaleBackground={!isMobileDevice}
+      modal={!isMobileDevice}
+      dismissible={isDesktop}
     >
-      {/* Page content */}
       <div className="min-h-screen">
         <Outlet />
       </div>
 
-      {/* Floating Bottom Bar Buttons */}
       <DrawerTrigger asChild>
         <div
           className={cn(
-            'fixed bottom-6 z-[1000] flex flex-row gap-2 transition-all duration-300',
+            'fixed z-[1000] flex flex-row gap-2 transition-all duration-300',
             isDesktop && open ? 'right-[450px]' : 'right-6'
           )}
+          style={{
+            bottom: buttonBottomPosition,
+          }}
         >
           <button
             type="button"
@@ -58,7 +81,6 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
             )}
             aria-label="Open AI Assistant"
           >
-            {/* Star burst background with rainbow gradient */}
             <div
               className={`absolute inset-0 ${isLoading ? 'animate-spin' : ''}`}
               style={{
@@ -80,7 +102,6 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
                 maskRepeat: 'no-repeat',
               }}
             />
-            {/* Message icon on top */}
             <MessageCircle className="w-7 h-7 text-white relative z-10 drop-shadow-md" />
           </button>
           <Link
@@ -93,22 +114,25 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
         </div>
       </DrawerTrigger>
 
-      {/* Drawer Content */}
       <DrawerContent
         title="Agent Chat"
         className={cn(
           'p-0 overflow-clip z-[1000000]',
-          isDesktop
-            ? 'w-[600px] h-full rounded-l-lg'
-            : 'max-h-[85vh] h-[85vh] rounded-t-lg'
+          isDesktop ? 'w-[600px] h-full rounded-l-lg' : 'rounded-t-lg'
         )}
+        style={{
+          maxHeight: drawerMaxHeight,
+          height: drawerMaxHeight,
+        }}
         onWheel={e => e.stopPropagation()}
       >
         <div
-          className={cn('flex flex-col h-full bg-white', !isDesktop && '-mt-6')}
+          className="flex flex-col flex-1 bg-white min-h-0"
+          style={{
+            touchAction: 'pan-y',
+          }}
         >
-          {/* AgentChat Component */}
-          <AgentChat inputRef={inputRef} />
+          <AgentChat inputRef={inputRef} onClose={() => handleOpen(false)} />
         </div>
       </DrawerContent>
     </Drawer>
