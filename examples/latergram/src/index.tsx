@@ -31,15 +31,19 @@ const container = document.getElementById('root');
 if (!container) throw new Error('Failed to find the root element');
 const root = createRoot(container);
 
-const pathSegments = window.location.pathname.split('/');
 // check to see if appSlug exists, this should be the basename
 const slug = localStorage.getItem('appSlug');
 const basename = slug !== null ? `/${slug}/` : '';
 
-const URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8081';
-const URL_LOCATION = URL.replace(/^https?:\/\//, '');
-const manifestUrl = `${URL}/.manifest.tonk`;
-const wsUrl = `ws://${URL_LOCATION}`;
+const isLocalhost =
+  window.location.hostname === 'localhost' ||
+  window.location.hostname === '127.0.0.1';
+const relayUrl = isLocalhost
+  ? 'http://localhost:8081'
+  : 'https://relay.tonk.xyz';
+
+const manifestUrl = `${relayUrl}/.manifest.tonk`;
+const wsUrl = relayUrl.replace(/^http/, 'ws');
 
 // Initialize VFS for sync middleware
 const initializeVFS = async () => {
