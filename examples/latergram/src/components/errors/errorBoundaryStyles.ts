@@ -22,6 +22,8 @@ export const errorStyles = {
     summary: 'text-red-600 cursor-pointer hover:text-red-800 font-medium',
     stackTrace:
       'mt-3 p-3 bg-white border border-red-200 rounded text-red-700 overflow-x-auto text-xs font-mono',
+    sendButton:
+      'mt-4 w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-semibold py-2 px-4 rounded transition-colors',
   },
 
   // Component-level error styles
@@ -39,6 +41,8 @@ export const errorStyles = {
     summary: 'text-red-600 cursor-pointer hover:text-red-800',
     stackTrace:
       'mt-2 p-2 bg-red-100 rounded text-red-700 overflow-x-auto text-xs',
+    sendButton:
+      'mt-2 w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-semibold text-xs py-1.5 px-3 rounded transition-colors',
   },
 };
 
@@ -51,7 +55,9 @@ export function buildErrorUI(
   error: any,
   componentName: string,
   isPageError: boolean,
-  viewPath?: string
+  viewPath?: string,
+  onSendToAgent?: () => void,
+  errorSent?: boolean
 ) {
   const styles = isPageError ? errorStyles.page : errorStyles.component;
   const displayName =
@@ -120,6 +126,20 @@ export function buildErrorUI(
                     ),
                   ]
                 ),
+                onSendToAgent &&
+                  React.createElement(
+                    'button',
+                    {
+                      key: 'send-button',
+                      type: 'button',
+                      onClick: onSendToAgent,
+                      disabled: errorSent,
+                      className: pageStyles.sendButton,
+                    },
+                    errorSent
+                      ? '✓ Sent to AI Agent'
+                      : 'Ask AI to Fix This Error'
+                  ),
               ]
             ),
           ])
@@ -172,6 +192,18 @@ export function buildErrorUI(
             ),
           ]
         ),
+        onSendToAgent &&
+          React.createElement(
+            'button',
+            {
+              key: 'send-button',
+              type: 'button',
+              onClick: onSendToAgent,
+              disabled: errorSent,
+              className: componentStyles.sendButton,
+            },
+            errorSent ? '✓ Sent to AI' : 'Ask AI to Fix'
+          ),
       ]),
     ])
   );

@@ -16,6 +16,7 @@ interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
   errorInfo: React.ErrorInfo | null;
+  errorSent: boolean;
 }
 
 export class ErrorBoundary extends Component<
@@ -28,6 +29,7 @@ export class ErrorBoundary extends Component<
       hasError: false,
       error: null,
       errorInfo: null,
+      errorSent: false,
     };
   }
 
@@ -46,14 +48,21 @@ export class ErrorBoundary extends Component<
       error,
       errorInfo,
     });
-
-    // Send error to AI agent for automatic fixing (only for views)
-    sendErrorToAgent(error, errorInfo, componentName, viewPath);
   }
+
+  handleSendToAgent = () => {
+    const { error, errorInfo } = this.state;
+    const { componentName = 'Component', viewPath } = this.props;
+
+    if (error && errorInfo) {
+      this.setState({ errorSent: true });
+      sendErrorToAgent(error, errorInfo, componentName, viewPath);
+    }
+  };
 
   render() {
     if (this.state.hasError) {
-      const { error } = this.state;
+      const { error, errorSent } = this.state;
       const {
         componentName = 'Component',
         viewPath,
@@ -98,6 +107,16 @@ export class ErrorBoundary extends Component<
                         {error?.stack || 'No stack trace available'}
                       </pre>
                     </details>
+                    <button
+                      type="button"
+                      onClick={this.handleSendToAgent}
+                      disabled={errorSent}
+                      className={styles.sendButton}
+                    >
+                      {errorSent
+                        ? '✓ Sent to AI Agent'
+                        : 'Ask AI to Fix This Error'}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -127,6 +146,14 @@ export class ErrorBoundary extends Component<
                     </summary>
                     <pre className={styles.stackTrace}>{error.stack}</pre>
                   </details>
+                  <button
+                    type="button"
+                    onClick={this.handleSendToAgent}
+                    disabled={errorSent}
+                    className={styles.sendButton}
+                  >
+                    {errorSent ? '✓ Sent to AI' : 'Ask AI to Fix'}
+                  </button>
                 </>
               )}
             </div>

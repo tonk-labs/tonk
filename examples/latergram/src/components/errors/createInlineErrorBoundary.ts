@@ -16,7 +16,13 @@ export function createInlineErrorBoundary(
   return class extends React.Component {
     constructor(props: any) {
       super(props);
-      this.state = { hasError: false, error: null };
+      this.state = {
+        hasError: false,
+        error: null,
+        errorInfo: null,
+        errorSent: false,
+      };
+      this.handleSendToAgent = this.handleSendToAgent.bind(this);
     }
 
     static getDerivedStateFromError(error: any) {
@@ -26,15 +32,29 @@ export function createInlineErrorBoundary(
     componentDidCatch(error: any, errorInfo: any) {
       const context = viewPath ? `[View: ${viewPath}]` : `[${componentName}]`;
       console.error(`${context} Error:`, error, errorInfo);
+      this.setState({ errorInfo });
+    }
 
-      // Send error to AI agent for automatic fixing (only for views)
-      sendErrorToAgent(error, errorInfo, componentName, viewPath);
+    handleSendToAgent() {
+      const state = this.state as any;
+      if (state.error && state.errorInfo) {
+        this.setState({ errorSent: true });
+        sendErrorToAgent(state.error, state.errorInfo, componentName, viewPath);
+      }
     }
 
     render() {
       if ((this.state as any).hasError) {
-        const error = (this.state as any).error;
-        return buildErrorUI(React, error, componentName, isPageError, viewPath);
+        const state = this.state as any;
+        return buildErrorUI(
+          React,
+          state.error,
+          componentName,
+          isPageError,
+          viewPath,
+          this.handleSendToAgent,
+          state.errorSent
+        );
       }
 
       return (this.props as any).children;
