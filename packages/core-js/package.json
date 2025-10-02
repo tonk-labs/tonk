@@ -1,0 +1,77 @@
+{
+  "name": "@tonk/core",
+  "version": "0.1.0",
+  "description": "Core library of the Tonk stack, providing sync engine and bundling",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./slim": {
+      "types": "./dist/index-slim.d.ts",
+      "import": "./dist/index-slim.js",
+      "default": "./dist/index-slim.js"
+    },
+    "./wasm": "./dist/tonk_core_bg.wasm"
+  },
+  "browser": {
+    "./dist/tonk_core.js": "./dist/tonk_core.js"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "embed-wasm": "tsx ./scripts/embed-wasm.ts",
+    "build": "npm run build:wasm && npm run build:wrapper",
+    "build:wasm": "cd ../core && npm run build:browser && cp -r pkg-browser/* ../core-js/dist/ && cd ../core-js/ && npm run embed-wasm",
+    "build:wrapper": "tsc",
+    "clean": "rm -rf dist",
+    "prebuild": "npm run clean && mkdir -p dist",
+    "prepublishOnly": "npm run build",
+    "test": "npm run build && node --experimental-strip-types --test test/*.test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonk-labs/tonk.git"
+  },
+  "keywords": [
+    "tonk",
+    "local-first",
+    "sync",
+    "automerge",
+    "wasm",
+    "real-time",
+    "collaboration",
+    "browser",
+    "websocket",
+    "vfs"
+  ],
+  "author": "Tonk Labs",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/tonk-labs/tonk/issues"
+  },
+  "homepage": "https://github.com/tonk-labs/tonk#readme",
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "sideEffects": [
+    "./dist/snippets/*"
+  ]
+}

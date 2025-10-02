@@ -13,7 +13,8 @@ export default [
     files: [
       'packages/cli/src/**/*.ts',
       'packages/create/src/**/*.ts',
-      'packages/server/src/**/*.ts',
+      'packages/relay/src/**/*.ts',
+      'packages/core-js/src/**/*.ts',
     ],
     languageOptions: {
       parser: tsparser,
@@ -48,13 +49,16 @@ export default [
 
   // Browser/Universal TypeScript files (Keepsync package)
   {
-    files: ['packages/keepsync/src/**/*.ts'],
+    files: [
+      'packages/keepsync/src/**/*.ts',
+      'packages/host-web/src/**/*.ts'
+    ],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
         ecmaVersion: 2022,
         sourceType: 'module',
-        project: ['packages/keepsync/tsconfig.json'],
+        project: ['packages/*/tsconfig.json'],
       },
       globals: {
         ...globals.browser,

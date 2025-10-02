@@ -1,0 +1,446 @@
+import { test, expect } from '../fixtures';
+import { setupTestWithServer, waitForVFSConnection } from '../fixtures';
+import { imageGenerator } from '../../src/utils/image-generator';
+import { MetricsCollector } from '../../src/utils/metrics-collector';
+
+test.describe('Memory Leak Detection Tests', () => {
+  test(
+    'should not leak memory during continuous operations (30 min)',
+    async ({ page, serverInstance }) => {
+      await setupTestWithServer(page, serverInstance);
+      await waitForVFSConnection(page);
+
+      const testDurationMs = 30 * 60 * 1000; // 30 minutes
+      const operationIntervalMs = 2000; // Operation every 2 seconds
+      const memoryCheckIntervalMs = 30000; // Check memory every 30 seconds
+
+      console.log(
+        `Starting 30-minute memory leak test on port ${serverInstance.port}`
+      );
+      console.log(
+        `Operations every ${operationIntervalMs}ms, memory checks every ${memoryCheckIntervalMs}ms`
+      );
+
+      const metricsCollector = new MetricsCollector('memory-leak-30min');
+      const startTime = Date.now();
+      let operationCount = 0;
+      let memorySnapshots: Array<{
+        time: number;
+        heapUsed: number;
+        heapTotal: number;
+      }> = [];
+
+      // Setup periodic memory monitoring
+      const memoryMonitor = setInterval(async () => {
+        const currentMemory = await metricsCollector.collectMemoryMetrics();
+        const elapsedMin = (Date.now() - startTime) / (1000 * 60);
+
+        memorySnapshots.push({
+          time: elapsedMin,
+          heapUsed: currentMemory.heapUsed,
+          heapTotal: currentMemory.heapTotal,
+        });
+
+        console.log(
+          `${elapsedMin.toFixed(1)}min: Heap ${(currentMemory.heapUsed / 1024 / 1024).toFixed(1)}MB, Operations: ${operationCount}`
+        );
+
+        // Early detection of severe memory leaks
+        if (memorySnapshots.length > 2) {
+          const firstSnapshot = memorySnapshots[0];
+          const latestSnapshot = memorySnapshots[memorySnapshots.length - 1];
+          const memoryIncreaseMB =
+            (latestSnapshot.heapUsed - firstSnapshot.heapUsed) / (1024 * 1024);
+
+          // Fail early if memory increases more than 500MB
+          if (memoryIncreaseMB > 500) {
+            clearInterval(memoryMonitor);
+            clearInterval(operationRunner);
+            throw new Error(
+              `Severe memory leak detected: ${memoryIncreaseMB.toFixed(1)}MB increase in ${elapsedMin.toFixed(1)} minutes`
+            );
+          }
+        }
+      }, memoryCheckIntervalMs);
+
+      // Setup periodic operations
+      const operationRunner = setInterval(async () => {
+        try {
+          const endOperation = metricsCollector.startOperation();
+
+          // Generate a small image for the operation
+          const images = await imageGenerator.generateBatchForTest(
+            'memory-leak-30min-ops',
+            1,
+            [0.5, 1.5]
+          );
+          const image = images[0];
+
+          // Perform write operation
+          await page.evaluate(
+            async ({ image, imageName }: { image: any; imageName: string }) => {
+              const vfsService = (window as any).vfsService;
+              if (!vfsService) throw new Error('VFS service not available');
+
+              await vfsService.writeFile(imageName, image.data);
+            },
+            {
+              image,
+              imageName: `leak-test-${operationCount}.jpg`,
+            }
+          );
+
+          // Occasionally read and delete old files to test cleanup
+          if (operationCount > 10 && operationCount % 10 === 0) {
+            const oldFileName = `leak-test-${operationCount - 10}.jpg`;
+
+            // Read old file
+            await page.evaluate(
+              async (params: { fileName: string }) => {
+                const vfsService = (window as any).vfsService;
+                try {
+                  await vfsService.readFile(params.fileName);
+                } catch (error) {
+                  // File might not exist, that's okay
+                }
+              },
+              { fileName: oldFileName }
+            );
+
+            // Delete old file
+            await page.evaluate(
+              async (params: { fileName: string }) => {
+                const vfsService = (window as any).vfsService;
+                try {
+                  await vfsService.deleteFile(params.fileName);
+                } catch (error) {
+                  // File might not exist, that's okay
+                }
+              },
+              { fileName: oldFileName }
+            );
+          }
+
+          endOperation();
+          metricsCollector.recordBytes(image.size);
+          operationCount++;
+        } catch (error) {
+          metricsCollector.recordError('continuous-operation');
+          console.error('Operation failed:', error);
+        }
+      }, operationIntervalMs);
+
+      // Wait for the full test duration
+      await new Promise(resolve => setTimeout(resolve, testDurationMs));
+
+      // Cleanup intervals
+      clearInterval(memoryMonitor);
+      clearInterval(operationRunner);
+
+      // Final memory check
+      const finalMemory = await metricsCollector.collectMemoryMetrics();
+      memorySnapshots.push({
+        time: testDurationMs / (1000 * 60),
+        heapUsed: finalMemory.heapUsed,
+        heapTotal: finalMemory.heapTotal,
+      });
+
+      // Analyze memory trends
+      const firstSnapshot = memorySnapshots[0];
+      const lastSnapshot = memorySnapshots[memorySnapshots.length - 1];
+      const memoryIncreaseMB =
+        (lastSnapshot.heapUsed - firstSnapshot.heapUsed) / (1024 * 1024);
+      const memoryIncreasePercent =
+        (memoryIncreaseMB / (firstSnapshot.heapUsed / 1024 / 1024)) * 100;
+
+      console.log(`Memory leak test completed:`);
+      console.log(`- Duration: 30 minutes`);
+      console.log(`- Operations: ${operationCount}`);
+      console.log(
+        `- Memory increase: ${memoryIncreaseMB.toFixed(1)}MB (${memoryIncreasePercent.toFixed(1)}%)`
+      );
+      console.log(
+        `- Initial heap: ${(firstSnapshot.heapUsed / 1024 / 1024).toFixed(1)}MB`
+      );
+      console.log(
+        `- Final heap: ${(lastSnapshot.heapUsed / 1024 / 1024).toFixed(1)}MB`
+      );
+
+      // Memory leak assertions
+      expect(memoryIncreaseMB).toBeLessThan(200); // Less than 200MB increase over 30 minutes
+      expect(memoryIncreasePercent).toBeLessThan(100); // Less than 100% increase
+
+      // Performance assertions
+      expect(operationCount).toBeGreaterThan(800); // Should complete at least 800 operations (30min * 60s/2s)
+
+      // Check for memory leak using built-in detector
+      const hasMemoryLeak = metricsCollector.detectMemoryLeak(100); // 100MB threshold
+      expect(hasMemoryLeak).toBe(false);
+
+      // Verify operations completed successfully
+      const metrics = await metricsCollector.getMetrics();
+      expect(metrics.errors.count).toBeLessThan(operationCount * 0.05); // Less than 5% error rate
+    },
+    35 * 60 * 1000
+  ); // 35 minute timeout
+
+  test('should handle rapid allocation and deallocation cycles', async ({
+    page,
+    serverInstance,
+  }) => {
+    await setupTestWithServer(page, serverInstance);
+    await waitForVFSConnection(page);
+
+    const cycles = 100;
+    const filesPerCycle = 20;
+
+    console.log(
+      `Starting rapid allocation test: ${cycles} cycles, ${filesPerCycle} files per cycle`
+    );
+
+    const metricsCollector = new MetricsCollector('rapid-allocation-test');
+    const memorySnapshots: Array<{ cycle: number; heapUsed: number }> = [];
+
+    for (let cycle = 0; cycle < cycles; cycle++) {
+      // Allocation phase: create many files
+      const images = await imageGenerator.generateBatchForTest(
+        `rapid-alloc-cycle-${filesPerCycle}files`,
+        filesPerCycle,
+        [0.2, 0.5]
+      );
+
+      for (let i = 0; i < images.length; i++) {
+        const image = images[i];
+        const endOperation = metricsCollector.startOperation();
+
+        try {
+          await page.evaluate(
+            async ({ image, imageName }: { image: any; imageName: string }) => {
+              const vfsService = (window as any).vfsService;
+              if (!vfsService) throw new Error('VFS service not available');
+
+              await vfsService.writeFile(imageName, image.data);
+            },
+            {
+              image,
+              imageName: `cycle-${cycle}-file-${i}.jpg`,
+            }
+          );
+
+          endOperation();
+          metricsCollector.recordBytes(image.size);
+        } catch (error) {
+          endOperation();
+          metricsCollector.recordError('allocation-phase');
+        }
+      }
+
+      // Deallocation phase: delete all files from this cycle
+      for (let i = 0; i < filesPerCycle; i++) {
+        try {
+          await page.evaluate(
+            async (params: { fileName: string }) => {
+              const vfsService = (window as any).vfsService;
+              await vfsService.deleteFile(params.fileName);
+            },
+            { fileName: `cycle-${cycle}-file-${i}.jpg` }
+          );
+        } catch (error) {
+          metricsCollector.recordError('deallocation-phase');
+        }
+      }
+
+      // Memory snapshot every 10 cycles
+      if (cycle % 10 === 0) {
+        const memory = await metricsCollector.collectMemoryMetrics();
+        memorySnapshots.push({
+          cycle: cycle,
+          heapUsed: memory.heapUsed,
+        });
+
+        console.log(
+          `Cycle ${cycle}: Heap ${(memory.heapUsed / 1024 / 1024).toFixed(1)}MB`
+        );
+      }
+
+      // Force garbage collection hint (if available in test environment)
+      if ((cycle + 1) % 20 === 0) {
+        await page.evaluate(() => {
+          if ((window as any).gc) {
+            (window as any).gc();
+          }
+        });
+      }
+    }
+
+    // Final memory analysis
+    const metrics = await metricsCollector.getMetrics();
+
+    if (memorySnapshots.length >= 2) {
+      const firstMemory = memorySnapshots[0].heapUsed;
+      const lastMemory = memorySnapshots[memorySnapshots.length - 1].heapUsed;
+      const memoryGrowthMB = (lastMemory - firstMemory) / (1024 * 1024);
+
+      console.log(`Rapid allocation test completed:`);
+      console.log(`- Cycles: ${cycles}`);
+      console.log(`- Total operations: ${cycles * filesPerCycle * 2}`); // write + delete
+      console.log(`- Memory growth: ${memoryGrowthMB.toFixed(1)}MB`);
+      console.log(`- Error count: ${metrics.errors.count}`);
+
+      // Memory should not grow significantly after allocation/deallocation cycles
+      expect(memoryGrowthMB).toBeLessThan(100); // Less than 100MB growth
+
+      // Error rate should be reasonable
+      expect(metrics.errors.count).toBeLessThan(cycles * filesPerCycle * 0.05); // Less than 5% error rate
+    }
+  });
+
+  test('should maintain stable memory during concurrent operations', async ({
+    page,
+    serverInstance,
+  }) => {
+    await setupTestWithServer(page, serverInstance);
+    await waitForVFSConnection(page);
+
+    const duration = 5 * 60 * 1000; // 5 minutes
+    const concurrentTasks = 5;
+
+    console.log(
+      `Starting concurrent memory stability test: ${duration / 1000}s with ${concurrentTasks} concurrent tasks`
+    );
+
+    const metricsCollector = new MetricsCollector('concurrent-memory-test');
+    const startTime = Date.now();
+    const memorySnapshots: Array<{ time: number; heapUsed: number }> = [];
+
+    // Memory monitoring
+    const memoryMonitor = setInterval(async () => {
+      const memory = await metricsCollector.collectMemoryMetrics();
+      const elapsedSec = (Date.now() - startTime) / 1000;
+
+      memorySnapshots.push({
+        time: elapsedSec,
+        heapUsed: memory.heapUsed,
+      });
+
+      console.log(
+        `${elapsedSec.toFixed(0)}s: Heap ${(memory.heapUsed / 1024 / 1024).toFixed(1)}MB`
+      );
+    }, 10000); // Every 10 seconds
+
+    // Start concurrent tasks
+    const taskPromises = Array.from(
+      { length: concurrentTasks },
+      async (_, taskIndex) => {
+        let operationCount = 0;
+
+        while (Date.now() - startTime < duration) {
+          try {
+            const endOperation = metricsCollector.startOperation();
+
+            // Different operation patterns for each task
+            if (taskIndex % 3 === 0) {
+              // Write operations
+              const images = await imageGenerator.generateBatchForTest(
+                `concurrent-memory-task${taskIndex}`,
+                1,
+                [0.3, 0.8]
+              );
+              const image = images[0];
+
+              await page.evaluate(
+                async ({ image, imageName }: { image: any; imageName: string }) => {
+                  const vfsService = (window as any).vfsService;
+                  await vfsService.writeFile(
+                    imageName,
+                    image.data
+                  );
+                },
+                {
+                  image,
+                  imageName: `concurrent-${taskIndex}-${operationCount}.jpg`,
+                }
+              );
+
+              metricsCollector.recordBytes(image.size);
+            } else if (taskIndex % 3 === 1) {
+              // Read/write cycles
+              const fileName = `readwrite-${taskIndex}-${operationCount}.txt`;
+              const content = `Task ${taskIndex} content ${operationCount} ${Date.now()}`;
+
+              await page.evaluate(
+                async (params: { fileName: string; content: string }) => {
+                  const vfsService = (window as any).vfsService;
+                  await vfsService.writeFile(params.fileName, params.content);
+                  const readBack = await vfsService.readFile(params.fileName);
+                  if (readBack !== params.content)
+                    throw new Error('Read/write mismatch');
+                },
+                { fileName, content }
+              );
+
+              metricsCollector.recordBytes(content.length * 2);
+            } else {
+              // Create and delete cycles
+              const fileName = `temp-${taskIndex}-${operationCount}.txt`;
+              const content = `Temporary content ${operationCount}`;
+
+              await page.evaluate(
+                async (params: { fileName: string; content: string }) => {
+                  const vfsService = (window as any).vfsService;
+                  await vfsService.writeFile(params.fileName, params.content);
+                  await vfsService.deleteFile(params.fileName);
+                },
+                { fileName, content }
+              );
+
+              metricsCollector.recordBytes(content.length);
+            }
+
+            endOperation();
+            operationCount++;
+
+            // Small delay between operations
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } catch (error) {
+            metricsCollector.recordError(`concurrent-task-${taskIndex}`);
+          }
+        }
+
+        console.log(`Task ${taskIndex} completed ${operationCount} operations`);
+        return operationCount;
+      }
+    );
+
+    // Wait for all tasks to complete
+    const taskResults = await Promise.all(taskPromises);
+
+    // Cleanup
+    clearInterval(memoryMonitor);
+
+    // Final analysis
+    const metrics = await metricsCollector.getMetrics();
+    const totalOperations = taskResults.reduce((sum, count) => sum + count, 0);
+
+    if (memorySnapshots.length >= 2) {
+      const memoryVariation = memorySnapshots.map(s => s.heapUsed);
+      const maxMemory = Math.max(...memoryVariation);
+      const minMemory = Math.min(...memoryVariation);
+      const memoryRangeMB = (maxMemory - minMemory) / (1024 * 1024);
+
+      console.log(`Concurrent memory test completed:`);
+      console.log(`- Total operations: ${totalOperations}`);
+      console.log(`- Memory range: ${memoryRangeMB.toFixed(1)}MB`);
+      console.log(`- Error count: ${metrics.errors.count}`);
+
+      // Memory should remain relatively stable
+      expect(memoryRangeMB).toBeLessThan(150); // Memory range should be less than 150MB
+
+      // Should complete a reasonable number of operations
+      expect(totalOperations).toBeGreaterThan(1000);
+
+      // Error rate should be low
+      expect(metrics.errors.count).toBeLessThan(totalOperations * 0.05);
+    }
+  });
+});

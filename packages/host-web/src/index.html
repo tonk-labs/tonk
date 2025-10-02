@@ -1,0 +1,1598 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>TONK BIOS</title>
+    <style>
+      @font-face {
+        font-family: 'VGA';
+        src: url('data:font/woff2;base64,') format('woff2');
+        font-display: block;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: rgb(73, 24, 79);
+        color: #fff;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 16px;
+        line-height: 1.4;
+        padding: 20px;
+        min-height: 100vh;
+        cursor: default;
+        -webkit-font-smoothing: none;
+        -moz-osx-font-smoothing: grayscale;
+        text-rendering: optimizeSpeed;
+      }
+
+      .bios-container {
+        max-width: 800px;
+        margin: 0 auto;
+      }
+
+      .version-text {
+        text-align: center;
+        font-size: 14px;
+        font-weight: normal;
+        color: #ddd;
+        margin-bottom: 20px;
+      }
+
+      .boot-menu {
+        border: 2px solid #fff;
+        padding: 15px;
+        margin-bottom: 20px;
+        min-height: 400px;
+        transition: border-color 0.2s ease;
+      }
+
+      .boot-menu.drag-over {
+        border-color: #0f0;
+        background: rgba(0, 255, 0, 0.1);
+      }
+
+      .boot-menu-title {
+        color: #ddd;
+        margin-bottom: 10px;
+        font-size: 14px;
+      }
+
+      .app-list {
+        list-style: none;
+      }
+
+      .app-item {
+        padding: 5px 10px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        transition: none;
+        color: #fff;
+        background: transparent;
+        font-weight: 600;
+      }
+
+      .app-item.selected {
+        background: #ddd;
+        color: #000;
+      }
+
+      .app-item:not(.selected):hover {
+        background: #333;
+      }
+
+      .app-status {
+        margin-left: auto;
+        font-size: 12px;
+        color: #fff;
+        font-weight: 600;
+      }
+
+      .app-item.selected .app-status {
+        color: #000;
+      }
+
+      .instructions {
+        color: #ddd;
+        font-size: 12px;
+        margin-top: 20px;
+        line-height: 1.6;
+      }
+
+      .loading-message {
+        color: #fff;
+        animation: blink 1s infinite;
+      }
+
+      @keyframes blink {
+        0%,
+        50% {
+          opacity: 1;
+        }
+        51%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      .error-message {
+        color: #f00;
+        margin-top: 10px;
+      }
+
+      .confirmation-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #000;
+        border: 2px solid #666;
+        padding: 20px;
+        min-width: 400px;
+        display: none;
+        z-index: 1000;
+      }
+
+      .confirmation-dialog.active {
+        display: block;
+      }
+
+      .confirmation-title {
+        color: #fff;
+        margin-bottom: 15px;
+        font-size: 14px;
+      }
+
+      .confirmation-message {
+        color: #999;
+        margin-bottom: 20px;
+        font-size: 14px;
+      }
+
+      .confirmation-buttons {
+        display: flex;
+        gap: 10px;
+      }
+
+      .btn {
+        padding: 5px 15px;
+        background: #333;
+        color: #fff;
+        border: 1px solid #666;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 14px;
+      }
+
+      .btn:hover {
+        background: #444;
+      }
+
+      .btn.primary {
+        background: #fff;
+        color: #000;
+        font-weight: 600;
+      }
+
+      .btn.primary:hover {
+        background: #ddd;
+      }
+
+      .overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        display: none;
+        z-index: 999;
+      }
+
+      .overlay.active {
+        display: block;
+      }
+
+      .share-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #000;
+        border: 2px solid #666;
+        padding: 20px;
+        min-width: 400px;
+        display: none;
+        z-index: 1000;
+      }
+
+      .share-dialog.active {
+        display: block;
+      }
+
+      .share-title {
+        color: #fff;
+        margin-bottom: 15px;
+        font-size: 14px;
+      }
+
+      .share-options {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .share-loader {
+        display: none;
+        text-align: center;
+        padding: 20px;
+      }
+
+      .share-loader.active {
+        display: block;
+      }
+
+      .spinner {
+        border: 4px solid #333;
+        border-top: 4px solid #fff;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 10px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .qr-code-container {
+        display: none;
+        text-align: center;
+        padding: 20px;
+      }
+
+      .qr-code-container.active {
+        display: block;
+      }
+
+      .qr-code-image {
+        width: 200px;
+        height: 200px;
+        margin: 0 auto 15px;
+        background: #fff;
+        padding: 10px;
+        display: block;
+      }
+
+      .name-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #000;
+        border: 2px solid #666;
+        padding: 20px;
+        min-width: 400px;
+        display: none;
+        z-index: 1000;
+      }
+
+      .name-dialog.active {
+        display: block;
+      }
+
+      .name-title {
+        color: #fff;
+        margin-bottom: 15px;
+        font-size: 14px;
+      }
+
+      .name-message {
+        color: #ddd;
+        margin-bottom: 15px;
+        font-size: 12px;
+      }
+
+      .name-input-container {
+        margin-bottom: 20px;
+      }
+
+      .name-input-container input {
+        width: 100%;
+        padding: 8px;
+        background: #222;
+        border: 1px solid #666;
+        color: #fff;
+        font-size: 12px;
+        box-sizing: border-box;
+      }
+
+      .name-input-container input:focus {
+        outline: none;
+        border-color: #f90;
+      }
+
+      .name-buttons {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+      }
+
+      .download-spinner-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #000;
+        border: 2px solid #666;
+        padding: 30px;
+        min-width: 300px;
+        display: none;
+        z-index: 1001;
+        text-align: center;
+      }
+
+      .download-spinner-dialog.active {
+        display: block;
+      }
+    </style>
+    <script>
+      // BIOS Boot Manager State
+      let selectedAppIndex = 0;
+      let availableApps = [];
+      let isConfirmationOpen = false;
+
+      // Show loading screen
+      function showLoadingScreen(message = 'Initializing TONK runtime...') {
+        document.getElementById('loading-screen').style.display = 'block';
+        document.getElementById('boot-screen').style.display = 'none';
+        document.getElementById('error-screen').style.display = 'none';
+        document.getElementById('prompt-screen').style.display = 'none';
+        document.querySelector('.loading-message').textContent = message;
+      }
+
+      // Show boot menu
+      function showBootMenu() {
+        document.getElementById('loading-screen').style.display = 'none';
+        document.getElementById('boot-screen').style.display = 'block';
+        document.getElementById('error-screen').style.display = 'none';
+        document.getElementById('prompt-screen').style.display = 'none';
+      }
+
+      // Show error screen
+      function showError(message) {
+        document.getElementById('loading-screen').style.display = 'none';
+        document.getElementById('boot-screen').style.display = 'none';
+        document.getElementById('error-screen').style.display = 'block';
+        document.getElementById('prompt-screen').style.display = 'none';
+        document.querySelector('.error-message').textContent = message;
+      }
+
+      // Show prompt screen (no bundle loaded)
+      function showPromptScreen() {
+        document.getElementById('loading-screen').style.display = 'none';
+        document.getElementById('boot-screen').style.display = 'none';
+        document.getElementById('error-screen').style.display = 'none';
+        document.getElementById('prompt-screen').style.display = 'block';
+      }
+
+      // Render app list
+      function renderAppList() {
+        const appList = document.getElementById('app-list');
+        appList.innerHTML = '';
+
+        if (availableApps.length === 0) {
+          const li = document.createElement('li');
+          li.className = 'app-item';
+          li.textContent = 'No applications found';
+          li.style.color = '#666';
+          appList.appendChild(li);
+          return;
+        }
+
+        availableApps.forEach((app, index) => {
+          const li = document.createElement('li');
+          li.className = 'app-item';
+          if (index === selectedAppIndex) {
+            li.classList.add('selected');
+          }
+
+          const appName = document.createElement('span');
+          appName.textContent = app.name || app;
+          li.appendChild(appName);
+
+          const appStatus = document.createElement('span');
+          appStatus.className = 'app-status';
+          appStatus.textContent = app.status || 'Ready';
+          li.appendChild(appStatus);
+
+          appList.appendChild(li);
+        });
+      }
+
+      // Handle keyboard navigation
+      function handleKeyDown(e) {
+        if (isConfirmationOpen) {
+          if (e.key === 'Enter' || e.key === 'y' || e.key === 'Y') {
+            confirmBoot();
+          } else if (e.key === 'Escape' || e.key === 'n' || e.key === 'N') {
+            cancelBoot();
+          }
+          return;
+        }
+
+        if (availableApps.length === 0) return;
+
+        switch (e.key) {
+          case 'ArrowUp':
+            e.preventDefault();
+            selectedAppIndex = Math.max(0, selectedAppIndex - 1);
+            renderAppList();
+            break;
+          case 'ArrowDown':
+            e.preventDefault();
+            selectedAppIndex = Math.min(
+              availableApps.length - 1,
+              selectedAppIndex + 1
+            );
+            renderAppList();
+            break;
+          case 'Enter':
+            e.preventDefault();
+            showConfirmation();
+            break;
+        }
+      }
+
+      // Show confirmation dialog
+      function showConfirmation() {
+        if (availableApps.length === 0) return;
+
+        const app = availableApps[selectedAppIndex];
+        const appName = typeof app === 'string' ? app : app.name;
+
+        document.getElementById(
+          'confirmation-message'
+        ).textContent = `Are you sure you want to boot "${appName}"?`;
+        document.getElementById('confirmation-dialog').classList.add('active');
+        document.getElementById('overlay').classList.add('active');
+        isConfirmationOpen = true;
+      }
+
+      // Confirm boot
+      async function confirmBoot() {
+        const app = availableApps[selectedAppIndex];
+        const appSlug = typeof app === 'string' ? app : app.slug || app.name;
+
+        console.log('Booting application:', appSlug);
+
+        // Hide confirmation dialog
+        document
+          .getElementById('confirmation-dialog')
+          .classList.remove('active');
+        document.getElementById('overlay').classList.remove('active');
+        isConfirmationOpen = false;
+
+        // Show loading screen
+        showLoadingScreen(`Loading ${appSlug}...`);
+
+        // Set the app slug in the service worker
+        if (navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({
+            type: 'setAppSlug',
+            slug: appSlug,
+          });
+
+          // Save to localStorage for persistence
+          localStorage.setItem('appSlug', appSlug);
+
+          // Wait a moment for the service worker to process
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Redirect to the app
+          window.location.href = `/${appSlug}/`;
+        } else {
+          showError('Service worker not ready. Please refresh the page.');
+        }
+      }
+
+      // Cancel boot
+      function cancelBoot() {
+        document
+          .getElementById('confirmation-dialog')
+          .classList.remove('active');
+        document.getElementById('overlay').classList.remove('active');
+        isConfirmationOpen = false;
+      }
+      // Show share dialog
+      function showShareDialog() {
+        document.getElementById('share-dialog').classList.add('active');
+        document.getElementById('overlay').classList.add('active');
+
+        // Reset to options view
+        document.getElementById('share-options-view').style.display = 'block';
+        document.getElementById('share-loader').classList.remove('active');
+        document.getElementById('qr-code-container').classList.remove('active');
+      }
+
+      // Close share dialog
+      function closeShareDialog() {
+        document.getElementById('share-dialog').classList.remove('active');
+        document.getElementById('overlay').classList.remove('active');
+      }
+
+      async function getServerUrl() {
+        if (!navigator.serviceWorker.controller) {
+          throw new Error('No service worker controller available');
+        }
+
+        const requestId = 'get-server-url-' + Date.now();
+
+        const response = await new Promise((resolve, reject) => {
+          const messageHandler = event => {
+            if (
+              event.data &&
+              event.data.type === 'getServerUrl' &&
+              event.data.id === requestId
+            ) {
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              resolve(event.data);
+            }
+          };
+
+          navigator.serviceWorker.addEventListener('message', messageHandler);
+          navigator.serviceWorker.controller.postMessage({
+            type: 'getServerUrl',
+            id: requestId,
+          });
+
+          setTimeout(() => {
+            navigator.serviceWorker.removeEventListener(
+              'message',
+              messageHandler
+            );
+            reject(new Error('Timeout waiting for server URL'));
+          }, 5000);
+        });
+
+        if (response.success && response.data) {
+          return response.data;
+        } else {
+          throw new Error('Failed to get server URL');
+        }
+      }
+
+      async function shareAsUrl() {
+        document.getElementById('share-options-view').style.display = 'none';
+        document.getElementById('share-loader').classList.add('active');
+
+        try {
+          const serverUrl = await getServerUrl();
+
+          const requestId = 'to-bytes-' + Date.now();
+          const bytesResponse = await new Promise((resolve, reject) => {
+            const messageHandler = event => {
+              if (
+                event.data &&
+                event.data.type === 'toBytes' &&
+                event.data.id === requestId
+              ) {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                resolve(event.data);
+              }
+            };
+
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+            navigator.serviceWorker.controller.postMessage({
+              type: 'toBytes',
+              id: requestId,
+            });
+
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              reject(new Error('Timeout waiting for toBytes response'));
+            }, 30000);
+          });
+
+          if (!bytesResponse.success || !bytesResponse.data) {
+            throw new Error(
+              bytesResponse.error || 'Failed to get bundle bytes'
+            );
+          }
+
+          const bundleBytes = bytesResponse.data;
+          const rootId = bytesResponse.rootId;
+
+          const uploadResponse = await fetch(`${serverUrl}/api/bundles`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/octet-stream',
+            },
+            body: bundleBytes,
+          });
+
+          if (!uploadResponse.ok) {
+            const errorData = await uploadResponse.json();
+            throw new Error(errorData.error || 'Failed to upload bundle');
+          }
+
+          const uploadResult = await uploadResponse.json();
+          const bundleId = uploadResult.id;
+
+          const manifestUrl = `${serverUrl}/api/bundles/${bundleId}`;
+          const shareUrl = `${
+            window.location.origin
+          }/?bundle=${encodeURIComponent(manifestUrl)}`;
+
+          const QRCode = await import('https://esm.sh/qrcode@1.5.3');
+          const qrDataUrl = await QRCode.toDataURL(shareUrl, {
+            width: 200,
+            margin: 2,
+            color: {
+              dark: '#000000',
+              light: '#ffffff',
+            },
+          });
+
+          document.getElementById('qr-code-image').src = qrDataUrl;
+          document.getElementById('share-loader').classList.remove('active');
+          document.getElementById('qr-code-container').classList.add('active');
+        } catch (error) {
+          console.error('Failed to generate share URL:', error);
+
+          document.getElementById('share-loader').classList.remove('active');
+
+          document.getElementById('share-options-view').innerHTML = `
+                  <div style="color: #f00; margin-bottom: 15px;">
+                    Failed to upload bundle: ${error.message}
+                  </div>
+                  <button class="btn" onclick="closeShareDialog(); showShareDialog();" style="width: 100%;">Try Again</button>
+                  <button class="btn" onclick="closeShareDialog()" style="width: 100%; margin-top: 10px;">Close</button>
+                `;
+          document.getElementById('share-options-view').style.display = 'block';
+        }
+      }
+
+      // Show download spinner
+      function showDownloadSpinner() {
+        document
+          .getElementById('download-spinner-dialog')
+          .classList.add('active');
+        document.getElementById('overlay').classList.add('active');
+      }
+
+      // Hide download spinner
+      function hideDownloadSpinner() {
+        document
+          .getElementById('download-spinner-dialog')
+          .classList.remove('active');
+        // Only remove overlay if share dialog is also closed
+        if (
+          !document.getElementById('share-dialog').classList.contains('active')
+        ) {
+          document.getElementById('overlay').classList.remove('active');
+        }
+      }
+
+      // Handle share as file (download)
+      async function shareAsFile() {
+        // Close the share dialog
+        closeShareDialog();
+
+        // Show download spinner
+        showDownloadSpinner();
+
+        // Call the existing download function
+        try {
+          await downloadTonk();
+        } finally {
+          // Hide spinner after download completes or fails
+          hideDownloadSpinner();
+        }
+      }
+
+      // Download Tonk
+      async function downloadTonk() {
+        console.log('Downloading tonk bundle...');
+
+        try {
+          if (!navigator.serviceWorker.controller) {
+            throw new Error('No service worker controller available');
+          }
+
+          const requestId = 'to-bytes-' + Date.now();
+
+          // Set up response handler
+          const response = await new Promise((resolve, reject) => {
+            const messageHandler = event => {
+              if (
+                event.data &&
+                event.data.type === 'toBytes' &&
+                event.data.id === requestId
+              ) {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                resolve(event.data);
+              }
+            };
+
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+
+            // Send the toBytes message
+            navigator.serviceWorker.controller.postMessage({
+              type: 'toBytes',
+              id: requestId,
+            });
+
+            // Timeout after 30 seconds
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              reject(new Error('Timeout waiting for toBytes response'));
+            }, 30000);
+          });
+
+          if (response.success && response.data) {
+            // Create a Blob from the Uint8Array
+            const blob = new Blob([response.data], {
+              type: 'application/octet-stream',
+            });
+
+            // Create a download link
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${response.rootId}.tonk`;
+            document.body.appendChild(a);
+            a.click();
+
+            // Clean up
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          } else {
+            console.error('Failed to get bundle bytes:', response.error);
+            showError(`Failed to download bundle: ${response.error}`);
+          }
+        } catch (error) {
+          console.error('Error downloading tonk bundle:', error);
+          showError(`Error downloading bundle: ${error.message}`);
+        }
+      }
+
+      // New Tonk
+      async function newTonk() {
+        console.log('Creating new forked tonk bundle...');
+
+        // Pre-populate with first app name if available
+        const defaultName =
+          availableApps.length > 0 ? availableApps[0] : 'new-tonk';
+
+        // Show name dialog
+        showNameDialog(defaultName);
+      }
+
+      // Show name dialog for new tonk
+      function showNameDialog(defaultName) {
+        const dialog = document.getElementById('name-dialog');
+        const input = document.getElementById('tonk-name-input');
+
+        input.value = defaultName;
+        input.select(); // Select all text for easy editing
+
+        dialog.classList.add('active');
+        document.getElementById('overlay').style.display = 'block';
+
+        // Focus the input
+        setTimeout(() => input.focus(), 100);
+      }
+
+      // Hide name dialog
+      function hideNameDialog() {
+        const dialog = document.getElementById('name-dialog');
+        dialog.classList.remove('active');
+        document.getElementById('overlay').style.display = 'none';
+      }
+
+      // Create new tonk with the specified name
+      async function createNewTonk(tonkName) {
+        console.log('Creating new tonk with name:', tonkName);
+
+        // Show loading spinner
+        showDownloadSpinner();
+
+        try {
+          if (!navigator.serviceWorker.controller) {
+            throw new Error('No service worker controller available');
+          }
+
+          // Step 1: Fork to bytes
+          const forkRequestId = 'fork-to-bytes-' + Date.now();
+          const forkResponse = await new Promise((resolve, reject) => {
+            const messageHandler = event => {
+              if (
+                event.data &&
+                event.data.type === 'forkToBytes' &&
+                event.data.id === forkRequestId
+              ) {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                resolve(event.data);
+              }
+            };
+
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+
+            navigator.serviceWorker.controller.postMessage({
+              type: 'forkToBytes',
+              id: forkRequestId,
+            });
+
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              reject(new Error('Timeout waiting for forkToBytes response'));
+            }, 30000);
+          });
+
+          if (!forkResponse.success || !forkResponse.data) {
+            throw new Error(forkResponse.error || 'Failed to fork tonk');
+          }
+
+          // Step 2: Load the forked bundle
+          const loadRequestId = 'load-bundle-' + Date.now();
+          const loadResponse = await new Promise((resolve, reject) => {
+            const messageHandler = event => {
+              if (
+                event.data &&
+                event.data.type === 'loadBundle' &&
+                event.data.id === loadRequestId
+              ) {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                resolve(event.data);
+              }
+            };
+
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+
+            // Convert Uint8Array to ArrayBuffer
+            const arrayBuffer = forkResponse.data.buffer.slice(
+              forkResponse.data.byteOffset,
+              forkResponse.data.byteOffset + forkResponse.data.byteLength
+            );
+
+            navigator.serviceWorker.controller.postMessage({
+              type: 'loadBundle',
+              id: loadRequestId,
+              bundleBytes: arrayBuffer,
+            });
+
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              reject(new Error('Timeout waiting for loadBundle response'));
+            }, 30000);
+          });
+
+          if (!loadResponse.success) {
+            throw new Error(
+              loadResponse.error || 'Failed to load forked bundle'
+            );
+          }
+
+          // Step 3: Rename the app directory
+          const oldName = availableApps.length > 0 ? availableApps[0] : 'app';
+          const renameRequestId = 'rename-' + Date.now();
+          const renameResponse = await new Promise((resolve, reject) => {
+            const messageHandler = event => {
+              if (
+                event.data &&
+                event.data.type === 'rename' &&
+                event.data.id === renameRequestId
+              ) {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                resolve(event.data);
+              }
+            };
+
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+
+            navigator.serviceWorker.controller.postMessage({
+              type: 'rename',
+              id: renameRequestId,
+              oldPath: `/app/${oldName}`,
+              newPath: `/app/${tonkName}`,
+            });
+
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              reject(new Error('Timeout waiting for rename response'));
+            }, 30000);
+          });
+
+          if (!renameResponse.success) {
+            console.warn(
+              'Failed to rename app directory:',
+              renameResponse.error
+            );
+            // Continue anyway, the tonk was created successfully
+          }
+
+          // Step 4: Refresh the app list and show the new tonk
+          await proceedToBiosMenu();
+        } catch (error) {
+          console.error('Error creating new tonk:', error);
+          showError(`Error creating new tonk: ${error.message}`);
+        } finally {
+          hideDownloadSpinner();
+        }
+      }
+
+      // Drag and drop handlers
+      function setupDragAndDrop() {
+        // Set up on the entire body for better UX
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+          document.body.addEventListener(eventName, preventDefaults, false);
+        });
+
+        // Highlight active screen when item is dragged over it
+        ['dragenter', 'dragover'].forEach(eventName => {
+          document.body.addEventListener(
+            eventName,
+            () => {
+              const activeMenu = document.querySelector(
+                '#prompt-screen:not([style*="display: none"]) .boot-menu, #boot-screen:not([style*="display: none"]) .boot-menu'
+              );
+              if (activeMenu) {
+                activeMenu.classList.add('drag-over');
+              }
+            },
+            false
+          );
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+          document.body.addEventListener(
+            eventName,
+            () => {
+              document.querySelectorAll('.boot-menu').forEach(menu => {
+                menu.classList.remove('drag-over');
+              });
+            },
+            false
+          );
+        });
+
+        // Handle dropped files on body
+        document.body.addEventListener('drop', handleDrop, false);
+      }
+
+      function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+
+      function highlight(e) {
+        document.querySelector('.boot-menu').classList.add('drag-over');
+      }
+
+      function unhighlight(e) {
+        document.querySelector('.boot-menu').classList.remove('drag-over');
+      }
+
+      async function handleDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+
+        if (files.length === 0) return;
+
+        // Filter for .tonk files
+        const tonkFiles = Array.from(files).filter(file =>
+          file.name.toLowerCase().endsWith('.tonk')
+        );
+
+        if (tonkFiles.length === 0) {
+          showError('Please drop only .tonk files');
+          return;
+        }
+
+        // Process the first .tonk file (only support one bundle at a time)
+        if (tonkFiles.length > 0) {
+          await processTonkFile(tonkFiles[0]);
+        }
+      }
+
+      async function processTonkFile(file) {
+        console.log('Processing .tonk file:', file.name);
+
+        showLoadingScreen('Loading bundle from file...');
+
+        try {
+          // Read the file as ArrayBuffer
+          const arrayBuffer = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = e => resolve(e.target.result);
+            reader.onerror = e => reject(e);
+            reader.readAsArrayBuffer(file);
+          });
+
+          console.log(
+            'File read as ArrayBuffer, size:',
+            arrayBuffer.byteLength
+          );
+
+          // Send loadBundle message to service worker
+          if (!navigator.serviceWorker.controller) {
+            throw new Error('No service worker controller available');
+          }
+
+          const requestId = 'load-bundle-' + Date.now();
+
+          // Set up response handler
+          const response = await new Promise((resolve, reject) => {
+            const messageHandler = event => {
+              if (
+                event.data &&
+                event.data.type === 'loadBundle' &&
+                event.data.id === requestId
+              ) {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                resolve(event.data);
+              }
+            };
+
+            navigator.serviceWorker.addEventListener('message', messageHandler);
+
+            // Send the loadBundle message
+            navigator.serviceWorker.controller.postMessage({
+              type: 'loadBundle',
+              id: requestId,
+              bundleBytes: arrayBuffer,
+            });
+
+            // Timeout after 30 seconds
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              reject(new Error('Timeout waiting for loadBundle response'));
+            }, 30000);
+          });
+
+          if (response.success) {
+            console.log('Bundle loaded successfully:', file.name);
+
+            // After successful load, proceed to BIOS menu
+            await proceedToBiosMenu();
+          } else {
+            console.error('Failed to load bundle:', response.error);
+            showError(`Failed to load bundle: ${response.error}`);
+          }
+        } catch (error) {
+          console.error('Error processing tonk file:', error);
+          showError(`Error processing ${file.name}: ${error.message}`);
+        }
+      }
+
+      // Query available apps from service worker using standard messaging
+      async function queryAvailableApps() {
+        return new Promise((resolve, reject) => {
+          if (!navigator.serviceWorker.controller) {
+            console.log(
+              'No service worker controller, returning empty app list'
+            );
+            resolve([]);
+            return;
+          }
+
+          const requestId = 'bios-app-query-' + Date.now();
+
+          // Set up response handler
+          const messageHandler = event => {
+            console.log('Received message from service worker:', event.data);
+            if (
+              event.data &&
+              event.data.type === 'listDirectory' &&
+              event.data.id === requestId
+            ) {
+              // Remove the listener since we got our response
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+
+              if (event.data.success) {
+                // Extract app names from the directory listing
+                const files = event.data.data || [];
+                const apps = files
+                  .filter(file => file.type === 'directory')
+                  .map(file => file.name);
+                console.log('Extracted apps from directory listing:', apps);
+                resolve(apps);
+              } else {
+                // If VFS not initialized, return empty array instead of failing
+                if (
+                  event.data.error &&
+                  event.data.error.includes('not initialized')
+                ) {
+                  console.log(
+                    'VFS not initialized yet, returning empty app list'
+                  );
+                  resolve([]);
+                } else {
+                  console.log('Failed to get app list:', event.data.error);
+                  reject(event.data.error);
+                }
+              }
+            }
+          };
+
+          // Listen for messages from service worker
+          navigator.serviceWorker.addEventListener('message', messageHandler);
+
+          // Send listDirectory message to service worker
+          console.log('Sending listDirectory message to service worker');
+          navigator.serviceWorker.controller.postMessage({
+            type: 'listDirectory',
+            path: '/app',
+            id: requestId,
+          });
+
+          // Timeout fallback
+          setTimeout(() => {
+            navigator.serviceWorker.removeEventListener(
+              'message',
+              messageHandler
+            );
+            console.log('App list query timed out, using fallback');
+            reject('Cannot query app list, it timed out');
+          }, 20000);
+        });
+      }
+
+      // Wait for service worker to be ready
+      async function waitForServiceWorkerReady() {
+        return new Promise(resolve => {
+          // If service worker is already controlling the page, assume it's ready
+          if (navigator.serviceWorker.controller) {
+            console.log(
+              'Service worker is already controlling page, assuming ready'
+            );
+            resolve();
+            return;
+          }
+
+          let timeoutId;
+
+          const messageHandler = event => {
+            if (event.data && event.data.type === 'ready') {
+              console.log('Service worker is ready to handle requests');
+              clearTimeout(timeoutId);
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              resolve();
+            }
+          };
+
+          // Listen for the ready message from service worker
+          navigator.serviceWorker.addEventListener('message', messageHandler);
+
+          // Timeout fallback - if no ready message received in 10 seconds, proceed anyway
+          timeoutId = setTimeout(() => {
+            console.log(
+              'Service worker ready check timed out, proceeding anyway'
+            );
+            navigator.serviceWorker.removeEventListener(
+              'message',
+              messageHandler
+            );
+            resolve();
+          }, 10000);
+        });
+      }
+
+      // Helper function to proceed to BIOS menu after bundle is loaded
+      async function proceedToBiosMenu() {
+        showLoadingScreen('Loading applications...');
+
+        // Query available apps
+        try {
+          availableApps = await queryAvailableApps();
+
+          // Render the boot menu
+          renderAppList();
+          showBootMenu();
+        } catch (error) {
+          console.error('Failed to query available apps:', error);
+          showError(`Failed to load applications: ${error.message}`);
+        }
+      }
+
+      // Initialize BIOS boot manager
+      async function initializeBios() {
+        // Check for bundle URL parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const bundleUrl = urlParams.get('bundle');
+
+        // Wait for service worker to be ready
+        await waitForServiceWorkerReady();
+
+        if (bundleUrl) {
+          // Scenario A: URL parameter provided - load from URL
+          showLoadingScreen('Loading bundle from URL...');
+
+          try {
+            if (!navigator.serviceWorker.controller) {
+              throw new Error('No service worker controller available');
+            }
+
+            const requestId = 'init-url-' + Date.now();
+
+            // Set up response handler
+            const response = await new Promise((resolve, reject) => {
+              const messageHandler = event => {
+                if (
+                  event.data &&
+                  event.data.type === 'initializeFromUrl' &&
+                  event.data.id === requestId
+                ) {
+                  navigator.serviceWorker.removeEventListener(
+                    'message',
+                    messageHandler
+                  );
+                  resolve(event.data);
+                }
+              };
+
+              navigator.serviceWorker.addEventListener(
+                'message',
+                messageHandler
+              );
+
+              // Send initializeFromUrl message
+              navigator.serviceWorker.controller.postMessage({
+                type: 'initializeFromUrl',
+                id: requestId,
+                manifestUrl: bundleUrl,
+                // Could add wasmUrl and wsUrl params here if needed
+              });
+
+              // Timeout after 30 seconds
+              setTimeout(() => {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                reject(new Error('Timeout waiting for initialization'));
+              }, 30000);
+            });
+
+            if (response.success) {
+              console.log('Bundle loaded successfully from URL');
+              await proceedToBiosMenu();
+            } else {
+              console.error('Failed to load bundle from URL:', response.error);
+              showError(`Failed to load bundle: ${response.error}`);
+            }
+          } catch (error) {
+            console.error('Error loading bundle from URL:', error);
+            showError(`Error loading bundle: ${error.message}`);
+          }
+        } else {
+          // Scenario B/C: No URL parameter - show prompt and wait for drag-drop
+          showPromptScreen();
+
+          // Set up drag and drop (so user can drop a bundle)
+          setupDragAndDrop();
+        }
+
+        // Set up event listeners (do this regardless of scenario)
+        // Query available apps
+        availableApps = await queryAvailableApps();
+        // Render the boot menu
+        renderAppList();
+        showBootMenu();
+        // Set up event listeners
+        document.addEventListener('keydown', handleKeyDown);
+        document
+          .getElementById('confirm-yes')
+          .addEventListener('click', confirmBoot);
+        document
+          .getElementById('confirm-no')
+          .addEventListener('click', cancelBoot);
+
+        // Name dialog event listeners
+        document
+          .getElementById('name-confirm')
+          .addEventListener('click', () => {
+            const input = document.getElementById('tonk-name-input');
+            const tonkName = input.value.trim();
+            if (tonkName) {
+              hideNameDialog();
+              createNewTonk(tonkName);
+            }
+          });
+
+        document
+          .getElementById('name-cancel')
+          .addEventListener('click', hideNameDialog);
+
+        // Handle Enter key in name input
+        document
+          .getElementById('tonk-name-input')
+          .addEventListener('keydown', e => {
+            if (e.key === 'Enter') {
+              const tonkName = e.target.value.trim();
+              if (tonkName) {
+                hideNameDialog();
+                createNewTonk(tonkName);
+              }
+            } else if (e.key === 'Escape') {
+              hideNameDialog();
+            }
+          });
+
+        // Handle app list clicks
+        document.getElementById('app-list').addEventListener('click', e => {
+          const appItem = e.target.closest('.app-item');
+          if (appItem) {
+            const index = Array.from(appItem.parentNode.children).indexOf(
+              appItem
+            );
+            if (index >= 0 && index < availableApps.length) {
+              selectedAppIndex = index;
+              renderAppList();
+              showConfirmation();
+            }
+          }
+        });
+      }
+
+      // Main initialization
+      (async () => {
+        // Wait for DOM to be ready
+        if (document.readyState === 'loading') {
+          await new Promise(resolve => {
+            document.addEventListener('DOMContentLoaded', resolve);
+          });
+        }
+
+        if ('serviceWorker' in navigator) {
+          // If we already have a controller, initialize immediately
+          if (navigator.serviceWorker.controller) {
+            console.log('Service worker is already controlling the page');
+            await initializeBios();
+          } else {
+            // Register service worker without bundle parameter
+            // Bundle will be loaded via message after registration
+            // Otherwise wait for a controller
+            const urlParams = new URLSearchParams(window.location.search);
+            const bundleParam = urlParams.get('bundle');
+            let serviceWorkerUrl = './service-worker-bundled.js';
+            if (bundleParam) {
+              serviceWorkerUrl += `?bundle=${encodeURIComponent(bundleParam)}`;
+            }
+            navigator.serviceWorker
+              .register(serviceWorkerUrl, { type: 'module' })
+              .catch(err => {
+                console.log('ServiceWorker registration failed: ', err);
+                showError(
+                  "Service Worker failed to load. If you're on Firefox, check ES module support."
+                );
+              });
+
+            console.log('Waiting for service worker to take control...');
+            navigator.serviceWorker.addEventListener(
+              'controllerchange',
+              async () => {
+                console.log('Service worker now controlling the page');
+                await initializeBios();
+              }
+            );
+          }
+        } else {
+          showError('Service Workers are not supported in this browser.');
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="bios-container">
+      <div class="version-text">TONK HOST WEB version 0.1.0</div>
+
+      <div id="boot-screen" style="display: none">
+        <div class="boot-menu">
+          <div class="boot-menu-title">Available Applications</div>
+          <ul class="app-list" id="app-list">
+            <!-- Apps will be dynamically loaded here -->
+          </ul>
+        </div>
+
+        <div class="instructions">
+          Use the ↑ and ↓ keys to select which entry is highlighted.<br />
+          Press enter to boot the selected application<br />
+          <br />
+          Drag a .tonk file onto the applications box to load it.
+        </div>
+
+        <div style="margin-top: 20px">
+          <button
+            class="btn primary"
+            onclick="showShareDialog()"
+            style="font-size: 16px; padding: 10px 20px; margin-right: 10px"
+          >
+            Share Tonk
+          </button>
+          <button
+            class="btn primary"
+            onclick="newTonk()"
+            style="font-size: 16px; padding: 10px 20px"
+          >
+            New Tonk
+          </button>
+        </div>
+      </div>
+
+      <div id="loading-screen">
+        <p class="loading-message">Initializing TONK runtime...</p>
+      </div>
+
+      <div id="error-screen" style="display: none">
+        <p class="error-message"></p>
+      </div>
+
+      <div id="prompt-screen" style="display: none">
+        <div class="boot-menu" style="border-color: #f90">
+          <div class="boot-menu-title">⚠ NO BUNDLE LOADED</div>
+          <p style="margin: 20px 0; color: #ddd">
+            Please provide a Tonk bundle to continue:
+          </p>
+          <ul style="list-style: none; padding-left: 20px">
+            <li style="margin: 10px 0; color: #ddd">
+              → Drag a .tonk file onto this window
+            </li>
+            <li style="margin: 10px 0; color: #ddd">
+              → Or add URL parameter:
+              <code style="background: #333; padding: 2px 6px"
+                >?bundle=&lt;url&gt;</code
+              >
+            </li>
+          </ul>
+          <p style="margin-top: 30px; color: #999; font-size: 12px">
+            Example:
+            <code style="background: #333; padding: 2px 6px"
+              >?bundle=http://localhost:8081/.manifest.tonk</code
+            >
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="overlay" id="overlay"></div>
+    <div class="confirmation-dialog" id="confirmation-dialog">
+      <div class="confirmation-title">Boot Confirmation</div>
+      <div class="confirmation-message" id="confirmation-message">
+        Are you sure you want to boot this application?
+      </div>
+      <div class="confirmation-buttons">
+        <button class="btn primary" id="confirm-yes">Yes</button>
+        <button class="btn" id="confirm-no">No</button>
+      </div>
+    </div>
+
+    <div class="share-dialog" id="share-dialog">
+      <div class="share-title">Share Tonk</div>
+
+      <div id="share-options-view">
+        <div class="share-options">
+          <button
+            class="btn primary"
+            onclick="shareAsFile()"
+            style="width: 100%"
+          >
+            Share as File
+          </button>
+          <button
+            class="btn primary"
+            onclick="shareAsUrl()"
+            style="width: 100%"
+          >
+            Share as URL
+          </button>
+        </div>
+        <div style="margin-top: 15px">
+          <button class="btn" onclick="closeShareDialog()" style="width: 100%">
+            Cancel
+          </button>
+        </div>
+      </div>
+
+      <div class="share-loader" id="share-loader">
+        <div class="spinner"></div>
+        <p>Uploading bundle to server...</p>
+      </div>
+
+      <div class="qr-code-container" id="qr-code-container">
+        <img id="qr-code-image" class="qr-code-image" alt="QR Code" />
+        <div style="color: #999; margin-bottom: 15px">Scan to access Tonk</div>
+        <button class="btn" onclick="closeShareDialog()" style="width: 100%">
+          Close
+        </button>
+      </div>
+    </div>
+
+    <div class="name-dialog" id="name-dialog">
+      <div class="name-title">New Tonk Name</div>
+      <div class="name-message">Enter a name for your new Tonk:</div>
+      <div class="name-input-container">
+        <input
+          type="text"
+          id="tonk-name-input"
+          placeholder="Enter tonk name..."
+          maxlength="50"
+        />
+      </div>
+      <div class="name-buttons">
+        <button class="btn primary" id="name-confirm">Create</button>
+        <button class="btn" id="name-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <div class="qr-code-container" id="qr-code-container">
+      <img id="qr-code-image" class="qr-code-image" alt="QR Code" />
+      <div style="color: #999; margin-bottom: 15px">Scan to access Tonk</div>
+      <button class="btn" onclick="closeShareDialog()" style="width: 100%">
+        Close
+      </button>
+    </div>
+
+    <div class="download-spinner-dialog" id="download-spinner-dialog">
+      <div class="spinner"></div>
+      <div style="color: #999; margin-top: 15px">Preparing tonk...</div>
+    </div>
+  </body>
+</html>

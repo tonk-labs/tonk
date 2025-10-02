@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tonk Core Browser Tests</title>
+    <style>
+      .test-results {
+        font-family: monospace;
+        background: #f8f8f8;
+        padding: 10px;
+        border: 1px solid #ccc;
+        white-space: pre-wrap;
+        overflow-y: auto;
+        max-height: 400px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>Tonk Core Browser Integration Tests</h1>
+      <p>Testing WASM browser target with atomics and threading support</p>
+      <div id="browser-info"></div>
+    </div>
+
+    <div class="test-section">
+      <h2>Browser Capabilities</h2>
+      <div id="capabilities-check"></div>
+    </div>
+
+    <div class="test-section">
+      <h2>Test Suite Controls</h2>
+      <button id="run-basic">Basic Tests</button>
+      <button id="run-atomics">Atomics Tests</button>
+      <button id="run-threading">Threading Tests</button>
+      <button id="run-storage">Storage Tests</button>
+      <button id="run-performance">Performance Tests</button>
+      <button id="run-all">Run All Tests</button>
+      <button id="clear-results">Clear Results</button>
+
+      <div class="progress-bar">
+        <div class="progress-fill" id="progress"></div>
+      </div>
+    </div>
+
+    <div class="test-section">
+      <h2>Test Results</h2>
+      <div class="test-results" id="results"></div>
+    </div>
+
+    <script type="module">
+      import init, * as wasm from '../../pkg-browser/tonk_core.js';
+
+      class TestRunner {
+        constructor() {
+          this.results = document.getElementById('results');
+          this.progress = document.getElementById('progress');
+          this.wasmModule = null;
+          this.testCount = 0;
+          this.completedTests = 0;
+        }
+
+        async initialize() {
+          this.log('🔄 Initializing WASM module...', 'info');
+          try {
+            await init();
+            this.wasmModule = wasm;
+            this.log('✅ WASM module loaded successfully!', 'success');
+            this.checkCapabilities();
+            this.setupEventListeners();
+          } catch (error) {
+            this.log(`❌ Failed to initialize WASM: ${error.message}`, 'error');
+            this.log(`Stack: ${error.stack}`, 'error');
+          }
+        }
+
+        log(message, type = 'info') {
+          const timestamp = new Date()
+            .toISOString()
+            .split('T')[1]
+            .split('.')[0];
+          const className = `test-${type}`;
+          this.results.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+          this.results.scrollTop = this.results.scrollHeight;
+        }
+
+        updateProgress() {
+          const percentage = (this.completedTests / this.testCount) * 100;
+          this.progress.style.width = `${percentage}%`;
+        }
+
+        checkCapabilities() {
+          const capabilities = document.getElementById('capabilities-check');
+          const checks = [
+            {
+              name: 'WebAssembly Support',
+              test: () => typeof WebAssembly !== 'undefined',
+            },
+            {
+              name: 'SharedArrayBuffer Support',
+              test: () => typeof SharedArrayBuffer !== 'undefined',
+            },
+            {
+              name: 'Atomics Support',
+              test: () => typeof Atomics !== 'undefined',
+            },
+            {
+              name: 'Cross-Origin Isolation',
+              test: () => window.crossOriginIsolated === true,
+            },
+            {
+              name: 'Web Workers',
+              test: () => typeof Worker !== 'undefined',
+            },
+            {
+              name: 'IndexedDB',
+              test: () => typeof indexedDB !== 'undefined',
+            },
+            {
+              name: 'LocalStorage',
+              test: () => typeof localStorage !== 'undefined',
+            },
+          ];
+
+          const browserInfo = document.getElementById('browser-info');
+          browserInfo.innerHTML = `
+                    <strong>Browser:</strong> ${navigator.userAgent.split(' ').pop()}<br>
+                    <strong>Platform:</strong> ${navigator.platform}<br>
+                    <strong>Threads:</strong> ${navigator.hardwareConcurrency || 'Unknown'}
+                `;
+
+          checks.forEach(check => {
+            const supported = check.test();
+            const div = document.createElement('div');
+            div.className = `capability-check ${supported ? 'supported' : 'unsupported'}`;
+            div.innerHTML = `${supported ? '✅' : '❌'} ${check.name}`;
+            capabilities.appendChild(div);
+          });
+        }
+
+        setupEventListeners() {
+          document.getElementById('run-basic').onclick = () =>
+            this.runBasicTests();
+          document.getElementById('run-atomics').onclick = () =>
+            this.runAtomicsTests();
+          document.getElementById('run-threading').onclick = () =>
+            this.runThreadingTests();
+          document.getElementById('run-storage').onclick = () =>
+            this.runStorageTests();
+          document.getElementById('run-performance').onclick = () =>
+            this.runPerformanceTests();
+          document.getElementById('run-all').onclick = () => this.runAllTests();
+          document.getElementById('clear-results').onclick = () => {
+            this.results.innerHTML = '';
+            this.progress.style.width = '0%';
+          };
+        }
+
+        async runTest(name, testFn) {
+          this.log(`🧪 Running: ${name}`, 'info');
+          const start = performance.now();
+          try {
+            await testFn();
+            const duration = (performance.now() - start).toFixed(2);
+            this.log(`✅ ${name} - ${duration}ms`, 'success');
+            this.completedTests++;
+            this.updateProgress();
+            return true;
+          } catch (error) {
+            const duration = (performance.now() - start).toFixed(2);
+            this.log(`❌ ${name} failed - ${duration}ms`, 'error');
+            this.log(`   Error: ${error.message}`, 'error');
+            this.completedTests++;
+            this.updateProgress();
+            return false;
+          }
+        }
+
+        async runBasicTests() {
+          this.log('🔄 Starting Basic Tests...', 'info');
+          this.testCount = 5;
+          this.completedTests = 0;
+
+          await this.runTest('Create Sync Engine', async () => {
+            if (!this.wasmModule.create_sync_engine) {
+              throw new Error(
+                'create_sync_engine function not found in WASM module'
+              );
+            }
+            const engine = await this.wasmModule.create_sync_engine();
+            if (!engine) throw new Error('Failed to create sync engine');
+          });
+
+          await this.runTest('Create Sync Engine with Peer ID', async () => {
+            const peerId =
+              'test-browser-peer-' + Math.random().toString(36).substr(2, 9);
+            const engine =
+              await this.wasmModule.create_sync_engine_with_peer_id(peerId);
+            if (!engine)
+              throw new Error('Failed to create sync engine with peer ID');
+          });
+
+          await this.runTest('Create Bundle', async () => {
+            if (!this.wasmModule.create_bundle) {
+              throw new Error(
+                'create_bundle function not found in WASM module'
+              );
+            }
+            const bundle = await this.wasmModule.create_bundle();
+            if (!bundle) throw new Error('Failed to create bundle');
+          });
+
+          await this.runTest('Bundle Operations', async () => {
+            const bundle = await this.wasmModule.create_bundle();
+            const key = 'test/data.txt';
+            const value = new TextEncoder().encode('Hello, Browser WASM!');
+
+            await bundle.put(key, value);
+            const retrieved = await bundle.get(key);
+
+            if (!retrieved || retrieved.length !== value.length) {
+              throw new Error('Bundle get/put operation failed');
+            }
+          });
+
+          await this.runTest('Multiple Engines', async () => {
+            const engines = [];
+            for (let i = 0; i < 5; i++) {
+              engines.push(await this.wasmModule.create_sync_engine());
+            }
+            if (engines.length !== 5) {
+              throw new Error('Failed to create multiple engines');
+            }
+          });
+        }
+
+        async runAtomicsTests() {
+          this.log('🔄 Starting Atomics Tests...', 'info');
+
+          if (typeof SharedArrayBuffer === 'undefined') {
+            this.log(
+              '⚠️  SharedArrayBuffer not available, skipping atomics tests',
+              'warning'
+            );
+            return;
+          }
+
+          this.testCount = 3;
+          this.completedTests = 0;
+
+          await this.runTest('SharedArrayBuffer Creation', async () => {
+            const buffer = new SharedArrayBuffer(64);
+            const view = new Int32Array(buffer);
+            Atomics.store(view, 0, 42);
+            const value = Atomics.load(view, 0);
+            if (value !== 42) throw new Error('Atomics operations failed');
+          });
+
+          await this.runTest('Atomic Bundle Operations', async () => {
+            const bundle1 = await this.wasmModule.create_bundle();
+            const bundle2 = await this.wasmModule.create_bundle();
+
+            const operations = [];
+            for (let i = 0; i < 10; i++) {
+              const key = `atomic-test-${i}`;
+              const value = new TextEncoder().encode(`data-${i}`);
+              operations.push(bundle1.put(key, value));
+              operations.push(bundle2.put(key, value));
+            }
+
+            await Promise.all(operations);
+          });
+
+          await this.runTest('Concurrent Engine Operations', async () => {
+            const engines = await Promise.all([
+              this.wasmModule.create_sync_engine(),
+              this.wasmModule.create_sync_engine(),
+              this.wasmModule.create_sync_engine(),
+            ]);
+
+            if (engines.length !== 3) {
+              throw new Error('Failed to create concurrent engines');
+            }
+          });
+        }
+
+        async runThreadingTests() {
+          this.log('🔄 Starting Threading Tests...', 'info');
+
+          if (typeof Worker === 'undefined') {
+            this.log(
+              '⚠️  Web Workers not available, skipping threading tests',
+              'warning'
+            );
+            return;
+          }
+
+          this.testCount = 2;
+          this.completedTests = 0;
+
+          await this.runTest('Worker Thread Creation', async () => {
+            return new Promise((resolve, reject) => {
+              const workerCode = `
+                            self.postMessage('worker-ready');
+                            self.onmessage = function(e) {
+                                if (e.data === 'test') {
+                                    self.postMessage('test-response');
+                                }
+                            };
+                        `;
+              const blob = new Blob([workerCode], {
+                type: 'application/javascript',
+              });
+              const worker = new Worker(URL.createObjectURL(blob));
+
+              let ready = false;
+              worker.onmessage = function (e) {
+                if (e.data === 'worker-ready') {
+                  ready = true;
+                  worker.postMessage('test');
+                } else if (e.data === 'test-response' && ready) {
+                  worker.terminate();
+                  resolve();
+                }
+              };
+
+              setTimeout(() => {
+                worker.terminate();
+                reject(new Error('Worker test timeout'));
+              }, 5000);
+            });
+          });
+
+          await this.runTest('Parallel Operations', async () => {
+            const operations = [];
+            for (let i = 0; i < 20; i++) {
+              operations.push(
+                (async () => {
+                  const engine = await this.wasmModule.create_sync_engine();
+                  const bundle = await this.wasmModule.create_bundle();
+                  await bundle.put(
+                    `parallel-${i}`,
+                    new TextEncoder().encode(`data-${i}`)
+                  );
+                  return bundle.get(`parallel-${i}`);
+                })()
+              );
+            }
+
+            const results = await Promise.all(operations);
+            if (results.some(r => !r)) {
+              throw new Error('Some parallel operations failed');
+            }
+          });
+        }
+
+        async runStorageTests() {
+          this.log('🔄 Starting Storage Tests...', 'info');
+          this.testCount = 3;
+          this.completedTests = 0;
+
+          await this.runTest('LocalStorage Integration', async () => {
+            const testKey = 'tonk-test-' + Date.now();
+            const testData = JSON.stringify({
+              test: 'data',
+              timestamp: Date.now(),
+            });
+
+            localStorage.setItem(testKey, testData);
+            const retrieved = localStorage.getItem(testKey);
+            localStorage.removeItem(testKey);
+
+            if (retrieved !== testData) {
+              throw new Error('LocalStorage integration failed');
+            }
+          });
+
+          await this.runTest('IndexedDB Basic Operations', async () => {
+            return new Promise((resolve, reject) => {
+              const request = indexedDB.open('tonk-test', 1);
+              request.onerror = () =>
+                reject(new Error('Failed to open IndexedDB'));
+              request.onsuccess = event => {
+                const db = event.target.result;
+                db.close();
+                indexedDB.deleteDatabase('tonk-test');
+                resolve();
+              };
+              request.onupgradeneeded = event => {
+                const db = event.target.result;
+                db.createObjectStore('test', { keyPath: 'id' });
+              };
+            });
+          });
+
+          await this.runTest('Bundle Persistence Simulation', async () => {
+            const bundle = await this.wasmModule.create_bundle();
+            const testData = new TextEncoder().encode('persistent test data');
+
+            await bundle.put('persistent-key', testData);
+            const retrieved = await bundle.get('persistent-key');
+
+            if (!retrieved || retrieved.length !== testData.length) {
+              throw new Error('Bundle persistence test failed');
+            }
+          });
+        }
+
+        async runPerformanceTests() {
+          this.log('🔄 Starting Performance Tests...', 'info');
+          this.testCount = 4;
+          this.completedTests = 0;
+
+          await this.runTest('Engine Creation Performance', async () => {
+            const iterations = 50;
+            const start = performance.now();
+
+            for (let i = 0; i < iterations; i++) {
+              await this.wasmModule.create_sync_engine();
+            }
+
+            const duration = performance.now() - start;
+            const avgTime = duration / iterations;
+
+            this.log(
+              `   Average engine creation: ${avgTime.toFixed(2)}ms`,
+              'info'
+            );
+
+            if (avgTime > 50) {
+              throw new Error(
+                `Engine creation too slow: ${avgTime.toFixed(2)}ms average`
+              );
+            }
+          });
+
+          await this.runTest('Bundle Operations Performance', async () => {
+            const bundle = await this.wasmModule.create_bundle();
+            const iterations = 100;
+            const testData = new TextEncoder().encode('performance test data');
+
+            const start = performance.now();
+            for (let i = 0; i < iterations; i++) {
+              await bundle.put(`perf-key-${i}`, testData);
+              await bundle.get(`perf-key-${i}`);
+            }
+            const duration = performance.now() - start;
+
+            this.log(
+              `   ${iterations} put/get operations: ${duration.toFixed(2)}ms`,
+              'info'
+            );
+
+            if (duration > 5000) {
+              throw new Error(
+                `Bundle operations too slow: ${duration.toFixed(2)}ms for ${iterations} operations`
+              );
+            }
+          });
+
+          await this.runTest('Memory Usage Test', async () => {
+            const engines = [];
+            const bundles = [];
+
+            // Create many objects to test memory usage
+            for (let i = 0; i < 25; i++) {
+              engines.push(await this.wasmModule.create_sync_engine());
+              bundles.push(await this.wasmModule.create_bundle());
+            }
+
+            // Use them
+            for (let i = 0; i < bundles.length; i++) {
+              const testData = new TextEncoder().encode(`test-data-${i}`);
+              await bundles[i].put(`memory-test-${i}`, testData);
+            }
+
+            this.log(
+              `   Created ${engines.length} engines and ${bundles.length} bundles`,
+              'info'
+            );
+          });
+
+          await this.runTest('Concurrent Load Test', async () => {
+            const concurrency = 20;
+            const operations = [];
+
+            const start = performance.now();
+            for (let i = 0; i < concurrency; i++) {
+              operations.push(
+                (async () => {
+                  const engine = await this.wasmModule.create_sync_engine();
+                  const bundle = await this.wasmModule.create_bundle();
+
+                  for (let j = 0; j < 5; j++) {
+                    await bundle.put(
+                      `load-${i}-${j}`,
+                      new TextEncoder().encode(`data-${i}-${j}`)
+                    );
+                    await bundle.get(`load-${i}-${j}`);
+                  }
+                })()
+              );
+            }
+
+            await Promise.all(operations);
+            const duration = performance.now() - start;
+
+            this.log(
+              `   ${concurrency} concurrent operations: ${duration.toFixed(2)}ms`,
+              'info'
+            );
+
+            if (duration > 10000) {
+              throw new Error(
+                `Concurrent operations too slow: ${duration.toFixed(2)}ms`
+              );
+            }
+          });
+        }
+
+        async runAllTests() {
+          this.log('🚀 Running All Tests...', 'info');
+          await this.runBasicTests();
+          await this.runAtomicsTests();
+          await this.runThreadingTests();
+          await this.runStorageTests();
+          await this.runPerformanceTests();
+          this.log('🎉 All tests completed!', 'success');
+        }
+      }
+
+      // Initialize test runner
+      const testRunner = new TestRunner();
+      await testRunner.initialize();
+    </script>
+  </body>
+</html>

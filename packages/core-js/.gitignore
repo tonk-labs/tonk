@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Built files
+dist/
+generated/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Playwright
+playwright-report
+test-results.json
+
+# TypeScript
+*.tsbuildinfo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo

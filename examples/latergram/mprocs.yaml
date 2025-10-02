@@ -1,0 +1,4 @@
+procs:
+  frontend:
+    shell: "vite"
+    autostart: true

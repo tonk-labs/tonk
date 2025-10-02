@@ -1,0 +1,78 @@
+[package]
+name = "tonk-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tonk Labs"]
+description = "Core library of the Tonk stack, providing sync engine and bundling"
+license = "MIT"
+repository = "https://github.com/tonk-labs/tonk"
+keywords = ["tonk", "local-first", "sync", "automerge", "real-time", "collaboration"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# core deps
+samod = { git = "https://github.com/tonk-labs/samod", branch = "wasm-runtime", features = ["tokio"] }
+automerge = "0.6.1"
+
+# runtime
+tokio-stream = "0.1.17"
+futures = "0.3.31"
+rayon = "1.11.0"
+
+# serialisation
+serde = "1.0.219"
+serde_json = "1.0.143"
+
+# error handling
+anyhow = "1.0.99"
+thiserror = "2.0.16"
+
+# utilities
+tracing = "0.1.41"
+tracing-subscriber = {version = "0.3.20", features = ["env-filter"]}
+chrono = { version = "0.4.41", features = ["serde"] }
+zip = { version = "5.0.0", default-features = false, features = ["deflate"] }
+rand = "0.9.2"
+bytes = "1"
+getrandom = { version = "0.3.3", features = ["wasm_js"]}
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = {version="1.47.1", features=["macros", "rt-multi-thread"]}
+tokio-tungstenite = "0.27"
+samod = { git = "https://github.com/tonk-labs/samod", branch = "wasm-runtime", features = ["tungstenite", "threadpool"]}
+tempfile = "3.21.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = {version = "1.47.1", features = ["macros", "rt", "sync"]}
+samod = { git = "https://github.com/tonk-labs/samod", branch = "wasm-runtime" }
+wasm-bindgen = { version = "0.2.100", features = ["serde-serialize"] }
+wasm-bindgen-futures = "0.4.50"
+serde-wasm-bindgen = "0.6.5"
+js-sys = "0.3.77"
+console_error_panic_hook = { version = "0.1.7", optional = true}
+tracing-wasm = "0.2.1"
+wee_alloc = { version = "0.4.5", optional = true }
+wasm-bindgen-test = "0.3.50"
+web-sys = {version = "0.3.77", features = [
+  "BinaryType",
+  "Blob",
+  "CloseEvent",
+  "ErrorEvent", 
+  "FileReader",
+  "MessageEvent",
+  "ProgressEvent",
+  "Response",
+  "WebSocket",
+  "Window"
+]}
+
+[features]
+default = ["console_error_panic_hook"]
+wee_alloc = ["dep:wee_alloc"]
+wasm-browser = ["samod/wasm"]
+wasm-node = ["samod/wasm"]

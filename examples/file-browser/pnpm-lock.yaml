@@ -20,9 +20,9 @@ importers:
       '@automerge/automerge-repo-storage-indexeddb':
         specifier: ^2.2.0
         version: 2.2.0
-      '@tonk/keepsync':
-        specifier: ^0.4.3
-        version: link:../../packages/keepsync
+      '@tonk/core':
+        specifier: file:../../packages/core-js
+        version: file:../../packages/core-js
       lucide-react:
         specifier: ^0.475.0
         version: 0.475.0(react@19.0.0)
@@ -1430,6 +1430,10 @@ packages:
 
   '@swc/types@0.1.21':
     resolution: {integrity: sha512-2YEtj5HJVbKivud9N4bpPBAyZhj4S2Ipe5LkUG94alTpr7in/GU/EARgPAd3BwU+YOmFVJC2+kjqhGRi3r0ZpQ==}
+
+  '@tonk/core@file:../../packages/core-js':
+    resolution: {directory: ../../packages/core-js, type: directory}
+    engines: {node: '>=16.0.0'}
 
   '@tsconfig/node10@1.0.11':
     resolution: {integrity: sha512-DcRjDCujK/kCk/cUe8Xz8ZSpm8mS3mNNpta+jGCA6USEDfktlNvm1+IuZ9eTcDbNk41BHwpHHeW+N1lKCz4zOw==}
@@ -5107,6 +5111,8 @@ snapshots:
   '@swc/types@0.1.21':
     dependencies:
       '@swc/counter': 0.1.3
+
+  '@tonk/core@file:../../packages/core-js': {}
 
   '@tsconfig/node10@1.0.11':
     optional: true
