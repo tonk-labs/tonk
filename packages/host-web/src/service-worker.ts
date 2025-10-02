@@ -76,28 +76,37 @@ log('info', 'Service worker installed, waiting for bundle');
 console.log('🚀 SERVICE WORKER: Installed, waiting for bundle');
 tonkState = { status: 'uninitialized' };
 
-// Notify clients that service worker is ready but needs a bundle
-self.addEventListener('activate', async event => {
-  log('info', 'Service worker activated');
-  console.log('🚀 SERVICE WORKER: Activated');
-  const clients = await (self as any).clients.matchAll();
-  clients.forEach(client => {
-    client.postMessage({ type: 'ready', needsBundle: true });
-  });
-});
-
-self.addEventListener('install', () => {
+self.addEventListener('install', event => {
   log('info', 'Service worker installing');
   console.log('🔧 SERVICE WORKER: Installing SW');
   (self as any).skipWaiting();
   log('info', 'Service worker install completed, skipWaiting called');
 });
 
-self.addEventListener('activate', async () => {
+// Consolidated activate handler with proper event.waitUntil for Safari compatibility
+self.addEventListener('activate', event => {
   log('info', 'Service worker activating');
   console.log('🚀 SERVICE WORKER: Activating service worker.');
-  (self as any).clients.claim();
-  log('info', 'Service worker activation completed, clients claimed');
+
+  // Use waitUntil to ensure Safari waits for async operations to complete
+  (event as any).waitUntil(
+    (async () => {
+      // Claim clients first to take control of the page
+      await (self as any).clients.claim();
+      log('info', 'Service worker activation completed, clients claimed');
+
+      // Then notify all clients that service worker is ready
+      const allClients = await (self as any).clients.matchAll();
+      allClients.forEach(client => {
+        client.postMessage({ type: 'ready', needsBundle: true });
+      });
+      log(
+        'info',
+        'Service worker activated, ready message sent to all clients'
+      );
+      console.log('🚀 SERVICE WORKER: Activated and ready');
+    })()
+  );
 });
 
 const targetToResponse = async (
@@ -235,10 +244,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                  ? 'loading'
-                  : tonkState.status === 'failed'
-                    ? 'failed'
-                    : 'uninitialized',
+                ? 'loading'
+                : tonkState.status === 'failed'
+                ? 'failed'
+                : 'uninitialized',
           });
 
           if (!tonkInstance) {
