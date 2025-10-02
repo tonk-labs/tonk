@@ -514,9 +514,6 @@
               document.getElementById('overlay').classList.remove('active');
               isConfirmationOpen = false;
             }
-      <<<<<<< Conflict 2 of 10
-      +++++++ Contents of side #1
-
             // Show share dialog
             function showShareDialog() {
               document.getElementById('share-dialog').classList.add('active');
@@ -954,10 +951,6 @@
               }
             }
 
-      %%%%%%% Changes from base to side #2
-      -
-      +
-      >>>>>>> Conflict 2 of 10 ends
             // Query available apps from service worker using standard messaging
             async function queryAvailableApps() {
               return new Promise((resolve, reject) => {
@@ -1019,18 +1012,11 @@
 
                 // Timeout fallback
                 setTimeout(() => {
-      <<<<<<< Conflict 3 of 10
-      %%%%%%% Changes from base to side #1
-                   navigator.serviceWorker.removeEventListener('message', messageHandler);
-      -            console.log('App list query timed out, using fallback');
-      +            console.log('App list query timed out');
-      +++++++ Contents of side #2
                   navigator.serviceWorker.removeEventListener(
                     'message',
                     messageHandler
                   );
                   console.log('App list query timed out, using fallback');
-      >>>>>>> Conflict 3 of 10 ends
                   reject('Cannot query app list, it timed out');
                 }, 20000);
               });
@@ -1078,8 +1064,6 @@
                 }, 10000);
               });
             }
-      <<<<<<< Conflict 4 of 10
-      +++++++ Contents of side #1
 
             // Helper function to proceed to BIOS menu after bundle is loaded
             async function proceedToBiosMenu() {
@@ -1098,64 +1082,14 @@
               }
             }
 
-      %%%%%%% Changes from base to side #2
-      -
-      +
-      >>>>>>> Conflict 4 of 10 ends
             // Initialize BIOS boot manager
             async function initializeBios() {
-      <<<<<<< Conflict 5 of 10
-      +++++++ Contents of side #1
               // Check for bundle URL parameter
               const urlParams = new URLSearchParams(window.location.search);
               const bundleUrl = urlParams.get('bundle');
 
-      %%%%%%% Changes from base to side #2
-               showLoadingScreen();
-      -
-      +
-               // // Check for redirect path first (from 404.html)
-               // const redirectPath = sessionStorage.getItem("redirectPath");
-               // if (redirectPath) {
-               //   console.log("Found redirect path, handling redirect...");
-               //   sessionStorage.removeItem("redirectPath");
-      -
-      +
-               //   // Wait for service worker to be ready
-               //   await waitForServiceWorkerReady();
-      -
-      +
-               //   // Extract app slug from redirect path
-               //   const pathParts = redirectPath.replace(window.location.origin, '').split('/').filter(p => p);
-               //   if (pathParts.length > 0) {
-               //     const appSlug = pathParts[0];
-               //     console.log("Extracted app slug from redirect:", appSlug);
-      -
-      +
-               //     if (navigator.serviceWorker.controller) {
-      -        //       navigator.serviceWorker.controller.postMessage({
-      -        //         type: "setAppSlug",
-      -        //         slug: appSlug
-      +        //       navigator.serviceWorker.controller.postMessage({
-      +        //         type: "setAppSlug",
-      +        //         slug: appSlug
-               //       });
-               //       localStorage.setItem("appSlug", appSlug);
-               //     }
-      -
-      +
-               //     // Redirect to the app
-               //     window.location.href = redirectPath;
-               //     return;
-               //   }
-               // }
-      -
-      +
-      >>>>>>> Conflict 5 of 10 ends
               // Wait for service worker to be ready
               await waitForServiceWorkerReady();
-      <<<<<<< Conflict 6 of 10
-      +++++++ Contents of side #1
 
               if (bundleUrl) {
                 // Scenario A: URL parameter provided - load from URL
@@ -1214,23 +1148,13 @@
               }
 
               // Set up event listeners (do this regardless of scenario)
-      %%%%%%% Changes from base to side #2
-      -
-      +
                // Query available apps
                availableApps = await queryAvailableApps();
-      -
-      +
                // Render the boot menu
                renderAppList();
                showBootMenu();
-      -
-      +
                // Set up event listeners
-      >>>>>>> Conflict 6 of 10 ends
               document.addEventListener('keydown', handleKeyDown);
-      <<<<<<< Conflict 7 of 10
-      +++++++ Contents of side #1
               document.getElementById('confirm-yes').addEventListener('click', confirmBoot);
               document.getElementById('confirm-no').addEventListener('click', cancelBoot);
 
@@ -1259,21 +1183,6 @@
                 }
               });
 
-      %%%%%%% Changes from base to side #2
-      -
-      +
-               // Set up button click handlers
-      -        document.getElementById('confirm-yes').addEventListener('click', confirmBoot);
-      -        document.getElementById('confirm-no').addEventListener('click', cancelBoot);
-      -
-      +        document
-      +          .getElementById('confirm-yes')
-      +          .addEventListener('click', confirmBoot);
-      +        document
-      +          .getElementById('confirm-no')
-      +          .addEventListener('click', cancelBoot);
-      +
-      >>>>>>> Conflict 7 of 10 ends
               // Handle app list clicks
               document.getElementById('app-list').addEventListener('click', e => {
                 const appItem = e.target.closest('.app-item');
@@ -1305,40 +1214,20 @@
                   console.log('Service worker is already controlling the page');
                   await initializeBios();
                 } else {
-      <<<<<<< Conflict 8 of 10
-      +++++++ Contents of side #1
                   // Register service worker without bundle parameter
                   // Bundle will be loaded via message after registration
-      %%%%%%% Changes from base to side #2
                    // Otherwise wait for a controller
                    const urlParams = new URLSearchParams(window.location.search);
                    const bundleParam = urlParams.get('bundle');
-      -
-      -            let serviceWorkerUrl = "./service-worker-bundled.js";
-      +
-      +            let serviceWorkerUrl = './service-worker-bundled.js';
+                   let serviceWorkerUrl = './service-worker-bundled.js';
                    if (bundleParam) {
                      serviceWorkerUrl += `?bundle=${encodeURIComponent(bundleParam)}`;
                    }
-      -
-      +
-      >>>>>>> Conflict 8 of 10 ends
                   navigator.serviceWorker
-      <<<<<<< Conflict 9 of 10
-      %%%%%%% Changes from base to side #1
-      -              .register(serviceWorkerUrl, { type: "module" })
-      +              .register("./service-worker-bundled.js", { type: "module" })
+                     .register(serviceWorkerUrl, { type: "module" })
                      .catch((err) => {
                        console.log("ServiceWorker registration failed: ", err);
                        showError("Service Worker failed to load. If you're on Firefox, check ES module support.");
-      +++++++ Contents of side #2
-                    .register(serviceWorkerUrl, { type: 'module' })
-                    .catch(err => {
-                      console.log('ServiceWorker registration failed: ', err);
-                      showError(
-                        "Service Worker failed to load. If you're on Firefox, check ES module support."
-                      );
-      >>>>>>> Conflict 9 of 10 ends
                     });
 
                   console.log('Waiting for service worker to take control...');
@@ -1369,8 +1258,7 @@
         </div>
 
         <div class="instructions">
-          <<<<<<< Conflict 10 of 10 +++++++ Contents of side #1 Use the ↑ and ↓
-          keys to select which entry is highlighted.<br />
+          Use the ↑ and ↓ keys to select which entry is highlighted.<br />
           Press enter to boot the selected application<br />
           <br />
           Drag a .tonk file onto the applications box to load it.
@@ -1391,12 +1279,6 @@
           >
             New Tonk
           </button>
-          %%%%%%% Changes from base to side #2 - Use the ↑ and ↓ keys to select
-          which entry is highlighted.<br />
-          - Press enter to boot the selected application<br />
-          + Use the ↑ and ↓ keys to select which entry is highlighted.<br />
-          + Press enter to boot the selected application<br />
-          >>>>>>> Conflict 10 of 10 ends
         </div>
       </div>
 
