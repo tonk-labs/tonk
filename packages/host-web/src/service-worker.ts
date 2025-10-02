@@ -1,5 +1,5 @@
 /* eslint-env serviceworker */
-/* global self, console, fetch, atob, btoa, caches, clients, location, URL, Response, __DEV_MODE__ */
+/* global self, console, fetch, atob, btoa, caches, clients, location, URL, Response, __DEV_MODE__, TONK_SERVER_URL */
 
 import {
   TonkCore,
@@ -9,6 +9,8 @@ import {
   DocumentData,
 } from '@tonk/core/slim';
 import type { VFSWorkerMessage } from './types';
+
+declare const TONK_SERVER_URL: string;
 
 interface FetchEvent extends Event {
   request: Request;
@@ -244,10 +246,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                  ? 'loading'
-                  : tonkState.status === 'failed'
-                    ? 'failed'
-                    : 'uninitialized',
+                ? 'loading'
+                : tonkState.status === 'failed'
+                ? 'failed'
+                : 'uninitialized',
           });
 
           if (!tonkInstance) {
@@ -901,7 +903,7 @@ async function handleMessage(
         // Initialize WASM if not already initialized
         if (tonkState.status === 'uninitialized') {
           log('info', 'WASM not initialized, initializing now');
-          const wasmUrl = 'http://localhost:8081/tonk_core_bg.wasm';
+          const wasmUrl = `${TONK_SERVER_URL}/tonk_core_bg.wasm`;
           const cacheBustUrl = `${wasmUrl}?t=${Date.now()}`;
           await initializeTonk({ wasmPath: cacheBustUrl });
           log('info', 'WASM initialization completed for bundle loading');
@@ -926,7 +928,7 @@ async function handleMessage(
         // Get the websocket URL from the current config
         const urlParams = new URLSearchParams(self.location.search);
         const bundleParam = urlParams.get('bundle');
-        let wsUrl = 'ws://localhost:8081';
+        let wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
 
         if (bundleParam) {
           try {
@@ -1003,10 +1005,10 @@ async function handleMessage(
       try {
         // Extract URLs from message, with defaults
         const wasmUrl =
-          message.wasmUrl || 'http://localhost:8081/tonk_core_bg.wasm';
+          message.wasmUrl || `${TONK_SERVER_URL}/tonk_core_bg.wasm`;
         const manifestUrl =
-          message.manifestUrl || 'http://localhost:8081/.manifest.tonk';
-        const wsUrl = message.wsUrl || 'ws://localhost:8081';
+          message.manifestUrl || `${TONK_SERVER_URL}/.manifest.tonk`;
+        const wsUrl = message.wsUrl || TONK_SERVER_URL.replace(/^http/, 'ws');
 
         log('info', 'Fetching WASM from URL', { wasmUrl });
 

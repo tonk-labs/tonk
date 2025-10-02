@@ -27,7 +27,9 @@ export default defineConfig({
     'process.env': {},
     global: 'globalThis',
     'window.TONK_SERVER_URL': JSON.stringify(
-      process.env.VITE_TONK_SERVER_URL || 'http://localhost:8080'
+      process.env.NODE_ENV === 'production'
+        ? 'https://relay.tonk.xyz'
+        : 'http://localhost:8081'
     ),
   },
   resolve: {
