@@ -1,7 +1,8 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TONK BIOS</title>
     <style>
       @font-face {
@@ -133,7 +134,8 @@
         background: #000;
         border: 2px solid #666;
         padding: 20px;
-        min-width: 400px;
+        width: 90%;
+        max-width: 400px;
         display: none;
         z-index: 1000;
       }
@@ -206,7 +208,8 @@
         background: #000;
         border: 2px solid #666;
         padding: 20px;
-        min-width: 400px;
+        width: 90%;
+        max-width: 400px;
         display: none;
         z-index: 1000;
       }
@@ -283,7 +286,8 @@
         background: #000;
         border: 2px solid #666;
         padding: 20px;
-        min-width: 400px;
+        width: 90%;
+        max-width: 400px;
         display: none;
         z-index: 1000;
       }
@@ -337,7 +341,8 @@
         background: #000;
         border: 2px solid #666;
         padding: 30px;
-        min-width: 300px;
+        width: 90%;
+        max-width: 300px;
         display: none;
         z-index: 1001;
         text-align: center;
@@ -345,6 +350,64 @@
 
       .download-spinner-dialog.active {
         display: block;
+      }
+
+      @media (max-width: 768px) {
+        body {
+          padding: 15px;
+          font-size: 18px;
+        }
+
+        .bios-container {
+          max-width: 100%;
+        }
+
+        .version-text {
+          font-size: 16px;
+        }
+
+        .boot-menu {
+          padding: 12px;
+        }
+
+        .boot-menu-title {
+          font-size: 16px;
+        }
+
+        .app-item {
+          padding: 12px 10px;
+          font-size: 16px;
+        }
+
+        .app-status {
+          font-size: 14px;
+        }
+
+        .instructions {
+          font-size: 14px;
+        }
+
+        .btn {
+          padding: 12px 20px;
+          font-size: 16px;
+          min-height: 44px;
+        }
+
+        .confirmation-title,
+        .share-title,
+        .name-title {
+          font-size: 16px;
+        }
+
+        .confirmation-message,
+        .name-message {
+          font-size: 14px;
+        }
+
+        .name-input-container input {
+          padding: 12px;
+          font-size: 16px;
+        }
       }
     </style>
     <script>
@@ -462,9 +525,8 @@
         const app = availableApps[selectedAppIndex];
         const appName = typeof app === 'string' ? app : app.name;
 
-        document.getElementById(
-          'confirmation-message'
-        ).textContent = `Are you sure you want to boot "${appName}"?`;
+        document.getElementById('confirmation-message').textContent =
+          `Are you sure you want to boot "${appName}"?`;
         document.getElementById('confirmation-dialog').classList.add('active');
         document.getElementById('overlay').classList.add('active');
         isConfirmationOpen = true;
