@@ -55,6 +55,17 @@ Self-contained application packages (.tonk files) that include:
 - Metadata and configuration
 - Network sync endpoints
 
+### Host-Web Runtime Environment
+
+Complete browser runtime for loading and executing .tonk applications:
+
+- **Drag-and-Drop Loading**: Simply drag .tonk files onto the interface
+- **Service Worker Architecture**: Intercepts requests and serves content from VFS
+- **Multi-Bundle Support**: Load and run multiple applications simultaneously
+- **Offline-First Operation**: Applications work without network connectivity
+- **URL-based Access**: Applications accessible at `localhost:3000/${project-name}/`
+- **Automatic Sync**: Connects to relay servers specified in bundle manifest
+
 ### WASM Core
 
 High-performance Rust implementation compiled to WebAssembly:
@@ -68,8 +79,8 @@ High-performance Rust implementation compiled to WebAssembly:
 
 Automatic synchronization of JSON-like objects powered by Automerge:
 
-- WebSocket-based transport
-- Peer discovery and connection
+- WebSocket-based relay transport
+- Peer discovery and room-based connection
 - Conflict-free merge semantics
 - Offline queue and replay
 

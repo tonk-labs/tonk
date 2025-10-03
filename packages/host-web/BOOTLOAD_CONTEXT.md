@@ -1,118 +1,153 @@
-# Bootload Context: Host-Web + Latergram + Server Architecture
+# Bootload Context: Host-Web + Bundle Loading Architecture
 
-This document explains the complex multi-component architecture used for loading and running Tonk
-applications, specifically the relationship between `host-web`, `latergram`, and the
-`latergram/server`.
+This document explains the architecture used for loading and running Tonk applications through the
+host-web runtime.
 
 ## High-Level Architecture
 
-The system consists of three interconnected components that work together to provide a dynamic,
-WASM-based application environment:
+The system consists of two main components that work together to provide a dynamic, WASM-based
+application environment:
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   latergram     │───▶│ latergram/server│───▶│    host-web     │
-│   (bundled app) │    │  (serves files) │    │ (tonk runtime)  │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-        │                       │                       │
-        │                       │                       │
-    .tonk bundle           WASM + Manifest          Service Worker
-   (ZIP archive)          HTTP endpoints           + Tonk Runtime
+┌─────────────────┐    ┌─────────────────┐
+│   .tonk Bundle  │───▶│    host-web     │
+│  (drag & drop   │    │ (tonk runtime)  │
+│   or remote)    │    │                 │
+└─────────────────┘    └─────────────────┘
+                              │
+                              │ connects to
+                              ▼
+                       ┌─────────────────┐
+                       │  Relay Server   │
+                       │ (sync endpoint) │
+                       └─────────────────┘
 ```
 
 ## Component Breakdown
 
-### 1. Latergram (Application)
+### 1. Tonk Bundle (.tonk file)
 
-- **Location**: `/examples/latergram/`
-- **Purpose**: A React-based application that gets compiled and bundled into a `.tonk` file
-- **Build Process**:
-  - TypeScript/React code gets compiled
-  - Assets are processed and bundled
-  - Everything is packaged into a `.tonk` file (ZIP archive format)
-  - Contains: `manifest.json`, application files, and bundled assets
+- **Format**: ZIP archive containing application files and manifest
+- **Loading Methods**:
+  - Local: Drag and drop onto host-web interface
+  - Remote: Fetch from URL
+- **Contents**:
+  - `manifest.json` - Application metadata, network endpoints, rootId
+  - Application files organized in directory structure
+  - Assets and compiled code
 
-### 2. Latergram Server
-
-- **Location**: `/examples/latergram/server/`
-- **Purpose**: HTTP server that serves both the bundled application and WASM runtime files
-- **Port**: `localhost:8081`
-- **Key Endpoints**:
-  - `/tonk_core_bg.wasm` - WASM binary for Tonk runtime (served from `packages/core-js/dist/`)
-  - `/.manifest.tonk` - Application manifest and bundle data
-  - WebSocket endpoint for real-time sync
-
-### 3. Host-Web (Runtime Environment)
+### 2. Host-Web (Runtime Environment)
 
 - **Location**: `/packages/host-web/`
 - **Purpose**: Provides the runtime environment that loads and executes `.tonk` applications
-- **Port**: `localhost:3000`
-- **Architecture**: Uses a Service Worker to intercept requests and serve files from the virtual
-  file system
+- **Port**: `localhost:3000` (development)
+- **Key Components**:
+  - WASM runtime (loads locally, no server dependency)
+  - Service Worker for request interception
+  - Virtual File System (VFS) backed by Automerge CRDTs
+  - Bundle loader and parser
+
+### 3. Relay Server
+
+- **Location**: `/examples/latergram/server/` (example implementation)
+- **Purpose**: WebSocket relay for real-time synchronization between peers
+- **Port**: `localhost:8081` (configurable)
+- **Responsibilities**:
+  - Relay sync messages between connected peers
+  - Maintain peer connections using bundle rootId as room identifier
+  - No file serving or WASM hosting
 
 ## Detailed Flow
 
-### 1. Application Bundling
-
-```bash
-# In latergram directory
-pnpm bundle create --copy-to-server  # Creates latergram.tonk bundle and copies to server
-```
-
-### 2. Server Startup
-
-```bash
-# In latergram/server directory
-npm run dev  # Starts server on port 8081
-```
-
-- Server loads the `.tonk` bundle using `BundleStorageAdapter`
-- Serves WASM runtime from `packages/core-js/dist/tonk_core_bg.wasm`
-- Provides WebSocket endpoint for real-time synchronization
-
-### 3. Host-Web Initialization
+### 1. Host-Web Initialization
 
 ```bash
 # In host-web directory
 npm run dev  # Starts development server on port 3000
 ```
 
-### 4. Service Worker Bootload Process
-
-When you visit `localhost:3000`, the following happens:
+When you visit `localhost:3000`:
 
 1. **Service Worker Registration**: Browser loads and registers the service worker
-2. **WASM Initialization**:
-   - Service worker fetches WASM binary from `http://localhost:8081/tonk_core_bg.wasm`
-   - Initializes Tonk runtime with matching JavaScript bindings
-3. **Manifest Loading**:
-   - Fetches application manifest from `http://localhost:8081/.manifest.tonk`
-   - Loads bundle metadata and virtual file system structure
-4. **WebSocket Connection**: Establishes real-time sync connection to `ws://localhost:8081`
+2. **WASM Initialization**: Service worker loads the bundled WASM runtime
+3. **Bundle Loading Interface**: User sees interface to load a bundle
+
+### 2. Bundle Loading
+
+#### Option A: Drag and Drop (Local)
+
+1. User drags a `.tonk` file onto the host-web interface
+2. Browser reads the file as `ArrayBuffer`
+3. Host-web parses the ZIP archive
+4. Extracts `manifest.json` to read:
+   - `rootId` - Unique identifier for this bundle/document
+   - `networkUris` - WebSocket URLs for relay servers
+   - `entrypoints` - Application entry points
+5. Loads files into VFS using Tonk runtime
+
+#### Option B: Remote Fetch
+
+1. User provides URL to a `.tonk` file
+2. Host-web fetches the bundle via HTTP
+3. Same parsing and loading process as drag-and-drop
+
+### 3. Bundle Structure and RootId
+
+**manifest.json example:**
+
+```json
+{
+  "manifestVersion": 1,
+  "version": { "major": 0, "minor": 1 },
+  "rootId": "automerge:2a3b4c5d6e7f8g9h",
+  "entrypoints": ["/app/latergram/index.html"],
+  "networkUris": ["ws://localhost:8081"],
+  "xNotes": "Latergram social media app"
+}
+```
+
+**Key Points:**
+
+- `rootId` is the Automerge document ID for the bundle's root document
+- This rootId identifies the sync "room" on the relay server
+- All peers with the same rootId sync their VFS state together
+- Files inside the bundle are stored in the VFS with the bundle's root as their parent document
+
+### 4. WebSocket Connection to Relay Server
+
+After loading the bundle:
+
+1. Host-web reads `networkUris` from manifest
+2. Establishes WebSocket connection: `ws://localhost:8081`
+3. Sends initial sync message with `rootId`
+4. Relay server:
+   - Uses `rootId` to identify the sync room
+   - Connects this peer with other peers sharing the same `rootId`
+   - Relays sync messages (Automerge CRDT operations) between peers
 
 ### 5. Application Access and URL Structure
 
-**IMPORTANT**: To access a bundled application, you must visit the project-specific URL:
+To access a loaded application, visit:
 
 ```
 localhost:3000/${project-name}/
 ```
 
-For latergram, this means visiting: `localhost:3000/latergram/`
+For latergram: `localhost:3000/latergram/`
 
 **Why this structure?**
 
 - Applications are bundled with their project name as a namespace: `/app/${project-name}/`
-- This enables **multi-app support** - a single bundle could contain multiple applications
+- Enables **multi-bundle support** - multiple applications can run simultaneously
 - Each application is isolated within its own directory structure
 - The URL path maps directly to the VFS structure
 
-### 5a. Redirect Mechanism (404.html)
+### 6. Redirect Mechanism (404.html)
 
-Host-web includes a clever redirect system to handle direct navigation to application URLs:
+Host-web includes a redirect system to handle direct navigation to application URLs:
 
 **The Problem**: When you directly visit `localhost:3000/latergram/`, the static file server returns
-a 404 because the service worker hasn't loaded yet.
+a 404 because the service worker and bundle haven't loaded yet.
 
 **The Solution**: A two-step redirect process:
 
@@ -125,6 +160,7 @@ a 404 because the service worker hasn't loaded yet.
    ```
 
 2. **Service Worker Bootstrap** (`/packages/host-web/src/index.html`):
+
    ```javascript
    // After service worker loads, checks for saved redirect
    const redirectPath = sessionStorage.getItem('redirectPath');
@@ -138,11 +174,11 @@ a 404 because the service worker hasn't loaded yet.
 
 1. User visits `localhost:3000/latergram/` → 404.html
 2. 404.html saves `/latergram/` to sessionStorage, redirects to `/`
-3. Root loads, registers service worker
+3. Root loads, user loads bundle, service worker registers
 4. Service worker takes control, index.html reads sessionStorage
 5. Redirects back to `localhost:3000/latergram/` → now served by service worker
 
-### 6. Request Interception and Path Mapping
+### 7. Request Interception and Path Mapping
 
 Once initialized, the service worker intercepts all requests to `localhost:3000`:
 
@@ -155,7 +191,7 @@ Once initialized, the service worker intercepts all requests to `localhost:3000`
 // 5. Returns file content as HTTP response
 ```
 
-**Bundle Structure:**
+**Bundle VFS Structure:**
 
 ```
 /app/
@@ -169,85 +205,141 @@ Once initialized, the service worker intercepts all requests to `localhost:3000`
 
 ## Key Technical Details
 
-### WASM + JavaScript Binding Synchronization
-
-- **Critical Issue**: WASM binary and JavaScript bindings must be from the same build
-- **Problem**: Browser caching can serve stale WASM while JS bindings are updated
-- **Solution**: Cache-busting query parameters (`?t=${timestamp}`) force fresh WASM fetch
-- **Error Pattern**: `__wbindgen_closure_wrapper[NUMBER]` import mismatches indicate version skew
-
-### Virtual File System (VFS)
-
-- Powered by Tonk WASM runtime
-- Files stored in CRDT (Conflict-free Replicated Data Type) format
-- Real-time synchronization via WebSocket
-- All file operations go through `tonkCore.readFile()`, `tonkCore.writeFile()`, etc.
-
 ### Bundle Format (.tonk files)
 
 - ZIP archive containing:
   - `manifest.json` - Application metadata and configuration
   - Application files organized in directory structure
   - Assets and compiled code
-- Loaded by `BundleStorageAdapter` on server side
-- Provides initial state for virtual file system
+- Loaded directly in the browser (no server needed)
+- `rootId` from manifest identifies the document for sync purposes
+
+### Virtual File System (VFS)
+
+- Powered by Tonk WASM runtime (loaded locally)
+- Files stored in CRDT (Conflict-free Replicated Data Type) format
+- Real-time synchronization via WebSocket relay
+- All file operations go through `tonkCore.readFile()`, `tonkCore.createFile()`, etc.
+- Bundle files are loaded into VFS on initialization
+
+### Relay Server Architecture
+
+The relay server is a simple WebSocket relay that:
+
+- Accepts connections from peers
+- Uses bundle `rootId` to group peers into sync rooms
+- Forwards Automerge sync messages between peers in the same room
+- Does not store or serve files
+- Does not host WASM or application code
+
+**Example Implementation** (`/examples/latergram/server/src/index.ts`):
+
+```typescript
+// Simplified concept
+const rooms = new Map<string, Set<WebSocket>>();
+
+wss.on('connection', ws => {
+  ws.on('message', data => {
+    const message = JSON.parse(data);
+    const { rootId, syncMessage } = message;
+
+    // Add peer to room based on rootId
+    if (!rooms.has(rootId)) {
+      rooms.set(rootId, new Set());
+    }
+    rooms.get(rootId).add(ws);
+
+    // Relay sync message to other peers in same room
+    for (const peer of rooms.get(rootId)) {
+      if (peer !== ws) {
+        peer.send(syncMessage);
+      }
+    }
+  });
+});
+```
 
 ## Development Workflow
 
-### Making Changes to the Application
+### Making Changes to an Application
 
 1. Edit files in `/examples/latergram/src/`
-2. Run `pnpm bundle create --copy-to-server` to create new `.tonk` bundle and copy to server
-3. Server automatically picks up the new bundle
-4. Refresh browser to load updated application
+2. Run `pnpm bundle create` to create new `.tonk` bundle
+3. Drag and drop the new bundle onto host-web
+4. Application reloads with updated code
+
+### Starting the Relay Server
+
+```bash
+# In latergram/server directory
+npm run dev  # Starts relay server on port 8081
+```
 
 ### Debugging Issues
 
 1. **Service Worker Problems**: Check browser DevTools → Application → Service Workers
-2. **WASM Issues**: Look for closure wrapper import errors in console
-3. **VFS Issues**: Check if files exist in bundle and are being served correctly
-4. **Network Issues**: Verify server is running on port 8081 and serving endpoints
+2. **Bundle Loading Issues**: Check console for ZIP parsing or manifest errors
+3. **VFS Issues**: Verify files exist in bundle and are loaded into VFS
+4. **Sync Issues**: Check relay server connection and rootId matching
 
 ### Common Gotchas
 
 - **Wrong URL**: Must visit `localhost:3000/${project-name}/` not just `localhost:3000/`
-- **Browser Caching**: WASM files are aggressively cached - use hard refresh or cache-busting
 - **Service Worker Persistence**: May need to unregister and re-register after major changes
-- **Build Dependencies**: Changes to `packages/core-js` require rebuilding both core and host-web
-- **Port Conflicts**: Ensure both servers (3000 and 8081) are available
-- **Environment Variables**: Ensure `.env` file exists with required keys before building bundle
+- **Bundle Caching**: Hard refresh may be needed after loading a new version of the same bundle
+- **RootId Mismatch**: Peers must have the same rootId to sync with each other
+- **Relay Server Down**: App still works offline, but won't sync without relay connection
 
 ## File System Paths
 
 ### Build Artifacts
 
-- Latergram bundle: `/examples/latergram/latergram.tonk`
-- WASM runtime: `/packages/core-js/dist/tonk_core_bg.wasm`
+- Application bundle: `/examples/latergram/latergram.tonk`
+- WASM runtime: Bundled with host-web (no separate serving)
 - Service worker: `/packages/host-web/dist/service-worker-bundled.js`
 
 ### Key Configuration Files
 
 - Service worker source: `/packages/host-web/src/service-worker.ts`
-- Server implementation: `/examples/latergram/server/src/index.ts`
-- Bundle adapter: `/examples/latergram/server/src/bundleStorageAdapter.ts`
+- Relay server implementation: `/examples/latergram/server/src/index.ts`
+- Bundle manifest: Inside each `.tonk` file as `manifest.json`
 
 ## Architecture Benefits
 
-1. **Dynamic Loading**: Applications can be loaded without rebuilding the runtime
-2. **Virtual File System**: Provides file-like interface with real-time sync
-3. **WASM Performance**: Core operations run at near-native speed
-4. **Development Experience**: Hot reloading and real-time collaboration
-5. **Bundle Portability**: `.tonk` files are self-contained application packages
+1. **True Portability**: `.tonk` files can be shared via any medium (USB, email, IPFS, HTTP)
+2. **Decentralized**: No dependency on specific servers for application hosting
+3. **Offline-First**: Applications work without network connectivity
+4. **Simple Relay**: Relay servers only forward messages, don't host content
+5. **Multi-Bundle**: Load and run multiple applications simultaneously
+6. **Peer-to-Peer Ready**: Direct peer connections possible (relay is optional)
+
+## Comparison to Previous Architecture
+
+**Old Architecture (Server-Hosted)**:
+
+- Server served WASM runtime
+- Server served application files
+- Server provided both sync and file hosting
+- Required server to load application
+
+**New Architecture (Local-First)**:
+
+- WASM runtime bundled with host-web
+- Application files in portable `.tonk` bundle
+- Relay server only handles sync messages
+- Can load and run applications without any server
+- Relay server only needed for multi-peer sync
 
 ## Future Considerations
 
-- **Production Deployment**: Cache headers need adjustment for production use
-- **Bundle Optimization**: Compression and selective loading for large applications
-- **Security**: Sandboxing and permission model for loaded applications
-- **Multi-App Support**: Loading multiple `.tonk` applications simultaneously
-- **Offline Support**: Caching strategy for offline application usage
+- **Bundle Signing**: Cryptographic verification of bundle authenticity
+- **Encrypted Bundles**: Group-based encryption for private applications
+- **DHT/IPFS Integration**: Distributed bundle storage and discovery
+- **Direct P2P**: WebRTC connections bypassing relay server
+- **Bundle Versioning**: Semantic versioning and update notifications
+- **Partial Loading**: Stream large bundles instead of loading all at once
 
 ---
 
-_This architecture enables rapid development and deployment of collaborative applications with
-real-time synchronization and WASM-powered performance._
+_This architecture enables true application portability and offline-first collaborative software
+with minimal infrastructure requirements._

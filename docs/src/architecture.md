@@ -8,6 +8,15 @@ and how they work together.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
+│                    Host Web Environment                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
+│  │   Host-Web   │  │   .tonk      │  │   Relay Server   │  │
+│  │   Runtime    │  │   Bundle     │  │   (WebSocket)    │  │
+│  └──────────────┘  └──────────────┘  └──────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
 │                     JavaScript/TypeScript Layer              │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
 │  │   Core-JS    │  │   Keepsync   │  │   Application    │  │
@@ -101,6 +110,33 @@ This format hasn't been fully integrated yet.
   "network_uris": ["wss://sync.example.com"]
 }
 ```
+
+### 4. Host-Web Environment
+
+The host-web package assists in loading and executing .tonk applications in browsers via a simple
+index.html bootloader screen and service worker:
+
+**Key Components:**
+
+- **WASM Runtime Integration**: Bundled Tonk WASM core for local execution (no server dependency)
+- **Service Worker Architecture**: Intercepts requests and serves content from VFS
+- **Bundle Loading System**: Supports drag-and-drop and remote URL loading of .tonk files
+- **Multi-Bundle Support**: Can load and run multiple applications simultaneously
+- **Offline-First Design**: Applications work without network connectivity
+
+**Bundle Loading Flow:**
+
+1. **Bundle Parsing**: Extracts .tonk ZIP archives and reads manifest.json
+2. **VFS Population**: Loads application files into the virtual file system
+3. **Service Worker Registration**: Takes control of HTTP requests for the application
+4. **Request Mapping**: Maps URL paths to VFS file locations
+
+**URL Structure:** Applications are accessible at `${hostname}/${project-name}/` where the project
+name corresponds to the bundle's application namespace.
+
+**Network Integration:** Bundles specify relay server endpoints in their manifest for real-time peer
+synchronization. The host-web environment automatically connects to these endpoints using the
+bundle's rootId as the sync room identifier.
 
 ### 5. Automerge
 
