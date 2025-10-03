@@ -6,6 +6,8 @@ for bundle storage using AWS S3.
 ## Features
 
 - **WebSocket Sync**: Real-time collaboration via Automerge
+- **Persistent Storage**: Filesystem-based storage for document changes
+- **Bundle Loading**: Load initial state from `.tonk` bundle files
 - **Bundle Storage**: Upload and download Tonk bundles via S3
 - **Manifest Serving**: Serve slim bundles (manifest + root document only)
 - **CORS Support**: Configurable cross-origin resource sharing
@@ -24,9 +26,26 @@ for bundle storage using AWS S3.
    # Development mode with a local bundle
    pnpm dev
 
-   # Or start with custom port and bundle
+   # Or start with custom port, bundle, and storage directory
+   tsx src/index.ts 8081 path/to/bundle.tonk ./storage-data
+   
+   # With defaults (storage-data defaults to 'automerge-repo-data')
    tsx src/index.ts 8081 path/to/bundle.tonk
    ```
+
+## Storage Architecture
+
+The server uses a **composite storage strategy** that combines two storage adapters:
+
+1. **Bundle Storage** (read-only): Loads initial document state from the `.tonk` bundle file
+2. **Filesystem Storage** (read-write): Persists all document changes to disk
+
+**How it works:**
+- **Reads**: Check filesystem first for latest changes, fall back to bundle for initial state
+- **Writes**: All changes are written to the filesystem storage directory
+- **Persistence**: Changes survive server restarts and are preserved independently from the bundle
+
+This architecture allows bundles to serve as immutable distribution packages while runtime state evolves in the filesystem storage.
 
 ## API Endpoints
 
@@ -135,5 +154,6 @@ pnpm dev
 - **Express**: HTTP server and routing
 - **WebSocket**: Real-time sync via `ws` library
 - **Automerge**: CRDT-based document sync
+- **Composite Storage**: Bundle (read-only) + Filesystem (persistent)
 - **S3**: Bundle storage via AWS SDK
 - **JSZip**: Bundle manipulation (zip files)

@@ -7,8 +7,8 @@ cd /home/ec2-user/tonk
 
 echo "📥 Pulling latest changes..."
 git fetch origin
-git checkout shared/feat/latergram
-git pull origin shared/feat/latergram
+git checkout main
+git pull origin main
 
 echo "📦 Installing dependencies..."
 pnpm install
