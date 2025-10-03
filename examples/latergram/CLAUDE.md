@@ -14,9 +14,10 @@ state management and real-time updates.
 ### Core Technologies
 
 - **Frontend**: React 19 with TypeScript, Vite for bundling
+- **UI Library**: Chakra UI (primary component library)
 - **State Management**: Zustand stores, Automerge for CRDT-based collaboration
 - **Virtual File System**: TonkCore with WebSocket sync to server
-- **Styling**: Dual styling system with Twind runtime compilation and standard Tailwind CSS
+- **Styling**: Chakra UI + Dual styling system with Twind runtime compilation and standard Tailwind CSS
 - **Code Editor**: Monaco Editor for in-browser code editing
 - **Server**: Express server with WebSocket support for Automerge sync
 
@@ -111,9 +112,14 @@ pnpm dev  # Starts server on port 8081 with blank.tonk manifest
 
 - Components must export a default React component
 - Supports both `.tsx` and `.ts` file extensions
-- Available packages are injected via `contextBuilder.ts`
-- Components have access to: React, Lucide icons, React Router, Zustand stores, Monaco Editor, AI
-  SDK, and more
+- **NO IMPORTS NEEDED** - All packages are globally available via `contextBuilder.ts`
+- **Primary UI Library: Chakra UI** - Use Chakra UI components for all UI elements
+- Components have access to:
+  - **React & Hooks**: `React`, `useState`, `useEffect`, `useCallback`, `useMemo`, `useRef`, `useReducer`, `useContext`, `Fragment`
+  - **Chakra UI**: All components (`Box`, `Button`, `Heading`, `Text`, `Input`, `Stack`, `VStack`, `HStack`, `Modal`, `useDisclosure`, `useToast`, etc.)
+  - **React Router**: `Link`, `NavLink`, `useNavigate`, `useLocation`, `useParams`
+  - **Zustand**: `create`, `sync` for store creation
+  - **Custom Components & Stores**: All registered VFS components and stores
 
 ### Store Integration
 
