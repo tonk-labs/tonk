@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -525,8 +525,9 @@
         const app = availableApps[selectedAppIndex];
         const appName = typeof app === 'string' ? app : app.name;
 
-        document.getElementById('confirmation-message').textContent =
-          `Are you sure you want to boot "${appName}"?`;
+        document.getElementById(
+          'confirmation-message'
+        ).textContent = `Are you sure you want to boot "${appName}"?`;
         document.getElementById('confirmation-dialog').classList.add('active');
         document.getElementById('overlay').classList.add('active');
         isConfirmationOpen = true;
@@ -847,18 +848,20 @@
 
       // New Tonk
       async function newTonk() {
-        console.log('Creating new forked tonk bundle...');
+        console.log('Creating new tonk...');
 
-        // Pre-populate with first app name if available
-        const defaultName =
-          availableApps.length > 0 ? availableApps[0] : 'new-tonk';
+        // Check if we have any loaded bundles
+        const hasLoadedBundles = availableApps.length > 0;
+
+        // Pre-populate with first app name if available, otherwise use 'new-tonk'
+        const defaultName = hasLoadedBundles ? availableApps[0] : 'new-tonk';
 
         // Show name dialog
-        showNameDialog(defaultName);
+        showNameDialog(defaultName, hasLoadedBundles);
       }
 
       // Show name dialog for new tonk
-      function showNameDialog(defaultName) {
+      function showNameDialog(defaultName, hasLoadedBundles = true) {
         const dialog = document.getElementById('name-dialog');
         const input = document.getElementById('tonk-name-input');
 
@@ -867,6 +870,9 @@
 
         dialog.classList.add('active');
         document.getElementById('overlay').style.display = 'block';
+
+        // Store the flag for use in createNewTonk
+        dialog.dataset.hasLoadedBundles = hasLoadedBundles;
 
         // Focus the input
         setTimeout(() => input.focus(), 100);
@@ -883,6 +889,10 @@
       async function createNewTonk(tonkName) {
         console.log('Creating new tonk with name:', tonkName);
 
+        // Check if we should fork or use blank tonk
+        const dialog = document.getElementById('name-dialog');
+        const hasLoadedBundles = dialog.dataset.hasLoadedBundles === 'true';
+
         // Show loading spinner
         showDownloadSpinner();
 
@@ -891,44 +901,65 @@
             throw new Error('No service worker controller available');
           }
 
-          // Step 1: Fork to bytes
-          const forkRequestId = 'fork-to-bytes-' + Date.now();
-          const forkResponse = await new Promise((resolve, reject) => {
-            const messageHandler = event => {
-              if (
-                event.data &&
-                event.data.type === 'forkToBytes' &&
-                event.data.id === forkRequestId
-              ) {
+          let bundleBytes;
+
+          if (hasLoadedBundles) {
+            // Step 1: Fork to bytes
+            console.log('Forking current bundle...');
+            const forkRequestId = 'fork-to-bytes-' + Date.now();
+            const forkResponse = await new Promise((resolve, reject) => {
+              const messageHandler = event => {
+                if (
+                  event.data &&
+                  event.data.type === 'forkToBytes' &&
+                  event.data.id === forkRequestId
+                ) {
+                  navigator.serviceWorker.removeEventListener(
+                    'message',
+                    messageHandler
+                  );
+                  resolve(event.data);
+                }
+              };
+
+              navigator.serviceWorker.addEventListener(
+                'message',
+                messageHandler
+              );
+
+              navigator.serviceWorker.controller.postMessage({
+                type: 'forkToBytes',
+                id: forkRequestId,
+              });
+
+              setTimeout(() => {
                 navigator.serviceWorker.removeEventListener(
                   'message',
                   messageHandler
                 );
-                resolve(event.data);
-              }
-            };
-
-            navigator.serviceWorker.addEventListener('message', messageHandler);
-
-            navigator.serviceWorker.controller.postMessage({
-              type: 'forkToBytes',
-              id: forkRequestId,
+                reject(new Error('Timeout waiting for forkToBytes response'));
+              }, 30000);
             });
 
-            setTimeout(() => {
-              navigator.serviceWorker.removeEventListener(
-                'message',
-                messageHandler
-              );
-              reject(new Error('Timeout waiting for forkToBytes response'));
-            }, 30000);
-          });
+            if (!forkResponse.success || !forkResponse.data) {
+              throw new Error(forkResponse.error || 'Failed to fork tonk');
+            }
 
-          if (!forkResponse.success || !forkResponse.data) {
-            throw new Error(forkResponse.error || 'Failed to fork tonk');
+            bundleBytes = forkResponse.data;
+          } else {
+            // Fetch blank tonk from server
+            console.log('Fetching blank tonk from server...');
+            const serverUrl = await getServerUrl();
+            const response = await fetch(`${serverUrl}/api/blank-tonk`);
+
+            if (!response.ok) {
+              throw new Error('Failed to fetch blank tonk template');
+            }
+
+            bundleBytes = new Uint8Array(await response.arrayBuffer());
           }
 
-          // Step 2: Load the forked bundle
+          // Step 2: Load the bundle (forked or blank)
           const loadRequestId = 'load-bundle-' + Date.now();
           const loadResponse = await new Promise((resolve, reject) => {
             const messageHandler = event => {
@@ -948,9 +979,9 @@
             navigator.serviceWorker.addEventListener('message', messageHandler);
 
             // Convert Uint8Array to ArrayBuffer
-            const arrayBuffer = forkResponse.data.buffer.slice(
-              forkResponse.data.byteOffset,
-              forkResponse.data.byteOffset + forkResponse.data.byteLength
+            const arrayBuffer = bundleBytes.buffer.slice(
+              bundleBytes.byteOffset,
+              bundleBytes.byteOffset + bundleBytes.byteLength
             );
 
             navigator.serviceWorker.controller.postMessage({
@@ -969,13 +1000,14 @@
           });
 
           if (!loadResponse.success) {
-            throw new Error(
-              loadResponse.error || 'Failed to load forked bundle'
-            );
+            throw new Error(loadResponse.error || 'Failed to load bundle');
           }
 
           // Step 3: Rename the app directory
-          const oldName = availableApps.length > 0 ? availableApps[0] : 'app';
+          const oldName =
+            hasLoadedBundles && availableApps.length > 0
+              ? availableApps[0]
+              : 'latergram';
           const renameRequestId = 'rename-' + Date.now();
           const renameResponse = await new Promise((resolve, reject) => {
             const messageHandler = event => {
@@ -1015,7 +1047,6 @@
               'Failed to rename app directory:',
               renameResponse.error
             );
-            // Continue anyway, the tonk was created successfully
           }
 
           // Step 4: Refresh the app list and show the new tonk

@@ -246,10 +246,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                  ? 'loading'
-                  : tonkState.status === 'failed'
-                    ? 'failed'
-                    : 'uninitialized',
+                ? 'loading'
+                : tonkState.status === 'failed'
+                ? 'failed'
+                : 'uninitialized',
           });
 
           if (!tonkInstance) {
@@ -349,7 +349,12 @@ async function handleMessage(
   }
 
   // Allow init, loadBundle, and initializeFromUrl operations when not ready
-  const allowedWhenUninitialized = ['init', 'loadBundle', 'initializeFromUrl'];
+  const allowedWhenUninitialized = [
+    'init',
+    'loadBundle',
+    'initializeFromUrl',
+    'getServerUrl',
+  ];
   if (
     tonkState.status !== 'ready' &&
     !allowedWhenUninitialized.includes(message.type)
