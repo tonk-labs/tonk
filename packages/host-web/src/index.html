@@ -278,6 +278,27 @@
         display: block;
       }
 
+      .share-url-container {
+        margin: 15px 0;
+      }
+
+      .share-url-input {
+        width: 100%;
+        padding: 8px;
+        background: #222;
+        border: 1px solid #666;
+        color: #fff;
+        font-size: 12px;
+        font-family: 'Courier New', Courier, monospace;
+        text-align: center;
+        margin-bottom: 10px;
+      }
+
+      .share-url-input:focus {
+        outline: none;
+        border-color: #f90;
+      }
+
       .name-dialog {
         position: fixed;
         top: 50%;
@@ -350,64 +371,6 @@
 
       .download-spinner-dialog.active {
         display: block;
-      }
-
-      @media (max-width: 768px) {
-        body {
-          padding: 15px;
-          font-size: 18px;
-        }
-
-        .bios-container {
-          max-width: 100%;
-        }
-
-        .version-text {
-          font-size: 16px;
-        }
-
-        .boot-menu {
-          padding: 12px;
-        }
-
-        .boot-menu-title {
-          font-size: 16px;
-        }
-
-        .app-item {
-          padding: 12px 10px;
-          font-size: 16px;
-        }
-
-        .app-status {
-          font-size: 14px;
-        }
-
-        .instructions {
-          font-size: 14px;
-        }
-
-        .btn {
-          padding: 12px 20px;
-          font-size: 16px;
-          min-height: 44px;
-        }
-
-        .confirmation-title,
-        .share-title,
-        .name-title {
-          font-size: 16px;
-        }
-
-        .confirmation-message,
-        .name-message {
-          font-size: 14px;
-        }
-
-        .name-input-container input {
-          padding: 12px;
-          font-size: 16px;
-        }
       }
     </style>
     <script>
@@ -583,10 +546,12 @@
         document.getElementById('share-dialog').classList.add('active');
         document.getElementById('overlay').classList.add('active');
 
-        // Reset to options view
-        document.getElementById('share-options-view').style.display = 'block';
+        // Reset views
         document.getElementById('share-loader').classList.remove('active');
         document.getElementById('qr-code-container').classList.remove('active');
+
+        // Immediately start upload
+        shareAsUrl();
       }
 
       // Close share dialog
@@ -640,7 +605,6 @@
       }
 
       async function shareAsUrl() {
-        document.getElementById('share-options-view').style.display = 'none';
         document.getElementById('share-loader').classList.add('active');
 
         try {
@@ -718,21 +682,20 @@
           });
 
           document.getElementById('qr-code-image').src = qrDataUrl;
+          document.getElementById('share-url-input').value = shareUrl;
           document.getElementById('share-loader').classList.remove('active');
           document.getElementById('qr-code-container').classList.add('active');
         } catch (error) {
           console.error('Failed to generate share URL:', error);
 
-          document.getElementById('share-loader').classList.remove('active');
-
-          document.getElementById('share-options-view').innerHTML = `
-                  <div style="color: #f00; margin-bottom: 15px;">
-                    Failed to upload bundle: ${error.message}
-                  </div>
-                  <button class="btn" onclick="closeShareDialog(); showShareDialog();" style="width: 100%;">Try Again</button>
-                  <button class="btn" onclick="closeShareDialog()" style="width: 100%; margin-top: 10px;">Close</button>
-                `;
-          document.getElementById('share-options-view').style.display = 'block';
+          const loaderEl = document.getElementById('share-loader');
+          loaderEl.innerHTML = `
+            <div style="color: #f00; margin-bottom: 15px;">
+              Failed to upload bundle: ${error.message}
+            </div>
+            <button class="btn primary" onclick="closeShareDialog(); showShareDialog();" style="width: 100%; margin-bottom: 10px;">Try Again</button>
+            <button class="btn" onclick="closeShareDialog()" style="width: 100%;">Close</button>
+          `;
         }
       }
 
@@ -770,6 +733,37 @@
           await downloadTonk();
         } finally {
           // Hide spinner after download completes or fails
+          hideDownloadSpinner();
+        }
+      }
+
+      // Copy URL to clipboard
+      async function copyUrlToClipboard() {
+        const urlInput = document.getElementById('share-url-input');
+        try {
+          await navigator.clipboard.writeText(urlInput.value);
+          // Show visual feedback
+          const btn = event.target;
+          const originalText = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => {
+            btn.textContent = originalText;
+          }, 2000);
+        } catch (err) {
+          // Fallback for older browsers
+          urlInput.select();
+          document.execCommand('copy');
+        }
+      }
+
+      // Download from share dialog
+      async function downloadFromShare() {
+        // Show download spinner
+        showDownloadSpinner();
+
+        try {
+          await downloadTonk();
+        } finally {
           hideDownloadSpinner();
         }
       }
@@ -1622,30 +1616,6 @@
     <div class="share-dialog" id="share-dialog">
       <div class="share-title">Share Tonk</div>
 
-      <div id="share-options-view">
-        <div class="share-options">
-          <button
-            class="btn primary"
-            onclick="shareAsFile()"
-            style="width: 100%"
-          >
-            Share as File
-          </button>
-          <button
-            class="btn primary"
-            onclick="shareAsUrl()"
-            style="width: 100%"
-          >
-            Share as URL
-          </button>
-        </div>
-        <div style="margin-top: 15px">
-          <button class="btn" onclick="closeShareDialog()" style="width: 100%">
-            Cancel
-          </button>
-        </div>
-      </div>
-
       <div class="share-loader" id="share-loader">
         <div class="spinner"></div>
         <p>Uploading bundle to server...</p>
@@ -1654,6 +1624,32 @@
       <div class="qr-code-container" id="qr-code-container">
         <img id="qr-code-image" class="qr-code-image" alt="QR Code" />
         <div style="color: #999; margin-bottom: 15px">Scan to access Tonk</div>
+
+        <div class="share-url-container">
+          <input
+            type="text"
+            id="share-url-input"
+            class="share-url-input"
+            readonly
+            placeholder="Generating URL..."
+          />
+          <button
+            class="btn primary"
+            onclick="copyUrlToClipboard()"
+            style="width: 100%; margin-bottom: 10px"
+          >
+            Copy URL
+          </button>
+        </div>
+
+        <button
+          class="btn primary"
+          onclick="downloadFromShare()"
+          style="width: 100%; margin-bottom: 10px"
+        >
+          Download as File
+        </button>
+
         <button class="btn" onclick="closeShareDialog()" style="width: 100%">
           Close
         </button>
@@ -1675,14 +1671,6 @@
         <button class="btn primary" id="name-confirm">Create</button>
         <button class="btn" id="name-cancel">Cancel</button>
       </div>
-    </div>
-
-    <div class="qr-code-container" id="qr-code-container">
-      <img id="qr-code-image" class="qr-code-image" alt="QR Code" />
-      <div style="color: #999; margin-bottom: 15px">Scan to access Tonk</div>
-      <button class="btn" onclick="closeShareDialog()" style="width: 100%">
-        Close
-      </button>
     </div>
 
     <div class="download-spinner-dialog" id="download-spinner-dialog">

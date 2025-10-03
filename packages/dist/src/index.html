@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -278,136 +278,25 @@
         display: block;
       }
 
-      .name-dialog {
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: #000;
-        border: 2px solid #666;
-        padding: 20px;
-        width: 90%;
-        max-width: 400px;
-        display: none;
-        z-index: 1000;
+      .share-url-container {
+        margin: 15px 0;
       }
 
-      .name-dialog.active {
-        display: block;
-      }
-
-      .name-title {
-        color: #fff;
-        margin-bottom: 15px;
-        font-size: 14px;
-      }
-
-      .name-message {
-        color: #ddd;
-        margin-bottom: 15px;
-        font-size: 12px;
-      }
-
-      .name-input-container {
-        margin-bottom: 20px;
-      }
-
-      .name-input-container input {
+      .share-url-input {
         width: 100%;
         padding: 8px;
         background: #222;
         border: 1px solid #666;
         color: #fff;
         font-size: 12px;
-        box-sizing: border-box;
+        font-family: 'Courier New', Courier, monospace;
+        text-align: center;
+        margin-bottom: 10px;
       }
 
-      .name-input-container input:focus {
+      .share-url-input:focus {
         outline: none;
         border-color: #f90;
-      }
-
-      .name-buttons {
-        display: flex;
-        gap: 10px;
-        justify-content: flex-end;
-      }
-
-      .download-spinner-dialog {
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: #000;
-        border: 2px solid #666;
-        padding: 30px;
-        width: 90%;
-        max-width: 300px;
-        display: none;
-        z-index: 1001;
-        text-align: center;
-      }
-
-      .download-spinner-dialog.active {
-        display: block;
-      }
-
-      @media (max-width: 768px) {
-        body {
-          padding: 15px;
-          font-size: 18px;
-        }
-
-        .bios-container {
-          max-width: 100%;
-        }
-
-        .version-text {
-          font-size: 16px;
-        }
-
-        .boot-menu {
-          padding: 12px;
-        }
-
-        .boot-menu-title {
-          font-size: 16px;
-        }
-
-        .app-item {
-          padding: 12px 10px;
-          font-size: 16px;
-        }
-
-        .app-status {
-          font-size: 14px;
-        }
-
-        .instructions {
-          font-size: 14px;
-        }
-
-        .btn {
-          padding: 12px 20px;
-          font-size: 16px;
-          min-height: 44px;
-        }
-
-        .confirmation-title,
-        .share-title,
-        .name-title {
-          font-size: 16px;
-        }
-
-        .confirmation-message,
-        .name-message {
-          font-size: 14px;
-        }
-
-        .name-input-container input {
-          padding: 12px;
-          font-size: 16px;
-        }
       }
     </style>
     <script>
@@ -525,8 +414,9 @@
         const app = availableApps[selectedAppIndex];
         const appName = typeof app === 'string' ? app : app.name;
 
-        document.getElementById('confirmation-message').textContent =
-          `Are you sure you want to boot "${appName}"?`;
+        document.getElementById(
+          'confirmation-message'
+        ).textContent = `Are you sure you want to boot "${appName}"?`;
         document.getElementById('confirmation-dialog').classList.add('active');
         document.getElementById('overlay').classList.add('active');
         isConfirmationOpen = true;
@@ -582,10 +472,13 @@
         document.getElementById('share-dialog').classList.add('active');
         document.getElementById('overlay').classList.add('active');
 
-        // Reset to options view
-        document.getElementById('share-options-view').style.display = 'block';
+        // Reset views
+        document.getElementById('share-options-view').style.display = 'none';
         document.getElementById('share-loader').classList.remove('active');
         document.getElementById('qr-code-container').classList.remove('active');
+
+        // Immediately start upload
+        shareAsUrl();
       }
 
       // Close share dialog
@@ -639,7 +532,6 @@
       }
 
       async function shareAsUrl() {
-        document.getElementById('share-options-view').style.display = 'none';
         document.getElementById('share-loader').classList.add('active');
 
         try {
@@ -717,6 +609,7 @@
           });
 
           document.getElementById('qr-code-image').src = qrDataUrl;
+          document.getElementById('share-url-input').value = shareUrl;
           document.getElementById('share-loader').classList.remove('active');
           document.getElementById('qr-code-container').classList.add('active');
         } catch (error) {
@@ -769,6 +662,37 @@
           await downloadTonk();
         } finally {
           // Hide spinner after download completes or fails
+          hideDownloadSpinner();
+        }
+      }
+
+      // Copy URL to clipboard
+      async function copyUrlToClipboard() {
+        const urlInput = document.getElementById('share-url-input');
+        try {
+          await navigator.clipboard.writeText(urlInput.value);
+          // Show visual feedback
+          const btn = event.target;
+          const originalText = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => {
+            btn.textContent = originalText;
+          }, 2000);
+        } catch (err) {
+          // Fallback for older browsers
+          urlInput.select();
+          document.execCommand('copy');
+        }
+      }
+
+      // Download from share dialog
+      async function downloadFromShare() {
+        // Show download spinner
+        showDownloadSpinner();
+
+        try {
+          await downloadTonk();
+        } finally {
           hideDownloadSpinner();
         }
       }
@@ -1006,7 +930,7 @@
           const oldName =
             hasLoadedBundles && availableApps.length > 0
               ? availableApps[0]
-              : 'app';
+              : 'latergram';
           const renameRequestId = 'rename-' + Date.now();
           const renameResponse = await new Promise((resolve, reject) => {
             const messageHandler = event => {
@@ -1513,7 +1437,9 @@
               .catch(err => {
                 console.log('ServiceWorker registration failed: ', err);
                 showError(
-                  "Service Worker failed to load. If you're on Firefox, check ES module support."
+                  'Service Worker registration failed.\n\n' +
+                    'Firefox does not yet support ES modules in Service Workers.\n\n' +
+                    'Please use Chrome or Safari to run Tonks.'
                 );
               });
 
@@ -1651,6 +1577,32 @@
       <div class="qr-code-container" id="qr-code-container">
         <img id="qr-code-image" class="qr-code-image" alt="QR Code" />
         <div style="color: #999; margin-bottom: 15px">Scan to access Tonk</div>
+
+        <div class="share-url-container">
+          <input
+            type="text"
+            id="share-url-input"
+            class="share-url-input"
+            readonly
+            placeholder="Generating URL..."
+          />
+          <button
+            class="btn primary"
+            onclick="copyUrlToClipboard()"
+            style="width: 100%; margin-bottom: 10px"
+          >
+            Copy URL
+          </button>
+        </div>
+
+        <button
+          class="btn primary"
+          onclick="downloadFromShare()"
+          style="width: 100%; margin-bottom: 10px"
+        >
+          Download as File
+        </button>
+
         <button class="btn" onclick="closeShareDialog()" style="width: 100%">
           Close
         </button>
@@ -1672,14 +1624,6 @@
         <button class="btn primary" id="name-confirm">Create</button>
         <button class="btn" id="name-cancel">Cancel</button>
       </div>
-    </div>
-
-    <div class="qr-code-container" id="qr-code-container">
-      <img id="qr-code-image" class="qr-code-image" alt="QR Code" />
-      <div style="color: #999; margin-bottom: 15px">Scan to access Tonk</div>
-      <button class="btn" onclick="closeShareDialog()" style="width: 100%">
-        Close
-      </button>
     </div>
 
     <div class="download-spinner-dialog" id="download-spinner-dialog">
