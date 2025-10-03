@@ -6,13 +6,49 @@ Pages in Tonk are React components stored in `/src/views/` that are dynamically 
 rendered at runtime. The routing system automatically maps URL paths to view files, enabling hot
 module replacement and live editing.
 
+## 🏠 THE HOME PAGE - CRITICAL REQUIREMENT
+
+**THE MOST IMPORTANT FILE: `/src/views/index.tsx`**
+
+This file is the MAIN HOME PAGE that users see when viewing the app (not in edit mode).
+
+### When Creating Components for Users
+
+When a user asks you to "make something" or "create something", ALWAYS follow this workflow:
+
+1. **FIRST**: Check if `/src/views/index.tsx` exists
+2. **READ**: If it exists, read its content to understand what's there
+
+3. **THEN** choose your path:
+
+   **Path A - No index.tsx exists:**
+
+   - Create the component in `/src/components/`
+   - CREATE `/src/views/index.tsx` and add the component to it
+   - Tell user: "I created [Component] and added it to your home page"
+
+   **Path B - index.tsx exists but is empty/minimal:**
+
+   - Create the component in `/src/components/`
+   - UPDATE `/src/views/index.tsx` to include the component
+   - Tell user: "I created [Component] and added it to your home page"
+
+   **Path C - index.tsx has real content:**
+
+   - Create ONLY the component in `/src/components/`
+   - Tell user: "I created the [Component] component. Would you like me to add it to your home page,
+     or would you prefer to add it to a different page?"
+   - WAIT for user response before modifying index.tsx
+
+**This ensures users always have a functional home page to view their app.**
+
 ## Critical Page Structure Requirements
 
 ### 1. File Location & Naming
 
 - **MUST** be placed in `/src/views/` directory
 - File name determines the route:
-  - `/src/views/index.tsx` → `/` (homepage)
+  - `/src/views/index.tsx` → `/` (homepage) **← THE MOST IMPORTANT FILE**
   - `/src/views/about.tsx` → `/about`
   - `/src/views/products.tsx` → `/products`
   - `/src/views/admin/dashboard.tsx` → `/admin/dashboard`
