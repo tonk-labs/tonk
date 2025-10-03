@@ -1,18 +1,18 @@
 import { Code2Icon, MessageCircle } from 'lucide-react';
 import type React from 'react';
 import { createRef, useCallback, useEffect, useState } from 'react';
-import { Link, Outlet } from 'react-router-dom';
+import { Link, Outlet, useLocation } from 'react-router-dom';
 import { useAgentChat } from '../lib/agent/use-agent-chat';
 import { cn, isMobile } from '../lib/utils';
 import AgentChat from './chat/AgentChat';
 import { Drawer, DrawerContent, DrawerTrigger } from './ui/drawer';
 import { useVisualViewport } from './hooks/useVisualViewport';
 
-interface PageLayoutProps {
-  viewPath: string;
-}
-
-export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
+export const PageLayout: React.FC = () => {
+  const location = useLocation();
+  const pathname =
+    location.pathname === '/' ? 'index' : location.pathname.slice(1);
+  const viewPath = `/src/views/${pathname}.tsx`;
   const [open, setOpen] = useState(false);
   const [isDesktop, setIsDesktop] = useState(false);
   const inputRef = createRef<HTMLTextAreaElement>();
@@ -132,7 +132,13 @@ export const PageLayout: React.FC<PageLayoutProps> = ({ viewPath }) => {
             touchAction: 'pan-y',
           }}
         >
-          <AgentChat inputRef={inputRef} onClose={() => handleOpen(false)} />
+          <AgentChat
+            inputRef={inputRef}
+            onClose={() => handleOpen(false)}
+            context={{
+              currentView: viewPath,
+            }}
+          />
         </div>
       </DrawerContent>
     </Drawer>
