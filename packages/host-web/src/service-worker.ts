@@ -222,10 +222,6 @@ const determinePath = (url: URL): string => {
 
   // Check if this is a request for the root hostname (should bypass VFS)
   const isRootRequest = url.pathname === '/' || url.pathname === '';
-  if (isRootRequest && appSlug) {
-    console.log('DOING THE THING');
-    appSlug = null;
-  }
 
   if (appSlug && url.origin === location.origin && !isRootRequest) {
     log('info', 'Processing fetch request for same origin (non-root)');
