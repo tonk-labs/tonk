@@ -298,6 +298,80 @@
         outline: none;
         border-color: #f90;
       }
+
+      .name-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #000;
+        border: 2px solid #666;
+        padding: 20px;
+        width: 90%;
+        max-width: 400px;
+        display: none;
+        z-index: 1000;
+      }
+
+      .name-dialog.active {
+        display: block;
+      }
+
+      .name-title {
+        color: #fff;
+        margin-bottom: 15px;
+        font-size: 14px;
+      }
+
+      .name-message {
+        color: #ddd;
+        margin-bottom: 15px;
+        font-size: 12px;
+      }
+
+      .name-input-container {
+        margin-bottom: 20px;
+      }
+
+      .name-input-container input {
+        width: 100%;
+        padding: 8px;
+        background: #222;
+        border: 1px solid #666;
+        color: #fff;
+        font-size: 12px;
+        box-sizing: border-box;
+      }
+
+      .name-input-container input:focus {
+        outline: none;
+        border-color: #f90;
+      }
+
+      .name-buttons {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+      }
+
+      .download-spinner-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #000;
+        border: 2px solid #666;
+        padding: 30px;
+        width: 90%;
+        max-width: 300px;
+        display: none;
+        z-index: 1001;
+        text-align: center;
+      }
+
+      .download-spinner-dialog.active {
+        display: block;
+      }
     </style>
     <script>
       // BIOS Boot Manager State
@@ -473,7 +547,6 @@
         document.getElementById('overlay').classList.add('active');
 
         // Reset views
-        document.getElementById('share-options-view').style.display = 'none';
         document.getElementById('share-loader').classList.remove('active');
         document.getElementById('qr-code-container').classList.remove('active');
 
@@ -615,16 +688,14 @@
         } catch (error) {
           console.error('Failed to generate share URL:', error);
 
-          document.getElementById('share-loader').classList.remove('active');
-
-          document.getElementById('share-options-view').innerHTML = `
-                  <div style="color: #f00; margin-bottom: 15px;">
-                    Failed to upload bundle: ${error.message}
-                  </div>
-                  <button class="btn" onclick="closeShareDialog(); showShareDialog();" style="width: 100%;">Try Again</button>
-                  <button class="btn" onclick="closeShareDialog()" style="width: 100%; margin-top: 10px;">Close</button>
-                `;
-          document.getElementById('share-options-view').style.display = 'block';
+          const loaderEl = document.getElementById('share-loader');
+          loaderEl.innerHTML = `
+            <div style="color: #f00; margin-bottom: 15px;">
+              Failed to upload bundle: ${error.message}
+            </div>
+            <button class="btn primary" onclick="closeShareDialog(); showShareDialog();" style="width: 100%; margin-bottom: 10px;">Try Again</button>
+            <button class="btn" onclick="closeShareDialog()" style="width: 100%;">Close</button>
+          `;
         }
       }
 
@@ -824,52 +895,8 @@
             throw new Error('No service worker controller available');
           }
 
-          let bundleBytes;
-
-          if (hasLoadedBundles) {
-            // Step 1: Fork to bytes
-            console.log('Forking current bundle...');
-            const forkRequestId = 'fork-to-bytes-' + Date.now();
-            const forkResponse = await new Promise((resolve, reject) => {
-              const messageHandler = event => {
-                if (
-                  event.data &&
-                  event.data.type === 'forkToBytes' &&
-                  event.data.id === forkRequestId
-                ) {
-                  navigator.serviceWorker.removeEventListener(
-                    'message',
-                    messageHandler
-                  );
-                  resolve(event.data);
-                }
-              };
-
-              navigator.serviceWorker.addEventListener(
-                'message',
-                messageHandler
-              );
-
-              navigator.serviceWorker.controller.postMessage({
-                type: 'forkToBytes',
-                id: forkRequestId,
-              });
-
-              setTimeout(() => {
-                navigator.serviceWorker.removeEventListener(
-                  'message',
-                  messageHandler
-                );
-                reject(new Error('Timeout waiting for forkToBytes response'));
-              }, 30000);
-            });
-
-            if (!forkResponse.success || !forkResponse.data) {
-              throw new Error(forkResponse.error || 'Failed to fork tonk');
-            }
-
-            bundleBytes = forkResponse.data;
-          } else {
+          // Step 1: Load the appropriate bundle first (if not already loaded)
+          if (!hasLoadedBundles) {
             // Fetch blank tonk from server
             console.log('Fetching blank tonk from server...');
             const serverUrl = await getServerUrl();
@@ -879,8 +906,95 @@
               throw new Error('Failed to fetch blank tonk template');
             }
 
-            bundleBytes = new Uint8Array(await response.arrayBuffer());
+            const blankBytes = new Uint8Array(await response.arrayBuffer());
+
+            // Load the blank tonk
+            console.log('Loading blank tonk...');
+            const tempLoadRequestId = 'temp-load-' + Date.now();
+            const tempLoadResponse = await new Promise((resolve, reject) => {
+              const messageHandler = event => {
+                if (
+                  event.data &&
+                  event.data.type === 'loadBundle' &&
+                  event.data.id === tempLoadRequestId
+                ) {
+                  navigator.serviceWorker.removeEventListener(
+                    'message',
+                    messageHandler
+                  );
+                  resolve(event.data);
+                }
+              };
+
+              navigator.serviceWorker.addEventListener('message', messageHandler);
+
+              const arrayBuffer = blankBytes.buffer.slice(
+                blankBytes.byteOffset,
+                blankBytes.byteOffset + blankBytes.byteLength
+              );
+
+              navigator.serviceWorker.controller.postMessage({
+                type: 'loadBundle',
+                id: tempLoadRequestId,
+                bundleBytes: arrayBuffer,
+              });
+
+              setTimeout(() => {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                reject(new Error('Timeout waiting for loadBundle response'));
+              }, 30000);
+            });
+
+            if (!tempLoadResponse.success) {
+              throw new Error(tempLoadResponse.error || 'Failed to load blank tonk');
+            }
           }
+
+          // Step 2: Fork the loaded bundle to bytes
+          console.log('Forking bundle to bytes...');
+          const forkRequestId = 'fork-to-bytes-' + Date.now();
+          const forkResponse = await new Promise((resolve, reject) => {
+            const messageHandler = event => {
+              if (
+                event.data &&
+                event.data.type === 'forkToBytes' &&
+                event.data.id === forkRequestId
+              ) {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                resolve(event.data);
+              }
+            };
+
+            navigator.serviceWorker.addEventListener(
+              'message',
+              messageHandler
+            );
+
+            navigator.serviceWorker.controller.postMessage({
+              type: 'forkToBytes',
+              id: forkRequestId,
+            });
+
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              reject(new Error('Timeout waiting for forkToBytes response'));
+            }, 30000);
+          });
+
+          if (!forkResponse.success || !forkResponse.data) {
+            throw new Error(forkResponse.error || 'Failed to fork tonk');
+          }
+
+          const bundleBytes = forkResponse.data;
 
           // Step 2: Load the bundle (forked or blank)
           const loadRequestId = 'load-bundle-' + Date.now();
@@ -1544,30 +1658,6 @@
 
     <div class="share-dialog" id="share-dialog">
       <div class="share-title">Share Tonk</div>
-
-      <div id="share-options-view">
-        <div class="share-options">
-          <button
-            class="btn primary"
-            onclick="shareAsFile()"
-            style="width: 100%"
-          >
-            Share as File
-          </button>
-          <button
-            class="btn primary"
-            onclick="shareAsUrl()"
-            style="width: 100%"
-          >
-            Share as URL
-          </button>
-        </div>
-        <div style="margin-top: 15px">
-          <button class="btn" onclick="closeShareDialog()" style="width: 100%">
-            Cancel
-          </button>
-        </div>
-      </div>
 
       <div class="share-loader" id="share-loader">
         <div class="spinner"></div>

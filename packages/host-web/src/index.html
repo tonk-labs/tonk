@@ -895,52 +895,8 @@
             throw new Error('No service worker controller available');
           }
 
-          let bundleBytes;
-
-          if (hasLoadedBundles) {
-            // Step 1: Fork to bytes
-            console.log('Forking current bundle...');
-            const forkRequestId = 'fork-to-bytes-' + Date.now();
-            const forkResponse = await new Promise((resolve, reject) => {
-              const messageHandler = event => {
-                if (
-                  event.data &&
-                  event.data.type === 'forkToBytes' &&
-                  event.data.id === forkRequestId
-                ) {
-                  navigator.serviceWorker.removeEventListener(
-                    'message',
-                    messageHandler
-                  );
-                  resolve(event.data);
-                }
-              };
-
-              navigator.serviceWorker.addEventListener(
-                'message',
-                messageHandler
-              );
-
-              navigator.serviceWorker.controller.postMessage({
-                type: 'forkToBytes',
-                id: forkRequestId,
-              });
-
-              setTimeout(() => {
-                navigator.serviceWorker.removeEventListener(
-                  'message',
-                  messageHandler
-                );
-                reject(new Error('Timeout waiting for forkToBytes response'));
-              }, 30000);
-            });
-
-            if (!forkResponse.success || !forkResponse.data) {
-              throw new Error(forkResponse.error || 'Failed to fork tonk');
-            }
-
-            bundleBytes = forkResponse.data;
-          } else {
+          // Step 1: Load the appropriate bundle first (if not already loaded)
+          if (!hasLoadedBundles) {
             // Fetch blank tonk from server
             console.log('Fetching blank tonk from server...');
             const serverUrl = await getServerUrl();
@@ -950,8 +906,95 @@
               throw new Error('Failed to fetch blank tonk template');
             }
 
-            bundleBytes = new Uint8Array(await response.arrayBuffer());
+            const blankBytes = new Uint8Array(await response.arrayBuffer());
+
+            // Load the blank tonk
+            console.log('Loading blank tonk...');
+            const tempLoadRequestId = 'temp-load-' + Date.now();
+            const tempLoadResponse = await new Promise((resolve, reject) => {
+              const messageHandler = event => {
+                if (
+                  event.data &&
+                  event.data.type === 'loadBundle' &&
+                  event.data.id === tempLoadRequestId
+                ) {
+                  navigator.serviceWorker.removeEventListener(
+                    'message',
+                    messageHandler
+                  );
+                  resolve(event.data);
+                }
+              };
+
+              navigator.serviceWorker.addEventListener('message', messageHandler);
+
+              const arrayBuffer = blankBytes.buffer.slice(
+                blankBytes.byteOffset,
+                blankBytes.byteOffset + blankBytes.byteLength
+              );
+
+              navigator.serviceWorker.controller.postMessage({
+                type: 'loadBundle',
+                id: tempLoadRequestId,
+                bundleBytes: arrayBuffer,
+              });
+
+              setTimeout(() => {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                reject(new Error('Timeout waiting for loadBundle response'));
+              }, 30000);
+            });
+
+            if (!tempLoadResponse.success) {
+              throw new Error(tempLoadResponse.error || 'Failed to load blank tonk');
+            }
           }
+
+          // Step 2: Fork the loaded bundle to bytes
+          console.log('Forking bundle to bytes...');
+          const forkRequestId = 'fork-to-bytes-' + Date.now();
+          const forkResponse = await new Promise((resolve, reject) => {
+            const messageHandler = event => {
+              if (
+                event.data &&
+                event.data.type === 'forkToBytes' &&
+                event.data.id === forkRequestId
+              ) {
+                navigator.serviceWorker.removeEventListener(
+                  'message',
+                  messageHandler
+                );
+                resolve(event.data);
+              }
+            };
+
+            navigator.serviceWorker.addEventListener(
+              'message',
+              messageHandler
+            );
+
+            navigator.serviceWorker.controller.postMessage({
+              type: 'forkToBytes',
+              id: forkRequestId,
+            });
+
+            setTimeout(() => {
+              navigator.serviceWorker.removeEventListener(
+                'message',
+                messageHandler
+              );
+              reject(new Error('Timeout waiting for forkToBytes response'));
+            }, 30000);
+          });
+
+          if (!forkResponse.success || !forkResponse.data) {
+            throw new Error(forkResponse.error || 'Failed to fork tonk');
+          }
+
+          const bundleBytes = forkResponse.data;
 
           // Step 2: Load the bundle (forked or blank)
           const loadRequestId = 'load-bundle-' + Date.now();
