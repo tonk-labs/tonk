@@ -12,13 +12,6 @@ export function sendErrorToAgent(
 ): void {
   // Check if we're in an editor route
   const currentPath = window.location.pathname;
-  const isEditorRoute =
-    currentPath.includes('/editor') || currentPath.includes('/admin');
-
-  if (isEditorRoute) {
-    console.log('Skipping AI error report - in editor route:', currentPath);
-    return;
-  }
 
   // Delay to ensure agent is ready
   setTimeout(async () => {
