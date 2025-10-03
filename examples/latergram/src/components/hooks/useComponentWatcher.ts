@@ -31,8 +31,6 @@ export function useComponentWatcher(): ComponentWatcherHook {
           },
         });
 
-        // Always get fresh context to ensure all available components are included
-        // but exclude the current component being compiled to avoid duplicate identifiers
         const freshPackages = buildAvailablePackages(componentId);
         const contextKeys = Object.keys(freshPackages);
         const contextValues = Object.values(freshPackages);
@@ -49,10 +47,41 @@ export function useComponentWatcher(): ComponentWatcherHook {
       `
         );
 
-        const component = moduleFactory(...contextValues);
+        let component = moduleFactory(...contextValues);
+
+        const React = (window as any).React;
+        const ChakraProvider = (window as any).ChakraUI?.ChakraProvider;
+        const Toaster = (window as any).ChakraUI?.Toaster;
+        const createToaster = (window as any).createToaster;
+        const defaultSystem = (window as any).defaultSystem;
+
+        if (React && ChakraProvider && defaultSystem && component) {
+          const OriginalComponent = component;
+          
+          let componentToaster: any = null;
+          
+          component = (props: any) => {
+            if (!componentToaster && createToaster) {
+              componentToaster = createToaster({
+                placement: 'bottom-end',
+                pauseOnPageIdle: true,
+              });
+              (window as any).toaster = componentToaster;
+            }
+
+            return React.createElement(
+              ChakraProvider,
+              { value: defaultSystem },
+              React.createElement(React.Fragment, null,
+                React.createElement(OriginalComponent, props),
+                Toaster && componentToaster ? React.createElement(Toaster, { toaster: componentToaster }) : null
+              )
+            );
+          };
+          component.displayName = `ChakraWrapped(${OriginalComponent.displayName || OriginalComponent.name || 'Component'})`;
+        }
 
         componentRegistry.update(componentId, component, 'success');
-        // Store the source code in metadata
         componentRegistry.updateMetadata(componentId, { source: code });
       } catch (error) {
         const errorMessage =

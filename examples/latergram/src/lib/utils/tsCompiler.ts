@@ -10,6 +10,7 @@ export interface CompilerConfig {
   moduleType?: 'None' | 'CommonJS';
   outputFormat?: 'default' | 'module';
   excludeStoreId?: string;
+  wrapWithChakra?: boolean;
 }
 
 export const compileTSCode = async (
@@ -22,9 +23,12 @@ export const compileTSCode = async (
       throw new Error('TypeScript compiler not loaded');
     }
 
-    const { moduleType = 'None', outputFormat = 'default' } = config;
+    const { 
+      moduleType = 'None', 
+      outputFormat = 'default',
+      wrapWithChakra = false 
+    } = config;
 
-    // Compile the TypeScript code
     const compiled = ts.transpileModule(code, {
       compilerOptions: {
         jsx: ts.JsxEmit.React,
@@ -36,15 +40,12 @@ export const compileTSCode = async (
       },
     });
 
-    // Get fresh context, excluding the current store if specified
     const freshPackages = buildAvailablePackages(config.excludeStoreId);
     const contextKeys = Object.keys(freshPackages);
     const contextValues = Object.values(freshPackages);
 
-    // Handle different output formats
     let moduleFactory: Function;
     if (outputFormat === 'module') {
-      // For components that use module.exports
       moduleFactory = new Function(
         ...contextKeys,
         `
@@ -55,11 +56,28 @@ export const compileTSCode = async (
         `
       );
     } else {
-      // For stores that use direct return
       moduleFactory = new Function(...contextKeys, compiled.outputText);
     }
 
-    const result = moduleFactory(...contextValues);
+    let result = moduleFactory(...contextValues);
+
+    if (wrapWithChakra && result) {
+      const React = (window as any).React;
+      const ChakraProvider = (window as any).ChakraUI?.ChakraProvider;
+      const defaultSystem = (window as any).defaultSystem;
+
+      if (React && ChakraProvider && defaultSystem) {
+        const OriginalComponent = result;
+        result = (props: any) => {
+          return React.createElement(
+            ChakraProvider,
+            { value: defaultSystem },
+            React.createElement(OriginalComponent, props)
+          );
+        };
+        result.displayName = `ChakraWrapped(${OriginalComponent.displayName || OriginalComponent.name || 'Component'})`;
+      }
+    }
 
     return {
       success: true,

@@ -83,6 +83,13 @@ To complete your task, you MUST call the 'finish' tool when you have completed t
 Remember: You MUST call the 'finish' tool when done with the task. Do not leave tasks incomplete.
 
 ALWAYS START BY READING THE MANUAL BEFORE IMPLEMENTING ANY CODE
+
+IMPORTANT - ERROR HANDLING WORKFLOW:
+When a user reports an error or asks you to fix something:
+1. Read the manual with includeErrorPatterns: true to see common anti-patterns
+2. Review the error patterns section carefully to avoid repeating known mistakes
+3. Fix the issue following the correct patterns shown in the error guide
+4. The error patterns document shows both WRONG and CORRECT examples - follow the CORRECT ones
 `;
 
 const tonkTools = {
