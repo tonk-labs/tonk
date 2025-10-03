@@ -1514,7 +1514,9 @@
               .catch(err => {
                 console.log('ServiceWorker registration failed: ', err);
                 showError(
-                  "Service Worker failed to load. If you're on Firefox, check ES module support."
+                  'Service Worker registration failed.\n\n' +
+                    'Firefox does not yet support ES modules in Service Workers.\n\n' +
+                    'Please use Chrome or Safari to run Tonks.'
                 );
               });
 
