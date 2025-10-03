@@ -7,7 +7,7 @@ import { BrowserRouter } from 'react-router-dom';
 import * as ReactRouterDOM from 'react-router-dom';
 import * as zustand from 'zustand';
 import * as ChakraUI from '@chakra-ui/react';
-import { ChakraProvider, defaultSystem } from '@chakra-ui/react';
+import { ChakraProvider, defaultSystem, createToaster, Toaster } from '@chakra-ui/react';
 import App from './App';
 import { getAgentService } from './lib/agent/agent-service';
 import { sync } from './middleware';
@@ -27,6 +27,12 @@ install(twConfig);
 
 (window as any).ChakraUI = ChakraUI;
 (window as any).defaultSystem = defaultSystem;
+(window as any).createToaster = createToaster;
+
+const mainToaster = createToaster({
+  placement: 'bottom-end',
+  pauseOnPageIdle: true,
+});
 
 const container = document.getElementById('root');
 if (!container) throw new Error('Failed to find the root element');
@@ -79,6 +85,7 @@ const initialize = async () => {
         <ChakraProvider value={defaultSystem}>
           <BrowserRouter basename={basename}>
             <App />
+            <Toaster toaster={mainToaster} />
           </BrowserRouter>
         </ChakraProvider>
       </React.StrictMode>

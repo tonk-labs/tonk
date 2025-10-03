@@ -75,7 +75,40 @@ export const ViewRenderer: React.FC<ViewRendererProps> = ({
       `
         );
 
-        const component = moduleFactory(...contextValues);
+        let component = moduleFactory(...contextValues);
+
+        const React = (window as any).React;
+        const ChakraProvider = (window as any).ChakraUI?.ChakraProvider;
+        const Toaster = (window as any).ChakraUI?.Toaster;
+        const createToaster = (window as any).createToaster;
+        const defaultSystem = (window as any).defaultSystem;
+
+        if (React && ChakraProvider && defaultSystem && component) {
+          const OriginalComponent = component;
+          
+          let viewToaster: any = null;
+          
+          component = (props: any) => {
+            if (!viewToaster && createToaster) {
+              viewToaster = createToaster({
+                placement: 'bottom-end',
+                pauseOnPageIdle: true,
+              });
+              (window as any).toaster = viewToaster;
+            }
+
+            return React.createElement(
+              ChakraProvider,
+              { value: defaultSystem },
+              React.createElement(React.Fragment, null,
+                React.createElement(OriginalComponent, props),
+                Toaster && viewToaster ? React.createElement(Toaster, { toaster: viewToaster }) : null
+              )
+            );
+          };
+          component.displayName = `ChakraWrapped(${OriginalComponent.displayName || OriginalComponent.name || 'View'})`;
+        }
+
         return component;
       } catch (error) {
         const errorMessage =

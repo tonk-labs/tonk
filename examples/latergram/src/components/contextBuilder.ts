@@ -106,42 +106,6 @@ export interface RouterContext {
   params: Record<string, string | undefined>;
 }
 
-const createChakraWrapper = (Component: any, componentName: string) => {
-  const React = (window as any).React;
-  const ChakraProvider = (window as any).ChakraUI?.ChakraProvider;
-  const defaultSystem = (window as any).defaultSystem;
-
-  if (!ChakraProvider || !defaultSystem) {
-    return Component;
-  }
-
-  const WrappedComponent = (props: any) => {
-    return React.createElement(
-      ChakraProvider,
-      { value: defaultSystem },
-      React.createElement(Component, props)
-    );
-  };
-
-  WrappedComponent.displayName = `ChakraWrapped(${componentName})`;
-  return WrappedComponent;
-};
-
-const isChakraComponent = (componentName: string): boolean => {
-  const chakraComponents = [
-    'Box', 'Flex', 'Grid', 'Stack', 'VStack', 'HStack', 'Wrap', 'Center', 'Container', 'Spacer',
-    'Button', 'IconButton', 'ButtonGroup',
-    'Heading', 'Text',
-    'Input', 'Textarea', 'Select', 'Checkbox', 'Radio', 'Switch', 'FormControl', 'FormLabel',
-    'Modal', 'ModalOverlay', 'ModalContent', 'ModalHeader', 'ModalBody', 'ModalFooter', 'ModalCloseButton',
-    'Drawer', 'DrawerOverlay', 'DrawerContent', 'DrawerHeader', 'DrawerBody', 'DrawerFooter', 'DrawerCloseButton',
-    'Alert', 'Spinner', 'Toast', 'Popover',
-    'Badge', 'Card', 'CardBody', 'CardHeader', 'CardFooter', 'Table', 'Tag', 'Avatar', 'Image',
-    'Breadcrumb', 'Tabs', 'Menu', 'MenuItem',
-  ];
-  return chakraComponents.includes(componentName);
-};
-
 export const buildAvailablePackages = (
   excludeId?: string,
   routerContext?: RouterContext
@@ -179,15 +143,6 @@ export const buildAvailablePackages = (
   };
 
   const ChakraUI = (window as any).ChakraUI || {};
-  
-  const wrappedChakraUI: { [key: string]: any } = {};
-  Object.keys(ChakraUI).forEach(key => {
-    if (isChakraComponent(key)) {
-      wrappedChakraUI[key] = createChakraWrapper(ChakraUI[key], key);
-    } else {
-      wrappedChakraUI[key] = ChakraUI[key];
-    }
-  });
 
   const basePackages = {
     React: (window as any).React,
@@ -201,6 +156,7 @@ export const buildAvailablePackages = (
     Fragment: (window as any).React?.Fragment,
     create: (window as any).zustand?.create,
     sync: (window as any).sync,
+    createToaster: (window as any).createToaster,
     Link: createBridgedLink(),
     NavLink: routerContext
       ? createBridgedLink()
@@ -215,7 +171,7 @@ export const buildAvailablePackages = (
       ? () => routerContext.params
       : (window as any).ReactRouterDOM?.useParams,
     useSearchParams: (window as any).ReactRouterDOM?.useSearchParams,
-    ...wrappedChakraUI,
+    ...ChakraUI,
   };
 
   const componentPackages: { [key: string]: any } = {};

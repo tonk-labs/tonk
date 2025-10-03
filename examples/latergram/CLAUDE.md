@@ -116,7 +116,8 @@ pnpm dev  # Starts server on port 8081 with blank.tonk manifest
 - **Primary UI Library: Chakra UI** - Use Chakra UI components for all UI elements
 - Components have access to:
   - **React & Hooks**: `React`, `useState`, `useEffect`, `useCallback`, `useMemo`, `useRef`, `useReducer`, `useContext`, `Fragment`
-  - **Chakra UI**: All components (`Box`, `Button`, `Heading`, `Text`, `Input`, `Stack`, `VStack`, `HStack`, `Modal`, `useDisclosure`, `useToast`, etc.)
+  - **Chakra UI v3**: All components (`Box`, `Button`, `Heading`, `Input`, `Modal`, etc.) and hooks (`useDisclosure`, `useBreakpoint`, etc.)
+  - **Toast Notifications**: Global `toaster` utility for notifications (Chakra v3 API)
   - **React Router**: `Link`, `NavLink`, `useNavigate`, `useLocation`, `useParams`
   - **Zustand**: `create`, `sync` for store creation
   - **Custom Components & Stores**: All registered VFS components and stores
