@@ -276,6 +276,28 @@ class Server {
       }
     });
 
+    // API endpoint to get blank tonk template
+    app.get('/api/blank-tonk', async (_req, res) => {
+      try {
+        const __filename = fileURLToPath(import.meta.url);
+        const __dirname = dirname(__filename);
+        const blankTonkPath = join(__dirname, '..', 'latergram.tonk');
+        const blankTonkBuffer = readFileSync(blankTonkPath);
+
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader(
+          'Content-Disposition',
+          'attachment; filename="latergram.tonk"'
+        );
+        res.setHeader('Content-Length', blankTonkBuffer.length.toString());
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
+        res.send(blankTonkBuffer);
+      } catch (error) {
+        console.error('Error serving blank tonk:', error);
+        res.status(404).json({ error: 'Blank tonk template not found' });
+      }
+    });
+
     this.#server = app.listen(PORT, () => {
       const address = this.#server.address();
       console.log(
