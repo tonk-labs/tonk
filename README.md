@@ -34,7 +34,7 @@
           -++    .+%=*::+.*-    ##*@+--#@@@+.....=:.==. *-*+%  +%+-
 ```
 
-Tonk is a containerized format for multiplayer software you keep and share like files.
+Tonk is a containerized format, host environment and protocol for multiplayer software you keep and share like files.
 
 Every file contains both its application and its data, is designed to work across any connection, on
 any machine, last forever, and remain under user control.
@@ -49,6 +49,7 @@ retain control of their tools and data).
 
 - **Virtual File System**: Document-based storage backed by Automerge CRDTs with real-time sync
 - **Bundle Format**: Self-contained .tonk files containing both application and data
+- **Web Host Environment**: A simple website shell for running web bundles packaged in .tonk files
 - **WASM Core**: High-performance Rust implementation that runs in browsers and Node.js
 - **Real-time Sync**: Automatic peer-to-peer synchronization via WebSockets
 - **Offline-First**: Works without internet, syncs when reconnected
