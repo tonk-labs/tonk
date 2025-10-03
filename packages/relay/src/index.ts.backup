@@ -26,7 +26,6 @@ class Server {
   ): Promise<Server> {
     const bundleBytes = readFileSync(bundlePath);
 
-    // Create storage adapter from bundle and filesystem storage
     const storage = await CompositeStorageAdapter.create(
       bundleBytes,
       storageDir
@@ -41,10 +40,12 @@ class Server {
     const PORT = port;
     const app = express();
 
+    // Enable CORS for all routes to allow browser clients to fetch root document
+
     app.use(
       cors({
-        origin: true,
-        credentials: true,
+        origin: true, // Allow all origins
+        credentials: true, // Allow cookies/credentials
         methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization'],
       })
@@ -60,6 +61,8 @@ class Server {
       storage: this.#storage,
       /** @ts-expect-error @type {(import("automerge-repo").PeerId)}  */
       peerId: `storage-server` as PeerId,
+      // Since this is a server, we don't share generously — meaning we only sync documents they already
+      // know about and can ask for by ID.
       sharePolicy: async () => true,
     };
     const serverRepo = new Repo(config);
@@ -325,16 +328,15 @@ class Server {
 async function main() {
   const port = process.argv[2] ? parseInt(process.argv[2]) : 8080;
   const bundlePath = process.argv[3];
-  const storageDir = process.argv[4] || 'automerge-repo-data';
 
   if (!bundlePath) {
     console.error('Error: Bundle path is required');
-    console.error('Usage: node server.js [port] <bundle-path> [storage-dir]');
+    console.error('Usage: node server.js [port] <bundle-path>');
     process.exit(1);
   }
 
   try {
-    const server = await Server.create(port, bundlePath, storageDir);
+    const server = await Server.create(port, bundlePath);
 
     process.on('SIGINT', () => {
       server.close();

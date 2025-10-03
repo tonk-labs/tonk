@@ -51,7 +51,7 @@ fi
 
 echo "📥 Cloning repository..."
 if [ ! -d "/home/ec2-user/tonk" ]; then
-  git clone -b shared/feat/latergram https://github.com/tonk-labs/tonk.git tonk
+  git clone https://github.com/tonk-labs/tonk.git tonk
 else
   echo "✓ Repository already cloned"
 fi
