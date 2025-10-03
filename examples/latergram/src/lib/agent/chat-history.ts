@@ -16,6 +16,11 @@ export interface ChatMessage {
   toolCallId?: string;
   hidden?: boolean;
   streaming?: boolean;
+  context?: {
+    currentView?: string;
+    selectedFile?: string;
+    fileType?: 'component' | 'store' | 'page' | 'generic';
+  };
 }
 
 export interface ChatHistoryData {

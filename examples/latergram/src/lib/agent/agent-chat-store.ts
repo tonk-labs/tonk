@@ -24,7 +24,14 @@ export interface AgentChatActions {
 
   // Public actions
   initialize: () => Promise<void>;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (
+    text: string,
+    context?: {
+      currentView?: string;
+      selectedFile?: string;
+      fileType?: 'component' | 'store' | 'page' | 'generic';
+    }
+  ) => Promise<void>;
   clearConversation: () => Promise<void>;
   stopGeneration: () => void;
   updateMessage: (messageId: string, newContent: string) => Promise<void>;
@@ -156,7 +163,7 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
   },
 
   // Send a message
-  sendMessage: async text => {
+  sendMessage: async (text, context) => {
     const { isReady, isLoading } = get();
     if (!text.trim() || !isReady || isLoading) {
       return;
@@ -168,8 +175,8 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
     try {
       let accumulatedContent = '';
 
-      // Stream the response
-      for await (const chunk of service.streamMessage(text)) {
+      // Stream the response with context
+      for await (const chunk of service.streamMessage(text, context)) {
         if (chunk.content) {
           accumulatedContent += chunk.content;
           set({ streamingContent: accumulatedContent });

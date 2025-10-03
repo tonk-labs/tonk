@@ -4,12 +4,24 @@ import { useCallback, useState } from 'react';
 import { useKeyboardSubmit } from './hooks';
 
 interface ChatInputBarProps {
-  onSendMessage: (text: string) => void;
+  onSendMessage: (
+    text: string,
+    context?: {
+      currentView?: string;
+      selectedFile?: string;
+      fileType?: 'component' | 'store' | 'page' | 'generic';
+    }
+  ) => void;
   isLoading: boolean;
   isReady: boolean;
   inputRef: React.RefObject<HTMLTextAreaElement>;
   onClear: () => Promise<void>;
   onStop: () => void;
+  context?: {
+    currentView?: string;
+    selectedFile?: string;
+    fileType?: 'component' | 'store' | 'page' | 'generic';
+  };
 }
 
 const ChatInputBar: React.FC<ChatInputBarProps> = ({
@@ -19,6 +31,7 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
   inputRef,
   onClear,
   onStop,
+  context,
 }) => {
   const [prompt, setPrompt] = useState('');
 
@@ -27,10 +40,10 @@ const ChatInputBar: React.FC<ChatInputBarProps> = ({
       e?.preventDefault();
       // Allow typing but prevent sending while loading
       if (!prompt.trim() || !isReady || isLoading) return;
-      onSendMessage(prompt.trim());
+      onSendMessage(prompt.trim(), context);
       setPrompt('');
     },
-    [prompt, isReady, isLoading, onSendMessage]
+    [prompt, isReady, isLoading, onSendMessage, context]
   );
 
   const { handleKeyDown } = useKeyboardSubmit(handleSubmit);

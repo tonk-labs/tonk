@@ -1,5 +1,5 @@
 import { Database, FileText, FolderOpen, House, Layers } from 'lucide-react';
-import { createRef, useCallback } from 'react';
+import { createRef, useCallback, useState } from 'react';
 import {
   Link,
   Route,
@@ -11,16 +11,29 @@ import {
 import AgentChat from '../chat/AgentChat';
 import { UnifiedEditor } from './UnifiedEditor';
 
+type FileType = 'component' | 'store' | 'page' | 'generic';
+
+const getFileType = (filePath: string): FileType => {
+  if (filePath.startsWith('/src/components/')) return 'component';
+  if (filePath.startsWith('/src/stores/')) return 'store';
+  if (filePath.startsWith('/src/views/')) return 'page';
+  return 'generic';
+};
+
 export default function Editor() {
   const chatInputRef = createRef<HTMLTextAreaElement>();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const fileParam = searchParams.get('file');
+  const [selectedFile, setSelectedFile] = useState<string | null>(
+    fileParam || null
+  );
 
   // Handle file change - update URL with the selected file
   const handleFileChange = useCallback(
     (filePath: string) => {
+      setSelectedFile(filePath);
       const newSearchParams = new URLSearchParams(searchParams);
       newSearchParams.set('file', filePath);
       navigate(`${location.pathname}?${newSearchParams.toString()}`, {
@@ -152,7 +165,17 @@ export default function Editor() {
           </Routes>
         </div>
         <div className="overflow-hidden col-span-2 border-l border-gray-200">
-          <AgentChat inputRef={chatInputRef} />
+          <AgentChat
+            inputRef={chatInputRef}
+            context={
+              selectedFile
+                ? {
+                    selectedFile,
+                    fileType: getFileType(selectedFile),
+                  }
+                : undefined
+            }
+          />
         </div>
       </div>
     </div>

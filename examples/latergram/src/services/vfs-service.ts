@@ -286,7 +286,7 @@ export class VFSService {
             console.error('[VFSService] VFS initialization timeout');
             reject(new Error('VFS initialization timeout'));
           }
-        }, 10000);
+        }, 30000);
       });
     } catch (error) {
       throw new Error(

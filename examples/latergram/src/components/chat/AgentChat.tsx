@@ -11,9 +11,18 @@ import ChatMessage from './ChatMessage';
 interface AgentChatProps {
   inputRef: React.RefObject<HTMLTextAreaElement>;
   onClose?: () => void;
+  context?: {
+    currentView?: string;
+    selectedFile?: string;
+    fileType?: 'component' | 'store' | 'page' | 'generic';
+  };
 }
 
-const AgentChat: React.FC<AgentChatProps> = ({ inputRef, onClose }) => {
+const AgentChat: React.FC<AgentChatProps> = ({
+  inputRef,
+  onClose,
+  context,
+}) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const {
     messages,
@@ -144,6 +153,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ inputRef, onClose }) => {
         inputRef={inputRef}
         onStop={stopGeneration}
         onClear={clearConversation}
+        context={context}
       />
     </div>
   );

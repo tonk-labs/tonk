@@ -310,7 +310,14 @@ export class AgentService {
     }
   }
 
-  async *streamMessage(prompt: string): AsyncGenerator<{
+  async *streamMessage(
+    prompt: string,
+    context?: {
+      currentView?: string;
+      selectedFile?: string;
+      fileType?: 'component' | 'store' | 'page' | 'generic';
+    }
+  ): AsyncGenerator<{
     content: string;
     done: boolean;
     type?: 'text' | 'tool_call' | 'tool_result';
@@ -322,16 +329,43 @@ export class AgentService {
     // Create new abort controller for this request
     const abortController = this.createAbortController();
 
-    // Add user message and get conversation history in single operation
+    // Add user message WITHOUT context in the content (context stored separately)
     await this.chatHistory.addMessage({
       role: 'user',
       content: prompt,
+      context,
     });
 
     // Yield so chat will update correctly
     yield { content: '', done: false, type: 'text' };
 
+    // Format context information to add to the AI message
+    let contextInfo = '';
+    if (context) {
+      const parts: string[] = [];
+      if (context.currentView) {
+        parts.push(`Currently viewing: ${context.currentView}`);
+      }
+      if (context.selectedFile) {
+        const fileTypeLabel = context.fileType ? ` (${context.fileType})` : '';
+        parts.push(
+          `Currently editing: ${context.selectedFile}${fileTypeLabel}`
+        );
+      }
+      if (parts.length > 0) {
+        contextInfo = `\n\n[Context: ${parts.join(', ')}]`;
+      }
+    }
+
+    // Get messages for AI and add context to the last user message only for the AI
     const messages = this.chatHistory.formatForAI();
+    if (
+      messages.length > 0 &&
+      messages[messages.length - 1].role === 'user' &&
+      contextInfo
+    ) {
+      messages[messages.length - 1].content += contextInfo;
+    }
 
     // Create the assistant message with streaming flag
     const assistantMessage = await this.chatHistory.addMessage({
