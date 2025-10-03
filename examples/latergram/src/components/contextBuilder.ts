@@ -15,7 +15,6 @@ export const sanitizeStoreName = (name: string): string => {
   );
 };
 
-// Create a safe store proxy that returns undefined instead of throwing
 const createSafeStoreProxy = (storeName: string) => {
   return new Proxy(() => undefined, {
     get: (target, prop) => {
@@ -33,18 +32,15 @@ const createSafeStoreProxy = (storeName: string) => {
   });
 };
 
-// Create a safe component proxy that returns a placeholder component
 const createSafeComponentProxy = (
   componentName: string,
   componentId: string
 ) => {
-  // This creates a dynamic proxy that checks if the real component is available
   const DynamicPlaceholder = () => {
     const React = (window as any).React;
     const [, forceUpdate] = React.useReducer((x: number) => x + 1, 0);
 
     React.useEffect(() => {
-      // Check if the real component is now available
       const checkComponent = () => {
         const realComponent = componentRegistry.getComponent(componentId);
         if (realComponent && realComponent.metadata.status === 'success') {
@@ -52,17 +48,14 @@ const createSafeComponentProxy = (
         }
       };
 
-      // Set up a listener for component updates
       const unsubscribe = componentRegistry.onUpdate(componentId, () => {
         checkComponent();
       });
 
-      // Also listen to context updates (when new components are registered)
       const contextUnsub = componentRegistry.onContextUpdate(() => {
         checkComponent();
       });
 
-      // Check immediately and periodically
       checkComponent();
       const interval = setInterval(checkComponent, 500);
 
@@ -73,13 +66,11 @@ const createSafeComponentProxy = (
       };
     }, []);
 
-    // Try to get the real component
     const realComponent = componentRegistry.getComponent(componentId);
     if (realComponent && realComponent.metadata.status === 'success') {
       return React.createElement(realComponent.proxy);
     }
 
-    // Show placeholder
     return React.createElement(
       'div',
       {
@@ -115,11 +106,46 @@ export interface RouterContext {
   params: Record<string, string | undefined>;
 }
 
+const createChakraWrapper = (Component: any, componentName: string) => {
+  const React = (window as any).React;
+  const ChakraProvider = (window as any).ChakraUI?.ChakraProvider;
+  const defaultSystem = (window as any).defaultSystem;
+
+  if (!ChakraProvider || !defaultSystem) {
+    return Component;
+  }
+
+  const WrappedComponent = (props: any) => {
+    return React.createElement(
+      ChakraProvider,
+      { value: defaultSystem },
+      React.createElement(Component, props)
+    );
+  };
+
+  WrappedComponent.displayName = `ChakraWrapped(${componentName})`;
+  return WrappedComponent;
+};
+
+const isChakraComponent = (componentName: string): boolean => {
+  const chakraComponents = [
+    'Box', 'Flex', 'Grid', 'Stack', 'VStack', 'HStack', 'Wrap', 'Center', 'Container', 'Spacer',
+    'Button', 'IconButton', 'ButtonGroup',
+    'Heading', 'Text',
+    'Input', 'Textarea', 'Select', 'Checkbox', 'Radio', 'Switch', 'FormControl', 'FormLabel',
+    'Modal', 'ModalOverlay', 'ModalContent', 'ModalHeader', 'ModalBody', 'ModalFooter', 'ModalCloseButton',
+    'Drawer', 'DrawerOverlay', 'DrawerContent', 'DrawerHeader', 'DrawerBody', 'DrawerFooter', 'DrawerCloseButton',
+    'Alert', 'Spinner', 'Toast', 'Popover',
+    'Badge', 'Card', 'CardBody', 'CardHeader', 'CardFooter', 'Table', 'Tag', 'Avatar', 'Image',
+    'Breadcrumb', 'Tabs', 'Menu', 'MenuItem',
+  ];
+  return chakraComponents.includes(componentName);
+};
+
 export const buildAvailablePackages = (
   excludeId?: string,
   routerContext?: RouterContext
 ) => {
-  // Create bridged router functions/components if context is provided
   const createBridgedLink = () => {
     if (!routerContext) {
       return (window as any).ReactRouterDOM?.Link;
@@ -130,14 +156,12 @@ export const buildAvailablePackages = (
       const { to, replace, state, onClick, children, ...rest } = props;
 
       const handleClick = (e: any) => {
-        // Call custom onClick first if it exists
         if (onClick) {
           onClick(e);
         }
 
-        // Only navigate if the custom onClick didn't prevent default
         if (!e.defaultPrevented) {
-          e.preventDefault(); // Prevent the default <a> behavior
+          e.preventDefault();
           routerContext.navigate(to, { replace, state });
         }
       };
@@ -154,6 +178,17 @@ export const buildAvailablePackages = (
     };
   };
 
+  const ChakraUI = (window as any).ChakraUI || {};
+  
+  const wrappedChakraUI: { [key: string]: any } = {};
+  Object.keys(ChakraUI).forEach(key => {
+    if (isChakraComponent(key)) {
+      wrappedChakraUI[key] = createChakraWrapper(ChakraUI[key], key);
+    } else {
+      wrappedChakraUI[key] = ChakraUI[key];
+    }
+  });
+
   const basePackages = {
     React: (window as any).React,
     useState: (window as any).React?.useState,
@@ -164,10 +199,8 @@ export const buildAvailablePackages = (
     useReducer: (window as any).React?.useReducer,
     useContext: (window as any).React?.useContext,
     Fragment: (window as any).React?.Fragment,
-    // Add zustand imports for store creation
     create: (window as any).zustand?.create,
-    sync: (window as any).sync, // Our custom sync middleware
-    // Add React Router imports - bridged if context provided
+    sync: (window as any).sync,
     Link: createBridgedLink(),
     NavLink: routerContext
       ? createBridgedLink()
@@ -182,23 +215,20 @@ export const buildAvailablePackages = (
       ? () => routerContext.params
       : (window as any).ReactRouterDOM?.useParams,
     useSearchParams: (window as any).ReactRouterDOM?.useSearchParams,
+    ...wrappedChakraUI,
   };
 
-  // Add all registered components, including loading ones with safe proxies
   const componentPackages: { [key: string]: any } = {};
   componentRegistry.getAllComponents().forEach(comp => {
-    // Skip if this is the component being compiled
     if (comp.id === excludeId) {
       return;
     }
 
     const sanitizedName = sanitizeComponentName(comp.metadata.name);
     if (sanitizedName !== 'UnnamedComponent') {
-      // If component is successfully loaded, use the real proxy
       if (comp.metadata.status === 'success') {
         componentPackages[sanitizedName] = comp.proxy;
       } else {
-        // If component is still loading or has errors, provide a safe placeholder
         componentPackages[sanitizedName] = createSafeComponentProxy(
           sanitizedName,
           comp.id
@@ -207,10 +237,8 @@ export const buildAvailablePackages = (
     }
   });
 
-  // Add all registered stores, including loading ones with safe proxies
   const storePackages: { [key: string]: any } = {};
   storeRegistry.getAllStores().forEach(store => {
-    // Skip if this is the store being compiled
     if (store.id === excludeId) {
       return;
     }
@@ -220,11 +248,9 @@ export const buildAvailablePackages = (
       storeName.replace(/[^a-zA-Z0-9]/g, '') || 'UnnamedStore';
 
     if (sanitizedName !== 'UnnamedStore') {
-      // If store is successfully loaded, use the real proxy
       if (store.metadata.status === 'success') {
         storePackages[sanitizedName] = store.proxy;
       } else {
-        // If store is still loading or has errors, provide a safe proxy
         storePackages[sanitizedName] = createSafeStoreProxy(sanitizedName);
       }
     }

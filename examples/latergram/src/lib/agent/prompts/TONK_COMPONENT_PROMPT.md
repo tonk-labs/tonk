@@ -10,50 +10,55 @@ Components are compiled and hot-reloaded through our bespoke HMR system.
 ### Basic Function Component Pattern
 
 ```tsx
-// Import types and interfaces first
 interface ComponentProps {
   prop1: string;
   prop2?: number;
   onAction?: (value: string) => void;
 }
 
-// Function component with typed props
 const ComponentName: React.FC<ComponentProps> = ({ prop1, prop2 = 0, onAction }) => {
-  // State and hooks at the top
-  const [state, setState] = React.useState<string>('');
+  const [state, setState] = useState<string>('');
 
-  // Effects after state
-  React.useEffect(() => {
+  useEffect(() => {
     // Effect logic
   }, [dependency]);
 
-  // Event handlers
   const handleClick = () => {
     if (onAction) {
       onAction(state);
     }
   };
 
-  // Render
   return (
-    <div className="p-4 bg-white rounded-lg shadow-md">
-      <h1>{prop1}</h1>
-      <button onClick={handleClick}>Click me</button>
-    </div>
+    <Box p={4} bg="white" borderRadius="lg" shadow="md">
+      <Heading>{prop1}</Heading>
+      <Button onClick={handleClick}>Click me</Button>
+    </Box>
   );
 };
 
-// REQUIRED: Default export
 export default ComponentName;
 ```
 
 ## Critical Rules for Components
 
-### 1. Import Requirements
+### 1. Available Libraries (NO IMPORTS NEEDED)
 
-- Always import React explicitly: `import React from 'react';`
-- Import hooks from React namespace: `React.useState`, `React.useEffect`
-- Can also destructure: `import React, { useState, useEffect } from 'react';`
+The following are available globally without imports:
+
+**React & Hooks:**
+- `React`, `useState`, `useEffect`, `useCallback`, `useMemo`, `useRef`, `useReducer`, `useContext`, `Fragment`
+
+**Chakra UI Components & Hooks (USE THIS AS PRIMARY UI LIBRARY):**
+- All Chakra UI components: `Box`, `Button`, `Heading`, `Text`, `Input`, `Stack`, `Flex`, `Grid`, etc.
+- All Chakra UI hooks: `useDisclosure`, `useToast`, `useColorMode`, etc.
+- Chakra UI is the primary component library - use it for all UI elements
+
+**React Router:**
+- `Link`, `NavLink`, `useNavigate`, `useLocation`, `useParams`, `useSearchParams`
+
+**Zustand (for stores):**
+- `create`, `sync`
 
 ### 2. Component Definition
 
@@ -61,6 +66,7 @@ export default ComponentName;
 - **MUST** use `React.FC<Props>` or function declaration with typed props
 - **MUST** use default export
 - Component name should be PascalCase
+- **NO IMPORTS** - all libraries are globally available
 
 ### 3. Hooks Rules
 
@@ -84,22 +90,21 @@ interface MyComponentProps {
 }
 
 const MyComponent: React.FC<MyComponentProps> = ({ title }) => {
-  // Access store state and actions
   const { data, isLoading, fetchData } = useExampleStore();
 
-  React.useEffect(() => {
+  useEffect(() => {
     fetchData();
   }, []);
 
   if (isLoading) {
-    return <div>Loading...</div>;
+    return <Spinner />;
   }
 
   return (
-    <div className="p-4 bg-white rounded-lg shadow-md">
-      <h1 className="text-2xl font-bold mb-4">{title}</h1>
-      <div>{data}</div>
-    </div>
+    <Box p={4} bg="white" borderRadius="lg" shadow="md">
+      <Heading size="lg" mb={4}>{title}</Heading>
+      <Text>{data}</Text>
+    </Box>
   );
 };
 
@@ -117,23 +122,20 @@ const NavigationComponent: React.FC = () => {
   const params = useParams();
 
   const handleNavigation = () => {
-    // Programmatic navigation - MUST use absolute paths starting with '/'
     navigate('/about');
     navigate('/products', { replace: true });
   };
 
   return (
-    <div>
-      {/* Link navigation - MUST use absolute paths starting with '/' */}
-      <Link to="/about" className="text-blue-500 hover:underline">
+    <Stack spacing={4}>
+      <Link to="/about" color="blue.500">
         About Us
       </Link>
 
-      <Link to="/products" className="px-4 py-2 bg-blue-500 text-white rounded">
+      <Button as={Link} to="/products" colorScheme="blue">
         View Products
-      </Link>
+      </Button>
 
-      {/* NavLink for active state styling */}
       <NavLink
         to="/dashboard"
         className={({ isActive }) => (isActive ? 'text-blue-600 font-bold' : 'text-gray-600')}
@@ -141,8 +143,8 @@ const NavigationComponent: React.FC = () => {
         Dashboard
       </NavLink>
 
-      <button onClick={handleNavigation}>Go to About</button>
-    </div>
+      <Button onClick={handleNavigation}>Go to About</Button>
+    </Stack>
   );
 };
 ```
@@ -155,6 +157,85 @@ const NavigationComponent: React.FC = () => {
 - ✅ **USE** `useNavigate()` for programmatic navigation
 - ❌ **NEVER** use `window.location` for navigation
 - ❌ **NEVER** use `<a href="/path">` for internal links
+
+## UI Component Library - Chakra UI
+
+**USE CHAKRA UI AS THE PRIMARY COMPONENT LIBRARY**
+
+All Chakra UI components and hooks are available globally without imports:
+
+### Common Components:
+- Layout: `Box`, `Container`, `Flex`, `Grid`, `Stack`, `VStack`, `HStack`, `Wrap`, `Center`, `Spacer`
+- Typography: `Heading`, `Text`
+- Forms: `Input`, `Textarea`, `Select`, `Checkbox`, `Radio`, `Switch`, `FormControl`, `FormLabel`
+- Buttons: `Button`, `IconButton`, `ButtonGroup`
+- Feedback: `Alert`, `Spinner`, `Toast`, `Modal`, `Drawer`, `Popover`
+- Data Display: `Badge`, `Card`, `Table`, `Tag`, `Avatar`, `Image`
+- Navigation: `Breadcrumb`, `Tabs`, `Menu`
+
+### Common Hooks:
+- `useDisclosure`, `useToast`, `useColorMode`, `useBreakpointValue`
+
+### Example with Chakra UI:
+
+```tsx
+const UserCard: React.FC<{ name: string; email: string }> = ({ name, email }) => {
+  const { isOpen, onOpen, onClose } = useDisclosure();
+  const toast = useToast();
+
+  const handleSave = () => {
+    toast({
+      title: "Profile saved",
+      status: "success",
+      duration: 3000,
+    });
+  };
+
+  return (
+    <Box>
+      <Card>
+        <CardBody>
+          <VStack align="start" spacing={3}>
+            <Heading size="md">{name}</Heading>
+            <Text color="gray.600">{email}</Text>
+            <Button colorScheme="blue" onClick={onOpen}>
+              Edit Profile
+            </Button>
+          </VStack>
+        </CardBody>
+      </Card>
+
+      <Modal isOpen={isOpen} onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Edit Profile</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <VStack spacing={4}>
+              <FormControl>
+                <FormLabel>Name</FormLabel>
+                <Input defaultValue={name} />
+              </FormControl>
+              <FormControl>
+                <FormLabel>Email</FormLabel>
+                <Input defaultValue={email} />
+              </FormControl>
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" mr={3} onClick={onClose}>
+              Cancel
+            </Button>
+            <Button colorScheme="blue" onClick={handleSave}>
+              Save
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+    </Box>
+  );
+};
+```
 
 # IMPORTANT
 
