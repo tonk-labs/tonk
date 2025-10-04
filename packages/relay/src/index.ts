@@ -1,6 +1,5 @@
 import { Repo, type RepoConfig } from '@automerge/automerge-repo';
 import { NodeWSServerAdapter } from '@automerge/automerge-repo-network-websocket';
-import { NodeFSStorageAdapter } from '@automerge/automerge-repo-storage-nodefs';
 import cors from 'cors';
 import express from 'express';
 import { readFileSync } from 'fs';
@@ -15,42 +14,33 @@ class Server {
   #socket: WebSocketServer;
 
   #server: ReturnType<import('express').Express['listen']>;
-  #storage: NodeFSStorageAdapter;
-  #bundleStorage: BundleStorageAdapter;
+  #storage: BundleStorageAdapter;
 
   #repo: Repo;
   #rootDocumentId: string | null = null;
 
-  static async create(
-    port: number,
-    bundlePath: string,
-    storageDir = 'automerge-repo-data'
-  ): Promise<Server> {
+  static async create(port: number, bundlePath: string): Promise<Server> {
+    // Read bundle file as bytes
     const bundleBytes = readFileSync(bundlePath);
 
-    // Create bundle storage adapter (only for API endpoints)
-    const bundleStorage = await BundleStorageAdapter.fromBundle(bundleBytes);
+    // Create storage adapter from bundle
+    const storage = await BundleStorageAdapter.fromBundle(bundleBytes);
 
-    // Create filesystem storage for Automerge repo
-    const storage = new NodeFSStorageAdapter(storageDir);
-
-    return new Server(port, storage, bundleStorage);
+    return new Server(port, storage);
   }
 
-  private constructor(
-    port: number,
-    storage: NodeFSStorageAdapter,
-    bundleStorage: BundleStorageAdapter
-  ) {
+  private constructor(port: number, storage: BundleStorageAdapter) {
     this.#socket = new WebSocketServer({ noServer: true });
 
     const PORT = port;
     const app = express();
 
+    // Enable CORS for all routes to allow browser clients to fetch root document
+
     app.use(
       cors({
-        origin: true,
-        credentials: true,
+        origin: true, // Allow all origins
+        credentials: true, // Allow cookies/credentials
         methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization'],
       })
@@ -60,22 +50,18 @@ class Server {
     app.use(express.raw({ type: 'application/octet-stream', limit: '100mb' }));
     app.use(express.json());
     this.#storage = storage;
-    this.#bundleStorage = bundleStorage;
 
     const config: RepoConfig = {
       network: [new NodeWSServerAdapter(this.#socket as any) as any],
       storage: this.#storage,
       /** @ts-expect-error @type {(import("automerge-repo").PeerId)}  */
       peerId: `storage-server` as PeerId,
+      // Since this is a server, we don't share generously — meaning we only sync documents they already
+      // know about and can ask for by ID.
       sharePolicy: async () => true,
     };
     const serverRepo = new Repo(config);
     this.#repo = serverRepo;
-
-    // Handle WebSocket server errors
-    this.#socket.on('error', error => {
-      console.error('WebSocket server error:', error);
-    });
 
     app.get('/', (_req, res) => {
       res.send(`👍 @automerge/automerge-repo-sync-server is running`);
@@ -118,7 +104,7 @@ class Server {
       console.log('Received request for /.manifest.tonk');
       try {
         console.log('Creating slim bundle...');
-        const slimBundle = await this.#bundleStorage.createSlimBundle();
+        const slimBundle = await this.#storage.createSlimBundle();
         console.log(
           'Slim bundle created successfully, size:',
           slimBundle.length
@@ -321,18 +307,14 @@ class Server {
 
     this.#server.on('upgrade', (request, socket, head) => {
       console.log('upgrading to websocket');
-      this.#socket.handleUpgrade(request, socket, head, ws => {
-        // Handle errors on individual WebSocket connections
-        ws.on('error', error => {
-          console.error('WebSocket connection error:', error);
-        });
-
-        this.#socket.emit('connection', ws, request);
+      this.#socket.handleUpgrade(request, socket, head, socket => {
+        this.#socket.emit('connection', socket, request);
       });
     });
   }
 
   close() {
+    this.#storage.log();
     this.#socket.close();
     this.#server.close();
   }
@@ -341,43 +323,20 @@ class Server {
 async function main() {
   const port = process.argv[2] ? parseInt(process.argv[2]) : 8080;
   const bundlePath = process.argv[3];
-  const storageDir = process.argv[4] || 'automerge-repo-data';
 
   if (!bundlePath) {
     console.error('Error: Bundle path is required');
-    console.error('Usage: node server.js [port] <bundle-path> [storage-dir]');
+    console.error('Usage: node server.js [port] <bundle-path>');
     process.exit(1);
   }
 
-  // Global error handlers to prevent server crashes
-  process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Promise Rejection at:', promise);
-    console.error('Reason:', reason);
-    // Log but don't crash - server continues running
-  });
-
-  process.on('uncaughtException', error => {
-    console.error('Uncaught Exception:', error);
-    console.error('Stack:', error.stack);
-    // Log but don't crash - server continues running
-  });
-
   try {
-    const server = await Server.create(port, bundlePath, storageDir);
+    const server = await Server.create(port, bundlePath);
 
     process.on('SIGINT', () => {
-      console.log('Received SIGINT, shutting down gracefully...');
       server.close();
       process.exit(0);
     });
-
-    process.on('SIGTERM', () => {
-      console.log('Received SIGTERM, shutting down gracefully...');
-      server.close();
-      process.exit(0);
-    });
-
-    console.log('Server started successfully');
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
