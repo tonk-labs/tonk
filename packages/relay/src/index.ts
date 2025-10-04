@@ -1,12 +1,13 @@
 import { Repo, type RepoConfig } from '@automerge/automerge-repo';
 import { NodeWSServerAdapter } from '@automerge/automerge-repo-network-websocket';
+import { NodeFSStorageAdapter } from '@automerge/automerge-repo-storage-nodefs';
 import cors from 'cors';
 import express from 'express';
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
-import { CompositeStorageAdapter } from './compositeStorageAdapter.js';
+import { BundleStorageAdapter } from './bundleStorageAdapter.js';
 import { S3Storage } from './s3-storage.js';
 import JSZip from 'jszip';
 
@@ -14,7 +15,8 @@ class Server {
   #socket: WebSocketServer;
 
   #server: ReturnType<import('express').Express['listen']>;
-  #storage: CompositeStorageAdapter;
+  #storage: NodeFSStorageAdapter;
+  #bundleStorage: BundleStorageAdapter;
 
   #repo: Repo;
   #rootDocumentId: string | null = null;
@@ -26,16 +28,20 @@ class Server {
   ): Promise<Server> {
     const bundleBytes = readFileSync(bundlePath);
 
-    // Create storage adapter from bundle and filesystem storage
-    const storage = await CompositeStorageAdapter.create(
-      bundleBytes,
-      storageDir
-    );
+    // Create bundle storage adapter (only for API endpoints)
+    const bundleStorage = await BundleStorageAdapter.fromBundle(bundleBytes);
 
-    return new Server(port, storage);
+    // Create filesystem storage for Automerge repo
+    const storage = new NodeFSStorageAdapter(storageDir);
+
+    return new Server(port, storage, bundleStorage);
   }
 
-  private constructor(port: number, storage: CompositeStorageAdapter) {
+  private constructor(
+    port: number,
+    storage: NodeFSStorageAdapter,
+    bundleStorage: BundleStorageAdapter
+  ) {
     this.#socket = new WebSocketServer({ noServer: true });
 
     const PORT = port;
@@ -54,6 +60,7 @@ class Server {
     app.use(express.raw({ type: 'application/octet-stream', limit: '100mb' }));
     app.use(express.json());
     this.#storage = storage;
+    this.#bundleStorage = bundleStorage;
 
     const config: RepoConfig = {
       network: [new NodeWSServerAdapter(this.#socket as any) as any],
@@ -64,6 +71,11 @@ class Server {
     };
     const serverRepo = new Repo(config);
     this.#repo = serverRepo;
+
+    // Handle WebSocket server errors
+    this.#socket.on('error', error => {
+      console.error('WebSocket server error:', error);
+    });
 
     app.get('/', (_req, res) => {
       res.send(`👍 @automerge/automerge-repo-sync-server is running`);
@@ -106,7 +118,7 @@ class Server {
       console.log('Received request for /.manifest.tonk');
       try {
         console.log('Creating slim bundle...');
-        const slimBundle = await this.#storage.createSlimBundle();
+        const slimBundle = await this.#bundleStorage.createSlimBundle();
         console.log(
           'Slim bundle created successfully, size:',
           slimBundle.length
@@ -309,14 +321,18 @@ class Server {
 
     this.#server.on('upgrade', (request, socket, head) => {
       console.log('upgrading to websocket');
-      this.#socket.handleUpgrade(request, socket, head, socket => {
-        this.#socket.emit('connection', socket, request);
+      this.#socket.handleUpgrade(request, socket, head, ws => {
+        // Handle errors on individual WebSocket connections
+        ws.on('error', error => {
+          console.error('WebSocket connection error:', error);
+        });
+
+        this.#socket.emit('connection', ws, request);
       });
     });
   }
 
   close() {
-    this.#storage.log();
     this.#socket.close();
     this.#server.close();
   }
@@ -333,13 +349,35 @@ async function main() {
     process.exit(1);
   }
 
+  // Global error handlers to prevent server crashes
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Promise Rejection at:', promise);
+    console.error('Reason:', reason);
+    // Log but don't crash - server continues running
+  });
+
+  process.on('uncaughtException', error => {
+    console.error('Uncaught Exception:', error);
+    console.error('Stack:', error.stack);
+    // Log but don't crash - server continues running
+  });
+
   try {
     const server = await Server.create(port, bundlePath, storageDir);
 
     process.on('SIGINT', () => {
+      console.log('Received SIGINT, shutting down gracefully...');
       server.close();
       process.exit(0);
     });
+
+    process.on('SIGTERM', () => {
+      console.log('Received SIGTERM, shutting down gracefully...');
+      server.close();
+      process.exit(0);
+    });
+
+    console.log('Server started successfully');
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);

@@ -167,8 +167,6 @@ export class BundleStorageAdapter implements StorageAdapterInterface {
       return undefined;
     }
 
-    console.log(pathStr);
-
     try {
       const file = this.#bundleZip.file(pathStr);
       if (!file) {

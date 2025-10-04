@@ -201,7 +201,10 @@ export const UnifiedEditor: React.FC<UnifiedEditorProps> = ({
             // Extract component name from file path
             const fileName =
               selectedFile.split('/').pop()?.replace('.tsx', '') || 'Component';
-            componentId = componentRegistry.createComponent(fileName);
+            componentId = componentRegistry.createComponent(
+              fileName,
+              selectedFile
+            );
             const component = componentRegistry.getComponent(componentId);
             if (component) {
               // Watch the component file

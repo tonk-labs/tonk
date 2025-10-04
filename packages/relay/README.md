@@ -28,24 +28,29 @@ for bundle storage using AWS S3.
 
    # Or start with custom port, bundle, and storage directory
    tsx src/index.ts 8081 path/to/bundle.tonk ./storage-data
-   
+
    # With defaults (storage-data defaults to 'automerge-repo-data')
    tsx src/index.ts 8081 path/to/bundle.tonk
    ```
 
 ## Storage Architecture
 
-The server uses a **composite storage strategy** that combines two storage adapters:
+The server uses a **simple filesystem storage** approach:
 
-1. **Bundle Storage** (read-only): Loads initial document state from the `.tonk` bundle file
-2. **Filesystem Storage** (read-write): Persists all document changes to disk
+1. **Filesystem Storage**: Persists all Automerge document changes to disk using
+   `NodeFSStorageAdapter`
+2. **Bundle**: Kept in memory only for serving the manifest API endpoint
 
 **How it works:**
-- **Reads**: Check filesystem first for latest changes, fall back to bundle for initial state
-- **Writes**: All changes are written to the filesystem storage directory
-- **Persistence**: Changes survive server restarts and are preserved independently from the bundle
 
-This architecture allows bundles to serve as immutable distribution packages while runtime state evolves in the filesystem storage.
+- **WebSocket Sync**: All document syncing uses filesystem storage exclusively
+- **Bundle API**: The initial bundle is loaded into memory once at startup and only used to serve
+  the `/.manifest.tonk` endpoint
+- **Persistence**: All runtime changes are persisted to the filesystem storage directory and survive
+  server restarts
+
+This simple architecture avoids the overhead of reading from ZIP bundles during sync operations,
+which was causing memory exhaustion under load.
 
 ## API Endpoints
 
@@ -154,6 +159,7 @@ pnpm dev
 - **Express**: HTTP server and routing
 - **WebSocket**: Real-time sync via `ws` library
 - **Automerge**: CRDT-based document sync
-- **Composite Storage**: Bundle (read-only) + Filesystem (persistent)
+- **Filesystem Storage**: `NodeFSStorageAdapter` for persistent document storage
+- **Bundle Adapter**: In-memory bundle for serving manifest API endpoint
 - **S3**: Bundle storage via AWS SDK
 - **JSZip**: Bundle manipulation (zip files)

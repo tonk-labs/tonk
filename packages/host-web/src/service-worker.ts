@@ -41,6 +41,98 @@ function getTonk(): { tonk: TonkCore; manifest: Manifest } | null {
   return tonkState.status === 'ready' ? tonkState : null;
 }
 
+// Cache API helpers for persisting state across service worker restarts
+const CACHE_NAME = 'tonk-sw-state-v1';
+const APP_SLUG_URL = '/tonk-state/appSlug';
+const BUNDLE_BYTES_URL = '/tonk-state/bundleBytes';
+
+async function persistAppSlug(slug: string | null): Promise<void> {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+
+    if (slug === null) {
+      await cache.delete(APP_SLUG_URL);
+    } else {
+      const response = new Response(JSON.stringify({ slug }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      await cache.put(APP_SLUG_URL, response);
+    }
+
+    log('info', 'AppSlug persisted to cache', { slug });
+  } catch (error) {
+    log('error', 'Failed to persist appSlug', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function restoreAppSlug(): Promise<string | null> {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const response = await cache.match(APP_SLUG_URL);
+
+    if (!response) {
+      return null;
+    }
+
+    const data = await response.json();
+    return data.slug || null;
+  } catch (error) {
+    log('error', 'Failed to restore appSlug', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function persistBundleBytes(bytes: Uint8Array | null): Promise<void> {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+
+    if (bytes === null) {
+      await cache.delete(BUNDLE_BYTES_URL);
+    } else {
+      // Convert Uint8Array to Blob for Response
+      // Use type assertion to work around ArrayBufferLike type issue
+      const blob = new Blob([bytes as any], {
+        type: 'application/octet-stream',
+      });
+      const response = new Response(blob, {
+        headers: { 'Content-Type': 'application/octet-stream' },
+      });
+      await cache.put(BUNDLE_BYTES_URL, response);
+    }
+
+    log('info', 'Bundle bytes persisted to cache', {
+      size: bytes ? bytes.length : 0,
+    });
+  } catch (error) {
+    log('error', 'Failed to persist bundle bytes', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function restoreBundleBytes(): Promise<Uint8Array | null> {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const response = await cache.match(BUNDLE_BYTES_URL);
+
+    if (!response) {
+      return null;
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return new Uint8Array(arrayBuffer);
+  } catch (error) {
+    log('error', 'Failed to restore bundle bytes', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 // Logger utility
 function log(level, message, data?) {
   if (!DEBUG_LOGGING) return;
@@ -72,11 +164,102 @@ async function postResponse(response) {
   });
 }
 
-// Don't auto-load Tonk on service worker startup
-// Keep it uninitialized until a bundle is provided
-log('info', 'Service worker installed, waiting for bundle');
-console.log('🚀 SERVICE WORKER: Installed, waiting for bundle');
+// Auto-initialize Tonk from cache if available
+log('info', 'Service worker starting, checking for cached state');
+console.log('🚀 SERVICE WORKER: Starting initialization');
 tonkState = { status: 'uninitialized' };
+
+// Auto-initialization function
+async function autoInitializeFromCache() {
+  try {
+    // Try to restore appSlug and bundle from cache
+    const restoredSlug = await restoreAppSlug();
+    const bundleBytes = await restoreBundleBytes();
+
+    if (!restoredSlug || !bundleBytes) {
+      log('info', 'No cached state found, waiting for initialization message', {
+        hasSlug: !!restoredSlug,
+        hasBundle: !!bundleBytes,
+      });
+      console.log('🔄 SERVICE WORKER: No cached state - waiting for bundle');
+      return;
+    }
+
+    // Found cached state - auto-initialize
+    appSlug = restoredSlug;
+    log('info', 'Found cached state, auto-initializing', {
+      slug: appSlug,
+      bundleSize: bundleBytes.length,
+    });
+    console.log('🔄 SERVICE WORKER: Auto-initializing from cache...', appSlug);
+
+    // Initialize WASM from server
+    const wasmUrl = `${TONK_SERVER_URL}/tonk_core_bg.wasm`;
+    log('info', 'Fetching WASM from server');
+    await initializeTonk({ wasmPath: wasmUrl });
+    log('info', 'WASM initialization completed');
+
+    // Create bundle and manifest
+    const bundle = await Bundle.fromBytes(bundleBytes);
+    const manifest = await bundle.getManifest();
+    log('info', 'Bundle and manifest restored from cache');
+
+    // Create TonkCore instance
+    const tonk = await TonkCore.fromBytes(bundleBytes);
+    log('info', 'TonkCore created from cached bundle');
+
+    // Connect to websocket
+    const wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
+    await tonk.connectWebsocket(wsUrl);
+    log('info', 'Websocket connected');
+
+    // Wait for initial sync
+    let syncAttempts = 0;
+    const maxAttempts = 20;
+    while (syncAttempts < maxAttempts) {
+      try {
+        await tonk.listDirectory('/app');
+        log('info', 'Auto-initialization complete - tonk ready');
+        console.log('✅ SERVICE WORKER: Auto-initialized successfully');
+        break;
+      } catch (error) {
+        syncAttempts++;
+        if (syncAttempts >= maxAttempts) {
+          log('warn', 'Initial sync timeout after restore', {
+            attempts: syncAttempts,
+          });
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+    }
+
+    // Update tonk state
+    tonkState = { status: 'ready', tonk, manifest };
+  } catch (error) {
+    log('error', 'Auto-initialization failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    console.error('❌ SERVICE WORKER: Auto-initialization failed:', error);
+
+    // Reset to uninitialized state
+    tonkState = { status: 'uninitialized' };
+    appSlug = null;
+
+    // Notify clients that manual initialization is needed
+    const allClients = await (self as any).clients.matchAll();
+    allClients.forEach(client => {
+      client.postMessage({
+        type: 'needsReinit',
+        appSlug: null,
+        reason: 'Auto-initialization failed',
+      });
+    });
+  }
+}
+
+// Start auto-initialization (non-blocking)
+autoInitializeFromCache();
 
 self.addEventListener('install', event => {
   log('info', 'Service worker installing');
@@ -222,6 +405,14 @@ const determinePath = (url: URL): string => {
 
   // Check if this is a request for the root hostname (should bypass VFS)
   const isRootRequest = url.pathname === '/' || url.pathname === '';
+  if (isRootRequest && appSlug) {
+    appSlug = null;
+    // Persist the reset so it survives service worker restarts
+    // Also clear bundle bytes to avoid stale data
+    Promise.all([persistAppSlug(null), persistBundleBytes(null)]).catch(err => {
+      log('error', 'Failed to persist state reset', { error: err });
+    });
+  }
 
   if (appSlug && url.origin === location.origin && !isRootRequest) {
     log('info', 'Processing fetch request for same origin (non-root)');
@@ -340,7 +531,10 @@ async function handleMessage(
   if (message.type === 'setAppSlug') {
     appSlug = message.slug;
 
-    log('info', 'App slug set', { slug: appSlug });
+    // Persist to IndexedDB so it survives service worker restarts
+    await persistAppSlug(appSlug);
+
+    log('info', 'App slug set and persisted', { slug: appSlug });
     return;
   }
 
@@ -978,6 +1172,10 @@ async function handleMessage(
         tonkState = { status: 'ready', tonk: newTonk, manifest };
         log('info', 'Tonk state updated with new instance');
 
+        // Persist bundle bytes to survive service worker restarts
+        await persistBundleBytes(bundleBytes);
+        log('info', 'Bundle bytes persisted to IndexedDB');
+
         postResponse({
           type: 'loadBundle',
           id: message.id,
@@ -1080,6 +1278,10 @@ async function handleMessage(
         // Update the global tonk state
         tonkState = { status: 'ready', tonk, manifest };
         log('info', 'Tonk state updated to ready from URL');
+
+        // Persist bundle bytes to survive service worker restarts
+        await persistBundleBytes(manifestBytes);
+        log('info', 'Bundle bytes persisted to IndexedDB');
 
         postResponse({
           type: 'initializeFromUrl',
