@@ -65,6 +65,11 @@ class Server {
     const serverRepo = new Repo(config);
     this.#repo = serverRepo;
 
+    // Handle WebSocket server errors
+    this.#socket.on('error', error => {
+      console.error('WebSocket server error:', error);
+    });
+
     app.get('/', (_req, res) => {
       res.send(`👍 @automerge/automerge-repo-sync-server is running`);
     });
@@ -309,8 +314,13 @@ class Server {
 
     this.#server.on('upgrade', (request, socket, head) => {
       console.log('upgrading to websocket');
-      this.#socket.handleUpgrade(request, socket, head, socket => {
-        this.#socket.emit('connection', socket, request);
+      this.#socket.handleUpgrade(request, socket, head, ws => {
+        // Handle errors on individual WebSocket connections
+        ws.on('error', error => {
+          console.error('WebSocket connection error:', error);
+        });
+
+        this.#socket.emit('connection', ws, request);
       });
     });
   }
@@ -333,13 +343,35 @@ async function main() {
     process.exit(1);
   }
 
+  // Global error handlers to prevent server crashes
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Promise Rejection at:', promise);
+    console.error('Reason:', reason);
+    // Log but don't crash - server continues running
+  });
+
+  process.on('uncaughtException', error => {
+    console.error('Uncaught Exception:', error);
+    console.error('Stack:', error.stack);
+    // Log but don't crash - server continues running
+  });
+
   try {
     const server = await Server.create(port, bundlePath, storageDir);
 
     process.on('SIGINT', () => {
+      console.log('Received SIGINT, shutting down gracefully...');
       server.close();
       process.exit(0);
     });
+
+    process.on('SIGTERM', () => {
+      console.log('Received SIGTERM, shutting down gracefully...');
+      server.close();
+      process.exit(0);
+    });
+
+    console.log('Server started successfully');
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);

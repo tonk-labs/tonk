@@ -34,14 +34,24 @@ export class CompositeStorageAdapter implements StorageAdapterInterface {
   }
 
   async load(key: StorageKey): Promise<Uint8Array | undefined> {
-    const fsData = await this.#fsStorage.load(key);
-    if (fsData) return fsData;
+    try {
+      const fsData = await this.#fsStorage.load(key);
+      if (fsData) return fsData;
 
-    return await this.#bundleStorage.load(key);
+      return await this.#bundleStorage.load(key);
+    } catch (error) {
+      console.error('Error loading key:', key, error);
+      return undefined;
+    }
   }
 
   async save(key: StorageKey, data: Uint8Array): Promise<void> {
-    await this.#fsStorage.save(key, data);
+    try {
+      await this.#fsStorage.save(key, data);
+    } catch (error) {
+      console.error('Error saving key:', key, error);
+      // Don't throw - log and continue
+    }
   }
 
   private getFilePath(keyArray: string[]): string {
@@ -79,26 +89,36 @@ export class CompositeStorageAdapter implements StorageAdapterInterface {
   }
 
   async loadRange(keyPrefix: StorageKey): Promise<Chunk[]> {
-    const fsChunks = await this.#fsStorage.loadRange(keyPrefix);
-    const bundleChunks = await this.#bundleStorage.loadRange(keyPrefix);
+    try {
+      const fsChunks = await this.#fsStorage.loadRange(keyPrefix);
+      const bundleChunks = await this.#bundleStorage.loadRange(keyPrefix);
 
-    const chunkMap = new Map<string, Chunk>();
+      const chunkMap = new Map<string, Chunk>();
 
-    for (const chunk of bundleChunks) {
-      const keyStr = chunk.key.join('/');
-      chunkMap.set(keyStr, chunk);
+      for (const chunk of bundleChunks) {
+        const keyStr = chunk.key.join('/');
+        chunkMap.set(keyStr, chunk);
+      }
+
+      for (const chunk of fsChunks) {
+        const keyStr = chunk.key.join('/');
+        chunkMap.set(keyStr, chunk);
+      }
+
+      return Array.from(chunkMap.values());
+    } catch (error) {
+      console.error('Error loading range for keyPrefix:', keyPrefix, error);
+      return [];
     }
-
-    for (const chunk of fsChunks) {
-      const keyStr = chunk.key.join('/');
-      chunkMap.set(keyStr, chunk);
-    }
-
-    return Array.from(chunkMap.values());
   }
 
   async removeRange(keyPrefix: StorageKey): Promise<void> {
-    await this.#fsStorage.removeRange(keyPrefix);
+    try {
+      await this.#fsStorage.removeRange(keyPrefix);
+    } catch (error) {
+      console.error('Error removing range for keyPrefix:', keyPrefix, error);
+      // Don't throw - log and continue
+    }
   }
 
   getRootId(): string | null {
@@ -108,7 +128,12 @@ export class CompositeStorageAdapter implements StorageAdapterInterface {
   async createSlimBundle(
     newManifest?: Partial<ReturnType<BundleStorageAdapter['createSlimBundle']>>
   ): Promise<Uint8Array> {
-    return await this.#bundleStorage.createSlimBundle(newManifest as any);
+    try {
+      return await this.#bundleStorage.createSlimBundle(newManifest as any);
+    } catch (error) {
+      console.error('Error creating slim bundle:', error);
+      throw error; // Re-throw since this is an API call that should fail explicitly
+    }
   }
 
   log(): void {
