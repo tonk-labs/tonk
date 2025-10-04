@@ -32,6 +32,10 @@ class Server {
   private constructor(port: number, storage: BundleStorageAdapter) {
     this.#socket = new WebSocketServer({ noServer: true });
 
+    this.#socket.on('error', error => {
+      console.error('WebSocket server error:', error);
+    });
+
     const PORT = port;
     const app = express();
 
@@ -307,9 +311,17 @@ class Server {
 
     this.#server.on('upgrade', (request, socket, head) => {
       console.log('upgrading to websocket');
-      this.#socket.handleUpgrade(request, socket, head, socket => {
-        this.#socket.emit('connection', socket, request);
+      this.#socket.handleUpgrade(request, socket, head, ws => {
+        this.#socket.emit('connection', ws, request);
       });
+    });
+
+    this.#server.on('error', error => {
+      console.error('HTTP server error:', error);
+    });
+
+    this.#socket.on('error', error => {
+      console.error('WebSocket server error:', error);
     });
   }
 
@@ -343,4 +355,15 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+process.on('uncaughtException', error => {
+  console.error('Uncaught exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection at:', promise, 'reason:', reason);
+});
+
+main().catch(error => {
+  console.error('Fatal error in main:', error);
+  process.exit(1);
+});
