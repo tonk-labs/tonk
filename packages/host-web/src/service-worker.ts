@@ -41,6 +41,135 @@ function getTonk(): { tonk: TonkCore; manifest: Manifest } | null {
   return tonkState.status === 'ready' ? tonkState : null;
 }
 
+// IndexedDB helpers for persisting appSlug across service worker restarts
+const DB_NAME = 'tonk-sw-state';
+const DB_VERSION = 1;
+const STORE_NAME = 'state';
+
+async function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+
+    request.onupgradeneeded = event => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+  });
+}
+
+async function persistAppSlug(slug: string | null): Promise<void> {
+  try {
+    const db = await openDB();
+    const transaction = db.transaction([STORE_NAME], 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+
+    if (slug === null) {
+      store.delete('appSlug');
+    } else {
+      store.put(slug, 'appSlug');
+    }
+
+    return new Promise((resolve, reject) => {
+      transaction.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        db.close();
+        reject(transaction.error);
+      };
+    });
+  } catch (error) {
+    log('error', 'Failed to persist appSlug', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function restoreAppSlug(): Promise<string | null> {
+  try {
+    const db = await openDB();
+    const transaction = db.transaction([STORE_NAME], 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.get('appSlug');
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => {
+        db.close();
+        resolve(request.result || null);
+      };
+      request.onerror = () => {
+        db.close();
+        reject(request.error);
+      };
+    });
+  } catch (error) {
+    log('error', 'Failed to restore appSlug', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function persistBundleBytes(bytes: Uint8Array | null): Promise<void> {
+  try {
+    const db = await openDB();
+    const transaction = db.transaction([STORE_NAME], 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+
+    if (bytes === null) {
+      store.delete('bundleBytes');
+    } else {
+      store.put(bytes, 'bundleBytes');
+    }
+
+    return new Promise((resolve, reject) => {
+      transaction.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        db.close();
+        reject(transaction.error);
+      };
+    });
+  } catch (error) {
+    log('error', 'Failed to persist bundle bytes', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function restoreBundleBytes(): Promise<Uint8Array | null> {
+  try {
+    const db = await openDB();
+    const transaction = db.transaction([STORE_NAME], 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.get('bundleBytes');
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => {
+        db.close();
+        resolve(request.result || null);
+      };
+      request.onerror = () => {
+        db.close();
+        reject(request.error);
+      };
+    });
+  } catch (error) {
+    log('error', 'Failed to restore bundle bytes', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 // Logger utility
 function log(level, message, data?) {
   if (!DEBUG_LOGGING) return;
@@ -77,6 +206,100 @@ async function postResponse(response) {
 log('info', 'Service worker installed, waiting for bundle');
 console.log('🚀 SERVICE WORKER: Installed, waiting for bundle');
 tonkState = { status: 'uninitialized' };
+
+// Restore appSlug and bundle from persistent storage (survives SW restarts)
+restoreAppSlug().then(async restoredSlug => {
+  if (restoredSlug) {
+    appSlug = restoredSlug;
+    log('info', 'Restored appSlug from persistent storage', { slug: appSlug });
+    console.log('🔄 SERVICE WORKER: Restored appSlug:', appSlug);
+
+    // Try to restore bundle bytes and reinitialize tonk
+    const bundleBytes = await restoreBundleBytes();
+    if (bundleBytes && tonkState.status === 'uninitialized') {
+      log('info', 'Attempting to restore bundle from persistent storage', {
+        byteLength: bundleBytes.length,
+      });
+      console.log('🔄 SERVICE WORKER: Restoring bundle from IndexedDB...');
+
+      try {
+        // Initialize WASM if needed
+        const wasmUrl = `${TONK_SERVER_URL}/tonk_core_bg.wasm`;
+        const cacheBustUrl = `${wasmUrl}?t=${Date.now()}`;
+        await initializeTonk({ wasmPath: cacheBustUrl });
+        log('info', 'WASM initialization completed');
+
+        // Create bundle and manifest
+        const bundle = await Bundle.fromBytes(bundleBytes);
+        const manifest = await bundle.getManifest();
+        log('info', 'Bundle and manifest restored from storage');
+
+        // Create TonkCore instance
+        const tonk = await TonkCore.fromBytes(bundleBytes);
+        log('info', 'TonkCore created from restored bundle');
+
+        // Connect to websocket
+        const wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
+        await tonk.connectWebsocket(wsUrl);
+        log('info', 'Websocket reconnected');
+
+        // Wait for initial sync
+        let syncAttempts = 0;
+        const maxAttempts = 20;
+        while (syncAttempts < maxAttempts) {
+          try {
+            await tonk.listDirectory('/app');
+            log('info', 'Bundle restoration complete - tonk ready');
+            console.log('✅ SERVICE WORKER: Bundle restored successfully');
+            break;
+          } catch (error) {
+            syncAttempts++;
+            if (syncAttempts >= maxAttempts) {
+              log('warn', 'Initial sync timeout after restore', {
+                attempts: syncAttempts,
+              });
+            } else {
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+          }
+        }
+
+        // Update tonk state
+        tonkState = { status: 'ready', tonk, manifest };
+      } catch (error) {
+        log('error', 'Failed to restore bundle from storage', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        console.error('❌ SERVICE WORKER: Bundle restoration failed:', error);
+
+        // Notify clients that reinit is needed
+        const allClients = await (self as any).clients.matchAll();
+        allClients.forEach(client => {
+          client.postMessage({
+            type: 'needsReinit',
+            appSlug: appSlug,
+            reason: 'Bundle restoration failed',
+          });
+        });
+      }
+    } else if (!bundleBytes && tonkState.status === 'uninitialized') {
+      log('warn', 'AppSlug restored but no bundle found in storage');
+      console.log('⚠️ SERVICE WORKER: No bundle found - needs reload');
+
+      // Notify clients that bundle needs to be reloaded
+      const allClients = await (self as any).clients.matchAll();
+      allClients.forEach(client => {
+        client.postMessage({
+          type: 'needsReinit',
+          appSlug: appSlug,
+          reason: 'No bundle in storage',
+        });
+      });
+    }
+  } else {
+    log('info', 'No appSlug found in persistent storage');
+  }
+});
 
 self.addEventListener('install', event => {
   log('info', 'Service worker installing');
@@ -224,6 +447,11 @@ const determinePath = (url: URL): string => {
   const isRootRequest = url.pathname === '/' || url.pathname === '';
   if (isRootRequest && appSlug) {
     appSlug = null;
+    // Persist the reset so it survives service worker restarts
+    // Also clear bundle bytes to avoid stale data
+    Promise.all([persistAppSlug(null), persistBundleBytes(null)]).catch(err => {
+      log('error', 'Failed to persist state reset', { error: err });
+    });
   }
 
   if (appSlug && url.origin === location.origin && !isRootRequest) {
@@ -343,7 +571,10 @@ async function handleMessage(
   if (message.type === 'setAppSlug') {
     appSlug = message.slug;
 
-    log('info', 'App slug set', { slug: appSlug });
+    // Persist to IndexedDB so it survives service worker restarts
+    await persistAppSlug(appSlug);
+
+    log('info', 'App slug set and persisted', { slug: appSlug });
     return;
   }
 
@@ -981,6 +1212,10 @@ async function handleMessage(
         tonkState = { status: 'ready', tonk: newTonk, manifest };
         log('info', 'Tonk state updated with new instance');
 
+        // Persist bundle bytes to survive service worker restarts
+        await persistBundleBytes(bundleBytes);
+        log('info', 'Bundle bytes persisted to IndexedDB');
+
         postResponse({
           type: 'loadBundle',
           id: message.id,
@@ -1083,6 +1318,10 @@ async function handleMessage(
         // Update the global tonk state
         tonkState = { status: 'ready', tonk, manifest };
         log('info', 'Tonk state updated to ready from URL');
+
+        // Persist bundle bytes to survive service worker restarts
+        await persistBundleBytes(manifestBytes);
+        log('info', 'Bundle bytes persisted to IndexedDB');
 
         postResponse({
           type: 'initializeFromUrl',
