@@ -318,6 +318,8 @@ class Server {
 
     this.#server.on('error', error => {
       console.error('HTTP server error:', error);
+      console.error('Process will exit and systemd will restart it');
+      process.exit(1);
     });
 
     this.#socket.on('error', error => {
@@ -357,10 +359,14 @@ async function main() {
 
 process.on('uncaughtException', error => {
   console.error('Uncaught exception:', error);
+  console.error('Process will exit and systemd will restart it');
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled rejection at:', promise, 'reason:', reason);
+  console.error('Process will exit and systemd will restart it');
+  process.exit(1);
 });
 
 main().catch(error => {
