@@ -1,5 +1,6 @@
 import { AlertCircle, Database, Eye, FileText } from 'lucide-react';
 import type React from 'react';
+import { useEffect, useState } from 'react';
 import { componentRegistry } from '../ComponentRegistry';
 import { storeRegistry } from '../StoreRegistry';
 import { ViewRenderer } from '../ViewRenderer';
@@ -16,7 +17,23 @@ export const PreviewPane: React.FC<PreviewPaneProps> = ({
   fileType,
   className = '',
 }) => {
-  // Get the appropriate ID based on file type
+  const [, forceUpdate] = useState(0);
+
+  useEffect(() => {
+    const unsubComponents = componentRegistry.onContextUpdate(() => {
+      forceUpdate(v => v + 1);
+    });
+
+    const unsubStores = storeRegistry.onContextUpdate(() => {
+      forceUpdate(v => v + 1);
+    });
+
+    return () => {
+      unsubComponents();
+      unsubStores();
+    };
+  }, []);
+
   const getEntityId = () => {
     if (!filePath) return null;
 
