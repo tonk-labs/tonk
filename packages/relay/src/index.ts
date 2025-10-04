@@ -1,12 +1,13 @@
 import { Repo, type RepoConfig } from '@automerge/automerge-repo';
 import { NodeWSServerAdapter } from '@automerge/automerge-repo-network-websocket';
+import { NodeFSStorageAdapter } from '@automerge/automerge-repo-storage-nodefs';
 import cors from 'cors';
 import express from 'express';
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
-import { CompositeStorageAdapter } from './compositeStorageAdapter.js';
+import { BundleStorageAdapter } from './bundleStorageAdapter.js';
 import { S3Storage } from './s3-storage.js';
 import JSZip from 'jszip';
 
@@ -14,7 +15,8 @@ class Server {
   #socket: WebSocketServer;
 
   #server: ReturnType<import('express').Express['listen']>;
-  #storage: CompositeStorageAdapter;
+  #storage: NodeFSStorageAdapter;
+  #bundleStorage: BundleStorageAdapter;
 
   #repo: Repo;
   #rootDocumentId: string | null = null;
@@ -26,16 +28,20 @@ class Server {
   ): Promise<Server> {
     const bundleBytes = readFileSync(bundlePath);
 
-    // Create storage adapter from bundle and filesystem storage
-    const storage = await CompositeStorageAdapter.create(
-      bundleBytes,
-      storageDir
-    );
+    // Create bundle storage adapter (only for API endpoints)
+    const bundleStorage = await BundleStorageAdapter.fromBundle(bundleBytes);
 
-    return new Server(port, storage);
+    // Create filesystem storage for Automerge repo
+    const storage = new NodeFSStorageAdapter(storageDir);
+
+    return new Server(port, storage, bundleStorage);
   }
 
-  private constructor(port: number, storage: CompositeStorageAdapter) {
+  private constructor(
+    port: number,
+    storage: NodeFSStorageAdapter,
+    bundleStorage: BundleStorageAdapter
+  ) {
     this.#socket = new WebSocketServer({ noServer: true });
 
     const PORT = port;
@@ -54,6 +60,7 @@ class Server {
     app.use(express.raw({ type: 'application/octet-stream', limit: '100mb' }));
     app.use(express.json());
     this.#storage = storage;
+    this.#bundleStorage = bundleStorage;
 
     const config: RepoConfig = {
       network: [new NodeWSServerAdapter(this.#socket as any) as any],
@@ -111,7 +118,7 @@ class Server {
       console.log('Received request for /.manifest.tonk');
       try {
         console.log('Creating slim bundle...');
-        const slimBundle = await this.#storage.createSlimBundle();
+        const slimBundle = await this.#bundleStorage.createSlimBundle();
         console.log(
           'Slim bundle created successfully, size:',
           slimBundle.length
@@ -326,7 +333,6 @@ class Server {
   }
 
   close() {
-    this.#storage.log();
     this.#socket.close();
     this.#server.close();
   }
