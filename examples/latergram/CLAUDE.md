@@ -14,46 +14,52 @@ state management and real-time updates.
 ### Core Technologies
 
 - **Frontend**: React 19 with TypeScript, Vite for bundling
-- **UI Library**: Chakra UI (primary component library)
 - **State Management**: Zustand stores, Automerge for CRDT-based collaboration
 - **Virtual File System**: TonkCore with WebSocket sync to server
-- **Styling**: Chakra UI + Dual styling system with Twind runtime compilation and standard Tailwind CSS
+- **Styling**: Tailwind CSS
 - **Code Editor**: Monaco Editor for in-browser code editing
 - **Server**: Express server with WebSocket support for Automerge sync
 
 ### Key Architectural Components
 
 1. **Virtual File System (VFS)**
+
    - Managed through Web Worker (`src/tonk-worker.ts`) for non-blocking operations
    - All file operations (read/write/watch) go through VFS service (`src/services/vfs-service.ts`)
    - Supports real-time file watching and directory monitoring
 
 2. **Dynamic Component System**
+
    - Components are stored as TypeScript files in VFS at `/src/components/`
    - Hot compilation via `HotCompiler.tsx` using TypeScript transpilation
    - Component registry manages available components for drag-and-drop
 
 3. **Dynamic Views & Routing**
+
    - Views stored in VFS at `/src/views/`
    - `ViewRenderer` component dynamically loads and renders view files
    - Route-to-view mapping: URL path maps to `/src/views/{path}.tsx`
 
 4. **Store Management**
+
    - Zustand stores defined in VFS at `/src/stores/`
    - Dynamic store compilation and registration
    - Shared state across components via store hooks
 
 5. **TypeScript Validation**
+
    - Runtime TypeScript validation in `src/lib/typescript-validator.ts`
    - Compiles and validates code before execution
    - Provides diagnostics for error reporting
 
 6. **Error Handling System**
+
    - Comprehensive error boundaries (`src/components/errors/`)
    - Inline error boundary creation for dynamic components
    - Error reporting to AI agent for debugging assistance
 
 7. **AI Agent Integration**
+
    - Built-in AI chat interface (`src/components/chat/`)
    - Agent service for code assistance (`src/lib/agent/`)
    - Tool integration for VFS file operations
@@ -113,11 +119,9 @@ pnpm dev  # Starts server on port 8081 with blank.tonk manifest
 - Components must export a default React component
 - Supports both `.tsx` and `.ts` file extensions
 - **NO IMPORTS NEEDED** - All packages are globally available via `contextBuilder.ts`
-- **Primary UI Library: Chakra UI** - Use Chakra UI components for all UI elements
 - Components have access to:
-  - **React & Hooks**: `React`, `useState`, `useEffect`, `useCallback`, `useMemo`, `useRef`, `useReducer`, `useContext`, `Fragment`
-  - **Chakra UI v3**: All components (`Box`, `Button`, `Heading`, `Input`, `Modal`, etc.) and hooks (`useDisclosure`, `useBreakpoint`, etc.)
-  - **Toast Notifications**: Global `toaster` utility for notifications (Chakra v3 API)
+  - **React & Hooks**: `React`, `useState`, `useEffect`, `useCallback`, `useMemo`, `useRef`,
+    `useReducer`, `useContext`, `Fragment`
   - **React Router**: `Link`, `NavLink`, `useNavigate`, `useLocation`, `useParams`
   - **Zustand**: `create`, `sync` for store creation
   - **Custom Components & Stores**: All registered VFS components and stores

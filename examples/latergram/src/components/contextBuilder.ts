@@ -142,8 +142,6 @@ export const buildAvailablePackages = (
     };
   };
 
-  const ChakraUI = (window as any).ChakraUI || {};
-
   const basePackages = {
     React: (window as any).React,
     useState: (window as any).React?.useState,
@@ -156,7 +154,6 @@ export const buildAvailablePackages = (
     Fragment: (window as any).React?.Fragment,
     create: (window as any).zustand?.create,
     sync: (window as any).sync,
-    createToaster: (window as any).createToaster,
     Link: createBridgedLink(),
     NavLink: routerContext
       ? createBridgedLink()
@@ -171,7 +168,6 @@ export const buildAvailablePackages = (
       ? () => routerContext.params
       : (window as any).ReactRouterDOM?.useParams,
     useSearchParams: (window as any).ReactRouterDOM?.useSearchParams,
-    ...ChakraUI,
   };
 
   const componentPackages: { [key: string]: any } = {};
