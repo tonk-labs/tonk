@@ -456,6 +456,12 @@ impl TonkCore {
         self.copy_directory_recursive(&self.vfs, &copied_vfs, "/app")
             .await?;
 
+        // Also copy /src if it exists
+        if self.vfs.exists("/src").await? {
+            self.copy_directory_recursive(&self.vfs, &copied_vfs, "/src")
+                .await?;
+        }
+
         // Export the copied VFS to bytes
         copied_vfs.to_bytes(config).await
     }
