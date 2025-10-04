@@ -41,49 +41,25 @@ function getTonk(): { tonk: TonkCore; manifest: Manifest } | null {
   return tonkState.status === 'ready' ? tonkState : null;
 }
 
-// IndexedDB helpers for persisting appSlug across service worker restarts
-const DB_NAME = 'tonk-sw-state';
-const DB_VERSION = 1;
-const STORE_NAME = 'state';
-
-async function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
-
-    request.onupgradeneeded = event => {
-      const db = (event.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
-      }
-    };
-  });
-}
+// Cache API helpers for persisting state across service worker restarts
+const CACHE_NAME = 'tonk-sw-state-v1';
+const APP_SLUG_URL = '/tonk-state/appSlug';
+const BUNDLE_BYTES_URL = '/tonk-state/bundleBytes';
 
 async function persistAppSlug(slug: string | null): Promise<void> {
   try {
-    const db = await openDB();
-    const transaction = db.transaction([STORE_NAME], 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
+    const cache = await caches.open(CACHE_NAME);
 
     if (slug === null) {
-      store.delete('appSlug');
+      await cache.delete(APP_SLUG_URL);
     } else {
-      store.put(slug, 'appSlug');
+      const response = new Response(JSON.stringify({ slug }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      await cache.put(APP_SLUG_URL, response);
     }
 
-    return new Promise((resolve, reject) => {
-      transaction.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      transaction.onerror = () => {
-        db.close();
-        reject(transaction.error);
-      };
-    });
+    log('info', 'AppSlug persisted to cache', { slug });
   } catch (error) {
     log('error', 'Failed to persist appSlug', {
       error: error instanceof Error ? error.message : String(error),
@@ -93,21 +69,15 @@ async function persistAppSlug(slug: string | null): Promise<void> {
 
 async function restoreAppSlug(): Promise<string | null> {
   try {
-    const db = await openDB();
-    const transaction = db.transaction([STORE_NAME], 'readonly');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.get('appSlug');
+    const cache = await caches.open(CACHE_NAME);
+    const response = await cache.match(APP_SLUG_URL);
 
-    return new Promise((resolve, reject) => {
-      request.onsuccess = () => {
-        db.close();
-        resolve(request.result || null);
-      };
-      request.onerror = () => {
-        db.close();
-        reject(request.error);
-      };
-    });
+    if (!response) {
+      return null;
+    }
+
+    const data = await response.json();
+    return data.slug || null;
   } catch (error) {
     log('error', 'Failed to restore appSlug', {
       error: error instanceof Error ? error.message : String(error),
@@ -118,25 +88,24 @@ async function restoreAppSlug(): Promise<string | null> {
 
 async function persistBundleBytes(bytes: Uint8Array | null): Promise<void> {
   try {
-    const db = await openDB();
-    const transaction = db.transaction([STORE_NAME], 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
+    const cache = await caches.open(CACHE_NAME);
 
     if (bytes === null) {
-      store.delete('bundleBytes');
+      await cache.delete(BUNDLE_BYTES_URL);
     } else {
-      store.put(bytes, 'bundleBytes');
+      // Convert Uint8Array to Blob for Response
+      // Use type assertion to work around ArrayBufferLike type issue
+      const blob = new Blob([bytes as any], {
+        type: 'application/octet-stream',
+      });
+      const response = new Response(blob, {
+        headers: { 'Content-Type': 'application/octet-stream' },
+      });
+      await cache.put(BUNDLE_BYTES_URL, response);
     }
 
-    return new Promise((resolve, reject) => {
-      transaction.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      transaction.onerror = () => {
-        db.close();
-        reject(transaction.error);
-      };
+    log('info', 'Bundle bytes persisted to cache', {
+      size: bytes ? bytes.length : 0,
     });
   } catch (error) {
     log('error', 'Failed to persist bundle bytes', {
@@ -147,21 +116,15 @@ async function persistBundleBytes(bytes: Uint8Array | null): Promise<void> {
 
 async function restoreBundleBytes(): Promise<Uint8Array | null> {
   try {
-    const db = await openDB();
-    const transaction = db.transaction([STORE_NAME], 'readonly');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.get('bundleBytes');
+    const cache = await caches.open(CACHE_NAME);
+    const response = await cache.match(BUNDLE_BYTES_URL);
 
-    return new Promise((resolve, reject) => {
-      request.onsuccess = () => {
-        db.close();
-        resolve(request.result || null);
-      };
-      request.onerror = () => {
-        db.close();
-        reject(request.error);
-      };
-    });
+    if (!response) {
+      return null;
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return new Uint8Array(arrayBuffer);
   } catch (error) {
     log('error', 'Failed to restore bundle bytes', {
       error: error instanceof Error ? error.message : String(error),
@@ -201,105 +164,102 @@ async function postResponse(response) {
   });
 }
 
-// Don't auto-load Tonk on service worker startup
-// Keep it uninitialized until a bundle is provided
-log('info', 'Service worker installed, waiting for bundle');
-console.log('🚀 SERVICE WORKER: Installed, waiting for bundle');
+// Auto-initialize Tonk from cache if available
+log('info', 'Service worker starting, checking for cached state');
+console.log('🚀 SERVICE WORKER: Starting initialization');
 tonkState = { status: 'uninitialized' };
 
-// Restore appSlug and bundle from persistent storage (survives SW restarts)
-restoreAppSlug().then(async restoredSlug => {
-  if (restoredSlug) {
-    appSlug = restoredSlug;
-    log('info', 'Restored appSlug from persistent storage', { slug: appSlug });
-    console.log('🔄 SERVICE WORKER: Restored appSlug:', appSlug);
-
-    // Try to restore bundle bytes and reinitialize tonk
+// Auto-initialization function
+async function autoInitializeFromCache() {
+  try {
+    // Try to restore appSlug and bundle from cache
+    const restoredSlug = await restoreAppSlug();
     const bundleBytes = await restoreBundleBytes();
-    if (bundleBytes && tonkState.status === 'uninitialized') {
-      log('info', 'Attempting to restore bundle from persistent storage', {
-        byteLength: bundleBytes.length,
+
+    if (!restoredSlug || !bundleBytes) {
+      log('info', 'No cached state found, waiting for initialization message', {
+        hasSlug: !!restoredSlug,
+        hasBundle: !!bundleBytes,
       });
-      console.log('🔄 SERVICE WORKER: Restoring bundle from IndexedDB...');
-
-      try {
-        // Initialize WASM if needed
-        const wasmUrl = `${TONK_SERVER_URL}/tonk_core_bg.wasm`;
-        const cacheBustUrl = `${wasmUrl}?t=${Date.now()}`;
-        await initializeTonk({ wasmPath: cacheBustUrl });
-        log('info', 'WASM initialization completed');
-
-        // Create bundle and manifest
-        const bundle = await Bundle.fromBytes(bundleBytes);
-        const manifest = await bundle.getManifest();
-        log('info', 'Bundle and manifest restored from storage');
-
-        // Create TonkCore instance
-        const tonk = await TonkCore.fromBytes(bundleBytes);
-        log('info', 'TonkCore created from restored bundle');
-
-        // Connect to websocket
-        const wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
-        await tonk.connectWebsocket(wsUrl);
-        log('info', 'Websocket reconnected');
-
-        // Wait for initial sync
-        let syncAttempts = 0;
-        const maxAttempts = 20;
-        while (syncAttempts < maxAttempts) {
-          try {
-            await tonk.listDirectory('/app');
-            log('info', 'Bundle restoration complete - tonk ready');
-            console.log('✅ SERVICE WORKER: Bundle restored successfully');
-            break;
-          } catch (error) {
-            syncAttempts++;
-            if (syncAttempts >= maxAttempts) {
-              log('warn', 'Initial sync timeout after restore', {
-                attempts: syncAttempts,
-              });
-            } else {
-              await new Promise(resolve => setTimeout(resolve, 500));
-            }
-          }
-        }
-
-        // Update tonk state
-        tonkState = { status: 'ready', tonk, manifest };
-      } catch (error) {
-        log('error', 'Failed to restore bundle from storage', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        console.error('❌ SERVICE WORKER: Bundle restoration failed:', error);
-
-        // Notify clients that reinit is needed
-        const allClients = await (self as any).clients.matchAll();
-        allClients.forEach(client => {
-          client.postMessage({
-            type: 'needsReinit',
-            appSlug: appSlug,
-            reason: 'Bundle restoration failed',
-          });
-        });
-      }
-    } else if (!bundleBytes && tonkState.status === 'uninitialized') {
-      log('warn', 'AppSlug restored but no bundle found in storage');
-      console.log('⚠️ SERVICE WORKER: No bundle found - needs reload');
-
-      // Notify clients that bundle needs to be reloaded
-      const allClients = await (self as any).clients.matchAll();
-      allClients.forEach(client => {
-        client.postMessage({
-          type: 'needsReinit',
-          appSlug: appSlug,
-          reason: 'No bundle in storage',
-        });
-      });
+      console.log('🔄 SERVICE WORKER: No cached state - waiting for bundle');
+      return;
     }
-  } else {
-    log('info', 'No appSlug found in persistent storage');
+
+    // Found cached state - auto-initialize
+    appSlug = restoredSlug;
+    log('info', 'Found cached state, auto-initializing', {
+      slug: appSlug,
+      bundleSize: bundleBytes.length,
+    });
+    console.log('🔄 SERVICE WORKER: Auto-initializing from cache...', appSlug);
+
+    // Initialize WASM from server
+    const wasmUrl = `${TONK_SERVER_URL}/tonk_core_bg.wasm`;
+    log('info', 'Fetching WASM from server');
+    await initializeTonk({ wasmPath: wasmUrl });
+    log('info', 'WASM initialization completed');
+
+    // Create bundle and manifest
+    const bundle = await Bundle.fromBytes(bundleBytes);
+    const manifest = await bundle.getManifest();
+    log('info', 'Bundle and manifest restored from cache');
+
+    // Create TonkCore instance
+    const tonk = await TonkCore.fromBytes(bundleBytes);
+    log('info', 'TonkCore created from cached bundle');
+
+    // Connect to websocket
+    const wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
+    await tonk.connectWebsocket(wsUrl);
+    log('info', 'Websocket connected');
+
+    // Wait for initial sync
+    let syncAttempts = 0;
+    const maxAttempts = 20;
+    while (syncAttempts < maxAttempts) {
+      try {
+        await tonk.listDirectory('/app');
+        log('info', 'Auto-initialization complete - tonk ready');
+        console.log('✅ SERVICE WORKER: Auto-initialized successfully');
+        break;
+      } catch (error) {
+        syncAttempts++;
+        if (syncAttempts >= maxAttempts) {
+          log('warn', 'Initial sync timeout after restore', {
+            attempts: syncAttempts,
+          });
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+    }
+
+    // Update tonk state
+    tonkState = { status: 'ready', tonk, manifest };
+  } catch (error) {
+    log('error', 'Auto-initialization failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    console.error('❌ SERVICE WORKER: Auto-initialization failed:', error);
+
+    // Reset to uninitialized state
+    tonkState = { status: 'uninitialized' };
+    appSlug = null;
+
+    // Notify clients that manual initialization is needed
+    const allClients = await (self as any).clients.matchAll();
+    allClients.forEach(client => {
+      client.postMessage({
+        type: 'needsReinit',
+        appSlug: null,
+        reason: 'Auto-initialization failed',
+      });
+    });
   }
-});
+}
+
+// Start auto-initialization (non-blocking)
+autoInitializeFromCache();
 
 self.addEventListener('install', event => {
   log('info', 'Service worker installing');
