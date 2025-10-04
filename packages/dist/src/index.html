@@ -845,10 +845,10 @@
         console.log('Creating new tonk...');
 
         // Check if we have any loaded bundles
-        const hasLoadedBundles = availableApps.length > 0;
+        const hasLoadedBundles = false;
 
         // Pre-populate with first app name if available, otherwise use 'new-tonk'
-        const defaultName = hasLoadedBundles ? availableApps[0] : 'new-tonk';
+        const defaultName = 'new-tonk';
 
         // Show name dialog
         showNameDialog(defaultName, hasLoadedBundles);
@@ -926,7 +926,10 @@
                 }
               };
 
-              navigator.serviceWorker.addEventListener('message', messageHandler);
+              navigator.serviceWorker.addEventListener(
+                'message',
+                messageHandler
+              );
 
               const arrayBuffer = blankBytes.buffer.slice(
                 blankBytes.byteOffset,
@@ -949,7 +952,9 @@
             });
 
             if (!tempLoadResponse.success) {
-              throw new Error(tempLoadResponse.error || 'Failed to load blank tonk');
+              throw new Error(
+                tempLoadResponse.error || 'Failed to load blank tonk'
+              );
             }
           }
 
@@ -971,10 +976,7 @@
               }
             };
 
-            navigator.serviceWorker.addEventListener(
-              'message',
-              messageHandler
-            );
+            navigator.serviceWorker.addEventListener('message', messageHandler);
 
             navigator.serviceWorker.controller.postMessage({
               type: 'forkToBytes',
