@@ -365,8 +365,9 @@ process.on('uncaughtException', error => {
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled rejection at:', promise, 'reason:', reason);
-  console.error('Process will exit and systemd will restart it');
-  process.exit(1);
+  console.error(
+    'This is likely an operational error (timeout, network issue, etc.)'
+  );
 });
 
 main().catch(error => {
