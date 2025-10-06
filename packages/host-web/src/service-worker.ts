@@ -433,10 +433,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                ? 'loading'
-                : tonkState.status === 'failed'
-                ? 'failed'
-                : 'uninitialized',
+                  ? 'loading'
+                  : tonkState.status === 'failed'
+                    ? 'failed'
+                    : 'uninitialized',
           });
 
           if (!tonkInstance) {
@@ -1093,13 +1093,19 @@ async function handleMessage(
       log('info', 'Loading new bundle', {
         id: message.id,
         byteLength: message.bundleBytes.byteLength,
+        serverUrl: (message as any).serverUrl,
       });
       try {
+        // Get server URL from message or fall back to TONK_SERVER_URL
+        const serverUrl = (message as any).serverUrl || TONK_SERVER_URL;
+        log('info', 'Using server URL', { serverUrl });
+
         // Initialize WASM if not already initialized
         if (tonkState.status === 'uninitialized') {
           log('info', 'WASM not initialized, initializing now');
-          const wasmUrl = `${TONK_SERVER_URL}/tonk_core_bg.wasm`;
+          const wasmUrl = `${serverUrl}/tonk_core_bg.wasm`;
           const cacheBustUrl = `${wasmUrl}?t=${Date.now()}`;
+          log('info', 'Fetching WASM from', { cacheBustUrl });
           await initializeTonk({ wasmPath: cacheBustUrl });
           log('info', 'WASM initialization completed for bundle loading');
         }
@@ -1120,10 +1126,10 @@ async function handleMessage(
         const newTonk = await TonkCore.fromBytes(bundleBytes);
         log('info', 'New TonkCore created successfully');
 
-        // Get the websocket URL from the current config
+        // Get the websocket URL from the current config (serverUrl already defined above)
         const urlParams = new URLSearchParams(self.location.search);
         const bundleParam = urlParams.get('bundle');
-        let wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
+        let wsUrl = serverUrl.replace(/^http/, 'ws');
 
         if (bundleParam) {
           try {
@@ -1138,6 +1144,8 @@ async function handleMessage(
             });
           }
         }
+
+        log('info', 'Determined websocket URL', { wsUrl, serverUrl });
 
         // Connect to websocket
         log('info', 'Connecting new tonk to websocket', { wsUrl });
