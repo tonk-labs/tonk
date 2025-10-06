@@ -33,6 +33,10 @@ export class VFSService {
   >();
   private watchers = new Map<string, (documentData: DocumentData) => void>();
   private directoryWatchers = new Map<string, (changeData: any) => void>();
+  private watcherMetadata = new Map<
+    string,
+    { path: string; type: 'file' | 'directory' }
+  >();
 
   constructor() {
     this.workerInitPromise = this.initWorker();
@@ -106,7 +110,6 @@ export class VFSService {
           (window as any).TonkWorker
         ) {
           console.log('[VFSService] Using runtime-provided worker...');
-          // @ts-expect-error
           this.worker = new (window as any).TonkWorker();
           this.usingServiceWorkerProxy = false;
         } else {
@@ -266,12 +269,13 @@ export class VFSService {
 
       // Wait for initialization to complete
       return new Promise((resolve, reject) => {
-        const checkInit = () => {
+        const checkInit = async () => {
           console.log(
             '[VFSService] Checking initialization state:',
             this.initialized
           );
           if (this.initialized) {
+            if (this.watcherMetadata.size > 0) await this.reestablishWatchers();
             console.log('[VFSService] VFS initialization completed!');
             resolve();
           } else {
@@ -449,6 +453,7 @@ export class VFSService {
   ): Promise<string> {
     const id = this.generateId();
     this.watchers.set(id, callback);
+    this.watcherMetadata.set(id, { path, type: 'file' });
 
     try {
       await this.sendMessage<void>({
@@ -459,12 +464,14 @@ export class VFSService {
       return id;
     } catch (error) {
       this.watchers.delete(id);
+      this.watcherMetadata.delete(id);
       throw error;
     }
   }
 
   async unwatchFile(watchId: string): Promise<void> {
     this.watchers.delete(watchId);
+    this.watcherMetadata.delete(watchId);
     return this.sendMessage<void>({
       type: 'unwatchFile',
       id: watchId,
@@ -478,6 +485,7 @@ export class VFSService {
   ): Promise<string> {
     const id = this.generateId();
     this.directoryWatchers.set(id, callback);
+    this.watcherMetadata.set(id, { path, type: 'directory' });
 
     try {
       await this.sendMessage<void>({
@@ -488,12 +496,14 @@ export class VFSService {
       return id;
     } catch (error) {
       this.directoryWatchers.delete(id);
+      this.watcherMetadata.delete(id);
       throw error;
     }
   }
 
   async unwatchDirectory(watchId: string): Promise<void> {
     this.directoryWatchers.delete(watchId);
+    this.watcherMetadata.delete(watchId);
     return this.sendMessage<void>({
       type: 'unwatchDirectory',
       id: watchId,
@@ -503,6 +513,47 @@ export class VFSService {
 
   isInitialized(): boolean {
     return this.initialized;
+  }
+
+  private async reestablishWatchers(): Promise<void> {
+    console.log('[VFSService] Re-establishing watchers after reconnection...');
+
+    const watcherPromises: Promise<void>[] = [];
+
+    for (const [watchId, metadata] of this.watcherMetadata.entries()) {
+      if (metadata.type === 'file') {
+        const callback = this.watchers.get(watchId);
+        if (callback) {
+          const promise = this.sendMessage<void>({
+            type: 'watchFile',
+            id: watchId,
+            path: metadata.path,
+          });
+          watcherPromises.push(promise);
+          console.log(
+            `[VFSService] Re-establishing file watch: ${metadata.path}`
+          );
+        }
+      } else if (metadata.type === 'directory') {
+        const callback = this.directoryWatchers.get(watchId);
+        if (callback) {
+          const promise = this.sendMessage<void>({
+            type: 'watchDirectory',
+            id: watchId,
+            path: metadata.path,
+          });
+          watcherPromises.push(promise);
+          console.log(
+            `[VFSService] Re-establishing directory watch: ${metadata.path}`
+          );
+        }
+      }
+    }
+
+    await Promise.all(watcherPromises);
+    console.log(
+      `[VFSService] Re-established ${watcherPromises.length} watchers`
+    );
   }
 
   destroy(): void {

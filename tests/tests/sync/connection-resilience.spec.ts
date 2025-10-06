@@ -49,13 +49,15 @@ test.describe('Connection Resilience', () => {
     await page.waitForTimeout(2000);
 
     await page.evaluate(async () => {
-      const config = (window as any).__testConfig;
-      const { initVFSService } = await import('./vfs-service.js');
-      const newVfsService = await initVFSService(
-        config.relayUrl,
-        config.storageAdapterId
-      );
-      (window as any).__vfsService = newVfsService;
+      const config = (window as any).serverConfig;
+      const vfsService = (window as any).__vfsService;
+
+      // Destroy the existing service
+      await vfsService.destroy();
+
+      // Reinitialize with the same config
+      await vfsService.initialize(config.manifestUrl, config.wsUrl);
+
       console.log('Reconnected VFS');
     });
 
@@ -132,17 +134,21 @@ test.describe('Connection Resilience', () => {
     );
 
     await page2.evaluate(async () => {
-      const config = (window as any).__testConfig;
-      const { initVFSService } = await import('./vfs-service.js');
-      const newVfsService = await initVFSService(
-        config.relayUrl,
-        config.storageAdapterId
-      );
-      (window as any).__vfsService = newVfsService;
-      console.log('Page2: Reconnected VFS');
+      const config = (window as any).serverConfig;
+      const vfsService = (window as any).__vfsService;
+
+      // Destroy the existing service
+      await vfsService.destroy();
+
+      // Reinitialize with the same config
+      await vfsService.initialize(config.manifestUrl, config.wsUrl);
+
+      console.log('Reconnected VFS');
     });
 
     await waitForVFSConnection(page2);
+
+    console.log('VFS CONNECTED');
 
     await page2.waitForFunction(
       () => {

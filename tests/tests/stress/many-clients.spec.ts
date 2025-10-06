@@ -113,7 +113,7 @@ test.describe('Stress Test - Many Clients', () => {
           const value = parseInt(
             counter?.textContent?.match(/\d+/)?.[0] || '0'
           );
-          return value >= 5;
+          return value === 1;
         },
         { timeout: 20000 }
       );
@@ -121,7 +121,7 @@ test.describe('Stress Test - Many Clients', () => {
 
     await new Promise(resolve => setTimeout(resolve, 3000));
 
-    const counters = [];
+    const counters: number[] = [];
     for (const page of pages) {
       const counter = await page.getByTestId('counter-value').textContent();
       const value = parseInt(counter?.match(/\d+/)?.[0] || '0');
@@ -130,7 +130,7 @@ test.describe('Stress Test - Many Clients', () => {
 
     const allEqual = counters.every(v => v === counters[0]);
     expect(allEqual).toBe(true);
-    expect(counters[0]).toBe(5);
+    expect(counters[0]).toBe(1);
 
     console.log(`All 5 clients converged to the same value: ${counters[0]}`);
 

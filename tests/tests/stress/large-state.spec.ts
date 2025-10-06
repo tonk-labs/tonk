@@ -53,9 +53,7 @@ test.describe('Stress Test - Large State', () => {
     await page1.evaluate(async data => {
       const store = (window as any).__counterStore;
       if (store) {
-        store.setState({
-          largeData: data,
-        });
+        store.getState().setData(data);
       }
     }, largeData);
 
@@ -124,9 +122,7 @@ test.describe('Stress Test - Large State', () => {
       await page1.evaluate(async data => {
         const store = (window as any).__counterStore;
         if (store) {
-          store.setState({
-            largeData: data,
-          });
+          store.getState().setData(data);
         }
       }, largeData);
 
