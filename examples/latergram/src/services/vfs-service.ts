@@ -17,6 +17,13 @@ if (import.meta.env.DEV) {
 
 const verbose = () => false;
 
+type ConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'open'
+  | 'connected'
+  | 'reconnecting';
+
 export class VFSService {
   private worker: Worker | null = null;
   private initialized = false;
@@ -37,9 +44,39 @@ export class VFSService {
     string,
     { path: string; type: 'file' | 'directory' }
   >();
+  private connectionState: ConnectionState = 'disconnected';
+  private connectionListeners = new Set<(state: ConnectionState) => void>();
 
   constructor() {
     this.workerInitPromise = this.initWorker();
+  }
+
+  onConnectionStateChange(
+    listener: (state: ConnectionState) => void
+  ): () => void {
+    this.connectionListeners.add(listener);
+    listener(this.connectionState);
+    return () => {
+      this.connectionListeners.delete(listener);
+    };
+  }
+
+  private notifyConnectionStateChange(state: ConnectionState): void {
+    this.connectionState = state;
+    for (const listener of this.connectionListeners) {
+      try {
+        listener(state);
+      } catch (error) {
+        console.error(
+          '[VFSService] Error in connection state listener:',
+          error
+        );
+      }
+    }
+  }
+
+  getConnectionState(): ConnectionState {
+    return this.connectionState;
   }
 
   private createServiceWorkerProxy(): Worker {
@@ -139,10 +176,33 @@ export class VFSService {
       if (response.type === 'init') {
         verbose() && console.log('Received init response:', response);
         this.initialized = response.success;
+        if (response.success) {
+          this.notifyConnectionStateChange('connected');
+        }
         if (!response.success && response.error) {
           verbose() &&
             console.error('VFS Worker initialization failed:', response.error);
         }
+        return;
+      }
+
+      if (response.type === 'disconnected') {
+        this.initialized = false;
+        this.notifyConnectionStateChange('disconnected');
+        return;
+      }
+
+      if (response.type === 'reconnecting') {
+        this.notifyConnectionStateChange('reconnecting');
+        return;
+      }
+
+      if (response.type === 'reconnected') {
+        this.initialized = true;
+        this.notifyConnectionStateChange('connected');
+        this.reestablishWatchers().catch(error => {
+          console.error('[VFSService] Failed to reestablish watchers:', error);
+        });
         return;
       }
 
@@ -185,6 +245,8 @@ export class VFSService {
   }
 
   async initialize(manifestUrl: string, wsUrl: string): Promise<void> {
+    this.notifyConnectionStateChange('connecting');
+
     // Wait for worker initialization to complete
     if (this.workerInitPromise) {
       await this.workerInitPromise;
