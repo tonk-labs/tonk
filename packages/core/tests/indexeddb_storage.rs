@@ -1,17 +1,26 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm_tests {
+    use std::sync::Once;
     use tonk_core::{StorageConfig, TonkCore};
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
 
+    static TRACING_INIT: Once = Once::new();
+
+    fn init_tracing() {
+        TRACING_INIT.call_once(|| {
+            tracing_wasm::set_as_global_default_with_config(
+                tracing_wasm::WASMLayerConfigBuilder::new()
+                    .set_max_level(tracing::Level::TRACE)
+                    .build(),
+            );
+        });
+    }
+
     #[wasm_bindgen_test]
     async fn test_indexeddb_storage_persistence() {
-        tracing_wasm::set_as_global_default_with_config(
-            tracing_wasm::WASMLayerConfigBuilder::new()
-                .set_max_level(tracing::Level::TRACE)
-                .build(),
-        );
+        init_tracing();
 
         // Create TonkCore with IndexedDB storage
         let tonk1 = TonkCore::builder()
@@ -210,53 +219,89 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
-    async fn test_indexeddb_multiple_instances_isolation() {
-        // Create two separate TonkCore instances with different peer IDs
-        let tonk1 = TonkCore::builder()
-            .with_storage(StorageConfig::IndexedDB)
-            .build()
-            .await
-            .expect("Failed to create first TonkCore instance");
+    async fn test_offline_initialization() {
+        init_tracing();
 
+        // Step 1: Load from a bundle with IndexedDB storage
+        // This simulates the first load where the user fetches the manifest
+        let bundle_bytes = include_bytes!("data/blank.tonk");
+        let tonk1 = TonkCore::from_bundle(
+            tonk_core::Bundle::from_bytes(bundle_bytes.to_vec()).expect("Failed to parse bundle"),
+            StorageConfig::IndexedDB,
+        )
+        .await
+        .expect("Failed to load from bundle with IndexedDB");
+
+        let vfs1 = tonk1.vfs();
+
+        // Create some test data
+        vfs1.create_document("/offline-test.txt", "Offline content".to_string())
+            .await
+            .expect("Failed to create test document");
+
+        // Get the root ID for verification
+        let root_id1 = tonk1.vfs().root_id();
+
+        // Step 2: Create a new TonkCore instance with IndexedDB
+        // This simulates a subsequent app load where no network is needed
         let tonk2 = TonkCore::builder()
             .with_storage(StorageConfig::IndexedDB)
             .build()
             .await
-            .expect("Failed to create second TonkCore instance");
+            .expect("Failed to create TonkCore from stored manifest");
 
-        // Ensure they have different peer IDs
-        assert_ne!(tonk1.peer_id(), tonk2.peer_id());
-
-        let vfs1 = tonk1.vfs();
         let vfs2 = tonk2.vfs();
 
-        // Create documents in each instance
-        vfs1.create_document("/instance1.txt", "Content from instance 1".to_string())
-            .await
-            .expect("Failed to create document in instance 1");
+        // Verify that the VFS was restored from the stored manifest
+        let root_id2 = tonk2.vfs().root_id();
+        assert_eq!(
+            root_id1, root_id2,
+            "Root ID should be restored from manifest"
+        );
 
-        vfs2.create_document("/instance2.txt", "Content from instance 2".to_string())
-            .await
-            .expect("Failed to create document in instance 2");
+        // Verify that documents created in first instance are accessible
+        assert!(
+            vfs2.exists("/offline-test.txt")
+                .await
+                .expect("Failed to check existence"),
+            "Document should persist across instances"
+        );
 
-        // Each instance should only see its own documents
-        assert!(vfs1
-            .exists("/instance1.txt")
+        // Verify content is correct
+        let handle = vfs2
+            .find_document("/offline-test.txt")
             .await
-            .expect("Failed to check existence"));
-        assert!(!vfs1
-            .exists("/instance2.txt")
-            .await
-            .expect("Failed to check existence"));
+            .expect("Failed to find document")
+            .expect("Document not found");
+        let content: String = handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            match doc.get(automerge::ROOT, "content") {
+                Ok(Some((value, _))) => {
+                    if let Some(s) = value.to_str() {
+                        s.to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => String::new(),
+            }
+        });
+        assert_eq!(content, "\"Offline content\"");
 
-        assert!(vfs2
-            .exists("/instance2.txt")
-            .await
-            .expect("Failed to check existence"));
-        assert!(!vfs2
-            .exists("/instance1.txt")
-            .await
-            .expect("Failed to check existence"));
+        // Step 3: Verify that we can create new documents in the restored instance
+        vfs2.create_document(
+            "/second-session.txt",
+            "Created after restoration".to_string(),
+        )
+        .await
+        .expect("Failed to create document in restored instance");
+
+        assert!(
+            vfs2.exists("/second-session.txt")
+                .await
+                .expect("Failed to check existence"),
+            "Should be able to create new documents in restored instance"
+        );
     }
 }
 

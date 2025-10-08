@@ -104,25 +104,62 @@ impl TonkCoreBuilder {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let samod: Repo = match self.storage_config {
+            let (samod, stored_root_id): (Repo, Option<DocumentId>) = match self.storage_config {
                 StorageConfig::InMemory => {
-                    Repo::build_wasm()
+                    let samod = Repo::build_wasm()
                         .with_peer_id(peer_id)
                         .with_storage(InMemoryStorage::new())
                         .load()
-                        .await
+                        .await;
+                    (samod, None)
                 }
                 StorageConfig::IndexedDB => {
-                    Repo::build_wasm()
+                    let storage = IndexedDbStorage::new();
+
+                    // Check for manifest
+                    let stored_root_id = if let Ok(manifest_key) =
+                        StorageKey::from_parts(vec!["__tonk_manifest__".to_string()])
+                    {
+                        match storage.load(manifest_key.clone()).await {
+                            Some(manifest_data) => {
+                                eprintln!("Found stored manifest in IndexedDB");
+                                // Try to parse and extract root_id
+                                serde_json::from_slice::<crate::bundle::Manifest>(&manifest_data)
+                                    .ok()
+                                    .and_then(|m| m.root_id.parse::<DocumentId>().ok())
+                            }
+                            None => {
+                                eprintln!("No stored manifest found");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Now build repo with storage (storage is moved here)
+                    let samod = Repo::build_wasm()
                         .with_peer_id(peer_id)
-                        .with_storage(IndexedDbStorage::new())
+                        .with_storage(storage)
                         .load_local()
-                        .await
+                        .await;
+
+                    (samod, stored_root_id)
                 }
             };
 
             let samod = Arc::new(samod);
-            let vfs = Arc::new(VirtualFileSystem::new(samod.clone()).await?);
+
+            // Initialize VFS based on whether we found a manifest
+            let vfs = if let Some(root_id) = stored_root_id {
+                eprintln!(
+                    "Restoring VFS from stored manifest with root ID: {}",
+                    root_id
+                );
+                Arc::new(VirtualFileSystem::from_root_id(samod.clone(), root_id).await?)
+            } else {
+                Arc::new(VirtualFileSystem::new(samod.clone()).await?)
+            };
 
             info!("TonkCore initialized with peer ID: {}", samod.peer_id());
 
@@ -272,6 +309,19 @@ impl TonkCoreBuilder {
                             );
                             storage.put(storage_key.clone(), data).await;
                         }
+                    }
+                }
+
+                // Store manifest in IndexedDB for offline initialization
+                if let Ok(manifest_key) =
+                    StorageKey::from_parts(vec!["__tonk_manifest__".to_string()])
+                {
+                    if let Ok(manifest_json) = serde_json::to_vec(bundle.manifest()) {
+                        eprintln!(
+                            "Storing manifest with root ID: {}",
+                            bundle.manifest().root_id
+                        );
+                        storage.put(manifest_key, manifest_json).await;
                     }
                 }
 
