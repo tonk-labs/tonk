@@ -555,6 +555,36 @@ export class TonkCore {
   }
 
   /**
+   * Check if currently connected to WebSocket.
+   *
+   * @returns True if connected, false otherwise
+   */
+  async isConnected(): Promise<boolean> {
+    try {
+      const result = await this.#wasm.isConnected();
+      return result;
+    } catch (error) {
+      console.error('🔌 [CORE-JS] isConnected() error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get the current connection state.
+   *
+   * @returns Connection state as a string: "disconnected", "connecting", "connected", or "failed:{message}"
+   */
+  async getConnectionState(): Promise<string> {
+    try {
+      const result = await this.#wasm.getConnectionState();
+      return result;
+    } catch (error) {
+      console.error('📡 [CORE-JS] getConnectionState() error:', error);
+      return 'failed:' + String(error);
+    }
+  }
+
+  /**
    * Serialize the Tonk Core /app data to a fresh binary with a new root.
    *
    * @param config Optional configuration for bundle export

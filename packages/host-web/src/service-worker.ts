@@ -36,6 +36,14 @@ type TonkState =
 let tonkState: TonkState = { status: 'uninitialized' };
 let appSlug: string | null = null; // Store the app slug for path resolution
 
+let wsUrl: string | null = null;
+let healthCheckInterval: number | null = null;
+let connectionHealthy = true;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const HEALTH_CHECK_INTERVAL = 5000;
+let continuousRetryEnabled = true;
+
 // Helper to get tonk instance when ready
 function getTonk(): { tonk: TonkCore; manifest: Manifest } | null {
   return tonkState.status === 'ready' ? tonkState : null;
@@ -164,6 +172,144 @@ async function postResponse(response) {
   });
 }
 
+async function performHealthCheck(): Promise<boolean> {
+  const tonkInstance = getTonk();
+  if (!tonkInstance) {
+    return false;
+  }
+
+  try {
+    const result = await tonkInstance.tonk.isConnected();
+    return result;
+  } catch (error) {
+    console.error('🏥 [SW] performHealthCheck() ERROR:', error);
+    return false;
+  }
+}
+
+async function attemptReconnect() {
+  if (!wsUrl) {
+    log('error', 'Cannot reconnect: wsUrl not stored');
+    console.error('🔄 [SW] Cannot reconnect: wsUrl not stored');
+    return;
+  }
+
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    if (continuousRetryEnabled) {
+      reconnectAttempts = 0;
+    } else {
+      log('error', 'Max reconnection attempts reached', {
+        attempts: reconnectAttempts,
+      });
+      console.error(
+        '🔄 [SW] Max reconnection attempts reached:',
+        reconnectAttempts
+      );
+      await postResponse({ type: 'reconnectionFailed' });
+      return;
+    }
+  }
+
+  const tonkInstance = getTonk();
+  if (!tonkInstance) {
+    log('error', 'Cannot reconnect: tonk not initialized');
+    console.error('🔄 [SW] Cannot reconnect: tonk not initialized');
+    return;
+  }
+
+  reconnectAttempts++;
+  log('info', 'Attempting to reconnect', {
+    attempt: reconnectAttempts,
+    maxAttempts: MAX_RECONNECT_ATTEMPTS,
+    wsUrl,
+  });
+
+  await postResponse({ type: 'reconnecting', attempt: reconnectAttempts });
+
+  try {
+    await tonkInstance.tonk.connectWebsocket(wsUrl);
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    const isConnected = await tonkInstance.tonk.isConnected();
+
+    if (isConnected) {
+      connectionHealthy = true;
+      reconnectAttempts = 0;
+      log('info', 'Reconnection successful');
+      await postResponse({ type: 'reconnected' });
+
+      await reestablishWatchers();
+    } else {
+      throw new Error('Connection check failed after reconnect attempt');
+    }
+  } catch (error) {
+    log('error', 'Reconnection failed', {
+      error: error instanceof Error ? error.message : String(error),
+      attempt: reconnectAttempts,
+    });
+
+    const backoffDelay = Math.min(
+      1000 * Math.pow(2, reconnectAttempts - 1),
+      30000
+    );
+    log('info', 'Scheduling next reconnect attempt', {
+      delayMs: backoffDelay,
+      nextAttempt: reconnectAttempts + 1,
+    });
+    setTimeout(attemptReconnect, backoffDelay);
+  }
+}
+
+async function reestablishWatchers() {
+  log('info', 'Re-establishing watchers after reconnection', {
+    watcherCount: watchers.size,
+  });
+
+  const tonkInstance = getTonk();
+  if (!tonkInstance) {
+    log('error', 'Cannot re-establish watchers: tonk not available');
+    return;
+  }
+
+  const watcherInfo = Array.from(watchers.entries());
+
+  log('info', 'Watcher re-establishment complete', {
+    watcherCount: watcherInfo.length,
+  });
+
+  await postResponse({
+    type: 'watchersReestablished',
+    count: watcherInfo.length,
+  });
+}
+
+function startHealthMonitoring() {
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+  }
+
+  log('info', 'Starting health monitoring', {
+    intervalMs: HEALTH_CHECK_INTERVAL,
+  });
+
+  healthCheckInterval = setInterval(async () => {
+    const isHealthy = await performHealthCheck();
+
+    if (!isHealthy && connectionHealthy) {
+      connectionHealthy = false;
+      log('error', 'Connection lost, starting reconnection attempts');
+      console.error('❌ [SW] Connection lost, starting reconnection attempts');
+      await postResponse({ type: 'disconnected' });
+      attemptReconnect();
+    } else if (isHealthy && !connectionHealthy) {
+      connectionHealthy = true;
+      reconnectAttempts = 0;
+      log('info', 'Connection health restored');
+    }
+  }, HEALTH_CHECK_INTERVAL) as unknown as number;
+}
+
 // Auto-initialize Tonk from cache if available
 log('info', 'Service worker starting, checking for cached state');
 console.log('🚀 SERVICE WORKER: Starting initialization');
@@ -209,9 +355,10 @@ async function autoInitializeFromCache() {
     log('info', 'TonkCore created from cached bundle');
 
     // Connect to websocket
-    const wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
+    wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
     await tonk.connectWebsocket(wsUrl);
     log('info', 'Websocket connected');
+    startHealthMonitoring();
 
     // Wait for initial sync
     let syncAttempts = 0;
@@ -433,10 +580,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                  ? 'loading'
-                  : tonkState.status === 'failed'
-                    ? 'failed'
-                    : 'uninitialized',
+                ? 'loading'
+                : tonkState.status === 'failed'
+                ? 'failed'
+                : 'uninitialized',
           });
 
           if (!tonkInstance) {
@@ -1129,14 +1276,14 @@ async function handleMessage(
         // Get the websocket URL from the current config (serverUrl already defined above)
         const urlParams = new URLSearchParams(self.location.search);
         const bundleParam = urlParams.get('bundle');
-        let wsUrl = serverUrl.replace(/^http/, 'ws');
+        let wsUrlLocal = serverUrl.replace(/^http/, 'ws');
 
         if (bundleParam) {
           try {
             const decoded = atob(bundleParam);
             const bundleConfig = JSON.parse(decoded);
             if (bundleConfig.wsUrl) {
-              wsUrl = bundleConfig.wsUrl;
+              wsUrlLocal = bundleConfig.wsUrl;
             }
           } catch (error) {
             log('warn', 'Could not parse bundle config for wsUrl', {
@@ -1145,12 +1292,19 @@ async function handleMessage(
           }
         }
 
-        log('info', 'Determined websocket URL', { wsUrl, serverUrl });
+        log('info', 'Determined websocket URL', {
+          wsUrl: wsUrlLocal,
+          serverUrl,
+        });
 
         // Connect to websocket
+        wsUrl = wsUrlLocal;
         log('info', 'Connecting new tonk to websocket', { wsUrl });
-        await newTonk.connectWebsocket(wsUrl);
-        log('info', 'Websocket connection established');
+        if (wsUrl) {
+          await newTonk.connectWebsocket(wsUrl);
+          log('info', 'Websocket connection established');
+          startHealthMonitoring();
+        }
 
         // Wait for initial data sync by polling until root is accessible
         log('info', 'Waiting for initial data sync');
@@ -1225,7 +1379,8 @@ async function handleMessage(
           message.wasmUrl || `${TONK_SERVER_URL}/tonk_core_bg.wasm`;
         const manifestUrl =
           message.manifestUrl || `${TONK_SERVER_URL}/.manifest.tonk`;
-        const wsUrl = message.wsUrl || TONK_SERVER_URL.replace(/^http/, 'ws');
+        const wsUrlInit =
+          message.wsUrl || TONK_SERVER_URL.replace(/^http/, 'ws');
 
         log('info', 'Fetching WASM from URL', { wasmUrl });
 
@@ -1255,9 +1410,11 @@ async function handleMessage(
         log('info', 'TonkCore created successfully');
 
         // Connect to websocket
+        wsUrl = wsUrlInit;
         log('info', 'Connecting to websocket', { wsUrl });
         await tonk.connectWebsocket(wsUrl);
         log('info', 'Websocket connection established');
+        startHealthMonitoring();
 
         // Wait for initial data sync by polling until root is accessible
         log('info', 'Waiting for initial data sync');

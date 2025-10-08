@@ -1,6 +1,6 @@
-use crate::StorageConfig;
 use crate::bundle::{Bundle, BundleConfig, BundlePath};
 use crate::tonk_core::TonkCore;
+use crate::StorageConfig;
 use automerge::AutoSerde;
 use bytes::Bytes;
 use js_sys::{Array, Function, Promise, Uint8Array};
@@ -9,7 +9,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{JsFuture, future_to_promise, spawn_local};
+use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
 #[cfg(feature = "wee_alloc")]
 #[global_allocator]
@@ -454,6 +454,35 @@ impl WasmTonkCore {
                 Ok(None) => Err(js_error("Document not found at the specified path")),
                 Err(e) => Err(js_error(e)),
             }
+        })
+    }
+
+    #[wasm_bindgen(js_name = isConnected)]
+    pub fn is_connected(&self) -> Promise {
+        let tonk = Arc::clone(&self.tonk);
+        future_to_promise(async move {
+            let tonk = tonk.lock().await;
+            let result = tonk.is_connected().await;
+            Ok(JsValue::from_bool(result))
+        })
+    }
+
+    #[wasm_bindgen(js_name = getConnectionState)]
+    pub fn get_connection_state(&self) -> Promise {
+        let tonk = Arc::clone(&self.tonk);
+        future_to_promise(async move {
+            let tonk = tonk.lock().await;
+            let state = tonk.connection_state().await;
+            let state_str = match state {
+                crate::ConnectionState::Disconnected => "disconnected",
+                crate::ConnectionState::Connecting => "connecting",
+                crate::ConnectionState::Open => "open",
+                crate::ConnectionState::Connected => "connected",
+                crate::ConnectionState::Failed(msg) => {
+                    return Ok(JsValue::from_str(&format!("failed:{}", msg)));
+                }
+            };
+            Ok(JsValue::from_str(state_str))
         })
     }
 

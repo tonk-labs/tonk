@@ -33,6 +33,12 @@ function log(
 // Worker state
 let tonk: TonkCore | null = null;
 const watchers = new Map<string, DocumentWatcher>();
+let healthCheckInterval: number | null = null;
+let connectionHealthy = true;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+let lastManifest: ArrayBuffer | null = null;
+let lastWsUrl: string | null = null;
 
 // Helper to post messages back to main thread
 function postResponse(response: VFSWorkerResponse) {
@@ -43,12 +49,97 @@ function postResponse(response: VFSWorkerResponse) {
   self.postMessage(response);
 }
 
+// Health check function
+async function performHealthCheck(): Promise<boolean> {
+  if (!tonk) return false;
+
+  try {
+    await tonk.listDirectory('/');
+    return true;
+  } catch (error) {
+    log('warn', 'Health check failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+// Start health monitoring
+function startHealthMonitoring() {
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+  }
+
+  healthCheckInterval = setInterval(async () => {
+    const isHealthy = await performHealthCheck();
+
+    if (!isHealthy && connectionHealthy) {
+      connectionHealthy = false;
+      log('error', 'Connection lost, attempting to reconnect');
+      postResponse({ type: 'disconnected' });
+      attemptReconnect();
+    } else if (isHealthy && !connectionHealthy) {
+      connectionHealthy = true;
+      reconnectAttempts = 0;
+      log('info', 'Connection restored');
+    }
+  }, 5000) as unknown as number;
+}
+
+// Reconnection logic
+async function attemptReconnect() {
+  if (!lastManifest || !lastWsUrl) {
+    log('error', 'Cannot reconnect: missing manifest or wsUrl');
+    return;
+  }
+
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    log('error', 'Max reconnection attempts reached, giving up');
+    return;
+  }
+
+  reconnectAttempts++;
+  log('info', 'Attempting to reconnect', {
+    attempt: reconnectAttempts,
+    maxAttempts: MAX_RECONNECT_ATTEMPTS,
+  });
+
+  postResponse({ type: 'reconnecting' });
+
+  try {
+    if (tonk) {
+      tonk = null;
+    }
+
+    await initializeTonk(lastManifest, lastWsUrl);
+
+    if (connectionHealthy) {
+      log('info', 'Reconnection successful');
+      postResponse({ type: 'reconnected' });
+      reconnectAttempts = 0;
+    }
+  } catch (error) {
+    log('error', 'Reconnection failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    const backoffDelay = Math.min(1000 * 2 ** reconnectAttempts, 30000);
+    log('info', 'Scheduling next reconnect attempt', {
+      delayMs: backoffDelay,
+    });
+    setTimeout(attemptReconnect, backoffDelay);
+  }
+}
+
 // Initialize TonkCore
 async function initializeTonk(manifest: ArrayBuffer, wsUrl: string) {
   log('info', 'Starting TonkCore initialization', {
     manifestSize: manifest.byteLength,
     wsUrl,
   });
+
+  lastManifest = manifest;
+  lastWsUrl = wsUrl;
 
   try {
     log('info', 'About to create Uint8Array from manifest');
@@ -80,7 +171,6 @@ async function initializeTonk(manifest: ArrayBuffer, wsUrl: string) {
     });
 
     while (retries > 0) {
-      // Check if connected (you may need to adjust this based on TonkCore API)
       try {
         await tonk.listDirectory('/');
         log('info', 'Connection test successful', {
@@ -102,6 +192,9 @@ async function initializeTonk(manifest: ArrayBuffer, wsUrl: string) {
       log('error', 'Connection test failed after all retries');
       throw new Error('Failed to connect to websocket');
     }
+
+    connectionHealthy = true;
+    startHealthMonitoring();
 
     log('info', 'TonkCore initialization completed successfully');
     postResponse({ type: 'init', success: true });
@@ -480,6 +573,29 @@ async function handleMessage(message: VFSWorkerMessage) {
         });
         postResponse({
           type: 'unwatchDirectory',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'healthCheck':
+      log('info', 'Performing health check', { id: message.id });
+      try {
+        const isHealthy = await performHealthCheck();
+        postResponse({
+          type: 'healthCheck',
+          id: message.id,
+          success: isHealthy,
+          error: isHealthy ? undefined : 'Health check failed',
+        });
+      } catch (error) {
+        log('error', 'Health check error', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'healthCheck',
           id: message.id,
           success: false,
           error: error instanceof Error ? error.message : String(error),
