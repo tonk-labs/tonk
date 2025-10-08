@@ -388,33 +388,33 @@ export class BundleStorageAdapter implements StorageAdapterInterface {
     const storageFolderPrefix = `storage/${rootIdPrefix}`;
 
     // Add all files from the storage folder that matches the rootId prefix
-    // if (this.#bundleZip) {
-    //   for (const [relativePath, file] of Object.entries(
-    //     this.#bundleZip.files
-    //   )) {
-    //     const zipFile = file as JSZip.JSZipObject;
-    //     if (
-    //       !zipFile.dir &&
-    //       relativePath !== 'manifest.json' &&
-    //       relativePath.startsWith(storageFolderPrefix)
-    //     ) {
-    //       // Check if this file has been updated in memory
-    //       if (this.#memoryData.has(relativePath)) {
-    //         // Use the updated version from memory
-    //         const data = this.#memoryData.get(relativePath);
-    //         if (data) {
-    //           zip.file(relativePath, data);
-    //         }
-    //       } else {
-    //         // Load from bundle
-    //         const data = await this.loadFromBundle(relativePath);
-    //         if (data) {
-    //           zip.file(relativePath, data);
-    //         }
-    //       }
-    //     }
-    //   }
-    // }
+    if (this.#bundleZip) {
+      for (const [relativePath, file] of Object.entries(
+        this.#bundleZip.files
+      )) {
+        const zipFile = file as JSZip.JSZipObject;
+        if (
+          !zipFile.dir &&
+          relativePath !== 'manifest.json' &&
+          relativePath.startsWith(storageFolderPrefix)
+        ) {
+          // Check if this file has been updated in memory
+          if (this.#memoryData.has(relativePath)) {
+            // Use the updated version from memory
+            const data = this.#memoryData.get(relativePath);
+            if (data) {
+              zip.file(relativePath, data);
+            }
+          } else {
+            // Load from bundle
+            const data = await this.loadFromBundle(relativePath);
+            if (data) {
+              zip.file(relativePath, data);
+            }
+          }
+        }
+      }
+    }
 
     // Also add any memory-only files that match the storage folder prefix
     for (const [keyStr, data] of this.#memoryData.entries()) {

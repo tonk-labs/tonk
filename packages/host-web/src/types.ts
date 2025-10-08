@@ -106,4 +106,9 @@ export type VFSWorkerResponse =
       success: boolean;
       data?: string;
       error?: string;
-    };
+    }
+  | { type: 'disconnected' }
+  | { type: 'reconnecting'; attempt: number }
+  | { type: 'reconnected' }
+  | { type: 'reconnectionFailed' }
+  | { type: 'watchersReestablished'; count: number };

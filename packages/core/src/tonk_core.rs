@@ -1,19 +1,21 @@
-use crate::Bundle;
 use crate::bundle::BundleConfig;
 use crate::error::{Result, VfsError};
 use crate::vfs::VirtualFileSystem;
+use crate::Bundle;
 use rand::rng;
-#[cfg(not(target_arch = "wasm32"))]
-use samod::RepoBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 use samod::storage::TokioFilesystemStorage as FilesystemStorage;
 use samod::storage::{InMemoryStorage, StorageKey};
 #[cfg(target_arch = "wasm32")]
 use samod::storage::{IndexedDbStorage, LocalStorage};
+#[cfg(not(target_arch = "wasm32"))]
+use samod::RepoBuilder;
 use samod::{DocHandle, DocumentId, PeerId, Repo};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(target_arch = "wasm32")]
+use tokio::sync::RwLock;
 use tracing::info;
 
 /// Storage configuration options for TonkCore
@@ -124,7 +126,12 @@ impl TonkCoreBuilder {
 
             info!("TonkCore initialized with peer ID: {}", samod.peer_id());
 
-            Ok(TonkCore { samod, vfs })
+            Ok(TonkCore {
+                samod,
+                vfs,
+                connection_state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
+                ws_url: Arc::new(RwLock::new(None)),
+            })
         }
     }
 
@@ -285,6 +292,17 @@ impl TonkCoreBuilder {
             samod.peer_id()
         );
 
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(TonkCore {
+                samod,
+                vfs,
+                connection_state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
+                ws_url: Arc::new(RwLock::new(None)),
+            })
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         Ok(TonkCore { samod, vfs })
     }
 
@@ -320,6 +338,16 @@ extern "C" {
     fn error(s: &str);
 }
 
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Open,
+    Connected,
+    Failed(String),
+}
+
 /// Core synchronization engine that orchestrates CRDT operations and VFS interactions.
 ///
 /// TonkCore combines samod (CRDT synchronization) with a virtual file system layer,
@@ -347,6 +375,10 @@ extern "C" {
 pub struct TonkCore {
     samod: Arc<Repo>,
     vfs: Arc<VirtualFileSystem>,
+    #[cfg(target_arch = "wasm32")]
+    connection_state: Arc<RwLock<ConnectionState>>,
+    #[cfg(target_arch = "wasm32")]
+    ws_url: Arc<RwLock<Option<String>>>,
 }
 
 impl TonkCore {
@@ -599,24 +631,75 @@ impl TonkCore {
     pub async fn connect_websocket(&self, url: &str) -> Result<()> {
         info!("Connecting to WebSocket peer at: {}", url);
 
-        let samod = Arc::clone(&self.samod);
-        let url = url.to_string();
-        let url_copy = url.clone();
+        {
+            let mut ws_url = self.ws_url.write().await;
+            *ws_url = Some(url.to_string());
+        }
 
-        // Spawn connection future so it runs in background
+        {
+            let mut state = self.connection_state.write().await;
+            *state = ConnectionState::Connecting;
+        }
+
+        let samod = Arc::clone(&self.samod);
+        let url_str = url.to_string();
+        let state_clone = Arc::clone(&self.connection_state);
+
+        let events =
+            samod.connect_wasm_websocket_observable(&url_str, samod::ConnDirection::Outgoing);
+
+        let state_for_open = Arc::clone(&state_clone);
         wasm_bindgen_futures::spawn_local(async move {
-            match crate::websocket::connect_wasm(samod, &url_copy).await {
-                Ok(reason) => {
-                    log(&format!("WebSocket connection closed: {reason:?}"));
+            if events.on_open.await.is_ok() {
+                let mut state = state_for_open.write().await;
+                *state = ConnectionState::Open;
+            }
+        });
+
+        let state_for_ready = Arc::clone(&state_clone);
+        wasm_bindgen_futures::spawn_local(async move {
+            if events.on_ready.await.is_ok() {
+                let mut state = state_for_ready.write().await;
+                *state = ConnectionState::Connected;
+            }
+        });
+
+        let state_for_finished = Arc::clone(&state_clone);
+        wasm_bindgen_futures::spawn_local(async move {
+            let reason = events.finished.await;
+
+            let mut state = state_for_finished.write().await;
+            match reason {
+                samod::ConnFinishedReason::Error(e) => {
+                    *state = ConnectionState::Failed(e);
                 }
-                Err(e) => {
-                    error(&format!("WebSocket connection error: {e}"));
+                _ => {
+                    *state = ConnectionState::Disconnected;
                 }
             }
         });
 
-        info!("Successfully connected to WebSocket peer at: {}", url);
+        info!("WebSocket connection initiated at: {}", url);
         Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn is_connected(&self) -> bool {
+        let state = self.connection_state.read().await;
+        let result = matches!(*state, ConnectionState::Connected);
+        result
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn connection_state(&self) -> ConnectionState {
+        let state = self.connection_state.read().await;
+        state.clone()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn ws_url(&self) -> Option<String> {
+        let url = self.ws_url.read().await;
+        url.clone()
     }
 
     /// Find a document by its ID
@@ -645,6 +728,10 @@ impl Clone for TonkCore {
         Self {
             samod: Arc::clone(&self.samod),
             vfs: Arc::clone(&self.vfs),
+            #[cfg(target_arch = "wasm32")]
+            connection_state: Arc::clone(&self.connection_state),
+            #[cfg(target_arch = "wasm32")]
+            ws_url: Arc::clone(&self.ws_url),
         }
     }
 }
@@ -654,7 +741,7 @@ mod tests {
     use super::*;
     #[cfg(not(target_arch = "wasm32"))]
     use tempfile::TempDir;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
     async fn test_sync_engine_creation() {

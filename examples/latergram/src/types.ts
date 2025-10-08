@@ -22,7 +22,8 @@ export type VFSWorkerMessage =
   | { type: 'watchFile'; id: string; path: string }
   | { type: 'unwatchFile'; id: string; path: string }
   | { type: 'watchDirectory'; id: string; path: string }
-  | { type: 'unwatchDirectory'; id: string; path: string };
+  | { type: 'unwatchDirectory'; id: string; path: string }
+  | { type: 'healthCheck'; id: string };
 export type VFSWorkerResponse =
   | { type: 'init'; success: boolean; error?: string }
   | {
@@ -58,4 +59,8 @@ export type VFSWorkerResponse =
       watchId: string;
       path: string;
       changeData: any;
-    };
+    }
+  | { type: 'healthCheck'; id: string; success: boolean; error?: string }
+  | { type: 'disconnected' }
+  | { type: 'reconnecting' }
+  | { type: 'reconnected' };

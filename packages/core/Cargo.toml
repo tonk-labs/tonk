@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # core deps
 samod = { git = "https://github.com/tonk-labs/samod", branch = "wasm-runtime", features = ["tokio"] }
-automerge = "0.6.1"
+automerge = "0.7.0"
 
 # runtime
 tokio-stream = "0.1.17"

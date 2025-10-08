@@ -24,6 +24,7 @@ export const sync =
     const vfs = getVFSService();
     let watchId: string | null = null;
     let isInitialized = false;
+    let connectionStateUnsubscribe: (() => void) | null = null;
 
     // Helper to serialize state for storage
     const serializeState = (state: T): any => {
@@ -41,7 +42,7 @@ export const sync =
         // Try to update first, create if it doesn't exist
         try {
           await vfs.writeFile(options.path, { content }, create);
-        } catch (error) {
+        } catch {
           // If update fails, try creating the file
           await vfs.writeFile(options.path, { content }, true);
         }
@@ -59,7 +60,7 @@ export const sync =
         if (content) {
           return content.content as Partial<T>;
         }
-      } catch (error) {
+      } catch {
         // File might not exist yet, that's okay
         console.log(
           `No existing state file at ${options.path}, starting fresh`
@@ -71,6 +72,18 @@ export const sync =
     // Setup file watcher for external changes
     const setupWatcher = async () => {
       if (!vfs.isInitialized()) return;
+
+      if (watchId) {
+        try {
+          await vfs.unwatchFile(watchId);
+          watchId = null;
+        } catch (error) {
+          console.warn(
+            `Error unwatching previous watcher for ${options.path}:`,
+            error
+          );
+        }
+      }
 
       try {
         watchId = await vfs.watchFile(options.path, (content: DocumentData) => {
@@ -139,8 +152,6 @@ export const sync =
       partial: T | Partial<T> | ((state: T) => T | Partial<T>),
       replace?: boolean
     ) => {
-      // console.log("Set called with:", { partial, replace });
-
       // Apply changes to Zustand state first
       if (replace === true) {
         set(partial as T, replace);
@@ -155,30 +166,39 @@ export const sync =
       }
     };
 
-    // console.log("Creating state with wrapped set function");
     const state = config(wrappedSet, get, api);
+
+    // Listen for connection state changes
+    connectionStateUnsubscribe = vfs.onConnectionStateChange(
+      async connectionState => {
+        if (connectionState === 'connected' && !isInitialized) {
+          await initializeFromFile(state);
+        } else if (connectionState === 'connected' && isInitialized) {
+          await setupWatcher();
+        }
+      }
+    );
 
     // Initialize from file when VFS is ready
     const waitForVFS = () => {
       if (vfs.isInitialized()) {
-        console.log(`VFS ready, initializing from file for ${options.path}`);
         initializeFromFile(state);
       } else {
-        // console.log(`VFS not ready for ${options.path}, waiting...`);
         // Poll until VFS is ready
         setTimeout(waitForVFS, 100);
       }
     };
     waitForVFS();
 
-    // Note: Cleanup would be needed if Zustand had a built-in cleanup mechanism
-    // For now, the watcher will remain active for the lifetime of the store
-
     // Add cleanup function to state for manual cleanup if needed
     (state as T & { __cleanup?: () => void }).__cleanup = () => {
       if (watchId) {
         vfs.unwatchFile(watchId).catch(console.warn);
         watchId = null;
+      }
+      if (connectionStateUnsubscribe) {
+        connectionStateUnsubscribe();
+        connectionStateUnsubscribe = null;
       }
     };
 
