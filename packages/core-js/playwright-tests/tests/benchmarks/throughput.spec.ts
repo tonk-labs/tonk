@@ -8,9 +8,7 @@ test.describe('Throughput Benchmarks', () => {
 
   test('should display connection status', async ({ page, serverInstance }) => {
     // Check that the test UI loads
-    await expect(page.locator('h1')).toContainText(
-      'Tonk Performance Test Suite'
-    );
+    await expect(page.locator('h1')).toContainText('Tonk Test Suite');
 
     // Check for connection status element
     const connectionStatus = page.getByTestId('connection-status');

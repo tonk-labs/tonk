@@ -280,15 +280,20 @@ export class VFSService {
         await this.reestablishWatchers();
       }
     } catch (error) {
-      console.error('[VFSService] 🔍 DEBUG: Initialization error:', {
-        error,
-        errorMessage: error instanceof Error ? error.message : String(error),
-        errorStack: error instanceof Error ? error.stack : undefined,
-        manifestUrl,
-      });
-      throw new Error(
-        `Failed to initialize VFS: ${error instanceof Error ? error.message : String(error)}`
+      console.warn(
+        '[VFSService] 🔍 DEBUG: Could not fetch manifest from server:',
+        {
+          error,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          errorStack: error instanceof Error ? error.stack : undefined,
+          manifestUrl,
+        }
       );
+
+      console.log(
+        '[VFSService] Initializing in offline mode - service worker ready'
+      );
+      this.initialized = true;
     }
   }
 

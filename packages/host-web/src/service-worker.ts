@@ -348,14 +348,32 @@ async function autoInitializeFromCache() {
     // Create bundle and manifest
     const bundle = await Bundle.fromBytes(bundleBytes);
     const manifest = await bundle.getManifest();
-    log('info', 'Bundle and manifest restored from cache');
+    log('info', 'Bundle and manifest restored from cache', {
+      rootId: manifest.rootId,
+    });
 
     // Create TonkCore instance
-    const tonk = await TonkCore.fromBytes(bundleBytes);
+    const tonk = await TonkCore.fromBytes(bundleBytes, {
+      storage: { type: 'indexeddb' },
+    });
     log('info', 'TonkCore created from cached bundle');
 
     // Connect to websocket
     wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
+    log('info', 'Connecting to websocket...', {
+      wsUrl,
+      localRootId: manifest.rootId,
+    });
+    await tonk.connectWebsocket(wsUrl);
+    log('info', 'Websocket connected');
+    startHealthMonitoring();
+
+    // Connect to websocket
+    wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
+    log('info', 'Connecting to websocket...', {
+      wsUrl,
+      localRootId: manifest.rootId,
+    });
     await tonk.connectWebsocket(wsUrl);
     log('info', 'Websocket connected');
     startHealthMonitoring();
@@ -1266,11 +1284,15 @@ async function handleMessage(
         // Create new bundle and manifest
         const bundle = await Bundle.fromBytes(bundleBytes);
         const manifest = await bundle.getManifest();
-        log('info', 'Bundle and manifest created successfully');
+        log('info', 'Bundle and manifest created successfully', {
+          rootId: manifest.rootId,
+        });
 
         // Create new TonkCore instance
         log('info', 'Creating new TonkCore from bundle bytes');
-        const newTonk = await TonkCore.fromBytes(bundleBytes);
+        const newTonk = await TonkCore.fromBytes(bundleBytes, {
+          storage: { type: 'indexeddb' },
+        });
         log('info', 'New TonkCore created successfully');
 
         // Get the websocket URL from the current config (serverUrl already defined above)
@@ -1299,7 +1321,10 @@ async function handleMessage(
 
         // Connect to websocket
         wsUrl = wsUrlLocal;
-        log('info', 'Connecting new tonk to websocket', { wsUrl });
+        log('info', 'Connecting new tonk to websocket', {
+          wsUrl,
+          localRootId: manifest.rootId,
+        });
         if (wsUrl) {
           await newTonk.connectWebsocket(wsUrl);
           log('info', 'Websocket connection established');
@@ -1406,7 +1431,9 @@ async function handleMessage(
 
         // Create TonkCore instance
         log('info', 'Creating TonkCore from manifest bytes');
-        const tonk = await TonkCore.fromBytes(manifestBytes);
+        const tonk = await TonkCore.fromBytes(manifestBytes, {
+          storage: { type: 'indexeddb' },
+        });
         log('info', 'TonkCore created successfully');
 
         // Connect to websocket

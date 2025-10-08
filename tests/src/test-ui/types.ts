@@ -12,6 +12,7 @@ export interface ServerInstance {
   port: number;
   wsUrl: string;
   manifestUrl: string;
+  testId: string;
 }
 
 // Image generator types
