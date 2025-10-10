@@ -42,7 +42,7 @@ any machine, last forever, and remain under user control.
 
 ## What is Tonk?
 
-Tonk represents a "credibly neutral platform" for building and sharing local software. It embodies
+Tonk represents a credibly neutral platform for building and sharing local software. It embodies
 principles of malleable software (as easy to change as it is to use) and user ownership (people
 retain control of their tools and data).
 
