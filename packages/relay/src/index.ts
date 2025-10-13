@@ -20,6 +20,7 @@ class Server {
 
   #repo: Repo;
   #rootDocumentId: string | null = null;
+  #connectionCount: number = 0;
 
   static async create(
     port: number,
@@ -312,6 +313,31 @@ class Server {
       }
     });
 
+    app.get('/metrics', (_req, res) => {
+      const memUsage = process.memoryUsage();
+      const uptime = process.uptime();
+
+      const metrics = {
+        timestamp: Date.now(),
+        memory: {
+          rss: memUsage.rss,
+          heapTotal: memUsage.heapTotal,
+          heapUsed: memUsage.heapUsed,
+          external: memUsage.external,
+          arrayBuffers: memUsage.arrayBuffers,
+        },
+        connections: this.#connectionCount,
+        uptime: uptime,
+        process: {
+          pid: process.pid,
+          version: process.version,
+          platform: process.platform,
+        },
+      };
+
+      res.json(metrics);
+    });
+
     this.#server = app.listen(PORT, () => {
       const address = this.#server.address();
       console.log(
@@ -322,7 +348,18 @@ class Server {
     this.#server.on('upgrade', (request, socket, head) => {
       console.log('upgrading to websocket');
       this.#socket.handleUpgrade(request, socket, head, ws => {
-        // Handle errors on individual WebSocket connections
+        this.#connectionCount++;
+        console.log(
+          `WebSocket connected. Total connections: ${this.#connectionCount}`
+        );
+
+        ws.on('close', () => {
+          this.#connectionCount--;
+          console.log(
+            `WebSocket disconnected. Total connections: ${this.#connectionCount}`
+          );
+        });
+
         ws.on('error', error => {
           console.error('WebSocket connection error:', error);
         });

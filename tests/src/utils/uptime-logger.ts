@@ -1,6 +1,6 @@
 import { MetricsCollector } from './metrics-collector';
-import { ServerProfiler } from './server-profiler';
 import { ConnectionManager } from './connection-manager';
+import { ServerInstance } from '../test-ui/types';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -17,9 +17,8 @@ export interface UptimeSnapshot {
   avgLatency: number;
   errorCount: number;
   errorRate: number;
-  memoryUsedMB: number;
-  memoryTotalMB: number;
   serverMemoryMB?: number;
+  serverConnectionCount?: number;
   throughputMBps?: number;
 }
 
@@ -50,19 +49,17 @@ export class UptimeLogger {
   private startTime: number = 0;
   private logInterval: NodeJS.Timeout | null = null;
   private metricsCollector: MetricsCollector;
-  private serverProfiler: ServerProfiler;
   private connectionManager: ConnectionManager | null = null;
+  private serverInstance: ServerInstance | null = null;
   private outputDir: string;
 
   constructor(
     testName: string,
     metricsCollector: MetricsCollector,
-    serverProfiler: ServerProfiler,
     outputDir: string = './test-results/uptime-metrics'
   ) {
     this.testName = testName;
     this.metricsCollector = metricsCollector;
-    this.serverProfiler = serverProfiler;
     this.outputDir = outputDir;
 
     fs.mkdirSync(this.outputDir, { recursive: true });
@@ -72,6 +69,10 @@ export class UptimeLogger {
     this.connectionManager = connectionManager;
   }
 
+  setServerInstance(serverInstance: ServerInstance): void {
+    this.serverInstance = serverInstance;
+  }
+
   startLogging(intervalMs: number = 30000): void {
     this.startTime = Date.now();
     this.snapshots = [];
@@ -79,8 +80,6 @@ export class UptimeLogger {
     console.log(
       `[UptimeLogger] Started logging for "${this.testName}" (interval: ${intervalMs}ms)`
     );
-
-    this.serverProfiler.startProfiling(this.testName, intervalMs);
 
     this.logInterval = setInterval(() => {
       this.captureSnapshot().catch(error => {
@@ -101,20 +100,21 @@ export class UptimeLogger {
     const connectionStats = this.connectionManager?.getStats();
 
     let serverMemoryMB: number | undefined;
-    const serverProfile = this.serverProfiler.getProfile(this.testName);
-    if (serverProfile && serverProfile.snapshots.length > 0) {
-      const latestSnapshot =
-        serverProfile.snapshots[serverProfile.snapshots.length - 1];
-      serverMemoryMB = latestSnapshot.rss / (1024 * 1024);
-    }
+    let serverConnectionCount: number | undefined;
 
-    if (this.connectionManager) {
-      this.serverProfiler.setConnectionCount(
-        this.connectionManager.getConnectionCount()
-      );
-      this.serverProfiler.incrementOperations(
-        connectionStats?.totalOperations || 0
-      );
+    if (this.serverInstance) {
+      try {
+        const metricsUrl = `http://localhost:${this.serverInstance.port}/metrics`;
+        const response = await fetch(metricsUrl);
+
+        if (response.ok) {
+          const serverMetrics = await response.json();
+          serverMemoryMB = serverMetrics.memory.rss / (1024 * 1024);
+          serverConnectionCount = serverMetrics.connections;
+        }
+      } catch (error) {
+        console.warn('[UptimeLogger] Failed to fetch server metrics:', error);
+      }
     }
 
     const snapshot: UptimeSnapshot = {
@@ -133,9 +133,8 @@ export class UptimeLogger {
         metrics.throughput.totalOperations > 0
           ? (metrics.errors.count / metrics.throughput.totalOperations) * 100
           : 0,
-      memoryUsedMB: metrics.memory.heapUsed / (1024 * 1024),
-      memoryTotalMB: metrics.memory.heapTotal / (1024 * 1024),
       serverMemoryMB,
+      serverConnectionCount,
       throughputMBps: metrics.throughput.bytesPerSecond / (1024 * 1024),
     };
 
@@ -145,23 +144,22 @@ export class UptimeLogger {
       `[UptimeLogger] Snapshot ${this.snapshots.length} @ ${elapsedSeconds.toFixed(0)}s: ` +
         `${snapshot.connectionCount} conns, ${snapshot.totalOperations} ops, ` +
         `P95: ${snapshot.latencyP95.toFixed(1)}ms, ` +
-        `Mem: ${snapshot.memoryUsedMB.toFixed(1)}MB, ` +
+        `Server Mem: ${snapshot.serverMemoryMB?.toFixed(1) || 'N/A'}MB, ` +
+        `Server Conns: ${snapshot.serverConnectionCount || 'N/A'}, ` +
         `Errors: ${snapshot.errorCount}`
     );
   }
 
-  stopLogging(): UptimeReport {
+  async stopLogging(): Promise<UptimeReport> {
     if (this.logInterval) {
       clearInterval(this.logInterval);
       this.logInterval = null;
     }
 
-    this.serverProfiler.stopProfiling();
-
     const endTime = Date.now();
     const durationSeconds = (endTime - this.startTime) / 1000;
 
-    const report = this.generateReport(endTime, durationSeconds);
+    const report = await this.generateReport(endTime, durationSeconds);
 
     console.log(
       `[UptimeLogger] Stopped logging for "${this.testName}" (${this.snapshots.length} snapshots)`
@@ -170,10 +168,10 @@ export class UptimeLogger {
     return report;
   }
 
-  private generateReport(
+  private async generateReport(
     endTime: number,
     durationSeconds: number
-  ): UptimeReport {
+  ): Promise<UptimeReport> {
     if (this.snapshots.length === 0) {
       return {
         testName: this.testName,
@@ -200,8 +198,9 @@ export class UptimeLogger {
     const firstSnapshot = this.snapshots[0];
     const lastSnapshot = this.snapshots[this.snapshots.length - 1];
 
-    const totalOperations = lastSnapshot.totalOperations;
-    const totalErrors = lastSnapshot.errorCount;
+    const currentMetrics = await this.metricsCollector.getMetrics();
+    const totalOperations = currentMetrics.throughput.totalOperations;
+    const totalErrors = currentMetrics.errors.count;
 
     const avgLatency =
       this.snapshots.reduce((sum, s) => sum + s.avgLatency, 0) /
@@ -221,7 +220,7 @@ export class UptimeLogger {
       this.snapshots.length;
 
     const memoryGrowthMB =
-      lastSnapshot.memoryUsedMB - firstSnapshot.memoryUsedMB;
+      (lastSnapshot.serverMemoryMB || 0) - (firstSnapshot.serverMemoryMB || 0);
 
     const degradationDetected = this.detectPerformanceDegradation();
 
@@ -323,6 +322,7 @@ export class UptimeLogger {
       'Memory Used (MB)',
       'Memory Total (MB)',
       'Server Memory (MB)',
+      'Server Connections',
       'Throughput (MB/s)',
     ];
 
@@ -339,9 +339,8 @@ export class UptimeLogger {
       s.avgLatency.toFixed(2),
       s.errorCount,
       s.errorRate.toFixed(2),
-      s.memoryUsedMB.toFixed(2),
-      s.memoryTotalMB.toFixed(2),
       s.serverMemoryMB?.toFixed(2) || '',
+      s.serverConnectionCount || '',
       s.throughputMBps?.toFixed(2) || '',
     ]);
 
@@ -354,10 +353,10 @@ export class UptimeLogger {
     return filepath;
   }
 
-  exportJSON(): string {
+  async exportJSON(): Promise<string> {
     const endTime = Date.now();
     const durationSeconds = (endTime - this.startTime) / 1000;
-    const report = this.generateReport(endTime, durationSeconds);
+    const report = await this.generateReport(endTime, durationSeconds);
 
     const filename = `${this.testName}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
     const filepath = path.join(this.outputDir, filename);
@@ -368,10 +367,10 @@ export class UptimeLogger {
     return filepath;
   }
 
-  generateTextReport(): string {
+  async generateTextReport(): Promise<string> {
     const endTime = Date.now();
     const durationSeconds = (endTime - this.startTime) / 1000;
-    const report = this.generateReport(endTime, durationSeconds);
+    const report = await this.generateReport(endTime, durationSeconds);
 
     const summary = report.summary;
 
@@ -387,7 +386,7 @@ OPERATIONS:
   Total Operations:     ${summary.totalOperations}
   Total Errors:         ${summary.totalErrors}
   Error Rate:           ${((summary.totalErrors / summary.totalOperations) * 100).toFixed(2)}%
-  
+
 LATENCY:
   Average:              ${summary.avgLatency.toFixed(2)}ms
   P95:                  ${summary.p95Latency.toFixed(2)}ms
@@ -417,7 +416,7 @@ SNAPSHOTS (First, Mid, Last):
   }
 
   private formatSnapshot(snapshot: UptimeSnapshot): string {
-    return `@ ${snapshot.elapsedSeconds.toFixed(0)}s: ${snapshot.connectionCount} conns, ${snapshot.totalOperations} ops, P95: ${snapshot.latencyP95.toFixed(1)}ms, Mem: ${snapshot.memoryUsedMB.toFixed(1)}MB`;
+    return `@ ${snapshot.elapsedSeconds.toFixed(0)}s: ${snapshot.connectionCount} conns, ${snapshot.totalOperations} ops, P95: ${snapshot.latencyP95.toFixed(1)}ms, Mem: ${(snapshot.serverMemoryMB || 0).toFixed(1)}MB`;
   }
 
   private getHealthEmoji(score: number): string {
@@ -426,11 +425,11 @@ SNAPSHOTS (First, Mid, Last):
     return '🔴';
   }
 
-  saveReport(): string[] {
+  async saveReport(): Promise<string[]> {
     const csvPath = this.exportCSV();
-    const jsonPath = this.exportJSON();
+    const jsonPath = await this.exportJSON();
+    const textReport = await this.generateTextReport();
 
-    const textReport = this.generateTextReport();
     const txtFilename = `${this.testName}-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
     const txtPath = path.join(this.outputDir, txtFilename);
     fs.writeFileSync(txtPath, textReport, 'utf-8');

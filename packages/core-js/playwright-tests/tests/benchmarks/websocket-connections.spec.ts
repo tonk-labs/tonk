@@ -1,6 +1,5 @@
 import { test, expect } from '@playwright/test';
 import { ConnectionManager } from '../../src/utils/connection-manager';
-import { serverProfiler } from '../../src/utils/server-profiler';
 import { serverManager } from '../../src/server/server-manager';
 
 test.describe('WebSocket Connection Benchmarks', () => {
@@ -20,7 +19,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
 
     try {
       // Start server profiling
-      serverProfiler.startProfiling('connection-scaling-test', 1000);
 
       const results: Array<{
         connections: number;
@@ -55,7 +53,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
         const establishTime = Date.now() - startTime;
 
         // Update profiler
-        serverProfiler.setConnectionCount(tier);
 
         console.log(
           `Established ${tier} connections in ${establishTime}ms (${(tier / (establishTime / 1000)).toFixed(1)} conn/sec)`
@@ -83,7 +80,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
           });
         });
 
-        serverProfiler.incrementOperations(tier);
 
         // Get stats only for current tier connections
         const stats =
@@ -110,13 +106,10 @@ test.describe('WebSocket Connection Benchmarks', () => {
       }
 
       // Stop profiling and generate report
-      const profile = serverProfiler.stopProfiling();
       if (profile) {
-        console.log(serverProfiler.generateReport(profile));
         console.log('\nMemory Analysis:');
         console.log(
           JSON.stringify(
-            serverProfiler.analyzeMemoryPerConnection(profile),
             null,
             2
           )
@@ -164,12 +157,10 @@ test.describe('WebSocket Connection Benchmarks', () => {
     const connectionManager = new ConnectionManager(browser, server);
 
     try {
-      serverProfiler.startProfiling('active-load-test', 500);
 
       // Create connections
       console.log('\nEstablishing connections...');
       await connectionManager.createConnections(connectionCount, 'active');
-      serverProfiler.setConnectionCount(connectionCount);
 
       const healthCheck = await connectionManager.checkHealth();
       console.log(
@@ -220,7 +211,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
 
         totalSuccessful += result.successCount;
         totalFailed += result.failureCount;
-        serverProfiler.incrementOperations(result.successCount);
 
         console.log(
           `  Success: ${result.successCount}, Failed: ${result.failureCount}, Avg Latency: ${result.avgLatency.toFixed(2)}ms`
@@ -244,9 +234,7 @@ test.describe('WebSocket Connection Benchmarks', () => {
       console.log(`P99 Latency: ${stats.p99Latency.toFixed(2)}ms`);
 
       // Stop profiling
-      const profile = serverProfiler.stopProfiling();
       if (profile) {
-        console.log('\n' + serverProfiler.generateReport(profile));
       }
 
       // Assertions
@@ -275,7 +263,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
     const connectionManager = new ConnectionManager(browser, server);
 
     try {
-      serverProfiler.startProfiling('connection-burst-test', 500);
 
       const waveResults: Array<{
         wave: number;
@@ -303,7 +290,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
 
         const connectionTime = Date.now() - startTime;
         const currentConnectionCount = connectionManager.getConnectionCount();
-        serverProfiler.setConnectionCount(currentConnectionCount);
 
         // Quick health check
         const healthCheck = await connectionManager.checkHealth();
@@ -321,7 +307,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
           }
         );
 
-        serverProfiler.incrementOperations(10);
 
         const currentLatency = result.avgLatency;
         const latencyIncrease =
@@ -350,9 +335,7 @@ test.describe('WebSocket Connection Benchmarks', () => {
       }
 
       // Stop profiling
-      const profile = serverProfiler.stopProfiling();
       if (profile) {
-        console.log('\n' + serverProfiler.generateReport(profile));
       }
 
       // Summary
@@ -396,12 +379,10 @@ test.describe('WebSocket Connection Benchmarks', () => {
     const connectionManager = new ConnectionManager(browser, server);
 
     try {
-      serverProfiler.startProfiling('sustained-load-test', 2000);
 
       // Establish connections
       console.log('\nEstablishing connections...');
       await connectionManager.createConnections(connectionCount, 'sustained');
-      serverProfiler.setConnectionCount(connectionCount);
 
       const healthCheck = await connectionManager.checkHealth();
       console.log(
@@ -447,7 +428,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
         );
 
         operationCount += result.successCount;
-        serverProfiler.incrementOperations(result.successCount);
 
         // Check health
         const currentHealth = await connectionManager.checkHealth();
@@ -473,9 +453,7 @@ test.describe('WebSocket Connection Benchmarks', () => {
       }
 
       // Stop profiling
-      const profile = serverProfiler.stopProfiling();
       if (profile) {
-        console.log('\n' + serverProfiler.generateReport(profile));
       }
 
       // Analyze results

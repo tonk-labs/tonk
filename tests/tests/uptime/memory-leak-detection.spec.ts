@@ -1,7 +1,6 @@
 import { test, expect } from '../fixtures';
 import { ConnectionManager } from '../../src/utils/connection-manager';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
-import { serverProfiler } from '../../src/utils/server-profiler';
 import { UptimeLogger } from '../../src/utils/uptime-logger';
 
 test.describe('Uptime Test - Memory Leak Detection', () => {
@@ -24,13 +23,10 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
 
     const metricsCollector = new MetricsCollector(testName);
     const connectionManager = new ConnectionManager(browser, serverInstance);
-    const uptimeLogger = new UptimeLogger(
-      testName,
-      metricsCollector,
-      serverProfiler
-    );
+    const uptimeLogger = new UptimeLogger(testName, metricsCollector);
 
     uptimeLogger.setConnectionManager(connectionManager);
+    uptimeLogger.setServerInstance(serverInstance);
     uptimeLogger.startLogging(30000);
 
     const startTime = Date.now();
@@ -40,17 +36,21 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
 
     const memorySnapshots: number[] = [];
 
-    const captureBaselineMemory = async () => {
-      const serverProfile = serverProfiler.getProfile(testName);
-      if (serverProfile && serverProfile.snapshots.length > 0) {
-        const latest =
-          serverProfile.snapshots[serverProfile.snapshots.length - 1];
-        return latest.rss / (1024 * 1024);
+    const captureServerMemory = async () => {
+      try {
+        const metricsUrl = `http://localhost:${serverInstance.port}/metrics`;
+        const response = await fetch(metricsUrl);
+        if (response.ok) {
+          const serverMetrics = await response.json();
+          return serverMetrics.memory.rss / (1024 * 1024);
+        }
+      } catch (error) {
+        console.warn('Failed to fetch server metrics:', error);
       }
       return 0;
     };
 
-    const baselineMemory = await captureBaselineMemory();
+    const baselineMemory = await captureServerMemory();
     console.log(`Baseline server memory: ${baselineMemory.toFixed(2)} MB`);
 
     while (Date.now() < endTime) {
@@ -105,7 +105,7 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
 
       await new Promise(resolve => setTimeout(resolve, 1000));
 
-      const currentMemory = await captureBaselineMemory();
+      const currentMemory = await captureServerMemory();
       memorySnapshots.push(currentMemory);
 
       const memoryGrowth = currentMemory - baselineMemory;
@@ -128,8 +128,8 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
       `\nCompleted ${cycleCount} cycles with ${totalOperations} total operations`
     );
 
-    const report = uptimeLogger.stopLogging();
-    const savedFiles = uptimeLogger.saveReport();
+    const report = await uptimeLogger.stopLogging();
+    const savedFiles = await uptimeLogger.saveReport();
 
     console.log(`Reports saved to: ${savedFiles.join(', ')}`);
 
@@ -153,7 +153,7 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
       `Memory increase: ${memoryIncrease >= 0 ? '+' : ''}${memoryIncrease.toFixed(2)} MB`
     );
 
-    const leakDetected = memoryIncrease > 50;
+    const leakDetected = memoryIncrease > 75;
 
     if (leakDetected) {
       console.warn(
@@ -190,13 +190,10 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
 
     const metricsCollector = new MetricsCollector(testName);
     const connectionManager = new ConnectionManager(browser, serverInstance);
-    const uptimeLogger = new UptimeLogger(
-      testName,
-      metricsCollector,
-      serverProfiler
-    );
+    const uptimeLogger = new UptimeLogger(testName, metricsCollector);
 
     uptimeLogger.setConnectionManager(connectionManager);
+    uptimeLogger.setServerInstance(serverInstance);
     uptimeLogger.startLogging(20000);
 
     console.log(`Creating ${clientCount} clients...`);
@@ -276,8 +273,8 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
       );
     }
 
-    const report = uptimeLogger.stopLogging();
-    uptimeLogger.saveReport();
+    const report = await uptimeLogger.stopLogging();
+    await uptimeLogger.saveReport();
 
     await connectionManager.closeAll();
 

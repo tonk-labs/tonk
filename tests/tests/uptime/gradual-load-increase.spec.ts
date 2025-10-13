@@ -1,7 +1,6 @@
 import { test, expect } from '../fixtures';
 import { ConnectionManager } from '../../src/utils/connection-manager';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
-import { serverProfiler } from '../../src/utils/server-profiler';
 import { UptimeLogger } from '../../src/utils/uptime-logger';
 
 interface LoadPhase {
@@ -63,13 +62,10 @@ test.describe('Uptime Test - Gradual Load Increase', () => {
 
     const metricsCollector = new MetricsCollector(testName);
     const connectionManager = new ConnectionManager(browser, serverInstance);
-    const uptimeLogger = new UptimeLogger(
-      testName,
-      metricsCollector,
-      serverProfiler
-    );
+    const uptimeLogger = new UptimeLogger(testName, metricsCollector);
 
     uptimeLogger.setConnectionManager(connectionManager);
+    uptimeLogger.setServerInstance(serverInstance);
     uptimeLogger.startLogging(30000);
 
     let currentConnections = 0;
@@ -169,8 +165,8 @@ test.describe('Uptime Test - Gradual Load Increase', () => {
 
     console.log('\nAll phases complete, generating final report...');
 
-    const report = uptimeLogger.stopLogging();
-    const savedFiles = uptimeLogger.saveReport();
+    const report = await uptimeLogger.stopLogging();
+    const savedFiles = await uptimeLogger.saveReport();
 
     console.log(`Reports saved to: ${savedFiles.join(', ')}`);
 
@@ -227,13 +223,10 @@ test.describe('Uptime Test - Gradual Load Increase', () => {
 
     const metricsCollector = new MetricsCollector(testName);
     const connectionManager = new ConnectionManager(browser, serverInstance);
-    const uptimeLogger = new UptimeLogger(
-      testName,
-      metricsCollector,
-      serverProfiler
-    );
+    const uptimeLogger = new UptimeLogger(testName, metricsCollector);
 
     uptimeLogger.setConnectionManager(connectionManager);
+    uptimeLogger.setServerInstance(serverInstance);
     uptimeLogger.startLogging(20000);
 
     let currentConnections = 0;
@@ -290,8 +283,8 @@ test.describe('Uptime Test - Gradual Load Increase', () => {
       );
     }
 
-    const report = uptimeLogger.stopLogging();
-    uptimeLogger.saveReport();
+    const report = await uptimeLogger.stopLogging();
+    await uptimeLogger.saveReport();
 
     await connectionManager.closeAll();
 

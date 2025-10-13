@@ -180,12 +180,6 @@ npx playwright test tests/uptime/extended-stability.spec.ts
 - Executes operations across connections
 - Tracks connection health and statistics
 
-### `ServerProfiler`
-
-- Monitors server-side memory usage
-- Tracks memory per connection and per operation
-- Detects memory leaks on the server
-
 ### `UptimeLogger`
 
 - Orchestrates continuous metrics logging

@@ -1,7 +1,6 @@
 import { test, expect } from '../fixtures';
 import { ConnectionManager } from '../../src/utils/connection-manager';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
-import { serverProfiler } from '../../src/utils/server-profiler';
 import { UptimeLogger } from '../../src/utils/uptime-logger';
 
 test.describe('Uptime Test - Extended Stability', () => {
@@ -20,13 +19,10 @@ test.describe('Uptime Test - Extended Stability', () => {
 
     const metricsCollector = new MetricsCollector(testName);
     const connectionManager = new ConnectionManager(browser, serverInstance);
-    const uptimeLogger = new UptimeLogger(
-      testName,
-      metricsCollector,
-      serverProfiler
-    );
+    const uptimeLogger = new UptimeLogger(testName, metricsCollector);
 
     uptimeLogger.setConnectionManager(connectionManager);
+    uptimeLogger.setServerInstance(serverInstance);
 
     uptimeLogger.startLogging(30000);
 
@@ -110,8 +106,8 @@ test.describe('Uptime Test - Extended Stability', () => {
       `Final health check: ${finalHealth.healthy} healthy, ${finalHealth.unhealthy} unhealthy`
     );
 
-    const report = uptimeLogger.stopLogging();
-    const savedFiles = uptimeLogger.saveReport();
+    const report = await uptimeLogger.stopLogging();
+    const savedFiles = await uptimeLogger.saveReport();
 
     console.log(`Reports saved to: ${savedFiles.join(', ')}`);
 
@@ -144,11 +140,7 @@ test.describe('Uptime Test - Extended Stability', () => {
 
     const metricsCollector = new MetricsCollector(testName);
     const connectionManager = new ConnectionManager(browser, serverInstance);
-    const uptimeLogger = new UptimeLogger(
-      testName,
-      metricsCollector,
-      serverProfiler
-    );
+    const uptimeLogger = new UptimeLogger(testName, metricsCollector);
 
     uptimeLogger.setConnectionManager(connectionManager);
     uptimeLogger.startLogging(30000);
@@ -206,8 +198,8 @@ test.describe('Uptime Test - Extended Stability', () => {
       await new Promise(resolve => setTimeout(resolve, operationInterval));
     }
 
-    const report = uptimeLogger.stopLogging();
-    uptimeLogger.saveReport();
+    const report = await uptimeLogger.stopLogging();
+    await uptimeLogger.saveReport();
 
     await connectionManager.closeAll();
 
