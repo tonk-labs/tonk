@@ -53,6 +53,15 @@ export default defineConfig({
         viewport: { width: 1920, height: 1080 },
       },
     },
+    {
+      name: 'uptime',
+      testMatch: /uptime\/.*\.spec\.ts$/,
+      timeout: 3600000,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1920, height: 1080 },
+      },
+    },
   ],
 
   reporter: [['html'], ['json', { outputFile: 'test-results.json' }], ['list']],
