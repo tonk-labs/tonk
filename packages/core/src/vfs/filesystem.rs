@@ -1,10 +1,10 @@
-use crate::Bundle;
 use crate::bundle::{BundleConfig, RandomAccess};
 use crate::error::{Result, VfsError};
 use crate::vfs::backend::AutomergeHelpers;
 use crate::vfs::traversal::PathTraverser;
 use crate::vfs::types::*;
 use crate::vfs::watcher::DocumentWatcher;
+use crate::Bundle;
 use automerge::Automerge;
 use bytes::Bytes;
 use samod::storage::StorageKey;
@@ -74,11 +74,25 @@ impl VirtualFileSystem {
         })
     }
 
+    /// Create a new VFS from a root document ID
+    /// Used when restoring from local storage where manifest is already persisted
+    pub async fn from_root_id(samod: Arc<Repo>, root_id: DocumentId) -> Result<Self> {
+        let (event_tx, _) = broadcast::channel(100);
+        let traverser = PathTraverser::new(Arc::clone(&samod));
+
+        Ok(Self {
+            samod,
+            root_id,
+            traverser,
+            event_tx,
+        })
+    }
+
     pub async fn to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
         use crate::bundle::{Manifest, Version};
         use std::io::{Cursor, Write};
-        use zip::ZipWriter;
         use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
 
         // Get the root document from VFS
         let root_id = self.root_id();
@@ -426,37 +440,47 @@ impl VirtualFileSystem {
     }
 
     /// Move a document or directory from one path to another
-    /// 
+    ///
     /// # Arguments
     /// * `from_path` - The current path of the document or directory
     /// * `to_path` - The destination path (can include a new name)
-    /// 
+    ///
     /// # Example
     /// ```no_run
     /// // Move a file
     /// vfs.move_document("/old/file.txt", "/new/file.txt").await?;
-    /// 
+    ///
     /// // Move a directory
     /// vfs.move_document("/old/dir", "/new/dir").await?;
-    /// 
+    ///
     /// // Move and rename
     /// vfs.move_document("/old/file.txt", "/new/renamed.txt").await?;
     /// ```
     pub async fn move_document(&self, from_path: &str, to_path: &str) -> Result<bool> {
         // Check for empty paths
         if from_path.is_empty() {
-            return Err(VfsError::InvalidPath("Source path cannot be empty".to_string()));
+            return Err(VfsError::InvalidPath(
+                "Source path cannot be empty".to_string(),
+            ));
         }
         if to_path.is_empty() {
-            return Err(VfsError::InvalidPath("Destination path cannot be empty".to_string()));
+            return Err(VfsError::InvalidPath(
+                "Destination path cannot be empty".to_string(),
+            ));
         }
 
         // Check that paths start with '/'
         if !from_path.starts_with('/') {
-            return Err(VfsError::InvalidPath(format!("Source path must start with '/': {}", from_path)));
+            return Err(VfsError::InvalidPath(format!(
+                "Source path must start with '/': {}",
+                from_path
+            )));
         }
         if !to_path.starts_with('/') {
-            return Err(VfsError::InvalidPath(format!("Destination path must start with '/': {}", to_path)));
+            return Err(VfsError::InvalidPath(format!(
+                "Destination path must start with '/': {}",
+                to_path
+            )));
         }
 
         if from_path == "/" || to_path == "/" {
@@ -469,7 +493,9 @@ impl VirtualFileSystem {
 
         // Check for circular move: prevent moving a directory into itself or its subdirectory
         // This happens when to_path starts with from_path followed by a slash
-        if normalized_to.starts_with(&format!("{}/", normalized_from)) || normalized_from == normalized_to {
+        if normalized_to.starts_with(&format!("{}/", normalized_from))
+            || normalized_from == normalized_to
+        {
             return Err(VfsError::CircularMove(format!(
                 "Cannot move '{}' to '{}'",
                 from_path, to_path
@@ -530,7 +556,9 @@ impl VirtualFileSystem {
             self.samod
                 .find(target_ref.pointer.clone())
                 .await
-                .map_err(|e| VfsError::SamodError(format!("Failed to find source parent directory: {e}")))?
+                .map_err(|e| {
+                    VfsError::SamodError(format!("Failed to find source parent directory: {e}"))
+                })?
                 .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
         } else {
             from_parent_result.node_handle.clone()
@@ -546,7 +574,11 @@ impl VirtualFileSystem {
             self.samod
                 .find(target_ref.pointer.clone())
                 .await
-                .map_err(|e| VfsError::SamodError(format!("Failed to find destination parent directory: {e}")))?
+                .map_err(|e| {
+                    VfsError::SamodError(format!(
+                        "Failed to find destination parent directory: {e}"
+                    ))
+                })?
                 .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
         } else {
             to_parent_result.node_handle.clone()
@@ -577,7 +609,7 @@ impl VirtualFileSystem {
                 .await
                 .map_err(|e| VfsError::SamodError(format!("Failed to find moved document: {e}")))?
                 .ok_or_else(|| VfsError::DocumentNotFound(moved_ref.pointer.to_string()))?;
-            
+
             AutomergeHelpers::update_document_name(&doc_handle, to_name)?;
         }
 
@@ -585,7 +617,7 @@ impl VirtualFileSystem {
         let _ = self.event_tx.send(VfsEvent::DocumentDeleted {
             path: from_path.to_string(),
         });
-        
+
         // Emit appropriate creation event based on node type
         match moved_ref.node_type {
             NodeType::Directory => {
@@ -1329,7 +1361,10 @@ mod tests {
         let doc_id = doc_handle.document_id().clone();
 
         // Move the file to /new
-        let moved = vfs.move_document("/old/file.txt", "/new/file.txt").await.unwrap();
+        let moved = vfs
+            .move_document("/old/file.txt", "/new/file.txt")
+            .await
+            .unwrap();
         assert!(moved);
 
         // Verify file no longer exists in old location
@@ -1367,7 +1402,10 @@ mod tests {
         let dir_doc_id = metadata.pointer.clone();
 
         // Move the directory
-        let moved = vfs.move_document("/source/mydir", "/dest/mydir").await.unwrap();
+        let moved = vfs
+            .move_document("/source/mydir", "/dest/mydir")
+            .await
+            .unwrap();
         assert!(moved);
 
         // Verify directory no longer exists in old location
@@ -1405,7 +1443,10 @@ mod tests {
         let doc_id = doc_handle.document_id().clone();
 
         // Move and rename
-        let moved = vfs.move_document("/oldname.txt", "/newname.txt").await.unwrap();
+        let moved = vfs
+            .move_document("/oldname.txt", "/newname.txt")
+            .await
+            .unwrap();
         assert!(moved);
 
         // Verify old name doesn't exist
@@ -1442,7 +1483,10 @@ mod tests {
         let doc_id = doc_handle.document_id().clone();
 
         // Move to a deeply nested path that doesn't exist yet
-        let moved = vfs.move_document("/file.txt", "/a/b/c/d/file.txt").await.unwrap();
+        let moved = vfs
+            .move_document("/file.txt", "/a/b/c/d/file.txt")
+            .await
+            .unwrap();
         assert!(moved);
 
         // Verify the nested directories were created
@@ -1502,7 +1546,9 @@ mod tests {
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
         // Try to move a non-existent file
-        let result = vfs.move_document("/nonexistent.txt", "/destination.txt").await;
+        let result = vfs
+            .move_document("/nonexistent.txt", "/destination.txt")
+            .await;
         assert!(matches!(result, Err(VfsError::PathNotFound(_))));
     }
 
@@ -1586,7 +1632,9 @@ mod tests {
         assert!(matches!(result, Err(VfsError::CircularMove(_))));
 
         // Try to move into grandchild (also circular)
-        let result = vfs.move_document("/parent", "/parent/child/grandchild/parent").await;
+        let result = vfs
+            .move_document("/parent", "/parent/child/grandchild/parent")
+            .await;
         assert!(matches!(result, Err(VfsError::CircularMove(_))));
 
         // Try to move into itself
@@ -1634,7 +1682,9 @@ mod tests {
         assert_eq!(original_internal_name, "original.txt");
 
         // Move and rename the document
-        vfs.move_document("/original.txt", "/renamed.txt").await.unwrap();
+        vfs.move_document("/original.txt", "/renamed.txt")
+            .await
+            .unwrap();
 
         // Read the internal name after move
         let doc_handle = vfs.find_document("/renamed.txt").await.unwrap().unwrap();
@@ -1721,7 +1771,9 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // Move without renaming (same filename, different parent)
-        vfs.move_document("/dir1/file.txt", "/dir2/file.txt").await.unwrap();
+        vfs.move_document("/dir1/file.txt", "/dir2/file.txt")
+            .await
+            .unwrap();
 
         // When moved without renaming, the internal name should stay the same
         // and the document's internal timestamp should NOT be updated

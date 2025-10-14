@@ -214,7 +214,10 @@ function App() {
 
       setBundleStatus('Uploading to server...');
 
-      // Upload to server
+      // Upload to server (convert Uint8Array to proper type for fetch)
+      const blob = new Blob([bundleBytes as any], {
+        type: 'application/octet-stream',
+      });
       const response = await fetch(
         `http://localhost:${state.serverConfig.port}/api/bundles`,
         {
@@ -222,7 +225,7 @@ function App() {
           headers: {
             'Content-Type': 'application/octet-stream',
           },
-          body: bundleBytes,
+          body: blob,
         }
       );
 
@@ -278,10 +281,6 @@ function App() {
 
       setBundleStatus('Bundle downloaded, reloading VFS...');
 
-      // Reinitialize VFS with the new bundle
-      const wsUrl = state.serverConfig.wsUrl;
-      const manifestUrl = `http://localhost:${state.serverConfig.port}/.manifest.tonk`;
-
       // Note: For a real implementation, we'd want to properly reload VFS with the downloaded bundle
       // For now, we'll just mark it as downloaded for test purposes
       (window as any).downloadedBundle = {
@@ -306,7 +305,7 @@ function App() {
 
   return (
     <div style={{ padding: '20px', fontFamily: 'monospace' }}>
-      <h1>Tonk Performance Test Suite</h1>
+      <h1>Tonk Test Suite</h1>
 
       <div style={{ marginBottom: '20px' }}>
         <h2>Connection Status</h2>

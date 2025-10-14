@@ -192,7 +192,7 @@ function App() {
 
   return (
     <div style={{ padding: '20px', fontFamily: 'monospace' }}>
-      <h1>Tonk Performance Test Suite</h1>
+      <h1>Tonk Test Suite</h1>
 
       <div style={{ marginBottom: '20px' }}>
         <h2>Connection Status</h2>

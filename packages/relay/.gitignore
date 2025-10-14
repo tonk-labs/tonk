@@ -25,3 +25,4 @@ pnpm-debug.log*
 # Storage directories
 automerge-repo-data/
 relay-storage/
+test-storage/

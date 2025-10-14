@@ -1,10 +1,14 @@
-import { test as base, Page } from '@playwright/test';
+import { test as base, Page, BrowserContext } from '@playwright/test';
 import { serverManager } from '../src/server/server-manager';
 import { ServerInstance } from '../src/test-ui/types';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 // Extend basic test with server fixture
 export const test = base.extend<{
   serverInstance: ServerInstance;
+  persistentContext: BrowserContext;
 }>({
   serverInstance: async ({}, use, testInfo) => {
     // Start a unique server for this test
@@ -46,6 +50,47 @@ export const test = base.extend<{
       );
     }
   },
+
+  persistentContext: async ({ browser }, use, testInfo) => {
+    // Create a unique storage state directory for this test
+    const storageDir = path.join(
+      os.tmpdir(),
+      'playwright-storage',
+      testInfo.testId
+    );
+    fs.mkdirSync(storageDir, { recursive: true });
+    const storageStatePath = path.join(storageDir, 'storage-state.json');
+
+    console.log(
+      `[Test] Creating persistent context with storage at: ${storageStatePath}`
+    );
+
+    // Create context with persistent storage
+    const context = await browser.newContext({
+      storageState: fs.existsSync(storageStatePath)
+        ? storageStatePath
+        : undefined,
+    });
+
+    await use(context);
+
+    // Save storage state including IndexedDB before closing
+    try {
+      await context.storageState({ path: storageStatePath, indexedDB: true });
+      console.log(`[Test] Storage state saved (with IndexedDB)`);
+    } catch (error) {
+      console.warn(`[Test] Failed to save storage state:`, error);
+    }
+
+    await context.close();
+
+    // Cleanup storage directory
+    try {
+      fs.rmSync(storageDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[Test] Failed to cleanup storage directory:`, error);
+    }
+  },
 });
 
 // Add a page cleanup fixture to unregister service workers and clear IndexedDB
@@ -83,6 +128,63 @@ export const testWithCleanup = test.extend<{ cleanupPage: Page }>({
       );
     } catch (error) {
       console.error('Error during page cleanup:', error);
+    }
+  },
+});
+
+// IndexedDB-specific cleanup fixture
+export const testWithIndexedDB = test.extend<{ indexedDBPage: Page }>({
+  indexedDBPage: async ({ page }, use) => {
+    // Clear IndexedDB before test
+    try {
+      await page.evaluate(async () => {
+        const dbs = await indexedDB.databases();
+        await Promise.all(
+          dbs.map(db => {
+            if (db.name) {
+              return new Promise<void>((resolve, reject) => {
+                const request = indexedDB.deleteDatabase(db.name!);
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject(request.error);
+              });
+            }
+            return Promise.resolve();
+          })
+        );
+      });
+      console.log('IndexedDB cleared before test');
+    } catch (error) {
+      console.warn('Failed to clear IndexedDB before test:', error);
+    }
+
+    await use(page);
+
+    // Cleanup after test
+    try {
+      await page.evaluate(async () => {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map(r => r.unregister()));
+      });
+
+      await page.evaluate(async () => {
+        const dbs = await indexedDB.databases();
+        await Promise.all(
+          dbs.map(db => {
+            if (db.name) {
+              return new Promise<void>((resolve, reject) => {
+                const request = indexedDB.deleteDatabase(db.name!);
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject(request.error);
+              });
+            }
+            return Promise.resolve();
+          })
+        );
+      });
+
+      console.log('IndexedDB cleanup completed after test');
+    } catch (error) {
+      console.error('Error during IndexedDB cleanup:', error);
     }
   },
 });
@@ -160,7 +262,7 @@ export async function setupTestWithServer(
   await page.goto('http://localhost:5173');
 
   // Wait for the page to load
-  await page.waitForLoadState('networkidle');
+  await page.waitForLoadState('load');
 }
 
 /**
