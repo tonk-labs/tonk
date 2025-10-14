@@ -86,11 +86,8 @@ export class ServerManager {
     // Find a free port
     const port = await this.findFreePort(8100, 8999);
 
-    // Path to the server script and blank.tonk file
-    const serverPath = path.resolve(
-      __dirname,
-      '../../../packages/relay/src/index.ts'
-    );
+    // Path to the relay package directory
+    const serverPath = path.resolve(__dirname, '../../../packages/relay-rust');
 
     const blankTonkPath = path.resolve(
       __dirname,
@@ -100,26 +97,26 @@ export class ServerManager {
     // Create unique storage directory for this test
     const storageDir = path.resolve(
       __dirname,
-      `../../../packages/relay/test-storage/${testId}`
+      `../../../packages/relay-rust/test-storage/${testId}`
     );
 
     console.log(`Starting server for test ${testId} on port ${port}`);
-    console.log(`Server script: ${serverPath}`);
+    console.log(`Server path: ${serverPath}`);
     console.log(`Bundle file: ${blankTonkPath}`);
     console.log(`Storage dir: ${storageDir}`);
 
     // Spawn the server process
     const serverProcess = spawn(
-      'tsx',
-      [serverPath, port.toString(), blankTonkPath, storageDir],
+      'cargo',
+      ['run', '--', port.toString(), blankTonkPath, storageDir],
       {
+        cwd: serverPath,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
         env: {
           ...process.env,
-          NODE_ENV: 'test',
-          PORT: port.toString(),
           S3_BUCKET_NAME: 'host-web-bundle-storage-test',
+          RUST_LOG: 'info',
         },
       }
     );
@@ -198,7 +195,7 @@ export class ServerManager {
     // Clean up storage directory
     const storageDir = path.resolve(
       __dirname,
-      `../../../packages/relay/test-storage/${testId}`
+      `../../../packages/relay-rust/test-storage/${testId}`
     );
     try {
       await rm(storageDir, { recursive: true, force: true });
