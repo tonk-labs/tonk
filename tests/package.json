@@ -13,6 +13,8 @@
     "test:sync": "npm run build-sw && playwright test tests/sync",
     "test:bundles": "npm run build-sw && playwright test tests/bundles",
     "test:stress": "npm run build-sw && playwright test tests/stress",
+    "test:uptime": "npm run build-sw && playwright test tests/uptime",
+    "test:uptime:quick": "npm run build-sw && playwright test tests/uptime/gradual-load-increase.spec.ts",
     "test:ui": "npm run build-sw && playwright test --ui",
     "test:headed": "npm run build-sw && playwright test --headed",
     "test:debug": "npm run build-sw && playwright test --debug",
