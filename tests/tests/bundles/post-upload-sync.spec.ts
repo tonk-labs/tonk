@@ -32,16 +32,6 @@ test.describe('Post-Upload Sync', () => {
     await waitForVFSConnection(page1);
     await waitForVFSConnection(page2);
 
-    await page1.getByTestId('enable-sync-btn').click();
-    await page2.getByTestId('enable-sync-btn').click();
-
-    await page1.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-    await page2.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-
     console.log('[CRITICAL] Testing sync BEFORE bundle upload');
     await page1.getByTestId('increment-btn').click();
 
@@ -138,16 +128,6 @@ test.describe('Post-Upload Sync', () => {
     await waitForVFSConnection(page1);
     await waitForVFSConnection(page2);
 
-    await page1.getByTestId('enable-sync-btn').click();
-    await page2.getByTestId('enable-sync-btn').click();
-
-    await page1.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-    await page2.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-
     await page1.getByTestId('increment-btn').click();
 
     await page2.waitForFunction(
@@ -221,16 +201,6 @@ test.describe('Post-Upload Sync', () => {
 
     await waitForVFSConnection(page1);
     await waitForVFSConnection(page2);
-
-    await page1.getByTestId('enable-sync-btn').click();
-    await page2.getByTestId('enable-sync-btn').click();
-
-    await page1.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-    await page2.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
 
     for (let i = 1; i <= 3; i++) {
       console.log(`[Round ${i}] Incrementing and uploading bundle`);

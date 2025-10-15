@@ -1,5 +1,7 @@
 use crate::error::{RelayError, Result};
+use crate::network::handle_websocket_connection;
 use crate::storage::{BundleStorageAdapter, S3Storage};
+use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::{
     body::Bytes,
@@ -21,6 +23,7 @@ use tower_http::cors::{Any, CorsLayer};
 use zip::ZipArchive;
 
 pub struct AppState {
+    pub repo: Arc<Repo>,
     pub bundle_storage: Arc<BundleStorageAdapter>,
     pub s3_storage: Option<Arc<S3Storage>>,
     pub connection_count: Arc<AtomicUsize>,
@@ -30,7 +33,6 @@ pub struct AppState {
 }
 
 pub struct RelayServer {
-    pub _repo: Arc<Repo>,
     pub state: Arc<AppState>,
 }
 
@@ -40,20 +42,15 @@ impl RelayServer {
         bundle_path: PathBuf,
         wasm_path: PathBuf,
         blank_tonk_path: PathBuf,
-        s3_config: Option<(String, String)>,
+        s3_config: (String, String),
         connection_count: Arc<AtomicUsize>,
     ) -> Result<Self> {
         let bundle_bytes = std::fs::read(&bundle_path)?;
-
         let bundle_storage = Arc::new(BundleStorageAdapter::from_bundle(bundle_bytes).await?);
-
-        let s3_storage = if let Some((bucket, region)) = s3_config {
-            Some(Arc::new(S3Storage::new(bucket, region).await?))
-        } else {
-            None
-        };
+        let s3_storage = Some(Arc::new(S3Storage::new(s3_config.0, s3_config.1).await?));
 
         let state = Arc::new(AppState {
+            repo: Arc::clone(&repo),
             bundle_storage,
             s3_storage,
             connection_count,
@@ -62,12 +59,13 @@ impl RelayServer {
             blank_tonk_path,
         });
 
-        Ok(Self { _repo: repo, state })
+        Ok(Self { state })
     }
 
     pub fn router(state: Arc<AppState>) -> Router {
         Router::new()
             .route("/", get(health_check))
+            .route("/ws", get(websocket_upgrade_handler))
             .route("/tonk_core_bg.wasm", get(serve_wasm))
             .route("/.manifest.tonk", get(serve_manifest))
             .route("/api/bundles", post(upload_bundle))
@@ -89,7 +87,10 @@ impl RelayServer {
 
         let listener = tokio::net::TcpListener::bind(http_addr).await?;
 
-        tracing::info!("HTTP server listening on {}", http_addr);
+        tracing::info!(
+            "Unified server (HTTP + WebSocket) listening on {}",
+            http_addr
+        );
 
         axum::serve(listener, app)
             .await
@@ -101,6 +102,32 @@ impl RelayServer {
 
 async fn health_check() -> impl IntoResponse {
     "👍 Tonk relay server is running"
+}
+
+async fn websocket_upgrade_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_websocket(socket, state))
+}
+
+async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
+    let start = std::time::Instant::now();
+    tracing::info!("WebSocket handler started");
+
+    let result = handle_websocket_connection(
+        socket,
+        Arc::clone(&state.repo),
+        Arc::clone(&state.connection_count),
+    )
+    .await;
+
+    let duration = start.elapsed();
+    tracing::info!(
+        "WebSocket handler finished after {:?}, reason {:?}",
+        duration,
+        result
+    );
 }
 
 async fn serve_wasm(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse> {

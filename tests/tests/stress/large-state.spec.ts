@@ -27,16 +27,6 @@ test.describe('Stress Test - Large State', () => {
     await waitForVFSConnection(page1);
     await waitForVFSConnection(page2);
 
-    await page1.getByTestId('enable-sync-btn').click();
-    await page2.getByTestId('enable-sync-btn').click();
-
-    await page1.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-    await page2.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-
     const largeData = {
       id: 'test-large-object',
       timestamp: Date.now(),
@@ -97,16 +87,6 @@ test.describe('Stress Test - Large State', () => {
 
     await waitForVFSConnection(page1);
     await waitForVFSConnection(page2);
-
-    await page1.getByTestId('enable-sync-btn').click();
-    await page2.getByTestId('enable-sync-btn').click();
-
-    await page1.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-    await page2.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
 
     for (let iteration = 0; iteration < 5; iteration++) {
       const largeData = {

@@ -23,11 +23,6 @@ test.describe('Connection Resilience', () => {
     await setupTestWithServer(page, serverInstance);
     await waitForVFSConnection(page);
 
-    await page.getByTestId('enable-sync-btn').click();
-    await page.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-
     await page.getByTestId('increment-btn').click();
 
     await page.waitForFunction(
@@ -94,16 +89,6 @@ test.describe('Connection Resilience', () => {
 
     await waitForVFSConnection(page1);
     await waitForVFSConnection(page2);
-
-    await page1.getByTestId('enable-sync-btn').click();
-    await page2.getByTestId('enable-sync-btn').click();
-
-    await page1.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-    await page2.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
 
     await page1.getByTestId('increment-btn').click();
 

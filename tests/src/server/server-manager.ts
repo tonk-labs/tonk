@@ -2,11 +2,23 @@ import { spawn } from 'child_process';
 import * as net from 'net';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { rm } from 'fs/promises';
+import { rm, readFile } from 'fs/promises';
 import { ServerInstance } from '../test-ui/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+async function getRelayBinaryPath(): Promise<string> {
+  const binaryPathFile = path.resolve(__dirname, '../../.relay-binary');
+  try {
+    const binaryPath = await readFile(binaryPathFile, 'utf-8');
+    return binaryPath.trim();
+  } catch (error) {
+    throw new Error(
+      'Relay binary path not found. Make sure global setup has run successfully.'
+    );
+  }
+}
 
 export class ServerManager {
   private servers: Map<string, ServerInstance> = new Map();
@@ -86,8 +98,7 @@ export class ServerManager {
     // Find a free port
     const port = await this.findFreePort(8100, 8999);
 
-    // Path to the relay package directory
-    const serverPath = path.resolve(__dirname, '../../../packages/relay-rust');
+    const relayBinaryPath = await getRelayBinaryPath();
 
     const blankTonkPath = path.resolve(
       __dirname,
@@ -101,16 +112,15 @@ export class ServerManager {
     );
 
     console.log(`Starting server for test ${testId} on port ${port}`);
-    console.log(`Server path: ${serverPath}`);
+    console.log(`Relay binary: ${relayBinaryPath}`);
     console.log(`Bundle file: ${blankTonkPath}`);
     console.log(`Storage dir: ${storageDir}`);
 
-    // Spawn the server process
+    // Spawn the server process using the pre-compiled binary
     const serverProcess = spawn(
-      'cargo',
-      ['run', '--', port.toString(), blankTonkPath, storageDir],
+      relayBinaryPath,
+      [port.toString(), blankTonkPath, storageDir],
       {
-        cwd: serverPath,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
         env: {
@@ -146,7 +156,7 @@ export class ServerManager {
     const instance: ServerInstance = {
       process: serverProcess,
       port,
-      wsUrl: `ws://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}/ws`,
       manifestUrl: `http://localhost:${port}/api/blank-tonk`,
       testId,
     };

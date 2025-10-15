@@ -4,7 +4,6 @@ mod server;
 mod storage;
 
 use error::Result;
-use network::WebSocketServer;
 use samod::storage::TokioFilesystemStorage;
 use samod::RepoBuilder;
 use server::RelayServer;
@@ -26,15 +25,15 @@ async fn main() -> Result<()> {
 
     let port = args
         .get(1)
-        .and_then(|s| s.parse::<u16>().ok())
+        .and_then(|s: &String| s.parse::<u16>().ok())
         .unwrap_or(8080);
 
-    let bundle_path = args
+    let bundle_path: PathBuf = args
         .get(2)
         .map(PathBuf::from)
         .ok_or_else(|| error::RelayError::Other("Bundle path is required".to_string()))?;
 
-    let storage_dir = args
+    let storage_dir: PathBuf = args
         .get(3)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("automerge-repo-data"));
@@ -51,16 +50,10 @@ async fn main() -> Result<()> {
     tracing::info!("Bundle: {}", bundle_path.display());
     tracing::info!("Storage: {}", storage_dir.display());
 
-    let s3_config = std::env::var("S3_BUCKET_NAME").ok().map(|bucket| {
-        let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-north-1".to_string());
-        (bucket, region)
-    });
-
-    if let Some((ref bucket, ref region)) = s3_config {
-        tracing::info!("S3 storage enabled: bucket={}, region={}", bucket, region);
-    } else {
-        tracing::info!("S3 storage disabled (no S3_BUCKET_NAME configured)");
-    }
+    let s3_config = (
+        std::env::var("S3_BUCKET_NAME").unwrap_or_else(|_| "host-web-bundle-storage".to_string()),
+        (std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-north-1".to_string())),
+    );
 
     let filesystem_storage = TokioFilesystemStorage::new(storage_dir.clone());
 
@@ -74,13 +67,9 @@ async fn main() -> Result<()> {
 
     let connection_count = Arc::new(AtomicUsize::new(0));
 
-    let ws_addr: SocketAddr = format!("0.0.0.0:{}", port)
+    let server_addr: SocketAddr = format!("127.0.0.1:{}", port)
         .parse()
-        .expect("Invalid WebSocket address");
-
-    let http_addr: SocketAddr = format!("0.0.0.0:{}", port)
-        .parse()
-        .expect("Invalid HTTP address");
+        .expect("Invalid server address");
 
     let wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -99,26 +88,16 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    let ws_server =
-        WebSocketServer::new(Arc::clone(&repo), ws_addr, Arc::clone(&connection_count)).await?;
-
-    let ws_handle = tokio::spawn(async move {
-        if let Err(e) = ws_server.run().await {
-            tracing::error!("WebSocket server error: {}", e);
-        }
-    });
-
-    let http_handle = tokio::spawn(async move {
-        if let Err(e) = relay_server.run(http_addr).await {
-            tracing::error!("HTTP server error: {}", e);
+    let server_handle = tokio::spawn(async move {
+        if let Err(e) = relay_server.run(server_addr).await {
+            tracing::error!("Server error: {}", e);
         }
     });
 
     tokio::signal::ctrl_c().await.ok();
     tracing::info!("Shutting down gracefully...");
 
-    ws_handle.abort();
-    http_handle.abort();
+    server_handle.abort();
 
     Ok(())
 }

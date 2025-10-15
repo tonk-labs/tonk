@@ -27,16 +27,6 @@ test.describe('Stress Test - Rapid Updates', () => {
     await waitForVFSConnection(page1);
     await waitForVFSConnection(page2);
 
-    await page1.getByTestId('enable-sync-btn').click();
-    await page2.getByTestId('enable-sync-btn').click();
-
-    await page1.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-    await page2.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-
     console.log('Performing 20 rapid increments on page1');
     for (let i = 0; i < 20; i++) {
       await page1.getByTestId('increment-btn').click();
@@ -82,16 +72,6 @@ test.describe('Stress Test - Rapid Updates', () => {
 
     await waitForVFSConnection(page1);
     await waitForVFSConnection(page2);
-
-    await page1.getByTestId('enable-sync-btn').click();
-    await page2.getByTestId('enable-sync-btn').click();
-
-    await page1.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-    await page2.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
 
     console.log('Performing alternating rapid updates');
     for (let i = 0; i < 10; i++) {
@@ -151,16 +131,6 @@ test.describe('Stress Test - Rapid Updates', () => {
 
     await waitForVFSConnection(page1);
     await waitForVFSConnection(page2);
-
-    await page1.getByTestId('enable-sync-btn').click();
-    await page2.getByTestId('enable-sync-btn').click();
-
-    await page1.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-    await page2.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
 
     for (let burst = 0; burst < 3; burst++) {
       console.log(`Burst ${burst + 1}: Performing 5 rapid updates`);

@@ -86,17 +86,6 @@ test.describe('Uptime Test - Gradual Load Increase', () => {
           `phase-${phases.indexOf(phase)}`
         );
 
-        for (const connId of newConnectionIds) {
-          const conn = connectionManager.getConnection(connId);
-          if (conn) {
-            await conn.page.getByTestId('enable-sync-btn').click();
-            await conn.page.waitForSelector(
-              '[data-testid="sync-status"]:has-text("Enabled")',
-              { timeout: 10000 }
-            );
-          }
-        }
-
         allConnectionIds = [...allConnectionIds, ...newConnectionIds];
         currentConnections = phase.targetClients;
 
@@ -242,17 +231,6 @@ test.describe('Uptime Test - Gradual Load Increase', () => {
           clientsToAdd,
           `latency-phase-${phases.indexOf(phase)}`
         );
-
-        for (const connId of newConnectionIds) {
-          const conn = connectionManager.getConnection(connId);
-          if (conn) {
-            await conn.page.getByTestId('enable-sync-btn').click();
-            await conn.page.waitForSelector(
-              '[data-testid="sync-status"]:has-text("Enabled")',
-              { timeout: 10000 }
-            );
-          }
-        }
 
         allConnectionIds = [...allConnectionIds, ...newConnectionIds];
         currentConnections = phase.targetClients;

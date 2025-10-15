@@ -359,7 +359,7 @@ async function autoInitializeFromCache() {
     log('info', 'TonkCore created from cached bundle');
 
     // Connect to websocket
-    wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
+    wsUrl = `${TONK_SERVER_URL.replace(/^http/, 'ws')}/ws`;
     log('info', 'Connecting to websocket...', {
       wsUrl,
       localRootId: manifest.rootId,
@@ -1298,7 +1298,7 @@ async function handleMessage(
         // Get the websocket URL from the current config (serverUrl already defined above)
         const urlParams = new URLSearchParams(self.location.search);
         const bundleParam = urlParams.get('bundle');
-        let wsUrlLocal = serverUrl.replace(/^http/, 'ws');
+        let wsUrlLocal = `${serverUrl.replace(/^http/, 'ws')}/ws`;
 
         if (bundleParam) {
           try {

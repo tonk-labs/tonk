@@ -95,12 +95,6 @@ test.describe('Uptime Test - Throttling and Network Stress', () => {
           { timeout: 30000 }
         );
 
-        await page.getByTestId('enable-sync-btn').click();
-        await page.waitForSelector(
-          '[data-testid="sync-status"]:has-text("Enabled")',
-          { timeout: 10000 }
-        );
-
         pages.push(page);
       }
 
@@ -193,17 +187,6 @@ test.describe('Uptime Test - Throttling and Network Stress', () => {
       clientCount,
       'disconnect-test'
     );
-
-    for (const connId of connectionIds) {
-      const conn = connectionManager.getConnection(connId);
-      if (conn) {
-        await conn.page.getByTestId('enable-sync-btn').click();
-        await conn.page.waitForSelector(
-          '[data-testid="sync-status"]:has-text("Enabled")',
-          { timeout: 10000 }
-        );
-      }
-    }
 
     const startTime = Date.now();
     const endTime = startTime + testDurationMinutes * 60 * 1000;

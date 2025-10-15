@@ -73,7 +73,6 @@ function App() {
   });
 
   const [vfs] = useState(() => getVFSService());
-  const [syncEnabled, setSyncEnabled] = useState(false);
   const { counter, increment } = useCounterStore();
   const [bundleStatus, setBundleStatus] = useState<string>('');
   const [uploadedBundleId, setUploadedBundleId] = useState<string>('');
@@ -314,21 +313,6 @@ function App() {
         </p>
         <p>Server: {state.serverConfig.wsUrl}</p>
         <p data-testid="server-info">Port: {state.serverConfig.port}</p>
-      </div>
-
-      <div style={{ marginBottom: '20px' }}>
-        <h2>Sync Controls</h2>
-        <button
-          data-testid="enable-sync-btn"
-          onClick={() => setSyncEnabled(true)}
-          disabled={!state.connected || syncEnabled}
-          style={{ marginRight: '10px' }}
-        >
-          Enable Sync
-        </button>
-        <p data-testid="sync-status">
-          Sync: {syncEnabled ? 'Enabled' : 'Disabled'}
-        </p>
       </div>
 
       <div style={{ marginBottom: '20px' }}>

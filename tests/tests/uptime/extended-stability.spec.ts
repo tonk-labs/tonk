@@ -32,18 +32,6 @@ test.describe('Uptime Test - Extended Stability', () => {
       'stability'
     );
 
-    console.log('Enabling sync on all clients...');
-    for (const connId of connectionIds) {
-      const conn = connectionManager.getConnection(connId);
-      if (conn) {
-        await conn.page.getByTestId('enable-sync-btn').click();
-        await conn.page.waitForSelector(
-          '[data-testid="sync-status"]:has-text("Enabled")',
-          { timeout: 10000 }
-        );
-      }
-    }
-
     console.log(
       `Running steady-state operations for ${durationMinutes} minutes...`
     );
@@ -149,17 +137,6 @@ test.describe('Uptime Test - Extended Stability', () => {
       clientCount,
       'stability-20'
     );
-
-    for (const connId of connectionIds) {
-      const conn = connectionManager.getConnection(connId);
-      if (conn) {
-        await conn.page.getByTestId('enable-sync-btn').click();
-        await conn.page.waitForSelector(
-          '[data-testid="sync-status"]:has-text("Enabled")',
-          { timeout: 10000 }
-        );
-      }
-    }
 
     const startTime = Date.now();
     const endTime = startTime + durationMinutes * 60 * 1000;

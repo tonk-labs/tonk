@@ -33,17 +33,6 @@ test.describe('Multi-Client WebSocket Sync', () => {
 
     await waitForVFSConnection(page2, 60000);
 
-    await page1.getByTestId('enable-sync-btn').click();
-
-    await page2.getByTestId('enable-sync-btn').click();
-
-    await page1.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-    await page2.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-
     await page1.getByTestId('increment-btn').click();
 
     await page1.waitForFunction(
