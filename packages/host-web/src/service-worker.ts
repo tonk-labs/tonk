@@ -156,8 +156,6 @@ function log(level, message, data?) {
   }
 }
 
-log('warn', 'Serving from Local:', TONK_SERVE_LOCAL);
-
 // Worker state for file watchers
 const watchers = new Map();
 
@@ -582,10 +580,52 @@ const determinePath = (url: URL): string => {
     });
   }
   
-  if (TONK_SERVE_LOCAL) {
-    log('info', 'TONK_SERVE_LOCAL enabled, skipping fetch event');
+  if (TONK_SERVE_LOCAL && appSlug && url.origin === location.origin && !isRootRequest) {
+  // always bypass vite dev assets and hmr channels
+  if (
+    url.pathname.startsWith('/@vite') ||
+    url.pathname.includes('__vite__') ||
+    url.searchParams.has('t') // those cache-busting params
+  ) {
+    return; // don't intercept these, let the network handle them
+  }
+    log('info', 'TONK_SERVE_LOCAL enabled, proxying to local dev server');
 
+    event.respondWith(
+      (async () => {
+        try {
+          // Extract the path after the app slug
+          const path = determinePath(url);
+          const appPath = path.replace(`${appSlug}/`, ''); // Remove appSlug prefix
+          const localDevUrl = `http://localhost:4001/${appPath}`;
 
+          log('info', 'Proxying request to local dev server', {
+            original: url.pathname,
+            determinedPath: path,
+            appPath: appPath,
+            proxied: localDevUrl
+          });
+
+          const response = await fetch(localDevUrl);
+          log('info', 'Received response from local dev server', {
+            status: response.status,
+            contentType: response.headers.get('content-type')
+          });
+
+          return response;
+        } catch (err) {
+          log('error', 'Failed to fetch from local dev server', {
+            error: err instanceof Error ? err.message : String(err),
+            url: url.pathname
+          });
+          return new Response('Local dev server unreachable on port 4001', {
+            status: 502,
+            headers: { 'Content-Type': 'text/plain' }
+          });
+        }
+      })()
+    );
+    return; // Exit early, don't process VFS
   } 
 
   if (appSlug && url.origin === location.origin && !isRootRequest) {

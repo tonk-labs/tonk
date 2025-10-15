@@ -296,13 +296,13 @@ class Server {
       try {
         const __filename = fileURLToPath(import.meta.url);
         const __dirname = dirname(__filename);
-        const blankTonkPath = join(__dirname, '..', 'latergram.tonk');
+        const blankTonkPath = join(__dirname, '..', 'base.tonk');
         const blankTonkBuffer = readFileSync(blankTonkPath);
 
         res.setHeader('Content-Type', 'application/octet-stream');
         res.setHeader(
           'Content-Disposition',
-          'attachment; filename="latergram.tonk"'
+          'attachment; filename="base.tonk"'
         );
         res.setHeader('Content-Length', blankTonkBuffer.length.toString());
         res.setHeader('Cache-Control', 'public, max-age=31536000');

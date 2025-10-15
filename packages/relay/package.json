@@ -6,7 +6,7 @@
   "main": "src/index.ts",
   "private": true,
   "scripts": {
-    "dev": "tsx watch src/index.ts 8081 latergram.tonk ./relay-storage",
+    "dev": "tsx watch src/index.ts 8081 base.tonk ./relay-storage",
     "build": "tsc",
     "start": "node dist/index.js"
   },
