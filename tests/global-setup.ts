@@ -7,9 +7,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export default async function globalSetup() {
-  console.log('Building relay-rust binary for tests...');
+  console.log('Building relay binary for tests...');
 
-  const relayPath = path.resolve(__dirname, '../packages/relay-rust');
+  const relayPath = path.resolve(__dirname, '../packages/relay');
   const targetDir = path.join(relayPath, 'target', 'debug');
   const binaryName =
     process.platform === 'win32' ? 'tonk-relay.exe' : 'tonk-relay';
@@ -37,7 +37,7 @@ export default async function globalSetup() {
       'utf-8'
     );
   } catch (error) {
-    console.error('Failed to build relay-rust binary:', error);
+    console.error('Failed to build relay binary:', error);
     throw error;
   }
 }

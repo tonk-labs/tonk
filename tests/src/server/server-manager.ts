@@ -108,7 +108,7 @@ export class ServerManager {
     // Create unique storage directory for this test
     const storageDir = path.resolve(
       __dirname,
-      `../../../packages/relay-rust/test-storage/${testId}`
+      `../../../packages/relay/test-storage/${testId}`
     );
 
     console.log(`Starting server for test ${testId} on port ${port}`);
@@ -205,7 +205,7 @@ export class ServerManager {
     // Clean up storage directory
     const storageDir = path.resolve(
       __dirname,
-      `../../../packages/relay-rust/test-storage/${testId}`
+      `../../../packages/relay/test-storage/${testId}`
     );
     try {
       await rm(storageDir, { recursive: true, force: true });
