@@ -948,7 +948,7 @@
                   messageHandler
                 );
                 reject(new Error('Timeout waiting for loadBundle response'));
-              }, 30000);
+              }, 120000);
             });
 
             if (!tempLoadResponse.success) {
@@ -1035,7 +1035,7 @@
                 messageHandler
               );
               reject(new Error('Timeout waiting for loadBundle response'));
-            }, 30000);
+            }, 120000);
           });
 
           if (!loadResponse.success) {
@@ -1223,14 +1223,14 @@
               bundleBytes: arrayBuffer,
             });
 
-            // Timeout after 30 seconds
+            // Timeout after 120 seconds for large bundles
             setTimeout(() => {
               navigator.serviceWorker.removeEventListener(
                 'message',
                 messageHandler
               );
               reject(new Error('Timeout waiting for loadBundle response'));
-            }, 30000);
+            }, 120000);
           });
 
           if (response.success) {
@@ -1433,14 +1433,14 @@
                 // Could add wasmUrl and wsUrl params here if needed
               });
 
-              // Timeout after 30 seconds
+              // Timeout after 120 seconds for large bundles
               setTimeout(() => {
                 navigator.serviceWorker.removeEventListener(
                   'message',
                   messageHandler
                 );
                 reject(new Error('Timeout waiting for initialization'));
-              }, 30000);
+              }, 120000);
             });
 
             if (response.success) {

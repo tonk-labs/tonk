@@ -1,0 +1,7 @@
+procs:
+  host-web:
+    shell: "pnpm run dev:host-web"
+    stop: SIGINT
+  relay:
+    shell: "pnpm run dev:relay"
+    stop: SIGINT

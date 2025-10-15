@@ -22,6 +22,9 @@ export default defineConfig({
         ? 'https://relay.tonk.xyz'
         : 'http://localhost:8081'
     ),
+    TONK_SERVE_LOCAL: JSON.stringify(
+      process.env.NODE_ENV !== 'production'
+    ),
   },
   resolve: {
     alias: {

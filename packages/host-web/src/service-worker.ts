@@ -11,6 +11,7 @@ import {
 import type { VFSWorkerMessage } from './types';
 
 declare const TONK_SERVER_URL: string;
+declare const TONK_SERVE_LOCAL: boolean;
 
 interface FetchEvent extends Event {
   request: Request;
@@ -154,6 +155,8 @@ function log(level, message, data?) {
     console[level](prefix, message);
   }
 }
+
+log('warn', 'Serving from Local:', TONK_SERVE_LOCAL);
 
 // Worker state for file watchers
 const watchers = new Map();
@@ -578,6 +581,12 @@ const determinePath = (url: URL): string => {
       log('error', 'Failed to persist state reset', { error: err });
     });
   }
+  
+  if (TONK_SERVE_LOCAL) {
+    log('info', 'TONK_SERVE_LOCAL enabled, skipping fetch event');
+
+
+  } 
 
   if (appSlug && url.origin === location.origin && !isRootRequest) {
     log('info', 'Processing fetch request for same origin (non-root)');

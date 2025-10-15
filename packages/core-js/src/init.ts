@@ -36,7 +36,7 @@ export async function initializeTonk(config?: TonkConfig): Promise<void> {
   initializationPromise = (async () => {
     try {
       if (config?.wasmPath) {
-        await init(config.wasmPath);
+        await init({ module_or_path: config.wasmPath });
       } else {
         await init();
       }
@@ -70,7 +70,7 @@ export async function initializeTonkWithEmbeddedWasm(
   initializationPromise = (async () => {
     try {
       if (config?.wasmPath) {
-        await init(config.wasmPath);
+        await init({ module_or_path: config.wasmPath });
       } else {
         const wasmBlob = Uint8Array.from(atob(WASM_BASE64), c =>
           c.charCodeAt(0)
