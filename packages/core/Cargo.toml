@@ -76,3 +76,6 @@ default = ["console_error_panic_hook"]
 wee_alloc = ["dep:wee_alloc"]
 wasm-browser = ["samod/wasm"]
 wasm-node = ["samod/wasm"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

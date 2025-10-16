@@ -7,6 +7,10 @@ export default defineConfig({
   server: {
     port: 4001,
     strictPort: true,
+    cors: {
+      origin: 'http://localhost:4000', // Allow requests from host-web
+      credentials: true,
+    },
     hmr: {
       protocol: 'ws',
       host: 'localhost',

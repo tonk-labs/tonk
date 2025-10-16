@@ -2,6 +2,7 @@ procs:
   tonk-app:
     shell: "cd app && pnpm run dev"
   host-web:
-    shell: "wait-port 8081 && sleep 4 && pnpm run dev:host-web"
+    shell: "wait-port 8081 && pnpm run dev:host-web"
   relay:
     shell: "pnpm run dev:relay"
+
