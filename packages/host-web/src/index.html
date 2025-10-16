@@ -1731,20 +1731,29 @@
   <script>
     setTimeout(() => {
       if (window.TONK_SERVE_LOCAL) {
+        // Update share button to "Export Tonk" and change behavior
         const shareButton = document.getElementById('share-button');
-
-        // Remove the inline onclick attribute
+        shareButton.textContent = 'Export Tonk';
         shareButton.removeAttribute('onclick');
+        shareButton.addEventListener('click', async () => {
+          await downloadTonk();
+        });
 
-        const onShare = () => {
-          document.getElementById('share-dialog').classList.add('active');
-          document.getElementById('overlay').classList.add('active');
-          document.getElementById('qr-code-container').classList.add('active');
-          document.getElementById('share-url-input').value =
-            'https://example.com/?bundle=test';
-        };
+        // Update new tonk button to skip name dialog
+        const newButton = document.getElementById('new-button');
+        newButton.removeAttribute('onclick');
+        newButton.addEventListener('click', async () => {
+          // Auto-generate name based on timestamp
+          const timestamp = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
+          const tonkName = `tonk-${timestamp}`;
 
-        shareButton.addEventListener('click', onShare);
+          const dialog = document.getElementById('name-dialog');
+          const hasLoadedBundles = availableApps.length > 0;
+          dialog.dataset.hasLoadedBundles = hasLoadedBundles;
+
+          await createNewTonk(tonkName);
+        });
+
         console.log(
           'DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE'
         );
