@@ -31,7 +31,7 @@ export class VFSService {
     }
   >();
   private watchers = new Map<string, (documentData: DocumentData) => void>();
-  private directoryWatchers = new Map<string, (changeData: any) => void>();
+  private directoryWatchers = new Map<string, (changeData: unknown) => void>();
   private watcherMetadata = new Map<
     string,
     { path: string; type: 'file' | 'directory' }
@@ -138,23 +138,30 @@ export class VFSService {
     this.worker.onmessage = (event: MessageEvent<VFSWorkerResponse>) => {
       const response = event.data;
       console.log('[VFSService] Received response from worker:', response);
-      verbose() && console.log('Received response from worker:', response);
+      if (verbose()) {
+        console.log('Received response from worker:', response);
+      }
 
       if ((response as { type: string }).type === 'ready') {
-        verbose() && console.log('Worker is ready!');
+        if (verbose()) {
+          console.log('Worker is ready!');
+        }
         this.workerReady = true;
         return;
       }
 
       if (response.type === 'init') {
-        verbose() && console.log('Received init response:', response);
+        if (verbose()) {
+          console.log('Received init response:', response);
+        }
         this.initialized = response.success;
         if (response.success) {
           this.notifyConnectionStateChange('connected');
         }
         if (!response.success && response.error) {
-          verbose() &&
+          if (verbose()) {
             console.error('VFS Worker initialization failed:', response.error);
+          }
         }
         return;
       }
@@ -241,7 +248,9 @@ export class VFSService {
 
       // Wait for worker to be ready
       console.log('[VFSService] Waiting for worker to be ready...');
-      verbose() && console.log('Waiting for worker to be ready...');
+      if (verbose()) {
+        console.log('Waiting for worker to be ready...');
+      }
 
       if (this.usingServiceWorkerProxy && 'serviceWorker' in navigator) {
         try {
@@ -516,7 +525,7 @@ export class VFSService {
 
   async watchDirectory(
     path: string,
-    callback: (changeData: any) => void
+    callback: (changeData: unknown) => void
   ): Promise<string> {
     const id = this.generateId();
     this.directoryWatchers.set(id, callback);

@@ -1,0 +1,5 @@
+there're 4 lines of javascript u can run in the browser console to skip s3 upload and just show the download as file button
+i'll send the code
+and then we should have a dev mode for the bios where we can specify a blank bundle for testing
+and also have easy access to import and export bundles
+the other thing that would be nice is starting a client connected to the server without having to manually specify a bundle, not just from bios but when testing period

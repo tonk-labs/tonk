@@ -4,7 +4,7 @@
   "description": "Host shell to bootstrap a tonk on the web",
   "scripts": {
     "dev": "npm run build:sw && npm run copy-sw-for-dev && serve src",
-    "dev:with-proxy": "npm run build:sw && npm run copy-sw-for-dev && NODE_ENV=development vite dev",
+    "dev:with-proxy": "npm run build:sw && npm run copy-sw-for-dev && PORT=4000 NODE_ENV=development vite dev --port=4000",
     "build": "npm run build:sw && vite build",
     "build:sw": "vite build --config vite.sw.config.ts && mkdir -p dist && cp -r dist-sw/* dist/",
     "copy-sw-for-dev": "cp dist/service-worker-bundled.js src/service-worker-bundled.js",

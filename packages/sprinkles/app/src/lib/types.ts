@@ -71,7 +71,7 @@ export type VFSWorkerResponse =
       type: 'directoryChanged';
       watchId: string;
       path: string;
-      changeData: any;
+      changeData: unknown;
     }
   | {
       type: 'toBytes';

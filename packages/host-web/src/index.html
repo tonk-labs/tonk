@@ -115,6 +115,7 @@
         50% {
           opacity: 1;
         }
+
         51%,
         100% {
           opacity: 0;
@@ -254,6 +255,7 @@
         0% {
           transform: rotate(0deg);
         }
+
         100% {
           transform: rotate(360deg);
         }
@@ -1574,6 +1576,7 @@
       })();
     </script>
   </head>
+
   <body>
     <div class="bios-container">
       <div class="version-text">TONK HOST WEB version 0.1.0</div>
@@ -1595,6 +1598,7 @@
 
         <div style="margin-top: 20px">
           <button
+            id="share-button"
             class="btn primary"
             onclick="showShareDialog()"
             style="font-size: 16px; padding: 10px 20px; margin-right: 10px"
@@ -1602,6 +1606,7 @@
             Share Tonk
           </button>
           <button
+            id="new-button"
             class="btn primary"
             onclick="newTonk()"
             style="font-size: 16px; padding: 10px 20px"
@@ -1723,4 +1728,27 @@
       <div style="color: #999; margin-top: 15px">Preparing tonk...</div>
     </div>
   </body>
+  <script>
+    setTimeout(() => {
+      if (window.TONK_SERVE_LOCAL) {
+        const shareButton = document.getElementById('share-button');
+
+        // Remove the inline onclick attribute
+        shareButton.removeAttribute('onclick');
+
+        const onShare = () => {
+          document.getElementById('share-dialog').classList.add('active');
+          document.getElementById('overlay').classList.add('active');
+          document.getElementById('qr-code-container').classList.add('active');
+          document.getElementById('share-url-input').value =
+            'https://example.com/?bundle=test';
+        };
+
+        shareButton.addEventListener('click', onShare);
+        console.log(
+          'DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE'
+        );
+      }
+    }, 400);
+  </script>
 </html>

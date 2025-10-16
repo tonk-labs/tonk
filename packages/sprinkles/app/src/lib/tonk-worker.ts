@@ -408,7 +408,7 @@ async function handleMessage(message: VFSWorkerMessage) {
       try {
         const watcher = await tonk!.watchDirectory(
           message.path,
-          (changeData: any) => {
+          (changeData: unknown) => {
             log('info', 'Directory change detected', {
               watchId: message.id,
               path: message.path,
