@@ -33,11 +33,6 @@ test.describe('IndexedDB Storage', () => {
     await clearIndexedDB(page);
     await waitForVFSConnection(page);
 
-    await page.getByTestId('enable-sync-btn').click();
-    await page.waitForSelector(
-      '[data-testid="sync-status"]:has-text("Enabled")'
-    );
-
     await createFile(page, '/test.txt', { message: 'Hello IndexedDB!' });
     await waitForSync(page, 2000);
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -66,8 +61,6 @@ test.describe('IndexedDB Storage', () => {
     await setupTestWithServer(page, serverInstance);
     await clearIndexedDB(page);
     await waitForVFSConnection(page);
-
-    await page.getByTestId('enable-sync-btn').click();
 
     await createFile(page, '/online.txt', { message: 'Created online' });
 
@@ -134,8 +127,6 @@ test.describe('IndexedDB Storage', () => {
     await clearIndexedDB(page);
     await setupTestWithServer(page, serverInstance);
     await waitForVFSConnection(page);
-
-    await page.getByTestId('enable-sync-btn').click();
 
     await createFile(page, '/persistent.txt', {
       message: 'Persisted data',
@@ -207,8 +198,6 @@ test.describe('IndexedDB Storage', () => {
     await clearIndexedDB(page);
     await setupTestWithServer(page, serverInstance);
     await waitForVFSConnection(page);
-
-    await page.getByTestId('enable-sync-btn').click();
 
     await createFile(page, '/cycle-test.txt', { cycle: 0 });
     await waitForSync(page, 1000);

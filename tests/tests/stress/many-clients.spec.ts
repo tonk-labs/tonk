@@ -28,17 +28,6 @@ test.describe('Stress Test - Many Clients', () => {
       pages.push(page);
     }
 
-    for (const page of pages) {
-      await page.getByTestId('enable-sync-btn').click();
-    }
-
-    for (const page of pages) {
-      await page.waitForSelector(
-        '[data-testid="sync-status"]:has-text("Enabled")',
-        { timeout: 10000 }
-      );
-    }
-
     console.log('All clients synced, incrementing on first client');
     await pages[0].getByTestId('increment-btn').click();
 
@@ -87,17 +76,6 @@ test.describe('Stress Test - Many Clients', () => {
 
       contexts.push(context);
       pages.push(page);
-    }
-
-    for (const page of pages) {
-      await page.getByTestId('enable-sync-btn').click();
-    }
-
-    for (const page of pages) {
-      await page.waitForSelector(
-        '[data-testid="sync-status"]:has-text("Enabled")',
-        { timeout: 10000 }
-      );
     }
 
     await Promise.all(

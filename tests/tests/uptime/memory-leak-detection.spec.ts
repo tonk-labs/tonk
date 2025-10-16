@@ -65,17 +65,6 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
         `cycle-${cycleCount}`
       );
 
-      for (const connId of connectionIds) {
-        const conn = connectionManager.getConnection(connId);
-        if (conn) {
-          await conn.page.getByTestId('enable-sync-btn').click();
-          await conn.page.waitForSelector(
-            '[data-testid="sync-status"]:has-text("Enabled")',
-            { timeout: 10000 }
-          );
-        }
-      }
-
       console.log(`Performing ${operationsPerCycle} operations...`);
       for (let op = 0; op < operationsPerCycle; op++) {
         const randomConnId =
@@ -201,17 +190,6 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
       clientCount,
       'sustained'
     );
-
-    for (const connId of connectionIds) {
-      const conn = connectionManager.getConnection(connId);
-      if (conn) {
-        await conn.page.getByTestId('enable-sync-btn').click();
-        await conn.page.waitForSelector(
-          '[data-testid="sync-status"]:has-text("Enabled")',
-          { timeout: 10000 }
-        );
-      }
-    }
 
     await metricsCollector.collectMemoryMetrics();
     const initialMemory = (await metricsCollector.getMetrics()).memory.heapUsed;
