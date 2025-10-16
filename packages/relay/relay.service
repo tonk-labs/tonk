@@ -1,0 +1,20 @@
+[Unit]
+Description=Tonk Relay Server
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/tonk/packages/relay
+Environment="PATH=/home/ec2-user/.local/share/pnpm:/home/ec2-user/.nvm/versions/node/v22.20.0/bin:/home/ec2-user/.cargo/bin:/home/ec2-user/.local/bin:/home/ec2-user/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"
+Environment="NODE_ENV=production"
+Environment="HOST=0.0.0.0"
+ExecStart=/home/ec2-user/tonk/packages/relay/target/release/tonk-relay 8080 ../../examples/latergram/latergram.tonk ./relay-storage
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tonk-relay
+
+[Install]
+WantedBy=multi-user.target

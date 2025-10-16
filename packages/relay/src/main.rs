@@ -67,9 +67,13 @@ async fn main() -> Result<()> {
 
     let connection_count = Arc::new(AtomicUsize::new(0));
 
-    let server_addr: SocketAddr = format!("127.0.0.1:{}", port)
-        .parse()
-        .expect("Invalid server address");
+    let server_addr: SocketAddr = format!(
+        "{}:{}",
+        std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
+        port
+    )
+    .parse()
+    .expect("Invalid server address");
 
     let wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
