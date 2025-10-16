@@ -156,7 +156,7 @@ export class ServerManager {
     const instance: ServerInstance = {
       process: serverProcess,
       port,
-      wsUrl: `ws://localhost:${port}/ws`,
+      wsUrl: `ws://localhost:${port}`,
       manifestUrl: `http://localhost:${port}/api/blank-tonk`,
       testId,
     };

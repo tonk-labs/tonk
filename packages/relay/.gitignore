@@ -2,5 +2,4 @@
 Cargo.lock
 .env
 *.tonk
-automerge-repo-data/
-relay-storage/
+test-storage/

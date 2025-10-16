@@ -1,7 +1,7 @@
 use crate::error::{RelayError, Result};
 use crate::network::handle_websocket_connection;
 use crate::storage::{BundleStorageAdapter, S3Storage};
-use axum::extract::ws::{WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{rejection::WebSocketUpgradeRejection, WebSocket, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::{
     body::Bytes,
@@ -64,8 +64,7 @@ impl RelayServer {
 
     pub fn router(state: Arc<AppState>) -> Router {
         Router::new()
-            .route("/", get(health_check))
-            .route("/ws", get(websocket_upgrade_handler))
+            .route("/", get(root_handler))
             .route("/tonk_core_bg.wasm", get(serve_wasm))
             .route("/.manifest.tonk", get(serve_manifest))
             .route("/api/bundles", post(upload_bundle))
@@ -104,11 +103,28 @@ async fn health_check() -> impl IntoResponse {
     "👍 Tonk relay server is running"
 }
 
-async fn websocket_upgrade_handler(
-    ws: WebSocketUpgrade,
+async fn root_handler(
+    headers: HeaderMap,
+    ws: std::result::Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_websocket(socket, state))
+) -> Response {
+    if headers
+        .get(header::UPGRADE)
+        .and_then(|v: &HeaderValue| v.to_str().ok())
+        .map(|v: &str| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false)
+    {
+        match ws {
+            Ok(ws) => ws
+                .on_upgrade(move |socket| handle_websocket(socket, state))
+                .into_response(),
+            Err(_) => {
+                (StatusCode::BAD_REQUEST, "Invalid WebSocket upgrade request").into_response()
+            }
+        }
+    } else {
+        health_check().await.into_response()
+    }
 }
 
 async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
