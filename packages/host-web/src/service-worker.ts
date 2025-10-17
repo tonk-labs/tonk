@@ -12,6 +12,8 @@ import type { VFSWorkerMessage } from "./types";
 
 declare const TONK_SERVER_URL: string;
 declare const TONK_SERVE_LOCAL: boolean;
+declare const __SW_BUILD_TIME__: string;
+declare const __SW_VERSION__: string;
 
 interface FetchEvent extends Event {
   request: Request;
@@ -23,7 +25,8 @@ const DEBUG_LOGGING = true;
 console.log("🚀 SERVICE WORKER: Script loaded at", new Date().toISOString());
 console.log("🔍 DEBUG_LOGGING enabled:", DEBUG_LOGGING);
 console.log("🌐 Service worker location:", self.location.href);
-console.log("UNIQUE ID:", 779);
+console.log("🔧 SERVICE WORKER VERSION:", __SW_VERSION__);
+console.log("🕐 SERVICE WORKER BUILD TIME:", __SW_BUILD_TIME__);
 
 type TonkState =
   | { status: "uninitialized" }
@@ -369,16 +372,6 @@ async function autoInitializeFromCache() {
     log("info", "Websocket connected");
     startHealthMonitoring();
 
-    // Connect to websocket
-    wsUrl = TONK_SERVER_URL.replace(/^http/, "ws");
-    log("info", "Connecting to websocket...", {
-      wsUrl,
-      localRootId: manifest.rootId,
-    });
-    await tonk.connectWebsocket(wsUrl);
-    log("info", "Websocket connected");
-    startHealthMonitoring();
-
     // Wait for initial sync
     let syncAttempts = 0;
     const maxAttempts = 20;
@@ -593,53 +586,46 @@ const determinePath = (url: URL): string => {
   }
 
   if (TONK_SERVE_LOCAL && appSlug && !isRootRequest) {
-    // Intercept and proxy Vite HMR assets with URL rewriting
+    // Intercept and proxy Vite HMR assets
     if (
       url.pathname.startsWith("/@vite") ||
+      url.pathname.startsWith("/@react-refresh") ||
+      url.pathname.startsWith("/src/") ||
+      url.pathname.startsWith(`/${appSlug}/@vite`) ||
+      url.pathname.startsWith(`/${appSlug}/node_modules`) ||
+      url.pathname.startsWith(`/${appSlug}/src/`) ||
+      url.pathname.startsWith("/node_modules") ||
       url.pathname.includes("__vite__") ||
-      url.searchParams.has("t") // those cache-busting params
+      url.searchParams.has("t") // cache-busting params
     ) {
-      log("info", "Vite HMR asset detected, proxying with URL rewriting", {
+      log("info", "Vite HMR asset detected, proxying to dev server", {
         url: url.href,
       });
 
       event.respondWith(
         (async () => {
           try {
+            // Keep the full path including appSlug for Vite to use its base config
             const localDevUrl = `http://localhost:4001${url.pathname}${url.search}`;
 
             log("info", "Fetching Vite asset from dev server", {
+              original: url.pathname,
               proxied: localDevUrl,
             });
 
             const response = await fetch(localDevUrl);
-            const contentType = response.headers.get("content-type") || "";
 
-            // Rewrite URLs in JS responses from localhost:4001 to localhost:4000
-            // BUT keep WebSocket URLs pointing to 4001 since SW can't proxy WebSockets
-            if (contentType.includes("javascript") || contentType.includes("text/")) {
-              let text = await response.text();
-              const currentPort = new URL(location.origin).port || "4000";
+            // Add no-cache headers to prevent browser caching during development
+            const headers = new Headers(response.headers);
+            headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+            headers.set('Pragma', 'no-cache');
+            headers.set('Expires', '0');
 
-              // Only replace HTTP URLs, NOT WebSocket URLs
-              // WebSocket must connect directly to port 4001
-              text = text.replace(/http:\/\/localhost:4001/g, location.origin);
-              // DON'T replace ws:// URLs - they need to connect to :4001 directly
-
-              log("info", "🔌 WS: Rewrote Vite client HTTP URLs (kept WebSocket URLs)", {
-                originalPort: "4001",
-                newPort: currentPort,
-                note: "WebSocket URLs kept at 4001 for direct connection",
-              });
-
-              return new Response(text, {
-                status: response.status,
-                statusText: response.statusText,
-                headers: response.headers,
-              });
-            }
-
-            return response;
+            return new Response(response.body, {
+              status: response.status,
+              statusText: response.statusText,
+              headers: headers
+            });
           } catch (err) {
             log("error", "Failed to fetch Vite asset", {
               error: err instanceof Error ? err.message : String(err),
@@ -660,15 +646,11 @@ const determinePath = (url: URL): string => {
     event.respondWith(
       (async () => {
         try {
-          // Extract the path after the app slug
-          const path = determinePath(url);
-          const appPath = path.replace(`${appSlug}/`, ""); // Remove appSlug prefix
-          const localDevUrl = `http://localhost:4001/${appPath}`;
+          // Keep the full path including appSlug for Vite to use its base config
+          const localDevUrl = `http://localhost:4001${url.pathname}${url.search}`;
 
           log("info", "Proxying request to local dev server", {
             original: url.pathname,
-            determinedPath: path,
-            appPath: appPath,
             proxied: localDevUrl,
           });
 
@@ -678,31 +660,17 @@ const determinePath = (url: URL): string => {
             contentType: response.headers.get("content-type"),
           });
 
-          // Rewrite URLs in HTML responses to fix Vite absolute URLs
-          const contentType = response.headers.get("content-type") || "";
-          if (contentType.includes("html")) {
-            const text = await response.text();
-            const rewritten = text.replace(
-              /http:\/\/localhost:4001/g,
-              location.origin
-            ).replace(
-              /ws:\/\/localhost:4001/g,
-              location.origin.replace(/^http/, "ws")
-            );
+          // Add no-cache headers to prevent browser caching during development
+          const headers = new Headers(response.headers);
+          headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+          headers.set('Pragma', 'no-cache');
+          headers.set('Expires', '0');
 
-            log("info", "Rewrote HTML with origin URLs", {
-              originalOrigin: "http://localhost:4001",
-              newOrigin: location.origin,
-            });
-
-            return new Response(rewritten, {
-              status: response.status,
-              statusText: response.statusText,
-              headers: response.headers,
-            });
-          }
-
-          return response;
+          return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: headers
+          });
         } catch (err) {
           log("error", "Failed to fetch from local dev server", {
             error: err instanceof Error ? err.message : String(err),

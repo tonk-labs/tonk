@@ -25,6 +25,8 @@ export default defineConfig({
     TONK_SERVE_LOCAL: JSON.stringify(
       process.env.NODE_ENV !== 'production'
     ),
+    __SW_BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+    __SW_VERSION__: JSON.stringify(Date.now().toString(36)),
   },
   resolve: {
     alias: {
