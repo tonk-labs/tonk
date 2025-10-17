@@ -14,7 +14,7 @@ const possibilities = [
 ];
 
 function Home() {
-  const [observed, _setObserved] = useState(
+  const [observed] = useState(
     possibilities[Math.floor(Math.random() * possibilities.length - 1)]
   );
 
