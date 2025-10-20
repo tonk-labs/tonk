@@ -16,6 +16,9 @@ interface OperationStats {
 export class VFSService {
   private serviceWorker: ServiceWorker | null = null;
   private initialized = false;
+  private serviceWorkerReady = false;
+  private swReadyPromise: Promise<void> | null = null;
+  private swReadyResolve: (() => void) | null = null;
   private messageId = 0;
   private pendingRequests = new Map<
     string,
@@ -115,8 +118,8 @@ export class VFSService {
 
     navigator.serviceWorker.addEventListener(
       'message',
-      (event: MessageEvent<VFSWorkerResponse>) => {
-        const response = event.data;
+      (event: MessageEvent) => {
+        const response = event.data as VFSWorkerResponse;
         console.log(
           '[VFSService] 🔍 DEBUG: Received message from service worker:',
           {
@@ -131,10 +134,31 @@ export class VFSService {
           }
         );
 
-        if ((response as { type: string }).type === 'ready') {
+        if (response.type === 'ready') {
           console.log(
             '[VFSService] 🔍 DEBUG: Service worker sent ready message'
           );
+          return;
+        }
+
+        if (response.type === 'swReady') {
+          console.log('[VFSService] Service worker ready:', response);
+          this.serviceWorkerReady = (response as any).autoInitialized;
+
+          if (this.swReadyResolve) {
+            this.swReadyResolve();
+            this.swReadyResolve = null;
+          }
+
+          if (
+            !(response as any).autoInitialized &&
+            (response as any).needsBundle
+          ) {
+            console.log(
+              '[VFSService] Service worker needs bundle - will load on initialize()'
+            );
+          }
+
           return;
         }
 
@@ -206,6 +230,47 @@ export class VFSService {
     console.log('[VFSService] Service worker setup complete');
   }
 
+  private async waitForServiceWorkerReady(
+    timeoutMs: number = 15000
+  ): Promise<void> {
+    if (this.serviceWorkerReady) {
+      return;
+    }
+
+    if (!this.swReadyPromise) {
+      this.swReadyPromise = new Promise((resolve, reject) => {
+        this.swReadyResolve = resolve;
+
+        setTimeout(() => {
+          reject(
+            new Error(
+              'Service worker ready timeout after 15s - likely initialization failed'
+            )
+          );
+        }, timeoutMs);
+      });
+    }
+
+    return this.swReadyPromise;
+  }
+
+  public async waitForReady(timeoutMs: number = 15000): Promise<boolean> {
+    if (this.serviceWorkerReady) {
+      return true;
+    }
+
+    try {
+      await this.waitForServiceWorkerReady(timeoutMs);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  public isReady(): boolean {
+    return this.serviceWorkerReady;
+  }
+
   async initialize(manifestUrl: string, wsUrl: string): Promise<void> {
     console.log('[VFSService] 🔍 DEBUG: Starting initialization', {
       manifestUrl,
@@ -220,8 +285,26 @@ export class VFSService {
       throw new Error('Service worker not initialized');
     }
 
+    // CRITICAL: Wait for service worker to be ready
+    console.log('[VFSService] Waiting for service worker to be ready...');
+    try {
+      await this.waitForServiceWorkerReady(15000);
+      console.log('[VFSService] Service worker is ready');
+    } catch (error) {
+      console.warn(
+        '[VFSService] Service worker ready timeout - will retry with bundle load'
+      );
+    }
+
+    // If service worker auto-initialized, we're done
+    if (this.serviceWorkerReady) {
+      console.log('[VFSService] Service worker auto-initialized from cache');
+      this.initialized = true;
+      return;
+    }
+
     console.log(
-      '[VFSService] 🔍 DEBUG: Service worker ready, fetching manifest...',
+      '[VFSService] 🔍 DEBUG: Service worker not auto-initialized, fetching manifest...',
       {
         serviceWorkerState: this.serviceWorker.state,
         serviceWorkerScriptURL: this.serviceWorker.scriptURL,
@@ -275,6 +358,7 @@ export class VFSService {
 
       console.log('[VFSService] Bundle loaded successfully');
       this.initialized = true;
+      this.serviceWorkerReady = true;
 
       if (this.watcherMetadata.size > 0) {
         await this.reestablishWatchers();
@@ -307,6 +391,15 @@ export class VFSService {
     if (!this.serviceWorker) {
       console.error('[VFSService] Service worker not initialized');
       return Promise.reject(new Error('Service worker not initialized'));
+    }
+
+    if (
+      !this.serviceWorkerReady &&
+      !['loadBundle', 'initializeFromUrl'].includes(message.type)
+    ) {
+      return Promise.reject(
+        new Error('Service worker not ready yet - initialization in progress')
+      );
     }
 
     console.log('[VFSService] 🔍 DEBUG: Sending message to service worker:', {
