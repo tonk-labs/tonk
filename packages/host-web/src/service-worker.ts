@@ -36,6 +36,15 @@ type TonkState =
 let tonkState: TonkState = { status: 'uninitialized' };
 let appSlug: string | null = null; // Store the app slug for path resolution
 
+let isReady = false;
+let readyPromise: Promise<void> | null = null;
+let readyResolve: (() => void) | null = null;
+
+let autoInitCompleted = false;
+let autoInitSucceeded = false;
+let autoInitPromise: Promise<void> | null = null;
+let autoInitResolve: (() => void) | null = null;
+
 let wsUrl: string | null = null;
 let healthCheckInterval: number | null = null;
 let connectionHealthy = true;
@@ -43,6 +52,16 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const HEALTH_CHECK_INTERVAL = 5000;
 let continuousRetryEnabled = true;
+
+// Message queue for operations received before initialization
+interface QueuedMessage {
+  message: VFSWorkerMessage | { type: 'setAppSlug'; slug: string };
+  clientId: string;
+  timestamp: number;
+}
+
+let messageQueue: QueuedMessage[] = [];
+let isProcessingQueue = false;
 
 // Helper to get tonk instance when ready
 function getTonk(): { tonk: TonkCore; manifest: Manifest } | null {
@@ -170,6 +189,49 @@ async function postResponse(response) {
   clients.forEach(client => {
     client.postMessage(response);
   });
+}
+
+async function broadcastToClients(message: any): Promise<void> {
+  const allClients = await (self as any).clients.matchAll();
+  allClients.forEach(client => client.postMessage(message));
+  log('info', 'Broadcast message to clients', {
+    type: message.type,
+    clientCount: allClients.length,
+  });
+}
+
+async function waitForReady(timeoutMs: number = 30000): Promise<void> {
+  if (isReady) return;
+
+  if (!readyPromise) {
+    readyPromise = new Promise(resolve => {
+      readyResolve = resolve;
+    });
+  }
+
+  return Promise.race([
+    readyPromise,
+    new Promise<void>((_, reject) =>
+      setTimeout(() => reject(new Error('SW ready timeout')), timeoutMs)
+    ),
+  ]);
+}
+
+async function waitForAutoInit(timeoutMs: number = 30000): Promise<void> {
+  if (autoInitCompleted) return;
+
+  if (!autoInitPromise) {
+    autoInitPromise = new Promise(resolve => {
+      autoInitResolve = resolve;
+    });
+  }
+
+  return Promise.race([
+    autoInitPromise,
+    new Promise<void>((_, reject) =>
+      setTimeout(() => reject(new Error('Auto-init timeout')), timeoutMs)
+    ),
+  ]);
 }
 
 async function performHealthCheck(): Promise<boolean> {
@@ -328,6 +390,14 @@ async function autoInitializeFromCache() {
         hasBundle: !!bundleBytes,
       });
       console.log('🔄 SERVICE WORKER: No cached state - waiting for bundle');
+
+      // Mark auto-init as completed but not successful
+      autoInitCompleted = true;
+      autoInitSucceeded = false;
+      if (autoInitResolve) {
+        autoInitResolve();
+      }
+
       return;
     }
 
@@ -368,16 +438,6 @@ async function autoInitializeFromCache() {
     log('info', 'Websocket connected');
     startHealthMonitoring();
 
-    // Connect to websocket
-    wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
-    log('info', 'Connecting to websocket...', {
-      wsUrl,
-      localRootId: manifest.rootId,
-    });
-    await tonk.connectWebsocket(wsUrl);
-    log('info', 'Websocket connected');
-    startHealthMonitoring();
-
     // Wait for initial sync
     let syncAttempts = 0;
     const maxAttempts = 20;
@@ -401,6 +461,21 @@ async function autoInitializeFromCache() {
 
     // Update tonk state
     tonkState = { status: 'ready', tonk, manifest };
+
+    isReady = true;
+    if (readyResolve) {
+      readyResolve();
+    }
+
+    // Mark auto-init as completed and successful
+    autoInitCompleted = true;
+    autoInitSucceeded = true;
+    if (autoInitResolve) {
+      autoInitResolve();
+    }
+
+    // Process any queued messages
+    await processMessageQueue();
   } catch (error) {
     log('error', 'Auto-initialization failed', {
       error: error instanceof Error ? error.message : String(error),
@@ -411,22 +486,23 @@ async function autoInitializeFromCache() {
     tonkState = { status: 'uninitialized' };
     appSlug = null;
 
-    // Notify clients that manual initialization is needed
-    const allClients = await (self as any).clients.matchAll();
-    allClients.forEach(client => {
-      client.postMessage({
-        type: 'needsReinit',
-        appSlug: null,
-        reason: 'Auto-initialization failed',
-      });
-    });
+    // Mark auto-init as completed but not successful
+    autoInitCompleted = true;
+    autoInitSucceeded = false;
+    if (autoInitResolve) {
+      autoInitResolve();
+    }
   }
 }
 
 // Start auto-initialization (non-blocking)
-autoInitializeFromCache();
+autoInitializeFromCache().catch(error => {
+  log('error', 'Auto-initialization failed critically', {
+    error: error.message,
+  });
+});
 
-self.addEventListener('install', event => {
+self.addEventListener('install', () => {
   log('info', 'Service worker installing');
   console.log('🔧 SERVICE WORKER: Installing SW');
   (self as any).skipWaiting();
@@ -445,24 +521,34 @@ self.addEventListener('activate', event => {
       await (self as any).clients.claim();
       log('info', 'Service worker activation completed, clients claimed');
 
-      // Then notify all clients that service worker is ready
+      // Wait for auto-init to complete (with timeout)
+      try {
+        await waitForAutoInit(30000);
+      } catch (error) {
+        log('warn', 'Auto-init timeout in activate handler, proceeding anyway');
+      }
+
+      // Now send swReady message based on auto-init result
       const allClients = await (self as any).clients.matchAll();
       allClients.forEach(client => {
-        client.postMessage({ type: 'ready', needsBundle: true });
+        client.postMessage({
+          type: 'swReady',
+          autoInitialized: autoInitSucceeded,
+          needsBundle: !autoInitSucceeded,
+        });
       });
+
       log(
         'info',
-        'Service worker activated, ready message sent to all clients'
+        'Service worker activated, ready message sent to all clients',
+        { autoInitSucceeded }
       );
       console.log('🚀 SERVICE WORKER: Activated and ready');
     })()
   );
 });
 
-const targetToResponse = async (
-  target: any,
-  path?: string
-): Promise<Response> => {
+const targetToResponse = async (target: any): Promise<Response> => {
   if (target.bytes) {
     // target.bytes is a base64 string, decode it to binary for Response
     const binaryString = atob(target.bytes);
@@ -598,10 +684,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                ? 'loading'
-                : tonkState.status === 'failed'
-                ? 'failed'
-                : 'uninitialized',
+                  ? 'loading'
+                  : tonkState.status === 'failed'
+                    ? 'failed'
+                    : 'uninitialized',
           });
 
           if (!tonkInstance) {
@@ -633,7 +719,7 @@ const determinePath = (url: URL): string => {
               hasContent: !!target.content,
               hasBytes: !!target.bytes,
             });
-            return targetToResponse(target, path);
+            return targetToResponse(target);
           }
 
           log('info', 'File exists, attempting to read from Tonk', {
@@ -649,7 +735,7 @@ const determinePath = (url: URL): string => {
               : 'unknown',
           });
 
-          const response = targetToResponse(target, path);
+          const response = targetToResponse(target);
           log('info', 'Created response for file', {
             filePath: `/app/${path}`,
             responseType: target.bytes ? 'binary' : 'text',
@@ -684,49 +770,132 @@ const determinePath = (url: URL): string => {
   }
 });
 
+// Process all queued messages in order
+async function processMessageQueue() {
+  if (isProcessingQueue || messageQueue.length === 0) {
+    return;
+  }
+
+  isProcessingQueue = true;
+  log('info', 'Processing message queue', {
+    queueSize: messageQueue.length,
+  });
+
+  // Process all queued messages in order
+  while (messageQueue.length > 0) {
+    const queued = messageQueue.shift()!;
+    const waitTime = Date.now() - queued.timestamp;
+
+    log('info', 'Processing queued message', {
+      type: queued.message.type,
+      waitTime: `${waitTime}ms`,
+      remainingInQueue: messageQueue.length,
+    });
+
+    try {
+      await processMessage(queued.message);
+    } catch (error) {
+      log('error', 'Error processing queued message', {
+        type: queued.message.type,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      // Send error response back to client
+      if ('id' in queued.message) {
+        await postResponse({
+          type: queued.message.type,
+          id: queued.message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  isProcessingQueue = false;
+  log('info', 'Message queue processing complete');
+}
+
 async function handleMessage(
   message: VFSWorkerMessage | { type: 'setAppSlug'; slug: string }
 ) {
   log('info', 'Received message', {
     type: message.type,
     id: 'id' in message ? message.id : 'N/A',
+    queueSize: messageQueue.length,
+    isReady,
+    autoInitCompleted,
   });
 
-  // Handle setAppSlug message separately
+  // Handle setAppSlug message separately - always process immediately
   if (message.type === 'setAppSlug') {
     appSlug = message.slug;
-
-    // Persist to IndexedDB so it survives service worker restarts
     await persistAppSlug(appSlug);
-
     log('info', 'App slug set and persisted', { slug: appSlug });
     return;
   }
 
-  // Allow init, loadBundle, and initializeFromUrl operations when not ready
+  // Messages that can trigger initialization
+  const initializingMessages = ['loadBundle', 'initializeFromUrl'];
+
+  // If we're not ready AND this isn't an initializing message, queue it
+  if (!isReady && !initializingMessages.includes(message.type)) {
+    log('info', 'Queueing message until VFS is ready', {
+      type: message.type,
+      queuePosition: messageQueue.length,
+    });
+
+    messageQueue.push({
+      message,
+      clientId: 'queued',
+      timestamp: Date.now(),
+    });
+
+    // Send acknowledgment that message was queued
+    if ('id' in message) {
+      await postResponse({
+        type: 'messageQueued' as any,
+        id: message.id,
+        originalType: message.type,
+        queuePosition: messageQueue.length,
+      });
+    }
+
+    return;
+  }
+
+  // Process the message immediately (either it's an init message or we're ready)
+  await processMessage(message);
+}
+
+async function processMessage(
+  message: VFSWorkerMessage | { type: 'setAppSlug'; slug: string }
+) {
   const allowedWhenUninitialized = [
     'init',
     'loadBundle',
     'initializeFromUrl',
     'getServerUrl',
   ];
-  if (
-    tonkState.status !== 'ready' &&
-    !allowedWhenUninitialized.includes(message.type)
-  ) {
-    log('error', 'Operation attempted before VFS initialization', {
-      type: message.type,
-      status: tonkState.status,
-    });
-    if ('id' in message) {
-      postResponse({
+
+  if (!allowedWhenUninitialized.includes(message.type)) {
+    try {
+      await waitForReady(10000);
+    } catch (error) {
+      log('error', 'Operation attempted before VFS ready', {
         type: message.type,
-        id: message.id,
-        success: false,
-        error: 'VFS not initialized. Please load a bundle first.',
+        error: error instanceof Error ? error.message : String(error),
       });
+      if ('id' in message) {
+        postResponse({
+          type: message.type,
+          id: message.id,
+          success: false,
+          error: 'VFS not initialized. Please load a bundle first.',
+        });
+      }
+      return;
     }
-    return;
   }
 
   switch (message.type) {
@@ -1359,15 +1528,27 @@ async function handleMessage(
         tonkState = { status: 'ready', tonk: newTonk, manifest };
         log('info', 'Tonk state updated with new instance');
 
+        // Set ready state and resolve promise
+        isReady = true;
+        if (readyResolve) {
+          readyResolve();
+        }
+
         // Persist bundle bytes to survive service worker restarts
         await persistBundleBytes(bundleBytes);
         log('info', 'Bundle bytes persisted to IndexedDB');
+
+        // Broadcast ready state to all clients
+        await broadcastToClients({ type: 'swReady', autoInitialized: false });
 
         postResponse({
           type: 'loadBundle',
           id: message.id,
           success: true,
         });
+
+        // Process any queued messages
+        await processMessageQueue();
       } catch (error) {
         log('error', 'Failed to load bundle', {
           id: message.id,
@@ -1471,15 +1652,27 @@ async function handleMessage(
         tonkState = { status: 'ready', tonk, manifest };
         log('info', 'Tonk state updated to ready from URL');
 
+        // Set ready state and resolve promise
+        isReady = true;
+        if (readyResolve) {
+          readyResolve();
+        }
+
         // Persist bundle bytes to survive service worker restarts
         await persistBundleBytes(manifestBytes);
         log('info', 'Bundle bytes persisted to IndexedDB');
+
+        // Broadcast ready state to all clients
+        await broadcastToClients({ type: 'swReady', autoInitialized: false });
 
         postResponse({
           type: 'initializeFromUrl',
           id: message.id,
           success: true,
         });
+
+        // Process any queued messages
+        await processMessageQueue();
       } catch (error) {
         log('error', 'Failed to initialize from URL', {
           id: message.id,

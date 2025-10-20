@@ -243,7 +243,6 @@ export async function setupTestWithServer(
   serverInstance: ServerInstance,
   additionalConfig?: Record<string, any>
 ): Promise<void> {
-  // Inject server configuration into the page before navigation
   const config = {
     port: serverInstance.port,
     wsUrl: serverInstance.wsUrl,
@@ -254,14 +253,11 @@ export async function setupTestWithServer(
   await page.addInitScript({
     content: `
       window.serverConfig = ${JSON.stringify(config)};
-      console.log('Server config injected:', window.serverConfig);
+      console.log('[TEST] Server config injected:', window.serverConfig);
     `,
   });
 
-  // Navigate to the test UI
   await page.goto('http://localhost:5173');
-
-  // Wait for the page to load
   await page.waitForLoadState('load');
 }
 

@@ -169,6 +169,9 @@ async function runDistributedTest(scenarioName: string) {
     const workers = await getWorkersFromCoordinator(coordinatorUrl);
     metricsAggregator.startPolling(workers, 5000);
 
+    console.log('Starting error monitoring...');
+    let lastErrorCount = 0;
+
     for (const phaseConfig of scenario.phases) {
       console.log(
         `\n${getPhaseEmoji(phaseConfig.phase)} PHASE: ${phaseConfig.phase.toUpperCase()}`
@@ -226,6 +229,29 @@ async function runDistributedTest(scenarioName: string) {
               `Errors: ${latestMetrics.aggregate.errorRate.toFixed(1)}%`
           );
 
+          const currentErrors = latestMetrics.workers.reduce(
+            (sum, w) => sum + w.errors.count,
+            0
+          );
+
+          if (currentErrors > lastErrorCount) {
+            const newErrors = currentErrors - lastErrorCount;
+            console.error(`🚨 ${newErrors} new error(s) detected!`);
+
+            for (const worker of latestMetrics.workers) {
+              if (
+                worker.errors.lastError &&
+                worker.errors.lastError.timestamp > Date.now() - 15000
+              ) {
+                console.error(
+                  `  └─ [${worker.workerId}] ${worker.errors.lastError.type}: ${worker.errors.lastError.message}`
+                );
+              }
+            }
+
+            lastErrorCount = currentErrors;
+          }
+
           if (phaseConfig.phase === 'stress') {
             if (latestMetrics.aggregate.errorRate > 10) {
               console.log(
@@ -280,6 +306,9 @@ async function runDistributedTest(scenarioName: string) {
 
     metricsAggregator.stopPolling();
 
+    console.log('Collecting final error data from workers...');
+    await metricsAggregator.collectErrors(workers);
+
     console.log('Generating report...');
     const report = await metricsAggregator.generateReport(
       scenarioName,
@@ -317,6 +346,47 @@ async function runDistributedTest(scenarioName: string) {
       duration: Date.now() - reportStart,
       status: 'completed',
     });
+
+    if (report.errorReport && report.errorReport.totalErrors > 0) {
+      console.log('\n⚠️  ERROR SUMMARY');
+      console.log('='.repeat(80));
+      console.log(`Total Errors: ${report.errorReport.totalErrors}`);
+      console.log('\nErrors by Type:');
+      Object.entries(report.errorReport.errorsByType).forEach(
+        ([type, count]) => {
+          console.log(`  ${type}: ${count}`);
+        }
+      );
+      console.log('\nErrors by Worker:');
+      Object.entries(report.errorReport.errorsByWorker).forEach(
+        ([worker, count]) => {
+          console.log(`  ${worker}: ${count}`);
+        }
+      );
+      console.log('\nErrors by Phase:');
+      Object.entries(report.errorReport.errorsByPhase).forEach(
+        ([phase, count]) => {
+          console.log(`  ${phase}: ${count}`);
+        }
+      );
+
+      if (report.errorReport.criticalErrors.length > 0) {
+        console.log(
+          `\n🔴 Critical Errors (${report.errorReport.criticalErrors.length}):`
+        );
+        report.errorReport.criticalErrors.slice(0, 5).forEach(e => {
+          console.log(`  [${new Date(e.timestamp).toISOString()}]`);
+          console.log(`  Worker: ${e.context?.workerId || 'unknown'}`);
+          console.log(`  Type: ${e.type}`);
+          console.log(`  Message: ${e.message}`);
+          if (e.stack) {
+            console.log(`  Stack: ${e.stack.split('\n')[0]}`);
+          }
+          console.log('');
+        });
+      }
+      console.log('='.repeat(80));
+    }
 
     console.log('\n' + '='.repeat(80));
     console.log('TEST SUMMARY');

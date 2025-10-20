@@ -246,11 +246,11 @@ class LoadGeneratorWorker {
 
     if (
       this.isRunning &&
-      newTargetConnections === this.currentTargetConnections &&
+      currentConnectionCount === newTargetConnections &&
       newOperationsPerMinute === this.currentOperationsPerMinute
     ) {
       console.log(
-        `Worker already running with ${this.currentTargetConnections} connections at ${this.currentOperationsPerMinute} ops/min`
+        `Worker already at target: ${currentConnectionCount}/${newTargetConnections} connections at ${this.currentOperationsPerMinute} ops/min`
       );
       return;
     }
@@ -284,7 +284,8 @@ class LoadGeneratorWorker {
 
         await this.connectionManager?.createConnections(
           count,
-          `${this.config.workerId}-conn`
+          `${this.config.workerId}-conn`,
+          currentConnectionCount + i
         );
 
         if (i + connectionsPerBatch < connectionsToAdd) {
@@ -345,7 +346,25 @@ class LoadGeneratorWorker {
 
         endOp();
       } catch (error) {
-        this.metricsCollector.recordError('operation-failed');
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        const errorStack = error instanceof Error ? error.stack : undefined;
+
+        this.metricsCollector.recordError(
+          'operation-failed',
+          errorMessage,
+          errorStack,
+          {
+            workerId: this.config.workerId,
+            timestamp: Date.now(),
+          }
+        );
+
+        console.error(`❌ [${this.config.workerId}] Operation failed:`, {
+          error: errorMessage,
+          stack: errorStack,
+          time: new Date().toISOString(),
+        });
       }
     }, operationIntervalMs);
   }
@@ -433,7 +452,9 @@ class LoadGeneratorWorker {
       },
       errors: {
         count: stats.totalErrors,
-        types: {},
+        types: this.metricsCollector.getErrorSummary().errorsByType,
+        details: this.metricsCollector.getErrorDetails(),
+        lastError: this.metricsCollector.getErrorDetails().slice(-1)[0],
       },
     };
   }

@@ -113,6 +113,20 @@ export type VFSWorkerResponse =
       data?: Uint8Array;
       rootId?: string;
       error?: string;
+    }
+  | { type: 'swReady'; autoInitialized: boolean; needsBundle?: boolean }
+  | { type: 'swInitializing' }
+  | { type: 'needsReinit'; appSlug: string | null; reason: string }
+  | { type: 'disconnected' }
+  | { type: 'reconnecting'; attempt: number }
+  | { type: 'reconnected' }
+  | { type: 'reconnectionFailed' }
+  | { type: 'watchersReestablished'; count: number }
+  | {
+      type: 'messageQueued';
+      id?: string;
+      originalType: string;
+      queuePosition: number;
     };
 
 // Performance metrics types
