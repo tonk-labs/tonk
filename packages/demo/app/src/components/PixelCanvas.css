@@ -1,0 +1,177 @@
+.pixel-canvas-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+}
+
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+  background: white;
+  border-bottom: 2px solid #e5e7eb;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.canvas-title {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #1f2937;
+  text-align: center;
+}
+
+.instructions {
+  margin: 0.5rem 0 0 0;
+  font-size: 0.875rem;
+  color: #6b7280;
+  text-align: center;
+  font-style: italic;
+}
+
+.toolbar-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.color-picker-section {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.color-label {
+  font-weight: 600;
+  color: #374151;
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.color-picker-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.color-picker {
+  width: 60px;
+  height: 40px;
+  border: 2px solid #d1d5db;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.color-picker:hover {
+  border-color: #9ca3af;
+}
+
+.color-picker:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.color-value {
+  font-family: 'Courier New', monospace;
+  font-size: 0.875rem;
+  color: #374151;
+  font-weight: 500;
+}
+
+.canvas-wrapper {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 2rem;
+  overflow: auto;
+  background: #f9fafb;
+}
+
+.pixel-canvas {
+  cursor: pointer;
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+  border: 2px solid #d1d5db;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  background: white;
+  
+  /* Default mobile size - actual canvas pixels scaled to CSS pixels */
+  width: 320px;
+  height: 480px;
+  max-width: 90vw;
+}
+
+/* Desktop - scale up to max 1024px width */
+@media (min-width: 769px) {
+  .pixel-canvas {
+    /* Max width 1024px, maintaining 2:3 aspect ratio */
+    width: min(1024px, 95vw);
+    height: calc(min(1024px, 95vw) * 1.5);
+  }
+}
+
+.clear-btn {
+  padding: 0.5rem 1.5rem;
+  background: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clear-btn:hover {
+  background: #dc2626;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.clear-btn:active {
+  transform: scale(0.98);
+}
+
+@media (max-width: 768px) {
+  .toolbar {
+    padding: 0.75rem;
+  }
+
+  .canvas-title {
+    font-size: 1.125rem;
+  }
+
+  .toolbar-controls {
+    gap: 1rem;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .color-picker-section {
+    justify-content: center;
+    width: auto;
+  }
+
+  .canvas-wrapper {
+    padding: 1rem;
+  }
+
+  .pixel-canvas {
+    width: min(90vw, 320px);
+    height: min(135vw, 480px);
+  }
+
+  .clear-btn {
+    width: 100%;
+  }
+}
+
