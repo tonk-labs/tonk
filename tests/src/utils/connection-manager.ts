@@ -53,12 +53,15 @@ export class ConnectionManager {
    */
   async createConnections(
     count: number,
-    prefix: string = 'conn'
+    prefix: string = 'conn',
+    startIndex: number = 0
   ): Promise<string[]> {
     const connectionIds: string[] = [];
     const startTime = Date.now();
 
-    console.log(`Creating ${count} connections with prefix "${prefix}"...`);
+    console.log(
+      `Creating ${count} connections with prefix "${prefix}" starting at index ${startIndex}...`
+    );
 
     // Create connections in parallel batches to avoid overwhelming the browser
     const batchSize = 10;
@@ -67,7 +70,7 @@ export class ConnectionManager {
       const batchPromises = [];
 
       for (let j = 0; j < batchCount; j++) {
-        const index = i + j;
+        const index = startIndex + i + j;
         const connId = `${prefix}-${index}`;
         batchPromises.push(this.createSingleConnection(connId));
         connectionIds.push(connId);

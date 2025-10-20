@@ -246,11 +246,11 @@ class LoadGeneratorWorker {
 
     if (
       this.isRunning &&
-      newTargetConnections === this.currentTargetConnections &&
+      currentConnectionCount === newTargetConnections &&
       newOperationsPerMinute === this.currentOperationsPerMinute
     ) {
       console.log(
-        `Worker already running with ${this.currentTargetConnections} connections at ${this.currentOperationsPerMinute} ops/min`
+        `Worker already at target: ${currentConnectionCount}/${newTargetConnections} connections at ${this.currentOperationsPerMinute} ops/min`
       );
       return;
     }
@@ -284,7 +284,8 @@ class LoadGeneratorWorker {
 
         await this.connectionManager?.createConnections(
           count,
-          `${this.config.workerId}-conn`
+          `${this.config.workerId}-conn`,
+          currentConnectionCount + i
         );
 
         if (i + connectionsPerBatch < connectionsToAdd) {
