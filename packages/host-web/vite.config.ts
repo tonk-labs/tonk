@@ -3,14 +3,15 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   base: './',
+  root: 'src',
 
   build: {
     target: 'esnext',
     outDir: '../dist',
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'src/index.html'),
-        '404': resolve(__dirname, 'src/404.html'),
+        main: resolve(__dirname, 'src', 'index.html'),
+        '404': resolve(__dirname, 'src', '404.html'),
       },
       output: {
         entryFileNames: `[name].js`,
@@ -30,6 +31,9 @@ export default defineConfig({
       process.env.NODE_ENV === 'production'
         ? 'https://relay.tonk.xyz'
         : 'http://localhost:8081'
+    ),
+    'window.TONK_SERVE_LOCAL': JSON.stringify(
+      process.env.NODE_ENV !== 'production'
     ),
   },
   resolve: {

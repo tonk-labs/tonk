@@ -115,6 +115,7 @@
         50% {
           opacity: 1;
         }
+
         51%,
         100% {
           opacity: 0;
@@ -254,6 +255,7 @@
         0% {
           transform: rotate(0deg);
         }
+
         100% {
           transform: rotate(360deg);
         }
@@ -948,7 +950,7 @@
                   messageHandler
                 );
                 reject(new Error('Timeout waiting for loadBundle response'));
-              }, 30000);
+              }, 120000);
             });
 
             if (!tempLoadResponse.success) {
@@ -1035,7 +1037,7 @@
                 messageHandler
               );
               reject(new Error('Timeout waiting for loadBundle response'));
-            }, 30000);
+            }, 120000);
           });
 
           if (!loadResponse.success) {
@@ -1223,14 +1225,14 @@
               bundleBytes: arrayBuffer,
             });
 
-            // Timeout after 30 seconds
+            // Timeout after 120 seconds for large bundles
             setTimeout(() => {
               navigator.serviceWorker.removeEventListener(
                 'message',
                 messageHandler
               );
               reject(new Error('Timeout waiting for loadBundle response'));
-            }, 30000);
+            }, 120000);
           });
 
           if (response.success) {
@@ -1433,14 +1435,14 @@
                 // Could add wasmUrl and wsUrl params here if needed
               });
 
-              // Timeout after 30 seconds
+              // Timeout after 120 seconds for large bundles
               setTimeout(() => {
                 navigator.serviceWorker.removeEventListener(
                   'message',
                   messageHandler
                 );
                 reject(new Error('Timeout waiting for initialization'));
-              }, 30000);
+              }, 120000);
             });
 
             if (response.success) {
@@ -1574,6 +1576,7 @@
       })();
     </script>
   </head>
+
   <body>
     <div class="bios-container">
       <div class="version-text">TONK HOST WEB version 0.1.0</div>
@@ -1595,6 +1598,7 @@
 
         <div style="margin-top: 20px">
           <button
+            id="share-button"
             class="btn primary"
             onclick="showShareDialog()"
             style="font-size: 16px; padding: 10px 20px; margin-right: 10px"
@@ -1602,6 +1606,7 @@
             Share Tonk
           </button>
           <button
+            id="new-button"
             class="btn primary"
             onclick="newTonk()"
             style="font-size: 16px; padding: 10px 20px"
@@ -1723,4 +1728,36 @@
       <div style="color: #999; margin-top: 15px">Preparing tonk...</div>
     </div>
   </body>
+  <script>
+    setTimeout(() => {
+      if (window.TONK_SERVE_LOCAL) {
+        // Update share button to "Export Tonk" and change behavior
+        const shareButton = document.getElementById('share-button');
+        shareButton.textContent = 'Export Tonk';
+        shareButton.removeAttribute('onclick');
+        shareButton.addEventListener('click', async () => {
+          await downloadTonk();
+        });
+
+        // Update new tonk button to skip name dialog
+        const newButton = document.getElementById('new-button');
+        newButton.removeAttribute('onclick');
+        newButton.addEventListener('click', async () => {
+          // Auto-generate name based on timestamp
+          const timestamp = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
+          const tonkName = `tonk-${timestamp}`;
+
+          const dialog = document.getElementById('name-dialog');
+          const hasLoadedBundles = availableApps.length > 0;
+          dialog.dataset.hasLoadedBundles = hasLoadedBundles;
+
+          await createNewTonk(tonkName);
+        });
+
+        console.log(
+          'DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE DEV MODE'
+        );
+      }
+    }, 400);
+  </script>
 </html>
