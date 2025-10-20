@@ -368,16 +368,6 @@ async function autoInitializeFromCache() {
     log('info', 'Websocket connected');
     startHealthMonitoring();
 
-    // Connect to websocket
-    wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
-    log('info', 'Connecting to websocket...', {
-      wsUrl,
-      localRootId: manifest.rootId,
-    });
-    await tonk.connectWebsocket(wsUrl);
-    log('info', 'Websocket connected');
-    startHealthMonitoring();
-
     // Wait for initial sync
     let syncAttempts = 0;
     const maxAttempts = 20;
@@ -426,7 +416,7 @@ async function autoInitializeFromCache() {
 // Start auto-initialization (non-blocking)
 autoInitializeFromCache();
 
-self.addEventListener('install', event => {
+self.addEventListener('install', () => {
   log('info', 'Service worker installing');
   console.log('🔧 SERVICE WORKER: Installing SW');
   (self as any).skipWaiting();
@@ -459,10 +449,7 @@ self.addEventListener('activate', event => {
   );
 });
 
-const targetToResponse = async (
-  target: any,
-  path?: string
-): Promise<Response> => {
+const targetToResponse = async (target: any): Promise<Response> => {
   if (target.bytes) {
     // target.bytes is a base64 string, decode it to binary for Response
     const binaryString = atob(target.bytes);
@@ -633,7 +620,7 @@ const determinePath = (url: URL): string => {
               hasContent: !!target.content,
               hasBytes: !!target.bytes,
             });
-            return targetToResponse(target, path);
+            return targetToResponse(target);
           }
 
           log('info', 'File exists, attempting to read from Tonk', {
@@ -649,7 +636,7 @@ const determinePath = (url: URL): string => {
               : 'unknown',
           });
 
-          const response = targetToResponse(target, path);
+          const response = targetToResponse(target);
           log('info', 'Created response for file', {
             filePath: `/app/${path}`,
             responseType: target.bytes ? 'binary' : 'text',
