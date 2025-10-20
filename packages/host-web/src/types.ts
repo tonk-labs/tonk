@@ -107,8 +107,12 @@ export type VFSWorkerResponse =
       data?: string;
       error?: string;
     }
+  | { type: 'ready'; needsBundle?: boolean }
   | { type: 'disconnected' }
   | { type: 'reconnecting'; attempt: number }
   | { type: 'reconnected' }
   | { type: 'reconnectionFailed' }
-  | { type: 'watchersReestablished'; count: number };
+  | { type: 'watchersReestablished'; count: number }
+  | { type: 'swReady'; autoInitialized: boolean; needsBundle?: boolean }
+  | { type: 'swInitializing' }
+  | { type: 'needsReinit'; appSlug: string | null; reason: string };

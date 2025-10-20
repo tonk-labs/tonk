@@ -35,6 +35,13 @@ export class ConnectionManager {
   private connections: Map<string, ConnectionInfo> = new Map();
   private browser: Browser;
   private serverInstance: ServerInstance;
+  private errorLog: Array<{
+    timestamp: number;
+    connectionId: string;
+    type: string;
+    message: string;
+    stack?: string;
+  }> = [];
 
   constructor(browser: Browser, serverInstance: ServerInstance) {
     this.browser = browser;
@@ -46,12 +53,15 @@ export class ConnectionManager {
    */
   async createConnections(
     count: number,
-    prefix: string = 'conn'
+    prefix: string = 'conn',
+    startIndex: number = 0
   ): Promise<string[]> {
     const connectionIds: string[] = [];
     const startTime = Date.now();
 
-    console.log(`Creating ${count} connections with prefix "${prefix}"...`);
+    console.log(
+      `Creating ${count} connections with prefix "${prefix}" starting at index ${startIndex}...`
+    );
 
     // Create connections in parallel batches to avoid overwhelming the browser
     const batchSize = 10;
@@ -60,7 +70,7 @@ export class ConnectionManager {
       const batchPromises = [];
 
       for (let j = 0; j < batchCount; j++) {
-        const index = i + j;
+        const index = startIndex + i + j;
         const connId = `${prefix}-${index}`;
         batchPromises.push(this.createSingleConnection(connId));
         connectionIds.push(connId);
@@ -120,13 +130,36 @@ export class ConnectionManager {
 
       // Setup error monitoring
       page.on('pageerror', error => {
-        console.error(`[${id}] Page error:`, error.message);
+        const errorDetail = {
+          timestamp: Date.now(),
+          connectionId: id,
+          type: 'page-error',
+          message: error.message,
+          stack: error.stack,
+        };
+        this.errorLog.push(errorDetail);
+        console.error(`❌ [${id}] Page error:`, {
+          message: error.message,
+          stack: error.stack,
+          time: new Date().toISOString(),
+        });
         connInfo.errorCount++;
         connInfo.isHealthy = false;
       });
 
       page.on('console', msg => {
         if (msg.type() === 'error') {
+          const errorDetail = {
+            timestamp: Date.now(),
+            connectionId: id,
+            type: 'console-error',
+            message: msg.text(),
+          };
+          this.errorLog.push(errorDetail);
+          console.error(`❌ [${id}] Console error:`, {
+            message: msg.text(),
+            time: new Date().toISOString(),
+          });
           connInfo.errorCount++;
         }
       });
@@ -156,7 +189,19 @@ export class ConnectionManager {
       success = true;
       conn.operationCount++;
     } catch (error) {
-      console.error(`[${connectionId}] Operation failed:`, error);
+      const errorDetail = {
+        timestamp: Date.now(),
+        connectionId,
+        type: 'operation-failed',
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      };
+      this.errorLog.push(errorDetail);
+      console.error(`❌ [${connectionId}] Operation failed:`, {
+        message: errorDetail.message,
+        stack: errorDetail.stack,
+        time: new Date().toISOString(),
+      });
       conn.errorCount++;
       conn.isHealthy = false;
     }
@@ -421,5 +466,13 @@ OPERATIONS:
 `;
 
     return report;
+  }
+
+  getErrorLog() {
+    return [...this.errorLog];
+  }
+
+  getRecentErrors(limit: number = 10) {
+    return this.errorLog.slice(-limit);
   }
 }

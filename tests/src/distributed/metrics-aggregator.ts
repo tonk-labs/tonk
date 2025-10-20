@@ -16,6 +16,12 @@ export class MetricsAggregator {
   private testStartTime: number;
   private testName: string;
   private outputDir: string;
+  private errorLog: Array<{
+    timestamp: number;
+    workerId?: string;
+    phase?: string;
+    error: any;
+  }> = [];
 
   constructor(relayUrl: string, testName: string, outputDir?: string) {
     this.relayUrl = relayUrl;
@@ -191,6 +197,57 @@ export class MetricsAggregator {
     return [...this.metricsHistory];
   }
 
+  async collectErrors(workers: WorkerInfo[]): Promise<void> {
+    for (const worker of workers) {
+      try {
+        const metrics = await this.fetchWorkerMetrics(worker);
+        if (metrics?.errors?.details) {
+          metrics.errors.details.forEach(error => {
+            this.errorLog.push({
+              timestamp: error.timestamp,
+              workerId: worker.workerId,
+              error,
+            });
+          });
+        }
+      } catch (err) {
+        console.error(`Failed to fetch errors from ${worker.workerId}:`, err);
+      }
+    }
+  }
+
+  generateErrorReport(): {
+    totalErrors: number;
+    errorsByType: { [key: string]: number };
+    errorsByWorker: { [workerId: string]: number };
+    recentErrors: any[];
+    criticalErrors: any[];
+  } {
+    const errorsByType: { [key: string]: number } = {};
+    const errorsByWorker: { [workerId: string]: number } = {};
+    const criticalErrors: any[] = [];
+
+    this.errorLog.forEach(({ workerId, error }) => {
+      errorsByType[error.type] = (errorsByType[error.type] || 0) + 1;
+
+      if (workerId) {
+        errorsByWorker[workerId] = (errorsByWorker[workerId] || 0) + 1;
+      }
+
+      if (error.stack || ['page-error', 'crash'].includes(error.type)) {
+        criticalErrors.push({ workerId, ...error });
+      }
+    });
+
+    return {
+      totalErrors: this.errorLog.length,
+      errorsByType,
+      errorsByWorker,
+      recentErrors: this.errorLog.slice(-50),
+      criticalErrors,
+    };
+  }
+
   getMetricsSummary(): {
     totalSamples: number;
     duration: number;
@@ -324,6 +381,15 @@ export class MetricsAggregator {
         avgLatency: w.latency.mean,
       })) || [];
 
+    const errorReport = this.generateErrorReport();
+    const errorsByPhase: { [phase: string]: number } = {};
+    phases.forEach(p => {
+      const phaseErrors = this.errorLog.filter(
+        e => e.timestamp >= p.startTime && e.timestamp <= p.endTime
+      );
+      errorsByPhase[p.phase] = phaseErrors.length;
+    });
+
     const report: TestReport = {
       testName: this.testName,
       scenario,
@@ -354,6 +420,20 @@ export class MetricsAggregator {
         totalCost: 0,
       },
       workerStats,
+      errorReport: {
+        totalErrors: errorReport.totalErrors,
+        errorsByType: errorReport.errorsByType,
+        errorsByWorker: errorReport.errorsByWorker,
+        errorsByPhase,
+        criticalErrors: errorReport.criticalErrors.map(e => ({
+          timestamp: e.timestamp,
+          type: e.type,
+          message: e.message,
+          stack: e.stack,
+          context: { workerId: e.workerId },
+        })),
+        allErrors: this.errorLog,
+      },
       metricsTimeSeries: this.metricsHistory,
     };
 
@@ -383,6 +463,25 @@ export class MetricsAggregator {
     const logPath = join(this.outputDir, 'test.log');
     await fs.writeFile(logPath, this.generateLogSummary(report));
     files.push(logPath);
+
+    if (report.errorReport) {
+      const errorsPath = join(this.outputDir, 'errors.json');
+      await fs.writeFile(
+        errorsPath,
+        JSON.stringify(report.errorReport, null, 2)
+      );
+      files.push(errorsPath);
+
+      const errorsLogPath = join(this.outputDir, 'errors.log');
+      const errorsLog = report.errorReport.allErrors
+        .map(
+          e =>
+            `[${new Date(e.timestamp).toISOString()}] ${e.workerId || 'unknown'} - ${e.error.type}: ${e.error.message}\n${e.error.stack || ''}\n`
+        )
+        .join('\n---\n');
+      await fs.writeFile(errorsLogPath, errorsLog);
+      files.push(errorsLogPath);
+    }
 
     console.log(`Report saved to ${this.outputDir}`);
     console.log(`Files: ${files.join(', ')}`);
@@ -462,6 +561,45 @@ ${report.workerStats
       `${w.workerId.padEnd(15)} | ${w.connections} conn | ${w.operations} ops | ${w.errors} err | ${w.avgLatency.toFixed(0)}ms avg`
   )
   .join('\n')}
+${
+  report.errorReport
+    ? `
+
+ERROR DETAILS
+-----------------------------------------------------------------
+Total Errors: ${report.errorReport.totalErrors}
+
+Errors by Type:
+${Object.entries(report.errorReport.errorsByType)
+  .map(([type, count]) => `  ${type}: ${count}`)
+  .join('\n')}
+
+Errors by Worker:
+${Object.entries(report.errorReport.errorsByWorker)
+  .map(([worker, count]) => `  ${worker}: ${count}`)
+  .join('\n')}
+
+Errors by Phase:
+${Object.entries(report.errorReport.errorsByPhase)
+  .map(([phase, count]) => `  ${phase}: ${count}`)
+  .join('\n')}
+${
+  report.errorReport.criticalErrors.length > 0
+    ? `
+Critical Errors (last 10):
+${report.errorReport.criticalErrors
+  .slice(-10)
+  .map(
+    e =>
+      `  [${new Date(e.timestamp).toISOString()}] ${e.context?.workerId || 'unknown'}: ${e.message}`
+  )
+  .join('\n')}
+`
+    : ''
+}
+`
+    : ''
+}
 
 =================================================================
 `.trim();

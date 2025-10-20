@@ -1,5 +1,19 @@
 import type { ConnectionStats } from '../utils/connection-manager';
 
+export interface ErrorDetail {
+  timestamp: number;
+  type: string;
+  message: string;
+  stack?: string;
+  context?: {
+    connectionId?: string;
+    operation?: string;
+    workerId?: string;
+    phase?: TestPhase;
+    [key: string]: any;
+  };
+}
+
 export interface WorkerConfig {
   workerId: string;
   coordinatorUrl: string;
@@ -54,6 +68,8 @@ export interface WorkerMetrics {
   errors: {
     count: number;
     types: { [key: string]: number };
+    details: ErrorDetail[];
+    lastError?: ErrorDetail;
   };
 }
 
@@ -221,6 +237,19 @@ export interface TestReport {
     error: string;
     context: any;
   }[];
+  errorReport?: {
+    totalErrors: number;
+    errorsByType: { [key: string]: number };
+    errorsByWorker: { [workerId: string]: number };
+    errorsByPhase: { [phase: string]: number };
+    criticalErrors: ErrorDetail[];
+    allErrors: Array<{
+      timestamp: number;
+      workerId?: string;
+      phase?: string;
+      error: ErrorDetail;
+    }>;
+  };
   metricsTimeSeries: AggregateMetrics[];
 }
 
