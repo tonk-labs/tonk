@@ -53,6 +53,16 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 const HEALTH_CHECK_INTERVAL = 5000;
 let continuousRetryEnabled = true;
 
+// Message queue for operations received before initialization
+interface QueuedMessage {
+  message: VFSWorkerMessage | { type: 'setAppSlug'; slug: string };
+  clientId: string;
+  timestamp: number;
+}
+
+let messageQueue: QueuedMessage[] = [];
+let isProcessingQueue = false;
+
 // Helper to get tonk instance when ready
 function getTonk(): { tonk: TonkCore; manifest: Manifest } | null {
   return tonkState.status === 'ready' ? tonkState : null;
@@ -463,6 +473,9 @@ async function autoInitializeFromCache() {
     if (autoInitResolve) {
       autoInitResolve();
     }
+
+    // Process any queued messages
+    await processMessageQueue();
   } catch (error) {
     log('error', 'Auto-initialization failed', {
       error: error instanceof Error ? error.message : String(error),
@@ -757,25 +770,107 @@ const determinePath = (url: URL): string => {
   }
 });
 
+// Process all queued messages in order
+async function processMessageQueue() {
+  if (isProcessingQueue || messageQueue.length === 0) {
+    return;
+  }
+
+  isProcessingQueue = true;
+  log('info', 'Processing message queue', {
+    queueSize: messageQueue.length,
+  });
+
+  // Process all queued messages in order
+  while (messageQueue.length > 0) {
+    const queued = messageQueue.shift()!;
+    const waitTime = Date.now() - queued.timestamp;
+
+    log('info', 'Processing queued message', {
+      type: queued.message.type,
+      waitTime: `${waitTime}ms`,
+      remainingInQueue: messageQueue.length,
+    });
+
+    try {
+      await processMessage(queued.message);
+    } catch (error) {
+      log('error', 'Error processing queued message', {
+        type: queued.message.type,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      // Send error response back to client
+      if ('id' in queued.message) {
+        await postResponse({
+          type: queued.message.type,
+          id: queued.message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  isProcessingQueue = false;
+  log('info', 'Message queue processing complete');
+}
+
 async function handleMessage(
   message: VFSWorkerMessage | { type: 'setAppSlug'; slug: string }
 ) {
   log('info', 'Received message', {
     type: message.type,
     id: 'id' in message ? message.id : 'N/A',
+    queueSize: messageQueue.length,
+    isReady,
+    autoInitCompleted,
   });
 
-  // Handle setAppSlug message separately
+  // Handle setAppSlug message separately - always process immediately
   if (message.type === 'setAppSlug') {
     appSlug = message.slug;
-
-    // Persist to IndexedDB so it survives service worker restarts
     await persistAppSlug(appSlug);
-
     log('info', 'App slug set and persisted', { slug: appSlug });
     return;
   }
 
+  // Messages that can trigger initialization
+  const initializingMessages = ['loadBundle', 'initializeFromUrl'];
+
+  // If we're not ready AND this isn't an initializing message, queue it
+  if (!isReady && !initializingMessages.includes(message.type)) {
+    log('info', 'Queueing message until VFS is ready', {
+      type: message.type,
+      queuePosition: messageQueue.length,
+    });
+
+    messageQueue.push({
+      message,
+      clientId: 'queued',
+      timestamp: Date.now(),
+    });
+
+    // Send acknowledgment that message was queued
+    if ('id' in message) {
+      await postResponse({
+        type: 'messageQueued' as any,
+        id: message.id,
+        originalType: message.type,
+        queuePosition: messageQueue.length,
+      });
+    }
+
+    return;
+  }
+
+  // Process the message immediately (either it's an init message or we're ready)
+  await processMessage(message);
+}
+
+async function processMessage(
+  message: VFSWorkerMessage | { type: 'setAppSlug'; slug: string }
+) {
   const allowedWhenUninitialized = [
     'init',
     'loadBundle',
@@ -1451,6 +1546,9 @@ async function handleMessage(
           id: message.id,
           success: true,
         });
+
+        // Process any queued messages
+        await processMessageQueue();
       } catch (error) {
         log('error', 'Failed to load bundle', {
           id: message.id,
@@ -1572,6 +1670,9 @@ async function handleMessage(
           id: message.id,
           success: true,
         });
+
+        // Process any queued messages
+        await processMessageQueue();
       } catch (error) {
         log('error', 'Failed to initialize from URL', {
           id: message.id,

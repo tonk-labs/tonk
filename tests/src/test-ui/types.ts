@@ -121,7 +121,13 @@ export type VFSWorkerResponse =
   | { type: 'reconnecting'; attempt: number }
   | { type: 'reconnected' }
   | { type: 'reconnectionFailed' }
-  | { type: 'watchersReestablished'; count: number };
+  | { type: 'watchersReestablished'; count: number }
+  | {
+      type: 'messageQueued';
+      id?: string;
+      originalType: string;
+      queuePosition: number;
+    };
 
 // Performance metrics types
 export interface MemoryMetrics {

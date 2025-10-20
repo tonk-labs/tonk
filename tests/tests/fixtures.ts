@@ -243,7 +243,6 @@ export async function setupTestWithServer(
   serverInstance: ServerInstance,
   additionalConfig?: Record<string, any>
 ): Promise<void> {
-  // Inject server configuration into the page before navigation
   const config = {
     port: serverInstance.port,
     wsUrl: serverInstance.wsUrl,
@@ -258,31 +257,8 @@ export async function setupTestWithServer(
     `,
   });
 
-  // Navigate to the test UI
   await page.goto('http://localhost:5173');
-
-  // Wait for the page to load
   await page.waitForLoadState('load');
-
-  // CRITICAL: Wait for VFS service to be ready
-  // console.log('[TEST] Waiting for VFS service to be ready...');
-  //
-  // try {
-  //   await page.waitForFunction(
-  //     () => (window as any).vfsService?.isReady() === true,
-  //     { timeout: 15000 }
-  //   );
-  //   console.log('[TEST] VFS service is ready');
-  // } catch (error) {
-  // Auto-init didn't complete, manually initialize
-  console.log('[TEST] Auto-init incomplete, manually initializing VFS...');
-  await page.evaluate(async config => {
-    const vfs = (window as any).vfsService;
-    if (vfs && !vfs.isReady()) {
-      await vfs.initialize(config.manifestUrl, config.wsUrl);
-    }
-  }, config);
-  // }
 }
 
 /**
