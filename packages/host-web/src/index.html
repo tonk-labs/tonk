@@ -399,7 +399,8 @@
       }
 
       // Show error screen
-      function showError(message) {
+      // Exposed globally so it can be called from cross-origin-drag-drop.js
+      window.showError = function showError(message) {
         document.getElementById('loading-screen').style.display = 'none';
         document.getElementById('boot-screen').style.display = 'none';
         document.getElementById('error-screen').style.display = 'block';
@@ -1174,7 +1175,9 @@
         }
       }
 
-      async function processTonkFile(file) {
+      // Process a .tonk file and load it into the service worker
+      // Exposed globally so it can be called from cross-origin-drag-drop.js
+      window.processTonkFile = async function processTonkFile(file) {
         console.log('Processing .tonk file:', file.name);
 
         showLoadingScreen('Loading bundle from file...');
@@ -1462,6 +1465,11 @@
 
           // Set up drag and drop (so user can drop a bundle)
           setupDragAndDrop();
+
+          // Set up cross-origin drag and drop from parent frame
+          if (window.setupCrossOriginDragDrop) {
+            window.setupCrossOriginDragDrop();
+          }
         }
 
         // Set up event listeners (do this regardless of scenario)
@@ -1574,6 +1582,13 @@
           showError('Service Workers are not supported in this browser.');
         }
       })();
+    </script>
+    <script type="module">
+      // Import and initialize cross-origin drag-drop handler
+      import { setupCrossOriginDragDrop } from './cross-origin-drag-drop.js';
+
+      // Expose to window so it can be called from main script
+      window.setupCrossOriginDragDrop = setupCrossOriginDragDrop;
     </script>
   </head>
 
