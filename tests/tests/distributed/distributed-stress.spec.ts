@@ -7,9 +7,12 @@ import type {
   ProvisionedInstance,
   TestPhase,
 } from '../../src/distributed/types';
-import { execSync } from 'child_process';
+import { execSync, exec as execCallback } from 'child_process';
+import { promisify } from 'util';
 import { join } from 'path';
 import { promises as fs } from 'fs';
+
+const exec = promisify(execCallback);
 
 const AWS_REGION = process.env.AWS_REGION || 'eu-north-1';
 const AWS_KEY_NAME = process.env.AWS_KEY_NAME || 'tonk-load-test';
@@ -221,35 +224,57 @@ async function runDistributedTest(scenarioName: string) {
 
         const latestMetrics = metricsAggregator.getLatestMetrics();
         if (latestMetrics) {
+          let syncInfo = '';
+          if (latestMetrics.aggregate.sync) {
+            const sync = latestMetrics.aggregate.sync;
+            const range = sync.valueRange
+              ? `[${sync.valueRange.min}-${sync.valueRange.max}]`
+              : '[?]';
+            syncInfo = ` | Counter: ${sync.sourceOfTruthValue} ${range} | Sync: ${sync.totalInSync}/${sync.totalInSync + sync.totalOutOfSync} (${(100 - sync.syncErrorRate).toFixed(1)}%)`;
+          } else {
+            syncInfo = ` | Errors: ${latestMetrics.aggregate.errorRate.toFixed(1)}%`;
+          }
+
           console.log(
             `  [${progress.toFixed(0)}%] ${(remaining / 1000 / 60).toFixed(1)}min remaining | ` +
-              `Connections: ${latestMetrics.aggregate.totalConnections}/${phaseConfig.targetConnections} | ` +
+              `Connections: ${latestMetrics.aggregate.healthyConnections}/${phaseConfig.targetConnections} | ` +
               `Ops: ${latestMetrics.aggregate.totalOperations} | ` +
-              `P95: ${latestMetrics.aggregate.latency.p95.toFixed(0)}ms | ` +
-              `Errors: ${latestMetrics.aggregate.errorRate.toFixed(1)}%`
+              `P95: ${latestMetrics.aggregate.latency.p95.toFixed(0)}ms` +
+              syncInfo
           );
 
-          const currentErrors = latestMetrics.workers.reduce(
-            (sum, w) => sum + w.errors.count,
-            0
-          );
+          const currentSyncErrors = latestMetrics.aggregate.sync
+            ? latestMetrics.aggregate.sync.totalOutOfSync
+            : 0;
 
-          if (currentErrors > lastErrorCount) {
-            const newErrors = currentErrors - lastErrorCount;
-            console.error(`🚨 ${newErrors} new error(s) detected!`);
+          if (currentSyncErrors > lastErrorCount) {
+            const newErrors = currentSyncErrors - lastErrorCount;
+            console.error(`🚨 ${newErrors} new sync error(s) detected!`);
 
-            for (const worker of latestMetrics.workers) {
-              if (
-                worker.errors.lastError &&
-                worker.errors.lastError.timestamp > Date.now() - 15000
-              ) {
-                console.error(
-                  `  └─ [${worker.workerId}] ${worker.errors.lastError.type}: ${worker.errors.lastError.message}`
-                );
+            if (latestMetrics.aggregate.sync) {
+              const sync = latestMetrics.aggregate.sync;
+              console.error(
+                `  Source of truth: ${sync.sourceOfTruthValue}, ` +
+                  `Range: ${sync.valueRange?.min ?? '?'}-${sync.valueRange?.max ?? '?'}`
+              );
+
+              const sortedValues = Object.entries(sync.globalDistribution)
+                .map(([val, count]) => ({ value: parseInt(val, 10), count }))
+                .sort((a, b) => b.count - a.count);
+
+              if (sortedValues.length > 0) {
+                console.error(`  Distribution (top 5):`);
+                for (const { value, count } of sortedValues.slice(0, 5)) {
+                  const pct = (
+                    (count / (sync.totalInSync + sync.totalOutOfSync)) *
+                    100
+                  ).toFixed(1);
+                  console.error(`    ${value}: ${count} clients (${pct}%)`);
+                }
               }
             }
 
-            lastErrorCount = currentErrors;
+            lastErrorCount = currentSyncErrors;
           }
 
           if (phaseConfig.phase === 'stress') {
@@ -287,6 +312,9 @@ async function runDistributedTest(scenarioName: string) {
           `  Total Connections: ${phaseMetrics.aggregate.totalConnections}`
         );
         console.log(
+          `  Healthy Connections: ${phaseMetrics.aggregate.healthyConnections}`
+        );
+        console.log(
           `  Total Operations: ${phaseMetrics.aggregate.totalOperations}`
         );
         console.log(
@@ -295,9 +323,25 @@ async function runDistributedTest(scenarioName: string) {
         console.log(
           `  P95 Latency: ${phaseMetrics.aggregate.latency.p95.toFixed(2)}ms`
         );
-        console.log(
-          `  Error Rate: ${phaseMetrics.aggregate.errorRate.toFixed(2)}%`
-        );
+        if (phaseMetrics.aggregate.sync) {
+          const sync = phaseMetrics.aggregate.sync;
+          console.log(`  Counter Value: ${sync.sourceOfTruthValue}`);
+          console.log(
+            `  Sync Success Rate: ${(100 - sync.syncErrorRate).toFixed(2)}%`
+          );
+          console.log(
+            `  In Sync: ${sync.totalInSync}/${sync.totalInSync + sync.totalOutOfSync}`
+          );
+          if (sync.valueRange) {
+            console.log(
+              `  Value Range: ${sync.valueRange.min} - ${sync.valueRange.max}`
+            );
+          }
+        } else {
+          console.log(
+            `  Error Rate: ${phaseMetrics.aggregate.errorRate.toFixed(2)}%`
+          );
+        }
       }
     }
 
@@ -519,110 +563,106 @@ async function deployWorkersToInstances(
     'scripts/distributed/setup-worker.sh'
   );
 
-  for (let i = 0; i < instances.length; i++) {
-    const instance = instances[i];
-    const workerId = `worker-${i}`;
+  await Promise.all(
+    instances.map(async (instance, i) => {
+      const workerId = `worker-${i}`;
 
-    console.log(
-      `\n[${i + 1}/${instances.length}] Deploying to ${instance.instanceId} (${instance.publicIp})...`
-    );
-
-    const sshBase = `ssh -o StrictHostKeyChecking=no -i ${keyPath} ec2-user@${instance.publicIp}`;
-
-    try {
-      console.log('  Creating worker directory structure...');
-      execSync(`${sshBase} "mkdir -p ~/worker"`, { stdio: 'pipe' });
-
-      console.log('  Copying setup script...');
-      execSync(
-        `scp -o StrictHostKeyChecking=no -i ${keyPath} ${setupScriptPath} ec2-user@${instance.publicIp}:~/`,
-        { stdio: 'pipe' }
+      console.log(
+        `\n[${i + 1}/${instances.length}] Deploying to ${instance.instanceId} (${instance.publicIp})...`
       );
 
-      console.log('  Running setup script...');
-      execSync(`${sshBase} "bash ~/setup-worker.sh"`, { stdio: 'inherit' });
+      const sshBase = `ssh -o StrictHostKeyChecking=no -i ${keyPath} ec2-user@${instance.publicIp}`;
 
-      console.log('  Copying package.json...');
-      const packageJsonPath = join(process.cwd(), 'package.json');
-      execSync(
-        `scp -o StrictHostKeyChecking=no -i ${keyPath} ${packageJsonPath} ec2-user@${instance.publicIp}:~/worker/package.json`,
-        { stdio: 'pipe' }
-      );
+      try {
+        console.log(`  [${workerId}] Creating worker directory structure...`);
+        await exec(`${sshBase} "mkdir -p ~/worker"`);
 
-      console.log('  Copying source files...');
-      const srcDir = join(process.cwd(), 'src');
-      const testsDir = join(process.cwd(), 'tests');
-      const rsyncIgnore = join(process.cwd(), '.rsyncignore');
-
-      execSync(
-        `rsync -av --exclude-from=${rsyncIgnore} -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${srcDir} ec2-user@${instance.publicIp}:~/worker/`,
-        { stdio: 'inherit' }
-      );
-      execSync(
-        `rsync -av --exclude-from=${rsyncIgnore} -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${testsDir} ec2-user@${instance.publicIp}:~/worker/`,
-        { stdio: 'inherit' }
-      );
-
-      console.log('  Copying config files...');
-      const configFiles = [
-        'vite.config.ts',
-        'vite.sw.config.ts',
-        'tsconfig.json',
-        'tsconfig.node.json',
-      ];
-      for (const configFile of configFiles) {
-        const configPath = join(process.cwd(), configFile);
-        execSync(
-          `scp -o StrictHostKeyChecking=no -i ${keyPath} ${configPath} ec2-user@${instance.publicIp}:~/worker/${configFile}`,
-          { stdio: 'pipe' }
+        console.log(`  [${workerId}] Copying setup script...`);
+        await exec(
+          `scp -o StrictHostKeyChecking=no -i ${keyPath} ${setupScriptPath} ec2-user@${instance.publicIp}:~/`
         );
-      }
 
-      console.log('  Copying monorepo packages...');
-      const packagesDir = join(process.cwd(), '../packages');
-      execSync(`${sshBase} "mkdir -p ~/packages"`, { stdio: 'pipe' });
+        console.log(`  [${workerId}] Running setup script...`);
+        await exec(`${sshBase} "bash ~/setup-worker.sh"`);
 
-      const requiredPackages = ['host-web', 'core-js', 'core'];
-      for (const pkg of requiredPackages) {
-        const packagePath = join(packagesDir, pkg);
-        execSync(
-          `rsync -av --exclude-from=${rsyncIgnore} -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${packagePath} ec2-user@${instance.publicIp}:~/packages/`,
-          { stdio: 'inherit' }
+        console.log(`  [${workerId}] Copying package.json...`);
+        const packageJsonPath = join(process.cwd(), 'package.json');
+        await exec(
+          `scp -o StrictHostKeyChecking=no -i ${keyPath} ${packageJsonPath} ec2-user@${instance.publicIp}:~/worker/package.json`
         );
+
+        console.log(`  [${workerId}] Copying source files...`);
+        const srcDir = join(process.cwd(), 'src');
+        const testsDir = join(process.cwd(), 'tests');
+        const rsyncIgnore = join(process.cwd(), '.rsyncignore');
+
+        await exec(
+          `rsync -av --exclude-from=${rsyncIgnore} -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${srcDir} ec2-user@${instance.publicIp}:~/worker/`
+        );
+        await exec(
+          `rsync -av --exclude-from=${rsyncIgnore} -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${testsDir} ec2-user@${instance.publicIp}:~/worker/`
+        );
+
+        console.log(`  [${workerId}] Copying config files...`);
+        const configFiles = [
+          'vite.config.ts',
+          'vite.sw.config.ts',
+          'tsconfig.json',
+          'tsconfig.node.json',
+        ];
+        await Promise.all(
+          configFiles.map(configFile => {
+            const configPath = join(process.cwd(), configFile);
+            return exec(
+              `scp -o StrictHostKeyChecking=no -i ${keyPath} ${configPath} ec2-user@${instance.publicIp}:~/worker/${configFile}`
+            );
+          })
+        );
+
+        console.log(`  [${workerId}] Copying monorepo packages...`);
+        const packagesDir = join(process.cwd(), '../packages');
+        await exec(`${sshBase} "mkdir -p ~/packages"`);
+
+        const requiredPackages = ['host-web', 'core-js', 'core'];
+        await Promise.all(
+          requiredPackages.map(pkg => {
+            const packagePath = join(packagesDir, pkg);
+            return exec(
+              `rsync -av --exclude-from=${rsyncIgnore} -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${packagePath} ec2-user@${instance.publicIp}:~/packages/`
+            );
+          })
+        );
+
+        console.log(`  [${workerId}] Installing dependencies...`);
+        await exec(`${sshBase} "cd ~/worker && pnpm install"`);
+
+        console.log(`  [${workerId}] Installing Playwright browsers...`);
+        await exec(
+          `${sshBase} "cd ~/worker && npx playwright install chromium"`
+        );
+
+        console.log(`  [${workerId}] Starting Vite dev server...`);
+        await exec(
+          `${sshBase} "cd ~/worker && nohup pnpm dev --host 0.0.0.0 --port 5173 > vite.log 2>&1 &"`
+        );
+
+        console.log(`  [${workerId}] Waiting for Vite server to be ready...`);
+        await waitForViteReady(instance.publicIp, 5173, 60000);
+
+        console.log(`  [${workerId}] Starting worker...`);
+        const workerCmd = `cd ~/worker && nohup npx tsx src/distributed/load-generator-worker.ts ${workerId} ${coordinatorUrl} ${relayUrl} ${connectionsPerWorker} 60 ${instance.publicIp} > worker.log 2>&1 &`;
+        await exec(`${sshBase} -f "${workerCmd}"`);
+
+        console.log(`  ✓ Worker ${workerId} deployed and started`);
+      } catch (error) {
+        console.error(
+          `  ✗ Failed to deploy worker to ${instance.instanceId}:`,
+          error
+        );
+        throw error;
       }
-
-      console.log('  Installing dependencies...');
-      execSync(`${sshBase} "cd ~/worker && pnpm install"`, {
-        stdio: 'inherit',
-      });
-
-      console.log('  Installing Playwright browsers...');
-      execSync(`${sshBase} "cd ~/worker && npx playwright install chromium"`, {
-        stdio: 'inherit',
-      });
-
-      console.log('  Starting Vite dev server...');
-      execSync(
-        `${sshBase} -f "cd ~/worker && nohup pnpm dev --host 0.0.0.0 --port 5173 > vite.log 2>&1 &"`,
-        { stdio: 'inherit' }
-      );
-
-      console.log('  Waiting for Vite server to be ready...');
-      await waitForViteReady(instance.publicIp, 5173, 60000);
-
-      console.log('  Starting worker...');
-      const workerCmd = `cd ~/worker && nohup npx tsx src/distributed/load-generator-worker.ts ${workerId} ${coordinatorUrl} ${relayUrl} ${connectionsPerWorker} 60 ${instance.publicIp} > worker.log 2>&1 &`;
-      execSync(`${sshBase} -f "${workerCmd}"`, { stdio: 'inherit' });
-
-      console.log(`  ✓ Worker ${workerId} deployed and started`);
-    } catch (error) {
-      console.error(
-        `  ✗ Failed to deploy worker to ${instance.instanceId}:`,
-        error
-      );
-      throw error;
-    }
-  }
+    })
+  );
 
   console.log('\n✓ All workers deployed');
 }

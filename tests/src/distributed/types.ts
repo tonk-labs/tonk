@@ -71,6 +71,19 @@ export interface WorkerMetrics {
     details: ErrorDetail[];
     lastError?: ErrorDetail;
   };
+  sync?: {
+    sourceOfTruthValue: number | null;
+    inSync: boolean;
+    inSyncCount: number;
+    outOfSyncCount: number;
+    totalConnections: number;
+    valueDistribution: { [value: number]: number };
+    minValue: number | null;
+    maxValue: number | null;
+    medianValue: number | null;
+    modeValue: number | null;
+    lastCheckTimestamp: number;
+  };
 }
 
 export interface RelayMetrics {
@@ -108,6 +121,14 @@ export interface AggregateMetrics {
       relayRss: number;
       totalWorkerRss: number;
       totalRss: number;
+    };
+    sync?: {
+      sourceOfTruthValue: number | null;
+      totalInSync: number;
+      totalOutOfSync: number;
+      syncErrorRate: number;
+      valueRange: { min: number; max: number } | null;
+      globalDistribution: { [value: number]: number };
     };
   };
 }

@@ -353,25 +353,31 @@ export class AWSInfrastructure {
     console.log('Waiting for SSH to be ready on all instances...');
     const startTime = Date.now();
 
-    for (const instance of instances) {
-      console.log(
-        `  Checking ${instance.instanceId} (${instance.publicIp})...`
-      );
+    await Promise.all(
+      instances.map(async instance => {
+        console.log(
+          `  Checking ${instance.instanceId} (${instance.publicIp})...`
+        );
 
-      while (Date.now() - startTime < maxWaitTimeMs) {
-        try {
-          const { execSync } = await import('child_process');
-          execSync(
-            `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ${this.keyPath} ec2-user@${instance.publicIp} "echo ready"`,
-            { stdio: 'pipe', timeout: 10000 }
-          );
-          console.log(`  ✓ ${instance.instanceId} SSH ready`);
-          break;
-        } catch {
-          await new Promise(resolve => setTimeout(resolve, 5000));
+        while (Date.now() - startTime < maxWaitTimeMs) {
+          try {
+            const { execSync } = await import('child_process');
+            execSync(
+              `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ${this.keyPath} ec2-user@${instance.publicIp} "echo ready"`,
+              { stdio: 'pipe', timeout: 10000 }
+            );
+            console.log(`  ✓ ${instance.instanceId} SSH ready`);
+            return;
+          } catch {
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
         }
-      }
-    }
+
+        throw new Error(
+          `Timeout waiting for SSH on ${instance.instanceId} (${instance.publicIp})`
+        );
+      })
+    );
 
     console.log('✓ All instances have SSH ready');
   }

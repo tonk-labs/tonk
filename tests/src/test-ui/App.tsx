@@ -38,13 +38,14 @@ function getServerConfig(): ServerConfig {
 
   // Check URL parameters
   const params = new URLSearchParams(window.location.search);
-  const port = params.get('port') || '8081';
+  const port = params.get('port') || '8080';
   const portNum = parseInt(port, 10);
 
   const config = {
     port: portNum,
-    wsUrl: `ws://localhost:${portNum}`,
-    manifestUrl: `http://localhost:${portNum}/.manifest.tonk`,
+    wsUrl: 'ws://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080',
+    manifestUrl:
+      'http://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080/.manifest.tonk',
   };
 
   console.log('Using URL/default server config:', config);
@@ -218,7 +219,7 @@ function App() {
         type: 'application/octet-stream',
       });
       const response = await fetch(
-        `http://localhost:${state.serverConfig.port}/api/bundles`,
+        `http://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080/api/bundles`,
         {
           method: 'POST',
           headers: {
@@ -269,7 +270,7 @@ function App() {
 
       // Download from server
       const response = await fetch(
-        `http://localhost:${state.serverConfig.port}/api/bundles/${targetBundleId}/manifest`
+        `http://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080/api/bundles/${targetBundleId}/manifest`
       );
 
       if (!response.ok) {

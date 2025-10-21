@@ -17,9 +17,12 @@ class LoadGeneratorWorker {
   private isRunning: boolean = false;
   private operationInterval?: NodeJS.Timeout;
   private heartbeatInterval?: NodeJS.Timeout;
+  private syncCheckInterval?: NodeJS.Timeout;
   private serverInstance: ServerInstance;
   private currentTargetConnections: number;
   private currentOperationsPerMinute: number;
+  private phaseStartTime: number = 0;
+  private sourceOfTruthConnectionId: string | null = null;
 
   constructor(config: WorkerConfig) {
     this.config = config;
@@ -32,7 +35,7 @@ class LoadGeneratorWorker {
     this.serverInstance = {
       process: null as any,
       port: parseInt(new URL(config.relayUrl).port) || 8080,
-      wsUrl: config.relayUrl,
+      wsUrl: config.relayUrl.replace(/^http/, 'ws'),
       manifestUrl: `${config.relayUrl}/.manifest.tonk`,
       testId: config.workerId,
     };
@@ -264,6 +267,7 @@ class LoadGeneratorWorker {
 
     if (!this.isRunning) {
       this.isRunning = true;
+      this.phaseStartTime = Date.now();
     }
 
     if (this.currentTargetConnections > currentConnectionCount) {
@@ -426,6 +430,67 @@ class LoadGeneratorWorker {
 
     const memUsage = process.memoryUsage();
 
+    let syncMetrics = undefined;
+    if (this.connectionManager && this.isRunning) {
+      const timeSinceStart = Date.now() - this.phaseStartTime;
+      if (timeSinceStart >= 30000) {
+        try {
+          if (!this.sourceOfTruthConnectionId) {
+            const connIds = this.connectionManager.getConnectionIds();
+            if (connIds.length > 0) {
+              this.sourceOfTruthConnectionId = connIds[0];
+            }
+          }
+
+          const syncResult = await this.connectionManager.verifySync(
+            this.sourceOfTruthConnectionId || undefined
+          );
+
+          const distributionObj: { [value: number]: number } = {};
+          for (const [value, count] of syncResult.valueDistribution.entries()) {
+            distributionObj[value] = count;
+          }
+
+          syncMetrics = {
+            sourceOfTruthValue: syncResult.sourceOfTruthValue,
+            inSync: syncResult.inSync,
+            inSyncCount: syncResult.inSyncCount,
+            outOfSyncCount: syncResult.outOfSyncCount,
+            totalConnections: syncResult.totalConnections,
+            valueDistribution: distributionObj,
+            minValue: syncResult.minValue,
+            maxValue: syncResult.maxValue,
+            medianValue: syncResult.medianValue,
+            modeValue: syncResult.modeValue,
+            lastCheckTimestamp: Date.now(),
+          };
+
+          if (!syncResult.inSync && syncResult.sampleOutliers.length > 0) {
+            console.warn(
+              `⚠️  [${this.config.workerId}] Sync drift detected: ${syncResult.outOfSyncCount}/${syncResult.totalConnections} out of sync`
+            );
+            console.warn(
+              `   Source of truth (${syncResult.sourceOfTruthId}): ${syncResult.sourceOfTruthValue}`
+            );
+            console.warn(
+              `   Range: ${syncResult.minValue} - ${syncResult.maxValue}, Median: ${syncResult.medianValue}, Mode: ${syncResult.modeValue}`
+            );
+            console.warn(`   Sample outliers:`);
+            for (const outlier of syncResult.sampleOutliers.slice(0, 3)) {
+              console.warn(
+                `     ${outlier.connectionId}: ${outlier.value} (drift: ${outlier.drift > 0 ? '+' : ''}${outlier.drift})`
+              );
+            }
+          }
+        } catch (error) {
+          console.warn(
+            'Failed to verify sync during metrics collection:',
+            error
+          );
+        }
+      }
+    }
+
     return {
       workerId: this.config.workerId,
       timestamp: Date.now(),
@@ -456,6 +521,7 @@ class LoadGeneratorWorker {
         details: this.metricsCollector.getErrorDetails(),
         lastError: this.metricsCollector.getErrorDetails().slice(-1)[0],
       },
+      sync: syncMetrics,
     };
   }
 

@@ -143,6 +143,8 @@ export class MetricsAggregator {
       0
     );
 
+    const syncMetrics = this.aggregateSyncMetrics(workerMetrics);
+
     const aggregate: AggregateMetrics = {
       timestamp,
       relay,
@@ -159,6 +161,7 @@ export class MetricsAggregator {
           totalWorkerRss,
           totalRss: relay.memory.rss + totalWorkerRss,
         },
+        sync: syncMetrics,
       },
     };
 
@@ -171,6 +174,77 @@ export class MetricsAggregator {
     const sorted = values.sort((a, b) => a - b);
     const index = Math.floor(sorted.length * percentile);
     return sorted[index] || 0;
+  }
+
+  private aggregateSyncMetrics(workerMetrics: WorkerMetrics[]):
+    | {
+        sourceOfTruthValue: number | null;
+        totalInSync: number;
+        totalOutOfSync: number;
+        syncErrorRate: number;
+        valueRange: { min: number; max: number } | null;
+        globalDistribution: { [value: number]: number };
+      }
+    | undefined {
+    const workersWithSync = workerMetrics.filter(w => w.sync);
+
+    if (workersWithSync.length === 0) {
+      return undefined;
+    }
+
+    const sourceOfTruthValue =
+      workersWithSync[0]?.sync?.sourceOfTruthValue ?? null;
+
+    const totalInSync = workersWithSync.reduce(
+      (sum, w) => sum + (w.sync?.inSyncCount || 0),
+      0
+    );
+
+    const totalOutOfSync = workersWithSync.reduce(
+      (sum, w) => sum + (w.sync?.outOfSyncCount || 0),
+      0
+    );
+
+    const totalConnections = totalInSync + totalOutOfSync;
+    const syncErrorRate =
+      totalConnections > 0 ? (totalOutOfSync / totalConnections) * 100 : 0;
+
+    const allMinValues = workersWithSync
+      .map(w => w.sync?.minValue)
+      .filter((v): v is number => v !== null);
+    const allMaxValues = workersWithSync
+      .map(w => w.sync?.maxValue)
+      .filter((v): v is number => v !== null);
+
+    const valueRange =
+      allMinValues.length > 0 && allMaxValues.length > 0
+        ? {
+            min: Math.min(...allMinValues),
+            max: Math.max(...allMaxValues),
+          }
+        : null;
+
+    const globalDistribution: { [value: number]: number } = {};
+    for (const worker of workersWithSync) {
+      if (worker.sync?.valueDistribution) {
+        for (const [value, count] of Object.entries(
+          worker.sync.valueDistribution
+        )) {
+          const numValue = parseInt(value, 10);
+          globalDistribution[numValue] =
+            (globalDistribution[numValue] || 0) + count;
+        }
+      }
+    }
+
+    return {
+      sourceOfTruthValue,
+      totalInSync,
+      totalOutOfSync,
+      syncErrorRate,
+      valueRange,
+      globalDistribution,
+    };
   }
 
   startPolling(workers: WorkerInfo[], intervalMs: number = 5000): void {
