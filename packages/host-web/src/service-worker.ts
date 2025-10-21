@@ -63,6 +63,8 @@ interface QueuedMessage {
 let messageQueue: QueuedMessage[] = [];
 let isProcessingQueue = false;
 
+const MESSAGE_QUEUE_BATCH_SIZE = 10;
+
 // Helper to get tonk instance when ready
 function getTonk(): { tonk: TonkCore; manifest: Manifest } | null {
   return tonkState.status === 'ready' ? tonkState : null;
@@ -72,6 +74,7 @@ function getTonk(): { tonk: TonkCore; manifest: Manifest } | null {
 const CACHE_NAME = 'tonk-sw-state-v1';
 const APP_SLUG_URL = '/tonk-state/appSlug';
 const BUNDLE_BYTES_URL = '/tonk-state/bundleBytes';
+const SERVER_URL_CACHE = '/tonk-state/serverUrl';
 
 async function persistAppSlug(slug: string | null): Promise<void> {
   try {
@@ -154,6 +157,46 @@ async function restoreBundleBytes(): Promise<Uint8Array | null> {
     return new Uint8Array(arrayBuffer);
   } catch (error) {
     log('error', 'Failed to restore bundle bytes', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function persistServerUrl(serverUrl: string | null): Promise<void> {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+
+    if (serverUrl === null) {
+      await cache.delete(SERVER_URL_CACHE);
+    } else {
+      const response = new Response(JSON.stringify({ serverUrl }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      await cache.put(SERVER_URL_CACHE, response);
+    }
+
+    log('info', 'Server URL persisted to cache', { serverUrl });
+  } catch (error) {
+    log('error', 'Failed to persist server URL', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function restoreServerUrl(): Promise<string | null> {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const response = await cache.match(SERVER_URL_CACHE);
+
+    if (!response) {
+      return null;
+    }
+
+    const data = await response.json();
+    return data.serverUrl || null;
+  } catch (error) {
+    log('error', 'Failed to restore server URL', {
       error: error instanceof Error ? error.message : String(error),
     });
     return null;
@@ -380,9 +423,10 @@ tonkState = { status: 'uninitialized' };
 // Auto-initialization function
 async function autoInitializeFromCache() {
   try {
-    // Try to restore appSlug and bundle from cache
+    // Try to restore appSlug, bundle, and server URL from cache
     const restoredSlug = await restoreAppSlug();
     const bundleBytes = await restoreBundleBytes();
+    const restoredServerUrl = await restoreServerUrl();
 
     if (!restoredSlug || !bundleBytes) {
       log('info', 'No cached state found, waiting for initialization message', {
@@ -403,15 +447,23 @@ async function autoInitializeFromCache() {
 
     // Found cached state - auto-initialize
     appSlug = restoredSlug;
+    // Use restored server URL or fall back to TONK_SERVER_URL
+    const serverUrl = restoredServerUrl || TONK_SERVER_URL;
     log('info', 'Found cached state, auto-initializing', {
       slug: appSlug,
       bundleSize: bundleBytes.length,
+      serverUrl,
     });
-    console.log('🔄 SERVICE WORKER: Auto-initializing from cache...', appSlug);
+    console.log(
+      '🔄 SERVICE WORKER: Auto-initializing from cache...',
+      appSlug,
+      'Server:',
+      serverUrl
+    );
 
     // Initialize WASM from server
-    const wasmUrl = `${TONK_SERVER_URL}/tonk_core_bg.wasm`;
-    log('info', 'Fetching WASM from server');
+    const wasmUrl = `${serverUrl}/tonk_core_bg.wasm`;
+    log('info', 'Fetching WASM from server', { wasmUrl });
     await initializeTonk({ wasmPath: wasmUrl });
     log('info', 'WASM initialization completed');
 
@@ -428,8 +480,8 @@ async function autoInitializeFromCache() {
     });
     log('info', 'TonkCore created from cached bundle');
 
-    // Connect to websocket
-    wsUrl = `${TONK_SERVER_URL.replace(/^http/, 'ws')}`;
+    // Connect to websocket using the restored server URL
+    wsUrl = `${serverUrl.replace(/^http/, 'ws')}`;
     log('info', 'Connecting to websocket...', {
       wsUrl,
       localRootId: manifest.rootId,
@@ -659,8 +711,12 @@ const determinePath = (url: URL): string => {
   if (isRootRequest && appSlug) {
     appSlug = null;
     // Persist the reset so it survives service worker restarts
-    // Also clear bundle bytes to avoid stale data
-    Promise.all([persistAppSlug(null), persistBundleBytes(null)]).catch(err => {
+    // Also clear bundle bytes and server URL to avoid stale data
+    Promise.all([
+      persistAppSlug(null),
+      persistBundleBytes(null),
+      persistServerUrl(null),
+    ]).catch(err => {
       log('error', 'Failed to persist state reset', { error: err });
     });
   }
@@ -781,35 +837,45 @@ async function processMessageQueue() {
     queueSize: messageQueue.length,
   });
 
-  // Process all queued messages in order
+  // Process queue in parallel batches
   while (messageQueue.length > 0) {
-    const queued = messageQueue.shift()!;
-    const waitTime = Date.now() - queued.timestamp;
+    const batch = messageQueue.splice(0, MESSAGE_QUEUE_BATCH_SIZE);
 
-    log('info', 'Processing queued message', {
-      type: queued.message.type,
-      waitTime: `${waitTime}ms`,
+    log('info', 'Processing message batch', {
+      batchSize: batch.length,
       remainingInQueue: messageQueue.length,
     });
 
-    try {
-      await processMessage(queued.message);
-    } catch (error) {
-      log('error', 'Error processing queued message', {
-        type: queued.message.type,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    // Process batch in parallel
+    await Promise.allSettled(
+      batch.map(async queued => {
+        const waitTime = Date.now() - queued.timestamp;
 
-      // Send error response back to client
-      if ('id' in queued.message) {
-        await postResponse({
+        log('info', 'Processing queued message', {
           type: queued.message.type,
-          id: queued.message.id,
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
+          waitTime: `${waitTime}ms`,
         });
-      }
-    }
+
+        try {
+          await processMessage(queued.message);
+        } catch (error) {
+          log('error', 'Error processing queued message', {
+            type: queued.message.type,
+            error: error instanceof Error ? error.message : String(error),
+          });
+
+          // Send error response back to client
+          if ('id' in queued.message) {
+            await postResponse({
+              type: queued.message.type,
+              id: queued.message.id,
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      })
+    );
   }
 
   isProcessingQueue = false;
@@ -1534,9 +1600,10 @@ async function processMessage(
           readyResolve();
         }
 
-        // Persist bundle bytes to survive service worker restarts
+        // Persist bundle bytes and server URL to survive service worker restarts
         await persistBundleBytes(bundleBytes);
-        log('info', 'Bundle bytes persisted to IndexedDB');
+        await persistServerUrl(serverUrl);
+        log('info', 'Bundle bytes and server URL persisted to cache');
 
         // Broadcast ready state to all clients
         await broadcastToClients({ type: 'swReady', autoInitialized: false });
@@ -1658,9 +1725,13 @@ async function processMessage(
           readyResolve();
         }
 
-        // Persist bundle bytes to survive service worker restarts
+        // Persist bundle bytes and server URL to survive service worker restarts
         await persistBundleBytes(manifestBytes);
-        log('info', 'Bundle bytes persisted to IndexedDB');
+        // Extract server URL from manifestUrl
+        const manifestUrlObj = new URL(manifestUrl);
+        const serverUrlFromManifest = `${manifestUrlObj.protocol}//${manifestUrlObj.host}`;
+        await persistServerUrl(serverUrlFromManifest);
+        log('info', 'Bundle bytes and server URL persisted to cache');
 
         // Broadcast ready state to all clients
         await broadcastToClients({ type: 'swReady', autoInitialized: false });
