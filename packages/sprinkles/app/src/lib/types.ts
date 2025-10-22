@@ -1,4 +1,4 @@
-import { JsonValue, DocumentData, RefNode } from '@tonk/core';
+import type { JsonValue, DocumentData, RefNode } from '@tonk/core';
 
 export type DocumentContent = {
   content: JsonValue;
