@@ -1,6 +1,8 @@
 import { useTonk } from '../context/TonkContext';
 import { useDialogs } from '../context/DialogContext';
 import icon_upload from "../assets/icon-upload.svg";
+import { useEffect } from 'preact/hooks';
+import icon_file from "../assets/icon-tonk.svg";
 
 export function AppList() {
   const { availableApps, selectedAppIndex, setSelectedAppIndex } = useTonk();
@@ -24,9 +26,14 @@ export function AppList() {
       </ul>
     );
   }
+  useEffect(() => {
+  if (availableApps.length > 0) {
+    handleAppClick(0);
+  }
+  }, [availableApps.length]);
 
   return (
-    <ul class="list-none">
+    <ul class="list-none flex items-center justify-center w-full">
       {availableApps.map((app, index) => {
         const appName = typeof app === 'string' ? app : app.name;
         const appStatus =
@@ -37,14 +44,14 @@ export function AppList() {
           <li
             key={appName}
             onClick={() => handleAppClick(index)}
-            class={`px-3 py-2 cursor-pointer flex items-center text-white font-semibold transition-colors ${
+            class={`border border-black px-3 py-2 cursor-pointer flex items-center text-black font-semibold transition-colors ${
               isSelected
                 ? 'bg-[#ddd]/30 text-black'
                 : 'bg-transparent hover:bg-[#333]'
             }`}
           >
-            <span>{appName}</span>
-            <span class="pl-4 text-xs">{appStatus}</span>
+            <span><img src={icon_file} alt="app icon" class="w-6 h-6 mr-2"/></span>
+            <span class="pl-4 text-[6pt]">{appStatus}</span>
           </li>
         );
       })}

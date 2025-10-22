@@ -61,8 +61,7 @@ export function useDragDrop() {
       '.boot-menu'
     );
     if (activeMenu) {
-      activeMenu.style.borderColor = '#0f0';
-      activeMenu.style.background = 'rgba(0, 255, 0, 0.1)';
+      activeMenu.classList.add('drag-over');
     }
   }, []);
 
@@ -71,9 +70,7 @@ export function useDragDrop() {
     e.stopPropagation();
 
     document.querySelectorAll('.boot-menu').forEach((menu: Element) => {
-      const el = menu as HTMLElement;
-      el.style.borderColor = '';
-      el.style.background = '';
+      menu.classList.remove('drag-over');
     });
   }, []);
 
@@ -101,17 +98,14 @@ export function useDragDrop() {
             '.boot-menu'
           );
           if (activeMenu) {
-            activeMenu.style.borderColor = '#0f0';
-            activeMenu.style.background = 'rgba(0, 255, 0, 0.1)';
+            activeMenu.classList.add('drag-over');
           }
           break;
         }
 
         case 'tonk:dragLeave': {
           document.querySelectorAll('.boot-menu').forEach((menu: Element) => {
-            const el = menu as HTMLElement;
-            el.style.borderColor = '';
-            el.style.background = '';
+            menu.classList.remove('drag-over');
           });
           break;
         }
@@ -119,9 +113,7 @@ export function useDragDrop() {
         case 'tonk:drop': {
           // Remove drag styling
           document.querySelectorAll('.boot-menu').forEach((menu: Element) => {
-            const el = menu as HTMLElement;
-            el.style.borderColor = '';
-            el.style.background = '';
+            menu.classList.remove('drag-over');
           });
 
           // Validate file

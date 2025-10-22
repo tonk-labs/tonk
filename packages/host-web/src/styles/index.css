@@ -66,7 +66,7 @@
 
   body {
     @apply cursor-default;
-    background: #d7d7d7;
+    background: #f0f0f0;
     color: #000;
     font-family: 'Gestalte', Helvetica, Arial, sans-serif;
     font-size: 0.75rem;
@@ -75,6 +75,15 @@
 
   #root {
     @apply h-full;
+  }
+
+  .boot-menu {
+    @apply border-1 border-[#CCC] border-dashed bg-[] ;
+  }
+
+  /* Drag-over state for boot menu */
+  .boot-menu.drag-over {
+    @apply bg-[#ddd] m-1;
   }
 }
 

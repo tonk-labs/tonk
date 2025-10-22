@@ -7,6 +7,7 @@ export enum ScreenState {
   BOOT = 'boot',
   ERROR = 'error',
   PROMPT = 'prompt',
+  SPLASH = 'splash',
 }
 
 // App types
@@ -55,6 +56,7 @@ export interface TonkContextValue {
   showLoadingScreen: (message?: string) => void;
   showBootMenu: () => void;
   showPromptScreen: () => void;
+  showSplashScreen: () => void;
 }
 
 export interface DialogContextValue {

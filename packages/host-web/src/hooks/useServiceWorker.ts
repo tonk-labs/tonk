@@ -4,7 +4,7 @@ import { useDialogs } from '../context/DialogContext';
 import type { ServiceWorkerMessage } from '../types/index';
 
 export function useServiceWorker() {
-  const { showLoadingScreen, showError, setAvailableApps, showBootMenu } = useTonk();
+  const { showLoadingScreen, showError, setAvailableApps, showBootMenu, showSplashScreen } = useTonk();
   const { updateShareDialog, closeDownloadSpinner } = useDialogs();
 
   // Generic message sender with promise-based response handling
@@ -279,10 +279,19 @@ export function useServiceWorker() {
       if (response.success) {
         console.log('Bundle loaded successfully:', file.name);
 
-        // Refresh app list and show boot menu
+        // Refresh app list
         const apps = await queryAvailableApps();
         setAvailableApps(apps.map((name) => ({ name })));
-        showBootMenu();
+
+        if (apps.length > 0) {
+          // Show splash screen for 500ms, then auto-boot first app
+          showSplashScreen();
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          await confirmBoot(apps[0]);
+        } else {
+          // No apps found in bundle
+          showError('No applications found in bundle');
+        }
       } else {
         showError(`Failed to load bundle: ${response.error}`);
       }
@@ -290,7 +299,7 @@ export function useServiceWorker() {
       console.error('Error processing tonk file:', error);
       showError(`Error processing ${file.name}: ${error.message}`);
     }
-  }, [sendMessage, queryAvailableApps, setAvailableApps, showBootMenu, showLoadingScreen, showError]);
+  }, [sendMessage, queryAvailableApps, setAvailableApps, confirmBoot, showSplashScreen, showLoadingScreen, showError]);
 
   return {
     sendMessage,

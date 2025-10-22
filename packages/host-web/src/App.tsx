@@ -8,6 +8,7 @@ import { LoadingScreen } from './components/screens/LoadingScreen';
 import { ErrorScreen } from './components/screens/ErrorScreen';
 import { PromptScreen } from './components/screens/PromptScreen';
 import { BootScreen } from './components/screens/BootScreen';
+import { SplashScreen } from './components/screens/SplashScreen';
 import { Overlay } from './components/dialogs/Overlay';
 import { ConfirmationDialog } from './components/dialogs/ConfirmationDialog';
 import { ShareDialog } from './components/dialogs/ShareDialog';
@@ -23,9 +24,10 @@ function AppContent() {
     showPromptScreen,
     showError,
     setAvailableApps,
+    showSplashScreen,
   } = useTonk();
   const { dialogs } = useDialogs();
-  const { queryAvailableApps, sendMessage, processTonkFile } = useServiceWorker();
+  const { queryAvailableApps, sendMessage, processTonkFile, confirmBoot } = useServiceWorker();
 
   // Initialize hooks
   useKeyboardNav();
@@ -74,7 +76,16 @@ function AppContent() {
     try {
       const apps = await queryAvailableApps();
       setAvailableApps(apps.map((name) => ({ name })));
-      showBootMenu();
+
+      if (apps.length > 0) {
+        // Show splash screen for 500ms, then auto-boot first app
+        showSplashScreen();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await confirmBoot(apps[0]);
+      } else {
+        // No apps found in bundle
+        showError('No applications found in bundle');
+      }
     } catch (error: any) {
       console.error('Failed to query available apps:', error);
       showError(`Failed to load applications: ${error.message}`);
@@ -171,6 +182,7 @@ function AppContent() {
         {screenState === ScreenState.BOOT && <BootScreen />}
         {screenState === ScreenState.ERROR && <ErrorScreen />}
         {screenState === ScreenState.PROMPT && <PromptScreen />}
+        {screenState === ScreenState.SPLASH && <SplashScreen />}
       </div>
 
       <Overlay isVisible={showOverlay} />

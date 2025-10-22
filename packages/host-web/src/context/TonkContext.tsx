@@ -30,6 +30,10 @@ export function TonkProvider({ children }: { children: ComponentChildren }) {
     setScreenState(ScreenState.PROMPT);
   };
 
+  const showSplashScreen = () => {
+    setScreenState(ScreenState.SPLASH);
+  };
+
   const value: TonkContextValue = {
     screenState,
     setScreenState,
@@ -45,6 +49,7 @@ export function TonkProvider({ children }: { children: ComponentChildren }) {
     showLoadingScreen,
     showBootMenu,
     showPromptScreen,
+    showSplashScreen,
   };
 
   return <TonkContext.Provider value={value}>{children}</TonkContext.Provider>;
