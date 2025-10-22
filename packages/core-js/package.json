@@ -61,6 +61,7 @@
   "homepage": "https://github.com/tonk-labs/tonk#readme",
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "esbuild": "^0.25.11",
     "tsx": "^4.20.5",
     "typescript": "^5.3.3"
   },

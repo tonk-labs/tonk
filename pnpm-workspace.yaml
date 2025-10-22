@@ -1,0 +1,13 @@
+packages:
+  - packages/*
+  - examples/demo
+  - examples/demo/app
+
+onlyBuiltDependencies:
+  - '@clerk/shared'
+  - browser-tabs-lock
+  - cbor-extract
+  - core-js
+  - esbuild
+  - keytar
+  - wasm-pack

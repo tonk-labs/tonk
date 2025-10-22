@@ -1,5 +1,5 @@
 /* eslint-env serviceworker */
-/* global self, console, fetch, atob, btoa, caches, clients, location, URL, Response, __DEV_MODE__, TONK_SERVER_URL */
+/* eslint-disable @typescript-eslint/no-non-null-assertion */
 
 import {
   TonkCore,
@@ -11,6 +11,9 @@ import {
 import type { VFSWorkerMessage } from './types';
 
 declare const TONK_SERVER_URL: string;
+declare const TONK_SERVE_LOCAL: boolean;
+declare const __SW_BUILD_TIME__: string;
+declare const __SW_VERSION__: string;
 
 interface FetchEvent extends Event {
   request: Request;
@@ -22,7 +25,8 @@ const DEBUG_LOGGING = true;
 console.log('🚀 SERVICE WORKER: Script loaded at', new Date().toISOString());
 console.log('🔍 DEBUG_LOGGING enabled:', DEBUG_LOGGING);
 console.log('🌐 Service worker location:', self.location.href);
-console.log('UNIQUE ID:', 779);
+console.log('🔧 SERVICE WORKER VERSION:', __SW_VERSION__);
+console.log('🕐 SERVICE WORKER BUILD TIME:', __SW_BUILD_TIME__);
 
 type TonkState =
   | { status: 'uninitialized' }
@@ -42,7 +46,7 @@ let connectionHealthy = true;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const HEALTH_CHECK_INTERVAL = 5000;
-let continuousRetryEnabled = true;
+const continuousRetryEnabled = true;
 
 // Helper to get tonk instance when ready
 function getTonk(): { tonk: TonkCore; manifest: Manifest } | null {
@@ -142,15 +146,17 @@ async function restoreBundleBytes(): Promise<Uint8Array | null> {
 }
 
 // Logger utility
-function log(level, message, data?) {
+function log(level: any, message: any, data?: any) {
   if (!DEBUG_LOGGING) return;
 
   const timestamp = new Date().toISOString();
   const prefix = `[VFS Service Worker ${timestamp}] ${level.toUpperCase()}:`;
 
   if (data !== undefined) {
+    // @ts-expect-error - dynamic console method access
     console[level](prefix, message, data);
   } else {
+    // @ts-expect-error - dynamic console method access
     console[level](prefix, message);
   }
 }
@@ -159,7 +165,8 @@ function log(level, message, data?) {
 const watchers = new Map();
 
 // Helper to post messages back to main thread
-async function postResponse(response) {
+
+async function postResponse(response: any) {
   log('info', 'Posting response to main thread', {
     type: response.type,
     success: 'success' in response ? response.success : 'N/A',
@@ -167,7 +174,8 @@ async function postResponse(response) {
 
   // Get all clients and post message to each
   const clients = await (self as any).clients.matchAll();
-  clients.forEach(client => {
+
+  clients.forEach((client: any) => {
     client.postMessage(response);
   });
 }
@@ -368,16 +376,6 @@ async function autoInitializeFromCache() {
     log('info', 'Websocket connected');
     startHealthMonitoring();
 
-    // Connect to websocket
-    wsUrl = TONK_SERVER_URL.replace(/^http/, 'ws');
-    log('info', 'Connecting to websocket...', {
-      wsUrl,
-      localRootId: manifest.rootId,
-    });
-    await tonk.connectWebsocket(wsUrl);
-    log('info', 'Websocket connected');
-    startHealthMonitoring();
-
     // Wait for initial sync
     let syncAttempts = 0;
     const maxAttempts = 20;
@@ -387,7 +385,8 @@ async function autoInitializeFromCache() {
         log('info', 'Auto-initialization complete - tonk ready');
         console.log('✅ SERVICE WORKER: Auto-initialized successfully');
         break;
-      } catch (error) {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      } catch (_error) {
         syncAttempts++;
         if (syncAttempts >= maxAttempts) {
           log('warn', 'Initial sync timeout after restore', {
@@ -413,7 +412,8 @@ async function autoInitializeFromCache() {
 
     // Notify clients that manual initialization is needed
     const allClients = await (self as any).clients.matchAll();
-    allClients.forEach(client => {
+
+    allClients.forEach((client: any) => {
       client.postMessage({
         type: 'needsReinit',
         appSlug: null,
@@ -426,7 +426,7 @@ async function autoInitializeFromCache() {
 // Start auto-initialization (non-blocking)
 autoInitializeFromCache();
 
-self.addEventListener('install', event => {
+self.addEventListener('install', _event => {
   log('info', 'Service worker installing');
   console.log('🔧 SERVICE WORKER: Installing SW');
   (self as any).skipWaiting();
@@ -447,7 +447,8 @@ self.addEventListener('activate', event => {
 
       // Then notify all clients that service worker is ready
       const allClients = await (self as any).clients.matchAll();
-      allClients.forEach(client => {
+
+      allClients.forEach((client: any) => {
         client.postMessage({ type: 'ready', needsBundle: true });
       });
       log(
@@ -459,10 +460,7 @@ self.addEventListener('activate', event => {
   );
 });
 
-const targetToResponse = async (
-  target: any,
-  path?: string
-): Promise<Response> => {
+const targetToResponse = async (target: any): Promise<Response> => {
   if (target.bytes) {
     // target.bytes is a base64 string, decode it to binary for Response
     const binaryString = atob(target.bytes);
@@ -495,6 +493,7 @@ const determinePath = (url: URL): string => {
 
   // Strip the scope from the pathname
   const scopePath = new URL(
+    // @ts-expect-error - self.registration exists in ServiceWorkerGlobalScope
     (self.registration?.scope ?? self.location.href) as string
   ).pathname;
   const strippedPath = url.pathname.startsWith(scopePath)
@@ -568,6 +567,20 @@ const determinePath = (url: URL): string => {
     matchesOrigin: url.origin === location.origin,
   });
 
+  // Check for WebSocket upgrade requests for Vite HMR
+  const upgradeHeader = event.request.headers.get('upgrade');
+  if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
+    log(
+      'info',
+      '🔌 WS: WebSocket upgrade request detected - allowing through',
+      {
+        url: url.href,
+      }
+    );
+    // Don't intercept WebSocket connections - let them pass through
+    return;
+  }
+
   // Check if this is a request for the root hostname (should bypass VFS)
   const isRootRequest = url.pathname === '/' || url.pathname === '';
   if (isRootRequest && appSlug) {
@@ -577,6 +590,107 @@ const determinePath = (url: URL): string => {
     Promise.all([persistAppSlug(null), persistBundleBytes(null)]).catch(err => {
       log('error', 'Failed to persist state reset', { error: err });
     });
+  }
+
+  if (TONK_SERVE_LOCAL && appSlug && !isRootRequest) {
+    // Intercept and proxy Vite HMR assets
+    if (
+      url.pathname.startsWith('/@vite') ||
+      url.pathname.startsWith('/@react-refresh') ||
+      url.pathname.startsWith('/src/') ||
+      url.pathname.startsWith(`/${appSlug}/@vite`) ||
+      url.pathname.startsWith(`/${appSlug}/node_modules`) ||
+      url.pathname.startsWith(`/${appSlug}/src/`) ||
+      url.pathname.startsWith('/node_modules') ||
+      url.pathname.includes('__vite__') ||
+      url.searchParams.has('t') // cache-busting params
+    ) {
+      log('info', 'Vite HMR asset detected, proxying to dev server', {
+        url: url.href,
+      });
+
+      event.respondWith(
+        (async () => {
+          try {
+            // Keep the full path including appSlug for Vite to use its base config :
+            const localDevUrl = `http://localhost:4001${url.pathname}${url.search}`;
+
+            log('info', 'Fetching Vite asset from dev server', {
+              original: url.pathname,
+              proxied: localDevUrl,
+            });
+
+            const response = await fetch(localDevUrl);
+
+            // Add no-cache headers to prevent browser caching during development
+            const headers = new Headers(response.headers);
+            headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+            headers.set('Pragma', 'no-cache');
+            headers.set('Expires', '0');
+
+            return new Response(response.body, {
+              status: response.status,
+              statusText: response.statusText,
+              headers: headers,
+            });
+          } catch (err) {
+            log('error', 'Failed to fetch Vite asset', {
+              error: err instanceof Error ? err.message : String(err),
+              url: url.pathname,
+            });
+            return new Response('Vite dev server unreachable', {
+              status: 502,
+              headers: { 'Content-Type': 'text/plain' },
+            });
+          }
+        })()
+      );
+      return;
+    }
+
+    log('info', 'TONK_SERVE_LOCAL enabled, proxying to local dev server');
+
+    event.respondWith(
+      (async () => {
+        try {
+          // Keep the full path including appSlug for Vite to use its base config
+          const localDevUrl = `http://localhost:4001${url.pathname}${url.search}`;
+
+          log('info', 'Proxying request to local dev server', {
+            original: url.pathname,
+            proxied: localDevUrl,
+          });
+
+          const response = await fetch(localDevUrl);
+          log('info', 'Received response from local dev server', {
+            status: response.status,
+            contentType: response.headers.get('content-type'),
+          });
+
+          // Add no-cache headers to prevent browser caching during development
+          const headers = new Headers(response.headers);
+          headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+          headers.set('Pragma', 'no-cache');
+          headers.set('Expires', '0');
+
+          return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: headers,
+          });
+        } catch (err) {
+          log('error', 'Failed to fetch from local dev server', {
+            error: err instanceof Error ? err.message : String(err),
+            url: url.pathname,
+          });
+          return new Response('Local dev server unreachable on port 4001', {
+            status: 502,
+            headers: { 'Content-Type': 'text/plain' },
+          });
+        }
+      })()
+    );
+    return; // Exit early, don't process VFS
   }
 
   if (appSlug && url.origin === location.origin && !isRootRequest) {
@@ -598,10 +712,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                ? 'loading'
-                : tonkState.status === 'failed'
-                ? 'failed'
-                : 'uninitialized',
+                  ? 'loading'
+                  : tonkState.status === 'failed'
+                    ? 'failed'
+                    : 'uninitialized',
           });
 
           if (!tonkInstance) {
@@ -633,7 +747,7 @@ const determinePath = (url: URL): string => {
               hasContent: !!target.content,
               hasBytes: !!target.bytes,
             });
-            return targetToResponse(target, path);
+            return targetToResponse(target);
           }
 
           log('info', 'File exists, attempting to read from Tonk', {
@@ -649,7 +763,7 @@ const determinePath = (url: URL): string => {
               : 'unknown',
           });
 
-          const response = targetToResponse(target, path);
+          const response = targetToResponse(target);
           log('info', 'Created response for file', {
             filePath: `/app/${path}`,
             responseType: target.bytes ? 'binary' : 'text',
@@ -751,7 +865,7 @@ async function handleMessage(
         if (tonkState.status === 'loading') {
           log('info', 'Tonk is loading, waiting for completion');
           try {
-            const { tonk, manifest } = await tonkState.promise;
+            await tonkState.promise;
             log('info', 'Tonk loading completed, responding with success');
             postResponse({
               type: 'init',

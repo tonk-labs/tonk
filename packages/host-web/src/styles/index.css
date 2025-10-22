@@ -1,0 +1,109 @@
+@import 'tailwindcss';
+
+/* Gestalte font declarations */
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-regular.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-medium.otf') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-bold.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-light.otf') format('opentype');
+  font-weight: 300;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-book.otf') format('opentype');
+  font-weight: 350;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-heavy.otf') format('opentype');
+  font-weight: 900;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-black.otf') format('opentype');
+  font-weight: 950;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-extralight.otf') format('opentype');
+  font-weight: 200;
+  font-style: normal;
+}
+
+/* Global body styles using Tailwind utilities */
+@layer base {
+  html,
+  body {
+    @apply h-screen;
+  }
+
+  body {
+    @apply cursor-default;
+    background: #f0f0f0;
+    color: #000;
+    font-family: 'Gestalte', Helvetica, Arial, sans-serif;
+    font-size: 0.75rem;
+    line-height: 1.4;
+  }
+
+  #root {
+    @apply h-full;
+  }
+
+  .boot-menu {
+    @apply border-1 border-[#6D6D6D] border-dashed bg-[transparent] ;
+  }
+
+  /* Drag-over state for boot menu */
+  .boot-menu.drag-over {
+    @apply bg-[#ddd] m-3 transition-all;
+  }
+}
+
+/* Animations - can't be done with Tailwind utilities */
+@keyframes blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
