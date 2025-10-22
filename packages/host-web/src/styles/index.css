@@ -78,12 +78,12 @@
   }
 
   .boot-menu {
-    @apply border-1 border-[#CCC] border-dashed bg-[] ;
+    @apply border-1 border-[#6D6D6D] border-dashed bg-[transparent] ;
   }
 
   /* Drag-over state for boot menu */
   .boot-menu.drag-over {
-    @apply bg-[#ddd] m-1;
+    @apply bg-[#ddd] m-3 transition-all;
   }
 }
 
