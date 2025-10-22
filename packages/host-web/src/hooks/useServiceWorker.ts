@@ -92,7 +92,7 @@ export function useServiceWorker() {
 
       const response = await sendMessage<ServiceWorkerMessage>({
         type: 'listDirectory',
-        path: '/app',
+        path: '/',
       });
 
       if (response.success && response.data) {

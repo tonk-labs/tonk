@@ -263,13 +263,13 @@ async function createBundle(
 
     console.log(`Found ${distFiles.length} files to bundle`);
 
-    // Store each file in the TonkCore VFS under /app
+    // Store each file in the TonkCore VFS at root level
     for (const { relativePath, fileData } of distFiles) {
       // Remove leading slash from relativePath to avoid double slashes
       const cleanRelativePath = relativePath.startsWith('/')
         ? relativePath.substring(1)
         : relativePath;
-      const modifiedPath = `/app/${projectName}/${cleanRelativePath}`;
+      const modifiedPath = `/${projectName}/${cleanRelativePath}`;
       const mimeType = determineMimeType(relativePath);
       console.log(`Adding file: ${modifiedPath} (${mimeType})`);
       // Use createFileWithBytes with MIME type

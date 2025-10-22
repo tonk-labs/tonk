@@ -1,11 +1,11 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 // https://vite.dev/config/
 export default defineConfig({
-  // Set base path to match the service worker proxy path
-  base: '/bundling/',
+  // Set base path to match the app directory name
+  base: '/app/',
 
   plugins: [react(), tailwindcss()],
 
@@ -23,4 +23,4 @@ export default defineConfig({
       port: 4001,
     },
   },
-})
+});

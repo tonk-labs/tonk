@@ -381,7 +381,7 @@ async function autoInitializeFromCache() {
     const maxAttempts = 20;
     while (syncAttempts < maxAttempts) {
       try {
-        await tonk.listDirectory('/app');
+        await tonk.listDirectory('/');
         log('info', 'Auto-initialization complete - tonk ready');
         console.log('✅ SERVICE WORKER: Auto-initialized successfully');
         break;
@@ -728,7 +728,7 @@ const determinePath = (url: URL): string => {
           }
 
           // Check if the file exists first
-          const filePath = `/app/${path}`;
+          const filePath = `/${path}`;
           const exists = await tonkInstance.tonk.exists(filePath);
 
           if (!exists) {
@@ -737,10 +737,10 @@ const determinePath = (url: URL): string => {
             );
             log('warn', 'File not found, falling back to index.html', {
               requestedPath: filePath,
-              fallbackPath: `/app/${appSlug}/index.html`,
+              fallbackPath: `/${appSlug}/index.html`,
             });
             // Fall back to index.html
-            const indexPath = `/app/${appSlug}/index.html`;
+            const indexPath = `/${appSlug}/index.html`;
             const target = await tonkInstance.tonk.readFile(indexPath);
             log('info', 'Successfully read index.html fallback', {
               filePath: indexPath,
@@ -765,7 +765,7 @@ const determinePath = (url: URL): string => {
 
           const response = targetToResponse(target);
           log('info', 'Created response for file', {
-            filePath: `/app/${path}`,
+            filePath: `/${path}`,
             responseType: target.bytes ? 'binary' : 'text',
           });
           return response;
@@ -1452,7 +1452,7 @@ async function handleMessage(
         while (syncAttempts < maxAttempts) {
           try {
             // Try to list the root directory to verify data is synced
-            await newTonk.listDirectory('/app');
+            await newTonk.listDirectory('/');
             log('info', 'Initial data sync confirmed');
             break;
           } catch (error) {
@@ -1564,7 +1564,7 @@ async function handleMessage(
         while (syncAttempts < maxAttempts) {
           try {
             // Try to list the root directory to verify data is synced
-            await tonk.listDirectory('/app');
+            await tonk.listDirectory('/');
             log('info', 'Initial data sync confirmed');
             break;
           } catch (error) {

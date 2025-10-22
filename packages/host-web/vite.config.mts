@@ -7,10 +7,7 @@ export default defineConfig({
   base: './',
   root: 'src',
 
-  plugins: [
-    preact(),
-    tailwindcss(),
-  ],
+  plugins: [preact(), tailwindcss()],
 
   build: {
     target: 'esnext',
@@ -50,5 +47,9 @@ export default defineConfig({
       process: 'process/browser',
       util: 'util',
     },
+  },
+
+  server: {
+    allowedHosts: ['ensemble.tonk.xyz'],
   },
 });
