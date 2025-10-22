@@ -1,4 +1,61 @@
-@import "tailwindcss";
+@import 'tailwindcss';
+
+/* Gestalte font declarations */
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-regular.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-medium.otf') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-bold.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-light.otf') format('opentype');
+  font-weight: 300;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-book.otf') format('opentype');
+  font-weight: 350;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-heavy.otf') format('opentype');
+  font-weight: 900;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-black.otf') format('opentype');
+  font-weight: 950;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Gestalte';
+  src: url('/fonts/gestalte-extralight.otf') format('opentype');
+  font-weight: 200;
+  font-style: normal;
+}
 
 /* Global body styles using Tailwind utilities */
 @layer base {
@@ -8,15 +65,12 @@
   }
 
   body {
-    @apply cursor-default p-5;
-    background: rgb(73, 24, 79);
-    color: #fff;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 16px;
+    @apply cursor-default;
+    background: #d7d7d7;
+    color: #000;
+    font-family: 'Gestalte', Helvetica, Arial, sans-serif;
+    font-size: 0.75rem;
     line-height: 1.4;
-    -webkit-font-smoothing: none;
-    -moz-osx-font-smoothing: grayscale;
-    text-rendering: optimizeSpeed;
   }
 
   #root {

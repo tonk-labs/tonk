@@ -43,11 +43,11 @@ export function BootScreen() {
 
   return (
     <div class="flex min-h-0 h-full flex-col">
-      <div class="border-2 border-white p-6 mb-6 flex grow transition-[border-color] duration-200 ease-in-out boot-menu">
+      <div class="border-1 border-[#6D6D6D] border-dashed p-6 flex grow transition-[border-color] duration-200 ease-in-out boot-menu">
         <AppList />
       </div>
 
-      <div class="text-[#ddd] text-xs leading-relaxed space-y-1">
+      {/* <div class="text-[#ddd] text-xs leading-relaxed space-y-1">
         <div>Use the ↑ and ↓ keys to select which entry is highlighted.</div>
         <div>Press enter to boot the selected application</div>
         <div class="pt-2">Drag a .tonk file onto the applications box to load it.</div>
@@ -66,7 +66,7 @@ export function BootScreen() {
         >
           New Tonk
         </button>
-      </div>
+      </div> */}
     </div>
   );
 }

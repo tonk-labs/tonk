@@ -165,9 +165,6 @@ function AppContent() {
 
   return (
     <div class="flex flex-col max-w-[800px] h-full min-h-0 mx-auto">
-      <div class="text-center text-sm font-normal text-[#ddd] mb-5">
-        TONK HOST WEB version 0.1.0
-      </div>
 
       <div class="flex-1 min-h-0 flex flex-col">
         {screenState === ScreenState.LOADING && <LoadingScreen />}

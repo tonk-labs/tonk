@@ -1,6 +1,6 @@
 import { useTonk } from '../context/TonkContext';
 import { useDialogs } from '../context/DialogContext';
-import type { App } from '../types/index';
+import icon_upload from "../assets/icon-upload.svg";
 
 export function AppList() {
   const { availableApps, selectedAppIndex, setSelectedAppIndex } = useTonk();
@@ -17,8 +17,10 @@ export function AppList() {
 
   if (availableApps.length === 0) {
     return (
-      <ul class="list-none">
-        <li class="px-3 py-2 text-[#666]">No applications found</li>
+      <ul class="list-none flex items-center justify-center w-full">
+        <div class="flex flex-col">
+        <img src={icon_upload} alt="upload icon" class="w-16 h-16 mx-auto"/>
+        <p>Drag a .tonk file to load it.</p></div>
       </ul>
     );
   }
