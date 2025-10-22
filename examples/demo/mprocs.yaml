@@ -4,5 +4,5 @@ procs:
   host-web:
     shell: "wait-port 8081 && pnpm run dev:host-web"
   relay:
-    shell: "../relay/target/release/tonk-relay 8081 bundling.tonk"
+    shell: "../../packages/relay/target/release/tonk-relay 8081 bundling.tonk"
 

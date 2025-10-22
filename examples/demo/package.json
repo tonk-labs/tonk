@@ -1,0 +1,24 @@
+{
+  "name": "@tonk/sprinkles",
+  "version": "0.0.1",
+  "description": "Unified dev environment for Tonk - runs host-web and relay together",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "pnpm run build:wasm && pnpm run build:sw && pnpm run build:relay",
+    "build:wasm": "mkdir -p ../../packages/core-js/dist && cd ../../packages/core && pnpm run build:browser && cp -r pkg-browser/* ../../packages/core-js/dist/ && cd ../../packages/core-js && pnpm run embed-wasm && pnpm run build:wrapper",
+    "build:sw": "cd ../../packages/host-web && NODE_ENV=development pnpm run build && NODE_ENV=development pnpm run build:sw && pnpm run copy-sw-for-dev",
+    "build:relay": "cd ../../packages/relay && cargo build --release",
+    "dev": "mprocs",
+    "dev:relay": "cd ../../packages/relay && pnpm run dev",
+    "dev:host-web": "cd ../../packages/host-web && PORT=4000 NODE_ENV=development pnpm run dev:with-proxy"
+  },
+  "dependencies": {
+    "@tonk/core": "workspace:*",
+    "@tonk/host-web": "workspace:*"
+  },
+  "devDependencies": {
+    "mprocs": "^0.7.1",
+    "wait-port": "^1.1.0"
+  }
+}

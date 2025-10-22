@@ -1,5 +1,7 @@
 packages:
   - packages/*
+  - examples/demo
+  - examples/demo/app
 
 onlyBuiltDependencies:
   - '@clerk/shared'
