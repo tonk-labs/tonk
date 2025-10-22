@@ -7,6 +7,8 @@ import {
   AuthorizeSecurityGroupIngressCommand,
   DeleteSecurityGroupCommand,
   CreateKeyPairCommand,
+  DeleteKeyPairCommand,
+  DescribeKeyPairsCommand,
   DescribeSecurityGroupsCommand,
 } from '@aws-sdk/client-ec2';
 import { promises as fs } from 'fs';
@@ -31,28 +33,59 @@ export class AWSInfrastructure {
     try {
       const keyPath = join(homedir(), '.ssh', `${this.config.keyName}.pem`);
 
+      const localKeyExists = await fs
+        .access(keyPath)
+        .then(() => true)
+        .catch(() => false);
+
+      const describeKeyPairCommand = new DescribeKeyPairsCommand({
+        KeyNames: [this.config.keyName],
+      });
+
+      let awsKeyExists = false;
       try {
-        await fs.access(keyPath);
-        console.log(`✓ Key pair already exists at ${keyPath}`);
-        this.keyPath = keyPath;
-        return keyPath;
-      } catch {
-        console.log('Creating new key pair...');
-        const createKeyPairCommand = new CreateKeyPairCommand({
-          KeyName: this.config.keyName,
-        });
-
-        const response = await this.ec2Client.send(createKeyPairCommand);
-
-        if (!response.KeyMaterial) {
-          throw new Error('No key material returned from AWS');
+        await this.ec2Client.send(describeKeyPairCommand);
+        awsKeyExists = true;
+      } catch (error: any) {
+        if (error.name !== 'InvalidKeyPair.NotFound') {
+          throw error;
         }
+      }
 
-        await fs.writeFile(keyPath, response.KeyMaterial, { mode: 0o400 });
-        console.log(`✓ Key pair created and saved to ${keyPath}`);
+      if (awsKeyExists && localKeyExists) {
+        console.log(
+          `✓ Key pair already exists in AWS and locally at ${keyPath}`
+        );
         this.keyPath = keyPath;
         return keyPath;
       }
+
+      if (awsKeyExists && !localKeyExists) {
+        console.log(
+          'Key pair exists in AWS but not locally. Deleting from AWS and recreating...'
+        );
+        const deleteKeyPairCommand = new DeleteKeyPairCommand({
+          KeyName: this.config.keyName,
+        });
+        await this.ec2Client.send(deleteKeyPairCommand);
+        console.log('✓ Key pair deleted from AWS');
+      }
+
+      console.log('Creating new key pair...');
+      const createKeyPairCommand = new CreateKeyPairCommand({
+        KeyName: this.config.keyName,
+      });
+
+      const response = await this.ec2Client.send(createKeyPairCommand);
+
+      if (!response.KeyMaterial) {
+        throw new Error('No key material returned from AWS');
+      }
+
+      await fs.writeFile(keyPath, response.KeyMaterial, { mode: 0o400 });
+      console.log(`✓ Key pair created and saved to ${keyPath}`);
+      this.keyPath = keyPath;
+      return keyPath;
     } catch (error) {
       throw new Error(`Failed to setup key pair: ${error}`);
     }

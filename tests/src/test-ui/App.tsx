@@ -43,9 +43,8 @@ function getServerConfig(): ServerConfig {
 
   const config = {
     port: portNum,
-    wsUrl: 'ws://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080',
-    manifestUrl:
-      'http://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080/.manifest.tonk',
+    wsUrl: 'wss://relay.tonk.xyz',
+    manifestUrl: 'https://relay.tonk.xyz/.manifest.tonk',
   };
 
   console.log('Using URL/default server config:', config);
@@ -218,16 +217,13 @@ function App() {
       const blob = new Blob([bundleBytes as any], {
         type: 'application/octet-stream',
       });
-      const response = await fetch(
-        `http://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080/api/bundles`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/octet-stream',
-          },
-          body: blob,
-        }
-      );
+      const response = await fetch(`https://relay.tonk.xyz/api/bundles`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+        },
+        body: blob,
+      });
 
       if (!response.ok) {
         throw new Error(`Upload failed: ${response.statusText}`);
@@ -270,7 +266,7 @@ function App() {
 
       // Download from server
       const response = await fetch(
-        `http://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080/api/bundles/${targetBundleId}/manifest`
+        `https://relay.tonk.xyz/api/bundles/${targetBundleId}/manifest`
       );
 
       if (!response.ok) {

@@ -642,16 +642,17 @@ async function deployWorkersToInstances(
         );
 
         console.log(`  [${workerId}] Starting Vite dev server...`);
-        await exec(
-          `${sshBase} "cd ~/worker && nohup pnpm dev --host 0.0.0.0 --port 5173 > vite.log 2>&1 &"`
-        );
+        exec(
+          `${sshBase} "cd ~/worker && nohup pnpm dev --host 0.0.0.0 --port 5173 > vite.log 2>&1 < /dev/null &"`
+        ).catch(() => {});
 
         console.log(`  [${workerId}] Waiting for Vite server to be ready...`);
         await waitForViteReady(instance.publicIp, 5173, 60000);
 
         console.log(`  [${workerId}] Starting worker...`);
         const workerCmd = `cd ~/worker && nohup npx tsx src/distributed/load-generator-worker.ts ${workerId} ${coordinatorUrl} ${relayUrl} ${connectionsPerWorker} 60 ${instance.publicIp} > worker.log 2>&1 &`;
-        await exec(`${sshBase} -f "${workerCmd}"`);
+        exec(`${sshBase} "${workerCmd}"`).catch(() => {});
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         console.log(`  ✓ Worker ${workerId} deployed and started`);
       } catch (error) {
