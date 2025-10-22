@@ -27,7 +27,8 @@ function AppContent() {
     showSplashScreen,
   } = useTonk();
   const { dialogs } = useDialogs();
-  const { queryAvailableApps, sendMessage, processTonkFile, confirmBoot } = useServiceWorker();
+  const { queryAvailableApps, sendMessage, processTonkFile, confirmBoot } =
+    useServiceWorker();
 
   // Initialize hooks
   useKeyboardNav();
@@ -41,9 +42,11 @@ function AppContent() {
 
   // Wait for service worker to be ready
   const waitForServiceWorkerReady = async () => {
-    return new Promise<void>((resolve) => {
+    return new Promise<void>(resolve => {
       if (navigator.serviceWorker.controller) {
-        console.log('Service worker is already controlling page, assuming ready');
+        console.log(
+          'Service worker is already controlling page, assuming ready'
+        );
         resolve();
         return;
       }
@@ -54,7 +57,10 @@ function AppContent() {
         if (event.data && event.data.type === 'ready') {
           console.log('Service worker is ready to handle requests');
           clearTimeout(timeoutId);
-          navigator.serviceWorker.removeEventListener('message', messageHandler);
+          navigator.serviceWorker.removeEventListener(
+            'message',
+            messageHandler
+          );
           resolve();
         }
       };
@@ -75,12 +81,12 @@ function AppContent() {
 
     try {
       const apps = await queryAvailableApps();
-      setAvailableApps(apps.map((name) => ({ name })));
+      setAvailableApps(apps.map(name => ({ name })));
 
       if (apps.length > 0) {
         // Show splash screen for 500ms, then auto-boot first app
         showSplashScreen();
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 500));
         await confirmBoot(apps[0]);
       } else {
         // No apps found in bundle
@@ -94,6 +100,21 @@ function AppContent() {
 
   // Initialize BIOS
   useEffect(() => {
+    // Notify parent window about service worker support (useful for iframe scenarios)
+    const notifyServiceWorkerSupport = (supported: boolean, error?: string) => {
+      if (window.parent !== window) {
+        window.parent.postMessage(
+          {
+            type: 'tonk:serviceWorkerSupport',
+            supported,
+            error,
+            timestamp: Date.now(),
+          },
+          '*'
+        );
+      }
+    };
+
     const initializeBios = async () => {
       const urlParams = new URLSearchParams(window.location.search);
       const bundleUrl = urlParams.get('bundle');
@@ -128,11 +149,13 @@ function AppContent() {
       // Set up event listeners (do this regardless of scenario)
       // Query available apps and show boot menu
       const apps = await queryAvailableApps();
-      setAvailableApps(apps.map((name) => ({ name })));
+      setAvailableApps(apps.map(name => ({ name })));
       showBootMenu();
     };
 
     if ('serviceWorker' in navigator) {
+      notifyServiceWorkerSupport(true);
+
       if (navigator.serviceWorker.controller) {
         console.log('Service worker is already controlling the page');
         initializeBios();
@@ -147,23 +170,29 @@ function AppContent() {
 
         navigator.serviceWorker
           .register(serviceWorkerUrl, { type: 'module' })
-          .catch((err) => {
+          .catch(err => {
             console.log('ServiceWorker registration failed: ', err);
-            showError(
+            const errorMsg =
               'Service Worker registration failed.\n\n' +
-                'Firefox does not yet support ES modules in Service Workers.\n\n' +
-                'Please use Chrome or Safari to run Tonks.'
-            );
+              'Firefox does not yet support ES modules in Service Workers.\n\n' +
+              'Please use Chrome or Safari to run Tonks.';
+            showError(errorMsg);
+            notifyServiceWorkerSupport(false, errorMsg);
           });
 
         console.log('Waiting for service worker to take control...');
-        navigator.serviceWorker.addEventListener('controllerchange', async () => {
-          console.log('Service worker now controlling the page');
-          await initializeBios();
-        });
+        navigator.serviceWorker.addEventListener(
+          'controllerchange',
+          async () => {
+            console.log('Service worker now controlling the page');
+            await initializeBios();
+          }
+        );
       }
     } else {
-      showError('Service Workers are not supported in this browser.');
+      const errorMsg = 'Service Workers are not supported in this browser.';
+      showError(errorMsg);
+      notifyServiceWorkerSupport(false, errorMsg);
     }
   }, []);
 
@@ -176,7 +205,6 @@ function AppContent() {
 
   return (
     <div class="flex flex-col max-w-[800px] h-full min-h-0 mx-auto">
-
       <div class="flex-1 min-h-0 flex flex-col">
         {screenState === ScreenState.LOADING && <LoadingScreen />}
         {screenState === ScreenState.BOOT && <BootScreen />}

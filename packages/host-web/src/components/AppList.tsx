@@ -24,8 +24,8 @@ export function AppList() {
 
   if (availableApps.length === 0) {
     return (
-      <ul class="list-none flex items-center justify-center w-full">
-        <div class="flex flex-col">
+      <ul class="list-none flex items-center justify-center w-full group">
+        <div class="flex flex-col group-hover:scale-[1.1] transition-all">
           <img src={icon_upload} alt="upload icon" class="w-16 h-16 mx-auto" />
           <p>Drag a .tonk file to load it.</p>
         </div>
