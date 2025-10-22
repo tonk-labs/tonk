@@ -1,6 +1,6 @@
 export function PromptScreen() {
   return (
-    <div class="border-2 border-[#f90] p-6 min-h-[400px] boot-menu">
+    <div class="border-2 border-[#f90] p-6 flex grow flex-col boot-menu">
       <div class="text-[#ddd] text-sm mb-4">⚠ NO BUNDLE LOADED</div>
       <p class="mb-6 text-[#ddd]">Please provide a Tonk bundle to continue:</p>
       <ul class="list-none space-y-3 pl-6">

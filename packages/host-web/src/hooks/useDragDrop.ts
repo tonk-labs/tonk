@@ -44,8 +44,10 @@ export function useDragDrop() {
       }
 
       // Remove drag styling
-      document.querySelectorAll('.boot-menu').forEach((menu) => {
-        menu.classList.remove('drag-over');
+      document.querySelectorAll('.boot-menu').forEach((menu: Element) => {
+        const el = menu as HTMLElement;
+        el.style.borderColor = '';
+        el.style.background = '';
       });
     },
     [showError, processTonkFile]
@@ -56,10 +58,11 @@ export function useDragDrop() {
     e.stopPropagation();
 
     const activeMenu = document.querySelector<HTMLElement>(
-      '#prompt-screen:not([style*="display: none"]) .boot-menu, #boot-screen:not([style*="display: none"]) .boot-menu'
+      '.boot-menu'
     );
     if (activeMenu) {
-      activeMenu.classList.add('drag-over');
+      activeMenu.style.borderColor = '#0f0';
+      activeMenu.style.background = 'rgba(0, 255, 0, 0.1)';
     }
   }, []);
 
@@ -67,8 +70,10 @@ export function useDragDrop() {
     e.preventDefault();
     e.stopPropagation();
 
-    document.querySelectorAll('.boot-menu').forEach((menu) => {
-      menu.classList.remove('drag-over');
+    document.querySelectorAll('.boot-menu').forEach((menu: Element) => {
+      const el = menu as HTMLElement;
+      el.style.borderColor = '';
+      el.style.background = '';
     });
   }, []);
 
@@ -93,25 +98,30 @@ export function useDragDrop() {
       switch (type) {
         case 'tonk:dragEnter': {
           const activeMenu = document.querySelector<HTMLElement>(
-            '#prompt-screen:not([style*="display: none"]) .boot-menu, #boot-screen:not([style*="display: none"]) .boot-menu'
+            '.boot-menu'
           );
           if (activeMenu) {
-            activeMenu.classList.add('drag-over');
+            activeMenu.style.borderColor = '#0f0';
+            activeMenu.style.background = 'rgba(0, 255, 0, 0.1)';
           }
           break;
         }
 
         case 'tonk:dragLeave': {
-          document.querySelectorAll('.boot-menu').forEach((menu) => {
-            menu.classList.remove('drag-over');
+          document.querySelectorAll('.boot-menu').forEach((menu: Element) => {
+            const el = menu as HTMLElement;
+            el.style.borderColor = '';
+            el.style.background = '';
           });
           break;
         }
 
         case 'tonk:drop': {
           // Remove drag styling
-          document.querySelectorAll('.boot-menu').forEach((menu) => {
-            menu.classList.remove('drag-over');
+          document.querySelectorAll('.boot-menu').forEach((menu: Element) => {
+            const el = menu as HTMLElement;
+            el.style.borderColor = '';
+            el.style.background = '';
           });
 
           // Validate file

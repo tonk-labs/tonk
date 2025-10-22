@@ -1,29 +1,25 @@
 @import "tailwindcss";
 
-/* Global styles - using @layer base so utilities can override */
+/* Global body styles using Tailwind utilities */
 @layer base {
-  * {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-  }
-
   body {
+    @apply min-h-screen cursor-default m-5;
     background: rgb(73, 24, 79);
     color: #fff;
     font-family: 'Courier New', Courier, monospace;
     font-size: 16px;
     line-height: 1.4;
-    padding: 20px;
-    min-height: 100vh;
-    cursor: default;
     -webkit-font-smoothing: none;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeSpeed;
   }
 }
 
-/* Animations */
+#root {
+  @apply h-screen min-h-0 box-content;
+}
+
+/* Animations - can't be done with Tailwind utilities */
 @keyframes blink {
   0%,
   50% {
@@ -41,29 +37,5 @@
   }
   100% {
     transform: rotate(360deg);
-  }
-}
-
-/* Component styles */
-@layer components {
-  .loading-message {
-    color: #fff;
-    animation: blink 1s infinite;
-  }
-
-  .spinner {
-    border: 4px solid #333;
-    border-top: 4px solid #fff;
-    border-radius: 50%;
-    width: 40px;
-    height: 40px;
-    animation: spin 1s linear infinite;
-    margin: 0 auto 10px;
-  }
-
-  /* Boot menu drag over state */
-  .boot-menu.drag-over {
-    border-color: #0f0;
-    background: rgba(0, 255, 0, 0.1);
   }
 }

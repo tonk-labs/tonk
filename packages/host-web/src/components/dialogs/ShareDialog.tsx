@@ -47,7 +47,7 @@ export function ShareDialog() {
 
       {dialogs.share.isLoading && (
         <div class="text-center py-6">
-          <div class="spinner" />
+          <div class="w-10 h-10 mx-auto mb-3 border-4 border-[#333] border-t-white rounded-full animate-[spin_1s_linear_infinite]" />
           <p class="mt-3">Uploading bundle to server...</p>
         </div>
       )}

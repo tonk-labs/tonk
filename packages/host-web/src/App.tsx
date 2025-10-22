@@ -164,7 +164,7 @@ function AppContent() {
     dialogs.downloadSpinner.isOpen;
 
   return (
-    <div class="max-w-[800px] mx-auto">
+    <div class="max-w-full h-full min-h-0 mx-auto">
       <div class="text-center text-sm font-normal text-[#ddd] mb-5">
         TONK HOST WEB version 0.1.0
       </div>

@@ -42,9 +42,8 @@ export function BootScreen() {
   };
 
   return (
-    <div>
-      <div class="border-2 border-white p-6 mb-6 min-h-[400px] transition-[border-color] duration-200 ease-in-out boot-menu">
-        <div class="text-[#ddd] mb-4 text-sm">Available Applications</div>
+    <div class="flex min-h-0 h-full flex-col">
+      <div class="border-2 border-white p-6 mb-6 flex grow transition-[border-color] duration-200 ease-in-out boot-menu">
         <AppList />
       </div>
 

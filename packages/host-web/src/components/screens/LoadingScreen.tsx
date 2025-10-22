@@ -5,7 +5,7 @@ export function LoadingScreen() {
 
   return (
     <div>
-      <p class="loading-message">{loadingMessage}</p>
+      <p class="text-white animate-[blink_1s_infinite]">{loadingMessage}</p>
     </div>
   );
 }
