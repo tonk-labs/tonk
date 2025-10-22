@@ -270,22 +270,6 @@ importers:
         specifier: ^1.1.0
         version: 1.1.0
 
-  packages/demo2:
-    dependencies:
-      '@tonk/core':
-        specifier: workspace:*
-        version: link:../core-js
-      '@tonk/host-web':
-        specifier: workspace:*
-        version: link:../host-web
-    devDependencies:
-      mprocs:
-        specifier: ^0.7.1
-        version: 0.7.3
-      wait-port:
-        specifier: ^1.1.0
-        version: 1.1.0
-
   packages/host-web:
     dependencies:
       '@tonk/core':

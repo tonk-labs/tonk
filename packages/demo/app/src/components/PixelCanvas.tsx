@@ -1,54 +1,71 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import './PixelCanvas.css';
 import { usePixelStore } from '../stores/pixelStore';
 
 interface PixelCanvasProps {
-  width?: number;
-  height?: number;
   pixelSize?: number;
 }
 
-export function PixelCanvas({
-  width = 1024,
-  height = 1024,
-  pixelSize = 1,
-}: PixelCanvasProps) {
+export function PixelCanvas({ pixelSize = 10 }: PixelCanvasProps) {
   const { pixels, selectedColor, setPixel, removePixel, setSelectedColor } =
     usePixelStore();
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+
   console.log('PixelCanvasContent rendering', {
     pixels,
     selectedColor,
     isReady: true,
   });
 
-  // Initialize canvas
+  // Update canvas size on window resize
+  useEffect(() => {
+    const updateSize = () => {
+      setDimensions({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+    };
+
+    updateSize();
+    window.addEventListener('resize', updateSize);
+    return () => window.removeEventListener('resize', updateSize);
+  }, []);
+
+  // Initialize and draw canvas
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !dimensions.width || !dimensions.height) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Set canvas size
-    canvas.width = width * pixelSize;
-    canvas.height = height * pixelSize;
+    // Set canvas size to viewport
+    canvas.width = dimensions.width;
+    canvas.height = dimensions.height;
 
     // Draw grid
     drawCanvas(ctx);
-  }, [width, height, pixelSize, pixels]);
+  }, [dimensions, pixelSize, pixels]);
 
   const drawCanvas = (ctx: CanvasRenderingContext2D) => {
     // Clear canvas with white background
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
+    // Calculate center offset
+    const centerX = Math.floor(ctx.canvas.width / 2);
+    const centerY = Math.floor(ctx.canvas.height / 2);
+
     // Draw only placed pixels
     Object.entries(pixels).forEach(([key, pixel]) => {
       const [x, y] = key.split(',').map(Number);
+      // Convert from grid coordinates (centered at 0,0) to screen coordinates
+      const screenX = centerX + x * pixelSize;
+      const screenY = centerY + y * pixelSize;
       ctx.fillStyle = pixel.color;
-      ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
+      ctx.fillRect(screenX, screenY, pixelSize, pixelSize);
     });
   };
 
@@ -57,14 +74,19 @@ export function PixelCanvas({
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const x = Math.floor(((e.clientX - rect.left) * scaleX) / pixelSize);
-    const y = Math.floor(((e.clientY - rect.top) * scaleY) / pixelSize);
+    // Get canvas coordinates
+    const canvasX = e.clientX - rect.left;
+    const canvasY = e.clientY - rect.top;
 
-    if (x >= 0 && x < width && y >= 0 && y < height) {
-      placePixel(x, y);
-    }
+    // Calculate center offset
+    const centerX = Math.floor(canvas.width / 2);
+    const centerY = Math.floor(canvas.height / 2);
+
+    // Convert to grid coordinates (centered at 0,0)
+    const gridX = Math.floor((canvasX - centerX) / pixelSize);
+    const gridY = Math.floor((canvasY - centerY) / pixelSize);
+
+    placePixel(gridX, gridY);
   };
 
   const placePixel = (x: number, y: number) => {
@@ -81,38 +103,33 @@ export function PixelCanvas({
 
   return (
     <div className="pixel-canvas-container">
-      <div className="toolbar">
-        <h2 className="canvas-title">Collaborative Pixel Editor</h2>
+      <canvas
+        ref={canvasRef}
+        className="pixel-canvas"
+        onClick={handleCanvasClick}
+      />
+
+      <div className="chat-bubble">
         <p className="instructions">
           Click to place a pixel, click to undo a pixel. Send this demo to a
           friend and click pixels together!
         </p>
 
-        <div className="toolbar-controls">
-          <div className="color-picker-section">
-            <label htmlFor="color-picker" className="color-label">
-              Color:
-            </label>
-            <div className="color-picker-wrapper">
-              <input
-                type="color"
-                id="color-picker"
-                value={selectedColor}
-                onChange={e => setSelectedColor(e.target.value)}
-                className="color-picker"
-              />
-              <span className="color-value">{selectedColor.toUpperCase()}</span>
-            </div>
+        <div className="color-picker-section">
+          <label htmlFor="color-picker" className="color-label">
+            Color:
+          </label>
+          <div className="color-picker-wrapper">
+            <input
+              type="color"
+              id="color-picker"
+              value={selectedColor}
+              onChange={e => setSelectedColor(e.target.value)}
+              className="color-picker"
+            />
+            <span className="color-value">{selectedColor.toUpperCase()}</span>
           </div>
         </div>
-      </div>
-
-      <div className="canvas-wrapper">
-        <canvas
-          ref={canvasRef}
-          className="pixel-canvas"
-          onClick={handleCanvasClick}
-        />
       </div>
     </div>
   );
