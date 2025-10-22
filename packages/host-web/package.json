@@ -13,6 +13,7 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@preact/preset-vite": "^2.9.2",
     "@types/node": "^20.0.0",
     "buffer": "^6.0.3",
     "prettier": "^2.8.8",
@@ -22,8 +23,10 @@
     "vite": "^5.0.0"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.0.0",
     "@tonk/core": "workspace:../core-js",
     "mime": "^4.1.0",
+    "preact": "^10.24.3",
     "tailwindcss": "^4.1.13"
   }
 }
