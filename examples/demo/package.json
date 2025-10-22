@@ -11,7 +11,7 @@
     "build:relay": "cd ../../packages/relay && cargo build --release",
     "dev": "mprocs",
     "dev:relay": "cd ../../packages/relay && pnpm run dev",
-    "dev:host-web": "cd ../../packages/host-web && PORT=4000 NODE_ENV=production pnpm run dev:with-proxy"
+    "dev:host-web": "cd ../../packages/host-web && PORT=4000 NODE_ENV=development pnpm run dev:with-proxy"
   },
   "dependencies": {
     "@tonk/core": "workspace:*",
