@@ -1,6 +1,5 @@
 import { useRef, useEffect } from 'react';
 import './PixelCanvas.css';
-import { useVFS } from '../hooks/useVFS';
 import { usePixelStore } from '../stores/pixelStore';
 
 interface PixelCanvasProps {
@@ -10,47 +9,14 @@ interface PixelCanvasProps {
 }
 
 export function PixelCanvas({
-  width = 32,
-  height = 48,
-  pixelSize = 10,
+  width = 1024,
+  height = 1024,
+  pixelSize = 1,
 }: PixelCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  // const { connectionState } = useVFS();
-
-  // console.log('PixelCanvas rendering', { connectionState });
-
-  // if (connectionState !== 'connected') {
-  //   return (
-  //     <div className="pixel-canvas-container">
-  //       <div className="toolbar">
-  //         <h2 className="canvas-title">Collaborative Pixel Editor</h2>
-  //         <p className="instructions">Loading...</p>
-  //       </div>
-  //     </div>
-  //   );
-  // }
-
-  return (
-    <PixelCanvasContent
-      width={width}
-      height={height}
-      pixelSize={pixelSize}
-      canvasRef={canvasRef}
-    />
-  );
-}
-
-function PixelCanvasContent({
-  width = 32,
-  height = 48,
-  pixelSize = 10,
-  canvasRef,
-}: PixelCanvasProps & {
-  canvasRef: React.RefObject<HTMLCanvasElement | null>;
-}) {
   const { pixels, selectedColor, setPixel, removePixel, setSelectedColor } =
     usePixelStore();
 
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   console.log('PixelCanvasContent rendering', {
     pixels,
     selectedColor,
