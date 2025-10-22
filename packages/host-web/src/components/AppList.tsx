@@ -19,7 +19,7 @@ export function AppList() {
     }
   };
   const bootTheApp = async (index: number) => {
-    await confirmBoot(availableApps[0].name);
+    await confirmBoot(availableApps[index].name);
   };
 
   if (availableApps.length === 0) {

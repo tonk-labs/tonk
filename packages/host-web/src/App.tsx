@@ -84,6 +84,31 @@ function AppContent() {
       setAvailableApps(apps.map(name => ({ name })));
 
       if (apps.length > 0) {
+        // Send success to parent (bundle already loaded)
+        if (window.parent !== window) {
+          const ALLOWED_ORIGINS = [
+            'https://tonk.xyz',
+            'https://www.tonk.xyz',
+            'http://localhost:3000',
+            'http://localhost:5173',
+            'http://localhost:5174',
+          ];
+          ALLOWED_ORIGINS.forEach(origin => {
+            try {
+              window.parent.postMessage(
+                {
+                  type: 'tonk:dropResponse',
+                  status: 'success',
+                  fileName: 'bundle',
+                },
+                origin
+              );
+            } catch (err) {
+              // Ignore errors for wrong origins
+            }
+          });
+        }
+
         // Show splash screen for 500ms, then auto-boot first app
         showSplashScreen();
         await new Promise(resolve => setTimeout(resolve, 500));

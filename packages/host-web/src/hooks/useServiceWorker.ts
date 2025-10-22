@@ -3,8 +3,42 @@ import { useTonk } from '../context/TonkContext';
 import { useDialogs } from '../context/DialogContext';
 import type { ServiceWorkerMessage } from '../types/index';
 
+const ALLOWED_ORIGINS = [
+  'https://tonk.xyz',
+  'https://www.tonk.xyz',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:5174',
+];
+
+const sendSuccessToParent = (fileName: string) => {
+  if (window.parent !== window) {
+    ALLOWED_ORIGINS.forEach(origin => {
+      try {
+        window.parent.postMessage(
+          {
+            type: 'tonk:dropResponse',
+            status: 'success',
+            fileName,
+          },
+          origin
+        );
+      } catch (err) {
+        console.log(err);
+        // Ignore errors for wrong origins
+      }
+    });
+  }
+};
+
 export function useServiceWorker() {
-  const { showLoadingScreen, showError, setAvailableApps, showBootMenu, showSplashScreen } = useTonk();
+  const {
+    showLoadingScreen,
+    showError,
+    setAvailableApps,
+    showBootMenu,
+    showSplashScreen,
+  } = useTonk();
   const { updateShareDialog, closeDownloadSpinner } = useDialogs();
 
   // Generic message sender with promise-based response handling
@@ -19,8 +53,15 @@ export function useServiceWorker() {
       const messageWithId = { ...message, id: requestId };
 
       const messageHandler = (event: MessageEvent) => {
-        if (event.data && event.data.type === message.type && event.data.id === requestId) {
-          navigator.serviceWorker.removeEventListener('message', messageHandler);
+        if (
+          event.data &&
+          event.data.type === message.type &&
+          event.data.id === requestId
+        ) {
+          navigator.serviceWorker.removeEventListener(
+            'message',
+            messageHandler
+          );
 
           if (event.data.success) {
             resolve(event.data as T);
@@ -75,23 +116,26 @@ export function useServiceWorker() {
   }, [sendMessage]);
 
   // Confirm boot and redirect to app
-  const confirmBoot = useCallback(async (appSlug: string) => {
-    console.log('Booting application:', appSlug);
-    showLoadingScreen(`Loading ${appSlug}...`);
+  const confirmBoot = useCallback(
+    async (appSlug: string) => {
+      console.log('Booting application:', appSlug);
+      showLoadingScreen(`Loading ${appSlug}...`);
 
-    if (navigator.serviceWorker.controller) {
-      navigator.serviceWorker.controller.postMessage({
-        type: 'setAppSlug',
-        slug: appSlug,
-      });
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: 'setAppSlug',
+          slug: appSlug,
+        });
 
-      localStorage.setItem('appSlug', appSlug);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      window.location.href = `/${appSlug}/`;
-    } else {
-      showError('Service worker not ready. Please refresh the page.');
-    }
-  }, [showLoadingScreen, showError]);
+        localStorage.setItem('appSlug', appSlug);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        window.location.href = `/${appSlug}/`;
+      } else {
+        showError('Service worker not ready. Please refresh the page.');
+      }
+    },
+    [showLoadingScreen, showError]
+  );
 
   // Get server URL from service worker
   const getServerUrl = useCallback(async (): Promise<string> => {
@@ -115,7 +159,9 @@ export function useServiceWorker() {
       });
 
       if (response.success && response.data) {
-        const blob = new Blob([response.data], { type: 'application/octet-stream' });
+        const blob = new Blob([response.data], {
+          type: 'application/octet-stream',
+        });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -134,7 +180,10 @@ export function useServiceWorker() {
   }, [sendMessage, showError]);
 
   // Share as URL with QR code
-  const shareAsUrl = useCallback(async (): Promise<{ shareUrl: string; qrCodeUrl: string }> => {
+  const shareAsUrl = useCallback(async (): Promise<{
+    shareUrl: string;
+    qrCodeUrl: string;
+  }> => {
     updateShareDialog({ isLoading: true, error: null });
 
     try {
@@ -150,7 +199,6 @@ export function useServiceWorker() {
       }
 
       const bundleBytes = bytesResponse.data;
-      const rootId = bytesResponse.rootId;
 
       // Upload to server
       const uploadResponse = await fetch(`${serverUrl}/api/bundles`, {
@@ -196,110 +244,136 @@ export function useServiceWorker() {
   }, [sendMessage, getServerUrl, updateShareDialog]);
 
   // Create new tonk
-  const createNewTonk = useCallback(async (tonkName: string, hasLoadedBundles: boolean) => {
-    console.log('Creating new tonk with name:', tonkName);
-    showLoadingScreen('Creating new tonk...');
+  const createNewTonk = useCallback(
+    async (tonkName: string, hasLoadedBundles: boolean) => {
+      console.log('Creating new tonk with name:', tonkName);
+      showLoadingScreen('Creating new tonk...');
 
-    try {
-      // If no bundles loaded, fetch blank tonk first
-      if (!hasLoadedBundles) {
-        const serverUrl = await getServerUrl();
-        const response = await fetch(`${serverUrl}/api/blank-tonk`);
+      try {
+        // If no bundles loaded, fetch blank tonk first
+        if (!hasLoadedBundles) {
+          const serverUrl = await getServerUrl();
+          const response = await fetch(`${serverUrl}/api/blank-tonk`);
 
-        if (!response.ok) {
-          throw new Error('Failed to fetch blank tonk template');
+          if (!response.ok) {
+            throw new Error('Failed to fetch blank tonk template');
+          }
+
+          const blankBytes = new Uint8Array(await response.arrayBuffer());
+
+          // Load the blank tonk
+          await sendMessage({
+            type: 'loadBundle',
+            bundleBytes: blankBytes.buffer.slice(
+              blankBytes.byteOffset,
+              blankBytes.byteOffset + blankBytes.byteLength
+            ),
+          });
         }
 
-        const blankBytes = new Uint8Array(await response.arrayBuffer());
+        // Fork the bundle
+        const forkResponse = await sendMessage<ServiceWorkerMessage>({
+          type: 'forkToBytes',
+        });
 
-        // Load the blank tonk
+        if (!forkResponse.success || !forkResponse.data) {
+          throw new Error(forkResponse.error || 'Failed to fork tonk');
+        }
+
+        const bundleBytes = forkResponse.data;
+
+        // Load the forked bundle
         await sendMessage({
           type: 'loadBundle',
-          bundleBytes: blankBytes.buffer.slice(
-            blankBytes.byteOffset,
-            blankBytes.byteOffset + blankBytes.byteLength
+          bundleBytes: bundleBytes.buffer.slice(
+            bundleBytes.byteOffset,
+            bundleBytes.byteOffset + bundleBytes.byteLength
           ),
         });
-      }
 
-      // Fork the bundle
-      const forkResponse = await sendMessage<ServiceWorkerMessage>({
-        type: 'forkToBytes',
-      });
-
-      if (!forkResponse.success || !forkResponse.data) {
-        throw new Error(forkResponse.error || 'Failed to fork tonk');
-      }
-
-      const bundleBytes = forkResponse.data;
-
-      // Load the forked bundle
-      await sendMessage({
-        type: 'loadBundle',
-        bundleBytes: bundleBytes.buffer.slice(
-          bundleBytes.byteOffset,
-          bundleBytes.byteOffset + bundleBytes.byteLength
-        ),
-      });
-
-      // Rename the app directory
-      const oldName = hasLoadedBundles ? 'latergram' : 'latergram';
-      await sendMessage({
-        type: 'rename',
-        oldPath: `/app/${oldName}`,
-        newPath: `/app/${tonkName}`,
-      });
-
-      // Refresh app list
-      const apps = await queryAvailableApps();
-      setAvailableApps(apps.map((name) => ({ name })));
-      showBootMenu();
-    } catch (error: any) {
-      console.error('Error creating new tonk:', error);
-      showError(`Error creating new tonk: ${error.message}`);
-    } finally {
-      closeDownloadSpinner();
-    }
-  }, [sendMessage, getServerUrl, queryAvailableApps, setAvailableApps, showBootMenu, showLoadingScreen, showError, closeDownloadSpinner]);
-
-  // Process tonk file
-  const processTonkFile = useCallback(async (file: File) => {
-    console.log('Processing .tonk file:', file.name);
-    showLoadingScreen('Loading bundle from file...');
-
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      console.log('File read as ArrayBuffer, size:', arrayBuffer.byteLength);
-
-      const response = await sendMessage<ServiceWorkerMessage>({
-        type: 'loadBundle',
-        bundleBytes: arrayBuffer,
-      });
-
-      if (response.success) {
-        console.log('Bundle loaded successfully:', file.name);
+        // Rename the app directory
+        const oldName = hasLoadedBundles ? 'latergram' : 'latergram';
+        await sendMessage({
+          type: 'rename',
+          oldPath: `/app/${oldName}`,
+          newPath: `/app/${tonkName}`,
+        });
 
         // Refresh app list
         const apps = await queryAvailableApps();
-        setAvailableApps(apps.map((name) => ({ name })));
-
-        if (apps.length > 0) {
-          // Show splash screen for 500ms, then auto-boot first app
-          showSplashScreen();
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          await confirmBoot(apps[0]);
-        } else {
-          // No apps found in bundle
-          showError('No applications found in bundle');
-        }
-      } else {
-        showError(`Failed to load bundle: ${response.error}`);
+        setAvailableApps(apps.map(name => ({ name })));
+        showBootMenu();
+      } catch (error: any) {
+        console.error('Error creating new tonk:', error);
+        showError(`Error creating new tonk: ${error.message}`);
+      } finally {
+        closeDownloadSpinner();
       }
-    } catch (error: any) {
-      console.error('Error processing tonk file:', error);
-      showError(`Error processing ${file.name}: ${error.message}`);
-    }
-  }, [sendMessage, queryAvailableApps, setAvailableApps, confirmBoot, showSplashScreen, showLoadingScreen, showError]);
+    },
+    [
+      sendMessage,
+      getServerUrl,
+      queryAvailableApps,
+      setAvailableApps,
+      showBootMenu,
+      showLoadingScreen,
+      showError,
+      closeDownloadSpinner,
+    ]
+  );
+
+  // Process tonk file
+  const processTonkFile = useCallback(
+    async (file: File) => {
+      console.log('Processing .tonk file:', file.name);
+      showLoadingScreen('Loading bundle from file...');
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        console.log('File read as ArrayBuffer, size:', arrayBuffer.byteLength);
+
+        const response = await sendMessage<ServiceWorkerMessage>({
+          type: 'loadBundle',
+          bundleBytes: arrayBuffer,
+        });
+
+        if (response.success) {
+          console.log('Bundle loaded successfully:', file.name);
+
+          // Refresh app list
+          const apps = await queryAvailableApps();
+          setAvailableApps(apps.map(name => ({ name })));
+
+          if (apps.length > 0) {
+            // Send success to parent BEFORE redirecting
+            sendSuccessToParent(file.name);
+
+            // Show splash screen for 500ms, then auto-boot first app
+            showSplashScreen();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await confirmBoot(apps[0]);
+          } else {
+            // No apps found in bundle
+            showError('No applications found in bundle');
+          }
+        } else {
+          showError(`Failed to load bundle: ${response.error}`);
+        }
+      } catch (error: any) {
+        console.error('Error processing tonk file:', error);
+        showError(`Error processing ${file.name}: ${error.message}`);
+      }
+    },
+    [
+      sendMessage,
+      queryAvailableApps,
+      setAvailableApps,
+      confirmBoot,
+      showSplashScreen,
+      showLoadingScreen,
+      showError,
+    ]
+  );
 
   return {
     sendMessage,
