@@ -27,7 +27,8 @@ export function AppList() {
     <ul class="list-none">
       {availableApps.map((app, index) => {
         const appName = typeof app === 'string' ? app : app.name;
-        const appStatus = typeof app === 'string' ? 'Ready' : app.status || 'Ready';
+        const appStatus =
+          typeof app === 'string' ? 'Ready' : app.status || 'Ready';
         const isSelected = index === selectedAppIndex;
 
         return (
@@ -36,18 +37,12 @@ export function AppList() {
             onClick={() => handleAppClick(index)}
             class={`px-3 py-2 cursor-pointer flex items-center text-white font-semibold transition-colors ${
               isSelected
-                ? 'bg-[#ddd] text-black'
+                ? 'bg-[#ddd]/30 text-black'
                 : 'bg-transparent hover:bg-[#333]'
             }`}
           >
             <span>{appName}</span>
-            <span
-              class={`ml-auto text-xs font-semibold ${
-                isSelected ? 'text-black' : 'text-white'
-              }`}
-            >
-              {appStatus}
-            </span>
+            <span class="pl-4 text-xs">{appStatus}</span>
           </li>
         );
       })}

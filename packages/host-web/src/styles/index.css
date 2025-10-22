@@ -2,8 +2,13 @@
 
 /* Global body styles using Tailwind utilities */
 @layer base {
+  html,
   body {
-    @apply min-h-screen cursor-default m-5;
+    @apply h-screen;
+  }
+
+  body {
+    @apply cursor-default p-5;
     background: rgb(73, 24, 79);
     color: #fff;
     font-family: 'Courier New', Courier, monospace;
@@ -13,10 +18,10 @@
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeSpeed;
   }
-}
 
-#root {
-  @apply h-screen min-h-0 box-content;
+  #root {
+    @apply h-full;
+  }
 }
 
 /* Animations - can't be done with Tailwind utilities */

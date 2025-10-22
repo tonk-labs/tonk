@@ -164,15 +164,17 @@ function AppContent() {
     dialogs.downloadSpinner.isOpen;
 
   return (
-    <div class="max-w-full h-full min-h-0 mx-auto">
+    <div class="flex flex-col max-w-[800px] h-full min-h-0 mx-auto">
       <div class="text-center text-sm font-normal text-[#ddd] mb-5">
         TONK HOST WEB version 0.1.0
       </div>
 
-      {screenState === ScreenState.LOADING && <LoadingScreen />}
-      {screenState === ScreenState.BOOT && <BootScreen />}
-      {screenState === ScreenState.ERROR && <ErrorScreen />}
-      {screenState === ScreenState.PROMPT && <PromptScreen />}
+      <div class="flex-1 min-h-0 flex flex-col">
+        {screenState === ScreenState.LOADING && <LoadingScreen />}
+        {screenState === ScreenState.BOOT && <BootScreen />}
+        {screenState === ScreenState.ERROR && <ErrorScreen />}
+        {screenState === ScreenState.PROMPT && <PromptScreen />}
+      </div>
 
       <Overlay isVisible={showOverlay} />
       <ConfirmationDialog />
