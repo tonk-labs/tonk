@@ -6,7 +6,7 @@
 
 .line-number {
   position: absolute;
-  left: 0;
+  left: -15%;
   width: 3rem;
   text-align: right;
   padding-right: 1rem;

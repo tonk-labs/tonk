@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+main {
+  @apply flex flex-col h-full items-center;
+}
+
+nav#nav-topbar {
+  @apply w-full h-16 px-4 py-2 flex items-center justify-between;
+}

@@ -7,7 +7,7 @@ body {
 .dark body {
   --tt-theme-text: var(--tt-gray-dark-900);
 }
-
+/* 
 body {
   font-family: "Inter", sans-serif;
   color: var(--tt-theme-text);
@@ -29,7 +29,7 @@ body,
 #app {
   height: 100%;
   background-color: var(--tt-bg-color);
-}
+} */
 
 ::-webkit-scrollbar {
   width: 0.25rem;
@@ -57,14 +57,7 @@ body,
   font-family: "DM Sans", sans-serif;
 }
 
-.simple-editor-wrapper {
-  width: 100vw;
-  height: 100vh;
-  overflow: auto;
-}
-
 .simple-editor-content {
-  max-width: 648px;
   width: 100%;
   margin: 0 auto;
   height: 100%;
@@ -75,11 +68,11 @@ body,
 
 .simple-editor-content .tiptap.ProseMirror.simple-editor {
   flex: 1;
-  padding: 3rem 3rem 30vh;
+  padding: 3rem 3rem; 
 }
 
 @media screen and (max-width: 480px) {
   .simple-editor-content .tiptap.ProseMirror.simple-editor {
-    padding: 1rem 1.5rem 30vh;
+    padding: 1rem 1.5rem;
   }
 }

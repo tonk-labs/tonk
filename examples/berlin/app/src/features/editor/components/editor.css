@@ -1,0 +1,5 @@
+@import "tailwindcss";
+
+#editor-area {
+    @apply max-w-[900px] w-[80%] bg-white h-full;
+}

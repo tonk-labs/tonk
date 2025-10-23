@@ -1,5 +1,4 @@
-import './App.css';
-import Layout from './components/layout';
+import Layout from './components/layout/layout';
 import { Editor } from './features/editor';
 
 function App() {

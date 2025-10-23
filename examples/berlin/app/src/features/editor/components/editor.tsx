@@ -15,9 +15,10 @@ import HorizontalRule from '@tiptap/extension-horizontal-rule';
 import { Selection } from '@tiptap/extensions';
 import { ImageUploadNode } from '@/components/tiptap-node/image-upload-node/image-upload-node-extension';
 import { LineNumbers } from '../extensions/LineNumbers';
-import '../extensions/LineNumbers.css';
 import { useEditorStore } from '../stores/editorStore';
 import { SimpleEditor } from './tiptap/simple-editor';
+import './editor.css'
+import '../extensions/LineNumbers.css';
 
 export function Editor() {
   const { document, setDocument } = useEditorStore();
@@ -105,5 +106,5 @@ export function Editor() {
   }, [editor])
 
 
-  return <main id="editor-area">{editorArea}</main>;
+  return <article id="editor-area">{editorArea}</article>;
 }
