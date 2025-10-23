@@ -1,6 +1,6 @@
 import './App.css';
 import Layout from './components/layout';
-import Editor from './features/editor/editor';
+import { Editor } from './features/editor';
 
 function App() {
   return (
