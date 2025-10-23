@@ -9,23 +9,27 @@ export interface LineNumbersOptions {
 function createDecorations(state: any): DecorationSet {
   const decorations: Decoration[] = [];
   const doc = state.doc;
-  let lineNumber = 1;
+  let lineNumber = 0;
 
   doc.descendants((node: any, pos: number) => {
+    // Only add line numbers to top-level block nodes (direct children of doc)
     if (node.isBlock && node.type.name !== 'doc') {
-      const decoration = Decoration.widget(pos, () => {
+      lineNumber++;
+      const currentLine = lineNumber; // Capture current value
+      const decoration = Decoration.widget(pos + 1, () => {
         const span = document.createElement('span');
         span.className = 'line-number';
-        span.textContent = String(lineNumber);
+        span.textContent = String(currentLine);
         span.contentEditable = 'false';
         return span;
       }, {
         side: -1,
-        key: `line-${lineNumber}`,
+        key: `line-${pos}`,
       });
       decorations.push(decoration);
-      lineNumber++;
+      return false; // Don't descend into child nodes
     }
+    return true;
   });
 
   return DecorationSet.create(doc, decorations);
