@@ -50,15 +50,15 @@ tempfile = "3.21.0"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = {version = "1.47.1", features = ["macros", "rt", "sync"]}
 samod = { git = "https://github.com/tonk-labs/samod", branch = "wasm-runtime" }
-wasm-bindgen = { version = "0.2.100", features = ["serde-serialize"] }
+wasm-bindgen = { version = "0.2.104", features = ["serde-serialize"] }
 wasm-bindgen-futures = "0.4.50"
 serde-wasm-bindgen = "0.6.5"
-js-sys = "0.3.77"
+js-sys = "0.3.81"
 console_error_panic_hook = { version = "0.1.7", optional = true}
 tracing-wasm = "0.2.1"
 wee_alloc = { version = "0.4.5", optional = true }
 wasm-bindgen-test = "0.3.50"
-web-sys = {version = "0.3.77", features = [
+web-sys = {version = "0.3.81", features = [
   "BinaryType",
   "Blob",
   "CloseEvent",

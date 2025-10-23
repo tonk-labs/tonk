@@ -1,11 +1,16 @@
 #!/bin/bash
 set -e
 
-echo "🚀 Deploying Tonk Host-Web..."
+EC2_HOST="ec2-13-48-6-167.eu-north-1.compute.amazonaws.com"
+EC2_USER="ec2-user"
 
-cd /home/ec2-user/tonk
+echo "🚀 Deploying Tonk Host-Web to ${EC2_HOST}..."
+
+ssh "${EC2_USER}@${EC2_HOST}" <<'ENDSSH'
+set -e
 
 echo "📥 Pulling latest changes..."
+cd /home/ec2-user/tonk
 git fetch origin
 git checkout main
 git pull origin main
@@ -15,11 +20,17 @@ pnpm install
 
 echo "🔨 Rebuilding core-js (includes WASM)..."
 cd packages/core-js
-pnpm build
+pnpm build --frozen-lockfile
 
 echo "🔨 Rebuilding host-web..."
 cd ../host-web
 pnpm build
+
+echo "🔄 Starting tonk-app..."
+cd ../../examples/demo/app
+pnpm install
+nohup pnpm dev &
+disown
 
 echo "🔄 Restarting host-web service..."
 sudo systemctl restart host-web.service
@@ -30,3 +41,4 @@ echo "Service status:"
 sudo systemctl status host-web.service --no-pager
 echo ""
 echo "To view logs: sudo journalctl -u host-web.service -f"
+ENDSSH

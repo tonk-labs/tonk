@@ -8,7 +8,7 @@ User=ec2-user
 WorkingDirectory=/home/ec2-user/tonk/packages/host-web
 Environment="PATH=/home/ec2-user/.local/share/pnpm:/home/ec2-user/.nvm/versions/node/v22.20.0/bin:/home/ec2-user/.cargo/bin:/home/ec2-user/.local/bin:/home/ec2-user/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"
 Environment="NODE_ENV=production"
-ExecStart=/home/ec2-user/.local/share/pnpm/pnpm dev
+ExecStart=/home/ec2-user/.local/share/pnpm/pnpm start
 Restart=always
 RestartSec=10
 StandardOutput=journal
