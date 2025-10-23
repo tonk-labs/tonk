@@ -50,7 +50,7 @@ async function runDistributedTest(scenarioName: string) {
   console.log(
     `Total Connections: ${scenario.workerCount * scenario.connectionsPerWorker}`
   );
-  console.log(`Relay: ${scenario.relayHost}:${scenario.relayPort}`);
+  console.log(`Relay: ${scenario.relayUrl}`);
   console.log('='.repeat(80) + '\n');
 
   let infrastructure: AWSInfrastructure | undefined;
@@ -68,7 +68,7 @@ async function runDistributedTest(scenarioName: string) {
   }[] = [];
 
   try {
-    const relayUrl = `http://${scenario.relayHost}:${scenario.relayPort}`;
+    const relayUrl = scenario.relayUrl;
 
     console.log('📊 Initializing metrics aggregator...');
     metricsAggregator = new MetricsAggregator(relayUrl, testName);

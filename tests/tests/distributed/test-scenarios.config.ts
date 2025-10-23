@@ -1,8 +1,6 @@
 import type { TestScenario } from '../../src/distributed/types';
 
-const RELAY_HOST =
-  process.env.RELAY_HOST || 'ec2-16-16-146-55.eu-north-1.compute.amazonaws.com';
-const RELAY_PORT = parseInt(process.env.RELAY_PORT || '8081');
+const RELAY_URL = process.env.RELAY_URL || 'https://relay.tonk.xyz';
 
 export const scenarios: Record<string, TestScenario> = {
   baseline: {
@@ -11,8 +9,7 @@ export const scenarios: Record<string, TestScenario> = {
     workerInstanceType: 'c5.xlarge',
     workerCount: 2,
     connectionsPerWorker: 50,
-    relayHost: RELAY_HOST,
-    relayPort: RELAY_PORT,
+    relayUrl: RELAY_URL,
     useSpotInstances: true,
     maxCostPerHour: 1.0,
     phases: [
@@ -53,8 +50,7 @@ export const scenarios: Record<string, TestScenario> = {
     workerInstanceType: 'c5.2xlarge',
     workerCount: 3,
     connectionsPerWorker: 167,
-    relayHost: RELAY_HOST,
-    relayPort: RELAY_PORT,
+    relayUrl: RELAY_URL,
     useSpotInstances: true,
     maxCostPerHour: 2.0,
     phases: [
@@ -95,8 +91,7 @@ export const scenarios: Record<string, TestScenario> = {
     workerInstanceType: 'c5.2xlarge',
     workerCount: 5,
     connectionsPerWorker: 200,
-    relayHost: RELAY_HOST,
-    relayPort: RELAY_PORT,
+    relayUrl: RELAY_URL,
     useSpotInstances: true,
     maxCostPerHour: 3.0,
     phases: [
@@ -137,8 +132,7 @@ export const scenarios: Record<string, TestScenario> = {
     workerInstanceType: 'c5.2xlarge',
     workerCount: 50,
     connectionsPerWorker: 200,
-    relayHost: RELAY_HOST,
-    relayPort: RELAY_PORT,
+    relayUrl: RELAY_URL,
     useSpotInstances: true,
     maxCostPerHour: 25.0,
     phases: [

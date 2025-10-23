@@ -161,8 +161,7 @@ export interface TestScenario {
   workerCount: number;
   connectionsPerWorker: number;
   phases: PhaseConfig[];
-  relayHost: string;
-  relayPort: number;
+  relayUrl: string;
   useSpotInstances: boolean;
   maxCostPerHour?: number;
 }
