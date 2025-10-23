@@ -65,6 +65,13 @@ export type VFSWorkerMessage =
       wasmUrl?: string;
       wsUrl?: string;
     }
+  | {
+      type: 'initializeFromBytes';
+      id: string;
+      bundleBytes: ArrayBuffer;
+      serverUrl?: string;
+      wsUrl?: string;
+    }
   | { type: 'getServerUrl'; id: string };
 
 export type VFSWorkerResponse =
@@ -135,6 +142,12 @@ export type VFSWorkerResponse =
     }
   | {
       type: 'initializeFromUrl';
+      id: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: 'initializeFromBytes';
       id: string;
       success: boolean;
       error?: string;

@@ -193,15 +193,31 @@ function App() {
 
       try {
         console.log(
-          '[TEST-UI] Initializing service worker with bundle from:',
-          state.serverConfig.manifestUrl
+          '[TEST-UI] Fetching shared blank-tonk bundle from relay server'
         );
 
-        // Step 1: Initialize service worker with the bundle
-        // This creates the Tonk instance in the service worker
+        // Step 1: Fetch the shared blank-tonk bundle from the relay
+        // This ensures all clients start with the same root document
+        const blankTonkUrl = 'https://relay.tonk.xyz/api/blank-tonk';
+        const response = await fetch(blankTonkUrl);
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch blank-tonk: ${response.statusText}`);
+        }
+
+        const bundleBytes = await response.arrayBuffer();
+        console.log(
+          '[TEST-UI] Fetched blank-tonk bundle:',
+          bundleBytes.byteLength,
+          'bytes'
+        );
+
+        // Step 2: Initialize service worker with the shared bundle bytes
+        // This creates the Tonk instance from the same root document
         const initResponse = await sendMessageToServiceWorker({
-          type: 'initializeFromUrl',
-          manifestUrl: state.serverConfig.manifestUrl,
+          type: 'initializeFromBytes',
+          bundleBytes: bundleBytes,
+          wsUrl: state.serverConfig.wsUrl,
         });
 
         if (!initResponse.success) {
@@ -210,9 +226,13 @@ function App() {
           );
         }
 
-        console.log('[TEST-UI] Service worker initialized successfully');
+        console.log(
+          '[TEST-UI] Service worker initialized successfully from shared bundle'
+        );
 
-        // Step 2: Now initialize VFS to connect the Tonk instance to the relay
+        // Step 3: Now initialize VFS to connect the Tonk instance to the relay
+        // Note: We still need to call vfs.initialize() to set up the VFS service,
+        // but the actual Tonk initialization already happened in the service worker
         console.log(
           '[TEST-UI] Connecting VFS to relay:',
           state.serverConfig.wsUrl
