@@ -16,12 +16,7 @@ import {
 } from "@/lib/tiptap-utils"
 
 // --- Icons ---
-import { HeadingOneIcon } from "@/components/tiptap-icons/heading-one-icon"
-import { HeadingTwoIcon } from "@/components/tiptap-icons/heading-two-icon"
-import { HeadingThreeIcon } from "@/components/tiptap-icons/heading-three-icon"
-import { HeadingFourIcon } from "@/components/tiptap-icons/heading-four-icon"
-import { HeadingFiveIcon } from "@/components/tiptap-icons/heading-five-icon"
-import { HeadingSixIcon } from "@/components/tiptap-icons/heading-six-icon"
+import { Heading1, Heading2, Heading3, Heading4, Heading5, Heading6 } from "lucide-react"
 
 export type Level = 1 | 2 | 3 | 4 | 5 | 6
 
@@ -49,12 +44,12 @@ export interface UseHeadingConfig {
 }
 
 export const headingIcons = {
-  1: HeadingOneIcon,
-  2: HeadingTwoIcon,
-  3: HeadingThreeIcon,
-  4: HeadingFourIcon,
-  5: HeadingFiveIcon,
-  6: HeadingSixIcon,
+  1: Heading1,
+  2: Heading2,
+  3: Heading3,
+  4: Heading4,
+  5: Heading5,
+  6: Heading6,
 }
 
 export const HEADING_SHORTCUT_KEYS: Record<Level, string> = {

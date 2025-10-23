@@ -8,9 +8,7 @@ import { NodeSelection, TextSelection } from "@tiptap/pm/state"
 import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 
 // --- Icons ---
-import { ListIcon } from "@/components/tiptap-icons/list-icon"
-import { ListOrderedIcon } from "@/components/tiptap-icons/list-ordered-icon"
-import { ListTodoIcon } from "@/components/tiptap-icons/list-todo-icon"
+import { List, ListOrdered, ListTodo } from "lucide-react"
 
 // --- Lib ---
 import {
@@ -46,9 +44,9 @@ export interface UseListConfig {
 }
 
 export const listIcons = {
-  bulletList: ListIcon,
-  orderedList: ListOrderedIcon,
-  taskList: ListTodoIcon,
+  bulletList: List,
+  orderedList: ListOrdered,
+  taskList: ListTodo,
 }
 
 export const listLabels: Record<ListType, string> = {

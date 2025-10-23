@@ -12,10 +12,7 @@ import {
 } from "@/lib/tiptap-utils"
 
 // --- Icons ---
-import { AlignCenterIcon } from "@/components/tiptap-icons/align-center-icon"
-import { AlignJustifyIcon } from "@/components/tiptap-icons/align-justify-icon"
-import { AlignLeftIcon } from "@/components/tiptap-icons/align-left-icon"
-import { AlignRightIcon } from "@/components/tiptap-icons/align-right-icon"
+import { AlignLeft, AlignCenter, AlignRight, AlignJustify } from "lucide-react"
 
 export type TextAlign = "left" | "center" | "right" | "justify"
 
@@ -50,10 +47,10 @@ export const TEXT_ALIGN_SHORTCUT_KEYS: Record<TextAlign, string> = {
 }
 
 export const textAlignIcons = {
-  left: AlignLeftIcon,
-  center: AlignCenterIcon,
-  right: AlignRightIcon,
-  justify: AlignJustifyIcon,
+  left: AlignLeft,
+  center: AlignCenter,
+  right: AlignRight,
+  justify: AlignJustify,
 }
 
 export const textAlignLabels: Record<TextAlign, string> = {

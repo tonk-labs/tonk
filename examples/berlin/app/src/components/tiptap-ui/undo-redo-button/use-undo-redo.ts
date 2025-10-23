@@ -8,8 +8,7 @@ import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 import { isNodeTypeSelected } from "@/lib/tiptap-utils"
 
 // --- Icons ---
-import { Redo2Icon } from "@/components/tiptap-icons/redo2-icon"
-import { Undo2Icon } from "@/components/tiptap-icons/undo2-icon"
+import { Undo2, Redo2 } from "lucide-react"
 
 export type UndoRedoAction = "undo" | "redo"
 
@@ -47,8 +46,8 @@ export const historyActionLabels: Record<UndoRedoAction, string> = {
 }
 
 export const historyIcons = {
-  undo: Undo2Icon,
-  redo: Redo2Icon,
+  undo: Undo2,
+  redo: Redo2,
 }
 
 /**
