@@ -6,13 +6,13 @@ interface SyncOptions {
   path: string;
 }
 
-const isLocalhost =
-  window.location.hostname === 'localhost' ||
-  window.location.hostname === '127.0.0.1';
-const relayUrl = isLocalhost
-  ? 'http://localhost:8081'
-  : 'https://relay.tonk.xyz';
-// const relayUrl = 'https://relay.tonk.xyz';
+// const isLocalhost =
+//   window.location.hostname === 'localhost' ||
+//   window.location.hostname === '127.0.0.1';
+// const relayUrl = isLocalhost
+//   ? 'http://localhost:8081'
+//   : 'https://relay.tonk.xyz';
+const relayUrl = 'https://relay.tonk.xyz';
 
 const manifestUrl = `${relayUrl}/.manifest.tonk`;
 const wsUrl = relayUrl.replace(/^http/, 'ws');

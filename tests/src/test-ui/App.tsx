@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getVFSService } from './vfs-service';
 import { useCounterStore } from './counter-store';
 
@@ -79,17 +79,17 @@ function getServerConfig(): ServerConfig {
   const port = params.get('port') || '8081';
   const portNum = parseInt(port, 10);
 
-  // const config = {
-  //   port: portNum,
-  //   wsUrl: 'wss://relay.tonk.xyz',
-  //   manifestUrl: 'https://relay.tonk.xyz/.manifest.tonk',
-  // };
-
   const config = {
     port: portNum,
-    wsUrl: 'ws://localhost:8081',
-    manifestUrl: 'http://localhost:8081/.manifest.tonk',
+    wsUrl: 'wss://relay.tonk.xyz',
+    manifestUrl: 'https://relay.tonk.xyz/.manifest.tonk',
   };
+
+  // const config = {
+  //   port: portNum,
+  //   wsUrl: 'ws://localhost:8081',
+  //   manifestUrl: 'http://localhost:8081/.manifest.tonk',
+  // };
 
   console.log('Using URL/default server config:', config);
   return config;
@@ -120,6 +120,10 @@ function App() {
   const { counter, increment } = useCounterStore();
   const [bundleStatus, setBundleStatus] = useState<string>('');
   const [uploadedBundleId, setUploadedBundleId] = useState<string>('');
+
+  // Refs to prevent double initialization from React StrictMode
+  const initializingRef = useRef(false);
+  const initializedRef = useRef(false);
 
   // Browser metrics collection function
   const collectBrowserMetrics = async (): Promise<BrowserMetrics> => {
@@ -170,8 +174,23 @@ function App() {
   }, [vfs]);
 
   useEffect(() => {
+    // Prevent double initialization in React StrictMode
+    if (initializedRef.current) {
+      console.log(
+        '[TEST-UI] VFS already initialized, skipping duplicate initialization'
+      );
+      return;
+    }
+
+    if (initializingRef.current) {
+      console.log('[TEST-UI] VFS initialization already in progress, skipping');
+      return;
+    }
+
     // Initialize connection using dynamic server config
     const initVFS = async () => {
+      initializingRef.current = true;
+
       try {
         console.log(
           '[TEST-UI] Initializing service worker with bundle from:',
@@ -198,16 +217,34 @@ function App() {
           '[TEST-UI] Connecting VFS to relay:',
           state.serverConfig.wsUrl
         );
+
+        console.log('[TEST-UI] About to call vfs.initialize()...');
         await vfs.initialize(
           state.serverConfig.manifestUrl,
           state.serverConfig.wsUrl
         );
+        console.log(
+          '[TEST-UI] vfs.initialize() completed, checking if initialized:',
+          vfs.isInitialized()
+        );
 
         setState(prev => ({ ...prev, connected: true }));
+        initializedRef.current = true;
         console.log('[TEST-UI] VFS connection established successfully');
       } catch (error) {
         console.error('[TEST-UI] Failed to initialize:', error);
+        console.error('[TEST-UI] Error details:', {
+          message: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+        });
         setState(prev => ({ ...prev, connected: false }));
+        // Don't set initializedRef.current = true on error, allow retry
+      } finally {
+        initializingRef.current = false;
+        console.log(
+          '[TEST-UI] Initialization finally block, vfs.isInitialized():',
+          vfs.isInitialized()
+        );
       }
     };
 
@@ -275,8 +312,8 @@ function App() {
       const blob = new Blob([bundleBytes as any], {
         type: 'application/octet-stream',
       });
-      // const response = await fetch(`https://relay.tonk.xyz/api/bundles`, {
-      const response = await fetch(`http://localhost:8081/api/bundles`, {
+      const response = await fetch(`https://relay.tonk.xyz/api/bundles`, {
+        // const response = await fetch(`http://localhost:8081/api/bundles`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/octet-stream',
@@ -325,8 +362,8 @@ function App() {
 
       // Download from server
       const response = await fetch(
-        // `https://relay.tonk.xyz/api/bundles/${targetBundleId}/manifest`
-        `http://localhost:8081/api/bundles/${targetBundleId}/manifest`
+        `https://relay.tonk.xyz/api/bundles/${targetBundleId}/manifest`
+        // `http://localhost:8081/api/bundles/${targetBundleId}/manifest`
       );
 
       if (!response.ok) {
