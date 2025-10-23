@@ -4,8 +4,7 @@ import * as React from "react"
 import { Button } from "@/components/tiptap-ui-primitive/button"
 
 // --- Icons ---
-import { MoonStarIcon } from "@/components/tiptap-icons/moon-star-icon"
-import { SunIcon } from "@/components/tiptap-icons/sun-icon"
+import { Moon, Sun } from "lucide-react"
 
 export function ThemeToggle() {
   const [isDarkMode, setIsDarkMode] = React.useState<boolean>(false)
@@ -37,9 +36,9 @@ export function ThemeToggle() {
       data-style="ghost"
     >
       {isDarkMode ? (
-        <MoonStarIcon className="tiptap-button-icon" />
+        <Moon className="tiptap-button-icon" />
       ) : (
-        <SunIcon className="tiptap-button-icon" />
+        <Sun className="tiptap-button-icon" />
       )}
     </Button>
   )

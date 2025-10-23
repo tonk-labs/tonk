@@ -16,7 +16,7 @@ import {
 } from "@/lib/tiptap-utils"
 
 // --- Icons ---
-import { CodeBlockIcon } from "@/components/tiptap-icons/code-block-icon"
+import { Code } from "lucide-react"
 
 export const CODE_BLOCK_SHORTCUT_KEY = "mod+alt+c"
 
@@ -242,6 +242,6 @@ export function useCodeBlock(config?: UseCodeBlockConfig) {
     canToggle: canToggleState,
     label: "Code Block",
     shortcutKeys: CODE_BLOCK_SHORTCUT_KEY,
-    Icon: CodeBlockIcon,
+    Icon: Code,
   }
 }

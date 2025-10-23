@@ -7,8 +7,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 
 // --- Icons ---
-import { BanIcon } from "@/components/tiptap-icons/ban-icon"
-import { HighlighterIcon } from "@/components/tiptap-icons/highlighter-icon"
+import { Ban, Highlighter } from "lucide-react"
 
 // --- UI Primitives ---
 import type { ButtonProps } from "@/components/tiptap-ui-primitive/button"
@@ -77,7 +76,7 @@ export const ColorHighlightPopoverButton = React.forwardRef<
     ref={ref}
     {...props}
   >
-    {children ?? <HighlighterIcon className="tiptap-button-icon" />}
+    {children ?? <Highlighter className="tiptap-button-icon" />}
   </Button>
 ))
 
@@ -150,7 +149,7 @@ export function ColorHighlightPopoverContent({
               data-style="ghost"
               data-highlighted={selectedIndex === colors.length}
             >
-              <BanIcon className="tiptap-button-icon" />
+              <Ban className="tiptap-button-icon" />
             </Button>
           </ButtonGroup>
         </CardItemGroup>

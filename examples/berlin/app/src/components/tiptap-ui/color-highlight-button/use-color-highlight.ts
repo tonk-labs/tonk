@@ -12,7 +12,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { isMarkInSchema, isNodeTypeSelected } from "@/lib/tiptap-utils"
 
 // --- Icons ---
-import { HighlighterIcon } from "@/components/tiptap-icons/highlighter-icon"
+import { Highlighter } from "lucide-react"
 
 export const COLOR_HIGHLIGHT_SHORTCUT_KEY = "mod+shift+h"
 export const HIGHLIGHT_COLORS = [
@@ -235,6 +235,6 @@ export function useColorHighlight(config: UseColorHighlightConfig) {
     canColorHighlight: canColorHighlightState,
     label: label || `Highlight`,
     shortcutKeys: COLOR_HIGHLIGHT_SHORTCUT_KEY,
-    Icon: HighlighterIcon,
+    Icon: Highlighter,
   }
 }

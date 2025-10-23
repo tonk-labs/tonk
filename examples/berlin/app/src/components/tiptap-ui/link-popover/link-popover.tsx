@@ -8,10 +8,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 
 // --- Icons ---
-import { CornerDownLeftIcon } from "@/components/tiptap-icons/corner-down-left-icon"
-import { ExternalLinkIcon } from "@/components/tiptap-icons/external-link-icon"
-import { LinkIcon } from "@/components/tiptap-icons/link-icon"
-import { TrashIcon } from "@/components/tiptap-icons/trash-icon"
+import { CornerDownLeft, ExternalLink, Link, Trash2 } from "lucide-react"
 
 // --- Tiptap UI ---
 import type { UseLinkPopoverConfig } from "@/components/tiptap-ui/link-popover"
@@ -91,7 +88,7 @@ export const LinkButton = React.forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         {...props}
       >
-        {children || <LinkIcon className="tiptap-button-icon" />}
+        {children || <Link className="tiptap-button-icon" />}
       </Button>
     )
   }
@@ -153,7 +150,7 @@ const LinkMain: React.FC<LinkMainProps> = ({
               disabled={!url && !isActive}
               data-style="ghost"
             >
-              <CornerDownLeftIcon className="tiptap-button-icon" />
+              <CornerDownLeft className="tiptap-button-icon" />
             </Button>
           </ButtonGroup>
 
@@ -167,7 +164,7 @@ const LinkMain: React.FC<LinkMainProps> = ({
               disabled={!url && !isActive}
               data-style="ghost"
             >
-              <ExternalLinkIcon className="tiptap-button-icon" />
+              <ExternalLink className="tiptap-button-icon" />
             </Button>
 
             <Button
@@ -177,7 +174,7 @@ const LinkMain: React.FC<LinkMainProps> = ({
               disabled={!url && !isActive}
               data-style="ghost"
             >
-              <TrashIcon className="tiptap-button-icon" />
+              <Trash2 className="tiptap-button-icon" />
             </Button>
           </ButtonGroup>
         </CardItemGroup>
