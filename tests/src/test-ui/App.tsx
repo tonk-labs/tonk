@@ -199,6 +199,7 @@ function App() {
         // Step 1: Fetch the shared blank-tonk bundle from the relay
         // This ensures all clients start with the same root document
         const blankTonkUrl = 'https://relay.tonk.xyz/api/blank-tonk';
+        // const blankTonkUrl = 'http://localhost:8081/api/blank-tonk';
         const response = await fetch(blankTonkUrl);
 
         if (!response.ok) {
