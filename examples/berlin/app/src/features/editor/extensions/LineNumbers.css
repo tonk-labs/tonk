@@ -1,4 +1,3 @@
-/* Line numbers styling */
 .tiptap.ProseMirror {
   position: relative;
   padding-left: 4rem;
@@ -12,10 +11,9 @@
   padding-right: 1rem;
   color: var(--tt-gray-light-400);
   font-size: 0.875rem;
-  line-height: 1.6;
   user-select: none;
   pointer-events: none;
-  font-family: "JetBrains Mono NL", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+  font-family: "IBM Plex", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
 }
 
 .dark .line-number {

@@ -7,29 +7,6 @@ body {
 .dark body {
   --tt-theme-text: var(--tt-gray-dark-900);
 }
-/* 
-body {
-  font-family: "Inter", sans-serif;
-  color: var(--tt-theme-text);
-  font-optical-sizing: auto;
-  font-weight: 400;
-  font-style: normal;
-  padding: 0;
-  overscroll-behavior-y: none;
-}
-
-html,
-body {
-  overscroll-behavior-x: none;
-}
-
-html,
-body,
-#root,
-#app {
-  height: 100%;
-  background-color: var(--tt-bg-color);
-} */
 
 ::-webkit-scrollbar {
   width: 0.25rem;
@@ -49,12 +26,12 @@ body,
   background: transparent;
 }
 
-.tiptap-toolbar {
-  @apply bg-[#2588E6];
+main .tiptap-toolbar[data-variant=fixed] {
+  @apply bg-[#2588E6]/5 ;
 }
 
 .tiptap.ProseMirror {
-  font-family: "DM Sans", sans-serif;
+  font-family: "IBM Plex", sans-serif;
 }
 
 .simple-editor-content {
