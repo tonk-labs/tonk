@@ -2,14 +2,7 @@ import { useCallback } from 'preact/hooks';
 import { useTonk } from '../context/TonkContext';
 import { useDialogs } from '../context/DialogContext';
 import type { ServiceWorkerMessage } from '../types/index';
-
-const ALLOWED_ORIGINS = [
-  'https://tonk.xyz',
-  'https://www.tonk.xyz',
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'http://localhost:5174',
-];
+import { ALLOWED_ORIGINS } from '../constants';
 
 const sendSuccessToParent = (fileName: string) => {
   if (window.parent !== window) {

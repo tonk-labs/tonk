@@ -61,7 +61,7 @@
 @layer base {
   html,
   body {
-    @apply h-screen;
+    @apply h-screen w-full;
   }
 
   body {
@@ -74,7 +74,7 @@
   }
 
   #root {
-    @apply h-full;
+    @apply h-full w-full;
   }
 
   .boot-menu {

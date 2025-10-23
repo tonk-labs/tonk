@@ -15,6 +15,7 @@ import { ShareDialog } from './components/dialogs/ShareDialog';
 import { NameDialog } from './components/dialogs/NameDialog';
 import { DownloadSpinnerDialog } from './components/dialogs/DownloadSpinnerDialog';
 import { ScreenState } from './types/index';
+import { ALLOWED_ORIGINS } from './constants';
 
 function AppContent() {
   const {
@@ -86,13 +87,6 @@ function AppContent() {
       if (apps.length > 0) {
         // Send success to parent (bundle already loaded)
         if (window.parent !== window) {
-          const ALLOWED_ORIGINS = [
-            'https://tonk.xyz',
-            'https://www.tonk.xyz',
-            'http://localhost:3000',
-            'http://localhost:5173',
-            'http://localhost:5174',
-          ];
           ALLOWED_ORIGINS.forEach(origin => {
             try {
               window.parent.postMessage(
@@ -229,7 +223,7 @@ function AppContent() {
     dialogs.downloadSpinner.isOpen;
 
   return (
-    <div class="flex flex-col max-w-[800px] h-full min-h-0 mx-auto">
+    <div class="flex flex-col max-w-[800px] max-h-[800px] h-full min-h-0 mx-auto">
       <div class="flex-1 min-h-0 flex flex-col">
         {screenState === ScreenState.LOADING && <LoadingScreen />}
         {screenState === ScreenState.BOOT && <BootScreen />}
