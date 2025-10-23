@@ -12,6 +12,8 @@ export function PixelCanvas({ pixelSize = 10 }: PixelCanvasProps) {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [isDrawing, setIsDrawing] = useState(false);
+  const lastPixelRef = useRef<{ x: number; y: number } | null>(null);
 
   console.log('PixelCanvasContent rendering', {
     pixels,
@@ -69,9 +71,9 @@ export function PixelCanvas({ pixelSize = 10 }: PixelCanvasProps) {
     });
   };
 
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const getGridCoordinates = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return null;
 
     const rect = canvas.getBoundingClientRect();
     // Get canvas coordinates
@@ -86,11 +88,56 @@ export function PixelCanvas({ pixelSize = 10 }: PixelCanvasProps) {
     const gridX = Math.floor((canvasX - centerX) / pixelSize);
     const gridY = Math.floor((canvasY - centerY) / pixelSize);
 
-    placePixel(gridX, gridY);
+    return { x: gridX, y: gridY };
+  };
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Only draw with left mouse button (button 0)
+    if (e.button !== 0) return;
+
+    setIsDrawing(true);
+    const coords = getGridCoordinates(e);
+    if (coords) {
+      placePixel(coords.x, coords.y);
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawing) return;
+
+    const coords = getGridCoordinates(e);
+    if (coords) {
+      placePixel(coords.x, coords.y);
+    }
+  };
+
+  const handleMouseUp = () => {
+    setIsDrawing(false);
+    lastPixelRef.current = null;
+  };
+
+  const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault(); // Prevent default context menu
+
+    const coords = getGridCoordinates(e);
+    if (!coords) return;
+
+    // Check if there's a pixel at this location
+    const key = `${coords.x},${coords.y}`;
+    const pixel = pixels[key];
+
+    // Sample the color (white for empty pixels)
+    setSelectedColor(pixel ? pixel.color : '#ffffff');
   };
 
   const placePixel = (x: number, y: number) => {
-      setPixel(x, y, selectedColor);
+    // Avoid placing the same pixel multiple times in a row
+    if (lastPixelRef.current?.x === x && lastPixelRef.current?.y === y) {
+      return;
+    }
+
+    lastPixelRef.current = { x, y };
+    setPixel(x, y, selectedColor);
   };
 
   return (
@@ -98,13 +145,16 @@ export function PixelCanvas({ pixelSize = 10 }: PixelCanvasProps) {
       <canvas
         ref={canvasRef}
         className="pixel-canvas"
-        onClick={handleCanvasClick}
-        onMouseDown={handleCanvasClick}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onContextMenu={handleContextMenu}
       />
 
       <div className="chat-bubble">
         <p className="instructions">
-          Click to place a pixel, send this website to a friend to draw together!
+          Click or drag to draw pixels, right-click to pick colors. Send this website to a friend to draw together!
         </p>
 
         <div className="color-picker-section">
