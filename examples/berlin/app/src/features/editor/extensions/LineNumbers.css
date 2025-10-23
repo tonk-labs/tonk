@@ -1,0 +1,44 @@
+/* Line numbers styling */
+.tiptap.ProseMirror {
+  position: relative;
+  padding-left: 4rem;
+}
+
+.line-number {
+  position: absolute;
+  left: 0;
+  width: 3rem;
+  text-align: right;
+  padding-right: 1rem;
+  color: var(--tt-gray-light-400);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  user-select: none;
+  pointer-events: none;
+  font-family: "JetBrains Mono NL", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+}
+
+.dark .line-number {
+  color: var(--tt-gray-dark-400);
+}
+
+/* Adjust editor content to make room for line numbers */
+.simple-editor-content .tiptap.ProseMirror.simple-editor {
+  padding-left: 4rem;
+}
+
+@media screen and (max-width: 480px) {
+  .tiptap.ProseMirror {
+    padding-left: 3rem;
+  }
+
+  .line-number {
+    width: 2rem;
+    padding-right: 0.5rem;
+    font-size: 0.75rem;
+  }
+
+  .simple-editor-content .tiptap.ProseMirror.simple-editor {
+    padding-left: 3rem;
+  }
+}

@@ -14,6 +14,8 @@ import Subscript from '@tiptap/extension-subscript';
 import HorizontalRule from '@tiptap/extension-horizontal-rule';
 import { Selection } from '@tiptap/extensions';
 import { ImageUploadNode } from '@/components/tiptap-node/image-upload-node/image-upload-node-extension';
+import { LineNumbers } from '../extensions/LineNumbers';
+import '../extensions/LineNumbers.css';
 import { useEditorStore } from '../stores/editorStore';
 import { SimpleEditor } from './tiptap/simple-editor';
 
@@ -42,6 +44,7 @@ export function Editor() {
       Superscript,
       Subscript,
       Selection,
+      LineNumbers,
       ImageUploadNode.configure({
         accept: 'image/*',
         maxSize: 5 * 1024 * 1024, // 5MB
@@ -102,5 +105,5 @@ export function Editor() {
   }, [editor])
 
 
-  return <main className="editor-area">{editorArea}</main>;
+  return <main id="editor-area">{editorArea}</main>;
 }
