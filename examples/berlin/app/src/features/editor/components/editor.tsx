@@ -1,5 +1,5 @@
 import { useEditor } from '@tiptap/react';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
 import TextAlign from '@tiptap/extension-text-align';
@@ -58,8 +58,7 @@ export function Editor() {
     ],
     editorProps: {
       attributes: {
-        class: 'prose prose-sm sm:prose-base focus:outline-none',
-        style: 'user-select: text; -webkit-user-select: text; -moz-user-select: text; -ms-user-select: text;',
+        class: 'simple-editor prose prose-sm sm:prose-base focus:outline-none',
       },
     },
     content: document || {
@@ -95,9 +94,13 @@ export function Editor() {
     }
   }, [document, editor]);
 
+  const editorArea = useMemo(() => {
   if (!editor) {
     return <div>Loading editor...</div>;
   }
+    return <SimpleEditor editor={editor} />;
+  }, [editor])
 
-  return <SimpleEditor editor={editor} />;
+
+  return <main className="editor-area">{editorArea}</main>;
 }

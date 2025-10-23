@@ -18,6 +18,7 @@ import "@/components/tiptap-node/code-block-node/code-block-node.css"
 import "@/components/tiptap-node/horizontal-rule-node/horizontal-rule-node.css"
 import "@/components/tiptap-node/list-node/list-node.css"
 import "@/components/tiptap-node/image-node/image-node.css"
+import "@/components/tiptap-node/image-upload-node/image-upload-node.css"
 import "@/components/tiptap-node/heading-node/heading-node.css"
 import "@/components/tiptap-node/paragraph-node/paragraph-node.css"
 
@@ -48,9 +49,6 @@ import { ArrowLeft, Highlighter, Link } from "lucide-react"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useWindowSize } from "@/hooks/use-window-size"
 import { useCursorVisibility } from "@/hooks/use-cursor-visibility"
-
-// --- Components ---
-import { ThemeToggle } from "./theme-toggle"
 
 // --- Styles ---
 import "./simple-editor.css"
@@ -126,10 +124,10 @@ const MainToolbarContent = ({
       <Spacer />
 
       {isMobile && <ToolbarSeparator />}
-
+{/* 
       <ToolbarGroup>
         <ThemeToggle />
-      </ToolbarGroup>
+      </ToolbarGroup> */}
     </>
   )
 }
