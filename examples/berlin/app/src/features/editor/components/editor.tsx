@@ -4,7 +4,6 @@ import StarterKit from '@tiptap/starter-kit';
 import Image from '@tiptap/extension-image';
 import Link from '@tiptap/extension-link';
 import TextAlign from '@tiptap/extension-text-align';
-import Underline from '@tiptap/extension-underline';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import { Highlight } from '@tiptap/extension-highlight';
@@ -18,8 +17,12 @@ export function Editor() {
 
   const editor = useEditor({
     extensions: [
-      StarterKit,
-      Image,
+      // Configure StarterKit to exclude extensions we'll configure separately
+      StarterKit.configure({
+        strike: false, // Keep from StarterKit
+        link: false, // Exclude link - we configure it separately below
+      }),
+      Image.extend({ name: 'imageUpload' }), // Rename to match template expectations
       Link.configure({
         openOnClick: false,
         HTMLAttributes: {
@@ -29,7 +32,6 @@ export function Editor() {
       TextAlign.configure({
         types: ['heading', 'paragraph'],
       }),
-      Underline,
       TextStyle,
       Color,
       Highlight,
@@ -38,6 +40,11 @@ export function Editor() {
         nested: true,
       }),
     ],
+    editorProps: {
+      attributes: {
+        class: 'prose prose-sm sm:prose-base focus:outline-none',
+      },
+    },
     content: document || {
       type: 'doc',
       content: [

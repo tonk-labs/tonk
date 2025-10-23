@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { sync } from '../../../lib/middleware';
+// import { sync } from '../../../lib/middleware'; // TEMP: Disabled for local-only testing
 import type { JSONContent } from '@tiptap/react';
 
 interface EditorState {
@@ -8,21 +8,17 @@ interface EditorState {
   clearDocument: () => void;
 }
 
+// TEMP: Using plain Zustand without VFS sync due to connection issues
 export const useEditorStore = create<EditorState>()(
-  sync(
-    set => ({
-      document: null,
+  set => ({
+    document: null,
 
-      setDocument: (doc: JSONContent) => {
-        set({ document: doc });
-      },
+    setDocument: (doc: JSONContent) => {
+      set({ document: doc });
+    },
 
-      clearDocument: () => {
-        set({ document: null });
-      },
-    }),
-    {
-      path: '/src/stores/editor.json',
-    }
-  )
+    clearDocument: () => {
+      set({ document: null });
+    },
+  })
 );
