@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { getVFSService } from '../lib/vfs-service';
 
 type ConnectionState =
