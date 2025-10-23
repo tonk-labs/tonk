@@ -19,7 +19,6 @@ export function Editor() {
     extensions: [
       // Configure StarterKit to exclude extensions we'll configure separately
       StarterKit.configure({
-        strike: false, // Keep from StarterKit
         link: false, // Exclude link - we configure it separately below
       }),
       Image.extend({ name: 'imageUpload' }), // Rename to match template expectations
@@ -43,6 +42,7 @@ export function Editor() {
     editorProps: {
       attributes: {
         class: 'prose prose-sm sm:prose-base focus:outline-none',
+        style: 'user-select: text; -webkit-user-select: text; -moz-user-select: text; -ms-user-select: text;',
       },
     },
     content: document || {
