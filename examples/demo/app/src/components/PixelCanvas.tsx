@@ -7,7 +7,7 @@ interface PixelCanvasProps {
 }
 
 export function PixelCanvas({ pixelSize = 10 }: PixelCanvasProps) {
-  const { pixels, selectedColor, setPixel, removePixel, setSelectedColor } =
+  const { pixels, selectedColor, setPixel, setSelectedColor } =
     usePixelStore();
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -90,15 +90,7 @@ export function PixelCanvas({ pixelSize = 10 }: PixelCanvasProps) {
   };
 
   const placePixel = (x: number, y: number) => {
-    const key = `${x},${y}`;
-    const existingPixel = pixels[key];
-
-    // Toggle off if clicking the same color, otherwise place new color
-    if (existingPixel && existingPixel.color === selectedColor) {
-      removePixel(x, y);
-    } else {
       setPixel(x, y, selectedColor);
-    }
   };
 
   return (
@@ -107,12 +99,12 @@ export function PixelCanvas({ pixelSize = 10 }: PixelCanvasProps) {
         ref={canvasRef}
         className="pixel-canvas"
         onClick={handleCanvasClick}
+        onMouseDown={handleCanvasClick}
       />
 
       <div className="chat-bubble">
         <p className="instructions">
-          Click to place a pixel, click to undo a pixel. Send this demo to a
-          friend and click pixels together!
+          Click to place a pixel, send this website to a friend to draw together!
         </p>
 
         <div className="color-picker-section">
