@@ -585,52 +585,82 @@ async function deployWorkersToInstances(
         console.log(`  [${workerId}] Running setup script...`);
         await exec(`${sshBase} "bash ~/setup-worker.sh"`);
 
-        console.log(`  [${workerId}] Copying package.json...`);
-        const packageJsonPath = join(process.cwd(), 'package.json');
+        console.log(`  [${workerId}] Creating package.json for worker...`);
+        const workerPackageJson = {
+          name: '@tonk/worker-runtime',
+          version: '0.1.0',
+          type: 'module',
+          private: true,
+          scripts: {
+            dev: 'vite --config vite.config.ts',
+          },
+          dependencies: {
+            express: '^4.18.0',
+            ws: '^8.18.0',
+            zustand: '^4.4.0',
+            react: '^18.2.0',
+            'react-dom': '^18.2.0',
+            mime: '^4.1.0',
+          },
+          devDependencies: {
+            '@playwright/test': '^1.40.0',
+            '@types/express': '^4.17.0',
+            '@types/node': '^20.19.17',
+            '@types/ws': '^8.5.0',
+            '@vitejs/plugin-react': '^4.0.0',
+            tsx: '^4.20.0',
+            typescript: '^5.3.3',
+            vite: '^5.0.0',
+          },
+        };
+        await fs.writeFile(
+          '/tmp/worker-package.json',
+          JSON.stringify(workerPackageJson, null, 2)
+        );
         await exec(
-          `scp -o StrictHostKeyChecking=no -i ${keyPath} ${packageJsonPath} ec2-user@${instance.publicIp}:~/worker/package.json`
+          `scp -o StrictHostKeyChecking=no -i ${keyPath} /tmp/worker-package.json ec2-user@${instance.publicIp}:~/worker/package.json`
         );
 
-        console.log(`  [${workerId}] Copying source files...`);
+        console.log(
+          `  [${workerId}] Copying source files (excluding test-ui public)...`
+        );
         const srcDir = join(process.cwd(), 'src');
-        const testsDir = join(process.cwd(), 'tests');
         const rsyncIgnore = join(process.cwd(), '.rsyncignore');
 
         await exec(
-          `rsync -av --exclude-from=${rsyncIgnore} -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${srcDir} ec2-user@${instance.publicIp}:~/worker/`
+          `rsync -av --exclude='test-ui/public' --exclude-from=${rsyncIgnore} -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${srcDir} ec2-user@${instance.publicIp}:~/worker/`
+        );
+
+        console.log(`  [${workerId}] Copying test fixtures...`);
+        const testsDir = join(process.cwd(), 'tests');
+        await exec(`${sshBase} "mkdir -p ~/worker/tests"`);
+        await exec(
+          `scp -o StrictHostKeyChecking=no -i ${keyPath} ${testsDir}/fixtures.ts ec2-user@${instance.publicIp}:~/worker/tests/fixtures.ts`
+        );
+
+        console.log(
+          `  [${workerId}] Copying pre-built service worker and assets...`
+        );
+        const publicDir = join(process.cwd(), 'src/test-ui/public');
+        await exec(`${sshBase} "mkdir -p ~/worker/src/test-ui/public"`);
+        await exec(
+          `rsync -av -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${publicDir}/ ec2-user@${instance.publicIp}:~/worker/src/test-ui/public/`
+        );
+
+        console.log(`  [${workerId}] Copying vite config...`);
+        const viteConfigPath = join(process.cwd(), 'vite.config.ts');
+        await exec(
+          `scp -o StrictHostKeyChecking=no -i ${keyPath} ${viteConfigPath} ec2-user@${instance.publicIp}:~/worker/vite.config.ts`
+        );
+
+        console.log(`  [${workerId}] Copying TypeScript configs...`);
+        const tsConfigPath = join(process.cwd(), 'tsconfig.json');
+        const tsConfigNodePath = join(process.cwd(), 'tsconfig.node.json');
+        await exec(
+          `scp -o StrictHostKeyChecking=no -i ${keyPath} ${tsConfigPath} ec2-user@${instance.publicIp}:~/worker/tsconfig.json`
         );
         await exec(
-          `rsync -av --exclude-from=${rsyncIgnore} -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${testsDir} ec2-user@${instance.publicIp}:~/worker/`
-        );
-
-        console.log(`  [${workerId}] Copying config files...`);
-        const configFiles = [
-          'vite.config.ts',
-          'vite.sw.config.ts',
-          'tsconfig.json',
-          'tsconfig.node.json',
-        ];
-        await Promise.all(
-          configFiles.map(configFile => {
-            const configPath = join(process.cwd(), configFile);
-            return exec(
-              `scp -o StrictHostKeyChecking=no -i ${keyPath} ${configPath} ec2-user@${instance.publicIp}:~/worker/${configFile}`
-            );
-          })
-        );
-
-        console.log(`  [${workerId}] Copying monorepo packages...`);
-        const packagesDir = join(process.cwd(), '../packages');
-        await exec(`${sshBase} "mkdir -p ~/packages"`);
-
-        const requiredPackages = ['host-web', 'core-js', 'core'];
-        await Promise.all(
-          requiredPackages.map(pkg => {
-            const packagePath = join(packagesDir, pkg);
-            return exec(
-              `rsync -av --exclude-from=${rsyncIgnore} -e "ssh -o StrictHostKeyChecking=no -i ${keyPath}" ${packagePath} ec2-user@${instance.publicIp}:~/packages/`
-            );
-          })
+          `scp -o StrictHostKeyChecking=no -i ${keyPath} ${tsConfigNodePath} ec2-user@${instance.publicIp}:~/worker/tsconfig.node.json`
         );
 
         console.log(`  [${workerId}] Installing dependencies...`);
