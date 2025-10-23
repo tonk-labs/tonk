@@ -5,7 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 // https://vite.dev/config/
 export default defineConfig({
   // Set base path to match the app directory name
-  base: '/app/',
+  base: process.env.NODE_ENV === 'development' ? '/app' : '/',
 
   plugins: [react(), tailwindcss()],
 
