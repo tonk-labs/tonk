@@ -243,8 +243,8 @@ importers:
         specifier: ^0.2.1
         version: 0.2.5
       wasm-pack:
-        specifier: ^0.12.1
-        version: 0.12.1
+        specifier: ^0.13.1
+        version: 0.13.1
       ws:
         specifier: ^8.18.3
         version: 8.18.3
@@ -5655,8 +5655,8 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
-  wasm-pack@0.12.1:
-    resolution: {integrity: sha512-dIyKWUumPFsGohdndZjDXRFaokUT/kQS+SavbbiXVAvA/eN4riX5QNdB6AhXQx37zNxluxQkuixZUgJ8adKjOg==}
+  wasm-pack@0.13.1:
+    resolution: {integrity: sha512-P9exD4YkjpDbw68xUhF3MDm/CC/3eTmmthyG5bHJ56kalxOTewOunxTke4SyF8MTXV6jUtNjXggPgrGmMtczGg==}
     hasBin: true
 
   wcwidth@1.0.1:
@@ -12066,7 +12066,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  wasm-pack@0.12.1:
+  wasm-pack@0.13.1:
     dependencies:
       binary-install: 1.1.2
     transitivePeerDependencies:
