@@ -1,7 +1,6 @@
 import { useEditor } from '@tiptap/react';
 import { useEffect } from 'react';
 import StarterKit from '@tiptap/starter-kit';
-import Image from '@tiptap/extension-image';
 import Link from '@tiptap/extension-link';
 import TextAlign from '@tiptap/extension-text-align';
 import { TextStyle } from '@tiptap/extension-text-style';
@@ -9,6 +8,12 @@ import { Color } from '@tiptap/extension-color';
 import { Highlight } from '@tiptap/extension-highlight';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
+import Typography from '@tiptap/extension-typography';
+import Superscript from '@tiptap/extension-superscript';
+import Subscript from '@tiptap/extension-subscript';
+import HorizontalRule from '@tiptap/extension-horizontal-rule';
+import { Selection } from '@tiptap/extensions';
+import { ImageUploadNode } from '@/components/tiptap-node/image-upload-node/image-upload-node-extension';
 import { useEditorStore } from '../stores/editorStore';
 import { SimpleEditor } from './tiptap/simple-editor';
 
@@ -19,25 +24,37 @@ export function Editor() {
     extensions: [
       // Configure StarterKit to exclude extensions we'll configure separately
       StarterKit.configure({
-        link: false, // Exclude link - we configure it separately below
+        horizontalRule: false,
+        link: false,
       }),
-      Image.extend({ name: 'imageUpload' }), // Rename to match template expectations
+      HorizontalRule,
+      TextAlign.configure({
+        types: ['heading', 'paragraph'],
+      }),
+      TaskList,
+      TaskItem.configure({
+        nested: true,
+      }),
+      Highlight.configure({
+        multicolor: true,
+      }),
+      Typography,
+      Superscript,
+      Subscript,
+      Selection,
+      ImageUploadNode.configure({
+        accept: 'image/*',
+        maxSize: 5 * 1024 * 1024, // 5MB
+        limit: 3,
+      }),
       Link.configure({
         openOnClick: false,
         HTMLAttributes: {
           class: 'text-blue-600 underline',
         },
       }),
-      TextAlign.configure({
-        types: ['heading', 'paragraph'],
-      }),
       TextStyle,
       Color,
-      Highlight,
-      TaskList,
-      TaskItem.configure({
-        nested: true,
-      }),
     ],
     editorProps: {
       attributes: {
