@@ -2,7 +2,7 @@ import type { TestScenario } from '../../src/distributed/types';
 
 const RELAY_HOST =
   process.env.RELAY_HOST || 'ec2-16-16-146-55.eu-north-1.compute.amazonaws.com';
-const RELAY_PORT = parseInt(process.env.RELAY_PORT || '8080');
+const RELAY_PORT = parseInt(process.env.RELAY_PORT || '8081');
 
 export const scenarios: Record<string, TestScenario> = {
   baseline: {

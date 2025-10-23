@@ -31,7 +31,7 @@ async function main() {
       connectionsPerWorker: 50,
       workerInstanceType: 'c5.xlarge',
       relayHost: 'localhost',
-      relayPort: 8080,
+      relayPort: 8081,
       useSpotInstances: true,
       phases: [],
     };

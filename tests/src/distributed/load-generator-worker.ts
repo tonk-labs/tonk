@@ -34,7 +34,7 @@ class LoadGeneratorWorker {
 
     this.serverInstance = {
       process: null as any,
-      port: parseInt(new URL(config.relayUrl).port) || 8080,
+      port: parseInt(new URL(config.relayUrl).port) || 8081,
       wsUrl: config.relayUrl.replace(/^http/, 'ws'),
       manifestUrl: `${config.relayUrl}/.manifest.tonk`,
       testId: config.workerId,

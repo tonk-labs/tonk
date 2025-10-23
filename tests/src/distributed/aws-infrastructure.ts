@@ -158,8 +158,8 @@ export class AWSInfrastructure {
           },
           {
             IpProtocol: 'tcp',
-            FromPort: 8080,
-            ToPort: 8080,
+            FromPort: 8081,
+            ToPort: 8081,
             IpRanges: [{ CidrIp: '0.0.0.0/0', Description: 'Relay WebSocket' }],
           },
           {
