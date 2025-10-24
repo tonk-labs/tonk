@@ -1,6 +1,24 @@
+/**
+ * Main CSS Entry Point
+ *
+ * Import order is CRITICAL for proper cascade behavior.
+ * Files are organized from lowest to highest specificity:
+ * 1. Base variables
+ * 2. ProseMirror core (global editor styles)
+ * 3. Node-specific styles (headings, lists, etc)
+ * 4. Extension styles (line numbers)
+ * 5. Layout styles (positioning, padding)
+ * 6. Instance overrides (simple-editor customizations)
+ */
+
+/* =====================
+   1. TAILWIND & VARIABLES
+   ===================== */
 @import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap");
 @import "./styles/_variables.css";
 
+/* Page background color */
 :root {
   --color-page-background: #f2f3f4;
 }
@@ -9,6 +27,46 @@
   --color-page-background: var(--color-page-background);
 }
 
+/* =====================
+   2. PROSEMIRROR BASE
+   (Global editor styles - lowest priority)
+   ===================== */
+@import "./styles/prosemirror-base.css";
+
+/* =====================
+   3. NODE-SPECIFIC STYLES
+   (Paragraph, headings, lists, etc)
+   ===================== */
+@import "./components/tiptap-node/paragraph-node/paragraph-node.css";
+@import "./components/tiptap-node/heading-node/heading-node.css";
+@import "./components/tiptap-node/list-node/list-node.css";
+@import "./components/tiptap-node/blockquote-node/blockquote-node.css";
+@import "./components/tiptap-node/code-block-node/code-block-node.css";
+@import "./components/tiptap-node/image-node/image-node.css";
+@import "./components/tiptap-node/horizontal-rule-node/horizontal-rule-node.css";
+@import "./components/tiptap-node/image-upload-node/image-upload-node.css";
+
+/* =====================
+   4. EXTENSION STYLES
+   (Line numbers, etc)
+   ===================== */
+@import "./features/editor/extensions/LineNumbers.css";
+
+/* =====================
+   5. LAYOUT STYLES
+   (Editor positioning and padding)
+   ===================== */
+@import "./features/editor/styles/editor-layout.css";
+
+/* =====================
+   6. INSTANCE OVERRIDES
+   (Simple editor customizations - highest priority)
+   ===================== */
+@import "./features/editor/components/tiptap/simple-editor.css";
+
+/* =====================
+   BASE HTML STYLES
+   ===================== */
 html, body {
   @apply p-0 m-0 min-w-[320px] min-h-screen bg-page-background;
 }

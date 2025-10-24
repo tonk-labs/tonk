@@ -1,5 +1,19 @@
-@import "tailwindcss";
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap");
+/**
+ * Simple Editor Styles
+ *
+ * App-specific customizations for the simple-editor instance.
+ * Layout and positioning have been moved to editor-layout.css
+ *
+ * This file only contains:
+ * - CSS variables
+ * - Scrollbar styling
+ * - App-specific toolbar overrides
+ * - Font family overrides
+ */
+
+/* =====================
+   CSS VARIABLES
+   ===================== */
 body {
   --tt-toolbar-height: 44px;
   --tt-theme-text: var(--tt-gray-light-900);
@@ -8,6 +22,9 @@ body {
   --tt-theme-text: var(--tt-gray-dark-900);
 }
 
+/* =====================
+   SCROLLBAR STYLING
+   ===================== */
 ::-webkit-scrollbar {
   width: 0.25rem;
 }
@@ -26,30 +43,21 @@ body {
   background: transparent;
 }
 
+/* =====================
+   TOOLBAR OVERRIDE
+
+   App-specific toolbar background color.
+   Uses the theme color with reduced opacity.
+   ===================== */
 main .tiptap-toolbar[data-variant=fixed] {
-  @apply bg-[#2588E6]/5 ;
+  @apply bg-[#2588E6]/5;
 }
 
-.tiptap.ProseMirror {
+/* =====================
+   FONT OVERRIDE
+
+   Sets IBM Plex as the font for this editor instance.
+   ===================== */
+.tiptap.ProseMirror.simple-editor {
   font-family: "IBM Plex", sans-serif;
-}
-
-.simple-editor-content {
-  width: 100%;
-  margin: 0 auto;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-}
-
-.simple-editor-content .tiptap.ProseMirror.simple-editor {
-  flex: 1;
-  padding: 3rem 3rem; 
-}
-
-@media screen and (max-width: 480px) {
-  .simple-editor-content .tiptap.ProseMirror.simple-editor {
-    padding: 1rem 1.5rem;
-  }
 }
