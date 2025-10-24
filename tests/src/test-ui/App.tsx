@@ -173,6 +173,23 @@ function App() {
     };
   }, [vfs]);
 
+  // Listen to VFS connection state changes
+  useEffect(() => {
+    console.log('[TEST-UI] Subscribing to VFS connection state changes');
+    const unsubscribe = vfs.onConnectionStateChange(connectionState => {
+      console.log('[TEST-UI] VFS connection state changed:', connectionState);
+      setState(prev => ({
+        ...prev,
+        connected: connectionState === 'connected',
+      }));
+    });
+
+    return () => {
+      console.log('[TEST-UI] Unsubscribing from VFS connection state changes');
+      unsubscribe();
+    };
+  }, [vfs]);
+
   useEffect(() => {
     // Prevent double initialization in React StrictMode
     if (initializedRef.current) {
@@ -249,7 +266,6 @@ function App() {
           vfs.isInitialized()
         );
 
-        setState(prev => ({ ...prev, connected: true }));
         initializedRef.current = true;
         console.log('[TEST-UI] VFS connection established successfully');
       } catch (error) {
@@ -258,8 +274,8 @@ function App() {
           message: error instanceof Error ? error.message : String(error),
           stack: error instanceof Error ? error.stack : undefined,
         });
-        setState(prev => ({ ...prev, connected: false }));
         // Don't set initializedRef.current = true on error, allow retry
+        // Note: connected state is now managed by the VFS connection state listener
       } finally {
         initializingRef.current = false;
         console.log(
