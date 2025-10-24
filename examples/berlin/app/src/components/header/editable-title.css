@@ -1,17 +1,6 @@
 .editable-title-display {
-  font-size: 1rem;
-  font-weight: 500;
+  @apply text-base font-medium m-0 px-3 py-1.5 cursor-pointer rounded transition-colors duration-150 whitespace-nowrap overflow-hidden text-ellipsis max-w-[400px] text-center;
   color: var(--tt-gray-light-900, #1d1e20);
-  margin: 0;
-  padding: 0.375rem 0.75rem;
-  cursor: pointer;
-  border-radius: 0.25rem;
-  transition: background-color 0.15s ease;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 400px;
-  text-align: center;
 }
 
 .editable-title-display:hover {
@@ -19,25 +8,17 @@
 }
 
 .editable-title-display:focus-visible {
-  outline: 2px solid var(--tt-gray-light-400, rgba(166, 167, 171, 1));
-  outline-offset: 2px;
+  @apply outline outline-2 outline-offset-2;
+  outline-color: var(--tt-gray-light-400, rgba(166, 167, 171, 1));
 }
 
 .editable-title-input {
-  font-size: 1rem;
-  font-weight: 500;
+  @apply text-base font-medium m-0 px-3 py-1.5 border-2 rounded bg-white text-center max-w-[400px] min-w-[200px];
   color: var(--tt-gray-light-900, #1d1e20);
-  margin: 0;
-  padding: 0.375rem 0.75rem;
-  border: 2px solid var(--tt-gray-light-400, rgba(166, 167, 171, 1));
-  border-radius: 0.25rem;
-  background-color: white;
-  text-align: center;
-  max-width: 400px;
-  min-width: 200px;
+  border-color: var(--tt-gray-light-400, rgba(166, 167, 171, 1));
 }
 
 .editable-title-input:focus {
-  outline: none;
+  @apply outline-none;
   border-color: var(--tt-gray-light-600, rgba(36, 39, 46, 0.78));
 }
