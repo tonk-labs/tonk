@@ -48,7 +48,8 @@ const createChatActions = () => {
         // Enforce history limit
         const { maxHistory } = state.config;
         if (maxHistory !== -1 && state.messages.length > maxHistory) {
-          state.messages = state.messages.slice(-maxHistory);
+          // Use splice for immer compatibility - mutates draft instead of reassigning
+          state.messages.splice(0, state.messages.length - maxHistory);
         }
       });
     },
