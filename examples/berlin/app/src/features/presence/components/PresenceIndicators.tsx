@@ -36,12 +36,12 @@ export const PresenceIndicators = ({
   }
 
   return (
-    <div className={`flex items-center ${className}`}>
+    <div className={`flex font-mono items-center ${className}`}>
       {visibleUsers.map((user, index) => (
         <Tooltip key={user.id} placement="bottom" delay={300}>
           <TooltipTrigger asChild>
             <div
-              className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[6pt] font-medium border-2 bg-white cursor-default"
+              className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-medium border-2 bg-white cursor-default"
               style={{
                 backgroundColor: user.color,
                 borderColor: user.color,
@@ -58,7 +58,7 @@ export const PresenceIndicators = ({
       ))}
 
       {hiddenCount > 0 && (
-        <div className="w-6 h-6 rounded-full flex items-center justify-center bg-gray-300 text-gray-700 text-xs font-medium border-2 border-white -ml-2">
+        <div className="w-7 h-7 rounded-full flex items-center justify-center bg-gray-300 text-gray-700 text-xs font-medium border-2 border-white -ml-2">
           +{hiddenCount}
         </div>
       )}
