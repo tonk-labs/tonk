@@ -1,6 +1,7 @@
+@import "tailwindcss";
+
 .editable-title-display {
-  @apply text-base font-medium m-0 px-3 py-1.5 cursor-pointer rounded transition-colors duration-150 whitespace-nowrap overflow-hidden text-ellipsis max-w-[400px] text-center;
-  color: var(--tt-gray-light-900, #1d1e20);
+  @apply font-mono text-base font-medium m-0 px-3 py-1.5 cursor-pointer rounded transition-colors duration-150 whitespace-nowrap overflow-hidden text-ellipsis max-w-[400px] text-center;
 }
 
 .editable-title-display:hover {
@@ -8,17 +9,13 @@
 }
 
 .editable-title-display:focus-visible {
-  @apply outline outline-2 outline-offset-2;
-  outline-color: var(--tt-gray-light-400, rgba(166, 167, 171, 1));
+  @apply outline-0;
 }
 
 .editable-title-input {
-  @apply text-base font-medium m-0 px-3 py-1.5 border-2 rounded bg-white text-center max-w-[400px] min-w-[200px];
-  color: var(--tt-gray-light-900, #1d1e20);
-  border-color: var(--tt-gray-light-400, rgba(166, 167, 171, 1));
+  @apply font-mono text-base font-medium m-0 px-3 py-1.5 border-0 rounded bg-white/10 text-center max-w-[400px] min-w-[200px];
 }
 
 .editable-title-input:focus {
-  @apply outline-none;
-  border-color: var(--tt-gray-light-600, rgba(36, 39, 46, 0.78));
+  @apply outline-0 border-0;
 }

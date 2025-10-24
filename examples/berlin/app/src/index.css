@@ -122,12 +122,6 @@
 @import "./features/editor/components/tiptap-ui-primitive/line-numbers/LineNumbers.css";
 
 /* =====================
-   6. INSTANCE OVERRIDES
-   (Simple editor customizations - highest priority)
-   ===================== */
-@import "./features/editor/components/tiptap/simple-editor.css";
-
-/* =====================
    BASE HTML STYLES
    ===================== */
 html, body {
@@ -143,6 +137,6 @@ main.rootLayout {
 }
 
 nav {
-   @apply flex flex-col items-end justify-end w-full gap-2 px-5 pt-5 pb-6;
+   @apply flex w-full gap-2 px-5 pt-5 pb-6;
 }
 

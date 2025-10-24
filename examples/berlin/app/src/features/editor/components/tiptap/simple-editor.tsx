@@ -39,9 +39,6 @@ import { ArrowLeft, Highlighter, Link } from 'lucide-react';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useWindowSize } from '@/hooks/use-window-size';
 import { useCursorVisibility } from '@/hooks/use-cursor-visibility';
-
-// --- Styles ---
-import './simple-editor.css';
 import { useEffect } from 'react';
 
 const MainToolbarContent = ({
@@ -181,35 +178,43 @@ export function SimpleEditor({ editor }: SimpleEditorProps) {
 
   return (
     <EditorContext.Provider value={{ editor }}>
-        <Toolbar
-          ref={toolbarRef}
-          style={{
-            ...(isMobile
-              ? {
-                  bottom: `calc(100% - ${height - rect.y}px)`,
-                }
-              : {}),
-          }}
-        >
-          {mobileView === 'main' ? (
-            <MainToolbarContent
-              onHighlighterClick={() => setMobileView('highlighter')}
-              onLinkClick={() => setMobileView('link')}
-              isMobile={isMobile}
-            />
-          ) : (
-            <MobileToolbarContent
-              type={mobileView === 'highlighter' ? 'highlighter' : 'link'}
-              onBack={() => setMobileView('main')}
-            />
-          )}
-        </Toolbar>
+      <div className="editor-container">
+        <div className="toolbar-wrapper">
+          <Toolbar
+            ref={toolbarRef}
+            style={{
+              ...(isMobile
+                ? {
+                    bottom: `calc(100% - ${height - rect.y}px)`,
+                  }
+                : {}),
+            }}
+          >
+            {mobileView === 'main' ? (
+              <MainToolbarContent
+                onHighlighterClick={() => setMobileView('highlighter')}
+                onLinkClick={() => setMobileView('link')}
+                isMobile={isMobile}
+              />
+            ) : (
+              <MobileToolbarContent
+                type={mobileView === 'highlighter' ? 'highlighter' : 'link'}
+                onBack={() => setMobileView('main')}
+              />
+            )}
+          </Toolbar>
+        </div>
+      </div>
 
-        <EditorContent
-          editor={editor}
-          role="presentation"
-          className="simple-editor-content"
-        />
+      <div className="editor-container">
+        <article id="editor-area">
+          <EditorContent
+            editor={editor}
+            role="presentation"
+            className="simple-editor-content"
+          />
+        </article>
+      </div>
     </EditorContext.Provider>
   );
 }

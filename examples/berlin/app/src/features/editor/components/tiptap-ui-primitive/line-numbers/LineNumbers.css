@@ -18,6 +18,7 @@
   width: 3rem;
   text-align: right;
   padding-right: 1rem;
+  padding-top: 0.25rem;
   color: var(--tt-gray-light-400);
   font-size: 0.725rem;
   user-select: none;

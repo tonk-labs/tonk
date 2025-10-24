@@ -110,12 +110,11 @@ export function Editor() {
 
   return (
     <div id="editor-wrapper">
-      <div id="editor-container">
+      <div className="editor-container">
       <div id="editor-paper" />
       </div>
-      <div id="editor-container">
-        <article id="editor-area">{editorArea}</article>
-      </div>
+
+        {editorArea}
     </div>
   );
 }
