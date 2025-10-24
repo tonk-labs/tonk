@@ -1,4 +1,4 @@
-import { DownloadIcon, Share2Icon, ShareIcon } from 'lucide-react';
+import { DownloadIcon, Share2Icon } from 'lucide-react';
 import { Button } from '../ui/button/button';
 import { PresenceIndicators } from '@/features/presence';
 
