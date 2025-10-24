@@ -15,7 +15,7 @@ export function ChatWindow() {
 
   if (!windowState.isOpen) return null;
 
-  const handleDragStop = (_e: any, data: { x: number; y: number }) => {
+  const handleDragStop = (_e: unknown, data: { x: number; y: number }) => {
     updateWindowPosition(data.x, data.y);
   };
 

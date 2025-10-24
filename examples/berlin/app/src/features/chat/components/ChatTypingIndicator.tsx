@@ -25,7 +25,7 @@ export function ChatTypingIndicator() {
 
   return (
     <div className="px-3 py-2">
-      <Badge variant="secondary" className="text-xs font-mono">
+      <Badge variant="gray" className="text-xs font-mono">
         {displayText}
       </Badge>
     </div>

@@ -24,7 +24,7 @@ const initialState: ChatState = {
 export const chatStore = StoreBuilder(initialState, {
   name: 'tonk-chat',
   version: 1,
-  partialize: state => ({
+  partialize: (state: ChatState) => ({
     messages: state.messages,
     windowState: state.windowState,
     config: state.config,

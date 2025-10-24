@@ -8,7 +8,7 @@ export function ChatInput() {
   const [text, setText] = useState('');
   const { addMessage, setUserTyping } = useChat();
   const { currentUserId } = usePresence();
-  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleTyping = useCallback(() => {
     if (!currentUserId) return;
