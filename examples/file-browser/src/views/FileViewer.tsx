@@ -154,7 +154,13 @@ const FileViewer: React.FC = () => {
       typeof fileContent === 'object' &&
       'content' in fileContent
     ) {
-      return <pre className="whitespace-pre-wrap">{fileContent.content}</pre>;
+      return (
+        <pre className="whitespace-pre-wrap">
+          {typeof fileContent.content === 'string'
+            ? fileContent.content
+            : JSON.stringify(fileContent.content, null, 2)}
+        </pre>
+      );
     }
 
     // Handle legacy string content
