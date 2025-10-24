@@ -35,6 +35,13 @@ export class ConnectionManager {
   private connections: Map<string, ConnectionInfo> = new Map();
   private browser: Browser;
   private serverInstance: ServerInstance;
+  private errorLog: Array<{
+    timestamp: number;
+    connectionId: string;
+    type: string;
+    message: string;
+    stack?: string;
+  }> = [];
 
   constructor(browser: Browser, serverInstance: ServerInstance) {
     this.browser = browser;
@@ -46,12 +53,15 @@ export class ConnectionManager {
    */
   async createConnections(
     count: number,
-    prefix: string = 'conn'
+    prefix: string = 'conn',
+    startIndex: number = 0
   ): Promise<string[]> {
     const connectionIds: string[] = [];
     const startTime = Date.now();
 
-    console.log(`Creating ${count} connections with prefix "${prefix}"...`);
+    console.log(
+      `Creating ${count} connections with prefix "${prefix}" starting at index ${startIndex}...`
+    );
 
     // Create connections in parallel batches to avoid overwhelming the browser
     const batchSize = 10;
@@ -60,7 +70,7 @@ export class ConnectionManager {
       const batchPromises = [];
 
       for (let j = 0; j < batchCount; j++) {
-        const index = i + j;
+        const index = startIndex + i + j;
         const connId = `${prefix}-${index}`;
         batchPromises.push(this.createSingleConnection(connId));
         connectionIds.push(connId);
@@ -120,13 +130,36 @@ export class ConnectionManager {
 
       // Setup error monitoring
       page.on('pageerror', error => {
-        console.error(`[${id}] Page error:`, error.message);
+        const errorDetail = {
+          timestamp: Date.now(),
+          connectionId: id,
+          type: 'page-error',
+          message: error.message,
+          stack: error.stack,
+        };
+        this.errorLog.push(errorDetail);
+        console.error(`❌ [${id}] Page error:`, {
+          message: error.message,
+          stack: error.stack,
+          time: new Date().toISOString(),
+        });
         connInfo.errorCount++;
         connInfo.isHealthy = false;
       });
 
       page.on('console', msg => {
         if (msg.type() === 'error') {
+          const errorDetail = {
+            timestamp: Date.now(),
+            connectionId: id,
+            type: 'console-error',
+            message: msg.text(),
+          };
+          this.errorLog.push(errorDetail);
+          console.error(`❌ [${id}] Console error:`, {
+            message: msg.text(),
+            time: new Date().toISOString(),
+          });
           connInfo.errorCount++;
         }
       });
@@ -156,7 +189,19 @@ export class ConnectionManager {
       success = true;
       conn.operationCount++;
     } catch (error) {
-      console.error(`[${connectionId}] Operation failed:`, error);
+      const errorDetail = {
+        timestamp: Date.now(),
+        connectionId,
+        type: 'operation-failed',
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      };
+      this.errorLog.push(errorDetail);
+      console.error(`❌ [${connectionId}] Operation failed:`, {
+        message: errorDetail.message,
+        stack: errorDetail.stack,
+        time: new Date().toISOString(),
+      });
       conn.errorCount++;
       conn.isHealthy = false;
     }
@@ -421,5 +466,149 @@ OPERATIONS:
 `;
 
     return report;
+  }
+
+  getErrorLog() {
+    return [...this.errorLog];
+  }
+
+  getRecentErrors(limit: number = 10) {
+    return this.errorLog.slice(-limit);
+  }
+
+  async getCounterValue(connectionId: string): Promise<number | null> {
+    const conn = this.connections.get(connectionId);
+    if (!conn) {
+      return null;
+    }
+
+    try {
+      const counterText = await conn.page
+        .getByTestId('counter-value')
+        .textContent();
+      if (!counterText) return null;
+
+      const match = counterText.match(/Counter:\s*(\d+)/);
+      return match ? parseInt(match[1], 10) : null;
+    } catch (error) {
+      console.warn(`Failed to read counter from ${connectionId}:`, error);
+      return null;
+    }
+  }
+
+  async verifySync(sourceOfTruthId?: string): Promise<{
+    inSync: boolean;
+    sourceOfTruthValue: number | null;
+    sourceOfTruthId: string | null;
+    totalConnections: number;
+    valueDistribution: Map<number, number>;
+    inSyncCount: number;
+    outOfSyncCount: number;
+    minValue: number | null;
+    maxValue: number | null;
+    medianValue: number | null;
+    modeValue: number | null;
+    sampleOutliers: Array<{
+      connectionId: string;
+      value: number;
+      drift: number;
+    }>;
+  }> {
+    const connectionIds = Array.from(this.connections.keys());
+
+    if (connectionIds.length === 0) {
+      return {
+        inSync: true,
+        sourceOfTruthValue: null,
+        sourceOfTruthId: null,
+        totalConnections: 0,
+        valueDistribution: new Map(),
+        inSyncCount: 0,
+        outOfSyncCount: 0,
+        minValue: null,
+        maxValue: null,
+        medianValue: null,
+        modeValue: null,
+        sampleOutliers: [],
+      };
+    }
+
+    const actualSourceId = sourceOfTruthId || connectionIds[0];
+    const sourceValue = await this.getCounterValue(actualSourceId);
+
+    const allValues: Array<{ id: string; value: number | null }> = [];
+    for (const connId of connectionIds) {
+      const value = await this.getCounterValue(connId);
+      allValues.push({ id: connId, value });
+    }
+
+    const validValues = allValues
+      .filter((v): v is { id: string; value: number } => v.value !== null)
+      .map(v => v.value);
+
+    if (validValues.length === 0 || sourceValue === null) {
+      return {
+        inSync: true,
+        sourceOfTruthValue: sourceValue,
+        sourceOfTruthId: actualSourceId,
+        totalConnections: connectionIds.length,
+        valueDistribution: new Map(),
+        inSyncCount: 0,
+        outOfSyncCount: 0,
+        minValue: null,
+        maxValue: null,
+        medianValue: null,
+        modeValue: null,
+        sampleOutliers: [],
+      };
+    }
+
+    const valueDistribution = new Map<number, number>();
+    for (const value of validValues) {
+      valueDistribution.set(value, (valueDistribution.get(value) || 0) + 1);
+    }
+
+    const sortedValues = [...validValues].sort((a, b) => a - b);
+    const minValue = sortedValues[0];
+    const maxValue = sortedValues[sortedValues.length - 1];
+    const medianValue = sortedValues[Math.floor(sortedValues.length / 2)];
+
+    let modeValue = validValues[0];
+    let modeCount = 0;
+    for (const [value, count] of valueDistribution.entries()) {
+      if (count > modeCount) {
+        modeCount = count;
+        modeValue = value;
+      }
+    }
+
+    const inSyncCount = allValues.filter(v => v.value === sourceValue).length;
+    const outOfSyncCount = connectionIds.length - inSyncCount;
+
+    const outliers = allValues
+      .filter(v => v.value !== null && v.value !== sourceValue)
+      .map(v => ({
+        connectionId: v.id,
+        value: v.value!,
+        drift: v.value! - sourceValue,
+      }))
+      .sort((a, b) => Math.abs(b.drift) - Math.abs(a.drift));
+
+    const sampleOutliers = outliers.slice(0, 5);
+
+    return {
+      inSync: outOfSyncCount === 0,
+      sourceOfTruthValue: sourceValue,
+      sourceOfTruthId: actualSourceId,
+      totalConnections: connectionIds.length,
+      valueDistribution,
+      inSyncCount,
+      outOfSyncCount,
+      minValue,
+      maxValue,
+      medianValue,
+      modeValue,
+      sampleOutliers,
+    };
   }
 }

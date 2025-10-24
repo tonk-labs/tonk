@@ -34,6 +34,13 @@ export type VFSWorkerMessage =
       wasmUrl?: string;
       wsUrl?: string;
     }
+  | {
+      type: 'initializeFromBytes';
+      id: string;
+      bundleBytes: ArrayBuffer;
+      serverUrl?: string;
+      wsUrl?: string;
+    }
   | { type: 'getServerUrl'; id: string };
 export type VFSWorkerResponse =
   | { type: 'init'; success: boolean; error?: string }
@@ -101,14 +108,24 @@ export type VFSWorkerResponse =
       error?: string;
     }
   | {
+      type: 'initializeFromBytes';
+      id: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
       type: 'getServerUrl';
       id: string;
       success: boolean;
       data?: string;
       error?: string;
     }
+  | { type: 'ready'; needsBundle?: boolean }
   | { type: 'disconnected' }
   | { type: 'reconnecting'; attempt: number }
   | { type: 'reconnected' }
   | { type: 'reconnectionFailed' }
-  | { type: 'watchersReestablished'; count: number };
+  | { type: 'watchersReestablished'; count: number }
+  | { type: 'swReady'; autoInitialized: boolean; needsBundle?: boolean }
+  | { type: 'swInitializing' }
+  | { type: 'needsReinit'; appSlug: string | null; reason: string };

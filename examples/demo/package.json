@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "predev": "pnpm run build:wasm && pnpm run build:sw && pnpm run build:relay",
-    "build:wasm": "mkdir -p ../../packages/core-js/dist && cd ../../packages/core && pnpm run build:browser && cp -r pkg-browser/* ../../packages/core-js/dist/ && cd ../../packages/core-js && pnpm run embed-wasm && pnpm run build:wrapper",
+    "build:wasm": "mkdir -p ../../packages/core-js/dist && cd ../../packages/core && pnpm run build:docker && cp -r pkg-browser/* ../../packages/core-js/dist/ && cd ../../packages/core-js && pnpm run embed-wasm && pnpm run build:wrapper",
     "build:sw": "cd ../../packages/host-web && NODE_ENV=development pnpm run build && NODE_ENV=development pnpm run build:sw && pnpm run copy-sw-for-dev",
     "build:relay": "cd ../../packages/relay && cargo build --release",
     "dev": "mprocs",
