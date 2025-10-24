@@ -16,6 +16,7 @@
     "bundle": "bun run build && bun scripts/bundleBuilder.ts -- create"
   },
   "dependencies": {
+    "@carbon/colors": "^11.42.0",
     "@floating-ui/react": "^0.27.16",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-popover": "^1.1.15",

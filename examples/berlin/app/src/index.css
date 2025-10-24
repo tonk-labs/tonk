@@ -20,79 +20,85 @@
 @import './styles/_keyframe-animations.css';
 /* Page background color */
 :root {
-  --color-page-background: #f2f3f4;
-}
-
-/* App-level color tokens (mapped from _variables.css) */
-:root {
-  /* Primary - Brand colors */
-  --color-primary: var(--tt-brand-color-500);
-  --color-primary-foreground: var(--white);
-
-  /* Destructive - Error/danger states */
-  --color-destructive: var(--tt-color-red-base);
-  --color-destructive-foreground: var(--white);
-
-  /* Secondary - Subtle actions */
-  --color-secondary: var(--tt-gray-light-200);
-  --color-secondary-foreground: var(--tt-gray-light-900);
-
-  /* Accent - Hover/focus states */
-  --color-accent: var(--tt-gray-light-100);
-  --color-accent-foreground: var(--tt-gray-light-900);
-
-  /* Background & borders */
-  --color-background: var(--tt-bg-color);
-  --color-foreground: var(--tt-gray-light-900);
-  --color-border: var(--tt-border-color);
-  --color-input: var(--tt-border-color);
-
-  /* Shadows */
-  --shadow-xs: 0px 1px 2px 0px rgba(17, 24, 39, 0.05);
+  --color-page-background: var(--carbon-warm-gray-10);
 }
 
 .dark {
-  /* Primary - Same brand color works in dark mode */
-  --color-primary: var(--tt-brand-color-500);
-  --color-primary-foreground: var(--white);
-
-  /* Destructive */
-  --color-destructive: var(--tt-color-red-base);
-  --color-destructive-foreground: var(--white);
-
-  /* Secondary */
-  --color-secondary: var(--tt-gray-dark-200);
-  --color-secondary-foreground: var(--tt-gray-dark-900);
-
-  /* Accent */
-  --color-accent: var(--tt-gray-dark-100);
-  --color-accent-foreground: var(--tt-gray-dark-900);
-
-  /* Background & borders */
-  --color-background: var(--tt-bg-color);
-  --color-foreground: var(--tt-gray-dark-900);
-  --color-border: var(--tt-border-color);
-  --color-input: var(--tt-border-color);
-
-  /* Shadows */
-  --shadow-xs: 0px 1px 2px 0px rgba(0, 0, 0, 0.2);
+  --color-page-background: var(--carbon-warm-gray-100);
 }
 
 @theme {
+  /* Page Background */
   --color-page-background: var(--color-page-background);
+
+  /* Primary/Brand */
   --color-primary: var(--color-primary);
-  --color-primary-foreground: var(--color-primary-foreground);
-  --color-secondary: var(--color-secondary);
-  --color-secondary-foreground: var(--color-secondary-foreground);
-  --color-accent: var(--color-accent);
-  --color-accent-foreground: var(--color-accent-foreground);
-  --color-destructive: var(--color-destructive);
-  --color-destructive-foreground: var(--color-destructive-foreground);
+  --color-primary-hover: var(--color-primary-hover);
+  --color-primary-light: var(--color-primary-light);
+  --color-primary-foreground: var(--color-text-on-color);
+
+  /* Background & Surface */
   --color-background: var(--color-background);
-  --color-foreground: var(--color-foreground);
+  --color-surface: var(--color-surface);
+  --color-surface-hover: var(--color-surface-hover);
+
+  /* Text */
+  --color-foreground: var(--color-text-primary);
+  --color-text-primary: var(--color-text-primary);
+  --color-text-secondary: var(--color-text-secondary);
+  --color-text-tertiary: var(--color-text-tertiary);
+  --color-text-on-color: var(--color-text-on-color);
+
+  /* Borders */
   --color-border: var(--color-border);
-  --color-input: var(--color-input);
+  --color-border-subtle: var(--color-border-subtle);
+  --color-border-strong: var(--color-border-strong);
+  --color-input: var(--color-border);
+
+  /* States */
+  --color-success: var(--color-success);
+  --color-success-light: var(--color-success-light);
+  --color-success-text: var(--color-success-text);
+  --color-warning: var(--color-warning);
+  --color-warning-light: var(--color-warning-light);
+  --color-warning-text: var(--color-warning-text);
+  --color-error: var(--color-error);
+  --color-error-light: var(--color-error-light);
+  --color-error-text: var(--color-error-text);
+  --color-info: var(--color-info);
+  --color-info-light: var(--color-info-light);
+  --color-info-text: var(--color-info-text);
+
+  /* Legacy aliases for compatibility */
+  --color-destructive: var(--color-error);
+  --color-destructive-foreground: var(--color-text-on-color);
+  --color-secondary: var(--color-surface);
+  --color-secondary-foreground: var(--color-text-primary);
+  --color-accent: var(--color-surface-hover);
+  --color-accent-foreground: var(--color-text-primary);
+
+  /* Interactive */
+  --color-interactive: var(--color-interactive);
+  --color-interactive-hover: var(--color-interactive-hover);
+  --color-focus: var(--color-focus);
+
+  /* Editor */
+  --color-selection: var(--color-selection);
+  --color-cursor: var(--color-cursor);
+
+  /* Shadows */
   --shadow-xs: var(--shadow-xs);
+  --shadow-elevated-md: var(--shadow-elevated-md);
+
+  /* Radius */
+  --radius-xxs: var(--radius-xxs);
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  /* Font */
   --font-mono: 'Berkeley Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
 }
 
@@ -125,7 +131,7 @@
    BASE HTML STYLES
    ===================== */
 html, body {
-  @apply p-0 m-0 min-w-[320px] min-h-screen bg-page-background overflow-clip;
+  @apply p-0 m-0 min-w-[320px] min-h-screen bg-[#f2f3f4] overflow-clip;
 }
 
 #root {

@@ -1,5 +1,5 @@
 :root {
-  /****************** 
+  /******************
   Basics
   ******************/
   overflow-wrap: break-word;
@@ -7,263 +7,502 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  /****************** 
-  Colors variables
+
+  /******************
+  IBM Carbon Design System Colors
   ******************/
-  /* Gray alpha (light mode) */
-  --tt-gray-light-a-50: rgba(56, 56, 56, 0.04);
-  --tt-gray-light-a-100: rgba(15, 22, 36, 0.05);
-  --tt-gray-light-a-200: rgba(37, 39, 45, 0.1);
-  --tt-gray-light-a-300: rgba(47, 50, 55, 0.2);
-  --tt-gray-light-a-400: rgba(40, 44, 51, 0.42);
-  --tt-gray-light-a-500: rgba(52, 55, 60, 0.64);
-  --tt-gray-light-a-600: rgba(36, 39, 46, 0.78);
-  --tt-gray-light-a-700: rgba(35, 37, 42, 0.87);
-  --tt-gray-light-a-800: rgba(30, 32, 36, 0.95);
-  --tt-gray-light-a-900: rgba(29, 30, 32, 0.98);
-  /* Gray (light mode) */
-  --tt-gray-light-50: rgba(250, 250, 250, 1);
-  --tt-gray-light-100: rgba(244, 244, 245, 1);
-  --tt-gray-light-200: rgba(234, 234, 235, 1);
-  --tt-gray-light-300: rgba(213, 214, 215, 1);
-  --tt-gray-light-400: rgba(166, 167, 171, 1);
-  --tt-gray-light-500: rgba(125, 127, 130, 1);
-  --tt-gray-light-600: rgba(83, 86, 90, 1);
-  --tt-gray-light-700: rgba(64, 65, 69, 1);
-  --tt-gray-light-800: rgba(44, 45, 48, 1);
-  --tt-gray-light-900: rgba(34, 35, 37, 1);
-  /* Gray alpha (dark mode) */
-  --tt-gray-dark-a-50: rgba(232, 232, 253, 0.05);
-  --tt-gray-dark-a-100: rgba(231, 231, 243, 0.07);
-  --tt-gray-dark-a-200: rgba(238, 238, 246, 0.11);
-  --tt-gray-dark-a-300: rgba(239, 239, 245, 0.22);
-  --tt-gray-dark-a-400: rgba(244, 244, 255, 0.37);
-  --tt-gray-dark-a-500: rgba(236, 238, 253, 0.5);
-  --tt-gray-dark-a-600: rgba(247, 247, 253, 0.64);
-  --tt-gray-dark-a-700: rgba(251, 251, 254, 0.75);
-  --tt-gray-dark-a-800: rgba(253, 253, 253, 0.88);
-  --tt-gray-dark-a-900: rgba(255, 255, 255, 0.96);
-  /* Gray (dark mode) */
-  --tt-gray-dark-50: rgba(25, 25, 26, 1);
-  --tt-gray-dark-100: rgba(32, 32, 34, 1);
-  --tt-gray-dark-200: rgba(45, 45, 47, 1);
-  --tt-gray-dark-300: rgba(70, 70, 73, 1);
-  --tt-gray-dark-400: rgba(99, 99, 105, 1);
-  --tt-gray-dark-500: rgba(124, 124, 131, 1);
-  --tt-gray-dark-600: rgba(163, 163, 168, 1);
-  --tt-gray-dark-700: rgba(192, 192, 195, 1);
-  --tt-gray-dark-800: rgba(224, 224, 225, 1);
-  --tt-gray-dark-900: rgba(245, 245, 245, 1);
-  /* Brand colors */
-  --tt-brand-color-50: rgba(239, 238, 255, 1);
-  --tt-brand-color-100: rgba(222, 219, 255, 1);
-  --tt-brand-color-200: rgba(195, 189, 255, 1);
-  --tt-brand-color-300: rgba(157, 138, 255, 1);
-  --tt-brand-color-400: rgba(122, 82, 255, 1);
-  --tt-brand-color-500: rgba(98, 41, 255, 1);
-  --tt-brand-color-600: rgba(84, 0, 229, 1);
-  --tt-brand-color-700: rgba(75, 0, 204, 1);
-  --tt-brand-color-800: rgba(56, 0, 153, 1);
-  --tt-brand-color-900: rgba(43, 25, 102, 1);
-  --tt-brand-color-950: hsla(257, 100%, 9%, 1);
-  /* Green */
-  --tt-color-green-inc-5: hsla(129, 100%, 97%, 1);
-  --tt-color-green-inc-4: hsla(129, 100%, 92%, 1);
-  --tt-color-green-inc-3: hsla(131, 100%, 86%, 1);
-  --tt-color-green-inc-2: hsla(133, 98%, 78%, 1);
-  --tt-color-green-inc-1: hsla(137, 99%, 70%, 1);
-  --tt-color-green-base: hsla(147, 99%, 50%, 1);
-  --tt-color-green-dec-1: hsla(147, 97%, 41%, 1);
-  --tt-color-green-dec-2: hsla(146, 98%, 32%, 1);
-  --tt-color-green-dec-3: hsla(146, 100%, 24%, 1);
-  --tt-color-green-dec-4: hsla(144, 100%, 16%, 1);
-  --tt-color-green-dec-5: hsla(140, 100%, 9%, 1);
-  /* Yellow */
-  --tt-color-yellow-inc-5: hsla(50, 100%, 97%, 1);
-  --tt-color-yellow-inc-4: hsla(50, 100%, 91%, 1);
-  --tt-color-yellow-inc-3: hsla(50, 100%, 84%, 1);
-  --tt-color-yellow-inc-2: hsla(50, 100%, 77%, 1);
-  --tt-color-yellow-inc-1: hsla(50, 100%, 68%, 1);
-  --tt-color-yellow-base: hsla(52, 100%, 50%, 1);
-  --tt-color-yellow-dec-1: hsla(52, 100%, 41%, 1);
-  --tt-color-yellow-dec-2: hsla(52, 100%, 32%, 1);
-  --tt-color-yellow-dec-3: hsla(52, 100%, 24%, 1);
-  --tt-color-yellow-dec-4: hsla(51, 100%, 16%, 1);
-  --tt-color-yellow-dec-5: hsla(50, 100%, 9%, 1);
+
   /* Red */
-  --tt-color-red-inc-5: hsla(11, 100%, 96%, 1);
-  --tt-color-red-inc-4: hsla(11, 100%, 88%, 1);
-  --tt-color-red-inc-3: hsla(10, 100%, 80%, 1);
-  --tt-color-red-inc-2: hsla(9, 100%, 73%, 1);
-  --tt-color-red-inc-1: hsla(7, 100%, 64%, 1);
-  --tt-color-red-base: hsla(7, 100%, 54%, 1);
-  --tt-color-red-dec-1: hsla(7, 100%, 41%, 1);
-  --tt-color-red-dec-2: hsla(5, 100%, 32%, 1);
-  --tt-color-red-dec-3: hsla(4, 100%, 24%, 1);
-  --tt-color-red-dec-4: hsla(3, 100%, 16%, 1);
-  --tt-color-red-dec-5: hsla(1, 100%, 9%, 1);
-  /* Basic colors */
-  --white: rgba(255, 255, 255, 1);
-  --black: rgba(14, 14, 17, 1);
-  --transparent: rgba(255, 255, 255, 0);
-  /****************** 
+  --carbon-red-10: #FFF1F1;
+  --carbon-red-20: #FFD7D9;
+  --carbon-red-30: #FFB3B8;
+  --carbon-red-40: #FF8389;
+  --carbon-red-50: #FA4D56;
+  --carbon-red-60: #DA1E28;
+  --carbon-red-70: #A2191F;
+  --carbon-red-80: #750E13;
+  --carbon-red-90: #520408;
+  --carbon-red-100: #2D0709;
+
+  /* Magenta */
+  --carbon-magenta-10: #FFF0F7;
+  --carbon-magenta-20: #FFD6E8;
+  --carbon-magenta-30: #FFAFD2;
+  --carbon-magenta-40: #FF7EB6;
+  --carbon-magenta-50: #EE5396;
+  --carbon-magenta-60: #D12771;
+  --carbon-magenta-70: #9F1853;
+  --carbon-magenta-80: #740937;
+  --carbon-magenta-90: #510224;
+  --carbon-magenta-100: #2A0A18;
+
+  /* Purple */
+  --carbon-purple-10: #F6F2FF;
+  --carbon-purple-20: #E8DAFF;
+  --carbon-purple-30: #D4BBFF;
+  --carbon-purple-40: #BE95FF;
+  --carbon-purple-50: #A56EFF;
+  --carbon-purple-60: #8A3FFC;
+  --carbon-purple-70: #6929C4;
+  --carbon-purple-80: #491D8B;
+  --carbon-purple-90: #31135E;
+  --carbon-purple-100: #1C0F30;
+
+  /* Blue */
+  --carbon-blue-10: #EDF5FF;
+  --carbon-blue-20: #D0E2FF;
+  --carbon-blue-30: #A6C8FF;
+  --carbon-blue-40: #78A9FF;
+  --carbon-blue-50: #4589FF;
+  --carbon-blue-60: #0F62FE;
+  --carbon-blue-70: #0043CE;
+  --carbon-blue-80: #002D9C;
+  --carbon-blue-90: #001D6C;
+  --carbon-blue-100: #001141;
+
+  /* Cyan */
+  --carbon-cyan-10: #E5F6FF;
+  --carbon-cyan-20: #BAE6FF;
+  --carbon-cyan-30: #82CFFF;
+  --carbon-cyan-40: #33B1FF;
+  --carbon-cyan-50: #1192E8;
+  --carbon-cyan-60: #0072C3;
+  --carbon-cyan-70: #00539A;
+  --carbon-cyan-80: #003A6D;
+  --carbon-cyan-90: #012749;
+  --carbon-cyan-100: #061727;
+
+  /* Teal */
+  --carbon-teal-10: #D9FBFB;
+  --carbon-teal-20: #9EF0F0;
+  --carbon-teal-30: #3DDBD9;
+  --carbon-teal-40: #08BDBA;
+  --carbon-teal-50: #009D9A;
+  --carbon-teal-60: #007D79;
+  --carbon-teal-70: #005D5D;
+  --carbon-teal-80: #004144;
+  --carbon-teal-90: #022B30;
+  --carbon-teal-100: #081A1C;
+
+  /* Green */
+  --carbon-green-10: #DEFBE6;
+  --carbon-green-20: #A7F0BA;
+  --carbon-green-30: #6FDC8C;
+  --carbon-green-40: #42BE65;
+  --carbon-green-50: #24A148;
+  --carbon-green-60: #198038;
+  --carbon-green-70: #0E6027;
+  --carbon-green-80: #044317;
+  --carbon-green-90: #022D0D;
+  --carbon-green-100: #071908;
+
+  /* Cool Gray */
+  --carbon-cool-gray-10: #F2F4F8;
+  --carbon-cool-gray-20: #DDE1E6;
+  --carbon-cool-gray-30: #C1C7CD;
+  --carbon-cool-gray-40: #A2A9B0;
+  --carbon-cool-gray-50: #878D96;
+  --carbon-cool-gray-60: #697077;
+  --carbon-cool-gray-70: #4D5358;
+  --carbon-cool-gray-80: #343A3F;
+  --carbon-cool-gray-90: #21272A;
+  --carbon-cool-gray-100: #121619;
+
+  /* Gray */
+  --carbon-gray-10: #F4F4F4;
+  --carbon-gray-20: #E0E0E0;
+  --carbon-gray-30: #C6C6C6;
+  --carbon-gray-40: #A8A8A8;
+  --carbon-gray-50: #8D8D8D;
+  --carbon-gray-60: #6F6F6F;
+  --carbon-gray-70: #525252;
+  --carbon-gray-80: #393939;
+  --carbon-gray-90: #262626;
+  --carbon-gray-100: #161616;
+
+  /* Warm Gray */
+  --carbon-warm-gray-10: #F7F3F2;
+  --carbon-warm-gray-20: #E5E0DF;
+  --carbon-warm-gray-30: #CAC5C4;
+  --carbon-warm-gray-40: #ADA8A8;
+  --carbon-warm-gray-50: #8F8B8B;
+  --carbon-warm-gray-60: #736F6F;
+  --carbon-warm-gray-70: #565151;
+  --carbon-warm-gray-80: #3C3838;
+  --carbon-warm-gray-90: #272525;
+  --carbon-warm-gray-100: #171414;
+
+  /* Alert Colors */
+  --carbon-alert-20: #F1C21B;
+  --carbon-alert-40: #FF832B;
+  --carbon-alert-50: #24A148;
+  --carbon-alert-60: #DA1E28;
+
+  /* Base Colors */
+  --carbon-white: #FFFFFF;
+  --carbon-black: #000000;
+
+  /******************
+  Semantic Color Mappings - Light Mode
+  ******************/
+
+  /* Primary/Brand - Blue 50 */
+  --color-primary: var(--carbon-blue-50);
+  --color-primary-hover: var(--carbon-blue-60);
+  --color-primary-light: var(--carbon-blue-20);
+
+  /* Background & Surface */
+  --color-background: var(--carbon-white);
+  --color-surface: var(--carbon-warm-gray-10);
+  --color-surface-hover: var(--carbon-warm-gray-20);
+
+  /* Text */
+  --color-text-primary: var(--carbon-warm-gray-100);
+  --color-text-secondary: var(--carbon-warm-gray-70);
+  --color-text-tertiary: var(--carbon-warm-gray-50);
+  --color-text-on-color: var(--carbon-white);
+
+  /* Borders */
+  --color-border-subtle: var(--carbon-warm-gray-20);
+  --color-border: var(--carbon-warm-gray-30);
+  --color-border-strong: var(--carbon-warm-gray-50);
+
+  /* States - Success */
+  --color-success: var(--carbon-green-50);
+  --color-success-light: var(--carbon-green-10);
+  --color-success-text: var(--carbon-green-70);
+
+  /* States - Warning */
+  --color-warning: var(--carbon-alert-20);
+  --color-warning-light: #FEF9C3;
+  --color-warning-text: #713F12;
+
+  /* States - Error */
+  --color-error: var(--carbon-red-60);
+  --color-error-light: var(--carbon-red-10);
+  --color-error-text: var(--carbon-red-80);
+
+  /* States - Info */
+  --color-info: var(--carbon-blue-60);
+  --color-info-light: var(--carbon-blue-10);
+  --color-info-text: var(--carbon-blue-80);
+
+  /* Interactive */
+  --color-interactive: var(--carbon-blue-50);
+  --color-interactive-hover: var(--carbon-blue-60);
+  --color-focus: var(--carbon-blue-60);
+
+  /* Editor-specific */
+  --color-selection: rgba(69, 137, 255, 0.2);
+  --color-cursor: var(--carbon-blue-50);
+
+  /******************
   Shadow variables
   ******************/
-  /* Shadows Light */
-  --tt-shadow-elevated-md:
+  --shadow-xs: 0px 1px 2px 0px rgba(17, 24, 39, 0.05);
+  --shadow-elevated-md:
     0px 16px 48px 0px rgba(17, 24, 39, 0.04),
     0px 12px 24px 0px rgba(17, 24, 39, 0.04),
     0px 6px 8px 0px rgba(17, 24, 39, 0.02),
     0px 2px 3px 0px rgba(17, 24, 39, 0.02);
-  /************************************************** 
-       Radius variables 
+
+  /**************************************************
+       Radius variables
     **************************************************/
-  --tt-radius-xxs: 0.125rem; /* 2px */
-  --tt-radius-xs: 0.25rem; /* 4px */
-  --tt-radius-sm: 0.375rem; /* 6px */
-  --tt-radius-md: 0.5rem; /* 8px */
-  --tt-radius-lg: 0.75rem; /* 12px */
-  --tt-radius-xl: 1rem; /* 16px */
-  /************************************************** 
-       Transition variables 
+  --radius-xxs: 0.125rem; /* 2px */
+  --radius-xs: 0.25rem; /* 4px */
+  --radius-sm: 0.375rem; /* 6px */
+  --radius-md: 0.5rem; /* 8px */
+  --radius-lg: 0.75rem; /* 12px */
+  --radius-xl: 1rem; /* 16px */
+
+  /**************************************************
+       Transition variables
     **************************************************/
-  --tt-transition-duration-short: 0.1s;
-  --tt-transition-duration-default: 0.2s;
-  --tt-transition-duration-long: 0.64s;
-  --tt-transition-easing-default: cubic-bezier(0.46, 0.03, 0.52, 0.96);
-  --tt-transition-easing-cubic: cubic-bezier(0.65, 0.05, 0.36, 1);
-  --tt-transition-easing-quart: cubic-bezier(0.77, 0, 0.18, 1);
-  --tt-transition-easing-circ: cubic-bezier(0.79, 0.14, 0.15, 0.86);
-  --tt-transition-easing-back: cubic-bezier(0.68, -0.55, 0.27, 1.55);
-  /****************** 
-  Contrast variables
-  ******************/
-  --tt-accent-contrast: 8%;
-  --tt-destructive-contrast: 8%;
-  --tt-foreground-contrast: 8%;
+  --transition-duration-short: 0.1s;
+  --transition-duration-default: 0.2s;
+  --transition-duration-long: 0.64s;
+  --transition-easing-default: cubic-bezier(0.46, 0.03, 0.52, 0.96);
+  --transition-easing-cubic: cubic-bezier(0.65, 0.05, 0.36, 1);
+  --transition-easing-quart: cubic-bezier(0.77, 0, 0.18, 1);
+  --transition-easing-circ: cubic-bezier(0.79, 0.14, 0.15, 0.86);
+  --transition-easing-back: cubic-bezier(0.68, -0.55, 0.27, 1.55);
 }
+
 :root,
 :root *,
 :root ::before,
 :root ::after {
   box-sizing: border-box;
-  transition: none var(--tt-transition-duration-default) var(--tt-transition-easing-default);
+  transition: none var(--transition-duration-default) var(--transition-easing-default);
 }
 
-:root {
-  /************************************************** 
-      Global colors 
-  **************************************************/
-  /* Global colors - Light mode */
-  --tt-bg-color: var(--white);
-  --tt-border-color: var(--tt-gray-light-a-200);
-  --tt-border-color-tint: var(--tt-gray-light-a-100);
-  --tt-sidebar-bg-color: var(--tt-gray-light-100);
-  --tt-scrollbar-color: var(--tt-gray-light-a-200);
-  --tt-cursor-color: var(--tt-brand-color-500);
-  --tt-selection-color: rgba(157, 138, 255, 0.2);
-  --tt-card-bg-color: var(--white);
-  --tt-card-border-color: var(--tt-gray-light-a-100);
-}
-
-/* Global colors - Dark mode */
+/******************
+Dark Mode Overrides
+******************/
 .dark {
-  --tt-bg-color: var(--black);
-  --tt-border-color: var(--tt-gray-dark-a-200);
-  --tt-border-color-tint: var(--tt-gray-dark-a-100);
-  --tt-sidebar-bg-color: var(--tt-gray-dark-100);
-  --tt-scrollbar-color: var(--tt-gray-dark-a-200);
-  --tt-cursor-color: var(--tt-brand-color-400);
-  --tt-selection-color: rgba(122, 82, 255, 0.2);
-  --tt-card-bg-color: var(--tt-gray-dark-50);
-  --tt-card-border-color: var(--tt-gray-dark-a-50);
-  --tt-shadow-elevated-md:
-    0px 16px 48px 0px rgba(0, 0, 0, 0.5), 0px 12px 24px 0px rgba(0, 0, 0, 0.24),
-    0px 6px 8px 0px rgba(0, 0, 0, 0.22), 0px 2px 3px 0px rgba(0, 0, 0, 0.12);
+  /* Primary/Brand - Blue 40 (lighter for dark mode) */
+  --color-primary: var(--carbon-blue-40);
+  --color-primary-hover: var(--carbon-blue-30);
+  --color-primary-light: var(--carbon-blue-90);
+
+  /* Background & Surface */
+  --color-background: var(--carbon-warm-gray-100);
+  --color-surface: var(--carbon-warm-gray-90);
+  --color-surface-hover: var(--carbon-warm-gray-80);
+
+  /* Text */
+  --color-text-primary: var(--carbon-warm-gray-10);
+  --color-text-secondary: var(--carbon-warm-gray-30);
+  --color-text-tertiary: var(--carbon-warm-gray-50);
+  --color-text-on-color: var(--carbon-warm-gray-100);
+
+  /* Borders */
+  --color-border-subtle: var(--carbon-warm-gray-80);
+  --color-border: var(--carbon-warm-gray-70);
+  --color-border-strong: var(--carbon-warm-gray-50);
+
+  /* States - Success */
+  --color-success: var(--carbon-green-40);
+  --color-success-light: var(--carbon-green-90);
+  --color-success-text: var(--carbon-green-30);
+
+  /* States - Warning */
+  --color-warning: var(--carbon-alert-20);
+  --color-warning-light: #422006;
+  --color-warning-text: #FEF3C7;
+
+  /* States - Error */
+  --color-error: var(--carbon-red-50);
+  --color-error-light: var(--carbon-red-90);
+  --color-error-text: var(--carbon-red-30);
+
+  /* States - Info */
+  --color-info: var(--carbon-blue-40);
+  --color-info-light: var(--carbon-blue-90);
+  --color-info-text: var(--carbon-blue-20);
+
+  /* Interactive */
+  --color-interactive: var(--carbon-blue-40);
+  --color-interactive-hover: var(--carbon-blue-30);
+  --color-focus: var(--carbon-blue-40);
+
+  /* Editor-specific */
+  --color-selection: rgba(69, 137, 255, 0.3);
+  --color-cursor: var(--carbon-blue-40);
+
+  /* Shadows */
+  --shadow-xs: 0px 1px 2px 0px rgba(0, 0, 0, 0.2);
+  --shadow-elevated-md:
+    0px 16px 48px 0px rgba(0, 0, 0, 0.5),
+    0px 12px 24px 0px rgba(0, 0, 0, 0.24),
+    0px 6px 8px 0px rgba(0, 0, 0, 0.22),
+    0px 2px 3px 0px rgba(0, 0, 0, 0.12);
 }
 
-/* Text colors */
+/******************
+Backward Compatibility Aliases (Legacy --tt- variables)
+******************/
 :root {
-  --tt-color-text-gray: hsl(45, 2%, 46%);
-  --tt-color-text-brown: hsl(19, 31%, 47%);
-  --tt-color-text-orange: hsl(30, 89%, 45%);
-  --tt-color-text-yellow: hsl(38, 62%, 49%);
-  --tt-color-text-green: hsl(148, 32%, 39%);
-  --tt-color-text-blue: hsl(202, 54%, 43%);
-  --tt-color-text-purple: hsl(274, 32%, 54%);
-  --tt-color-text-pink: hsl(328, 49%, 53%);
-  --tt-color-text-red: hsl(2, 62%, 55%);
-  --tt-color-text-gray-contrast: hsla(39, 26%, 26%, 0.15);
-  --tt-color-text-brown-contrast: hsla(18, 43%, 69%, 0.35);
-  --tt-color-text-orange-contrast: hsla(24, 73%, 55%, 0.27);
-  --tt-color-text-yellow-contrast: hsla(44, 82%, 59%, 0.39);
-  --tt-color-text-green-contrast: hsla(126, 29%, 60%, 0.27);
-  --tt-color-text-blue-contrast: hsla(202, 54%, 59%, 0.27);
-  --tt-color-text-purple-contrast: hsla(274, 37%, 64%, 0.27);
-  --tt-color-text-pink-contrast: hsla(331, 60%, 71%, 0.27);
-  --tt-color-text-red-contrast: hsla(8, 79%, 79%, 0.4);
+  /* Legacy gray light mode - map to Warm Gray */
+  --tt-gray-light-50: var(--carbon-warm-gray-10);
+  --tt-gray-light-100: var(--carbon-warm-gray-10);
+  --tt-gray-light-200: var(--carbon-warm-gray-20);
+  --tt-gray-light-300: var(--carbon-warm-gray-30);
+  --tt-gray-light-400: var(--carbon-warm-gray-40);
+  --tt-gray-light-500: var(--carbon-warm-gray-50);
+  --tt-gray-light-600: var(--carbon-warm-gray-60);
+  --tt-gray-light-700: var(--carbon-warm-gray-70);
+  --tt-gray-light-800: var(--carbon-warm-gray-80);
+  --tt-gray-light-900: var(--carbon-warm-gray-90);
+
+  /* Legacy gray alpha light mode */
+  --tt-gray-light-a-50: rgba(115, 111, 111, 0.04);
+  --tt-gray-light-a-100: rgba(115, 111, 111, 0.05);
+  --tt-gray-light-a-200: rgba(115, 111, 111, 0.1);
+  --tt-gray-light-a-300: rgba(115, 111, 111, 0.2);
+  --tt-gray-light-a-400: rgba(115, 111, 111, 0.42);
+  --tt-gray-light-a-500: rgba(115, 111, 111, 0.64);
+  --tt-gray-light-a-600: rgba(115, 111, 111, 0.78);
+  --tt-gray-light-a-700: rgba(115, 111, 111, 0.87);
+  --tt-gray-light-a-800: rgba(115, 111, 111, 0.95);
+  --tt-gray-light-a-900: rgba(115, 111, 111, 0.98);
+
+  /* Legacy brand colors - map to Blue */
+  --tt-brand-color-50: var(--carbon-blue-10);
+  --tt-brand-color-100: var(--carbon-blue-20);
+  --tt-brand-color-200: var(--carbon-blue-30);
+  --tt-brand-color-300: var(--carbon-blue-40);
+  --tt-brand-color-400: var(--carbon-blue-40);
+  --tt-brand-color-500: var(--carbon-blue-50);
+  --tt-brand-color-600: var(--carbon-blue-60);
+  --tt-brand-color-700: var(--carbon-blue-70);
+  --tt-brand-color-800: var(--carbon-blue-80);
+  --tt-brand-color-900: var(--carbon-blue-90);
+  --tt-brand-color-950: var(--carbon-blue-100);
+
+  /* Legacy semantic colors - Green */
+  --tt-color-green-inc-5: var(--carbon-green-10);
+  --tt-color-green-inc-4: var(--carbon-green-10);
+  --tt-color-green-inc-3: var(--carbon-green-20);
+  --tt-color-green-inc-2: var(--carbon-green-30);
+  --tt-color-green-inc-1: var(--carbon-green-40);
+  --tt-color-green-base: var(--carbon-green-50);
+  --tt-color-green-dec-1: var(--carbon-green-60);
+  --tt-color-green-dec-2: var(--carbon-green-70);
+  --tt-color-green-dec-3: var(--carbon-green-80);
+  --tt-color-green-dec-4: var(--carbon-green-90);
+  --tt-color-green-dec-5: var(--carbon-green-100);
+
+  /* Legacy semantic colors - Yellow */
+  --tt-color-yellow-inc-5: #FEF9C3;
+  --tt-color-yellow-inc-4: #FEF3C7;
+  --tt-color-yellow-inc-3: #FDE68A;
+  --tt-color-yellow-inc-2: #FCD34D;
+  --tt-color-yellow-inc-1: #FBBF24;
+  --tt-color-yellow-base: var(--carbon-alert-20);
+  --tt-color-yellow-dec-1: #D97706;
+  --tt-color-yellow-dec-2: #B45309;
+  --tt-color-yellow-dec-3: #92400E;
+  --tt-color-yellow-dec-4: #78350F;
+  --tt-color-yellow-dec-5: #422006;
+
+  /* Legacy semantic colors - Red */
+  --tt-color-red-inc-5: var(--carbon-red-10);
+  --tt-color-red-inc-4: var(--carbon-red-20);
+  --tt-color-red-inc-3: var(--carbon-red-30);
+  --tt-color-red-inc-2: var(--carbon-red-40);
+  --tt-color-red-inc-1: var(--carbon-red-50);
+  --tt-color-red-base: var(--carbon-red-60);
+  --tt-color-red-dec-1: var(--carbon-red-70);
+  --tt-color-red-dec-2: var(--carbon-red-80);
+  --tt-color-red-dec-3: var(--carbon-red-80);
+  --tt-color-red-dec-4: var(--carbon-red-90);
+  --tt-color-red-dec-5: var(--carbon-red-100);
+
+  /* Legacy basic colors */
+  --white: var(--carbon-white);
+  --black: var(--carbon-warm-gray-100);
+  --transparent: transparent;
+
+  /* Legacy global colors */
+  --tt-bg-color: var(--color-background);
+  --tt-border-color: var(--color-border);
+  --tt-border-color-tint: var(--color-border-subtle);
+  --tt-sidebar-bg-color: var(--color-surface);
+  --tt-scrollbar-color: var(--color-border);
+  --tt-cursor-color: var(--color-cursor);
+  --tt-selection-color: var(--color-selection);
+  --tt-card-bg-color: var(--color-background);
+  --tt-card-border-color: var(--color-border-subtle);
+
+  /* Legacy shadows */
+  --tt-shadow-elevated-md: var(--shadow-elevated-md);
+
+  /* Legacy radius */
+  --tt-radius-xxs: var(--radius-xxs);
+  --tt-radius-xs: var(--radius-xs);
+  --tt-radius-sm: var(--radius-sm);
+  --tt-radius-md: var(--radius-md);
+  --tt-radius-lg: var(--radius-lg);
+  --tt-radius-xl: var(--radius-xl);
+
+  /* Legacy transition */
+  --tt-transition-duration-short: var(--transition-duration-short);
+  --tt-transition-duration-default: var(--transition-duration-default);
+  --tt-transition-duration-long: var(--transition-duration-long);
+  --tt-transition-easing-default: var(--transition-easing-default);
+  --tt-transition-easing-cubic: var(--transition-easing-cubic);
+  --tt-transition-easing-quart: var(--transition-easing-quart);
+  --tt-transition-easing-circ: var(--transition-easing-circ);
+  --tt-transition-easing-back: var(--transition-easing-back);
+
+  /* Legacy text colors */
+  --tt-color-text-gray: var(--carbon-warm-gray-60);
+  --tt-color-text-brown: #8B6F47;
+  --tt-color-text-orange: #D97706;
+  --tt-color-text-yellow: #CA8A04;
+  --tt-color-text-green: var(--carbon-green-60);
+  --tt-color-text-blue: var(--carbon-blue-60);
+  --tt-color-text-purple: var(--carbon-purple-60);
+  --tt-color-text-pink: var(--carbon-magenta-60);
+  --tt-color-text-red: var(--carbon-red-60);
+
+  /* Legacy highlight colors */
+  --tt-color-highlight-yellow: #FEF9C3;
+  --tt-color-highlight-green: var(--carbon-green-10);
+  --tt-color-highlight-blue: var(--carbon-blue-10);
+  --tt-color-highlight-purple: var(--carbon-purple-10);
+  --tt-color-highlight-red: var(--carbon-red-10);
+  --tt-color-highlight-gray: var(--carbon-warm-gray-10);
+  --tt-color-highlight-brown: #F5F5F4;
+  --tt-color-highlight-orange: #FFEDD5;
+  --tt-color-highlight-pink: var(--carbon-magenta-10);
+
+  /* Legacy contrast */
+  --tt-accent-contrast: 8%;
+  --tt-destructive-contrast: 8%;
+  --tt-foreground-contrast: 8%;
 }
 
 .dark {
-  --tt-color-text-gray: hsl(0, 0%, 61%);
-  --tt-color-text-brown: hsl(18, 35%, 58%);
-  --tt-color-text-orange: hsl(25, 53%, 53%);
-  --tt-color-text-yellow: hsl(36, 54%, 55%);
-  --tt-color-text-green: hsl(145, 32%, 47%);
-  --tt-color-text-blue: hsl(202, 64%, 52%);
-  --tt-color-text-purple: hsl(270, 55%, 62%);
-  --tt-color-text-pink: hsl(329, 57%, 58%);
-  --tt-color-text-red: hsl(1, 69%, 60%);
-  --tt-color-text-gray-contrast: hsla(0, 0%, 100%, 0.09);
-  --tt-color-text-brown-contrast: hsla(17, 45%, 50%, 0.25);
-  --tt-color-text-orange-contrast: hsla(27, 82%, 53%, 0.2);
-  --tt-color-text-yellow-contrast: hsla(35, 49%, 47%, 0.2);
-  --tt-color-text-green-contrast: hsla(151, 55%, 39%, 0.2);
-  --tt-color-text-blue-contrast: hsla(202, 54%, 43%, 0.2);
-  --tt-color-text-purple-contrast: hsla(271, 56%, 60%, 0.18);
-  --tt-color-text-pink-contrast: hsla(331, 67%, 58%, 0.22);
-  --tt-color-text-red-contrast: hsla(0, 67%, 60%, 0.25);
-}
+  /* Legacy gray dark mode */
+  --tt-gray-dark-50: var(--carbon-warm-gray-90);
+  --tt-gray-dark-100: var(--carbon-warm-gray-90);
+  --tt-gray-dark-200: var(--carbon-warm-gray-80);
+  --tt-gray-dark-300: var(--carbon-warm-gray-70);
+  --tt-gray-dark-400: var(--carbon-warm-gray-60);
+  --tt-gray-dark-500: var(--carbon-warm-gray-50);
+  --tt-gray-dark-600: var(--carbon-warm-gray-40);
+  --tt-gray-dark-700: var(--carbon-warm-gray-30);
+  --tt-gray-dark-800: var(--carbon-warm-gray-20);
+  --tt-gray-dark-900: var(--carbon-warm-gray-10);
 
-/* Highlight colors */
-:root {
-  --tt-color-highlight-yellow: #fef9c3;
-  --tt-color-highlight-green: #dcfce7;
-  --tt-color-highlight-blue: #e0f2fe;
-  --tt-color-highlight-purple: #f3e8ff;
-  --tt-color-highlight-red: #ffe4e6;
-  --tt-color-highlight-gray: rgb(248, 248, 247);
-  --tt-color-highlight-brown: rgb(244, 238, 238);
-  --tt-color-highlight-orange: rgb(251, 236, 221);
-  --tt-color-highlight-pink: rgb(252, 241, 246);
-  --tt-color-highlight-yellow-contrast: #fbe604;
-  --tt-color-highlight-green-contrast: #c7fad8;
-  --tt-color-highlight-blue-contrast: #ceeafd;
-  --tt-color-highlight-purple-contrast: #e4ccff;
-  --tt-color-highlight-red-contrast: #ffccd0;
-  --tt-color-highlight-gray-contrast: rgba(84, 72, 49, 0.15);
-  --tt-color-highlight-brown-contrast: rgba(210, 162, 141, 0.35);
-  --tt-color-highlight-orange-contrast: rgba(224, 124, 57, 0.27);
-  --tt-color-highlight-pink-contrast: rgba(225, 136, 179, 0.27);
-}
+  /* Legacy gray alpha dark mode */
+  --tt-gray-dark-a-50: rgba(247, 243, 242, 0.05);
+  --tt-gray-dark-a-100: rgba(247, 243, 242, 0.07);
+  --tt-gray-dark-a-200: rgba(247, 243, 242, 0.11);
+  --tt-gray-dark-a-300: rgba(247, 243, 242, 0.22);
+  --tt-gray-dark-a-400: rgba(247, 243, 242, 0.37);
+  --tt-gray-dark-a-500: rgba(247, 243, 242, 0.5);
+  --tt-gray-dark-a-600: rgba(247, 243, 242, 0.64);
+  --tt-gray-dark-a-700: rgba(247, 243, 242, 0.75);
+  --tt-gray-dark-a-800: rgba(247, 243, 242, 0.88);
+  --tt-gray-dark-a-900: rgba(247, 243, 242, 0.96);
 
-.dark {
-  --tt-color-highlight-yellow: #6b6524;
-  --tt-color-highlight-green: #509568;
-  --tt-color-highlight-blue: #6e92aa;
-  --tt-color-highlight-purple: #583e74;
-  --tt-color-highlight-red: #743e42;
-  --tt-color-highlight-gray: rgb(47, 47, 47);
-  --tt-color-highlight-brown: rgb(74, 50, 40);
-  --tt-color-highlight-orange: rgb(92, 59, 35);
-  --tt-color-highlight-pink: rgb(78, 44, 60);
-  --tt-color-highlight-yellow-contrast: #58531e;
-  --tt-color-highlight-green-contrast: #47855d;
-  --tt-color-highlight-blue-contrast: #5e86a1;
-  --tt-color-highlight-purple-contrast: #4c3564;
-  --tt-color-highlight-red-contrast: #643539;
-  --tt-color-highlight-gray-contrast: rgba(255, 255, 255, 0.094);
-  --tt-color-highlight-brown-contrast: rgba(184, 101, 69, 0.25);
-  --tt-color-highlight-orange-contrast: rgba(233, 126, 37, 0.2);
-  --tt-color-highlight-pink-contrast: rgba(220, 76, 145, 0.22);
+  /* Legacy global colors - dark mode */
+  --tt-bg-color: var(--color-background);
+  --tt-border-color: var(--color-border);
+  --tt-border-color-tint: var(--color-border-subtle);
+  --tt-sidebar-bg-color: var(--color-surface);
+  --tt-scrollbar-color: var(--color-border);
+  --tt-cursor-color: var(--color-cursor);
+  --tt-selection-color: var(--color-selection);
+  --tt-card-bg-color: var(--color-surface);
+  --tt-card-border-color: var(--color-border-subtle);
+
+  /* Legacy text colors - dark mode */
+  --tt-color-text-gray: var(--carbon-warm-gray-40);
+  --tt-color-text-brown: #A78B6F;
+  --tt-color-text-orange: #FB923C;
+  --tt-color-text-yellow: #FCD34D;
+  --tt-color-text-green: var(--carbon-green-40);
+  --tt-color-text-blue: var(--carbon-blue-40);
+  --tt-color-text-purple: var(--carbon-purple-40);
+  --tt-color-text-pink: var(--carbon-magenta-40);
+  --tt-color-text-red: var(--carbon-red-40);
+
+  /* Legacy highlight colors - dark mode */
+  --tt-color-highlight-yellow: #422006;
+  --tt-color-highlight-green: var(--carbon-green-90);
+  --tt-color-highlight-blue: var(--carbon-blue-90);
+  --tt-color-highlight-purple: var(--carbon-purple-90);
+  --tt-color-highlight-red: var(--carbon-red-90);
+  --tt-color-highlight-gray: var(--carbon-warm-gray-90);
+  --tt-color-highlight-brown: #3C2A21;
+  --tt-color-highlight-orange: #52350F;
+  --tt-color-highlight-pink: var(--carbon-magenta-90);
+
+  /* Legacy basic colors - dark mode */
+  --black: var(--carbon-warm-gray-100);
 }
