@@ -24,9 +24,7 @@ export const TonkService = {
       const manifest = await response.arrayBuffer();
       const manifestBytes = new Uint8Array(manifest);
 
-      tonkInstance = await TonkCore.fromBytes(manifestBytes, {
-        storage: { type: 'indexeddb' },
-      });
+      tonkInstance = await TonkCore.fromBytes(manifestBytes);
 
       await tonkInstance.connectWebsocket(wsUrl);
       isInitialized = true;
