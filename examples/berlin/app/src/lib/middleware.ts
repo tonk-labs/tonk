@@ -12,7 +12,6 @@ const isLocalhost =
 const relayUrl = isLocalhost
   ? 'http://localhost:8081'
   : 'https://relay.tonk.xyz';
-// const relayUrl = 'https://relay.tonk.xyz';
 
 const manifestUrl = `${relayUrl}/.manifest.tonk`;
 const wsUrl = relayUrl.replace(/^http/, 'ws');

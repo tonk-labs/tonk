@@ -6,14 +6,13 @@ type EventTargetWithScroll = Window | HTMLElement | Document
 
 interface UseScrollingOptions {
   debounce?: number
-  fallbackToDocument?: boolean
 }
 
 export function useScrolling(
   target?: ScrollTarget,
   options: UseScrollingOptions = {}
 ): boolean {
-  const { debounce = 150, fallbackToDocument = true } = options
+  const { debounce = 150 } = options
   const [isScrolling, setIsScrolling] = useState(false)
 
   useEffect(() => {
@@ -23,13 +22,7 @@ export function useScrolling(
         ? target
         : ((target as RefObject<HTMLElement>)?.current ?? window)
 
-    // Mobile: fallback to document when using window
-    const eventTarget: EventTargetWithScroll =
-      fallbackToDocument &&
-      element === window &&
-      typeof document !== "undefined"
-        ? document
-        : element
+    const eventTarget: EventTargetWithScroll = element
 
     const on = (
       el: EventTargetWithScroll,
@@ -69,7 +62,7 @@ export function useScrolling(
       }
       clearTimeout(timeout)
     }
-  }, [target, debounce, fallbackToDocument, isScrolling])
+  }, [target, debounce, isScrolling])
 
   return isScrolling
 }

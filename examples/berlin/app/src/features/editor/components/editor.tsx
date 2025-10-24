@@ -18,7 +18,6 @@ import { LineNumbers } from './tiptap-ui-primitive/line-numbers/LineNumbers';
 import { useEditorStore } from '../stores/editorStore';
 import { SimpleEditor } from './tiptap/simple-editor';
 import './editor.css'
-import '../extensions/LineNumbers.css';
 
 export function Editor() {
   const { document, setDocument } = useEditorStore();

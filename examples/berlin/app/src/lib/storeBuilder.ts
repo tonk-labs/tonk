@@ -43,7 +43,7 @@ export const StoreBuilder = <T>(
 
 	/**
 	 * Creates a factory function that exposes all store state and methods.
-	 * Facilitates separating actions from the store state, and using the non-reactive get/set isntead of `useStore`, as it needs to be explicity exposed.
+	 * Facilitates separating actions from the store state, and using the non-reactive get/set instead of `useStore`, as it needs to be explicitly exposed.
 	 * @returns {set} The store state setter
 	 * @returns {useStore} The store state React hook
 	 * @returns {subscribe} The store subscription function

@@ -228,8 +228,7 @@ export function findNodePosition(props: {
     let foundNode: TiptapNode | null = null
 
     editor.state.doc.descendants((currentNode, pos) => {
-      // TODO: Needed?
-      // if (currentNode.type && currentNode.type.name === node!.type.name) {
+      // Use reference equality to find the exact node instance
       if (currentNode === node) {
         foundPos = pos
         foundNode = currentNode

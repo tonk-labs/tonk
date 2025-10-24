@@ -12,10 +12,6 @@ import {
   ToolbarSeparator,
 } from '@/features/editor/components/tiptap-ui-primitive/toolbar';
 
-// --- Tiptap Node Styles ---
-// Note: These imports are now handled in index.css for better cascade control
-// Keeping these here for backward compatibility but they're no-ops if already loaded
-
 // --- Tiptap UI ---
 import { HeadingDropdownMenu } from '@/features/editor/components/tiptap-ui/heading-dropdown-menu';
 import { ImageUploadButton } from '@/features/editor/components/tiptap-ui/image-upload-button';

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { usePresence, startPresenceCleanup, stopPresenceCleanup } from '../stores/presenceStore';
 import { getInitials } from '../utils/userGeneration';
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/features/editor/components/tiptap-ui-primitive/tooltip/tooltip';
 
 interface PresenceIndicatorsProps {
   className?: string;
@@ -37,28 +38,26 @@ export const PresenceIndicators = ({
   return (
     <div className={`flex items-center ${className}`}>
       {visibleUsers.map((user, index) => (
-        <div
-          key={user.id}
-          className="relative group"
-          style={{ marginLeft: index > 0 ? '-8px' : '0' }}
-        >
-          <div
-            className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-medium border-2 border-white shadow-sm cursor-default"
-            style={{ backgroundColor: user.color }}
-            title={user.name}
-          >
-            {getInitials(user.name)}
-          </div>
-
-          {/* Tooltip */}
-          <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+        <Tooltip key={user.id} placement="bottom" delay={300}>
+          <TooltipTrigger asChild>
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-medium border-2 border-white cursor-default"
+              style={{
+                backgroundColor: user.color,
+                marginLeft: index > 0 ? '-8px' : '0'
+              }}
+            >
+              {getInitials(user.name)}
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
             {user.name}
-          </div>
-        </div>
+          </TooltipContent>
+        </Tooltip>
       ))}
 
       {hiddenCount > 0 && (
-        <div className="w-8 h-8 rounded-full flex items-center justify-center bg-gray-300 text-gray-700 text-xs font-medium border-2 border-white shadow-sm ml-[-8px]">
+        <div className="w-8 h-8 rounded-full flex items-center justify-center bg-gray-300 text-gray-700 text-xs font-medium border-2 border-white -ml-2">
           +{hiddenCount}
         </div>
       )}

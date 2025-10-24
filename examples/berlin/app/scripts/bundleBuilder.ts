@@ -154,7 +154,7 @@ function determineMimeType(path?: string): string {
 }
 
 /**
- * Converts a base64 string back to Uint8Array (kept for backward compatibility)
+ * Converts a base64 string back to Uint8Array
  */
 function base64ToUint8Array(base64: string): Uint8Array {
   return new Uint8Array(Buffer.from(base64, 'base64'));
@@ -343,15 +343,11 @@ async function unpackBundle(bundlePath: string, outputDir: string) {
 
       const fileResult = await tonk.readFile(filePath);
 
-      // Handle DocumentData format: { content: JsonObject, bytes?: string }
-      let fileData: Uint8Array;
-      if (fileResult.bytes) {
-        // File stored with createFileWithBytes - bytes property contains base64 string
-        fileData = base64ToUint8Array(fileResult.bytes);
-      } else {
-        // Legacy format: content is base64 string
-        fileData = base64ToUint8Array(fileResult.content as unknown as string);
+      // Handle DocumentData format: { content: JsonObject, bytes: string }
+      if (!fileResult.bytes) {
+        throw new Error(`File ${filePath} has no bytes data - corrupted bundle?`);
       }
+      const fileData = base64ToUint8Array(fileResult.bytes);
 
       // Use the actual VFS path structure (remove leading slash for file system)
       const cleanPath = filePath.startsWith('/')
