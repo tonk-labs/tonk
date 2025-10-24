@@ -41,9 +41,7 @@
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
-.tiptap-toolbar[data-variant=fixed]::-webkit-scrollbar {
-  display: none;
-}
+
 @media (max-width: 480px) {
   .tiptap-toolbar[data-variant=fixed] {
     position: absolute;

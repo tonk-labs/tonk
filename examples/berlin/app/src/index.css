@@ -143,6 +143,6 @@ main.rootLayout {
 }
 
 nav {
-   @apply flex flex-col items-end justify-end w-full gap-2 px-5 pt-5 mb-6;
+   @apply flex flex-col items-end justify-end w-full gap-2 px-5 pt-5 pb-6;
 }
 
