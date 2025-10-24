@@ -712,10 +712,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                  ? 'loading'
-                  : tonkState.status === 'failed'
-                    ? 'failed'
-                    : 'uninitialized',
+                ? 'loading'
+                : tonkState.status === 'failed'
+                ? 'failed'
+                : 'uninitialized',
           });
 
           if (!tonkInstance) {
@@ -921,7 +921,7 @@ async function handleMessage(
       log('info', 'Reading file', { path: message.path, id: message.id });
       try {
         const { tonk } = getTonk()!;
-        const documentData = await tonk!.readFile(message.path);
+        const documentData = await tonk.readFile(message.path);
         log('info', 'File read successfully', {
           path: message.path,
           documentType: documentData.type,

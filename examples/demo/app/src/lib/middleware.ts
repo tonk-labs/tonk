@@ -122,6 +122,12 @@ export const sync =
 
     // Initialize state from file if it exists
     const initializeFromFile = async (state: T) => {
+      // Guard against multiple initializations
+      if (isInitialized) {
+        console.log(`Already initialized for ${options.path}, skipping`);
+        return;
+      }
+
       console.log(`Checking if file exists: ${options.path}`);
       if (await vfs.exists(options.path)) {
         console.log(`File exists, loading saved state from ${options.path}`);
@@ -190,18 +196,6 @@ export const sync =
         }
       }
     );
-
-    // Initialize from file when VFS is ready
-    const waitForVFS = () => {
-      console.log('waiting for vfs', vfs);
-      if (vfs.isInitialized()) {
-        console.log('init from file start');
-        initializeFromFile(state);
-        return;
-      }
-      setTimeout(waitForVFS, 100);
-    };
-    waitForVFS();
 
     // Add cleanup function to state for manual cleanup if needed
     (state as T & { __cleanup?: () => void }).__cleanup = () => {
