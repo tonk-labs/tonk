@@ -2,6 +2,34 @@
 
 Unified dev environment for Tonk - runs host-web and relay together with a nice TUI.
 
+## Features
+
+### Editable Page Title
+
+- Click the centered page title in the header to edit
+- Press Enter to save or Escape to cancel
+- Titles are automatically trimmed and limited to 100 characters
+- Empty titles default to "Untitled"
+- Title changes will sync in real-time across all connected clients via VFS (coming soon)
+- Title is stored as metadata alongside document content
+
+#### Storage Format
+
+Document metadata is stored in the VFS as:
+
+```json
+{
+  "content": {
+    /* TipTap document JSON */
+  },
+  "metadata": {
+    "title": "Document Title"
+  }
+}
+```
+
+This structure supports future metadata extensions (tags, description, author, etc.).
+
 ## What is this?
 
 Sprinkles runs both the Tonk relay server and host-web frontend simultaneously using
