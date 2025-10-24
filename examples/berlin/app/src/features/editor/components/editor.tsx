@@ -2,6 +2,7 @@ import { useEditor } from '@tiptap/react';
 import { useEffect, useMemo } from 'react';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
+import Image from '@tiptap/extension-image';
 import TextAlign from '@tiptap/extension-text-align';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
@@ -17,6 +18,7 @@ import { ImageUploadNode } from '@/features/editor/components/tiptap-node/image-
 import { LineNumbers } from './tiptap-ui-primitive/line-numbers/LineNumbers';
 import { useEditorStore } from '../stores/editorStore';
 import { SimpleEditor } from './tiptap/simple-editor';
+import { handleImageUpload } from '@/lib/utils';
 import './editor.css'
 
 export function Editor() {
@@ -45,10 +47,12 @@ export function Editor() {
       Subscript,
       Selection,
       LineNumbers,
+      Image,
       ImageUploadNode.configure({
         accept: 'image/*',
         maxSize: 5 * 1024 * 1024, // 5MB
         limit: 3,
+        upload: handleImageUpload,
       }),
       Link.configure({
         openOnClick: false,

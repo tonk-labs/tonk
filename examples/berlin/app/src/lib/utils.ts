@@ -301,17 +301,37 @@ export const handleImageUpload = async (
     )
   }
 
-  // For demo/testing: Simulate upload progress. In production, replace the following code
-  // with your own upload implementation.
-  for (let progress = 0; progress <= 100; progress += 10) {
-    if (abortSignal?.aborted) {
-      throw new Error("Upload cancelled")
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    onProgress?.({ progress })
-  }
+  // Convert file to data URL
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
 
-  return "/images/tiptap-ui-placeholder-image.jpg"
+    reader.onload = () => {
+      if (abortSignal?.aborted) {
+        reject(new Error("Upload cancelled"))
+        return
+      }
+      resolve(reader.result as string)
+    }
+
+    reader.onerror = () => {
+      reject(new Error("Failed to read file"))
+    }
+
+    reader.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const progress = Math.round((event.loaded / event.total) * 100)
+        onProgress?.({ progress })
+      }
+    }
+
+    // Check for abort before starting
+    if (abortSignal?.aborted) {
+      reject(new Error("Upload cancelled"))
+      return
+    }
+
+    reader.readAsDataURL(file)
+  })
 }
 
 type ProtocolOptions = {
