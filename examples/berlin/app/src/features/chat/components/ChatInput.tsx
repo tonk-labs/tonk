@@ -7,7 +7,7 @@ import { usePresence } from '../../presence/stores/presenceStore';
 export function ChatInput() {
   const [text, setText] = useState('');
   const { addMessage, setUserTyping } = useChat();
-  const { users, currentUserId } = usePresence();
+  const { currentUserId } = usePresence();
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleTyping = useCallback(() => {
