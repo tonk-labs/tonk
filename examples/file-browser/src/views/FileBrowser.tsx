@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { DirectoryEntry, NodeMetadata } from '@tonk/core';
+import { RefNode } from '@tonk/core';
 import { TonkService } from '../services/tonkService';
 import FileItem from '../components/FileItem';
 
@@ -8,9 +8,7 @@ const FileBrowser: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [currentPath, setCurrentPath] = useState<string>('/');
-  const [directoryContents, setDirectoryContents] = useState<
-    [DirectoryEntry, NodeMetadata][]
-  >([]);
+  const [directoryContents, setDirectoryContents] = useState<RefNode[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [newItemName, setNewItemName] = useState<string>('');
@@ -40,7 +38,7 @@ const FileBrowser: React.FC = () => {
       const result = await TonkService.listDirectory(path);
       if (result) {
         // Sort directories first, then files, both alphabetically
-        const sorted = result.sort(([a], [b]) => {
+        const sorted = result.sort((a, b) => {
           if (a.type !== b.type) {
             return a.type === 'directory' ? -1 : 1;
           }
@@ -312,10 +310,9 @@ const FileBrowser: React.FC = () => {
               </div>
             ) : (
               <div className="divide-y divide-[#d2d2d7]">
-                {directoryContents.map(([item, metadata]) => (
+                {directoryContents.map(item => (
                   <FileItem
                     key={item.name}
-                    metadata={metadata}
                     item={item}
                     currentPath={currentPath}
                     onNavigate={handleNavigate}
