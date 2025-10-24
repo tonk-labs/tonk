@@ -1,5 +1,6 @@
 import { StoreBuilder } from '../../../lib/storeBuilder';
 import type { ChatMessage, WindowState, ChatConfig } from '../types';
+import type { PersistStorage, StateStorage } from 'zustand/middleware';
 
 interface ChatState {
   messages: ChatMessage[];
@@ -21,9 +22,28 @@ const initialState: ChatState = {
   },
 };
 
+// Safe storage wrapper that handles unavailable localStorage
+const createSafeStorage = (): StateStorage => {
+  try {
+    // Test if localStorage is available
+    const test = '__test__';
+    localStorage.setItem(test, test);
+    localStorage.removeItem(test);
+    return localStorage;
+  } catch {
+    // Return no-op storage if localStorage is unavailable
+    return {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => {},
+    };
+  }
+};
+
 export const chatStore = StoreBuilder(initialState, {
   name: 'tonk-chat',
   version: 1,
+  storage: createSafeStorage() as PersistStorage<unknown>,
   partialize: (state: ChatState) => ({
     messages: state.messages,
     windowState: state.windowState,
