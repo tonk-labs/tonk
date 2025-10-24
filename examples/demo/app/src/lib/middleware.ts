@@ -6,17 +6,6 @@ interface SyncOptions {
   path: string;
 }
 
-const isLocalhost =
-  window.location.hostname === 'localhost' ||
-  window.location.hostname === '127.0.0.1';
-const relayUrl = isLocalhost
-  ? 'http://localhost:8081'
-  : 'https://relay.tonk.xyz';
-// const relayUrl = 'https://relay.tonk.xyz';
-
-const manifestUrl = `${relayUrl}/.manifest.tonk`;
-const wsUrl = relayUrl.replace(/^http/, 'ws');
-
 export const sync =
   <T extends object>(
     config: StateCreator<T>,
@@ -33,7 +22,6 @@ export const sync =
 
     console.log(`Sync middleware initializing for path: ${options.path}`);
     const vfs = getVFSService();
-    vfs.initialize(manifestUrl, wsUrl);
     let watchId: string | null = null;
     let isInitialized = false;
     let connectionStateUnsubscribe: (() => void) | null = null;
