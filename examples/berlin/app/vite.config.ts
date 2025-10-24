@@ -16,6 +16,16 @@ export default defineConfig({
     },
   },
 
+  optimizeDeps: {
+    include: ['immer', 'zustand'],
+  },
+
+  build: {
+    commonjsOptions: {
+      include: [/immer/, /node_modules/],
+    },
+  },
+
   server: {
     port: 4001,
     strictPort: true,

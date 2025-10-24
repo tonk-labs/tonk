@@ -35,5 +35,8 @@
     "*.{md,json}": [
       "prettier --write"
     ]
+  },
+  "dependencies": {
+    "immer": "^10.1.3"
   }
 }
