@@ -50,7 +50,7 @@ body {
    Uses the theme color with reduced opacity.
    ===================== */
 main .tiptap-toolbar[data-variant=fixed] {
-  @apply bg-[#2588E6]/5;
+  @apply bg-[#E8EEF4];
 }
 
 /* =====================

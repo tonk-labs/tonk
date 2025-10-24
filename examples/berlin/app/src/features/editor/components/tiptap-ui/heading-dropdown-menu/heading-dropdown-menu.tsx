@@ -21,6 +21,7 @@ import {
   DropdownMenuItem,
 } from "@/features/editor/components/tiptap-ui-primitive/dropdown-menu"
 import { Card, CardBody } from "@/features/editor/components/tiptap-ui-primitive/card"
+import { useDropdownMenuState } from "@/features/editor/components/tiptap-ui-primitive/dropdown-menu/dropdown-menu-context"
 
 export interface HeadingDropdownMenuProps
   extends Omit<ButtonProps, "type">,
@@ -57,7 +58,7 @@ export const HeadingDropdownMenu = React.forwardRef<
     ref
   ) => {
     const { editor } = useTiptapEditor(providedEditor)
-    const [isOpen, setIsOpen] = React.useState(false)
+    const { isOpen, setIsOpen } = useDropdownMenuState("heading-dropdown")
     const { isVisible, isActive, canToggle, Icon } = useHeadingDropdownMenu({
       editor,
       levels,
@@ -73,7 +74,7 @@ export const HeadingDropdownMenu = React.forwardRef<
       [canToggle, editor, onOpenChange]
     )
 
-    const handleItemClick = React.useCallback(() => {
+    const handleClose = React.useCallback(() => {
       setIsOpen(false)
     }, [])
 
@@ -82,7 +83,7 @@ export const HeadingDropdownMenu = React.forwardRef<
     }
 
     return (
-      <DropdownMenu modal open={isOpen} onOpenChange={handleOpenChange}>
+      <DropdownMenu open={isOpen} onOpenChange={handleOpenChange}>
         <DropdownMenuTrigger asChild>
           <Button
             type="button"
@@ -114,8 +115,10 @@ export const HeadingDropdownMenu = React.forwardRef<
                 {levels.map((level) => (
                   <DropdownMenuItem
                     key={`heading-${level}`}
+                    onSelect={() => {
+                      handleClose()
+                    }}
                     asChild
-                    onSelect={handleItemClick}
                   >
                     <HeadingButton
                       editor={editor}

@@ -11,6 +11,7 @@ import {
   ToolbarGroup,
   ToolbarSeparator,
 } from '@/features/editor/components/tiptap-ui-primitive/toolbar';
+import { DropdownMenuProvider } from '@/features/editor/components/tiptap-ui-primitive/dropdown-menu/dropdown-menu-context';
 
 // --- Tiptap UI ---
 import { HeadingDropdownMenu } from '@/features/editor/components/tiptap-ui/heading-dropdown-menu';
@@ -181,35 +182,37 @@ export function SimpleEditor({ editor }: SimpleEditorProps) {
 
   return (
     <EditorContext.Provider value={{ editor }}>
-      <Toolbar
-        ref={toolbarRef}
-        style={{
-          ...(isMobile
-            ? {
-                bottom: `calc(100% - ${height - rect.y}px)`,
-              }
-            : {}),
-        }}
-      >
-        {mobileView === 'main' ? (
-          <MainToolbarContent
-            onHighlighterClick={() => setMobileView('highlighter')}
-            onLinkClick={() => setMobileView('link')}
-            isMobile={isMobile}
-          />
-        ) : (
-          <MobileToolbarContent
-            type={mobileView === 'highlighter' ? 'highlighter' : 'link'}
-            onBack={() => setMobileView('main')}
-          />
-        )}
-      </Toolbar>
+      <DropdownMenuProvider>
+        <Toolbar
+          ref={toolbarRef}
+          style={{
+            ...(isMobile
+              ? {
+                  bottom: `calc(100% - ${height - rect.y}px)`,
+                }
+              : {}),
+          }}
+        >
+          {mobileView === 'main' ? (
+            <MainToolbarContent
+              onHighlighterClick={() => setMobileView('highlighter')}
+              onLinkClick={() => setMobileView('link')}
+              isMobile={isMobile}
+            />
+          ) : (
+            <MobileToolbarContent
+              type={mobileView === 'highlighter' ? 'highlighter' : 'link'}
+              onBack={() => setMobileView('main')}
+            />
+          )}
+        </Toolbar>
 
-      <EditorContent
-        editor={editor}
-        role="presentation"
-        className="simple-editor-content"
-      />
+        <EditorContent
+          editor={editor}
+          role="presentation"
+          className="simple-editor-content"
+        />
+      </DropdownMenuProvider>
     </EditorContext.Provider>
   );
 }

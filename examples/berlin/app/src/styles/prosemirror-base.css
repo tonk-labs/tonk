@@ -179,7 +179,7 @@
 .tiptap.ProseMirror .tiptap-thread.tiptap-thread--resolved.tiptap-thread--inline.tiptap-thread--selected {
   background-color: var(--tt-color-yellow-base);
   border-color: transparent;
-  opacity: 0.5;
+  /* opacity: 0.5; */
 }
 .tiptap.ProseMirror .tiptap-thread.tiptap-thread--block:has(.react-renderer) {
   margin-top: 3rem;

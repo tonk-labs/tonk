@@ -88,3 +88,37 @@
   font-style: italic;
   font-display: swap;
 }
+
+/* Berkeley Mono - Regular */
+@font-face {
+  font-family: 'Berkeley Mono';
+  src: url('/Berkeley_Mono/BerkeleyMono-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Berkeley Mono';
+  src: url('/Berkeley_Mono/BerkeleyMono-Italic.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Berkeley Mono - Bold */
+@font-face {
+  font-family: 'Berkeley Mono';
+  src: url('/Berkeley_Mono/BerkeleyMono-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Berkeley Mono';
+  src: url('/Berkeley_Mono/BerkeleyMono-BoldItalic.ttf') format('truetype');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}

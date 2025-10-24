@@ -14,7 +14,6 @@
 /* =====================
    1. TAILWIND & VARIABLES
    ===================== */
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap");
 @import "tailwindcss";
 @import "./styles/_fonts.css";
 @import "./styles/_variables.css";
@@ -94,7 +93,7 @@
   --color-border: var(--color-border);
   --color-input: var(--color-input);
   --shadow-xs: var(--shadow-xs);
-  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --font-mono: 'Berkeley Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
 }
 
 /* =====================

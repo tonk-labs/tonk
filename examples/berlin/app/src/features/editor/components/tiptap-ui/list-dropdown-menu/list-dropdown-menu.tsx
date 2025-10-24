@@ -22,6 +22,7 @@ import {
   DropdownMenuItem,
 } from "@/features/editor/components/tiptap-ui-primitive/dropdown-menu"
 import { Card, CardBody } from "@/features/editor/components/tiptap-ui-primitive/card"
+import { useDropdownMenuState } from "@/features/editor/components/tiptap-ui-primitive/dropdown-menu/dropdown-menu-context"
 
 export interface ListDropdownMenuProps extends Omit<ButtonProps, "type"> {
   /**
@@ -57,7 +58,7 @@ export function ListDropdownMenu({
   ...props
 }: ListDropdownMenuProps) {
   const { editor } = useTiptapEditor(providedEditor)
-  const [isOpen, setIsOpen] = React.useState(false)
+  const { isOpen, setIsOpen } = useDropdownMenuState("list-dropdown")
 
   const { filteredLists, canToggle, isActive, isVisible, Icon } =
     useListDropdownMenu({
@@ -74,7 +75,7 @@ export function ListDropdownMenu({
     [onOpenChange]
   )
 
-  const handleItemClick = React.useCallback(() => {
+  const handleClose = React.useCallback(() => {
     setIsOpen(false)
   }, [])
 
@@ -113,8 +114,10 @@ export function ListDropdownMenu({
               {filteredLists.map((option) => (
                 <DropdownMenuItem
                   key={option.type}
+                  onSelect={() => {
+                    handleClose()
+                  }}
                   asChild
-                  onSelect={handleItemClick}
                 >
                   <ListButton
                     editor={editor}

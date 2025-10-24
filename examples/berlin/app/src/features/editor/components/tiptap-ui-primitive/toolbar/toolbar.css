@@ -33,7 +33,7 @@
   width: 100%;
   min-height: var(--tt-toolbar-height);
   background: var(--tt-toolbar-bg-color);
-  border-bottom: 1px solid var(--tt-toolbar-border-color);
+  /* border-bottom: 1px solid var(--tt-toolbar-border-color); */
   padding: 0 0.5rem;
   overflow-x: auto;
   overscroll-behavior-x: contain;
