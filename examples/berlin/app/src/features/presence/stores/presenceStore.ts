@@ -93,3 +93,45 @@ const createPresenceActions = () => {
 
 // Export factory hook
 export const usePresence = presenceStore.createFactory(createPresenceActions());
+
+// Cleanup timer management
+let cleanupInterval: ReturnType<typeof setInterval> | null = null;
+let subscriberCount = 0;
+
+const CLEANUP_INTERVAL_MS = 30 * 1000; // 30 seconds
+
+const startCleanupTimer = () => {
+  if (cleanupInterval) return; // Already running
+
+  cleanupInterval = setInterval(() => {
+    const actions = createPresenceActions();
+    actions.pruneStaleUsers();
+  }, CLEANUP_INTERVAL_MS);
+};
+
+const stopCleanupTimer = () => {
+  if (cleanupInterval) {
+    clearInterval(cleanupInterval);
+    cleanupInterval = null;
+  }
+};
+
+/**
+ * Start cleanup timer (called by components on mount)
+ */
+export const startPresenceCleanup = () => {
+  subscriberCount++;
+  if (subscriberCount === 1) {
+    startCleanupTimer();
+  }
+};
+
+/**
+ * Stop cleanup timer (called by components on unmount)
+ */
+export const stopPresenceCleanup = () => {
+  subscriberCount--;
+  if (subscriberCount === 0) {
+    stopCleanupTimer();
+  }
+};
