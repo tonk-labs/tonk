@@ -13,7 +13,7 @@ import Superscript from '@tiptap/extension-superscript';
 import Subscript from '@tiptap/extension-subscript';
 import HorizontalRule from '@tiptap/extension-horizontal-rule';
 import { Selection } from '@tiptap/extensions';
-import { ImageUploadNode } from '@/components/tiptap-node/image-upload-node/image-upload-node-extension';
+import { ImageUploadNode } from '@/features/editor/components/tiptap-node/image-upload-node/image-upload-node-extension';
 import { LineNumbers } from '../extensions/LineNumbers';
 import { useEditorStore } from '../stores/editorStore';
 import { SimpleEditor } from './tiptap/simple-editor';

@@ -1,7 +1,7 @@
 import * as React from "react"
 
 // --- UI Primitives ---
-import { Button } from "@/components/tiptap-ui-primitive/button"
+import { Button } from "@/features/editor/components/tiptap-ui-primitive/button"
 
 // --- Icons ---
 import { Moon, Sun } from "lucide-react"

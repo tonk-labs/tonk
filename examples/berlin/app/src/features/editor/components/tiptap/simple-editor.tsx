@@ -4,43 +4,37 @@ import * as React from 'react';
 import { EditorContent, EditorContext, type Editor } from '@tiptap/react';
 
 // --- UI Primitives ---
-import { Button } from '@/components/tiptap-ui-primitive/button';
-import { Spacer } from '@/components/tiptap-ui-primitive/spacer';
+import { Button } from '@/features/editor/components/tiptap-ui-primitive/button';
+import { Spacer } from '@/features/editor/components/tiptap-ui-primitive/spacer';
 import {
   Toolbar,
   ToolbarGroup,
   ToolbarSeparator,
-} from '@/components/tiptap-ui-primitive/toolbar';
+} from '@/features/editor/components/tiptap-ui-primitive/toolbar';
 
 // --- Tiptap Node Styles ---
-import '@/components/tiptap-node/blockquote-node/blockquote-node.css';
-import '@/components/tiptap-node/code-block-node/code-block-node.css';
-import '@/components/tiptap-node/horizontal-rule-node/horizontal-rule-node.css';
-import '@/components/tiptap-node/list-node/list-node.css';
-import '@/components/tiptap-node/image-node/image-node.css';
-import '@/components/tiptap-node/image-upload-node/image-upload-node.css';
-import '@/components/tiptap-node/heading-node/heading-node.css';
-import '@/components/tiptap-node/paragraph-node/paragraph-node.css';
+// Note: These imports are now handled in index.css for better cascade control
+// Keeping these here for backward compatibility but they're no-ops if already loaded
 
 // --- Tiptap UI ---
-import { HeadingDropdownMenu } from '@/components/tiptap-ui/heading-dropdown-menu';
-import { ImageUploadButton } from '@/components/tiptap-ui/image-upload-button';
-import { ListDropdownMenu } from '@/components/tiptap-ui/list-dropdown-menu';
-import { BlockquoteButton } from '@/components/tiptap-ui/blockquote-button';
-import { CodeBlockButton } from '@/components/tiptap-ui/code-block-button';
+import { HeadingDropdownMenu } from '@/features/editor/components/tiptap-ui/heading-dropdown-menu';
+import { ImageUploadButton } from '@/features/editor/components/tiptap-ui/image-upload-button';
+import { ListDropdownMenu } from '@/features/editor/components/tiptap-ui/list-dropdown-menu';
+import { BlockquoteButton } from '@/features/editor/components/tiptap-ui/blockquote-button';
+import { CodeBlockButton } from '@/features/editor/components/tiptap-ui/code-block-button';
 import {
   ColorHighlightPopover,
   ColorHighlightPopoverContent,
   ColorHighlightPopoverButton,
-} from '@/components/tiptap-ui/color-highlight-popover';
+} from '@/features/editor/components/tiptap-ui/color-highlight-popover';
 import {
   LinkPopover,
   LinkContent,
   LinkButton,
-} from '@/components/tiptap-ui/link-popover';
-import { MarkButton } from '@/components/tiptap-ui/mark-button';
-import { TextAlignButton } from '@/components/tiptap-ui/text-align-button';
-import { UndoRedoButton } from '@/components/tiptap-ui/undo-redo-button';
+} from '@/features/editor/components/tiptap-ui/link-popover';
+import { MarkButton } from '@/features/editor/components/tiptap-ui/mark-button';
+import { TextAlignButton } from '@/features/editor/components/tiptap-ui/text-align-button';
+import { UndoRedoButton } from '@/features/editor/components/tiptap-ui/undo-redo-button';
 
 // --- Icons ---
 import { ArrowLeft, Highlighter, Link } from 'lucide-react';
