@@ -21,7 +21,6 @@ import {
   DropdownMenuItem,
 } from "@/features/editor/components/tiptap-ui-primitive/dropdown-menu"
 import { Card, CardBody } from "@/features/editor/components/tiptap-ui-primitive/card"
-import { useDropdownMenuState } from "@/features/editor/components/tiptap-ui-primitive/dropdown-menu/dropdown-menu-context"
 
 export interface HeadingDropdownMenuProps
   extends Omit<ButtonProps, "type">,
@@ -58,7 +57,7 @@ export const HeadingDropdownMenu = React.forwardRef<
     ref
   ) => {
     const { editor } = useTiptapEditor(providedEditor)
-    const { isOpen, setIsOpen } = useDropdownMenuState("heading-dropdown")
+    const [isOpen, setIsOpen] = React.useState(false)
     const { isVisible, isActive, canToggle, Icon } = useHeadingDropdownMenu({
       editor,
       levels,
@@ -67,23 +66,19 @@ export const HeadingDropdownMenu = React.forwardRef<
 
     const handleOpenChange = React.useCallback(
       (open: boolean) => {
-        if (open && (!editor || !canToggle)) return
+        if (!editor || !canToggle) return
         setIsOpen(open)
         onOpenChange?.(open)
       },
-      [canToggle, editor, onOpenChange, setIsOpen]
+      [canToggle, editor, onOpenChange]
     )
-
-    const handleClose = React.useCallback(() => {
-      setIsOpen(false)
-    }, [setIsOpen])
 
     if (!isVisible) {
       return null
     }
 
     return (
-      <DropdownMenu open={isOpen} onOpenChange={handleOpenChange}>
+      <DropdownMenu modal open={isOpen} onOpenChange={handleOpenChange}>
         <DropdownMenuTrigger asChild>
           <Button
             type="button"
@@ -104,22 +99,12 @@ export const HeadingDropdownMenu = React.forwardRef<
           </Button>
         </DropdownMenuTrigger>
 
-        <DropdownMenuContent
-          align="start"
-          portal={portal}
-          onInteractOutside={() => setIsOpen(false)}
-        >
+        <DropdownMenuContent align="start" portal={portal}>
           <Card>
             <CardBody>
               <ButtonGroup>
                 {levels.map((level) => (
-                  <DropdownMenuItem
-                    key={`heading-${level}`}
-                    onSelect={() => {
-                      handleClose()
-                    }}
-                    asChild
-                  >
+                  <DropdownMenuItem key={`heading-${level}`} asChild>
                     <HeadingButton
                       editor={editor}
                       level={level}

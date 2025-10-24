@@ -7,7 +7,7 @@ import type { Editor } from "@tiptap/react"
 import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 
 // --- Icons ---
-import { Heading } from "lucide-react"
+import { HeadingIcon } from "@/features/editor/components/tiptap-icons/heading-icon"
 
 // --- Tiptap UI ---
 import {
@@ -127,6 +127,6 @@ export function useHeadingDropdownMenu(config?: UseHeadingDropdownMenuConfig) {
     canToggle: canToggleState,
     levels,
     label: "Heading",
-    Icon: activeLevel ? headingIcons[activeLevel] : Heading,
+    Icon: activeLevel ? headingIcons[activeLevel] : HeadingIcon,
   }
 }

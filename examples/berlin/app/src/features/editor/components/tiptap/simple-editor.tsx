@@ -11,7 +11,6 @@ import {
   ToolbarGroup,
   ToolbarSeparator,
 } from '@/features/editor/components/tiptap-ui-primitive/toolbar';
-import { DropdownMenuProvider } from '@/features/editor/components/tiptap-ui-primitive/dropdown-menu/dropdown-menu-context';
 
 // --- Tiptap UI ---
 import { HeadingDropdownMenu } from '@/features/editor/components/tiptap-ui/heading-dropdown-menu';
@@ -182,7 +181,6 @@ export function SimpleEditor({ editor }: SimpleEditorProps) {
 
   return (
     <EditorContext.Provider value={{ editor }}>
-      <DropdownMenuProvider>
         <Toolbar
           ref={toolbarRef}
           style={{
@@ -212,7 +210,6 @@ export function SimpleEditor({ editor }: SimpleEditorProps) {
           role="presentation"
           className="simple-editor-content"
         />
-      </DropdownMenuProvider>
     </EditorContext.Provider>
   );
 }

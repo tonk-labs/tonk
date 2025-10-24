@@ -1,7 +1,7 @@
 import * as React from "react"
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu"
 import { cn } from "@/lib/utils"
-import "@/features/editor/components/tiptap-ui-primitive/dropdown-menu/dropdown-menu.css"
+import "./dropdown-menu.css"
 
 function DropdownMenu({
   ...props
@@ -66,6 +66,7 @@ const DropdownMenuContent = React.forwardRef<
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
+      onCloseAutoFocus={(e) => e.preventDefault()}
       className={cn("tiptap-dropdown-menu", className)}
       {...props}
     />
