@@ -47,6 +47,7 @@
     "mime": "^4.0.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "react-draggable": "^4.5.0",
     "react-hotkeys-hook": "^5.2.1",
     "unique-names-generator": "^4.7.1",
     "zustand": "^5.0.8"
