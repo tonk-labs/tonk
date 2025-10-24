@@ -46,6 +46,7 @@ import { useCursorVisibility } from '@/hooks/use-cursor-visibility';
 
 // --- Styles ---
 import './simple-editor.css';
+import { useEffect } from 'react';
 
 const MainToolbarContent = ({
   onHighlighterClick,
@@ -172,15 +173,15 @@ export function SimpleEditor({ editor }: SimpleEditorProps) {
     overlayHeight: toolbarRef.current?.getBoundingClientRect().height ?? 0,
   });
 
-  if (!editor) {
-    return null;
-  }
-
-  React.useEffect(() => {
+  useEffect(() => {
     if (!isMobile && mobileView !== 'main') {
       setMobileView('main');
     }
   }, [isMobile, mobileView]);
+
+  if (!editor) {
+    return null;
+  }
 
   return (
     <EditorContext.Provider value={{ editor }}>
