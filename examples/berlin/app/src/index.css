@@ -50,7 +50,7 @@
    4. EXTENSION STYLES
    (Line numbers, etc)
    ===================== */
-@import "./features/editor/extensions/LineNumbers.css";
+@import "./features/editor/components/tiptap-ui-primitive/line-numbers/LineNumbers.css";
 
 /* =====================
    5. LAYOUT STYLES
