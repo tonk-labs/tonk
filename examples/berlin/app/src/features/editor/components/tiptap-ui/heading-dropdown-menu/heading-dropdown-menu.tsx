@@ -73,6 +73,10 @@ export const HeadingDropdownMenu = React.forwardRef<
       [canToggle, editor, onOpenChange]
     )
 
+    const handleItemClick = React.useCallback(() => {
+      setIsOpen(false)
+    }, [])
+
     if (!isVisible) {
       return null
     }
@@ -99,12 +103,20 @@ export const HeadingDropdownMenu = React.forwardRef<
           </Button>
         </DropdownMenuTrigger>
 
-        <DropdownMenuContent align="start" portal={portal}>
+        <DropdownMenuContent
+          align="start"
+          portal={portal}
+          onInteractOutside={() => setIsOpen(false)}
+        >
           <Card>
             <CardBody>
               <ButtonGroup>
                 {levels.map((level) => (
-                  <DropdownMenuItem key={`heading-${level}`} asChild>
+                  <DropdownMenuItem
+                    key={`heading-${level}`}
+                    asChild
+                    onSelect={handleItemClick}
+                  >
                     <HeadingButton
                       editor={editor}
                       level={level}

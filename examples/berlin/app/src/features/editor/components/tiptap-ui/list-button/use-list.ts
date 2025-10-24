@@ -16,7 +16,7 @@ import {
   isNodeInSchema,
   isNodeTypeSelected,
   isValidPosition,
-} from "@/lib/tiptap-utils"
+} from "@/lib/utils"
 
 export type ListType = "bulletList" | "orderedList" | "taskList"
 

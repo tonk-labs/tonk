@@ -1,7 +1,7 @@
 import * as React from "react"
 
 // --- Lib ---
-import { parseShortcutKeys } from "@/lib/tiptap-utils"
+import { parseShortcutKeys } from "@/lib/utils"
 
 // --- Tiptap UI ---
 import type {

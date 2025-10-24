@@ -9,7 +9,7 @@ import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 import {
   isExtensionAvailable,
   isNodeTypeSelected,
-} from "@/lib/tiptap-utils"
+} from "@/lib/utils"
 
 // --- Icons ---
 import { AlignLeft, AlignCenter, AlignRight, AlignJustify } from "lucide-react"

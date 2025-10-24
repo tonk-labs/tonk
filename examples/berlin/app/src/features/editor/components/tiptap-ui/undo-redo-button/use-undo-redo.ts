@@ -5,7 +5,7 @@ import { type Editor } from "@tiptap/react"
 import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 
 // --- Lib ---
-import { isNodeTypeSelected } from "@/lib/tiptap-utils"
+import { isNodeTypeSelected } from "@/lib/utils"
 
 // --- Icons ---
 import { Undo2, Redo2 } from "lucide-react"

@@ -13,7 +13,7 @@ import {
   isNodeInSchema,
   isNodeTypeSelected,
   isValidPosition,
-} from "@/lib/tiptap-utils"
+} from "@/lib/utils"
 
 // --- Icons ---
 import { Code } from "lucide-react"

@@ -13,7 +13,7 @@ import {
   isNodeInSchema,
   isNodeTypeSelected,
   isValidPosition,
-} from "@/lib/tiptap-utils"
+} from "@/lib/utils"
 
 // --- Icons ---
 import { Heading1, Heading2, Heading3, Heading4, Heading5, Heading6 } from "lucide-react"

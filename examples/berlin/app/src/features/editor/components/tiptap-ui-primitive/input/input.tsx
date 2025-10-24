@@ -1,5 +1,5 @@
 import * as React from "react"
-import { cn } from "@/lib/tiptap-utils"
+import { cn } from "@/lib/utils"
 import "@/features/editor/components/tiptap-ui-primitive/input/input.css"
 
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {

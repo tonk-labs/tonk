@@ -8,7 +8,7 @@ import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 import { Link } from "lucide-react"
 
 // --- Lib ---
-import { isMarkInSchema, sanitizeUrl } from "@/lib/tiptap-utils"
+import { isMarkInSchema, sanitizeUrl } from "@/lib/utils"
 
 /**
  * Configuration for the link popover functionality

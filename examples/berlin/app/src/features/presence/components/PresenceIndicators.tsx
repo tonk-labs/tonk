@@ -41,9 +41,10 @@ export const PresenceIndicators = ({
         <Tooltip key={user.id} placement="bottom" delay={300}>
           <TooltipTrigger asChild>
             <div
-              className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-medium border-2 border-white cursor-default"
+              className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-medium border-2 bg-white cursor-default"
               style={{
                 backgroundColor: user.color,
+                borderColor: user.color,
                 marginLeft: index > 0 ? '-8px' : '0'
               }}
             >

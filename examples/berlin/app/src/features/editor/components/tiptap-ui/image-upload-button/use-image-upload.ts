@@ -12,7 +12,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import {
   isExtensionAvailable,
   isNodeTypeSelected,
-} from "@/lib/tiptap-utils"
+} from "@/lib/utils"
 
 // --- Icons ---
 import { ImagePlus } from "lucide-react"

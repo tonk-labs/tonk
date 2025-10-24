@@ -74,6 +74,10 @@ export function ListDropdownMenu({
     [onOpenChange]
   )
 
+  const handleItemClick = React.useCallback(() => {
+    setIsOpen(false)
+  }, [])
+
   if (!isVisible || !editor || !editor.isEditable) {
     return null
   }
@@ -98,12 +102,20 @@ export function ListDropdownMenu({
         </Button>
       </DropdownMenuTrigger>
 
-      <DropdownMenuContent align="start" portal={portal}>
+      <DropdownMenuContent
+        align="start"
+        portal={portal}
+        onInteractOutside={() => setIsOpen(false)}
+      >
         <Card>
           <CardBody>
             <ButtonGroup>
               {filteredLists.map((option) => (
-                <DropdownMenuItem key={option.type} asChild>
+                <DropdownMenuItem
+                  key={option.type}
+                  asChild
+                  onSelect={handleItemClick}
+                >
                   <ListButton
                     editor={editor}
                     type={option.type}

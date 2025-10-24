@@ -10,7 +10,7 @@ import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 import { List, ListOrdered, ListTodo } from "lucide-react"
 
 // --- Lib ---
-import { isNodeInSchema } from "@/lib/tiptap-utils"
+import { isNodeInSchema } from "@/lib/utils"
 
 // --- Tiptap UI ---
 import {

@@ -55,6 +55,10 @@ export interface LinkMainProps {
    * Whether the link is currently active in the editor.
    */
   isActive: boolean
+  /**
+   * Callback to close the popover
+   */
+  onClose?: () => void
 }
 
 export interface LinkPopoverProps
@@ -106,6 +110,7 @@ const LinkMain: React.FC<LinkMainProps> = ({
   removeLink,
   openLink,
   isActive,
+  onClose,
 }) => {
   const isMobile = useIsMobile()
 
@@ -115,6 +120,16 @@ const LinkMain: React.FC<LinkMainProps> = ({
       setLink()
     }
   }
+
+  const handleRemoveLinkAndClose = React.useCallback(() => {
+    removeLink()
+    onClose?.()
+  }, [removeLink, onClose])
+
+  const handleOpenLinkAndClose = React.useCallback(() => {
+    openLink()
+    onClose?.()
+  }, [openLink, onClose])
 
   return (
     <Card
@@ -159,7 +174,7 @@ const LinkMain: React.FC<LinkMainProps> = ({
           <ButtonGroup orientation="horizontal">
             <Button
               type="button"
-              onClick={openLink}
+              onClick={handleOpenLinkAndClose}
               title="Open in new window"
               disabled={!url && !isActive}
               data-style="ghost"
@@ -169,7 +184,7 @@ const LinkMain: React.FC<LinkMainProps> = ({
 
             <Button
               type="button"
-              onClick={removeLink}
+              onClick={handleRemoveLinkAndClose}
               title="Remove link"
               disabled={!url && !isActive}
               data-style="ghost"
@@ -287,7 +302,7 @@ export const LinkPopover = React.forwardRef<
           </LinkButton>
         </PopoverTrigger>
 
-        <PopoverContent>
+        <PopoverContent onInteractOutside={() => setIsOpen(false)}>
           <LinkMain
             url={url}
             setUrl={setUrl}
@@ -295,6 +310,7 @@ export const LinkPopover = React.forwardRef<
             removeLink={removeLink}
             openLink={openLink}
             isActive={isActive}
+            onClose={() => setIsOpen(false)}
           />
         </PopoverContent>
       </Popover>

@@ -9,7 +9,7 @@ import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 import { useIsMobile } from "@/hooks/use-mobile"
 
 // --- Lib ---
-import { isMarkInSchema, isNodeTypeSelected } from "@/lib/tiptap-utils"
+import { isMarkInSchema, isNodeTypeSelected } from "@/lib/utils"
 
 // --- Icons ---
 import { Highlighter } from "lucide-react"

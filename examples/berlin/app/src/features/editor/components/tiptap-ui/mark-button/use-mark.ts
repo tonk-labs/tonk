@@ -5,7 +5,7 @@ import type { Editor } from "@tiptap/react"
 import { useTiptapEditor } from "@/hooks/use-tiptap-editor"
 
 // --- Lib ---
-import { isMarkInSchema, isNodeTypeSelected } from "@/lib/tiptap-utils"
+import { isMarkInSchema, isNodeTypeSelected } from "@/lib/utils"
 
 // --- Icons ---
 import { Bold, Italic, Strikethrough, Underline, Subscript, Superscript } from "lucide-react"
