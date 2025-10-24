@@ -1,9 +1,0 @@
-@import "tailwindcss";
-
-main {
-  @apply flex flex-col h-full items-center relative p-2;
-}
-
-nav {
-  @apply flex flex-col items-end justify-end w-full gap-4 mb-6; 
-}

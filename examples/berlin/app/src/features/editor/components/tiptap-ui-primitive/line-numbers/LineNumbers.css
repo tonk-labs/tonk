@@ -14,7 +14,7 @@
    ===================== */
 .line-number {
   position: absolute;
-  right: calc(100% + 5rem);
+  right: calc(100% + 3rem);
   width: 3rem;
   text-align: right;
   padding-right: 1rem;

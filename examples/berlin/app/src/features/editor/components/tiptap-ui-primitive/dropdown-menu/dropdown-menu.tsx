@@ -66,7 +66,6 @@ const DropdownMenuContent = React.forwardRef<
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
-      onCloseAutoFocus={(e) => e.preventDefault()}
       className={cn("tiptap-dropdown-menu", className)}
       {...props}
     />

@@ -72,12 +72,12 @@ export function ListDropdownMenu({
       setIsOpen(open)
       onOpenChange?.(open)
     },
-    [onOpenChange]
+    [onOpenChange, setIsOpen]
   )
 
   const handleClose = React.useCallback(() => {
     setIsOpen(false)
-  }, [])
+  }, [setIsOpen])
 
   if (!isVisible || !editor || !editor.isEditable) {
     return null

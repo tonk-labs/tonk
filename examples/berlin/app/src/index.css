@@ -122,12 +122,6 @@
 @import "./features/editor/components/tiptap-ui-primitive/line-numbers/LineNumbers.css";
 
 /* =====================
-   5. LAYOUT STYLES
-   (Editor positioning and padding)
-   ===================== */
-@import "./features/editor/styles/editor-layout.css";
-
-/* =====================
    6. INSTANCE OVERRIDES
    (Simple editor customizations - highest priority)
    ===================== */
@@ -137,9 +131,18 @@
    BASE HTML STYLES
    ===================== */
 html, body {
-  @apply p-0 m-0 min-w-[320px] min-h-screen bg-page-background;
+  @apply p-0 m-0 min-w-[320px] min-h-screen bg-page-background overflow-clip;
 }
 
 #root {
-  @apply w-full;
+  @apply w-full h-screen relative;
 }
+
+main.rootLayout {
+   @apply mx-auto h-screen flex flex-col items-center relative;
+}
+
+nav {
+   @apply flex flex-col items-end justify-end w-full gap-2 px-5 pt-5 mb-6;
+}
+

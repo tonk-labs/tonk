@@ -19,7 +19,7 @@ import { LineNumbers } from './tiptap-ui-primitive/line-numbers/LineNumbers';
 import { useEditorStore } from '../stores/editorStore';
 import { SimpleEditor } from './tiptap/simple-editor';
 import { handleImageUpload } from '@/lib/utils';
-import './editor.css'
+import './editor.css';
 
 export function Editor() {
   const { document, setDocument } = useEditorStore();
@@ -102,12 +102,20 @@ export function Editor() {
   }, [document, editor]);
 
   const editorArea = useMemo(() => {
-  if (!editor) {
-    return <div>Loading editor...</div>;
-  }
+    if (!editor) {
+      return <div>Loading editor...</div>;
+    }
     return <SimpleEditor editor={editor} />;
-  }, [editor])
+  }, [editor]);
 
-
-  return <article id="editor-area">{editorArea}</article>;
+  return (
+    <div id="editor-wrapper">
+      <div id="editor-container">
+      <div id="editor-paper" />
+      </div>
+      <div id="editor-container">
+        <article id="editor-area">{editorArea}</article>
+      </div>
+    </div>
+  );
 }

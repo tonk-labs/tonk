@@ -1,5 +1,21 @@
 @import "tailwindcss";
 
+#editor-wrapper {
+    @apply w-full h-screen flex relative m-0 p-0;
+}
+
+#editor-container {
+    @apply w-full h-full overflow-y-scroll overflow-auto flex items-center justify-center absolute m-0 p-0;
+}
+
 #editor-area {
-    @apply max-w-[900px] w-[80%] bg-white h-full;
+    @apply overflow-visible h-full max-w-[900px] w-[80%] relative;
+}
+
+#editor-paper {
+    @apply bg-white relative max-w-[900px] w-[80%] h-full overflow-visible;
+}
+
+.tiptap.simple-editor {
+    @apply p-8;
 }
