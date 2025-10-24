@@ -57,6 +57,10 @@ export const presenceStore = StoreBuilder(initialState, {
   name: 'tonk-presence',
   version: 1,
   storage: createSafeStorage() as PersistStorage<unknown>,
+  partialize: (state: PresenceState) => ({
+    users: state.users,
+    currentUserId: state.currentUserId,
+  }),
 });
 
 // Export base hooks
