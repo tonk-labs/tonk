@@ -123,6 +123,18 @@ const createChatActions = () => {
         state.messages = [];
       });
     },
+
+    /**
+     * Hydrate messages from loaded data (e.g., VFS)
+     */
+    hydrateMessages: (messages: ChatMessage[], config?: Partial<ChatConfig>) => {
+      store.set(state => {
+        state.messages = messages;
+        if (config) {
+          state.config = { ...state.config, ...config };
+        }
+      });
+    },
   };
 };
 

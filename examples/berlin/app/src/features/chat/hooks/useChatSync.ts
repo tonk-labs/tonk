@@ -6,17 +6,20 @@ import { loadChatHistory, saveChatHistory } from '../utils/chatHistory';
  * Hook to sync chat store with VFS and presence system
  */
 export function useChatSync() {
-  const { messages, config } = useChat();
+  const { messages, config, hydrateMessages } = useChat();
 
   // Load chat history on mount
   useEffect(() => {
-    loadChatHistory().then(data => {
-      if (data) {
-        // TODO: Hydrate store with loaded data
-        console.log('Loaded chat history:', data);
-      }
-    });
-  }, []);
+    loadChatHistory()
+      .then(data => {
+        if (data) {
+          hydrateMessages(data.messages, data.config);
+        }
+      })
+      .catch(error => {
+        console.error('Failed to load chat history in hook:', error);
+      });
+  }, [hydrateMessages]);
 
   // Save to VFS whenever messages change
   useEffect(() => {
