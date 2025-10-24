@@ -10,10 +10,10 @@ dist-ssr/
 build/
 out/
 .next/
+.nuxt/
 .cache/
 .parcel-cache/
 .vite/
-*.tsbuildinfo
 
 # Testing
 coverage/
@@ -59,14 +59,27 @@ Desktop.ini
 .idea/
 *.swp
 *.swo
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
 *~
 *.sublime-workspace
 *.sublime-project
+.project
+.classpath
+.settings/
+.loadpath
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.history/*
+
+# IDE - IntelliJ
+*.iml
+*.ipr
+*.iws
+.idea/
 
 # Temporary files
 *.tmp
@@ -74,27 +87,41 @@ Desktop.ini
 .tmp/
 .temp/
 *.bak
-*.local
+*.swp
+*.swo
+*~
 
-# Vite
-vite.config.ts.timestamp-*
+# TypeScript
+*.tsbuildinfo
+.tsbuildinfo
 
 # Local development
+*.local
 .vercel
 .netlify
 
 # Misc
 .eslintcache
 .stylelintcache
+.tern-port
+.pnpm-debug.log
 
-# Optional caches
+# Optional npm cache directory
 .npm
+
+# Optional eslint cache
+.eslintcache
+
+# Microbundle cache
 .rpt2_cache/
 .rts2_cache_cjs/
 .rts2_cache_es/
 .rts2_cache_umd/
 
-# Diagnostic reports
+# Optional REPL history
+.node_repl_history
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Runtime data
@@ -102,3 +129,21 @@ pids
 *.pid
 *.seed
 *.pid.lock
+
+# Serverless directories
+.serverless/
+
+# FuseBox cache
+.fusebox/
+
+# DynamoDB Local files
+.dynamodb/
+
+# TernJS port file
+.tern-port
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test
+
+# Yarn Integrity file
+.yarn-integrity

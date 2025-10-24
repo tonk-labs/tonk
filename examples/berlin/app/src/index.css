@@ -23,8 +23,76 @@
   --color-page-background: #f2f3f4;
 }
 
+/* App-level color tokens (mapped from _variables.css) */
+:root {
+  /* Primary - Brand colors */
+  --color-primary: var(--tt-brand-color-500);
+  --color-primary-foreground: var(--white);
+
+  /* Destructive - Error/danger states */
+  --color-destructive: var(--tt-color-red-base);
+  --color-destructive-foreground: var(--white);
+
+  /* Secondary - Subtle actions */
+  --color-secondary: var(--tt-gray-light-200);
+  --color-secondary-foreground: var(--tt-gray-light-900);
+
+  /* Accent - Hover/focus states */
+  --color-accent: var(--tt-gray-light-100);
+  --color-accent-foreground: var(--tt-gray-light-900);
+
+  /* Background & borders */
+  --color-background: var(--tt-bg-color);
+  --color-foreground: var(--tt-gray-light-900);
+  --color-border: var(--tt-border-color);
+  --color-input: var(--tt-border-color);
+
+  /* Shadows */
+  --shadow-xs: 0px 1px 2px 0px rgba(17, 24, 39, 0.05);
+}
+
+.dark {
+  /* Primary - Same brand color works in dark mode */
+  --color-primary: var(--tt-brand-color-500);
+  --color-primary-foreground: var(--white);
+
+  /* Destructive */
+  --color-destructive: var(--tt-color-red-base);
+  --color-destructive-foreground: var(--white);
+
+  /* Secondary */
+  --color-secondary: var(--tt-gray-dark-200);
+  --color-secondary-foreground: var(--tt-gray-dark-900);
+
+  /* Accent */
+  --color-accent: var(--tt-gray-dark-100);
+  --color-accent-foreground: var(--tt-gray-dark-900);
+
+  /* Background & borders */
+  --color-background: var(--tt-bg-color);
+  --color-foreground: var(--tt-gray-dark-900);
+  --color-border: var(--tt-border-color);
+  --color-input: var(--tt-border-color);
+
+  /* Shadows */
+  --shadow-xs: 0px 1px 2px 0px rgba(0, 0, 0, 0.2);
+}
+
 @theme {
   --color-page-background: var(--color-page-background);
+  --color-primary: var(--color-primary);
+  --color-primary-foreground: var(--color-primary-foreground);
+  --color-secondary: var(--color-secondary);
+  --color-secondary-foreground: var(--color-secondary-foreground);
+  --color-accent: var(--color-accent);
+  --color-accent-foreground: var(--color-accent-foreground);
+  --color-destructive: var(--color-destructive);
+  --color-destructive-foreground: var(--color-destructive-foreground);
+  --color-background: var(--color-background);
+  --color-foreground: var(--color-foreground);
+  --color-border: var(--color-border);
+  --color-input: var(--color-input);
+  --shadow-xs: var(--shadow-xs);
 }
 
 /* =====================
