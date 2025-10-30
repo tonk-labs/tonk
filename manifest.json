@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "version": {
+    "major": 1,
+    "minor": 0
+  },
+  "rootId": "AgFCjGexJYzfccJKH9YJcUmPjnr",
+  "entrypoints": [],
+  "networkUris": [],
+  "xNotes": null,
+  "xVendor": {
+    "xTonk": {
+      "createdAt": "2025-10-31T08:02:45.239202+00:00",
+      "exportedFrom": "tonk-core v0.1.0"
+    }
+  }
+}
