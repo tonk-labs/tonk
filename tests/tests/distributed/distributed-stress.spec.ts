@@ -614,11 +614,11 @@ async function deployWorkersToInstances(
           },
         };
         await fs.writeFile(
-          '/tmp/worker-package.json',
+          `/tmp/worker-package-${workerId}.json`,
           JSON.stringify(workerPackageJson, null, 2)
         );
         await exec(
-          `scp -o StrictHostKeyChecking=no -i ${keyPath} /tmp/worker-package.json ec2-user@${instance.publicIp}:~/worker/package.json`
+          `scp -o StrictHostKeyChecking=no -i ${keyPath} /tmp/worker-package-${workerId}.json ec2-user@${instance.publicIp}:~/worker/package.json`
         );
 
         console.log(
