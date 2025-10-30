@@ -1,10 +1,11 @@
 use crate::bundle::{BundleConfig, RandomAccess};
 use crate::error::{Result, VfsError};
 use crate::vfs::backend::AutomergeHelpers;
-use crate::vfs::traversal::PathTraverser;
+use crate::vfs::path_index::PathIndex;
 use crate::vfs::types::*;
 use crate::vfs::watcher::DocumentWatcher;
 use crate::Bundle;
+use automerge::transaction::Transactable;
 use automerge::Automerge;
 use bytes::Bytes;
 use samod::storage::StorageKey;
@@ -15,7 +16,6 @@ use tokio::sync::broadcast;
 pub struct VirtualFileSystem {
     samod: Arc<Repo>,
     root_id: DocumentId,
-    traverser: PathTraverser,
     event_tx: broadcast::Sender<VfsEvent>,
 }
 
@@ -29,28 +29,27 @@ pub enum VfsEvent {
 
 impl VirtualFileSystem {
     pub async fn new(samod: Arc<Repo>) -> Result<Self> {
-        // Create root document with directory structure
-        let root_doc = Automerge::new();
-
-        let root_handle = samod
-            .create(root_doc)
+        // Create the path index document
+        let index_doc = Automerge::new();
+        let index_handle = samod
+            .create(index_doc)
             .await
-            .map_err(|e| VfsError::SamodError(format!("Failed to create root document: {e}")))?;
+            .map_err(|e| VfsError::SamodError(format!("Failed to create path index: {e}")))?;
 
-        let root_id = root_handle.document_id().clone();
-
-        // Initialize root as directory
-        AutomergeHelpers::init_as_directory(&root_handle, "/")?;
-
+        let root_id = index_handle.document_id().clone();
         let (event_tx, _) = broadcast::channel(100);
-        let traverser = PathTraverser::new(samod.clone());
 
-        Ok(Self {
+        let vfs = Self {
             samod,
             root_id,
-            traverser,
             event_tx,
-        })
+        };
+
+        // Initialize empty path index
+        let empty_index = PathIndex::new();
+        vfs.write_path_index(&empty_index).await?;
+
+        Ok(vfs)
     }
 
     /// Create a new VFS from a bundle
@@ -64,12 +63,10 @@ impl VirtualFileSystem {
             .map_err(|e| VfsError::Other(anyhow::anyhow!("Failed to parse root ID: {}", e)))?;
 
         let (event_tx, _) = broadcast::channel(100);
-        let traverser = PathTraverser::new(Arc::clone(&samod));
 
         Ok(Self {
             samod,
             root_id,
-            traverser,
             event_tx,
         })
     }
@@ -78,13 +75,95 @@ impl VirtualFileSystem {
     /// Used when restoring from local storage where manifest is already persisted
     pub async fn from_root_id(samod: Arc<Repo>, root_id: DocumentId) -> Result<Self> {
         let (event_tx, _) = broadcast::channel(100);
-        let traverser = PathTraverser::new(Arc::clone(&samod));
 
         Ok(Self {
             samod,
             root_id,
-            traverser,
             event_tx,
+        })
+    }
+
+    /// Read the path index from the root document
+    async fn read_path_index(&self) -> Result<PathIndex> {
+        let handle = self
+            .samod
+            .find(self.root_id.clone())
+            .await
+            .map_err(|e| VfsError::SamodError(format!("Failed to find path index: {e}")))?
+            .ok_or_else(|| VfsError::Other(anyhow::anyhow!("Path index not found")))?;
+
+        handle.with_document(|doc| {
+            use automerge::ReadDoc;
+            // Read the JSON string and deserialize
+            let index_json = doc
+                .get(automerge::ROOT, "path_index")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| AutomergeHelpers::extract_string_value(&value))
+                .ok_or_else(|| VfsError::Other(anyhow::anyhow!("Path index data not found")))?;
+
+            serde_json::from_str(&index_json).map_err(VfsError::SerializationError)
+        })
+    }
+
+    /// Write the path index to the root document
+    async fn write_path_index(&self, index: &PathIndex) -> Result<()> {
+        let handle = self
+            .samod
+            .find(self.root_id.clone()) // root_id points to path index!
+            .await
+            .map_err(|e| VfsError::SamodError(format!("Failed to find path index: {e}")))?
+            .ok_or_else(|| VfsError::Other(anyhow::anyhow!("Path index not found")))?;
+
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            // Serialize to JSON string like other VFS documents
+            let index_json = serde_json::to_string(index).map_err(VfsError::SerializationError)?;
+            tx.put(automerge::ROOT, "path_index", index_json)?;
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Update path index atomically with a closure
+    async fn update_path_index<F, R>(&self, update_fn: F) -> Result<R>
+    where
+        F: FnOnce(&mut PathIndex) -> R,
+    {
+        let mut index = self.read_path_index().await?;
+        let result = update_fn(&mut index);
+        self.write_path_index(&index).await?;
+        Ok(result)
+    }
+
+    /// Create parent directories for a path if they don't exist
+    fn ensure_parent_directories<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            // Extract parent path
+            let parent_path = if path.contains('/') {
+                let last_slash = path.rfind('/').unwrap();
+                if last_slash == 0 {
+                    return Ok(()); // Parent is root, no need to create
+                }
+                &path[..last_slash]
+            } else {
+                return Ok(()); // No parent needed
+            };
+
+            // Check if parent exists
+            if self.exists(parent_path).await? {
+                return Ok(());
+            }
+
+            // Recursively create grandparents first
+            self.ensure_parent_directories(parent_path).await?;
+
+            // Create this parent directory
+            self.create_directory(parent_path).await?;
+
+            Ok(())
         })
     }
 
@@ -265,48 +344,16 @@ impl VirtualFileSystem {
             return Err(VfsError::RootPathError);
         }
 
-        // Extract filename from path
-        let filename = path
-            .rsplit('/')
-            .next()
-            .ok_or_else(|| VfsError::InvalidPath(path.to_string()))?;
+        // Ensure parent directories exist
+        self.ensure_parent_directories(path).await?;
 
-        // Get the parent directory path
-        let parent_path = if path.contains('/') {
-            let last_slash = path.rfind('/').unwrap();
-            if last_slash == 0 {
-                "/"
-            } else {
-                &path[..last_slash]
-            }
-        } else {
-            "/"
-        };
-
-        // Traverse to parent directory, creating directories as needed
-        let result = self
-            .traverser
-            .traverse(self.root_id.clone(), parent_path, true)
-            .await?;
-
-        // Get the actual parent directory handle
-        let parent_handle = if let Some(ref target_ref) = result.target_ref {
-            self.samod
-                .find(target_ref.pointer.clone())
-                .await
-                .map_err(|e| VfsError::SamodError(format!("Failed to find parent directory: {e}")))?
-                .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
-        } else {
-            result.node_handle.clone()
-        };
-
-        // Check if document already exists in parent
-        let parent_dir = AutomergeHelpers::read_directory(&parent_handle)?;
-        if parent_dir.find_child(filename).is_some() {
+        // Check if already exists
+        let index = self.read_path_index().await?;
+        if index.has_path(path) {
             return Err(VfsError::DocumentExists(path.to_string()));
         }
 
-        // Create the new document
+        // Create the document in Samod
         let new_doc = Automerge::new();
         let doc_handle = self
             .samod
@@ -314,18 +361,20 @@ impl VirtualFileSystem {
             .await
             .map_err(|e| VfsError::SamodError(format!("Failed to create document: {e}")))?;
 
+        // Initialize document content (extract filename for internal name)
+        let filename = path.rsplit('/').next().unwrap_or(path);
         if use_bytes {
-            // Initialize the document with content and bytes
             AutomergeHelpers::init_as_document_with_bytes(&doc_handle, filename, content, bytes)?;
         } else {
-            // Initialize the document with content
             AutomergeHelpers::init_as_document(&doc_handle, filename, content)?;
         }
 
-        // Add reference to parent directory
-        let doc_ref = RefNode::new_document(filename.to_string(), doc_handle.document_id().clone());
-
-        AutomergeHelpers::add_child_to_directory(&parent_handle, &doc_ref)?;
+        // Update path index
+        let doc_id = doc_handle.document_id().clone();
+        self.update_path_index(|index| {
+            index.set_path(path.to_string(), doc_id.to_string(), NodeType::Document);
+        })
+        .await?;
 
         // Emit event
         let _ = self.event_tx.send(VfsEvent::DocumentCreated {
@@ -376,7 +425,7 @@ impl VirtualFileSystem {
         // Find the existing document
         match self.find_document(path).await? {
             Some(doc_handle) => {
-                // Update the document content (conditional)
+                // Update content
                 if use_bytes {
                     AutomergeHelpers::update_document_content_with_bytes(
                         &doc_handle,
@@ -387,47 +436,15 @@ impl VirtualFileSystem {
                     AutomergeHelpers::update_document_content(&doc_handle, content)?;
                 }
 
-                // Update the RefNode timestamp in the parent directory
-                // Extract filename from path
-                let filename = path
-                    .rsplit('/')
-                    .next()
-                    .ok_or_else(|| VfsError::InvalidPath(path.to_string()))?;
-
-                // Get the parent directory path
-                let parent_path = if path.contains('/') {
-                    let last_slash = path.rfind('/').unwrap();
-                    if last_slash == 0 {
-                        "/"
-                    } else {
-                        &path[..last_slash]
+                // Update timestamp in index
+                self.update_path_index(|index| {
+                    if let Some(entry) = index.paths.get_mut(path) {
+                        entry.modified = chrono::Utc::now();
                     }
-                } else {
-                    "/"
-                };
+                })
+                .await?;
 
-                // Find the parent directory and update the RefNode timestamp
-                let result = self
-                    .traverser
-                    .traverse(self.root_id.clone(), parent_path, false)
-                    .await?;
-
-                let parent_handle = if let Some(ref target_ref) = result.target_ref {
-                    self.samod
-                        .find(target_ref.pointer.clone())
-                        .await
-                        .map_err(|e| {
-                            VfsError::SamodError(format!("Failed to find parent directory: {e}"))
-                        })?
-                        .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
-                } else {
-                    result.node_handle.clone()
-                };
-
-                // Update the child's RefNode timestamp in the parent directory
-                let _ = AutomergeHelpers::update_child_ref_timestamp(&parent_handle, filename);
-
-                // Emit update event
+                // Emit event
                 let _ = self.event_tx.send(VfsEvent::DocumentUpdated {
                     path: path.to_string(),
                     doc_id: doc_handle.document_id().clone(),
@@ -440,22 +457,6 @@ impl VirtualFileSystem {
     }
 
     /// Move a document or directory from one path to another
-    ///
-    /// # Arguments
-    /// * `from_path` - The current path of the document or directory
-    /// * `to_path` - The destination path (can include a new name)
-    ///
-    /// # Example
-    /// ```no_run
-    /// // Move a file
-    /// vfs.move_document("/old/file.txt", "/new/file.txt").await?;
-    ///
-    /// // Move a directory
-    /// vfs.move_document("/old/dir", "/new/dir").await?;
-    ///
-    /// // Move and rename
-    /// vfs.move_document("/old/file.txt", "/new/renamed.txt").await?;
-    /// ```
     pub async fn move_document(&self, from_path: &str, to_path: &str) -> Result<bool> {
         // Check for empty paths
         if from_path.is_empty() {
@@ -491,8 +492,7 @@ impl VirtualFileSystem {
         let normalized_from = from_path.trim_end_matches('/');
         let normalized_to = to_path.trim_end_matches('/');
 
-        // Check for circular move: prevent moving a directory into itself or its subdirectory
-        // This happens when to_path starts with from_path followed by a slash
+        // Check for circular move
         if normalized_to.starts_with(&format!("{}/", normalized_from))
             || normalized_from == normalized_to
         {
@@ -502,113 +502,64 @@ impl VirtualFileSystem {
             )));
         }
 
-        // Extract source name and parent path
-        let from_name = from_path
-            .rsplit('/')
-            .next()
-            .ok_or_else(|| VfsError::InvalidPath(from_path.to_string()))?;
+        // Ensure destination parent directories exist
+        self.ensure_parent_directories(to_path).await?;
 
-        let from_parent_path = if from_path.contains('/') {
-            let last_slash = from_path.rfind('/').unwrap();
-            if last_slash == 0 {
-                "/"
-            } else {
-                &from_path[..last_slash]
-            }
-        } else {
-            "/"
-        };
-
-        // Extract destination name and parent path
-        let to_name = to_path
-            .rsplit('/')
-            .next()
-            .ok_or_else(|| VfsError::InvalidPath(to_path.to_string()))?;
-
-        let to_parent_path = if to_path.contains('/') {
-            let last_slash = to_path.rfind('/').unwrap();
-            if last_slash == 0 {
-                "/"
-            } else {
-                &to_path[..last_slash]
-            }
-        } else {
-            "/"
-        };
-
-        // Verify source exists
-        let from_result = self
-            .traverser
-            .traverse(self.root_id.clone(), from_path, false)
-            .await?;
-
-        let source_ref = from_result
-            .target_ref
+        // Get the node type and document ID before moving
+        let index = self.read_path_index().await?;
+        let entry = index
+            .get_entry(from_path)
             .ok_or_else(|| VfsError::PathNotFound(from_path.to_string()))?;
-
-        // Get source parent directory handle
-        let from_parent_result = self
-            .traverser
-            .traverse(self.root_id.clone(), from_parent_path, false)
-            .await?;
-
-        let from_parent_handle = if let Some(ref target_ref) = from_parent_result.target_ref {
-            self.samod
-                .find(target_ref.pointer.clone())
-                .await
-                .map_err(|e| {
-                    VfsError::SamodError(format!("Failed to find source parent directory: {e}"))
-                })?
-                .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
-        } else {
-            from_parent_result.node_handle.clone()
-        };
-
-        // Get destination parent directory handle (create if needed)
-        let to_parent_result = self
-            .traverser
-            .traverse(self.root_id.clone(), to_parent_path, true)
-            .await?;
-
-        let to_parent_handle = if let Some(ref target_ref) = to_parent_result.target_ref {
-            self.samod
-                .find(target_ref.pointer.clone())
-                .await
-                .map_err(|e| {
-                    VfsError::SamodError(format!(
-                        "Failed to find destination parent directory: {e}"
-                    ))
-                })?
-                .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
-        } else {
-            to_parent_result.node_handle.clone()
-        };
+        let node_type = entry.node_type.clone();
+        let doc_id = entry
+            .doc_id
+            .parse::<DocumentId>()
+            .map_err(|e| VfsError::Other(anyhow::anyhow!("Invalid document ID: {}", e)))?;
 
         // Check if destination already exists
-        let to_parent_dir = AutomergeHelpers::read_directory(&to_parent_handle)?;
-        if to_parent_dir.find_child(to_name).is_some() {
+        if index.has_path(to_path) {
             return Err(VfsError::DocumentExists(to_path.to_string()));
         }
 
-        // Remove from source parent
-        AutomergeHelpers::remove_child_from_directory(&from_parent_handle, from_name)?;
+        // Update in index - also update all children if it's a directory
+        self.update_path_index(|index| {
+            // If it's a directory, we need to move all children too
+            if node_type == NodeType::Directory {
+                // Collect all children paths
+                let mut children_to_move = Vec::new();
+                for path in index.all_paths() {
+                    if path.starts_with(&format!("{}/", from_path)) {
+                        children_to_move.push(path.clone());
+                    }
+                }
 
-        // Create new ref with potentially new name for destination
-        let mut moved_ref = source_ref.clone();
-        moved_ref.name = to_name.to_string();
-        moved_ref.timestamps.update_modified();
+                // Move all children
+                for child_path in children_to_move {
+                    let new_child_path = child_path.replacen(from_path, to_path, 1);
+                    index.move_path(&child_path, &new_child_path).map_err(|e| {
+                        VfsError::Other(anyhow::anyhow!("Failed to move child: {}", e))
+                    })?;
+                }
+            }
 
-        // Add to destination parent
-        AutomergeHelpers::add_child_to_directory(&to_parent_handle, &moved_ref)?;
+            // Move the directory/document itself
+            index
+                .move_path(from_path, to_path)
+                .map_err(VfsError::PathNotFound)
+        })
+        .await??;
 
         // Update the internal document name if the name changed
+        let from_name = from_path.rsplit('/').next().unwrap_or(from_path);
+        let to_name = to_path.rsplit('/').next().unwrap_or(to_path);
+
         if from_name != to_name {
             let doc_handle = self
                 .samod
-                .find(moved_ref.pointer.clone())
+                .find(doc_id.clone())
                 .await
                 .map_err(|e| VfsError::SamodError(format!("Failed to find moved document: {e}")))?
-                .ok_or_else(|| VfsError::DocumentNotFound(moved_ref.pointer.to_string()))?;
+                .ok_or_else(|| VfsError::DocumentNotFound(doc_id.to_string()))?;
 
             AutomergeHelpers::update_document_name(&doc_handle, to_name)?;
         }
@@ -618,18 +569,17 @@ impl VirtualFileSystem {
             path: from_path.to_string(),
         });
 
-        // Emit appropriate creation event based on node type
-        match moved_ref.node_type {
+        match node_type {
             NodeType::Directory => {
                 let _ = self.event_tx.send(VfsEvent::DirectoryCreated {
                     path: to_path.to_string(),
-                    doc_id: moved_ref.pointer.clone(),
+                    doc_id,
                 });
             }
             NodeType::Document => {
                 let _ = self.event_tx.send(VfsEvent::DocumentCreated {
                     path: to_path.to_string(),
-                    doc_id: moved_ref.pointer.clone(),
+                    doc_id,
                 });
             }
         }
@@ -639,31 +589,30 @@ impl VirtualFileSystem {
 
     /// Find a document at the specified path
     pub async fn find_document(&self, path: &str) -> Result<Option<DocHandle>> {
-        let result = self
-            .traverser
-            .traverse(self.root_id.clone(), path, false)
-            .await?;
+        let index = self.read_path_index().await?;
 
-        if let Some(target_ref) = result.target_ref {
-            if target_ref.node_type == NodeType::Document {
-                let doc_handle = self
-                    .samod
-                    .find(target_ref.pointer.clone())
-                    .await
-                    .map_err(|e| VfsError::SamodError(format!("Failed to find document: {e}")))?;
-                match doc_handle {
-                    Some(handle) => Ok(Some(handle)),
-                    None => Ok(None),
-                }
-            } else {
-                Err(VfsError::NodeTypeMismatch {
-                    expected: "document".to_string(),
-                    actual: "directory".to_string(),
-                })
-            }
-        } else {
-            Ok(None)
+        // Look up document ID
+        let Some(entry) = index.get_entry(path) else {
+            return Ok(None);
+        };
+
+        if entry.node_type != NodeType::Document {
+            return Err(VfsError::NodeTypeMismatch {
+                expected: "document".to_string(),
+                actual: "directory".to_string(),
+            });
         }
+
+        // Request specific document from Samod
+        let doc_id = entry
+            .doc_id
+            .parse::<DocumentId>()
+            .map_err(|e| VfsError::Other(anyhow::anyhow!("Invalid document ID: {}", e)))?;
+
+        self.samod
+            .find(doc_id)
+            .await
+            .map_err(|e| VfsError::SamodError(format!("Failed to find document: {e}")))
     }
 
     /// Remove a document at the specified path
@@ -672,128 +621,57 @@ impl VirtualFileSystem {
             return Err(VfsError::RootPathError);
         }
 
-        // Extract filename from path
-        let filename = path
-            .rsplit('/')
-            .next()
-            .ok_or_else(|| VfsError::InvalidPath(path.to_string()))?;
-
-        // Get the parent directory path
-        let parent_path = if path.contains('/') {
-            let last_slash = path.rfind('/').unwrap();
-            if last_slash == 0 {
-                "/"
-            } else {
-                &path[..last_slash]
-            }
-        } else {
-            "/"
-        };
-
-        // Traverse to parent directory
-        let result = self
-            .traverser
-            .traverse(self.root_id.clone(), parent_path, false)
+        // Remove from index
+        let removed = self
+            .update_path_index(|index| index.remove_path(path))
             .await?;
 
-        // Get the actual parent directory handle
-        let parent_handle = if let Some(ref target_ref) = result.target_ref {
-            self.samod
-                .find(target_ref.pointer.clone())
-                .await
-                .map_err(|e| VfsError::SamodError(format!("Failed to find parent directory: {e}")))?
-                .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
-        } else {
-            result.node_handle.clone()
-        };
-
-        // Remove the child from parent directory
-        let removed_ref = AutomergeHelpers::remove_child_from_directory(&parent_handle, filename)?;
-
-        if let Some(ref removed) = removed_ref {
-            // If it was a directory, we need to recursively delete all children
-            if removed.node_type == NodeType::Directory {
-                self.remove_directory_contents(path, &removed.pointer)
-                    .await?;
-            }
-
+        if removed.is_some() {
             // Emit event
             let _ = self.event_tx.send(VfsEvent::DocumentDeleted {
                 path: path.to_string(),
             });
-
             Ok(true)
         } else {
             Ok(false)
         }
     }
 
-    /// Recursively remove directory contents
-    fn remove_directory_contents<'a>(
-        &'a self,
-        parent_path: &'a str,
-        dir_id: &'a DocumentId,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(async move {
-            let dir_handle = self
-                .samod
-                .find(dir_id.clone())
-                .await
-                .map_err(|e| VfsError::SamodError(format!("Failed to find directory: {e}")))?;
-
-            if let Some(handle) = dir_handle {
-                let dir_node = AutomergeHelpers::read_directory(&handle)?;
-                for child in dir_node.children {
-                    let child_path = format!("{}/{}", parent_path, child.name);
-                    self.remove_document(&child_path).await?;
-                }
-            }
-            Ok(())
-        })
-    }
-
     /// List contents of a directory
     pub async fn list_directory(&self, path: &str) -> Result<Vec<RefNode>> {
-        let result = self
-            .traverser
-            .traverse(self.root_id.clone(), path, false)
-            .await?;
+        let index = self.read_path_index().await?;
 
-        if let Some(target_ref) = &result.target_ref {
-            if target_ref.node_type != NodeType::Directory {
-                return Err(VfsError::NodeTypeMismatch {
-                    expected: "directory".to_string(),
-                    actual: "document".to_string(),
-                });
-            }
+        let children = index.list_children(path);
 
-            // Get the directory document
-            let dir_handle = self
-                .samod
-                .find(target_ref.pointer.clone())
-                .await
-                .map_err(|e| VfsError::SamodError(format!("Failed to find directory: {e}")))?;
+        // Convert PathEntry to RefNode for compatibility
+        let ref_nodes: Result<Vec<RefNode>> = children
+            .into_iter()
+            .map(|(child_path, entry)| {
+                // Extract just the filename from the full path
+                let name = child_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&child_path)
+                    .to_string();
 
-            let dir_node = match dir_handle {
-                Some(ref handle) => {
-                    let node = self.dir_node(handle).await?;
-                    node
-                }
-                None => return Err(VfsError::PathNotFound(path.to_string())),
-            };
-            Ok(dir_node.children)
-        } else {
-            // target_ref is None - this could be root path or non-existent path
-            // If the path is root ("/"), return the root directory's children
-            let normalized_path = path.trim_start_matches('/').trim_end_matches('/');
-            if normalized_path.is_empty() {
-                // This is the root directory
-                Ok(result.node.children)
-            } else {
-                // This is a non-existent path
-                return Err(VfsError::PathNotFound(path.to_string()));
-            }
-        }
+                let pointer = entry
+                    .doc_id
+                    .parse::<DocumentId>()
+                    .map_err(|e| VfsError::Other(anyhow::anyhow!("Invalid document ID: {}", e)))?;
+
+                Ok(RefNode {
+                    pointer,
+                    node_type: entry.node_type.clone(),
+                    timestamps: Timestamps {
+                        created: entry.created,
+                        modified: entry.modified,
+                    },
+                    name,
+                })
+            })
+            .collect();
+
+        ref_nodes
     }
 
     /// Create a directory at the specified path
@@ -802,48 +680,13 @@ impl VirtualFileSystem {
             return Err(VfsError::RootPathError);
         }
 
-        // Extract directory name from path
-        let dirname = path
-            .rsplit('/')
-            .next()
-            .ok_or_else(|| VfsError::InvalidPath(path.to_string()))?;
-
-        // Get the parent directory path
-        let parent_path = if path.contains('/') {
-            let last_slash = path.rfind('/').unwrap();
-            if last_slash == 0 {
-                "/"
-            } else {
-                &path[..last_slash]
-            }
-        } else {
-            "/"
-        };
-
-        // Traverse to parent directory, creating directories as needed
-        let result = self
-            .traverser
-            .traverse(self.root_id.clone(), parent_path, true)
-            .await?;
-
-        // Get the actual parent directory handle
-        let parent_handle = if let Some(ref target_ref) = result.target_ref {
-            self.samod
-                .find(target_ref.pointer.clone())
-                .await
-                .map_err(|e| VfsError::SamodError(format!("Failed to find parent directory: {e}")))?
-                .ok_or_else(|| VfsError::DocumentNotFound(target_ref.pointer.to_string()))?
-        } else {
-            result.node_handle.clone()
-        };
-
-        // Check if directory already exists in parent
-        let parent_dir = AutomergeHelpers::read_directory(&parent_handle)?;
-        if parent_dir.find_child(dirname).is_some() {
+        // Check if already exists
+        let index = self.read_path_index().await?;
+        if index.has_path(path) {
             return Err(VfsError::DocumentExists(path.to_string()));
         }
 
-        // Create the new directory document
+        // Create the directory document
         let new_doc = Automerge::new();
         let dir_handle = self
             .samod
@@ -852,11 +695,15 @@ impl VirtualFileSystem {
             .map_err(|e| VfsError::SamodError(format!("Failed to create directory: {e}")))?;
 
         // Initialize as directory
+        let dirname = path.rsplit('/').next().unwrap_or(path);
         AutomergeHelpers::init_as_directory(&dir_handle, dirname)?;
 
-        // Add reference to parent directory
-        let dir_ref = RefNode::new_directory(dirname.to_string(), dir_handle.document_id().clone());
-        AutomergeHelpers::add_child_to_directory(&parent_handle, &dir_ref)?;
+        // Update path index
+        let doc_id = dir_handle.document_id().clone();
+        self.update_path_index(|index| {
+            index.set_path(path.to_string(), doc_id.to_string(), NodeType::Directory);
+        })
+        .await?;
 
         // Emit event
         let _ = self.event_tx.send(VfsEvent::DirectoryCreated {
@@ -869,43 +716,33 @@ impl VirtualFileSystem {
 
     /// Check if a path exists
     pub async fn exists(&self, path: &str) -> Result<bool> {
-        match self
-            .traverser
-            .traverse(self.root_id.clone(), path, false)
-            .await
-        {
-            Ok(result) => Ok(result.target_ref.is_some()),
-            Err(VfsError::PathNotFound(_)) => Ok(false),
-            Err(e) => Err(e),
-        }
+        let index = self.read_path_index().await?;
+        Ok(index.has_path(path))
     }
 
     /// Get metadata for a path
     pub async fn metadata(&self, path: &str) -> Result<RefNode> {
-        let result = self
-            .traverser
-            .traverse(self.root_id.clone(), path, false)
-            .await?;
+        let index = self.read_path_index().await?;
 
-        if let Some(target_ref) = result.target_ref {
-            Ok(target_ref)
+        if let Some(entry) = index.get_entry(path) {
+            let name = path.rsplit('/').next().unwrap_or(path).to_string();
+            let pointer = entry
+                .doc_id
+                .parse::<DocumentId>()
+                .map_err(|e| VfsError::Other(anyhow::anyhow!("Invalid document ID: {}", e)))?;
+
+            Ok(RefNode {
+                pointer,
+                node_type: entry.node_type.clone(),
+                timestamps: Timestamps {
+                    created: entry.created,
+                    modified: entry.modified,
+                },
+                name,
+            })
         } else {
-            // target_ref is None - this could be root path or non-existent path
-            let normalized_path = path.trim_start_matches('/').trim_end_matches('/');
-            if normalized_path.is_empty() {
-                // This is the root directory - create a RefNode for it
-                let root_ref = RefNode::new_directory("/".to_string(), self.root_id.clone());
-                Ok(root_ref)
-            } else {
-                // This is a non-existent path
-                Err(VfsError::PathNotFound(path.to_string()))
-            }
+            Err(VfsError::PathNotFound(path.to_string()))
         }
-    }
-
-    // Helper method to extract DirNode from a document handle
-    async fn dir_node(&self, handle: &DocHandle) -> Result<DirNode> {
-        AutomergeHelpers::read_directory(handle)
     }
 
     /// Watch a document for changes at the specified path
@@ -919,18 +756,31 @@ impl VirtualFileSystem {
 
     /// Watch a directory for changes at the specified path
     pub async fn watch_directory(&self, path: &str) -> Result<Option<DocumentWatcher>> {
-        let result = self
-            .traverser
-            .traverse(self.root_id.clone(), path, false)
-            .await?;
+        // Special case for root directory - watch the path index itself
+        if path == "/" || path.is_empty() {
+            let root_handle = self
+                .samod
+                .find(self.root_id.clone())
+                .await
+                .map_err(|e| VfsError::SamodError(format!("Failed to find root: {e}")))?
+                .ok_or_else(|| VfsError::DocumentNotFound(self.root_id.to_string()))?;
+            return Ok(Some(DocumentWatcher::new(root_handle)));
+        }
 
-        if let Some(target_ref) = result.target_ref {
-            if target_ref.node_type == NodeType::Directory {
-                let dir_handle = self
-                    .samod
-                    .find(target_ref.pointer.clone())
-                    .await
-                    .map_err(|e| VfsError::SamodError(format!("Failed to find directory: {e}")))?;
+        let index = self.read_path_index().await?;
+
+        let entry = index.get_entry(path);
+        if let Some(entry) = entry {
+            if entry.node_type == NodeType::Directory {
+                let doc_id = entry
+                    .doc_id
+                    .parse::<DocumentId>()
+                    .map_err(|e| VfsError::Other(anyhow::anyhow!("Invalid document ID: {}", e)))?;
+
+                let dir_handle =
+                    self.samod.find(doc_id).await.map_err(|e| {
+                        VfsError::SamodError(format!("Failed to find directory: {e}"))
+                    })?;
                 match dir_handle {
                     Some(handle) => Ok(Some(DocumentWatcher::new(handle))),
                     None => Ok(None),
@@ -941,15 +791,6 @@ impl VirtualFileSystem {
                     actual: "document".to_string(),
                 })
             }
-        } else if path == "/" || path.is_empty() {
-            // Watching root directory
-            let root_handle = self
-                .samod
-                .find(self.root_id.clone())
-                .await
-                .map_err(|e| VfsError::SamodError(format!("Failed to find root: {e}")))?
-                .ok_or_else(|| VfsError::DocumentNotFound(self.root_id.to_string()))?;
-            Ok(Some(DocumentWatcher::new(root_handle)))
         } else {
             Ok(None)
         }
@@ -1816,5 +1657,55 @@ mod tests {
 
         // Timestamps should be the same since we didn't update the document
         assert_eq!(original_modified_time, new_modified_time);
+    }
+
+    #[tokio::test]
+    async fn test_path_index_operations() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Read the initial empty path index
+        let index = vfs.read_path_index().await.unwrap();
+        assert_eq!(index.paths.len(), 0);
+
+        // Update the path index
+        vfs.update_path_index(|index| {
+            index.set_path(
+                "/test.json".to_string(),
+                "doc123".to_string(),
+                NodeType::Document,
+            );
+        })
+        .await
+        .unwrap();
+
+        // Verify the update
+        let index = vfs.read_path_index().await.unwrap();
+        assert_eq!(index.paths.len(), 1);
+        assert!(index.has_path("/test.json"));
+        assert_eq!(index.get_doc_id("/test.json"), Some(&"doc123".to_string()));
+
+        // Update again with more entries
+        vfs.update_path_index(|index| {
+            index.set_path(
+                "/dir/file.json".to_string(),
+                "doc456".to_string(),
+                NodeType::Document,
+            );
+            index.set_path(
+                "/dir".to_string(),
+                "doc789".to_string(),
+                NodeType::Directory,
+            );
+        })
+        .await
+        .unwrap();
+
+        // Verify multiple entries
+        let index = vfs.read_path_index().await.unwrap();
+        assert_eq!(index.paths.len(), 3);
+        assert!(index.has_path("/test.json"));
+        assert!(index.has_path("/dir"));
+        assert!(index.has_path("/dir/file.json"));
     }
 }
