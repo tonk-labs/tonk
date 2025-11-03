@@ -79,17 +79,17 @@ function getServerConfig(): ServerConfig {
   const port = params.get('port') || '8081';
   const portNum = parseInt(port, 10);
 
-  // const config = {
-  //   port: portNum,
-  //   wsUrl: 'wss://relay.tonk.xyz',
-  //   manifestUrl: 'https://relay.tonk.xyz/.manifest.tonk',
-  // };
-
   const config = {
     port: portNum,
-    wsUrl: 'ws://localhost:8081',
-    manifestUrl: 'http://localhost:8081/.manifest.tonk',
+    wsUrl: 'wss://relay.tonk.xyz',
+    manifestUrl: 'https://relay.tonk.xyz/.manifest.tonk',
   };
+
+  // const config = {
+  //   port: portNum,
+  //   wsUrl: 'ws://localhost:8081',
+  //   manifestUrl: 'http://localhost:8081/.manifest.tonk',
+  // };
 
   console.log('Using URL/default server config:', config);
   return config;
@@ -215,8 +215,8 @@ function App() {
 
         // Step 1: Fetch the shared blank-tonk bundle from the relay
         // This ensures all clients start with the same root document
-        // const blankTonkUrl = 'https://relay.tonk.xyz/api/blank-tonk';
-        const blankTonkUrl = 'http://localhost:8081/api/blank-tonk';
+        const blankTonkUrl = 'https://relay.tonk.xyz/api/blank-tonk';
+        // const blankTonkUrl = 'http://localhost:8081/api/blank-tonk';
         const response = await fetch(blankTonkUrl);
 
         if (!response.ok) {
@@ -349,8 +349,8 @@ function App() {
       const blob = new Blob([bundleBytes as any], {
         type: 'application/octet-stream',
       });
-      // const response = await fetch(`https://relay.tonk.xyz/api/bundles`, {
-      const response = await fetch(`http://localhost:8081/api/bundles`, {
+      const response = await fetch(`https://relay.tonk.xyz/api/bundles`, {
+        // const response = await fetch(`http://localhost:8081/api/bundles`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/octet-stream',
@@ -399,8 +399,8 @@ function App() {
 
       // Download from server
       const response = await fetch(
-        // `https://relay.tonk.xyz/api/bundles/${targetBundleId}/manifest`
-        `http://localhost:8081/api/bundles/${targetBundleId}/manifest`
+        `https://relay.tonk.xyz/api/bundles/${targetBundleId}/manifest`
+        // `http://localhost:8081/api/bundles/${targetBundleId}/manifest`
       );
 
       if (!response.ok) {
