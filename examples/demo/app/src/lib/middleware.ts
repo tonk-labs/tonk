@@ -160,7 +160,9 @@ export const sync =
     ) => {
       // Apply changes to Zustand state first
       if (replace === true) {
+        // TODO: replace full overwrite with more intelligent deep replacement
         set(partial as T, replace);
+        return; // Skip saveToFile to prevent watcher feedback loop
       } else {
         set(partial);
       }
