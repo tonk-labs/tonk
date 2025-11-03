@@ -213,7 +213,7 @@ async function setupCollaboration() {
   const vfs = await tonk.getVfs();
 
   // Connect to sync server
-  await tonk.connectWebsocket('ws://localhost:8080');
+  await tonk.connectWebsocket('ws://localhost:8081');
 
   // Create and sync files
   await vfs.createFile('/shared/document.md', '# Collaborative Document');

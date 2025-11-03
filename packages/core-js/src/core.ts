@@ -362,7 +362,7 @@ export class Bundle {
  * const tonk = await TonkCore.createWithPeerId('my-peer-id');
  *
  * // Connect to a sync server
- * await tonk.connectWebsocket('ws://localhost:8080');
+ * await tonk.connectWebsocket('ws://localhost:8081');
  * ```
  */
 export class TonkCore {
@@ -543,7 +543,7 @@ export class TonkCore {
    *
    * @example
    * ```typescript
-   * await tonk.connectWebsocket('ws://sync.example.com:8080');
+   * await tonk.connectWebsocket('ws://sync.example.com:8081');
    * ```
    */
   async connectWebsocket(url: string): Promise<void> {

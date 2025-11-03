@@ -182,12 +182,12 @@ export class AgentService {
     const manifestUrl =
       options.manifestUrl ||
       import.meta.env.VITE_TONK_MANIFEST_URL ||
-      'http://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080/.manifest.tonk';
+      'http://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8081/.manifest.tonk';
 
     const wsUrl =
       options.wsUrl ||
       import.meta.env.VITE_TONK_WS_URL ||
-      'ws://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080';
+      'ws://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8081';
 
     // Initialize VFS if not already initialized
     if (!this.vfs.isInitialized()) {

@@ -1,52 +1,128 @@
-# Development Guide
+# Tonk Development Guide
 
-This guide covers the development setup and workflow for the Tonk monorepo.
+This guide explains how to set up your development environment for working with Tonk.
 
-## Setup
+## Table of Contents
 
-1. **Install dependencies**:
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Without Nix](#without-nix)
+- [Running Examples](#running-examples)
+- [Building Packages](#building-packages)
+- [Testing](#testing)
+- [Code Quality](#code-quality)
+- [Troubleshooting](#troubleshooting)
+
+## Prerequisites
+
+### With Nix (Recommended)
+
+1. **Install Nix** with flakes support (see the [NixOS homepage](https://nixos.org/) and
+   [Determinate Nix](https://docs.determinate.systems/) for details)
 
    ```bash
-   pnpm install
+   curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
    ```
 
-2. **Install recommended VS Code extensions**:
-   - ESLint
-   - Prettier
-   - TypeScript
+2. **Install direnv** (optional but recommended):
+
+   ```bash
+   # macOS
+   brew install direnv
+
+   # Add to your shell rc file (~/.bashrc, ~/.zshrc, etc.)
+   eval "$(direnv hook bash)"  # or zsh, fish, etc.
+   ```
+
+### Without Nix
+
+1. **Node.js 20+** and **pnpm 9+**
+2. **Rust toolchain**
+3. **Docker**
+
+## Quick Start
+
+### With Nix + direnv
+
+```bash
+cd tonk
+direnv allow  # Automatically loads the environment
+pnpm install
+```
+
+### With Nix (manual)
+
+```bash
+cd tonk
+nix develop  # Enters development shell
+pnpm install
+```
+
+### Without Nix
+
+If you prefer not to use Nix, you can set everything up manually:
+
+```bash
+# Node.js, pnpm
+brew install node pnpm  # macOS
+# or use nvm, fnm, etc.
+
+# Rust (for building relay)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Install dependencies
+pnpm install
+```
+
+## Repository Structure
+
+- `packages/core` - CRDT core (Rust)
+- `packages/core-js` - TypeScript bindings
+- `packages/host-web` - Web host environment
+- `packages/relay` - Sync relay (Rust)
+- `tests/` - Integration tests
+- `examples/` - Example applications
+
+### Using an Alternate Relay
+
+By default, the relay in `packages/relay` is used. To use a different relay binary:
+
+```bash
+export TONK_RELAY_BINARY=/path/to/alternate/tonk-relay
+```
+
+All tools, tests, and examples will use the specified binary.
+
+## Running Examples
+
+### Demo Application
+
+```bash
+cd examples/demo
+pnpm run dev
+```
+
+Open http://localhost:4000
+
+### Other Examples
+
+Each example follows the same pattern:
+
+```bash
+cd examples/<example-name>
+pnpm install
+pnpm run dev
+```
 
 ## Code Quality
 
 ### Linting and Formatting
 
-The project uses ESLint for linting and Prettier for code formatting with consistent configuration
-across all packages.
+The project uses ESLint for linting and Prettier for code formatting.
 
 #### Available Scripts
 
 **Root level** (runs across all packages):
-
-```bash
-# Check linting issues
-npm run lint
-
-# Auto-fix linting issues
-npm run lint:fix
-
-# Format code
-npm run format
-
-# Check formatting
-npm run format:check
-
-# Run both linting and formatting checks
-npm run lint:all
-
-# Auto-fix both linting and formatting
-npm run fix:all
-```
-
-**Package level** (run from within any package directory):
 
 ```bash
 # Check linting issues
@@ -60,41 +136,21 @@ pnpm run format
 
 # Check formatting
 pnpm run format:check
+
+# Run both linting and formatting checks
+pnpm run lint:all
+
+# Auto-fix both linting and formatting
+pnpm run fix:all
 ```
 
 ### Pre-commit Hooks
 
-The repository is configured with pre-commit hooks that automatically:
+The repository uses Husky for pre-commit hooks that automatically:
 
 - Run ESLint with auto-fix
 - Format code with Prettier
 - Stage the fixed files
-
-This ensures all committed code follows the project's style guidelines.
-
-### VS Code Integration
-
-The workspace is configured to:
-
-- Format code on save
-- Auto-fix ESLint issues on save
-- Use Prettier as the default formatter
-- Validate TypeScript files with ESLint
-
-## Package Structure
-
-The monorepo contains the following packages:
-
-- **`@tonk/cli`** - Command line interface
-- **`@tonk/create`** - Project scaffolding tool
-- **`@tonk/keepsync`** - Sync engine framework
-- **`@tonk/server`** - Server package
-
-Each package has its own:
-
-- `package.json` with build, test, and lint scripts
-- TypeScript configuration
-- Individual dependencies
 
 ## Building Packages
 
@@ -103,59 +159,76 @@ Each package has its own:
 pnpm run build
 
 # Build specific package
-cd packages/cli && pnpm run build
+cd packages/host-web && pnpm run build
 ```
 
 ## Testing
 
-There are two scripts - `setup-production.js` and `setup-staging.js` - that will configure the
-`tonk` and `knot` monorepo environments for end-to-end testing against staging and production.
-
-IMPORTANT: Though the scripts exist in `tonk`, they expect both `tonk` and `knot` to exist in the
-same directory. The scripts will not work without this condition met.
-
 ```bash
-# Run tests for all packages
-pnpm run test
-
-# Run tests for specific package
-cd packages/cli && pnpm run test
+pnpm test
 ```
 
-## Publishing
-
-See [PUBLISHING.md](./PUBLISHING.md) for details on the automated publishing workflow.
-
-## Code Style Guidelines
-
-### TypeScript
-
-- Use explicit types where helpful for readability
-- Prefer `const` over `let` where possible
-- Use meaningful variable and function names
-- Add JSDoc comments for public APIs
-
-### Imports
-
-- Use relative imports within packages
-- Group imports: external libraries first, then internal modules
-- Sort imports alphabetically within groups
-
-### Error Handling
-
-- Use proper error types
-- Provide meaningful error messages
-- Handle async operations with proper error catching
-
 ## Troubleshooting
+
+### "Relay binary not found" Error
+
+The relay should build automatically, but if you encounter issues:
+
+```bash
+# Build the relay manually
+cd packages/relay
+cargo build --release
+
+# Verify it exists
+ls -la target/release/tonk-relay
+```
+
+### Nix Flake Update Issues
+
+```bash
+# Update flake inputs
+nix flake update
+
+# Clear flake cache
+rm -rf ~/.cache/nix
+
+# Force rebuild
+nix develop --refresh
+```
+
+### direnv Not Loading
+
+```bash
+# Allow direnv
+direnv allow
+
+# Check status
+direnv status
+
+# Reload
+direnv reload
+```
+
+### Port Already in Use
+
+```bash
+# Find process using port 8081
+lsof -i :8081
+
+# Kill it
+kill -9 <PID>
+
+# Or use a different port
+$TONK_RELAY_BINARY 8082 app.tonk
+```
 
 ### Linting Issues
 
 If you encounter linting errors:
 
-1. Run `npm run lint:fix` to auto-fix issues
+1. Run `pnpm run lint:fix` to auto-fix issues
 2. For remaining issues, fix them manually
-3. If you need to disable a rule, use ESLint disable comments sparingly
+3. Use ESLint disable comments sparingly
 
 ### Build Issues
 
@@ -163,12 +236,3 @@ If builds fail:
 
 1. Ensure all dependencies are installed: `pnpm install`
 2. Clean and rebuild: `pnpm run clean && pnpm run build`
-3. Check for TypeScript errors: `pnpm run type-check`
-
-### Pre-commit Hook Issues
-
-If the pre-commit hook fails:
-
-1. The hook will show which files have issues
-2. Fix the issues manually or run `npm run fix:all`
-3. Stage the changes and commit again

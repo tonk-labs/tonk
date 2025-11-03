@@ -19,7 +19,7 @@
     "test:browser": "npm run build:browser && npm run serve:test",
     "test:node": "cd examples/node && npm test",
     "test:integration": "npm run test:node && npm run test:browser",
-    "serve:test": "node examples/browser/server.js --port=8080 --dir=.",
+    "serve:test": "node examples/browser/server.js --port=8081 --dir=.",
     "clean": "rm -rf pkg pkg-node pkg-browser pkg-bundler"
   },
   "repository": {
