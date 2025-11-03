@@ -1,4 +1,10 @@
-import { RefNode, TonkCore, JsonValue } from '@tonk/core';
+import {
+  RefNode,
+  TonkCore,
+  JsonValue,
+  DirectoryNode,
+  DocumentWatcher,
+} from '@tonk/core';
 
 let tonkInstance: TonkCore | null = null;
 let isInitialized = false;
@@ -28,8 +34,6 @@ export const TonkService = {
 
       await tonkInstance.connectWebsocket(wsUrl);
       isInitialized = true;
-
-      console.log('TonkCore initialized successfully with relay:', relayUrl);
     } catch (error) {
       isInitialized = false;
       tonkInstance = null;
@@ -173,5 +177,26 @@ export const TonkService = {
    */
   formatDate(timestamp: number): string {
     return new Date(timestamp).toLocaleString();
+  },
+
+  /**
+   * Watch a directory for changes
+   * @param path Path to the directory
+   * @param callback Callback to run on change events
+   * @returns A DocumentWatcher for the specified path
+   */
+  async watchDirectory(
+    path: string,
+    callback: (result: DirectoryNode) => void
+  ): Promise<DocumentWatcher> {
+    if (!tonkInstance) {
+      throw new Error('TonkCore not initialized. Call initialize() first.');
+    }
+    try {
+      return await tonkInstance.watchDirectory(path, callback);
+    } catch (error) {
+      console.error('Error watching directory:', error);
+      throw error;
+    }
   },
 };

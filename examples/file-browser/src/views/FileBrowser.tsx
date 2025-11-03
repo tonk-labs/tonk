@@ -26,9 +26,73 @@ const FileBrowser: React.FC = () => {
     }
   }, [location]);
 
-  // Load directory contents
+  // Watch root directory for initial changes, with timeout fallback
   useEffect(() => {
-    loadDirectory(currentPath);
+    let watcher: any = null;
+    let timeoutId: NodeJS.Timeout | null = null;
+    let hasLoaded = false;
+
+    const tryLoadDirectory = async () => {
+      const result = await TonkService.listDirectory(currentPath);
+
+      // Consider loaded if we get data
+      if (result && result.length > 0) {
+        hasLoaded = true;
+        loadDirectory(currentPath);
+        // Clear timeout since we got the data
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        return true;
+      }
+      return false;
+    };
+
+    const setupWatcher = async () => {
+      try {
+        // Set up watcher for root directory
+        watcher = await TonkService.watchDirectory('/', async () => {
+          // Load directory when we notice changes (indicates sync)
+          if (!hasLoaded) {
+            await tryLoadDirectory();
+          }
+        });
+
+        // 1 sec fallback
+        timeoutId = setTimeout(async () => {
+          if (!hasLoaded) {
+            hasLoaded = true;
+            loadDirectory(currentPath);
+          }
+        }, 1000);
+      } catch (err) {
+        console.error('Error setting up directory watcher:', err);
+        loadDirectory(currentPath);
+      }
+    };
+
+    setupWatcher();
+
+    // Cleanup
+    return () => {
+      if (watcher) {
+        watcher.stop().catch((err: any) => {
+          console.error('Error stopping watcher:', err);
+        });
+      }
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, []);
+
+  // Load directory contents when path changes
+  useEffect(() => {
+    // Skip the initial mount since the watcher effect handles it
+    if (currentPath !== '/') {
+      loadDirectory(currentPath);
+    }
   }, [currentPath]);
 
   const loadDirectory = async (path: string) => {
