@@ -9,12 +9,10 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # Optional: Reference to private knot repo for proprietary relay binary
-    # Only needed for internal developers
+    # Optional: Reference to knot repo for proprietary relay binary
     # Override locally with: nix develop .#withKnot --override-input knot path:../knot
     knot = {
       url = "git+ssh://git@github.com/tonk-labs/knot.git";
-      # Mark as optional - won't fail if unavailable
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -38,10 +36,7 @@
           sha256 = "sha256-lA+P/gO+FPBym55ZoYV9nZiIxCEXAW4tYUi5OQnj/10=";
         };
 
-        # Local OSS relay path
-        localRelay = ./packages/relay/target/release/tonk-relay;
-
-        # Proprietary relay from knot (if available)
+        # Get knot relay if available
         knotRelay = knot.packages.${system}.tonk-relay or knot.packages.${system}.default or null;
 
         # Common build inputs for all dev shells
@@ -81,71 +76,135 @@
           echo ""
         '';
 
+        # Build initialization script
+        initBuild = ''
+          echo "Initializing development environment..."
+          echo ""
+
+          # Install dependencies
+          if [ ! -d "node_modules" ]; then
+            echo "📦 Installing dependencies..."
+            pnpm install --frozen-lockfile
+          else
+            echo "✓ Dependencies already installed"
+          fi
+
+          # Build Rust WASM package
+          if [ ! -d "packages/core/pkg-browser" ]; then
+            echo ""
+            echo "🦀 Building Rust WASM package (packages/core)..."
+            cd packages/core && pnpm run build:browser && cd ../..
+          else
+            echo "✓ WASM package already built"
+          fi
+
+          # Build TypeScript wrapper
+          if [ ! -d "packages/core-js/dist" ]; then
+            echo ""
+            echo "📘 Building TypeScript wrapper (packages/core-js)..."
+            cd packages/core-js && pnpm run build && cd ../..
+          else
+            echo "✓ TypeScript wrapper already built"
+          fi
+
+          # Build relay binary
+          if [ ! -f "packages/relay/target/release/tonk-relay" ]; then
+            echo ""
+            echo "🚀 Building relay server (packages/relay)..."
+            cd packages/relay && cargo build --release && cd ../..
+          else
+            echo "✓ Relay server already built"
+          fi
+
+          # Build all packages
+          echo ""
+          echo "🔨 Building all packages..."
+          pnpm build
+
+          echo ""
+          echo "✅ Development environment ready!"
+          echo ""
+        '';
+
         # Common shell hook footer
         shellFooter = ''
-          echo ""
           echo "Project Structure:"
           echo "  packages/cli         - Tonk CLI tool"
           echo "  packages/core        - Tonk CRDT core (Rust)"
           echo "  packages/core-js     - JavaScript bindings"
           echo "  packages/keepsync    - Reactive sync engine"
           echo "  packages/host-web    - Web host environment"
-          echo "  packages/relay       - Open-source relay server"
+          echo "  packages/relay       - Basic relay server"
           echo "  packages/create      - Project bootstrapping"
           echo "  examples/            - Example applications"
           echo ""
           echo "Quick Start:"
-          echo "  • pnpm install                           - Install dependencies"
-          echo "  • cd packages/relay && cargo build       - Build OSS relay"
-          echo "  • cd examples/demo && pnpm run dev       - Start demo"
-          echo "  • cd packages/sprinkles && pnpm run dev  - Dev environment"
+          echo "  • pnpm install       - Install dependencies"
+          echo "  • pnpm build         - Build all packages"
+          echo "  • pnpm test          - Run tests"
+          echo "  • cd examples/demo && pnpm run dev  - Start demo"
           echo ""
         '';
       in
       {
-        # Default dev shell - uses local OSS relay
+        # Default dev shell - uses basic relay
         devShells.default = pkgs.mkShell {
           buildInputs = commonBuildInputs;
 
-          shellHook = shellHeader + ''
-            echo "Relay: Open Source (local build)"
-            echo "Location: packages/relay/target/release/tonk-relay"
-            echo ""
-            echo "This uses the FREE open-source relay included in this repo."
-            echo "Perfect for development, testing, and small deployments!"
-          '' + shellFooter + ''
-            echo "Internal Developers:"
-            echo "  To use the proprietary optimized relay from knot:"
-            echo "    nix develop .#withKnot --override-input knot path:../knot"
-            echo ""
-          '';
+          shellHook =
+            shellHeader
+            + ''
+              echo "Relay: Basic"
+              echo "Location: packages/relay/target/release/tonk-relay"
+              echo ""
+              echo "This uses the open-source relay included in this repo"
+              echo "For development, testing, and small deployments"
+              echo ""
+            ''
+            + initBuild
+            + shellFooter
+            + ''
+              echo "Internal Developers:"
+              echo "  To use the proprietary relay from knot:"
+              echo "    nix develop .#withKnot --override-input knot path:../knot"
+              echo ""
+            '';
         };
 
         # Internal dev shell - uses proprietary relay from knot
         devShells.withKnot = pkgs.mkShell {
           buildInputs = commonBuildInputs ++ pkgs.lib.optional (knotRelay != null) knotRelay;
 
-          shellHook = shellHeader + (if knotRelay != null then ''
-            echo "Relay: Proprietary (from knot)"
-            echo "Location: ${knotRelay}/bin/tonk-relay"
-            echo ""
-            echo "Using PROPRIETARY optimized relay from knot repository."
-            echo "This version includes performance optimizations and enterprise features."
-            echo ""
+          shellHook =
+            shellHeader
+            + (
+              if knotRelay != null then
+                ''
+                  echo "Relay: Proprietary (from knot)"
+                  echo "Location: ${knotRelay}/bin/tonk-relay"
+                  echo ""
+                  echo "Using proprietary relay from knot repository"
+                  echo "This version includes performance optimisations and additional security"
+                  echo ""
 
-            # Set environment variable for proprietary relay binary
-            export TONK_RELAY_BINARY="${knotRelay}/bin/tonk-relay"
-          '' else ''
-            echo "Relay: Open Source (fallback - knot not available)"
-            echo "Location: packages/relay/target/release/tonk-relay"
-            echo ""
-            echo "WARNING: knot repository not available."
-            echo "Falling back to local OSS relay."
-            echo ""
-            echo "To use proprietary relay:"
-            echo "  nix develop .#withKnot --override-input knot path:../knot"
-            echo ""
-          '') + shellFooter;
+                  # Set environment variable for proprietary relay binary
+                  export TONK_RELAY_BINARY="${knotRelay}/bin/tonk-relay"
+                ''
+              else
+                ''
+                  echo "Relay: Basic (fallback - knot not available)"
+                  echo "Location: packages/relay/target/release/tonk-relay"
+                  echo ""
+                  echo "WARNING: knot repository not available"
+                  echo "Falling back to local OSS relay"
+                  echo ""
+                  echo "To use proprietary relay:"
+                  echo "  nix develop .#withKnot --override-input knot path:../knot"
+                  echo ""
+                ''
+            )
+            + initBuild
+            + shellFooter;
         };
       }
     );

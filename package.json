@@ -14,6 +14,9 @@
   },
   "scripts": {
     "prepare": "husky",
+    "install": "pnpm install",
+    "build": "pnpm --filter './packages/*' --filter './examples/demo' --filter './examples/demo/app' run build",
+    "test": "pnpm --filter tests test",
     "docs:distribute": "node utils/distribute-from-docs.js",
     "docs:dev": "mdbook serve docs --open --port 4069",
     "lint": "eslint packages/*/src/**/*.ts scripts/**/*.js",
