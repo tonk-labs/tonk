@@ -15,7 +15,7 @@
   "scripts": {
     "prepare": "husky",
     "install": "pnpm install",
-    "build": "pnpm --filter './packages/*' --filter './examples/demo' --filter './examples/demo/app' run build",
+    "build": "pnpm --filter @tonk/core-wasm run build && pnpm --filter @tonk/core run build && pnpm --filter './packages/*' --filter '!@tonk/core-wasm' --filter '!@tonk/core' --filter './examples/demo' --filter './examples/demo/app' run build",
     "test": "pnpm --filter tests test",
     "docs:distribute": "node utils/distribute-from-docs.js",
     "docs:dev": "mdbook serve docs --open --port 4069",
