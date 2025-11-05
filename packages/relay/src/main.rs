@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
     let port = args
         .get(1)
         .and_then(|s: &String| s.parse::<u16>().ok())
-        .unwrap_or(8080);
+        .unwrap_or(8081);
 
     let bundle_path: PathBuf = args
         .get(2)

@@ -89,7 +89,7 @@ function createServer(rootDir = '.') {
 function main() {
   const args = process.argv.slice(2);
   const port =
-    args.find(arg => arg.startsWith('--port='))?.split('=')[1] || 8080;
+    args.find(arg => arg.startsWith('--port='))?.split('=')[1] || 8081;
   const dir = args.find(arg => arg.startsWith('--dir='))?.split('=')[1] || '.';
 
   const server = createServer(dir);

@@ -9,18 +9,16 @@
     "pkg/**/*"
   ],
   "scripts": {
-    "build": "wasm-pack build --target web --out-dir pkg",
+    "build": "npm run build:node && npm run build:browser",
     "build:node": "wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node",
     "build:browser": "wasm-pack build --target web --out-dir pkg-browser -- --features wasm-browser",
-    "build:bundler": "wasm-pack build --target bundler --out-dir pkg-bundler",
-    "build:all": "npm run build && npm run build:node && npm run build:browser && npm run build:bundler",
     "build:docker": "./build-wasm-docker.sh",
     "test": "wasm-pack test --headless --firefox",
     "test:browser": "npm run build:browser && npm run serve:test",
     "test:node": "cd examples/node && npm test",
     "test:integration": "npm run test:node && npm run test:browser",
-    "serve:test": "node examples/browser/server.js --port=8080 --dir=.",
-    "clean": "rm -rf pkg pkg-node pkg-browser pkg-bundler"
+    "serve:test": "node examples/browser/server.js --port=8081 --dir=.",
+    "clean": "rm -rf pkg pkg-node pkg-browser"
   },
   "repository": {
     "type": "git",

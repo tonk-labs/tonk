@@ -257,7 +257,7 @@ describe('WebSocket Integration Tests', function () {
       const engine = await wasm.create_sync_engine();
       const malformedUrls = [
         'not-a-url',
-        'http://localhost:8080', // HTTP instead of WS
+        'http://localhost:8081', // HTTP instead of WS
         'ws://invalid-host:-1',
         '',
       ];
