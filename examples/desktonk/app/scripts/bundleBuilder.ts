@@ -263,13 +263,38 @@ async function createBundle(
 
     console.log(`Found ${distFiles.length} files to bundle`);
 
+    // Read sample files from sample_files directory and add to /desktonk
+    const sampleFilesPath = join(process.cwd(), '..', 'sample_files');
+    let sampleFiles: Array<{ relativePath: string; fileData: Uint8Array }> = [];
+    
+    if (existsSync(sampleFilesPath)) {
+      console.log('Reading sample files from sample_files/ folder...');
+      const rawSampleFiles = readDistFiles(sampleFilesPath);
+      // Prefix sample files with /desktonk/
+      sampleFiles = rawSampleFiles.map(({ relativePath, fileData }) => ({
+        relativePath: `/desktonk${relativePath}`,
+        fileData
+      }));
+      console.log(`Found ${sampleFiles.length} sample files to add to /desktonk`);
+    } else {
+      console.warn('sample_files/ folder not found, skipping sample files');
+    }
+
+    // Combine dist files and sample files
+    const allFiles = [...distFiles, ...sampleFiles];
+
     // Store each file in the TonkCore VFS at root level
-    for (const { relativePath, fileData } of distFiles) {
+    for (const { relativePath, fileData } of allFiles) {
       // Remove leading slash from relativePath to avoid double slashes
       const cleanRelativePath = relativePath.startsWith('/')
         ? relativePath.substring(1)
         : relativePath;
-      const modifiedPath = `/${projectName}/${cleanRelativePath}`;
+      
+      // Sample files already have /desktonk prefix, don't add projectName
+      const modifiedPath = relativePath.startsWith('/desktonk')
+        ? relativePath
+        : `/${projectName}/${cleanRelativePath}`;
+        
       const mimeType = determineMimeType(relativePath);
       console.log(`Adding file: ${modifiedPath} (${mimeType})`);
       // Use createFileWithBytes with MIME type

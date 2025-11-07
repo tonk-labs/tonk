@@ -7,6 +7,7 @@ import { ChatWindow, useChat } from '@/features/chat';
 import { Button } from '@/components/ui/button/button';
 import { useVFS } from '@/hooks/useVFS';
 import { useEditorStore } from '@/features/editor/stores/editorStore';
+import "./index.css";
 
 function TextEditorApp() {
   const [searchParams] = useSearchParams();

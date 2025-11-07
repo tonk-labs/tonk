@@ -112,20 +112,20 @@
    3. NODE-SPECIFIC STYLES
    (Paragraph, headings, lists, etc)
    ===================== */
-@import "./features/editor/components/tiptap-node/paragraph-node/paragraph-node.css";
-@import "./features/editor/components/tiptap-node/heading-node/heading-node.css";
-@import "./features/editor/components/tiptap-node/list-node/list-node.css";
-@import "./features/editor/components/tiptap-node/blockquote-node/blockquote-node.css";
-@import "./features/editor/components/tiptap-node/code-block-node/code-block-node.css";
-@import "./features/editor/components/tiptap-node/image-node/image-node.css";
-@import "./features/editor/components/tiptap-node/horizontal-rule-node/horizontal-rule-node.css";
-@import "./features/editor/components/tiptap-node/image-upload-node/image-upload-node.css";
+@import "../editor/components/tiptap-node/paragraph-node/paragraph-node.css";
+@import "../editor/components/tiptap-node/heading-node/heading-node.css";
+@import "../editor/components/tiptap-node/list-node/list-node.css";
+@import "../editor/components/tiptap-node/blockquote-node/blockquote-node.css";
+@import "../editor/components/tiptap-node/code-block-node/code-block-node.css";
+@import "../editor/components/tiptap-node/image-node/image-node.css";
+@import "../editor/components/tiptap-node/horizontal-rule-node/horizontal-rule-node.css";
+@import "../editor/components/tiptap-node/image-upload-node/image-upload-node.css";
 
 /* =====================
    4. EXTENSION STYLES
    (Line numbers, etc)
    ===================== */
-@import "./features/editor/components/tiptap-ui-primitive/line-numbers/LineNumbers.css";
+@import "../editor/components/tiptap-ui-primitive/line-numbers/LineNumbers.css";
 
 /* =====================
    BASE HTML STYLES
