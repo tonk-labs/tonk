@@ -6,6 +6,14 @@ import { extractDesktopFile, getNextAutoLayoutPosition } from '../utils/fileMeta
 import type { DesktopFile } from '../types';
 import { syncCoordinator } from './syncCoordinator';
 
+/**
+ * Debounce delay for directory watch callbacks (in milliseconds).
+ * Balances between responsiveness and performance during bulk file operations.
+ * Too short: reload thrashing when many files change rapidly.
+ * Too long: delayed UI updates, poor user experience.
+ */
+const DIRECTORY_WATCH_DEBOUNCE_MS = 300;
+
 export function useDesktopSync() {
   const editor = useEditor();
   const [files, setFiles] = useState<DesktopFile[]>([]);
@@ -66,7 +74,7 @@ export function useDesktopSync() {
 
         // Validate entries is an array before using
         if (!Array.isArray(entries)) {
-          console.error('Invalid directory listing:', entries);
+          console.error('[useDesktopSync] Invalid directory listing:', entries);
           throw new Error('Failed to list directory: invalid response');
         }
 
@@ -78,7 +86,7 @@ export function useDesktopSync() {
               const doc = await vfs.readFile(`/desktonk/${entry.name}`);
               return extractDesktopFile(`/desktonk/${entry.name}`, doc);
             } catch (error) {
-              console.error(`Failed to load file ${entry.name}:`, error);
+              console.error(`[useDesktopSync] Failed to load file ${entry.name}:`, error);
               throw error; // Re-throw so Promise.allSettled marks it as rejected
             }
           });
@@ -98,7 +106,7 @@ export function useDesktopSync() {
 
         const failedCount = results.filter(r => r.status === 'rejected').length;
         if (failedCount > 0) {
-          console.warn(`Failed to load ${failedCount} file(s) from desktop. See errors above.`);
+          console.warn(`[useDesktopSync] Failed to load ${failedCount} file(s) from desktop. See errors above.`);
         }
 
         setFiles(desktopFiles);
@@ -138,7 +146,7 @@ export function useDesktopSync() {
 
         setIsLoading(false);
       } catch (error) {
-        console.error('Failed to load desktop files:', error);
+        console.error('[useDesktopSync] Failed to load desktop files:', error);
         setIsLoading(false);
       } finally {
         loadInProgressRef.current = false;
@@ -159,7 +167,7 @@ export function useDesktopSync() {
           debounceTimerRef.current = setTimeout(() => {
             // Check if VFS is still connected before reloading
             if (!vfs.isInitialized()) {
-              console.warn('VFS disconnected, skipping reload. Will retry when reconnected.');
+              console.warn('[useDesktopSync] VFS disconnected, skipping reload. Will retry when reconnected.');
               return;
             }
 
@@ -175,12 +183,12 @@ export function useDesktopSync() {
 
             // No saves in progress, reload immediately
             loadDesktopFiles();
-          }, 300); // 300ms debounce - balances responsiveness with performance
+          }, DIRECTORY_WATCH_DEBOUNCE_MS);
         });
         // Only set watchId if successful
         watchId = tempWatchId;
       } catch (error) {
-        console.error('Failed to setup directory watcher:', error);
+        console.error('[useDesktopSync] Failed to setup directory watcher:', error);
         // Clean up partial watcher if it was created before error
         if (tempWatchId) {
           vfs.unwatchDirectory(tempWatchId).catch(console.error);

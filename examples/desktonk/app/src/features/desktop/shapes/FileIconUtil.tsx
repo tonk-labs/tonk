@@ -110,6 +110,13 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
 
   override onDoubleClick(shape: FileIconShape): void {
     const { filePath, mimeType, appHandler } = shape.props;
+
+    // Validate file path is not empty
+    if (!filePath || filePath.trim().length === 0) {
+      console.error('[FileIconUtil] Cannot open file: empty file path');
+      return;
+    }
+
     const targetApp = getAppHandler(mimeType, appHandler);
     const encodedPath = encodeURIComponent(filePath);
     navigate(`/${targetApp}?file=${encodedPath}`);

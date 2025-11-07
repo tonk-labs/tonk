@@ -27,7 +27,7 @@ export function extractDesktopFile(path: string, doc: DocumentData): DesktopFile
 
   // Validate content is an object
   if (!content || typeof content !== 'object') {
-    console.warn(`Invalid content for ${path}, using defaults`);
+    console.warn(`[fileMetadata] Invalid content for ${path}, using defaults`);
     return {
       path,
       name: doc.name,

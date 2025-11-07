@@ -5,6 +5,14 @@ import { getVFSService } from '../../../lib/vfs-service';
 import { syncCoordinator } from './syncCoordinator';
 
 /**
+ * Debounce delay for position saves (in milliseconds).
+ * Balances between responsiveness and reducing VFS write frequency.
+ * Too short: excessive VFS writes during dragging.
+ * Too long: delayed persistence, poor user experience.
+ */
+const POSITION_SAVE_DEBOUNCE_MS = 500;
+
+/**
  * Hook that listens for FileIcon shape position changes and persists them to VFS.
  * Uses debouncing to avoid excessive VFS writes during dragging operations.
  */
@@ -71,12 +79,12 @@ export function usePositionSync() {
             syncCoordinator.unregisterPendingSave(shapeId);
           }
 
-          // Debounce the save operation (500ms)
+          // Debounce the save operation
           const timeout = setTimeout(() => {
             syncCoordinator.unregisterPendingSave(shapeId);
             savePosition(editor, fileIconShape, saveInProgressRef.current);
             delete saveTimeoutRef.current[shapeId];
-          }, 500);
+          }, POSITION_SAVE_DEBOUNCE_MS);
 
           saveTimeoutRef.current[shapeId] = timeout;
           syncCoordinator.registerPendingSave(shapeId, timeout);
@@ -111,11 +119,17 @@ async function savePosition(
   const shapeId = shape.id;
   const filePath = shape.props.filePath;
 
+  // Validate editor is still available
+  if (!editor || !editor.getShape) {
+    console.warn('[usePositionSync] Editor unavailable, skipping position save');
+    return;
+  }
+
   // Wait for any in-progress save to this file to complete
   // This prevents read-modify-write race conditions
   const pendingSave = saveInProgress.get(filePath);
   if (pendingSave) {
-    console.log(`Waiting for in-progress save to ${filePath} to complete`);
+    console.log(`[usePositionSync] Waiting for in-progress save to ${filePath}`);
     await pendingSave;
   }
 
@@ -129,7 +143,7 @@ async function savePosition(
       // If it was deleted during the debounce delay, skip the save
       const currentShape = editor.getShape(shapeId) as FileIconShape | undefined;
       if (!currentShape || currentShape.type !== 'file-icon') {
-        console.log(`Shape ${shapeId} no longer exists, skipping position save`);
+        console.log(`[usePositionSync] Shape ${shapeId} no longer exists, skipping position save`);
         return;
       }
 
@@ -141,7 +155,7 @@ async function savePosition(
 
       // Check if VFS is connected before attempting save
       if (!vfs.isInitialized()) {
-        console.warn(`VFS disconnected, cannot save position for ${shape.props.fileName}`);
+        console.warn(`[usePositionSync] VFS disconnected, cannot save position for ${shape.props.fileName}`);
         return;
       }
 
@@ -151,13 +165,17 @@ async function savePosition(
       // Validate shape still exists after async read (could have been deleted)
       const shapeAfterRead = editor.getShape(shapeId) as FileIconShape | undefined;
       if (!shapeAfterRead || shapeAfterRead.type !== 'file-icon') {
-        console.log(`Shape ${shapeId} was deleted during read, skipping position save`);
+        console.log(`[usePositionSync] Shape ${shapeId} was deleted during read, skipping position save`);
         return;
       }
 
       // Validate position hasn't changed during read (concurrent drag)
+      // If position changed, we need to re-queue a save for the new position
       if (shapeAfterRead.x !== positionToSave.x || shapeAfterRead.y !== positionToSave.y) {
-        console.log(`Shape ${shapeId} position changed during read, a newer save will handle this`);
+        console.log(
+          `[usePositionSync] Position changed during save (${positionToSave.x},${positionToSave.y} → ${shapeAfterRead.x},${shapeAfterRead.y}). ` +
+            'Skipping this save - position tracking will trigger a new save for the current position.'
+        );
         return;
       }
 
@@ -171,9 +189,9 @@ async function savePosition(
       };
 
       await vfs.writeFile(filePath, { content: updatedContent });
-      console.log(`Saved position for ${shape.props.fileName}:`, positionToSave);
+      console.log(`[usePositionSync] Saved position for ${shape.props.fileName}:`, positionToSave);
     } catch (error) {
-      console.error(`CRITICAL: Failed to save position for ${shape.props.fileName}:`, error);
+      console.error(`[usePositionSync] CRITICAL: Failed to save position for ${shape.props.fileName}:`, error);
       // TODO: Add toast notification to user - they need to know saves are failing!
       // This is a data loss scenario - user's icon arrangements won't persist
     } finally {
