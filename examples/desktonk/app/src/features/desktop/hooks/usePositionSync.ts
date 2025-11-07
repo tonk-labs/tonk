@@ -51,13 +51,18 @@ export function usePositionSync() {
           // Clear any pending save for this shape
           if (saveTimeoutRef.current[shapeId]) {
             clearTimeout(saveTimeoutRef.current[shapeId]);
+            syncCoordinator.unregisterPendingSave(shapeId);
           }
 
           // Debounce the save operation (500ms)
-          saveTimeoutRef.current[shapeId] = setTimeout(() => {
+          const timeout = setTimeout(() => {
+            syncCoordinator.unregisterPendingSave(shapeId);
             savePosition(fileIconShape);
             delete saveTimeoutRef.current[shapeId];
           }, 500);
+
+          saveTimeoutRef.current[shapeId] = timeout;
+          syncCoordinator.registerPendingSave(shapeId, timeout);
         }
       },
       { source: 'user', scope: 'document' }
