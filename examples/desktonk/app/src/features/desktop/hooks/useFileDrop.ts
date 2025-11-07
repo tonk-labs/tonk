@@ -102,9 +102,12 @@ export function useFileDrop() {
       // Read file content
       const content = await readFileContent(file);
 
-      // Create document with desktop metadata (position)
-      const doc = {
-        content: typeof content === 'string' ? { text: content } : content,
+      // Create content object (text or binary)
+      const contentObj = typeof content === 'string' ? { text: content } : content;
+
+      // Add desktop metadata at the same level as content fields
+      const docContent = {
+        ...contentObj,
         desktopMeta: {
           x: dropCoordinates.x,
           y: dropCoordinates.y,
@@ -113,8 +116,8 @@ export function useFileDrop() {
       };
 
       // Write to VFS
-      console.log('[useFileDrop] Writing file to VFS:', filePath, 'with metadata:', doc.desktopMeta);
-      await vfs.writeFile(filePath, { content: doc as any });
+      console.log('[useFileDrop] Writing file to VFS:', filePath, 'with metadata:', docContent.desktopMeta);
+      await vfs.writeFile(filePath, { content: docContent });
       console.log('[useFileDrop] File written successfully:', filePath);
 
       return true;
