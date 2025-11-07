@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import 'tldraw/tldraw.css';
 import './desktop.css';
 import { FileIconUtil } from '../shapes';
-import { useDesktopSync } from '../hooks';
+import { useDesktopSync, usePositionSync } from '../hooks';
 import { setNavigationHandler } from '../utils/navigationHandler';
 
 const customShapeUtils = [FileIconUtil];
@@ -12,6 +12,9 @@ const customShapeUtils = [FileIconUtil];
 const DesktopInner = track(() => {
   const navigate = useNavigate();
   const { isLoading } = useDesktopSync();
+
+  // Enable position persistence
+  usePositionSync();
 
   // Set up navigation handler for double-click events
   useEffect(() => {
