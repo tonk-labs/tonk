@@ -1,9 +1,13 @@
+import { Tldraw } from 'tldraw';
+import 'tldraw/tldraw.css';
+import './desktop.css';
+
 function Desktop() {
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#1a1a1a' }}>
-      <div style={{ color: 'white', padding: '20px' }}>
-        Desktop - TLDraw will go here
-      </div>
+    <div className="desktop-container">
+      <Tldraw
+        className="tldraw-container"
+      />
     </div>
   );
 }
