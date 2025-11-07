@@ -22,7 +22,12 @@ export function useDesktopSync() {
         // from writing incorrect positions to VFS after shapes are recreated.
         syncCoordinator.cancelAllPendingSaves();
 
-        // 2. Clear all existing file-icon shapes to prevent accumulation
+        // 2. Clear all existing file-icon shapes before creating new ones
+        // This clear-and-rebuild approach prevents:
+        // - Shape accumulation (CRITICAL #2): Multiple shapes for the same file
+        // - Orphaned shapes (CRITICAL #5): Shapes for deleted files remain on canvas
+        // When a file is deleted, its shape is removed during this clear phase
+        // and not recreated since it won't be in the VFS listing.
         const existingFileIcons = Array.from(editor.getCurrentPageShapeIds())
           .map(id => editor.getShape(id))
           .filter((shape): shape is NonNullable<typeof shape> => shape?.type === 'file-icon');
