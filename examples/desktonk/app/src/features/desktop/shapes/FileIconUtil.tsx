@@ -20,6 +20,7 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
     fileName: T.string,
     mimeType: T.string,
     customIcon: T.optional(T.string),
+    thumbnail: T.optional(T.string),
     appHandler: T.optional(T.string),
     w: T.number,
     h: T.number,
@@ -48,7 +49,9 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
   }
 
   component(shape: FileIconShape) {
-    const icon = shape.props.customIcon || getFileIcon(shape.props.mimeType);
+    const { thumbnail, customIcon, mimeType } = shape.props;
+    const icon = customIcon || getFileIcon(mimeType);
+    const hasThumbnail = !!thumbnail;
 
     // Detect selected state
     const isSelected = this.editor.getSelectedShapeIds().includes(shape.id);
@@ -95,7 +98,20 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
         }}
       >
         <div className="file-icon-emoji">
-          {icon}
+          {hasThumbnail ? (
+            <img 
+              src={thumbnail} 
+              alt={shape.props.fileName}
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                borderRadius: '4px',
+              }}
+            />
+          ) : (
+            icon
+          )}
         </div>
         <div 
           className="file-icon-label"

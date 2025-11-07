@@ -80,6 +80,7 @@ export function extractDesktopFile(path: string, doc: DocumentData): DesktopFile
           y: safeNumber(validatedMeta.y),
           icon: safeString(validatedMeta.icon),
           appHandler: safeString(validatedMeta.appHandler),
+          thumbnail: safeString(validatedMeta.thumbnail),
         }
       : undefined,
   };

@@ -3,6 +3,7 @@ import { useEditor } from 'tldraw';
 import type { FileIconShape } from '../shapes';
 import { getVFSService } from '../../../lib/vfs-service';
 import { showError } from '../../../lib/notifications';
+import { deletionSyncControl } from './deletionSyncControl';
 
 export function useDeletionSync() {
   const editor = useEditor();
@@ -12,6 +13,12 @@ export function useDeletionSync() {
 
     const unsubscribe = editor.store.listen(
       (change) => {
+        // Skip deletion if sync is paused (during desktop reload)
+        if (deletionSyncControl.isPaused()) {
+          console.log('[useDeletionSync] Skipping deletion (paused)');
+          return;
+        }
+
         const removedShapes = Object.values(change.changes.removed);
         
         for (const shape of removedShapes) {

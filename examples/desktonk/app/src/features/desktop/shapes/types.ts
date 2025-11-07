@@ -7,6 +7,7 @@ export type FileIconShape = TLBaseShape<
     fileName: string;
     mimeType: string;
     customIcon?: string;
+    thumbnail?: string;
     appHandler?: string;
     w: number;
     h: number;

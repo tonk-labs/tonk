@@ -4,6 +4,7 @@ import { getVFSService } from '../../../lib/vfs-service';
 import { DESKTOP_DIRECTORY } from './useDesktopSync';
 import { getMimeType } from '../utils/mimeResolver';
 import { desktopSync } from '../lib/desktopSync';
+import { generateImageThumbnail } from '../utils/thumbnailGenerator';
 
 /**
  * Maximum file size allowed for upload (10MB).
@@ -23,7 +24,7 @@ export function useFileDrop() {
   /**
    * Reads a file's content as text or base64 depending on file type.
    */
-  const readFileContent = useCallback(async (file: File): Promise<string | object> => {
+  const readFileContent = useCallback(async (file: File): Promise<string | { type: 'binary'; encoding: 'base64'; data: string; mimeType: string }> => {
     const mimeType = file.type || getMimeType(file.name);
 
     // For text files, read as text
@@ -103,11 +104,19 @@ export function useFileDrop() {
       // Read file content
       const content = await readFileContent(file);
 
+      // Generate thumbnail for images
+      const mimeType = file.type || getMimeType(file.name);
+      let thumbnail: string | undefined;
+      if (mimeType.startsWith('image/')) {
+        thumbnail = (await generateImageThumbnail(file)) || undefined;
+      }
+
       // Desktop metadata
       const desktopMeta = {
         x: dropCoordinates.x,
         y: dropCoordinates.y,
-        mimeType: file.type || getMimeType(file.name),
+        mimeType,
+        ...(thumbnail && { thumbnail }),
       };
 
       // Write to VFS - different methods for text vs binary
@@ -143,6 +152,9 @@ export function useFileDrop() {
         type: 'file-added',
         path: filePath
       });
+
+      // Also dispatch event for current tab (BroadcastChannel doesn't loop back)
+      window.dispatchEvent(new CustomEvent('desktop-files-changed'));
 
       return true;
     } catch (error) {

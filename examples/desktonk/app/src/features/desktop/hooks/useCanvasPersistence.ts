@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useEditor } from 'tldraw';
 import { getVFSService } from '../../../lib/vfs-service';
 import { useVFS } from '../../../hooks/useVFS';
@@ -9,18 +9,25 @@ const SAVE_DEBOUNCE_MS = 500;
 export function useCanvasPersistence() {
   const editor = useEditor();
   const { connectionState } = useVFS();
+  const hasLoadedRef = useRef(false);
+  const [isReady, setIsReady] = useState(false);
 
+  // Load canvas state once on mount
   useEffect(() => {
     // Wait for VFS to be ready
     if (connectionState !== 'connected') {
       return;
     }
 
+    // Only load once
+    if (hasLoadedRef.current) {
+      return;
+    }
+
     const vfs = getVFSService();
     let cancelled = false;
-    let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    // Load canvas state on mount
+    // Load canvas state on mount (only runs once)
     (async () => {
       try {
         const exists = await vfs.exists(CANVAS_STATE_PATH);
@@ -38,16 +45,52 @@ export function useCanvasPersistence() {
         console.log('[useCanvasPersistence] Snapshot keys:', Object.keys(snapshot));
         
         if (!cancelled && snapshot.document) {
+          // Filter out file-icon shapes from the snapshot before loading
+          // File icons are dynamically managed by useDesktopSync, not persisted in canvas state
+          const filteredSnapshot = {
+            ...snapshot,
+            document: {
+              ...snapshot.document,
+              store: Object.fromEntries(
+                Object.entries(snapshot.document.store).filter(([_key, value]: [string, any]) => 
+                  !(value?.type === 'shape' && value?.typeName === 'file-icon')
+                )
+              )
+            }
+          };
+          
           // Use editor.loadSnapshot to restore the canvas state
-          editor.loadSnapshot(snapshot);
-          console.log('[useCanvasPersistence] Successfully loaded canvas snapshot');
+          console.log('[useCanvasPersistence] About to load snapshot...');
+          editor.loadSnapshot(filteredSnapshot);
+          hasLoadedRef.current = true;
+          setIsReady(true);
+          console.log('[useCanvasPersistence] Successfully loaded canvas snapshot (filtered file-icons)');
+          console.log('[useCanvasPersistence] Shapes after load:', editor.getCurrentPageShapes().length);
         } else {
+          hasLoadedRef.current = true;
+          setIsReady(true);
           console.log('[useCanvasPersistence] No valid snapshot to restore');
         }
       } catch (err) {
         console.error('[useCanvasPersistence] Canvas state load failed', err);
+        hasLoadedRef.current = true;
+        setIsReady(true);
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [editor, connectionState]);
+
+  // Save canvas state on changes (separate effect)
+  useEffect(() => {
+    if (connectionState !== 'connected') {
+      return;
+    }
+
+    const vfs = getVFSService();
+    let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
     // Save canvas state on changes (debounced)
     const unsubscribe = editor.store.listen(
@@ -72,9 +115,18 @@ export function useCanvasPersistence() {
               otherShapes.map(s => s.type).slice(0, 10)
             );
             
-            // Save the complete snapshot (tldraw will handle it properly)
-            // We'll filter out file-icons when loading instead
-            const toSave = snapshot;
+            // Filter out file-icon shapes when saving (they're managed by VFS, not canvas state)
+            const toSave = {
+              ...snapshot,
+              document: {
+                ...snapshot.document,
+                store: Object.fromEntries(
+                  Object.entries(snapshot.document.store).filter(([_key, value]: [string, any]) => 
+                    !(value?.type === 'shape' && value?.typeName === 'file-icon')
+                  )
+                )
+              }
+            };
             
             // Check if file exists to determine if we should create or update
             const exists = await vfs.exists(CANVAS_STATE_PATH);
@@ -89,9 +141,10 @@ export function useCanvasPersistence() {
     );
 
     return () => {
-      cancelled = true;
       unsubscribe();
       if (saveTimeout) clearTimeout(saveTimeout);
     };
   }, [editor, connectionState]);
+
+  return { isReady };
 }

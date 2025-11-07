@@ -10,6 +10,7 @@ export interface DesktopFile {
     y?: number;
     icon?: string;
     appHandler?: string;
+    thumbnail?: string;
   };
 }
 
@@ -22,6 +23,7 @@ export interface FileIconShapeProps {
   fileName: string;
   mimeType: string;
   customIcon?: string;
+  thumbnail?: string;
   appHandler?: string;
   w: number;
   h: number;

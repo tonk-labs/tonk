@@ -17,16 +17,17 @@ const components = {
 
 const DesktopInner = track(() => {
   const navigate = useNavigate();
-  const { isLoading, files } = useDesktopSync();
+  
+  // Enable canvas state persistence (must be ready before desktop sync)
+  const { isReady: canvasPersistenceReady } = useCanvasPersistence();
+  
+  const { isLoading, files } = useDesktopSync({ canvasPersistenceReady });
 
   // Enable position persistence
   usePositionSync();
   
   // Enable file deletion sync
   useDeletionSync();
-  
-  // Enable canvas state persistence
-  useCanvasPersistence();
 
   // Set up navigation handler for double-click events
   useEffect(() => {
@@ -41,17 +42,8 @@ const DesktopInner = track(() => {
 
   if (isLoading) {
     return (
-      <div
-        className="desktop-container"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          background: '#1a1a1a',
-          color: '#fff',
-        }}
-      >
-        Loading desktop...
+      <div>
+        
       </div>
     );
   }

@@ -3,18 +3,19 @@ import {
   DefaultContextMenuContent,
   TldrawUiMenuGroup,
   TldrawUiMenuItem,
-  TLUiContextMenuProps,
   useEditor,
 } from 'tldraw';
 import { getVFSService } from '../../../lib/vfs-service';
 import type { FileIconShape } from '../shapes/types';
 
-export function FileIconContextMenu(props: TLUiContextMenuProps) {
+export function FileIconContextMenu(props: any) {
   const editor = useEditor();
   
   // Check if only file-icon shapes are selected
   const selectedShapeIds = editor.getSelectedShapeIds();
-  const selectedShapes = Array.from(selectedShapeIds).map(id => editor.getShape(id));
+  const selectedShapes = Array.from(selectedShapeIds)
+    .map(id => editor.getShape(id))
+    .filter(Boolean); // Remove any null/undefined shapes
   const onlyFileIcons = selectedShapes.length > 0 && selectedShapes.every(s => s?.type === 'file-icon');
   const singleFileIcon = onlyFileIcons && selectedShapes.length === 1;
 

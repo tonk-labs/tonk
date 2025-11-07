@@ -7,6 +7,11 @@ import type { DesktopFile } from '../types';
 import { syncCoordinator } from './syncCoordinator';
 import { showWarning } from '../../../lib/notifications';
 import { desktopSync } from '../lib/desktopSync';
+import { deletionSyncControl } from './deletionSyncControl';
+
+interface UseDesktopSyncOptions {
+  canvasPersistenceReady: boolean;
+}
 
 /**
  * Directory path where desktop files are stored in VFS.
@@ -21,15 +26,41 @@ export const DESKTOP_DIRECTORY = '/desktonk';
  */
 const DIRECTORY_WATCH_DEBOUNCE_MS = 300;
 
-export function useDesktopSync() {
+export function useDesktopSync(options: UseDesktopSyncOptions) {
   const editor = useEditor();
   const [files, setFiles] = useState<DesktopFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const loadInProgressRef = useRef(false);
   const isUnmountedRef = useRef(false);
   const debounceTimerRef = useRef<number | undefined>(undefined);
+  const { canvasPersistenceReady } = options;
+
+  // Subscribe to cross-tab sync messages immediately (separate from canvas persistence)
+  useEffect(() => {
+    const unsubscribeSync = desktopSync.subscribe((message) => {
+      console.log('[useDesktopSync] Received sync message:', message);
+      if (message.type === 'refresh' || message.type === 'files-changed' || message.type === 'file-added') {
+        console.log('[useDesktopSync] Triggering loadDesktopFiles due to sync message');
+        // Don't reload if canvas persistence isn't ready yet
+        if (canvasPersistenceReady) {
+          // We'll need to trigger a reload - use a ref to call the function
+          window.dispatchEvent(new CustomEvent('desktop-files-changed'));
+        }
+      }
+    });
+
+    return () => {
+      unsubscribeSync();
+    };
+  }, [canvasPersistenceReady]);
 
   useEffect(() => {
+    // Wait for canvas persistence to be ready before loading desktop files
+    if (!canvasPersistenceReady) {
+      console.log('[useDesktopSync] Waiting for canvas persistence to be ready...');
+      return;
+    }
+    console.log('[useDesktopSync] Canvas persistence is ready, proceeding with desktop sync');
     const vfs = getVFSService();
     let watchId: string | null = null;
     isUnmountedRef.current = false;
@@ -54,7 +85,10 @@ export function useDesktopSync() {
         // from writing incorrect positions to VFS after shapes are recreated.
         syncCoordinator.cancelAllPendingSaves();
 
-        // 2. Clear all existing file-icon shapes before creating new ones
+        // 2. Pause deletion sync to prevent VFS files from being deleted during shape rebuild
+        deletionSyncControl.pause();
+
+        // 3. Clear all existing file-icon shapes before creating new ones
         // This clear-and-rebuild approach prevents:
         // - Shape accumulation (CRITICAL #2): Multiple shapes for the same file
         // - Orphaned shapes (CRITICAL #5): Shapes for deleted files remain on canvas
@@ -68,7 +102,7 @@ export function useDesktopSync() {
           editor.deleteShapes(existingFileIcons.map(s => s.id));
         }
 
-        // 3. Load files from VFS
+        // 4. Load files from VFS
         // Use Promise.allSettled to handle individual file failures gracefully
         // If one file is corrupted, we still show the rest instead of failing entirely
         const entries = await vfs.listDirectory(DESKTOP_DIRECTORY);
@@ -111,6 +145,8 @@ export function useDesktopSync() {
           .filter((result): result is PromiseFulfilledResult<DesktopFile> => result.status === 'fulfilled')
           .map(result => result.value);
 
+        console.log('[useDesktopSync] Loaded files:', loadedFiles.length, loadedFiles.map(f => f.name));
+
         const failedCount = results.filter(r => r.status === 'rejected').length;
         if (failedCount > 0) {
           console.warn(`[useDesktopSync] Failed to load ${failedCount} file(s) from desktop. See errors above.`);
@@ -122,7 +158,7 @@ export function useDesktopSync() {
 
         setFiles(loadedFiles);
 
-        // 4. Create fresh shapes for each file
+        // 5. Create fresh shapes for each file
         // Final abort check before creating shapes (prevents crashes on unmounted editor)
         if (isUnmountedRef.current) {
           console.log('[useDesktopSync] Component unmounted before shape creation, aborting');
@@ -138,22 +174,38 @@ export function useDesktopSync() {
           // This ensures that the same file always gets the same shape ID
           const shapeId = `shape:file-icon:${file.path}` as const;
 
-          editor.createShape({
-            id: shapeId as unknown as TLShapeId, // Type assertion needed for TLDraw's ID type
-            type: 'file-icon',
-            x: position.x,
-            y: position.y,
-            props: {
-              filePath: file.path,
-              fileName: file.name,
-              mimeType: file.mimeType,
-              customIcon: file.desktopMeta?.icon,
-              appHandler: file.desktopMeta?.appHandler,
-              w: 80,
-              h: 100,
-            },
+          console.log('[useDesktopSync] Creating shape for file:', file.name, {
+            position,
+            thumbnail: file.desktopMeta?.thumbnail ? `${file.desktopMeta.thumbnail.substring(0, 50)}...` : undefined,
+            mimeType: file.mimeType
           });
+
+          try {
+            editor.createShape({
+              id: shapeId as unknown as TLShapeId, // Type assertion needed for TLDraw's ID type
+              type: 'file-icon',
+              x: position.x,
+              y: position.y,
+              props: {
+                filePath: file.path,
+                fileName: file.name,
+                mimeType: file.mimeType,
+                customIcon: file.desktopMeta?.icon,
+                thumbnail: file.desktopMeta?.thumbnail,
+                appHandler: file.desktopMeta?.appHandler,
+                w: 80,
+                h: 100,
+              },
+            });
+            console.log('[useDesktopSync] Successfully created shape for:', file.name);
+            console.log('[useDesktopSync] Total shapes on canvas:', editor.getCurrentPageShapes().length);
+          } catch (error) {
+            console.error('[useDesktopSync] Failed to create shape for:', file.name, error);
+          }
         });
+
+        // 6. Resume deletion sync after all shapes are created
+        deletionSyncControl.resume();
 
         setIsLoading(false);
       } catch (error) {
@@ -226,17 +278,16 @@ export function useDesktopSync() {
       setupWatcher();
     }
 
-    // Subscribe to cross-tab sync messages (real-time updates across tabs/users)
-    const unsubscribeSync = desktopSync.subscribe((message) => {
-      console.log('[useDesktopSync] Received sync message:', message);
-      if (message.type === 'refresh' || message.type === 'files-changed' || message.type === 'file-added') {
-        loadDesktopFiles();
-      }
-    });
+    // Listen for custom event from broadcast subscription
+    const handleFilesChanged = () => {
+      console.log('[useDesktopSync] Handling desktop-files-changed event');
+      loadDesktopFiles();
+    };
+    window.addEventListener('desktop-files-changed', handleFilesChanged);
 
     return () => {
-      // Unsubscribe from sync messages
-      unsubscribeSync();
+      // Remove custom event listener
+      window.removeEventListener('desktop-files-changed', handleFilesChanged);
       // Unsubscribe from VFS connection changes
       unsubscribeVFS();
       // Mark component as unmounted to abort any in-flight operations
@@ -253,7 +304,7 @@ export function useDesktopSync() {
       // Reset load mutex
       loadInProgressRef.current = false;
     };
-  }, [editor]);
+  }, [editor, canvasPersistenceReady]);
 
   return { files, isLoading };
 }
