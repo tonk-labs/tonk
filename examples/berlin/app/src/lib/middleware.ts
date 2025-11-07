@@ -110,6 +110,12 @@ export const sync =
 
     // Initialize state from file if it exists
     const initializeFromFile = async (state: T) => {
+      // Guard against multiple initializations
+      if (isInitialized) {
+        console.log(`Already initialized for ${options.path}, skipping`);
+        return;
+      }
+
       console.log(`Checking if file exists: ${options.path}`);
       if (await vfs.exists(options.path)) {
         console.log(`File exists, loading saved state from ${options.path}`);
