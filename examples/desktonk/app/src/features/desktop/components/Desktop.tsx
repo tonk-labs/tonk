@@ -1,13 +1,24 @@
 import { Tldraw, track } from 'tldraw';
+import { useNavigate } from 'react-router-dom';
+import { useEffect } from 'react';
 import 'tldraw/tldraw.css';
 import './desktop.css';
 import { FileIconUtil } from '../shapes';
 import { useDesktopSync } from '../hooks';
+import { setNavigationHandler } from '../utils/navigationHandler';
 
 const customShapeUtils = [FileIconUtil];
 
 const DesktopInner = track(() => {
+  const navigate = useNavigate();
   const { isLoading } = useDesktopSync();
+
+  // Set up navigation handler for double-click events
+  useEffect(() => {
+    setNavigationHandler((path: string) => {
+      navigate(path);
+    });
+  }, [navigate]);
 
   if (isLoading) {
     return (

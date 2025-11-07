@@ -7,7 +7,8 @@ import {
   T,
 } from 'tldraw';
 import type { FileIconShape } from './types';
-import { getFileIcon } from '../utils/mimeResolver';
+import { getFileIcon, getAppHandler } from '../utils/mimeResolver';
+import { navigate } from '../utils/navigationHandler';
 
 export class FileIconUtil extends ShapeUtil<FileIconShape> {
   static override type = 'file-icon' as const;
@@ -108,5 +109,12 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
         h: Math.max(80, info.scaleY * info.initialShape.props.h),
       },
     };
+  }
+
+  override onDoubleClick(shape: FileIconShape): void {
+    const { filePath, mimeType, appHandler } = shape.props;
+    const targetApp = getAppHandler(mimeType, appHandler);
+    const encodedPath = encodeURIComponent(filePath);
+    navigate(`/${targetApp}?file=${encodedPath}`);
   }
 }
