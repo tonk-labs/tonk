@@ -1,5 +1,5 @@
 import { StoreBuilder } from '../../../lib/storeBuilder';
-import type { PersistStorage, StateStorage } from 'zustand/middleware';
+import type { StateStorage } from 'zustand/middleware';
 import {
   initializeUserId,
   getUserColor,
@@ -56,10 +56,10 @@ const createSafeStorage = (): StateStorage => {
 export const presenceStore = StoreBuilder(initialState, {
   name: 'tonk-presence',
   version: 1,
-  storage: createSafeStorage() as PersistStorage<unknown>,
-  partialize: (state: PresenceState) => ({
-    users: state.users,
-    currentUserId: state.currentUserId,
+  storage: createSafeStorage() as any,
+  partialize: (state) => ({
+    users: (state as PresenceState).users,
+    currentUserId: (state as PresenceState).currentUserId,
   }),
 });
 

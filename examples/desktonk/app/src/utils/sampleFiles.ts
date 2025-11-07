@@ -156,12 +156,6 @@ export async function createSampleFiles(): Promise<void> {
       console.log(`[CreateSamples] Creating file: ${file.path}`);
 
       try {
-        // Create file content with desktop metadata
-        const fileContent = {
-          desktopMeta: file.desktopMeta,
-          mime: getContentType(file.path),
-        };
-
         // Write file with content and metadata
         await vfs.writeStringAsBytes(file.path, file.content, true);
 
@@ -203,27 +197,6 @@ export async function createSampleFiles(): Promise<void> {
     console.error('[CreateSamples] Error creating sample files:', error);
     throw error;
   }
-}
-
-function getContentType(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase();
-  const mimeTypes: Record<string, string> = {
-    txt: 'text/plain',
-    md: 'text/markdown',
-    json: 'application/json',
-    html: 'text/html',
-    css: 'text/css',
-    js: 'text/javascript',
-    ts: 'text/typescript',
-    tsx: 'text/typescript',
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    gif: 'image/gif',
-    svg: 'image/svg+xml',
-  };
-
-  return mimeTypes[ext || ''] || 'application/octet-stream';
 }
 
 // Make function available globally in browser console

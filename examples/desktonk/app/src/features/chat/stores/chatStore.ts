@@ -1,6 +1,6 @@
 import { StoreBuilder } from '../../../lib/storeBuilder';
 import type { ChatMessage, WindowState, ChatConfig } from '../types';
-import type { PersistStorage, StateStorage } from 'zustand/middleware';
+import type { StateStorage } from 'zustand/middleware';
 
 interface ChatState {
   messages: ChatMessage[];
@@ -43,11 +43,11 @@ const createSafeStorage = (): StateStorage => {
 export const chatStore = StoreBuilder(initialState, {
   name: 'tonk-chat',
   version: 1,
-  storage: createSafeStorage() as PersistStorage<unknown>,
-  partialize: (state: ChatState) => ({
-    messages: state.messages,
-    windowState: state.windowState,
-    config: state.config,
+  storage: createSafeStorage() as any,
+  partialize: (state) => ({
+    messages: (state as ChatState).messages,
+    windowState: (state as ChatState).windowState,
+    config: (state as ChatState).config,
     // Don't persist typingUsers (runtime only)
   }),
 });

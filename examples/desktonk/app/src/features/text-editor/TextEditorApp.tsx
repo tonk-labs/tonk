@@ -12,7 +12,7 @@ import type { JSONContent } from '@tiptap/react';
 import "./index.css";
 
 function TextEditorApp() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { vfs, connectionState } = useVFS();
   const { setDocument, setTitle } = useEditorStore();
@@ -64,8 +64,15 @@ function TextEditorApp() {
         const mimeType = getMimeType(filePath);
         
         if (mimeType === 'text/html') {
-          // TipTap can parse HTML natively
-          setDocument(text);
+          // For HTML, create a single paragraph with the content
+          const htmlContent: JSONContent = {
+            type: 'doc',
+            content: [{
+              type: 'paragraph',
+              content: [{ type: 'text', text: text }]
+            }]
+          };
+          setDocument(htmlContent);
         } else {
           // Convert plain text to paragraph nodes to preserve newlines
           const lines = text.split('\n');
