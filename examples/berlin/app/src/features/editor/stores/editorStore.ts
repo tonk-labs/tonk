@@ -1,5 +1,4 @@
-import { create } from 'zustand';
-// import { sync } from '../../../lib/middleware'; // TEMP: Disabled for local-only testing
+import { StoreBuilder } from '../../../lib/storeBuilder';
 import type { JSONContent } from '@tiptap/react';
 
 interface EditorState {
@@ -7,34 +6,51 @@ interface EditorState {
   metadata: {
     title: string;
   };
-  setDocument: (doc: JSONContent) => void;
-  setTitle: (title: string) => void;
-  setMetadata: (metadata: { title: string }) => void;
-  clearDocument: () => void;
 }
 
-// TEMP: Using plain Zustand without VFS sync due to connection issues
-export const useEditorStore = create<EditorState>()(set => ({
+const initialState: EditorState = {
   document: null,
   metadata: {
     title: 'Untitled',
   },
+};
 
-  setDocument: (doc: JSONContent) => {
-    set({ document: doc });
-  },
+export const editorStore = StoreBuilder(initialState, {
+  type: 'vfs',
+  path: '/stores/editor.json',
+});
 
-  setTitle: (title: string) => {
-    set(state => ({
-      metadata: { ...state.metadata, title },
-    }));
-  },
+export const useEditorStore = editorStore.useStore;
 
-  setMetadata: (metadata: { title: string }) => {
-    set({ metadata });
-  },
+const createEditorActions = () => {
+  const store = editorStore;
 
-  clearDocument: () => {
-    set({ document: null, metadata: { title: 'Untitled' } });
-  },
-}));
+  return {
+    setDocument: (doc: JSONContent) => {
+      store.set(state => {
+        state.document = doc;
+      });
+    },
+
+    setTitle: (title: string) => {
+      store.set(state => {
+        state.metadata.title = title;
+      });
+    },
+
+    setMetadata: (metadata: { title: string }) => {
+      store.set(state => {
+        state.metadata = metadata;
+      });
+    },
+
+    clearDocument: () => {
+      store.set(state => {
+        state.document = null;
+        state.metadata = { title: 'Untitled' };
+      });
+    },
+  };
+};
+
+export const useEditor = editorStore.createFactory(createEditorActions());

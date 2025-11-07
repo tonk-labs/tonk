@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, type KeyboardEvent } from 'react';
-import { useEditorStore } from '@/features/editor/stores/editorStore';
+import { useEditorStore, useEditor } from '@/features/editor/stores/editorStore';
 import './editable-title.css';
 
 const MAX_TITLE_LENGTH = 100;
 
 export function EditableTitle() {
   const title = useEditorStore(state => state.metadata.title);
-  const setTitle = useEditorStore(state => state.setTitle);
+  const { setTitle } = useEditor();
   const [isEditing, setIsEditing] = useState(false);
   const [localTitle, setLocalTitle] = useState(title);
   const inputRef = useRef<HTMLInputElement>(null);

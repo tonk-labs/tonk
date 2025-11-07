@@ -1,4 +1,4 @@
-import { useEditor } from '@tiptap/react';
+import { useEditor as useTiptapEditor } from '@tiptap/react';
 import { useEffect, useMemo } from 'react';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
@@ -16,15 +16,16 @@ import HorizontalRule from '@tiptap/extension-horizontal-rule';
 import { Selection } from '@tiptap/extensions';
 import { ImageUploadNode } from '@/features/editor/components/tiptap-node/image-upload-node/image-upload-node-extension';
 import { LineNumbers } from './tiptap-ui-primitive/line-numbers/LineNumbers';
-import { useEditorStore } from '../stores/editorStore';
+import { useEditorStore, useEditor } from '../stores/editorStore';
 import { SimpleEditor } from './tiptap/simple-editor';
 import { handleImageUpload } from '@/lib/utils';
 import './editor.css';
 
 export function Editor() {
-  const { document, setDocument } = useEditorStore();
+  const document = useEditorStore(state => state.document);
+  const { setDocument } = useEditor();
 
-  const editor = useEditor({
+  const editor = useTiptapEditor({
     extensions: [
       // Configure StarterKit to exclude extensions we'll configure separately
       StarterKit.configure({
