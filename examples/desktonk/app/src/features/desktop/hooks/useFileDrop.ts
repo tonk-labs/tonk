@@ -117,10 +117,12 @@ export function useFileDrop() {
   /**
    * Handles file drop event.
    * Converts screen coordinates to canvas coordinates and uploads files.
+   * CRITICAL: Must stop propagation to prevent TLDraw from handling the drop.
    */
   const handleDrop = useCallback(async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    e.nativeEvent.stopImmediatePropagation(); // Stop TLDraw from seeing this event
     setIsDraggingOver(false);
 
     // Get dropped files
