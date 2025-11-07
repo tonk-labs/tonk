@@ -7,13 +7,15 @@ import { ChatWindow, useChat } from '@/features/chat';
 import { Button } from '@/components/ui/button/button';
 import { useVFS } from '@/hooks/useVFS';
 import { useEditorStore } from '@/features/editor/stores/editorStore';
+import { getMimeType } from '@/features/desktop/utils/mimeResolver';
+import type { JSONContent } from '@tiptap/react';
 import "./index.css";
 
 function TextEditorApp() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { vfs, connectionState } = useVFS();
-  const { setDocument } = useEditorStore();
+  const { setDocument, setTitle } = useEditorStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,12 +53,30 @@ function TextEditorApp() {
           return;
         }
 
-        // Read file from VFS
-        const documentData = await vfs.readFile(filePath);
+        // Read file from VFS as text
+        const text = await vfs.readBytesAsString(filePath);
 
-        // Set the document content in the editor store
-        if (documentData.content) {
-          setDocument(documentData.content);
+        // Extract filename from path and set as title
+        const fileName = filePath.split('/').pop() || 'Untitled';
+        setTitle(fileName);
+
+        // Convert text to TipTap JSONContent format
+        const mimeType = getMimeType(filePath);
+        
+        if (mimeType === 'text/html') {
+          // TipTap can parse HTML natively
+          setDocument(text);
+        } else {
+          // Convert plain text to paragraph nodes to preserve newlines
+          const lines = text.split('\n');
+          const content: JSONContent = {
+            type: 'doc',
+            content: lines.map(line => ({
+              type: 'paragraph',
+              content: line.trim() ? [{ type: 'text', text: line }] : []
+            }))
+          };
+          setDocument(content);
         }
 
         setLoading(false);

@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Desktop } from './features/desktop';
 import { DesktopErrorBoundary } from './features/desktop/components/DesktopErrorBoundary';
 import { TextEditorApp } from './features/text-editor';
+import "./global.css";
 
 function Router() {
   return (

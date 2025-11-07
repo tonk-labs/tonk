@@ -452,6 +452,22 @@ export class VFSService {
     return bytesToString(documentData);
   }
 
+  async renameFile(oldPath: string, newPath: string): Promise<void> {
+    if (!oldPath || !newPath) {
+      throw new Error('Both oldPath and newPath are required for renameFile');
+    }
+    
+    // Fallback: copy then delete (worker may not support native rename)
+    try {
+      const doc = await this.readFile(oldPath);
+      await this.writeFile(newPath, { content: doc.content, bytes: doc.bytes }, true);
+      await this.deleteFile(oldPath);
+    } catch (err) {
+      console.error('[VFSService] Rename failed', err);
+      throw err;
+    }
+  }
+
   async deleteFile(path: string): Promise<void> {
     const id = this.generateId();
     return this.sendMessage<void>({

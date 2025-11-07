@@ -9,6 +9,7 @@ import {
 import type { FileIconShape } from './types';
 import { getFileIcon, getAppHandler } from '../utils/mimeResolver';
 import { navigate } from '../utils/navigationHandler';
+import { getVFSService } from '../../../lib/vfs-service';
 import './fileIcon.css';
 
 export class FileIconUtil extends ShapeUtil<FileIconShape> {
@@ -55,6 +56,36 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
     // Build class name - TLDraw handles dragging visual feedback internally
     const className = isSelected ? 'file-icon selected' : 'file-icon';
 
+    const handleLabelDoubleClick = async (e: React.MouseEvent) => {
+      e.stopPropagation();
+      
+      const vfs = getVFSService();
+      const { filePath, fileName } = shape.props;
+      
+      const newName = prompt('Rename file', fileName)?.trim();
+      if (!newName || newName === fileName) return;
+
+      if (/[\\/]/.test(newName)) {
+        alert('File name cannot contain / or \\');
+        return;
+      }
+
+      const dir = filePath.slice(0, filePath.lastIndexOf('/') + 1);
+      const newPath = dir + newName;
+      
+      try {
+        await vfs.renameFile(filePath, newPath);
+        this.editor.updateShape({
+          id: shape.id,
+          type: 'file-icon',
+          props: { fileName: newName, filePath: newPath },
+        });
+      } catch (err) {
+        console.error('Rename failed', err);
+        alert('Failed to rename file');
+      }
+    };
+
     return (
       <HTMLContainer
         className={className}
@@ -66,7 +97,10 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
         <div className="file-icon-emoji">
           {icon}
         </div>
-        <div className="file-icon-label">
+        <div 
+          className="file-icon-label"
+          onDoubleClick={handleLabelDoubleClick}
+        >
           {shape.props.fileName}
         </div>
       </HTMLContainer>
@@ -78,11 +112,11 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
       <rect
         width={shape.props.w}
         height={shape.props.h}
-        rx={12}
-        ry={12}
+        rx={24}
+        ry={24}
         fill="transparent"
-        stroke="#0078d4"
-        strokeWidth={2}
+        stroke="#0078d433"
+        strokeWidth={1}
       />
     );
   }

@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, type KeyboardEvent } from 'react';
 import { useEditorStore } from '@/features/editor/stores/editorStore';
+import { useSearchParams, useLocation } from 'react-router-dom';
+import { getVFSService } from '@/lib/vfs-service';
 import './editable-title.css';
 
 const MAX_TITLE_LENGTH = 100;
@@ -10,6 +12,8 @@ export function EditableTitle() {
   const [isEditing, setIsEditing] = useState(false);
   const [localTitle, setLocalTitle] = useState(title);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
 
   // Sync local state when title changes externally
   useEffect(() => {
@@ -26,7 +30,7 @@ export function EditableTitle() {
     }
   }, [isEditing]);
 
-  const validateAndSave = () => {
+  const validateAndSave = async () => {
     let validated = localTitle.trim();
 
     // Enforce max length
@@ -39,8 +43,39 @@ export function EditableTitle() {
       validated = 'Untitled';
     }
 
-    setTitle(validated);
-    setLocalTitle(validated);
+    // If we're in the text editor with a file path, rename the file
+    const filePath = searchParams.get('file');
+    if (filePath && validated !== title && location.pathname === '/text-editor') {
+      try {
+        // Validate filename
+        if (/[\\/]/.test(validated)) {
+          alert('File name cannot contain / or \\');
+          setLocalTitle(title);
+          setIsEditing(false);
+          return;
+        }
+
+        const vfs = getVFSService();
+        const dir = filePath.slice(0, filePath.lastIndexOf('/') + 1);
+        const newPath = dir + validated;
+        
+        await vfs.renameFile(filePath, newPath);
+        
+        // Update URL with new file path
+        setSearchParams({ file: newPath });
+        
+        setTitle(validated);
+        setLocalTitle(validated);
+      } catch (err) {
+        console.error('Failed to rename file', err);
+        alert('Failed to rename file');
+        setLocalTitle(title);
+      }
+    } else {
+      setTitle(validated);
+      setLocalTitle(validated);
+    }
+
     setIsEditing(false);
   };
 

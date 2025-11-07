@@ -4,11 +4,16 @@ import { useEffect } from 'react';
 import 'tldraw/tldraw.css';
 import './desktop.css';
 import { FileIconUtil } from '../shapes';
-import { useDesktopSync, usePositionSync } from '../hooks';
+import { useDesktopSync, usePositionSync, useDeletionSync, useCanvasPersistence } from '../hooks';
 import { setNavigationHandler } from '../utils/navigationHandler';
 import { useFileDrop } from '../hooks/useFileDrop';
+import { FileIconContextMenu } from './FileIconContextMenu';
 
 const customShapeUtils = [FileIconUtil];
+
+const components = {
+  ContextMenu: FileIconContextMenu,
+};
 
 const DesktopInner = track(() => {
   const navigate = useNavigate();
@@ -16,6 +21,12 @@ const DesktopInner = track(() => {
 
   // Enable position persistence
   usePositionSync();
+  
+  // Enable file deletion sync
+  useDeletionSync();
+  
+  // Enable canvas state persistence
+  useCanvasPersistence();
 
   // Set up navigation handler for double-click events
   useEffect(() => {
@@ -81,6 +92,7 @@ function Desktop() {
       <Tldraw
         className="tldraw-container"
         shapeUtils={customShapeUtils}
+        components={components}
       >
         <DragDropWrapper />
       </Tldraw>
