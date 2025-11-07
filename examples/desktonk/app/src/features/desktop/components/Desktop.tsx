@@ -21,6 +21,10 @@ const DesktopInner = track(() => {
     setNavigationHandler((path: string) => {
       navigate(path);
     });
+
+    return () => {
+      setNavigationHandler(null);
+    };
   }, [navigate]);
 
   if (isLoading) {

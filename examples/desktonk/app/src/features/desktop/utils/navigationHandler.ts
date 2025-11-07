@@ -2,7 +2,7 @@ type NavigationHandler = (path: string) => void;
 
 let navigationHandler: NavigationHandler | null = null;
 
-export function setNavigationHandler(handler: NavigationHandler): void {
+export function setNavigationHandler(handler: NavigationHandler | null): void {
   navigationHandler = handler;
 }
 
