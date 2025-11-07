@@ -9,7 +9,7 @@ import { sync } from './middleware';
 export type VFSConfig = {
 	type: 'vfs';
 	path: string;
-	partialize?: <T>(state: T) => Partial<T>;
+	partialize?: (state: any) => Partial<any>;
 };
 
 export type PersistConfig = {

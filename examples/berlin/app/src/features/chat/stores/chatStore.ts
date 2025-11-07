@@ -24,7 +24,7 @@ const initialState: ChatState = {
 export const chatStore = StoreBuilder(initialState, {
   type: 'vfs',
   path: '/stores/chat.json',
-  partialize: (state) => ({
+  partialize: (state: ChatState): Partial<ChatState> => ({
     messages: state.messages,
     windowState: state.windowState,
     config: state.config,
