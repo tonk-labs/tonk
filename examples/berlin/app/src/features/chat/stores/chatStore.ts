@@ -24,6 +24,12 @@ const initialState: ChatState = {
 export const chatStore = StoreBuilder(initialState, {
   type: 'vfs',
   path: '/stores/chat.json',
+  partialize: (state) => ({
+    messages: state.messages,
+    windowState: state.windowState,
+    config: state.config,
+    // Exclude typingUsers (runtime-only state)
+  }),
 });
 
 export const useChatStore = chatStore.useStore;

@@ -9,6 +9,7 @@ import { sync } from './middleware';
 export type VFSConfig = {
 	type: 'vfs';
 	path: string;
+	partialize?: <T>(state: T) => Partial<T>;
 };
 
 export type PersistConfig = {
@@ -37,6 +38,7 @@ export const StoreBuilder = <T extends object>(
 						})) as StateCreator<StoreState>,
 						{
 							path: config.path,
+							partialize: config.partialize as ((state: StoreState) => Partial<StoreState>) | undefined,
 						}
 					)
 				)

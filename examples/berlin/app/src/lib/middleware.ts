@@ -2,14 +2,15 @@ import type { DocumentData } from '@tonk/core';
 import type { StateCreator } from 'zustand';
 import { getVFSService } from './vfs-service';
 
-interface SyncOptions {
+interface SyncOptions<T = any> {
   path: string;
+  partialize?: (state: T) => Partial<T>;
 }
 
 export const sync =
   <T extends object>(
     config: StateCreator<T>,
-    options?: SyncOptions
+    options?: SyncOptions<T>
   ): StateCreator<T> =>
   (set, get, api) => {
     // If no options provided, just return the config without sync
@@ -28,8 +29,10 @@ export const sync =
 
     // Helper to serialize state for storage
     const serializeState = (state: T): any => {
+      // Apply partialize if provided to exclude runtime-only fields
+      const stateToSerialize = options.partialize ? options.partialize(state) : state;
       // Remove functions and non-serializable values
-      const serializable = JSON.parse(JSON.stringify(state));
+      const serializable = JSON.parse(JSON.stringify(stateToSerialize));
       return serializable;
     };
 
