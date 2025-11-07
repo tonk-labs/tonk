@@ -1,14 +1,19 @@
 import type { DocumentData } from '@tonk/core';
 import type { DesktopFile } from '../types';
+import { getMimeType } from './mimeResolver';
 
 export function extractDesktopFile(path: string, doc: DocumentData): DesktopFile {
   const content = doc.content as any;
   const desktopMeta = content?.desktopMeta;
 
+  // Detect MIME type from filename if not in metadata
+  const detectedMime = getMimeType(doc.name);
+  const mimeType = desktopMeta?.mimeType || detectedMime;
+
   return {
     path,
     name: doc.name,
-    mimeType: desktopMeta?.mimeType || 'application/octet-stream',
+    mimeType,
     desktopMeta: {
       x: desktopMeta?.x,
       y: desktopMeta?.y,

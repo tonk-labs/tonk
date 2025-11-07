@@ -7,6 +7,7 @@ import {
   T,
 } from 'tldraw';
 import type { FileIconShape } from './types';
+import { getFileIcon } from '../utils/mimeResolver';
 
 export class FileIconUtil extends ShapeUtil<FileIconShape> {
   static override type = 'file-icon' as const;
@@ -44,6 +45,8 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
   }
 
   component(shape: FileIconShape) {
+    const icon = shape.props.customIcon || getFileIcon(shape.props.mimeType);
+
     return (
       <HTMLContainer
         style={{
@@ -66,7 +69,7 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
             marginBottom: '8px',
           }}
         >
-          📄
+          {icon}
         </div>
         <div
           style={{
