@@ -1,6 +1,6 @@
 import { Tldraw, track } from 'tldraw';
 import { useNavigate } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import 'tldraw/tldraw.css';
 import './desktop.css';
 import { FileIconUtil } from '../shapes';
@@ -74,27 +74,9 @@ const DesktopInner = track(() => {
 });
 
 function Desktop() {
-  // Detect and track theme changes
-  const [isDarkMode, setIsDarkMode] = useState(() => {
-    return document.documentElement.classList.contains('dark');
-  });
-
-  useEffect(() => {
-    // Watch for theme changes
-    const observer = new MutationObserver(() => {
-      setIsDarkMode(document.documentElement.classList.contains('dark'));
-    });
-
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['class'],
-    });
-
-    return () => observer.disconnect();
-  }, []);
-
+  // TLDraw is always in light mode (no dark mode support)
   return (
-    <div className={`desktop-container ${isDarkMode ? 'dark' : ''}`}>
+    <div className="desktop-container">
       <Tldraw
         className="tldraw-container"
         shapeUtils={customShapeUtils}
