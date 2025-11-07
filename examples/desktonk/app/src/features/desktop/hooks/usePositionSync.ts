@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useEditor } from 'tldraw';
 import type { FileIconShape } from '../shapes';
 import { getVFSService } from '../../../lib/vfs-service';
+import { syncCoordinator } from './syncCoordinator';
 
 /**
  * Hook that listens for FileIcon shape position changes and persists them to VFS.
@@ -74,9 +75,15 @@ export function usePositionSync() {
 
 /**
  * Saves the position of a FileIcon shape to VFS by updating its desktopMeta.
+ * Uses syncCoordinator to prevent triggering infinite reload loops.
  */
 async function savePosition(shape: FileIconShape): Promise<void> {
+  const shapeId = shape.id;
+
   try {
+    // Mark save as in-progress BEFORE writing to VFS
+    syncCoordinator.startPositionSave(shapeId);
+
     const vfs = getVFSService();
     const doc = await vfs.readFile(shape.props.filePath);
     const content = doc.content as Record<string, unknown>;
@@ -94,5 +101,8 @@ async function savePosition(shape: FileIconShape): Promise<void> {
     console.log(`Saved position for ${shape.props.fileName}:`, { x: shape.x, y: shape.y });
   } catch (error) {
     console.error('Failed to save position:', error);
+  } finally {
+    // Always mark save as complete, even if it failed
+    syncCoordinator.endPositionSave(shapeId);
   }
 }

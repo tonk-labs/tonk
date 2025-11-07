@@ -4,6 +4,7 @@ import type { RefNode } from '@tonk/core';
 import { getVFSService } from '../../../lib/vfs-service';
 import { extractDesktopFile, getNextAutoLayoutPosition } from '../utils/fileMetadata';
 import type { DesktopFile } from '../types';
+import { syncCoordinator } from './syncCoordinator';
 
 export function useDesktopSync() {
   const editor = useEditor();
@@ -61,6 +62,13 @@ export function useDesktopSync() {
       try {
         watchId = await vfs.watchDirectory('/desktonk', (changeData) => {
           console.log('Directory changed:', changeData);
+
+          // Skip reload if position saves are in progress to prevent infinite loop
+          if (syncCoordinator.shouldSkipReload()) {
+            console.log('Skipping reload - position save in progress');
+            return;
+          }
+
           // Reload files on change
           loadDesktopFiles();
         });
