@@ -102,26 +102,47 @@ export function useFileDrop() {
       // Read file content
       const content = await readFileContent(file);
 
-      // Create content object (text or binary)
-      const contentObj = typeof content === 'string' ? { text: content } : content;
-
-      // Add desktop metadata at the same level as content fields
-      const docContent = {
-        ...contentObj,
-        desktopMeta: {
-          x: dropCoordinates.x,
-          y: dropCoordinates.y,
-          mimeType: file.type || getMimeType(file.name),
-        },
+      // Desktop metadata
+      const desktopMeta = {
+        x: dropCoordinates.x,
+        y: dropCoordinates.y,
+        mimeType: file.type || getMimeType(file.name),
       };
 
-      // Write to VFS
-      console.log('[useFileDrop] Writing file to VFS:', filePath, 'with metadata:', docContent.desktopMeta);
-      await vfs.writeFile(filePath, { content: docContent });
+      // Write to VFS - different methods for text vs binary
+      console.log('[useFileDrop] Writing file to VFS:', filePath, 'with metadata:', desktopMeta);
+
+      if (typeof content === 'string') {
+        // Text file: store as text with metadata
+        const docContent = {
+          text: content,
+          desktopMeta,
+        };
+        await vfs.writeFile(filePath, { content: docContent });
+      } else {
+        // Binary file: use writeFileWithBytes with metadata in content
+        const docContent = {
+          desktopMeta,
+        };
+        await vfs.writeFileWithBytes(filePath, docContent, content.data);
+      }
+
       console.log('[useFileDrop] File written successfully:', filePath);
 
+      // Verify file can be read back
+      try {
+        const readBack = await vfs.readFile(filePath);
+        console.log('[useFileDrop] Verification: File can be read back:', filePath, readBack);
+      } catch (verifyError) {
+        console.error('[useFileDrop] ERROR: Cannot read file back after write!', filePath, verifyError);
+      }
+
       // Trigger desktop refresh (workaround for VFS directory watch not firing)
-      window.dispatchEvent(new CustomEvent('desktop:refresh'));
+      // Use a small delay to ensure write is committed before refresh
+      setTimeout(() => {
+        console.log('[useFileDrop] Dispatching desktop:refresh event');
+        window.dispatchEvent(new CustomEvent('desktop:refresh'));
+      }, 100);
 
       return true;
     } catch (error) {
