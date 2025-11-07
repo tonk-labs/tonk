@@ -147,8 +147,9 @@ export function useDesktopSync() {
 
     // Setup directory watcher
     async function setupWatcher() {
+      let tempWatchId: string | null = null;
       try {
-        watchId = await vfs.watchDirectory('/desktonk', (changeData) => {
+        tempWatchId = await vfs.watchDirectory('/desktonk', (changeData) => {
           console.log('Directory changed:', changeData);
 
           // Debounce rapid directory changes (e.g., build systems writing many files)
@@ -176,17 +177,39 @@ export function useDesktopSync() {
             loadDesktopFiles();
           }, 300); // 300ms debounce - balances responsiveness with performance
         });
+        // Only set watchId if successful
+        watchId = tempWatchId;
       } catch (error) {
         console.error('Failed to setup directory watcher:', error);
+        // Clean up partial watcher if it was created before error
+        if (tempWatchId) {
+          vfs.unwatchDirectory(tempWatchId).catch(console.error);
+        }
       }
     }
 
+    // Subscribe to VFS connection state changes
+    // This ensures we load when VFS connects, even if it wasn't ready initially
+    const unsubscribeVFS = vfs.onConnectionStateChange((state) => {
+      if (state === 'connected' && !isUnmountedRef.current) {
+        console.log('[useDesktopSync] VFS connected, loading desktop files');
+        loadDesktopFiles();
+        setupWatcher();
+      } else if (state === 'disconnected') {
+        console.warn('[useDesktopSync] VFS disconnected');
+        setIsLoading(true);
+      }
+    });
+
+    // Initial load if already connected
     if (vfs.isInitialized()) {
       loadDesktopFiles();
       setupWatcher();
     }
 
     return () => {
+      // Unsubscribe from VFS connection changes
+      unsubscribeVFS();
       // Mark component as unmounted to abort any in-flight operations
       isUnmountedRef.current = true;
 
