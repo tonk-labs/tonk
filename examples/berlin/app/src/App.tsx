@@ -1,28 +1,10 @@
-import { useEffect, useRef } from 'react';
 import Layout from './components/layout/layout';
 import { Editor } from './features/editor';
 import { usePresenceTracking } from './features/presence';
 import { ChatWindow, useChat } from './features/chat';
 import { Button } from './components/ui/button/button';
-import { getVFSService } from './lib/vfs-service';
 
 function App() {
-  const initRef = useRef(false);
-
-  useEffect(() => {
-    if (initRef.current) return;
-    initRef.current = true;
-
-    const vfs = getVFSService();
-
-    // Connect to the already-initialized service worker
-    // The service worker was initialized by host-web, so this will
-    // immediately succeed and trigger the middleware connection listener
-    vfs.initialize('', '').catch(err => {
-      console.warn('VFS connection warning:', err);
-    });
-  }, []);
-
   // Enable presence tracking
   usePresenceTracking();
 
