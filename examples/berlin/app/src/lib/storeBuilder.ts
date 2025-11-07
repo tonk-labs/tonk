@@ -3,6 +3,7 @@ import type { PersistStorage } from 'zustand/middleware';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import type { StateCreator } from 'zustand';
+import type { Draft } from 'immer';
 import { sync } from './middleware';
 
 export type VFSConfig = {
@@ -56,7 +57,32 @@ export const StoreBuilder = <T extends object>(
 				);
 
 	const get = () => useStore.getState();
-	const set = useStore.setState;
+
+	// Type set to accept immer-style draft mutations (void-returning functions)
+	// Create wrapper function with explicit overload signatures to match immer-enhanced setState
+	function set(
+		nextStateOrUpdater:
+			| StoreState
+			| Partial<StoreState>
+			| ((state: Draft<StoreState>) => void | StoreState | Partial<StoreState>),
+		replace?: false
+	): void;
+	function set(
+		nextStateOrUpdater:
+			| StoreState
+			| ((state: Draft<StoreState>) => void | StoreState),
+		replace: true
+	): void;
+	function set(
+		nextStateOrUpdater:
+			| StoreState
+			| Partial<StoreState>
+			| ((state: Draft<StoreState>) => void | StoreState | Partial<StoreState>),
+		replace?: boolean
+	): void {
+		(useStore.setState as any)(nextStateOrUpdater, replace);
+	}
+
 	const subscribe = useStore.subscribe;
 
 	/**
