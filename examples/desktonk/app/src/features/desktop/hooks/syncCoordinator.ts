@@ -6,8 +6,15 @@
  * watcher callbacks, which reload all files and recreate shapes, which
  * trigger more position changes, causing an infinite loop.
  *
- * The solution: Track when position saves are in-flight and skip directory
- * reload during those operations.
+ * The solution: Track when position saves are in-flight and queue directory
+ * reloads during those operations. When all saves complete, the queued reload
+ * executes. This prevents infinite loops while ensuring that reloads for
+ * unrelated file changes (deletions, external modifications) eventually happen.
+ *
+ * Key improvements over the previous "skip reload" approach:
+ * - Reloads are QUEUED, not DROPPED, so orphaned shapes are eventually cleaned up
+ * - Only the latest reload is queued (no accumulation of stale reloads)
+ * - Reload executes as soon as all position saves complete
  *
  * CRITICAL #4 Fix: Also tracks pending (debounced) position save timeouts
  * so they can be canceled when shapes are recreated during directory reload.
@@ -17,7 +24,7 @@
 class SyncCoordinator {
   private inProgressSaves = new Set<string>();
   private pendingSaveTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly GRACE_PERIOD_MS = 100;
+  private pendingReloadCallback: (() => void) | null = null;
 
   /**
    * Mark the start of a position save operation.
@@ -30,28 +37,52 @@ class SyncCoordinator {
 
   /**
    * Mark the end of a position save operation.
-   * Includes a grace period to handle async timing issues.
+   * If a reload was queued while saves were in progress, it will be
+   * processed once all saves complete.
+   *
+   * Grace period removed to eliminate race window that could cause infinite loops.
+   * Uses queueMicrotask for async processing to avoid stack overflow.
    * @param shapeId - Unique identifier for the shape that was saved
    */
   endPositionSave(shapeId: string): void {
-    // Add a small grace period to ensure watcher events have fired
-    setTimeout(() => {
-      this.inProgressSaves.delete(shapeId);
-      console.debug(`[SyncCoordinator] Ended position save for ${shapeId}. In-flight: ${this.inProgressSaves.size}`);
-    }, this.GRACE_PERIOD_MS);
+    this.inProgressSaves.delete(shapeId);
+    console.debug(`[SyncCoordinator] Ended position save for ${shapeId}. In-flight: ${this.inProgressSaves.size}`);
+
+    // If all saves completed and reload is queued, process it asynchronously
+    if (this.inProgressSaves.size === 0 && this.pendingReloadCallback) {
+      console.log('[SyncCoordinator] All saves complete, processing queued reload');
+      const callback = this.pendingReloadCallback;
+      this.pendingReloadCallback = null;
+
+      // Use microtask to avoid stack overflow and allow current call stack to complete
+      queueMicrotask(() => {
+        callback();
+      });
+    }
   }
 
   /**
-   * Check if a directory reload should be skipped because position saves
+   * Check if a directory reload should be deferred because position saves
    * are currently in progress.
-   * @returns true if reload should be skipped, false otherwise
+   * @returns true if reload should be queued, false if it can proceed immediately
    */
-  shouldSkipReload(): boolean {
+  shouldDeferReload(): boolean {
     const hasInProgressSaves = this.inProgressSaves.size > 0;
     if (hasInProgressSaves) {
-      console.debug(`[SyncCoordinator] Skipping reload - ${this.inProgressSaves.size} position save(s) in progress`);
+      console.debug(`[SyncCoordinator] Should defer reload - ${this.inProgressSaves.size} position save(s) in progress`);
     }
     return hasInProgressSaves;
+  }
+
+  /**
+   * Queue a reload to be executed after all in-progress saves complete.
+   * If there are no in-progress saves, this has no effect (caller should execute immediately).
+   * @param callback - The reload function to execute later
+   */
+  queueReload(callback: () => void): void {
+    // Replace any existing queued reload (only keep the latest)
+    this.pendingReloadCallback = callback;
+    console.log('[SyncCoordinator] Reload queued, will execute after saves complete');
   }
 
   /**
@@ -62,11 +93,20 @@ class SyncCoordinator {
   }
 
   /**
-   * Clear all tracked saves (for testing/cleanup)
+   * Clear all tracked saves and timeouts (for testing/cleanup)
+   * CRITICAL: Must clear timeouts to prevent them firing after reset
    */
   reset(): void {
     this.inProgressSaves.clear();
-    console.debug('[SyncCoordinator] Reset all in-progress saves');
+    this.pendingReloadCallback = null;
+
+    // CRITICAL: Cancel all pending timeouts
+    this.pendingSaveTimeouts.forEach((timeout) => {
+      clearTimeout(timeout);
+    });
+    this.pendingSaveTimeouts.clear();
+
+    console.debug('[SyncCoordinator] Reset complete - cleared saves, reload, and timeouts');
   }
 
   /**

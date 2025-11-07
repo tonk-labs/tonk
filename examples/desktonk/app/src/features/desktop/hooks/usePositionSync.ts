@@ -17,6 +17,22 @@ export function usePositionSync() {
     // Listen to all changes in the editor's store
     const unsubscribe = editor.store.listen(
       (change) => {
+        // Clean up removed shapes to prevent memory leak
+        const removedShapes = Object.values(change.changes.removed);
+        for (const shape of removedShapes) {
+          if (shape.typeName === 'shape' && shape.type === 'file-icon') {
+            const shapeId = shape.id;
+            // Remove from position tracking
+            delete previousPositionsRef.current[shapeId];
+            // Cancel any pending save
+            if (saveTimeoutRef.current[shapeId]) {
+              clearTimeout(saveTimeoutRef.current[shapeId]);
+              delete saveTimeoutRef.current[shapeId];
+              syncCoordinator.unregisterPendingSave(shapeId);
+            }
+          }
+        }
+
         // Process added and updated records
         const shapes = [
           ...Object.values(change.changes.added),
@@ -57,7 +73,7 @@ export function usePositionSync() {
           // Debounce the save operation (500ms)
           const timeout = setTimeout(() => {
             syncCoordinator.unregisterPendingSave(shapeId);
-            savePosition(fileIconShape);
+            savePosition(editor, fileIconShape);
             delete saveTimeoutRef.current[shapeId];
           }, 500);
 
@@ -74,6 +90,8 @@ export function usePositionSync() {
       // Clear all pending timeouts
       Object.values(saveTimeoutRef.current).forEach(clearTimeout);
       saveTimeoutRef.current = {};
+      // Clear position tracking to prevent memory leak
+      previousPositionsRef.current = {};
     };
   }, [editor]);
 }
@@ -81,29 +99,55 @@ export function usePositionSync() {
 /**
  * Saves the position of a FileIcon shape to VFS by updating its desktopMeta.
  * Uses syncCoordinator to prevent triggering infinite reload loops.
+ * Validates that the shape still exists before writing to prevent race conditions.
  */
-async function savePosition(shape: FileIconShape): Promise<void> {
+async function savePosition(editor: ReturnType<typeof useEditor>, shape: FileIconShape): Promise<void> {
   const shapeId = shape.id;
 
   try {
     // Mark save as in-progress BEFORE writing to VFS
     syncCoordinator.startPositionSave(shapeId);
 
+    // Validate that the shape still exists before starting the write
+    // If it was deleted during the debounce delay, skip the save
+    const currentShape = editor.getShape(shapeId) as FileIconShape | undefined;
+    if (!currentShape || currentShape.type !== 'file-icon') {
+      console.log(`Shape ${shapeId} no longer exists, skipping position save`);
+      return;
+    }
+
+    // Use the current shape's position (not the captured one from the closure)
+    // This ensures we save the most up-to-date position
+    const positionToSave = { x: currentShape.x, y: currentShape.y };
+
     const vfs = getVFSService();
     const doc = await vfs.readFile(shape.props.filePath);
     const content = doc.content as Record<string, unknown>;
+
+    // Validate shape still exists after async read (could have been deleted)
+    const shapeAfterRead = editor.getShape(shapeId) as FileIconShape | undefined;
+    if (!shapeAfterRead || shapeAfterRead.type !== 'file-icon') {
+      console.log(`Shape ${shapeId} was deleted during read, skipping position save`);
+      return;
+    }
+
+    // Validate position hasn't changed during read (concurrent drag)
+    if (shapeAfterRead.x !== positionToSave.x || shapeAfterRead.y !== positionToSave.y) {
+      console.log(`Shape ${shapeId} position changed during read, a newer save will handle this`);
+      return;
+    }
 
     const updatedContent = {
       ...content,
       desktopMeta: {
         ...(content?.desktopMeta as Record<string, unknown> | undefined),
-        x: shape.x,
-        y: shape.y,
+        x: positionToSave.x,
+        y: positionToSave.y,
       },
     };
 
     await vfs.writeFile(shape.props.filePath, { content: updatedContent });
-    console.log(`Saved position for ${shape.props.fileName}:`, { x: shape.x, y: shape.y });
+    console.log(`Saved position for ${shape.props.fileName}:`, positionToSave);
   } catch (error) {
     console.error('Failed to save position:', error);
   } finally {

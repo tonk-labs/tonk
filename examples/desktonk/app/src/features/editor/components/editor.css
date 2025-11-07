@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+#editor-wrapper {
+    @apply w-full h-screen flex relative m-0 p-0;
+}
+
+.editor-container {
+    @apply w-full h-full overflow-auto flex items-center justify-center absolute m-0 p-0;
+}
+
+#editor-area {
+    @apply overflow-visible h-full max-w-[900px] w-[80%] relative          mt-20;
+}
+
+#editor-paper {
+    @apply bg-white relative max-w-[900px] w-[80%] h-full overflow-visible;
+}
+
+.toolbar-wrapper {
+    @apply w-full overflow-auto flex absolute m-0 p-0 top-0 items-center justify-center;
+    
+}
+
+.tiptap-toolbar {
+@apply max-w-[900px] w-[80%] h-auto relative m-0 p-0;
+}
+
+.tiptap.simple-editor {
+    @apply p-8 overflow-visible;
+}
+
+body {
+  --tt-toolbar-height: 44px;
+  --tt-theme-text: var(--tt-gray-light-900);
+}
+.dark body {
+  --tt-theme-text: var(--tt-gray-dark-900);
+}
+
+::-webkit-scrollbar {
+  width: 0.25rem;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tt-scrollbar-color) transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--tt-scrollbar-color);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+main .tiptap-toolbar[data-variant=fixed] {
+  @apply bg-[#E8EEF4];
+}

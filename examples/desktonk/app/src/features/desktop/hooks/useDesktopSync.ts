@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useEditor } from 'tldraw';
 import type { RefNode } from '@tonk/core';
 import { getVFSService } from '../../../lib/vfs-service';
@@ -10,12 +10,29 @@ export function useDesktopSync() {
   const editor = useEditor();
   const [files, setFiles] = useState<DesktopFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const loadInProgressRef = useRef(false);
+  const isUnmountedRef = useRef(false);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
     const vfs = getVFSService();
     let watchId: string | null = null;
+    isUnmountedRef.current = false;
 
     async function loadDesktopFiles() {
+      // Check if component unmounted
+      if (isUnmountedRef.current) {
+        console.log('[useDesktopSync] Component unmounted, aborting load');
+        return;
+      }
+
+      // Mutex: Prevent concurrent loads that could cause race conditions
+      if (loadInProgressRef.current) {
+        console.log('[useDesktopSync] Load already in progress, skipping concurrent call');
+        return;
+      }
+
+      loadInProgressRef.current = true;
       try {
         // 1. Cancel all pending position saves to prevent race condition (CRITICAL #4)
         // This MUST happen before clearing shapes to prevent stale shape references
@@ -37,18 +54,62 @@ export function useDesktopSync() {
         }
 
         // 3. Load files from VFS
-        const entries = (await vfs.listDirectory('/desktonk')) as RefNode[];
-        const filePromises = entries
+        // Use Promise.allSettled to handle individual file failures gracefully
+        // If one file is corrupted, we still show the rest instead of failing entirely
+        const entries = await vfs.listDirectory('/desktonk');
+
+        // Abort check after async operation
+        if (isUnmountedRef.current) {
+          console.log('[useDesktopSync] Component unmounted after listDirectory, aborting');
+          return;
+        }
+
+        // Validate entries is an array before using
+        if (!Array.isArray(entries)) {
+          console.error('Invalid directory listing:', entries);
+          throw new Error('Failed to list directory: invalid response');
+        }
+
+        const refNodes = entries as RefNode[];
+        const filePromises = refNodes
           .filter(entry => entry.type === 'document')
           .map(async (entry) => {
-            const doc = await vfs.readFile(`/desktonk/${entry.name}`);
-            return extractDesktopFile(`/desktonk/${entry.name}`, doc);
+            try {
+              const doc = await vfs.readFile(`/desktonk/${entry.name}`);
+              return extractDesktopFile(`/desktonk/${entry.name}`, doc);
+            } catch (error) {
+              console.error(`Failed to load file ${entry.name}:`, error);
+              throw error; // Re-throw so Promise.allSettled marks it as rejected
+            }
           });
 
-        const desktopFiles = await Promise.all(filePromises);
+        const results = await Promise.allSettled(filePromises);
+
+        // Abort check after async operation
+        if (isUnmountedRef.current) {
+          console.log('[useDesktopSync] Component unmounted after file loading, aborting');
+          return;
+        }
+
+        // Extract successful results and log failures
+        const desktopFiles = results
+          .filter((result): result is PromiseFulfilledResult<DesktopFile> => result.status === 'fulfilled')
+          .map(result => result.value);
+
+        const failedCount = results.filter(r => r.status === 'rejected').length;
+        if (failedCount > 0) {
+          console.warn(`Failed to load ${failedCount} file(s) from desktop. See errors above.`);
+        }
+
         setFiles(desktopFiles);
 
         // 4. Create fresh shapes for each file
+        // Final abort check before creating shapes (prevents crashes on unmounted editor)
+        if (isUnmountedRef.current) {
+          console.log('[useDesktopSync] Component unmounted before shape creation, aborting');
+          return;
+        }
+
         desktopFiles.forEach((file, index) => {
           const position = file.desktopMeta?.x && file.desktopMeta?.y
             ? { x: file.desktopMeta.x, y: file.desktopMeta.y }
@@ -74,6 +135,8 @@ export function useDesktopSync() {
       } catch (error) {
         console.error('Failed to load desktop files:', error);
         setIsLoading(false);
+      } finally {
+        loadInProgressRef.current = false;
       }
     }
 
@@ -83,14 +146,24 @@ export function useDesktopSync() {
         watchId = await vfs.watchDirectory('/desktonk', (changeData) => {
           console.log('Directory changed:', changeData);
 
-          // Skip reload if position saves are in progress to prevent infinite loop
-          if (syncCoordinator.shouldSkipReload()) {
-            console.log('Skipping reload - position save in progress');
-            return;
-          }
+          // Debounce rapid directory changes (e.g., build systems writing many files)
+          // This prevents reload thrashing and improves performance
+          clearTimeout(debounceTimerRef.current);
 
-          // Reload files on change
-          loadDesktopFiles();
+          debounceTimerRef.current = setTimeout(() => {
+            // If position saves are in progress, queue reload instead of executing immediately
+            // This prevents infinite loops while ensuring reloads eventually happen
+            if (syncCoordinator.shouldDeferReload()) {
+              console.log('Deferring reload - position save in progress, will execute after save completes');
+              syncCoordinator.queueReload(() => {
+                loadDesktopFiles();
+              });
+              return;
+            }
+
+            // No saves in progress, reload immediately
+            loadDesktopFiles();
+          }, 300); // 300ms debounce - balances responsiveness with performance
         });
       } catch (error) {
         console.error('Failed to setup directory watcher:', error);
@@ -103,9 +176,19 @@ export function useDesktopSync() {
     }
 
     return () => {
+      // Mark component as unmounted to abort any in-flight operations
+      isUnmountedRef.current = true;
+
+      // Clear debounce timer to prevent reload after unmount
+      clearTimeout(debounceTimerRef.current);
+
       if (watchId) {
         vfs.unwatchDirectory(watchId).catch(console.error);
       }
+      // Reset syncCoordinator to prevent stale state leaking between mounts
+      syncCoordinator.reset();
+      // Reset load mutex
+      loadInProgressRef.current = false;
     };
   }, [editor]);
 

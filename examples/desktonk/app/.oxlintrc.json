@@ -1,0 +1,8 @@
+{
+  "rules": {
+    "react": "all",
+    "react-hooks": "all",
+    "jsx-a11y": "recommended"
+  },
+  "ignore": ["dist", "node_modules"]
+}

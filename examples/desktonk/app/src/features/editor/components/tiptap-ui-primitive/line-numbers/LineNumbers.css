@@ -1,0 +1,42 @@
+/**
+ * Line Numbers Extension Styles
+ *
+ * Visual styling for line numbers only.
+ * Padding and positioning logic has been moved to editor-layout.css
+ * to prevent cascade conflicts.
+ *
+ * This file is purely decorative - it styles the line number elements
+ * but does not control the editor's layout.
+ */
+
+/* =====================
+   LINE NUMBER DECORATION
+   ===================== */
+.line-number {
+  position: absolute;
+  right: calc(100% + 3rem);
+  width: 3rem;
+  text-align: right;
+  padding-right: 1rem;
+  padding-top: 0.25rem;
+  color: var(--tt-gray-light-400);
+  font-size: 0.725rem;
+  user-select: none;
+  pointer-events: none;
+  font-family: "IBM Plex Mono", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+}
+
+.dark .line-number {
+  color: var(--tt-gray-dark-400);
+}
+
+/* =====================
+   MOBILE RESPONSIVE
+   ===================== */
+@media screen and (max-width: 480px) {
+  .line-number {
+    width: 2rem;
+    padding-right: 0.5rem;
+    font-size: 0.75rem;
+  }
+}

@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+.editable-title-display {
+  @apply font-mono text-base font-medium m-0 px-3 py-1.5 cursor-pointer rounded transition-colors duration-150 whitespace-nowrap overflow-hidden text-ellipsis max-w-[400px] text-center;
+}
+
+.editable-title-display:hover {
+  background-color: var(--tt-gray-light-a-100, rgba(15, 22, 36, 0.05));
+}
+
+.editable-title-display:focus-visible {
+  @apply outline-0;
+}
+
+.editable-title-input {
+  @apply font-mono text-base font-medium m-0 px-3 py-1.5 border-0 rounded bg-white/10 text-center max-w-[400px] min-w-[200px];
+}
+
+.editable-title-input:focus {
+  @apply outline-0 border-0;
+}

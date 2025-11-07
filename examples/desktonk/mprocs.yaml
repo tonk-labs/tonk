@@ -1,0 +1,7 @@
+procs:
+  tonk-app:
+    shell: 'cd app && pnpm run dev'
+  host-web:
+    shell: 'pnpm run dev:host-web'
+  relay:
+    shell: '../../packages/relay/target/release/tonk-relay 8081 bundling.tonk'
