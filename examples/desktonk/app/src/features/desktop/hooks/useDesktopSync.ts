@@ -115,7 +115,12 @@ export function useDesktopSync() {
             ? { x: file.desktopMeta.x, y: file.desktopMeta.y }
             : getNextAutoLayoutPosition(index);
 
+          // Use deterministic ID based on file path to prevent duplicate shapes
+          // This ensures that the same file always gets the same shape ID
+          const shapeId = `file-icon:${file.path}`;
+
           editor.createShape({
+            id: shapeId as any, // Type assertion needed for TLDraw's ID type
             type: 'file-icon',
             x: position.x,
             y: position.y,
@@ -151,6 +156,12 @@ export function useDesktopSync() {
           clearTimeout(debounceTimerRef.current);
 
           debounceTimerRef.current = setTimeout(() => {
+            // Check if VFS is still connected before reloading
+            if (!vfs.isInitialized()) {
+              console.warn('VFS disconnected, skipping reload. Will retry when reconnected.');
+              return;
+            }
+
             // If position saves are in progress, queue reload instead of executing immediately
             // This prevents infinite loops while ensuring reloads eventually happen
             if (syncCoordinator.shouldDeferReload()) {
