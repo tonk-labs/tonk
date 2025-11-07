@@ -118,13 +118,13 @@ export function useFileDrop() {
           text: content,
           desktopMeta,
         };
-        await vfs.writeFile(filePath, { content: docContent });
+        await vfs.writeFile(filePath, { content: docContent }, true); // create=true for new files
       } else {
         // Binary file: use writeFileWithBytes with metadata in content
         const docContent = {
           desktopMeta,
         };
-        await vfs.writeFileWithBytes(filePath, docContent, content.data);
+        await vfs.writeFileWithBytes(filePath, docContent, content.data, true); // create=true for new files
       }
 
       console.log('[useFileDrop] File written successfully:', filePath);
