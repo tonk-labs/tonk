@@ -6,6 +6,7 @@ import { extractDesktopFile, getNextAutoLayoutPosition } from '../utils/fileMeta
 import type { DesktopFile } from '../types';
 import { syncCoordinator } from './syncCoordinator';
 import { showWarning } from '../../../lib/notifications';
+import { desktopSync } from '../lib/desktopSync';
 
 /**
  * Directory path where desktop files are stored in VFS.
@@ -225,7 +226,17 @@ export function useDesktopSync() {
       setupWatcher();
     }
 
+    // Subscribe to cross-tab sync messages (real-time updates across tabs/users)
+    const unsubscribeSync = desktopSync.subscribe((message) => {
+      console.log('[useDesktopSync] Received sync message:', message);
+      if (message.type === 'refresh' || message.type === 'files-changed' || message.type === 'file-added') {
+        loadDesktopFiles();
+      }
+    });
+
     return () => {
+      // Unsubscribe from sync messages
+      unsubscribeSync();
       // Unsubscribe from VFS connection changes
       unsubscribeVFS();
       // Mark component as unmounted to abort any in-flight operations

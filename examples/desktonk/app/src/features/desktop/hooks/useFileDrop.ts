@@ -3,6 +3,7 @@ import { useEditor, useToasts } from 'tldraw';
 import { getVFSService } from '../../../lib/vfs-service';
 import { DESKTOP_DIRECTORY } from './useDesktopSync';
 import { getMimeType } from '../utils/mimeResolver';
+import { desktopSync } from '../lib/desktopSync';
 
 /**
  * Maximum file size allowed for upload (10MB).
@@ -137,12 +138,11 @@ export function useFileDrop() {
         console.error('[useFileDrop] ERROR: Cannot read file back after write!', filePath, verifyError);
       }
 
-      // Trigger desktop refresh (workaround for VFS directory watch not firing)
-      // Use a small delay to ensure write is committed before refresh
-      setTimeout(() => {
-        console.log('[useFileDrop] Dispatching desktop:refresh event');
-        window.dispatchEvent(new CustomEvent('desktop:refresh'));
-      }, 100);
+      // Broadcast file addition to all tabs for real-time synchronization
+      desktopSync.broadcast({
+        type: 'file-added',
+        path: filePath
+      });
 
       return true;
     } catch (error) {
