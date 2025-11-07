@@ -1,41 +1,56 @@
-import { create } from "zustand";
-import type { PersistStorage } from "zustand/middleware";
-import { persist } from "zustand/middleware";
-import { immer } from "zustand/middleware/immer";
+import { create } from 'zustand';
+import type { PersistStorage } from 'zustand/middleware';
+import { persist } from 'zustand/middleware';
+import { immer } from 'zustand/middleware/immer';
+import { sync } from './middleware';
+
+export type VFSConfig = {
+	type: 'vfs';
+	path: string;
+};
 
 export type PersistConfig = {
+	type: 'persist';
 	name: string;
 	storage?: PersistStorage<unknown>;
 	partialize?: <T>(state: T) => object;
 	version?: number;
 };
 
+export type StoreConfig = VFSConfig | PersistConfig;
+
 export const StoreBuilder = <T>(
 	initialState: T,
-	persistConfig?: PersistConfig,
+	config: StoreConfig,
 ) => {
 	type StoreState = T;
 
-	// Create store with or without persistence
-	const useStore = persistConfig
-		? create<StoreState>()(
-				persist(
-					immer((_set) => ({
-						...initialState,
-					})),
-					{
-						name: persistConfig.name,
-						storage: persistConfig.storage,
-						partialize: persistConfig.partialize as (state: StoreState) => object,
-						version: persistConfig.version,
-					},
-				),
-			)
-		: create<StoreState>()(
-				immer((_set) => ({
-					...initialState,
-				})),
-			);
+	// Create store with VFS sync or persistence based on config type
+	const useStore =
+		config.type === 'vfs'
+			? create<StoreState>()(
+					sync(
+						immer(() => ({
+							...initialState,
+						})),
+						{
+							path: config.path,
+						}
+					)
+				)
+			: create<StoreState>()(
+					persist(
+						immer(() => ({
+							...initialState,
+						})),
+						{
+							name: config.name,
+							storage: config.storage,
+							partialize: config.partialize as (state: StoreState) => object,
+							version: config.version,
+						}
+					)
+				);
 
 	const get = () => useStore.getState();
 	const set = useStore.setState;
