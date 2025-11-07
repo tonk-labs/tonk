@@ -104,7 +104,7 @@ export function useFileDrop() {
       };
 
       // Write to VFS
-      await vfs.writeFile(filePath, { content: doc });
+      await vfs.writeFile(filePath, { content: doc as any });
 
       return true;
     } catch (error) {
@@ -119,13 +119,20 @@ export function useFileDrop() {
    * Converts screen coordinates to canvas coordinates and uploads files.
    * CRITICAL: Must stop propagation to prevent TLDraw from handling the drop.
    */
-  const handleDrop = useCallback(async (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDrop = useCallback(async (e: React.DragEvent<HTMLDivElement> | DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    e.nativeEvent.stopImmediatePropagation(); // Stop TLDraw from seeing this event
+    // When called from native addEventListener, e is already the native event
+    if ('stopImmediatePropagation' in e) {
+      e.stopImmediatePropagation();
+    }
     setIsDraggingOver(false);
 
     // Get dropped files
+    if (!e.dataTransfer?.files) {
+      return;
+    }
+
     const files = Array.from(e.dataTransfer.files);
 
     if (files.length === 0) {
@@ -177,13 +184,13 @@ export function useFileDrop() {
   /**
    * Handles drag over event to enable drop and show visual feedback.
    */
-  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement> | DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
 
     // Check if dragging files (not text or other data)
-    const hasFiles = e.dataTransfer.types.includes('Files');
-    if (hasFiles) {
+    const hasFiles = e.dataTransfer?.types.includes('Files');
+    if (hasFiles && e.dataTransfer) {
       e.dataTransfer.dropEffect = 'copy';
       setIsDraggingOver(true);
     }
@@ -192,10 +199,10 @@ export function useFileDrop() {
   /**
    * Handles drag enter event.
    */
-  const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+  const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement> | DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const hasFiles = e.dataTransfer.types.includes('Files');
+    const hasFiles = e.dataTransfer?.types.includes('Files');
     if (hasFiles) {
       setIsDraggingOver(true);
     }
@@ -204,13 +211,14 @@ export function useFileDrop() {
   /**
    * Handles drag leave event to remove visual feedback.
    */
-  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement> | DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
 
     // Only remove highlight if we're leaving the drop zone completely
     // (not just entering a child element)
-    const rect = e.currentTarget.getBoundingClientRect();
+    const target = e.currentTarget as HTMLElement || e.target as HTMLElement;
+    const rect = target.getBoundingClientRect();
     const x = e.clientX;
     const y = e.clientY;
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { useEditor } from 'tldraw';
+import { useEditor, type TLShapeId } from 'tldraw';
 import type { RefNode } from '@tonk/core';
 import { getVFSService } from '../../../lib/vfs-service';
 import { extractDesktopFile, getNextAutoLayoutPosition } from '../utils/fileMetadata';
@@ -26,7 +26,7 @@ export function useDesktopSync() {
   const [isLoading, setIsLoading] = useState(true);
   const loadInProgressRef = useRef(false);
   const isUnmountedRef = useRef(false);
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceTimerRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const vfs = getVFSService();
@@ -138,7 +138,7 @@ export function useDesktopSync() {
           const shapeId = `shape:file-icon:${file.path}` as const;
 
           editor.createShape({
-            id: shapeId as unknown as string, // Type assertion needed for TLDraw's ID type
+            id: shapeId as unknown as TLShapeId, // Type assertion needed for TLDraw's ID type
             type: 'file-icon',
             x: position.x,
             y: position.y,

@@ -1,6 +1,6 @@
 import { Tldraw, track } from 'tldraw';
 import { useNavigate } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import 'tldraw/tldraw.css';
 import './desktop.css';
 import { FileIconUtil } from '../shapes';
@@ -74,11 +74,27 @@ const DesktopInner = track(() => {
 });
 
 function Desktop() {
-  // We need a ref to pass drag handlers to outer container
-  // but we also need access to editor for useFileDrop
-  // Solution: Create a wrapper component that has access to editor
+  // Detect and track theme changes
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    return document.documentElement.classList.contains('dark');
+  });
+
+  useEffect(() => {
+    // Watch for theme changes
+    const observer = new MutationObserver(() => {
+      setIsDarkMode(document.documentElement.classList.contains('dark'));
+    });
+
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    <div className="desktop-container">
+    <div className={`desktop-container ${isDarkMode ? 'dark' : ''}`}>
       <Tldraw
         className="tldraw-container"
         shapeUtils={customShapeUtils}
