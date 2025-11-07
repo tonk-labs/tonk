@@ -16,4 +16,6 @@ export interface FileIconShapeProps {
   mimeType: string;
   customIcon?: string;
   appHandler?: string;
+  w: number;
+  h: number;
 }

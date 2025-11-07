@@ -5,6 +5,7 @@ import { getVFSService } from '../../../lib/vfs-service';
 import { extractDesktopFile, getNextAutoLayoutPosition } from '../utils/fileMetadata';
 import type { DesktopFile } from '../types';
 import { syncCoordinator } from './syncCoordinator';
+import { showWarning } from '../../../lib/notifications';
 
 /**
  * Debounce delay for directory watch callbacks (in milliseconds).
@@ -107,6 +108,10 @@ export function useDesktopSync() {
         const failedCount = results.filter(r => r.status === 'rejected').length;
         if (failedCount > 0) {
           console.warn(`[useDesktopSync] Failed to load ${failedCount} file(s) from desktop. See errors above.`);
+          showWarning(
+            `Failed to load ${failedCount} file${failedCount > 1 ? 's' : ''} from desktop. Check console for details.`,
+            6000
+          );
         }
 
         setFiles(desktopFiles);
