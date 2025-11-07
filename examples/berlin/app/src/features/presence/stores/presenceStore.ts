@@ -1,5 +1,4 @@
 import { StoreBuilder } from '../../../lib/storeBuilder';
-import type { PersistStorage, StateStorage } from 'zustand/middleware';
 import {
   initializeUserId,
   getUserColor,
@@ -34,33 +33,9 @@ const initialState: PresenceState = {
   currentUserId: userId,
 };
 
-// Safe storage wrapper that handles unavailable localStorage
-const createSafeStorage = (): StateStorage => {
-  try {
-    // Test if localStorage is available
-    const test = '__test__';
-    localStorage.setItem(test, test);
-    localStorage.removeItem(test);
-    return localStorage;
-  } catch {
-    // Return no-op storage if localStorage is unavailable
-    return {
-      getItem: () => null,
-      setItem: () => {},
-      removeItem: () => {},
-    };
-  }
-};
-
-// Create store with safe localStorage persistence
 export const presenceStore = StoreBuilder(initialState, {
-  name: 'tonk-presence',
-  version: 1,
-  storage: createSafeStorage() as PersistStorage<unknown>,
-  partialize: (state: PresenceState) => ({
-    users: state.users,
-    currentUserId: state.currentUserId,
-  }),
+  type: 'vfs',
+  path: '/stores/presence.json',
 });
 
 // Export base hooks
