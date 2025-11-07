@@ -27,7 +27,7 @@ export function useDesktopSync() {
     let watchId: string | null = null;
     isUnmountedRef.current = false;
 
-    async function loadDesktopFiles() {
+    async function loadDesktopFiles(): Promise<void> {
       // Check if component unmounted
       if (isUnmountedRef.current) {
         console.log('[useDesktopSync] Component unmounted, aborting load');
@@ -154,7 +154,7 @@ export function useDesktopSync() {
     }
 
     // Setup directory watcher
-    async function setupWatcher() {
+    async function setupWatcher(): Promise<void> {
       let tempWatchId: string | null = null;
       try {
         tempWatchId = await vfs.watchDirectory('/desktonk', (changeData) => {

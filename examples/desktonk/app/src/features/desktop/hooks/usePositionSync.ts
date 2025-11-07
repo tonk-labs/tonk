@@ -3,6 +3,7 @@ import { useEditor } from 'tldraw';
 import type { FileIconShape } from '../shapes';
 import { getVFSService } from '../../../lib/vfs-service';
 import { syncCoordinator } from './syncCoordinator';
+import { showError, showWarning } from '../../../lib/notifications';
 
 /**
  * Debounce delay for position saves (in milliseconds).
@@ -156,6 +157,7 @@ async function savePosition(
       // Check if VFS is connected before attempting save
       if (!vfs.isInitialized()) {
         console.warn(`[usePositionSync] VFS disconnected, cannot save position for ${shape.props.fileName}`);
+        showWarning('Storage disconnected. Icon positions cannot be saved until reconnected.');
         return;
       }
 
@@ -192,8 +194,11 @@ async function savePosition(
       console.log(`[usePositionSync] Saved position for ${shape.props.fileName}:`, positionToSave);
     } catch (error) {
       console.error(`[usePositionSync] CRITICAL: Failed to save position for ${shape.props.fileName}:`, error);
-      // TODO: Add toast notification to user - they need to know saves are failing!
-      // This is a data loss scenario - user's icon arrangements won't persist
+      // Show user-facing notification - this is a data loss scenario
+      showError(
+        `Failed to save position for "${shape.props.fileName}". Your icon arrangement may not persist.`,
+        7000 // Show for 7 seconds since this is important
+      );
     } finally {
       // Always mark save as complete, even if it failed
       syncCoordinator.endPositionSave(shapeId);

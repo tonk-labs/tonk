@@ -52,17 +52,8 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
     // Detect selected state
     const isSelected = this.editor.getSelectedShapeIds().includes(shape.id);
 
-    // Detect dragging state - check if the current tool is 'select' and shape is being moved
-    // In TLDraw v4, we can approximate dragging by checking if the shape is selected
-    // The dragging visual state will be applied when the user starts moving the shape
-    const isDragging = false; // TLDraw handles dragging visual feedback internally
-
-    // Build class name
-    const className = [
-      'file-icon',
-      isSelected ? 'selected' : '',
-      isDragging ? 'dragging' : '',
-    ].filter(Boolean).join(' ');
+    // Build class name - TLDraw handles dragging visual feedback internally
+    const className = isSelected ? 'file-icon selected' : 'file-icon';
 
     return (
       <HTMLContainer
