@@ -10,6 +10,11 @@
   height: 100%;
 }
 
+/* Fix for TLDraw icon visibility - icons use CSS masks and need a background color */
+.tlui-icon {
+  background-color: currentColor !important;
+}
+
 /* Drag and drop visual feedback */
 .desktop-container.dragging-over {
   background-color: rgba(37, 99, 235, 0.05);
