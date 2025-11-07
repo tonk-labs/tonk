@@ -1,7 +1,6 @@
 import { useCallback, useState } from 'react';
-import { useEditor } from 'tldraw';
+import { useEditor, useToasts } from 'tldraw';
 import { getVFSService } from '../../../lib/vfs-service';
-import { showError, showSuccess, showWarning } from '../../../lib/notifications';
 import { DESKTOP_DIRECTORY } from './useDesktopSync';
 import { getMimeType } from '../utils/mimeResolver';
 
@@ -17,6 +16,7 @@ const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
  */
 export function useFileDrop() {
   const editor = useEditor();
+  const { addToast } = useToasts();
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
   /**
@@ -63,7 +63,10 @@ export function useFileDrop() {
     try {
       // Validate file size
       if (file.size > MAX_FILE_SIZE_BYTES) {
-        showError(`File "${file.name}" is too large. Maximum size is 10MB.`);
+        addToast({
+          title: `File "${file.name}" is too large. Maximum size is 10MB.`,
+          severity: 'error'
+        });
         return false;
       }
 
@@ -71,7 +74,10 @@ export function useFileDrop() {
 
       // Check VFS connection
       if (!vfs.isInitialized()) {
-        showError('Storage disconnected. Cannot upload files.');
+        addToast({
+          title: 'Storage disconnected. Cannot upload files.',
+          severity: 'error'
+        });
         return false;
       }
 
@@ -83,7 +89,10 @@ export function useFileDrop() {
         // File exists - ask user what to do
         const overwrite = confirm(`"${file.name}" already exists. Overwrite?`);
         if (!overwrite) {
-          showWarning(`Upload cancelled for "${file.name}"`);
+          addToast({
+            title: `Upload cancelled for "${file.name}"`,
+            severity: 'warning'
+          });
           return false;
         }
       } catch (error) {
@@ -104,15 +113,20 @@ export function useFileDrop() {
       };
 
       // Write to VFS
+      console.log('[useFileDrop] Writing file to VFS:', filePath, 'with metadata:', doc.desktopMeta);
       await vfs.writeFile(filePath, { content: doc as any });
+      console.log('[useFileDrop] File written successfully:', filePath);
 
       return true;
     } catch (error) {
       console.error(`[useFileDrop] Failed to upload file ${file.name}:`, error);
-      showError(`Failed to upload "${file.name}". Check console for details.`);
+      addToast({
+        title: `Failed to upload "${file.name}". Check console for details.`,
+        severity: 'error'
+      });
       return false;
     }
-  }, [readFileContent]);
+  }, [readFileContent, addToast]);
 
   /**
    * Handles file drop event.
@@ -173,13 +187,19 @@ export function useFileDrop() {
       const message = successCount === 1
         ? `Uploaded "${files[0].name}"`
         : `Uploaded ${successCount} file${successCount > 1 ? 's' : ''}`;
-      showSuccess(message);
+      addToast({
+        title: message,
+        severity: 'success'
+      });
     }
 
     if (failCount > 0 && successCount === 0) {
-      showError(`Failed to upload ${failCount} file${failCount > 1 ? 's' : ''}`);
+      addToast({
+        title: `Failed to upload ${failCount} file${failCount > 1 ? 's' : ''}`,
+        severity: 'error'
+      });
     }
-  }, [editor, uploadFileToVFS]);
+  }, [editor, uploadFileToVFS, addToast]);
 
   /**
    * Handles drag over event to enable drop and show visual feedback.
