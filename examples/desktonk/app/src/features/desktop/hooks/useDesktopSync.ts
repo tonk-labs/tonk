@@ -17,6 +17,16 @@ export function useDesktopSync() {
 
     async function loadDesktopFiles() {
       try {
+        // 1. Clear all existing file-icon shapes to prevent accumulation
+        const existingFileIcons = editor.getCurrentPageShapeIds()
+          .map(id => editor.getShape(id))
+          .filter(shape => shape?.type === 'file-icon');
+
+        if (existingFileIcons.length > 0) {
+          editor.deleteShapes(existingFileIcons.map(s => s.id));
+        }
+
+        // 2. Load files from VFS
         const entries = (await vfs.listDirectory('/desktonk')) as RefNode[];
         const filePromises = entries
           .filter(entry => entry.type === 'document')
@@ -28,7 +38,7 @@ export function useDesktopSync() {
         const desktopFiles = await Promise.all(filePromises);
         setFiles(desktopFiles);
 
-        // Create TLDraw shapes for each file
+        // 3. Create fresh shapes for each file
         desktopFiles.forEach((file, index) => {
           const position = file.desktopMeta?.x && file.desktopMeta?.y
             ? { x: file.desktopMeta.x, y: file.desktopMeta.y }
