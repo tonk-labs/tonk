@@ -9,6 +9,7 @@ import {
 import type { FileIconShape } from './types';
 import { getFileIcon, getAppHandler } from '../utils/mimeResolver';
 import { navigate } from '../utils/navigationHandler';
+import './fileIcon.css';
 
 export class FileIconUtil extends ShapeUtil<FileIconShape> {
   static override type = 'file-icon' as const;
@@ -32,8 +33,8 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
       filePath: '',
       fileName: 'Untitled',
       mimeType: 'application/octet-stream',
-      w: 80,
-      h: 100,
+      w: 90,
+      h: 110,
     };
   }
 
@@ -48,39 +49,33 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
   component(shape: FileIconShape) {
     const icon = shape.props.customIcon || getFileIcon(shape.props.mimeType);
 
+    // Detect selected state
+    const isSelected = this.editor.getSelectedShapeIds().includes(shape.id);
+
+    // Detect dragging state - check if the current tool is 'select' and shape is being moved
+    // In TLDraw v4, we can approximate dragging by checking if the shape is selected
+    // The dragging visual state will be applied when the user starts moving the shape
+    const isDragging = false; // TLDraw handles dragging visual feedback internally
+
+    // Build class name
+    const className = [
+      'file-icon',
+      isSelected ? 'selected' : '',
+      isDragging ? 'dragging' : '',
+    ].filter(Boolean).join(' ');
+
     return (
       <HTMLContainer
+        className={className}
         style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          pointerEvents: 'all',
-          backgroundColor: '#2d2d2d',
-          border: '2px solid #444',
-          borderRadius: '8px',
-          padding: '8px',
           width: shape.props.w,
           height: shape.props.h,
         }}
       >
-        <div
-          style={{
-            fontSize: '32px',
-            marginBottom: '8px',
-          }}
-        >
+        <div className="file-icon-emoji">
           {icon}
         </div>
-        <div
-          style={{
-            fontSize: '12px',
-            color: '#fff',
-            textAlign: 'center',
-            wordBreak: 'break-word',
-            maxWidth: '100%',
-          }}
-        >
+        <div className="file-icon-label">
           {shape.props.fileName}
         </div>
       </HTMLContainer>
@@ -92,8 +87,10 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
       <rect
         width={shape.props.w}
         height={shape.props.h}
+        rx={12}
+        ry={12}
         fill="transparent"
-        stroke="blue"
+        stroke="#0078d4"
         strokeWidth={2}
       />
     );
@@ -105,8 +102,8 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
   ): Omit<TLShapePartial<FileIconShape>, 'id' | 'type'> | undefined {
     return {
       props: {
-        w: Math.max(60, info.scaleX * info.initialShape.props.w),
-        h: Math.max(80, info.scaleY * info.initialShape.props.h),
+        w: Math.max(70, info.scaleX * info.initialShape.props.w),
+        h: Math.max(90, info.scaleY * info.initialShape.props.h),
       },
     };
   }
