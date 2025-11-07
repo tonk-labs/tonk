@@ -13,7 +13,8 @@
     "format:check": "biome format .",
     "check": "biome check .",
     "preview": "vite preview",
-    "bundle": "bun run build && bun scripts/bundleBuilder.ts -- create"
+    "bundle": "bun run build && bun scripts/bundleBuilder.ts -- create",
+    "create-samples": "bun scripts/createSampleFiles.ts"
   },
   "dependencies": {
     "@carbon/colors": "^11.42.0",

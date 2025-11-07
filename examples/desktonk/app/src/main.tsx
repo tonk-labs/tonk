@@ -4,6 +4,9 @@ import "./index.css";
 import Router from "./Router";
 import { getVFSService } from "./lib/vfs-service";
 
+// Import sample files utility to make it available in browser console
+import "./utils/sampleFiles";
+
 // Initialize VFS before React mounts
 getVFSService().initialize('', '').catch(err => {
   console.warn('VFS initialization warning:', err);
