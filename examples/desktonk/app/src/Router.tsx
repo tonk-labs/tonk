@@ -3,7 +3,7 @@ import App from './App';
 
 function Router() {
   return (
-    <BrowserRouter basename="/app">
+    <BrowserRouter basename={import.meta.env.DEV ? "/app" : "/"}>
       <Routes>
         <Route path="/" element={<div>Desktop placeholder</div>} />
         <Route path="/text-editor" element={<App />} />
