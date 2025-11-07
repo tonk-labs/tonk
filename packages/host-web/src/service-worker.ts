@@ -644,7 +644,12 @@ const determinePath = (url: URL): string => {
     });
   }
 
-  if (TONK_SERVE_LOCAL && appSlug && !isRootRequest) {
+  if (
+    TONK_SERVE_LOCAL &&
+    appSlug &&
+    !isRootRequest &&
+    url.origin === location.origin
+  ) {
     // Intercept and proxy Vite HMR assets
     if (
       url.pathname.startsWith('/@vite') ||
@@ -764,10 +769,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                ? 'loading'
-                : tonkState.status === 'failed'
-                ? 'failed'
-                : 'uninitialized',
+                  ? 'loading'
+                  : tonkState.status === 'failed'
+                    ? 'failed'
+                    : 'uninitialized',
           });
 
           if (!tonkInstance) {
