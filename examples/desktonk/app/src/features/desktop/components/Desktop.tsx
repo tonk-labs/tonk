@@ -62,7 +62,7 @@ const DesktopInner = track(() => {
       <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📂</div>
       <div>Desktop is empty</div>
       <div style={{ fontSize: '1rem', marginTop: '0.5rem', color: '#888' }}>
-        Add files to /desktonk to see them here
+        Add files to the desktop directory to see them here
       </div>
     </div>
   ) : null;

@@ -8,6 +8,11 @@ import { syncCoordinator } from './syncCoordinator';
 import { showWarning } from '../../../lib/notifications';
 
 /**
+ * Directory path where desktop files are stored in VFS.
+ */
+const DESKTOP_DIRECTORY = '/desktonk';
+
+/**
  * Debounce delay for directory watch callbacks (in milliseconds).
  * Balances between responsiveness and performance during bulk file operations.
  * Too short: reload thrashing when many files change rapidly.
@@ -65,7 +70,7 @@ export function useDesktopSync() {
         // 3. Load files from VFS
         // Use Promise.allSettled to handle individual file failures gracefully
         // If one file is corrupted, we still show the rest instead of failing entirely
-        const entries = await vfs.listDirectory('/desktonk');
+        const entries = await vfs.listDirectory(DESKTOP_DIRECTORY);
 
         // Abort check after async operation
         if (isUnmountedRef.current) {
@@ -84,8 +89,8 @@ export function useDesktopSync() {
           .filter(entry => entry.type === 'document')
           .map(async (entry) => {
             try {
-              const doc = await vfs.readFile(`/desktonk/${entry.name}`);
-              return extractDesktopFile(`/desktonk/${entry.name}`, doc);
+              const doc = await vfs.readFile(`${DESKTOP_DIRECTORY}/${entry.name}`);
+              return extractDesktopFile(`${DESKTOP_DIRECTORY}/${entry.name}`, doc);
             } catch (error) {
               console.error(`[useDesktopSync] Failed to load file ${entry.name}:`, error);
               throw error; // Re-throw so Promise.allSettled marks it as rejected
@@ -101,7 +106,7 @@ export function useDesktopSync() {
         }
 
         // Extract successful results and log failures
-        const desktopFiles = results
+        const loadedFiles = results
           .filter((result): result is PromiseFulfilledResult<DesktopFile> => result.status === 'fulfilled')
           .map(result => result.value);
 
@@ -114,7 +119,7 @@ export function useDesktopSync() {
           );
         }
 
-        setFiles(desktopFiles);
+        setFiles(loadedFiles);
 
         // 4. Create fresh shapes for each file
         // Final abort check before creating shapes (prevents crashes on unmounted editor)
@@ -123,17 +128,17 @@ export function useDesktopSync() {
           return;
         }
 
-        desktopFiles.forEach((file, index) => {
+        loadedFiles.forEach((file, index) => {
           const position = file.desktopMeta?.x && file.desktopMeta?.y
             ? { x: file.desktopMeta.x, y: file.desktopMeta.y }
             : getNextAutoLayoutPosition(index);
 
           // Use deterministic ID based on file path to prevent duplicate shapes
           // This ensures that the same file always gets the same shape ID
-          const shapeId = `file-icon:${file.path}`;
+          const shapeId = `file-icon:${file.path}` as const;
 
           editor.createShape({
-            id: shapeId as any, // Type assertion needed for TLDraw's ID type
+            id: shapeId as unknown as string, // Type assertion needed for TLDraw's ID type
             type: 'file-icon',
             x: position.x,
             y: position.y,
@@ -162,7 +167,7 @@ export function useDesktopSync() {
     async function setupWatcher(): Promise<void> {
       let tempWatchId: string | null = null;
       try {
-        tempWatchId = await vfs.watchDirectory('/desktonk', (changeData) => {
+        tempWatchId = await vfs.watchDirectory(DESKTOP_DIRECTORY, (changeData) => {
           console.log('Directory changed:', changeData);
 
           // Debounce rapid directory changes (e.g., build systems writing many files)

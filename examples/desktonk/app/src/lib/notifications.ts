@@ -105,18 +105,15 @@ function dismiss(toast: HTMLElement): void {
   }, 300);
 }
 
+const NOTIFICATION_COLORS: Record<NotificationType, string> = {
+  error: '#dc2626',   // red-600
+  warning: '#f59e0b', // amber-500
+  success: '#16a34a', // green-600
+  info: '#2563eb',    // blue-600
+};
+
 function getBackgroundColor(type: NotificationType): string {
-  switch (type) {
-    case 'error':
-      return '#dc2626'; // red-600
-    case 'warning':
-      return '#f59e0b'; // amber-500
-    case 'success':
-      return '#16a34a'; // green-600
-    case 'info':
-    default:
-      return '#2563eb'; // blue-600
-  }
+  return NOTIFICATION_COLORS[type];
 }
 
 /**
