@@ -10,7 +10,7 @@ import { showWarning } from '../../../lib/notifications';
 /**
  * Directory path where desktop files are stored in VFS.
  */
-const DESKTOP_DIRECTORY = '/desktonk';
+export const DESKTOP_DIRECTORY = '/desktonk';
 
 /**
  * Debounce delay for directory watch callbacks (in milliseconds).
@@ -135,7 +135,7 @@ export function useDesktopSync() {
 
           // Use deterministic ID based on file path to prevent duplicate shapes
           // This ensures that the same file always gets the same shape ID
-          const shapeId = `file-icon:${file.path}` as const;
+          const shapeId = `shape:file-icon:${file.path}` as const;
 
           editor.createShape({
             id: shapeId as unknown as string, // Type assertion needed for TLDraw's ID type

@@ -6,12 +6,14 @@ import './desktop.css';
 import { FileIconUtil } from '../shapes';
 import { useDesktopSync, usePositionSync } from '../hooks';
 import { setNavigationHandler } from '../utils/navigationHandler';
+import { useFileDrop } from '../hooks/useFileDrop';
 
 const customShapeUtils = [FileIconUtil];
 
 const DesktopInner = track(() => {
   const navigate = useNavigate();
   const { isLoading, files } = useDesktopSync();
+  const { isDraggingOver, handleDrop, handleDragOver, handleDragEnter, handleDragLeave } = useFileDrop();
 
   // Enable position persistence
   usePositionSync();
@@ -67,7 +69,33 @@ const DesktopInner = track(() => {
     </div>
   ) : null;
 
-  return emptyStateOverlay;
+  // Render drag overlay when dragging files over
+  const dragOverlay = isDraggingOver ? (
+    <div className="drop-overlay">
+      <div className="drop-message">
+        <div className="drop-icon">📁</div>
+        <div>Drop files to upload</div>
+      </div>
+    </div>
+  ) : null;
+
+  return (
+    <div
+      className={isDraggingOver ? 'dragging-over-content' : ''}
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        pointerEvents: isDraggingOver ? 'auto' : 'none',
+      }}
+    >
+      {emptyStateOverlay}
+      {dragOverlay}
+    </div>
+  );
 });
 
 function Desktop() {
