@@ -120,6 +120,9 @@ export function useFileDrop() {
       await vfs.writeFile(filePath, { content: docContent });
       console.log('[useFileDrop] File written successfully:', filePath);
 
+      // Trigger desktop refresh (workaround for VFS directory watch not firing)
+      window.dispatchEvent(new CustomEvent('desktop:refresh'));
+
       return true;
     } catch (error) {
       console.error(`[useFileDrop] Failed to upload file ${file.name}:`, error);

@@ -167,8 +167,9 @@ export function useDesktopSync() {
     async function setupWatcher(): Promise<void> {
       let tempWatchId: string | null = null;
       try {
+        console.log('[useDesktopSync] Setting up directory watcher for:', DESKTOP_DIRECTORY);
         tempWatchId = await vfs.watchDirectory(DESKTOP_DIRECTORY, (changeData) => {
-          console.log('Directory changed:', changeData);
+          console.log('[useDesktopSync] Directory changed:', changeData);
 
           // Debounce rapid directory changes (e.g., build systems writing many files)
           // This prevents reload thrashing and improves performance
@@ -197,6 +198,7 @@ export function useDesktopSync() {
         });
         // Only set watchId if successful
         watchId = tempWatchId;
+        console.log('[useDesktopSync] Directory watcher setup successful, watchId:', watchId);
       } catch (error) {
         console.error('[useDesktopSync] Failed to setup directory watcher:', error);
         // Clean up partial watcher if it was created before error
@@ -225,7 +227,18 @@ export function useDesktopSync() {
       setupWatcher();
     }
 
+    // Listen for manual refresh events (workaround for VFS directory watch not firing)
+    const handleRefresh = () => {
+      console.log('[useDesktopSync] Manual refresh triggered');
+      loadDesktopFiles();
+    };
+    window.addEventListener('desktop:refresh', handleRefresh);
+
     return () => {
+      // Remove refresh listener
+      window.removeEventListener('desktop:refresh', handleRefresh);
+
+
       // Unsubscribe from VFS connection changes
       unsubscribeVFS();
       // Mark component as unmounted to abort any in-flight operations
