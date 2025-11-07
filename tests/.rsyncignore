@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+target/
+dist/
+build/
+
+# Caches
+.cache/
+.eslintcache
+
+# Test results
+test-results/
+playwright-report/
+coverage/
+
+# Logs
+*.log
+*.pid
+*.seed
+logs/
+
+# Version control
+.git/
+
+# Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+**/.DS_Store
+
+# Environment files
+.env
+.env.*
+.direnv
+
+# Temporary files
+*.tmp
+*.temp
+.relay-binary
+
+# Local files
+*.local.*

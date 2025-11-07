@@ -1,14 +1,7 @@
 import { useEffect, useCallback } from 'preact/hooks';
 import { useTonk } from '../context/TonkContext';
 import { useServiceWorker } from './useServiceWorker';
-
-const ALLOWED_ORIGINS = [
-  'https://tonk.xyz',
-  'https://www.tonk.xyz',
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'http://localhost:5174',
-];
+import { ALLOWED_ORIGINS } from '../constants';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
@@ -29,7 +22,7 @@ export function useDragDrop() {
       if (files.length === 0) return;
 
       // Filter for .tonk files
-      const tonkFiles = Array.from(files).filter((file) =>
+      const tonkFiles = Array.from(files).filter(file =>
         file.name.toLowerCase().endsWith('.tonk')
       );
 
@@ -57,9 +50,7 @@ export function useDragDrop() {
     e.preventDefault();
     e.stopPropagation();
 
-    const activeMenu = document.querySelector<HTMLElement>(
-      '.boot-menu'
-    );
+    const activeMenu = document.querySelector<HTMLElement>('.boot-menu');
     if (activeMenu) {
       activeMenu.classList.add('drag-over');
     }
@@ -79,7 +70,10 @@ export function useDragDrop() {
     async (event: MessageEvent) => {
       // Validate origin
       if (!ALLOWED_ORIGINS.includes(event.origin)) {
-        console.warn('[Cross-Origin D&D] Rejected message from unauthorized origin:', event.origin);
+        console.warn(
+          '[Cross-Origin D&D] Rejected message from unauthorized origin:',
+          event.origin
+        );
         return;
       }
 
@@ -94,9 +88,7 @@ export function useDragDrop() {
 
       switch (type) {
         case 'tonk:dragEnter': {
-          const activeMenu = document.querySelector<HTMLElement>(
-            '.boot-menu'
-          );
+          const activeMenu = document.querySelector<HTMLElement>('.boot-menu');
           if (activeMenu) {
             activeMenu.classList.add('drag-over');
           }
@@ -133,7 +125,9 @@ export function useDragDrop() {
           }
 
           if (fileData.byteLength > MAX_FILE_SIZE) {
-            showError(`File too large. Maximum size is ${MAX_FILE_SIZE / 1024 / 1024}MB`);
+            showError(
+              `File too large. Maximum size is ${MAX_FILE_SIZE / 1024 / 1024}MB`
+            );
             return;
           }
 
@@ -153,7 +147,7 @@ export function useDragDrop() {
 
             // Send success response to parent
             if (window.parent !== window) {
-              ALLOWED_ORIGINS.forEach((origin) => {
+              ALLOWED_ORIGINS.forEach(origin => {
                 try {
                   window.parent.postMessage(
                     {
@@ -164,16 +158,22 @@ export function useDragDrop() {
                     origin
                   );
                 } catch (err) {
+                  console.warn(
+                    '[Cross-Origin D&D] Failed to send success response to parent:',
+                    err
+                  );
                   // Ignore errors for wrong origins
                 }
               });
             }
           } catch (error: any) {
-            showError('Failed to process file: ' + (error.message || 'Unknown error'));
+            showError(
+              'Failed to process file: ' + (error.message || 'Unknown error')
+            );
 
             // Send error response to parent
             if (window.parent !== window) {
-              ALLOWED_ORIGINS.forEach((origin) => {
+              ALLOWED_ORIGINS.forEach(origin => {
                 try {
                   window.parent.postMessage(
                     {
@@ -185,6 +185,10 @@ export function useDragDrop() {
                     origin
                   );
                 } catch (err) {
+                  console.warn(
+                    '[Cross-Origin D&D] Failed to send error response to parent:',
+                    err
+                  );
                   // Ignore
                 }
               });
@@ -204,7 +208,7 @@ export function useDragDrop() {
       e.stopPropagation();
     };
 
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((eventName) => {
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
       document.body.addEventListener(eventName, preventDefaults, false);
     });
 
@@ -216,12 +220,20 @@ export function useDragDrop() {
     window.addEventListener('message', handleCrossOriginMessage);
 
     return () => {
-      ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((eventName) => {
+      ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
         document.body.removeEventListener(eventName, preventDefaults, false);
       });
 
-      document.body.removeEventListener('dragover', handleDragOver as any, false);
-      document.body.removeEventListener('dragleave', handleDragLeave as any, false);
+      document.body.removeEventListener(
+        'dragover',
+        handleDragOver as any,
+        false
+      );
+      document.body.removeEventListener(
+        'dragleave',
+        handleDragLeave as any,
+        false
+      );
       document.body.removeEventListener('drop', handleDrop as any, false);
       window.removeEventListener('message', handleCrossOriginMessage);
     };

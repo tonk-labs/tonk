@@ -26,7 +26,9 @@ export default defineConfig(async ({ mode }) => {
     plugins,
     server: {
       proxy: {
-        '/api': process.env.MANIFEST_URL || 'http://localhost:8081',
+        '/api':
+          process.env.MANIFEST_URL ||
+          'http://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080',
       },
     },
     build: {

@@ -7,7 +7,12 @@ import { BrowserRouter } from 'react-router-dom';
 import * as ReactRouterDOM from 'react-router-dom';
 import * as zustand from 'zustand';
 import * as ChakraUI from '@chakra-ui/react';
-import { ChakraProvider, defaultSystem, createToaster, Toaster } from '@chakra-ui/react';
+import {
+  ChakraProvider,
+  defaultSystem,
+  createToaster,
+  Toaster,
+} from '@chakra-ui/react';
 import App from './App';
 import { getAgentService } from './lib/agent/agent-service';
 import { sync } from './middleware';
@@ -45,7 +50,7 @@ const isLocalhost =
   window.location.hostname === 'localhost' ||
   window.location.hostname === '127.0.0.1';
 const relayUrl = isLocalhost
-  ? 'http://localhost:8081'
+  ? 'http://ec2-16-16-146-55.eu-north-1.compute.amazonaws.com:8080'
   : 'https://relay.tonk.xyz';
 
 const manifestUrl = `${relayUrl}/.manifest.tonk`;

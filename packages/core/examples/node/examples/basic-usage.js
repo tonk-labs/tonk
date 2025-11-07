@@ -88,7 +88,7 @@ async function main() {
 
     // WebSocket connection example (commented out as it requires a server)
     // console.log('\nConnecting to WebSocket server...');
-    // await engine.connectWebsocket('ws://localhost:8080');
+    // await engine.connectWebsocket('ws://localhost:8081');
     // console.log('Connected to WebSocket server');
   } catch (error) {
     console.error('Error:', error);

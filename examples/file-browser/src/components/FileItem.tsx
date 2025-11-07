@@ -1,10 +1,9 @@
 import React from 'react';
-import { DirectoryEntry, NodeMetadata } from '@tonk/core';
+import { RefNode } from '@tonk/core';
 import { TonkService } from '../services/tonkService';
 
 interface FileItemProps {
-  item: DirectoryEntry;
-  metadata: NodeMetadata;
+  item: RefNode;
   currentPath: string;
   onNavigate: (path: string) => void;
   onDelete: (path: string) => void;
@@ -12,7 +11,6 @@ interface FileItemProps {
 
 const FileItem: React.FC<FileItemProps> = ({
   item,
-  metadata,
   currentPath,
   onNavigate,
   onDelete,
@@ -134,7 +132,9 @@ const FileItem: React.FC<FileItemProps> = ({
         <div>
           <div className="font-medium text-[#1d1d1f]">{item.name}</div>
           <div className="text-xs text-[#86868b]">
-            {TonkService.formatDate(metadata.modifiedAt.getTime())}
+            {TonkService.formatDate(
+              new Date(item.timestamps.modified).getTime()
+            )}
           </div>
         </div>
       </div>

@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
 import { create_sync_engine } from '../../pkg-node/tonk_core.js';
-import WebSocket from 'ws';
 
 class SamodTestClient {
-  constructor(clientId, serverUrl = 'ws://127.0.0.1:8080') {
+  constructor(clientId, serverUrl = 'ws://127.0.0.1:8081') {
     this.clientId = clientId;
     this.serverUrl = serverUrl;
     this.syncEngine = null;
@@ -255,4 +254,3 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
       process.exit(1);
     });
 }
-

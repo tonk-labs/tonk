@@ -26,12 +26,6 @@ echo "🔨 Rebuilding host-web..."
 cd ../host-web
 pnpm build
 
-echo "🔄 Starting tonk-app..."
-cd ../../examples/demo/app
-pnpm install
-nohup pnpm dev &
-disown
-
 echo "🔄 Restarting host-web service..."
 sudo systemctl restart host-web.service
 

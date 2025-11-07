@@ -4,4 +4,4 @@ procs:
   host-web:
     shell: 'pnpm run dev:host-web'
   relay:
-    shell: '../../packages/relay/target/release/tonk-relay 8081 bundling.tonk'
+    shell: '${TONK_RELAY_BINARY:-../../packages/relay/target/release/tonk-relay} 8081 bundling.tonk'

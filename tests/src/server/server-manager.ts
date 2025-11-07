@@ -15,7 +15,9 @@ async function getRelayBinaryPath(): Promise<string> {
     return binaryPath.trim();
   } catch (error) {
     throw new Error(
-      'Relay binary path not found. Make sure global setup has run successfully.'
+      'Relay binary path not found. Make sure global setup has run successfully.\n' +
+        'To build the basic relay: cd packages/relay && cargo build\n' +
+        'For proprietary relay: nix develop .#withKnot --override-input knot path:../knot'
     );
   }
 }

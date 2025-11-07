@@ -7,13 +7,35 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export default async function globalSetup() {
-  console.log('Building relay binary for tests...');
+  console.log('Setting up relay binary for tests...');
 
+  let binaryPath: string;
+
+  // 1. Check access to the proprietary relay
+  if (process.env.TONK_RELAY_BINARY) {
+    binaryPath = process.env.TONK_RELAY_BINARY;
+    if (fs.existsSync(binaryPath)) {
+      console.log(`Using proprietary relay from: ${binaryPath}`);
+      fs.writeFileSync(
+        path.join(__dirname, '.relay-binary'),
+        binaryPath,
+        'utf-8'
+      );
+      return;
+    } else {
+      console.warn(
+        `TONK_RELAY_BINARY set to ${binaryPath} but file not found. Falling back to basic relay.`
+      );
+    }
+  }
+
+  // 2. Otherwise, build and use basic relay
+  console.log('Building basic relay binary...');
   const relayPath = path.resolve(__dirname, '../packages/relay');
   const targetDir = path.join(relayPath, 'target', 'debug');
   const binaryName =
     process.platform === 'win32' ? 'tonk-relay.exe' : 'tonk-relay';
-  const binaryPath = path.join(targetDir, binaryName);
+  binaryPath = path.join(targetDir, binaryName);
 
   try {
     execSync('cargo build', {
@@ -29,7 +51,7 @@ export default async function globalSetup() {
     }
 
     process.env.RELAY_BINARY_PATH = binaryPath;
-    console.log(`Relay binary built successfully at: ${binaryPath}`);
+    console.log(`Basic relay binary built successfully at: ${binaryPath}`);
 
     fs.writeFileSync(
       path.join(__dirname, '.relay-binary'),

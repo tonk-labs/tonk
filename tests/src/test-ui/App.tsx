@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getVFSService } from './vfs-service';
 import { useCounterStore } from './counter-store';
 
@@ -27,6 +27,44 @@ interface TestState {
   startTime: number;
 }
 
+// Helper function to send messages to service worker
+function sendMessageToServiceWorker<T = any>(message: any): Promise<T> {
+  return new Promise((resolve, reject) => {
+    if (!navigator.serviceWorker.controller) {
+      reject(new Error('No service worker controller available'));
+      return;
+    }
+
+    const requestId = message.id || `${message.type}-${Date.now()}`;
+    const messageWithId = { ...message, id: requestId };
+
+    const messageHandler = (event: MessageEvent) => {
+      if (
+        event.data &&
+        event.data.type === message.type &&
+        event.data.id === requestId
+      ) {
+        navigator.serviceWorker.removeEventListener('message', messageHandler);
+
+        if (event.data.success) {
+          resolve(event.data as T);
+        } else {
+          reject(new Error(event.data.error || 'Operation failed'));
+        }
+      }
+    };
+
+    navigator.serviceWorker.addEventListener('message', messageHandler);
+    navigator.serviceWorker.controller.postMessage(messageWithId);
+
+    // Timeout after 30 seconds
+    setTimeout(() => {
+      navigator.serviceWorker.removeEventListener('message', messageHandler);
+      reject(new Error('Timeout waiting for service worker response'));
+    }, 30000);
+  });
+}
+
 // Helper function to get server configuration
 function getServerConfig(): ServerConfig {
   // Check for injected config first (from tests)
@@ -43,9 +81,15 @@ function getServerConfig(): ServerConfig {
 
   const config = {
     port: portNum,
-    wsUrl: `ws://localhost:${portNum}`,
-    manifestUrl: `http://localhost:${portNum}/.manifest.tonk`,
+    wsUrl: 'wss://relay.tonk.xyz',
+    manifestUrl: 'https://relay.tonk.xyz/.manifest.tonk',
   };
+
+  // const config = {
+  //   port: portNum,
+  //   wsUrl: 'ws://localhost:8081',
+  //   manifestUrl: 'http://localhost:8081/.manifest.tonk',
+  // };
 
   console.log('Using URL/default server config:', config);
   return config;
@@ -76,6 +120,10 @@ function App() {
   const { counter, increment } = useCounterStore();
   const [bundleStatus, setBundleStatus] = useState<string>('');
   const [uploadedBundleId, setUploadedBundleId] = useState<string>('');
+
+  // Refs to prevent double initialization from React StrictMode
+  const initializingRef = useRef(false);
+  const initializedRef = useRef(false);
 
   // Browser metrics collection function
   const collectBrowserMetrics = async (): Promise<BrowserMetrics> => {
@@ -118,38 +166,122 @@ function App() {
     (window as any).__counterStore = useCounterStore; // Expose store for tests
     console.log('VFS service exposed to window');
 
-    // Subscribe to operation updates
-    const unsubscribe = vfs.onOperationComplete(stats => {
-      setState(prev => ({
-        ...prev,
-        operations: stats.totalOperations,
-        errors: stats.totalErrors,
-        operationTimings: stats.recentTimings,
-      }));
-    });
-
     return () => {
       delete (window as any).vfsService;
       delete (window as any).__vfsService;
       delete (window as any).__counterStore;
+    };
+  }, [vfs]);
+
+  // Listen to VFS connection state changes
+  useEffect(() => {
+    console.log('[TEST-UI] Subscribing to VFS connection state changes');
+    const unsubscribe = vfs.onConnectionStateChange(connectionState => {
+      console.log('[TEST-UI] VFS connection state changed:', connectionState);
+      setState(prev => ({
+        ...prev,
+        connected: connectionState === 'connected',
+      }));
+    });
+
+    return () => {
+      console.log('[TEST-UI] Unsubscribing from VFS connection state changes');
       unsubscribe();
     };
   }, [vfs]);
 
   useEffect(() => {
+    // Prevent double initialization in React StrictMode
+    if (initializedRef.current) {
+      console.log(
+        '[TEST-UI] VFS already initialized, skipping duplicate initialization'
+      );
+      return;
+    }
+
+    if (initializingRef.current) {
+      console.log('[TEST-UI] VFS initialization already in progress, skipping');
+      return;
+    }
+
     // Initialize connection using dynamic server config
     const initVFS = async () => {
+      initializingRef.current = true;
+
       try {
-        console.log('Initializing VFS with config:', state.serverConfig);
+        console.log(
+          '[TEST-UI] Fetching shared blank-tonk bundle from relay server'
+        );
+
+        // Step 1: Fetch the shared blank-tonk bundle from the relay
+        // This ensures all clients start with the same root document
+        const blankTonkUrl = 'https://relay.tonk.xyz/api/blank-tonk';
+        // const blankTonkUrl = 'http://localhost:8081/api/blank-tonk';
+        const response = await fetch(blankTonkUrl);
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch blank-tonk: ${response.statusText}`);
+        }
+
+        const bundleBytes = await response.arrayBuffer();
+        console.log(
+          '[TEST-UI] Fetched blank-tonk bundle:',
+          bundleBytes.byteLength,
+          'bytes'
+        );
+
+        // Step 2: Initialize service worker with the shared bundle bytes
+        // This creates the Tonk instance from the same root document
+        const initResponse = await sendMessageToServiceWorker({
+          type: 'initializeFromBytes',
+          bundleBytes: bundleBytes,
+          wsUrl: state.serverConfig.wsUrl,
+        });
+
+        if (!initResponse.success) {
+          throw new Error(
+            initResponse.error || 'Service worker initialization failed'
+          );
+        }
+
+        console.log(
+          '[TEST-UI] Service worker initialized successfully from shared bundle'
+        );
+
+        // Step 3: Now initialize VFS to connect the Tonk instance to the relay
+        // Note: We still need to call vfs.initialize() to set up the VFS service,
+        // but the actual Tonk initialization already happened in the service worker
+        console.log(
+          '[TEST-UI] Connecting VFS to relay:',
+          state.serverConfig.wsUrl
+        );
+
+        console.log('[TEST-UI] About to call vfs.initialize()...');
         await vfs.initialize(
           state.serverConfig.manifestUrl,
           state.serverConfig.wsUrl
         );
-        setState(prev => ({ ...prev, connected: true }));
-        console.log('VFS connection established successfully');
+        console.log(
+          '[TEST-UI] vfs.initialize() completed, checking if initialized:',
+          vfs.isInitialized()
+        );
+
+        initializedRef.current = true;
+        console.log('[TEST-UI] VFS connection established successfully');
       } catch (error) {
-        console.error('Failed to initialize VFS:', error);
-        setState(prev => ({ ...prev, connected: false }));
+        console.error('[TEST-UI] Failed to initialize:', error);
+        console.error('[TEST-UI] Error details:', {
+          message: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+        // Don't set initializedRef.current = true on error, allow retry
+        // Note: connected state is now managed by the VFS connection state listener
+      } finally {
+        initializingRef.current = false;
+        console.log(
+          '[TEST-UI] Initialization finally block, vfs.isInitialized():',
+          vfs.isInitialized()
+        );
       }
     };
 
@@ -217,16 +349,14 @@ function App() {
       const blob = new Blob([bundleBytes as any], {
         type: 'application/octet-stream',
       });
-      const response = await fetch(
-        `http://localhost:${state.serverConfig.port}/api/bundles`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/octet-stream',
-          },
-          body: blob,
-        }
-      );
+      const response = await fetch(`https://relay.tonk.xyz/api/bundles`, {
+        // const response = await fetch(`http://localhost:8081/api/bundles`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+        },
+        body: blob,
+      });
 
       if (!response.ok) {
         throw new Error(`Upload failed: ${response.statusText}`);
@@ -269,7 +399,8 @@ function App() {
 
       // Download from server
       const response = await fetch(
-        `http://localhost:${state.serverConfig.port}/api/bundles/${targetBundleId}/manifest`
+        `https://relay.tonk.xyz/api/bundles/${targetBundleId}/manifest`
+        // `http://localhost:8081/api/bundles/${targetBundleId}/manifest`
       );
 
       if (!response.ok) {

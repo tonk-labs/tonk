@@ -12,6 +12,13 @@ export class MetricsCollector {
   private bytesProcessed: number = 0;
   private operationCount: number = 0;
   private errors: Map<string, number> = new Map();
+  private errorDetails: Array<{
+    timestamp: number;
+    type: string;
+    message: string;
+    stack?: string;
+    context?: any;
+  }> = [];
   private startTime: number = 0;
   private testName: string = '';
   private memorySnapshots: MemoryMetrics[] = [];
@@ -29,6 +36,7 @@ export class MetricsCollector {
     this.bytesProcessed = 0;
     this.operationCount = 0;
     this.errors.clear();
+    this.errorDetails = [];
     this.startTime = performance.now();
     this.memorySnapshots = [];
   }
@@ -55,8 +63,29 @@ export class MetricsCollector {
   /**
    * Record an error
    */
-  recordError(errorType: string): void {
+  recordError(
+    errorType: string,
+    message?: string,
+    stack?: string,
+    context?: any
+  ): void {
     this.errors.set(errorType, (this.errors.get(errorType) || 0) + 1);
+
+    const errorDetail = {
+      timestamp: Date.now(),
+      type: errorType,
+      message: message || errorType,
+      stack,
+      context,
+    };
+    this.errorDetails.push(errorDetail);
+
+    console.error(`❌ Error recorded:`, {
+      type: errorType,
+      message,
+      context,
+      time: new Date().toISOString(),
+    });
   }
 
   /**
@@ -330,6 +359,18 @@ ${Array.from(metrics.errors.types.entries())
     const increaseMB = (avgLast - avgFirst) / (1024 * 1024);
 
     return increaseMB > thresholdMB;
+  }
+
+  getErrorDetails() {
+    return [...this.errorDetails];
+  }
+
+  getErrorSummary() {
+    return {
+      totalErrors: this.errorDetails.length,
+      errorsByType: Object.fromEntries(this.errors),
+      recentErrors: this.errorDetails.slice(-10),
+    };
   }
 }
 

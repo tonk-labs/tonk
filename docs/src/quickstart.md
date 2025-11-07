@@ -5,42 +5,68 @@
 
 ## Prerequisites
 
-Before you begin, you'll need to set up the development environment:
+### Option 1: With Nix (Recommended)
 
-1. **Build core-js**:
+The easiest way to get started is with Nix, which automatically sets up all dependencies including the relay server:
 
 ```bash
-cd packages/core-js
+# Install Nix with flakes support
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+
+# Enter development environment
+cd tonk
+nix develop
+
+# Install dependencies
 pnpm install
-pnpm build
 ```
+
+### Option 2: Manual Setup
+
+If you prefer not to use Nix:
+
+1. **Install dependencies**:
+   - Node.js 20+
+   - pnpm 9+
+   - Rust toolchain (for building core)
+
+2. **Set up relay binary**:
+
+   You'll need access to the relay binary. Contact the Tonk team for details.
+
+   ```bash
+   export TONK_RELAY_BINARY=/path/to/tonk-relay
+   ```
+
+3. **Build core-js**:
+
+   ```bash
+   cd packages/core-js
+   pnpm install
+   pnpm build
+   ```
 
 ## Try the Example
 
 The most complete example is `latergram`. Here's how to run it:
 
-1. **Start the relay server** (required for sync):
+> **Note**: With Nix, the relay server is automatically available via `$TONK_RELAY_BINARY`. Without Nix, ensure you've set the `TONK_RELAY_BINARY` environment variable.
 
-```bash
-cd packages/relay
-pnpm dev
-```
-
-2. **Bundle the latergram example**:
+1. **Bundle the latergram example**:
 
 ```bash
 cd examples/latergram
 pnpm install
 pnpm bundle create # Creates a .tonk file
-touch .env #create .env file, see .env.example for required API_KEY, latergram uses anthropic claude
+touch .env # Create .env file, see .env.example for required API_KEY (latergram uses Anthropic Claude)
 ```
 
-3. **Load it in host-web**:
+2. **Load it in host-web**:
 
 ```bash
 cd packages/host-web
 pnpm dev
-# Then upload the .tonk file created in step 2
+# Then upload the .tonk file created in step 1
 ```
 
 ## Note on Templates
@@ -56,6 +82,7 @@ Explore these working examples:
 
 ## Next Steps
 
+- [Development Guide](../../DEVELOPMENT.md) - Complete setup guide including cross-repo development
 - [Architecture](./architecture.md) - Deep dive into Tonk's design
 - [Virtual File System](./vfs.md) - Learn about the VFS layer
 - [Bundle Format](./bundles.md) - Understand bundle packaging

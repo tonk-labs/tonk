@@ -8,6 +8,7 @@ import {
 
   // Types
   type DocumentData,
+  type DocumentWatcher,
   type RefNode,
   type DirectoryNode,
   type DocumentTimestamps,
@@ -69,6 +70,7 @@ export {
 
   // Types
   type DocumentData,
+  type DocumentWatcher,
   type Manifest,
   type BundleEntry,
   type TonkConfig,

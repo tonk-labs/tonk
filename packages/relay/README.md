@@ -1,4 +1,7 @@
-# Tonk Relay Server
+# Tonk Relay
+
+This is the **free, open-source relay server** for Tonk. Perfect for development, testing, and
+non-demanding use cases.
 
 ## Features
 
@@ -21,7 +24,7 @@ cargo build --release
 ./target/release/tonk-relay <port> <bundle-path> [storage-dir]
 
 # Example
-./target/release/tonk-relay 8080 latergram.tonk ./relay-storage
+./target/release/tonk-relay 8081 latergram.tonk ./relay-storage
 ```
 
 ### Arguments
@@ -72,11 +75,30 @@ Storage files created by the TypeScript version can be read by the Rust version 
 
 ```bash
 # Run with debug logging
-RUST_LOG=debug cargo run -- 8080 latergram.tonk ./relay-storage
+RUST_LOG=debug cargo run -- 8081 latergram.tonk ./relay-storage
 
 # Check for compilation errors
 cargo check
 
 # Run tests
 cargo test
+
+# Auto-rebuild on changes
+cargo watch -x run
 ```
+
+### Internal Development
+
+Internal developers at Tonk Labs can use the proprietary relay for development:
+
+```bash
+# Use proprietary relay from knot repo
+nix develop .#withKnot --override-input knot path:../knot
+```
+
+This sets the `TONK_RELAY_BINARY` environment variable to point to the proprietary relay, and all
+tools (tests, mprocs, etc.) will automatically use it.
+
+## License
+
+Released under the MIT License. See [LICENSE](../../LICENSE) for details.

@@ -164,7 +164,7 @@ async fn serve_wasm(State(state): State<Arc<AppState>>) -> Result<impl IntoRespo
 async fn serve_manifest(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse> {
     tracing::info!("Received request for /.manifest.tonk");
 
-    let slim_bundle = state.bundle_storage.create_slim_bundle().await?;
+    let slim_bundle: Vec<u8> = state.bundle_storage.create_slim_bundle().await?;
 
     tracing::info!(
         "Slim bundle created successfully, size: {}",

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-EC2_HOST="ec2-16-16-146-55.eu-north-1.compute.amazonaws.com"
+EC2_HOST="ec2-13-53-188-126.eu-north-1.compute.amazonaws.com"
 EC2_USER="ec2-user"
 
 echo "🚀 Deploying Tonk Relay to ${EC2_HOST}..."
@@ -22,7 +22,7 @@ echo "🔨 Rebuilding relay..."
 cd packages/relay
 cargo build --release
 
-echo "🔨 Rebuilding core-js (includes WASM)..."
+echo "🔨 Rebuilding core-js..."
 cd ../core-js
 pnpm build --frozen-lockfile
 

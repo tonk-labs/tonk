@@ -6,17 +6,6 @@ interface SyncOptions {
   path: string;
 }
 
-const isLocalhost =
-  window.location.hostname === 'localhost' ||
-  window.location.hostname === '127.0.0.1';
-const relayUrl = isLocalhost
-  ? 'http://localhost:8081'
-  : 'https://relay.tonk.xyz';
-// const relayUrl = 'https://relay.tonk.xyz';
-
-const manifestUrl = `${relayUrl}/.manifest.tonk`;
-const wsUrl = relayUrl.replace(/^http/, 'ws');
-
 export const sync =
   <T extends object>(
     config: StateCreator<T>,
@@ -33,7 +22,6 @@ export const sync =
 
     console.log(`Sync middleware initializing for path: ${options.path}`);
     const vfs = getVFSService();
-    vfs.initialize(manifestUrl, wsUrl);
     let watchId: string | null = null;
     let isInitialized = false;
     let connectionStateUnsubscribe: (() => void) | null = null;
@@ -122,6 +110,12 @@ export const sync =
 
     // Initialize state from file if it exists
     const initializeFromFile = async (state: T) => {
+      // Guard against multiple initializations
+      if (isInitialized) {
+        console.log(`Already initialized for ${options.path}, skipping`);
+        return;
+      }
+
       console.log(`Checking if file exists: ${options.path}`);
       if (await vfs.exists(options.path)) {
         console.log(`File exists, loading saved state from ${options.path}`);
@@ -166,7 +160,9 @@ export const sync =
     ) => {
       // Apply changes to Zustand state first
       if (replace === true) {
+        // TODO: replace full overwrite with more intelligent deep replacement
         set(partial as T, replace);
+        return; // Skip saveToFile to prevent watcher feedback loop
       } else {
         set(partial);
       }
@@ -190,18 +186,6 @@ export const sync =
         }
       }
     );
-
-    // Initialize from file when VFS is ready
-    const waitForVFS = () => {
-      console.log('waiting for vfs', vfs);
-      if (vfs.isInitialized()) {
-        console.log('init from file start');
-        initializeFromFile(state);
-        return;
-      }
-      setTimeout(waitForVFS, 100);
-    };
-    waitForVFS();
 
     // Add cleanup function to state for manual cleanup if needed
     (state as T & { __cleanup?: () => void }).__cleanup = () => {

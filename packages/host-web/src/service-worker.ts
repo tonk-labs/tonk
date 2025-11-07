@@ -164,6 +164,75 @@ function log(level: any, message: any, data?: any) {
 // Worker state for file watchers
 const watchers = new Map();
 
+// Helper to wait for PathIndex to sync from remote
+async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
+  log('info', 'Waiting for PathIndex to sync from remote...');
+
+  return new Promise(resolve => {
+    let syncDetected = false;
+    let watcherHandle: any = null;
+
+    // Covers case where we're first client or PathIndex is already current
+    const timeout = setTimeout(() => {
+      if (watcherHandle) {
+        try {
+          watcherHandle.stop();
+        } catch (error) {
+          log('warn', 'Error stopping PathIndex watcher on timeout', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (!syncDetected) {
+        log(
+          'info',
+          'No PathIndex changes detected after 10s - proceeding (first client or already synced)'
+        );
+        resolve();
+      }
+    }, 1000);
+
+    // Watch root directory (which watches the PathIndex document)
+    tonk
+      .watchDirectory('/', (documentData: any) => {
+        if (!syncDetected) {
+          syncDetected = true;
+          log('info', 'PathIndex synced from remote - changes detected!', {
+            documentType: documentData.type,
+          });
+          clearTimeout(timeout);
+
+          // Stop watching
+          if (watcherHandle) {
+            try {
+              watcherHandle.stop();
+            } catch (error) {
+              log('warn', 'Error stopping PathIndex watcher after sync', {
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+
+          resolve();
+        }
+      })
+      .then((watcher: any) => {
+        watcherHandle = watcher;
+        log('info', 'PathIndex watcher established', {
+          watcherId: watcher?.document_id || 'unknown',
+        });
+      })
+      .catch((error: Error) => {
+        log('error', 'Failed to establish PathIndex watcher', {
+          error: error.message,
+        });
+        // Still resolve to allow initialization to proceed
+        clearTimeout(timeout);
+        resolve();
+      });
+  });
+}
+
 // Helper to post messages back to main thread
 
 async function postResponse(response: any) {
@@ -376,27 +445,10 @@ async function autoInitializeFromCache() {
     log('info', 'Websocket connected');
     startHealthMonitoring();
 
-    // Wait for initial sync
-    let syncAttempts = 0;
-    const maxAttempts = 20;
-    while (syncAttempts < maxAttempts) {
-      try {
-        await tonk.listDirectory('/');
-        log('info', 'Auto-initialization complete - tonk ready');
-        console.log('✅ SERVICE WORKER: Auto-initialized successfully');
-        break;
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      } catch (_error) {
-        syncAttempts++;
-        if (syncAttempts >= maxAttempts) {
-          log('warn', 'Initial sync timeout after restore', {
-            attempts: syncAttempts,
-          });
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-      }
-    }
+    // Wait for PathIndex to sync from remote
+    await waitForPathIndexSync(tonk);
+    log('info', 'Auto-initialization complete - tonk ready');
+    console.log('✅ SERVICE WORKER: Auto-initialized successfully');
 
     // Update tonk state
     tonkState = { status: 'ready', tonk, manifest };
@@ -712,10 +764,10 @@ const determinePath = (url: URL): string => {
               tonkState.status === 'ready'
                 ? 'ready'
                 : tonkState.status === 'loading'
-                  ? 'loading'
-                  : tonkState.status === 'failed'
-                    ? 'failed'
-                    : 'uninitialized',
+                ? 'loading'
+                : tonkState.status === 'failed'
+                ? 'failed'
+                : 'uninitialized',
           });
 
           if (!tonkInstance) {
@@ -817,11 +869,12 @@ async function handleMessage(
     return;
   }
 
-  // Allow init, loadBundle, and initializeFromUrl operations when not ready
+  // Allow init, loadBundle, initializeFromUrl, and initializeFromBytes operations when not ready
   const allowedWhenUninitialized = [
     'init',
     'loadBundle',
     'initializeFromUrl',
+    'initializeFromBytes',
     'getServerUrl',
   ];
   if (
@@ -920,7 +973,7 @@ async function handleMessage(
       log('info', 'Reading file', { path: message.path, id: message.id });
       try {
         const { tonk } = getTonk()!;
-        const documentData = await tonk!.readFile(message.path);
+        const documentData = await tonk.readFile(message.path);
         log('info', 'File read successfully', {
           path: message.path,
           documentType: documentData.type,
@@ -1443,30 +1496,10 @@ async function handleMessage(
           await newTonk.connectWebsocket(wsUrl);
           log('info', 'Websocket connection established');
           startHealthMonitoring();
-        }
 
-        // Wait for initial data sync by polling until root is accessible
-        log('info', 'Waiting for initial data sync');
-        let syncAttempts = 0;
-        const maxAttempts = 20; // 10 seconds max
-        while (syncAttempts < maxAttempts) {
-          try {
-            // Try to list the root directory to verify data is synced
-            await newTonk.listDirectory('/');
-            log('info', 'Initial data sync confirmed');
-            break;
-          } catch (error) {
-            syncAttempts++;
-            if (syncAttempts >= maxAttempts) {
-              log('warn', 'Initial sync timeout, proceeding anyway', {
-                attempts: syncAttempts,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            } else {
-              // Wait 500ms before trying again
-              await new Promise(resolve => setTimeout(resolve, 500));
-            }
-          }
+          // Wait for PathIndex to sync from remote
+          await waitForPathIndexSync(newTonk);
+          log('info', 'PathIndex sync complete after loadBundle');
         }
 
         // Update the global tonk state
@@ -1557,29 +1590,9 @@ async function handleMessage(
         log('info', 'Websocket connection established');
         startHealthMonitoring();
 
-        // Wait for initial data sync by polling until root is accessible
-        log('info', 'Waiting for initial data sync');
-        let syncAttempts = 0;
-        const maxAttempts = 20; // 10 seconds max
-        while (syncAttempts < maxAttempts) {
-          try {
-            // Try to list the root directory to verify data is synced
-            await tonk.listDirectory('/');
-            log('info', 'Initial data sync confirmed');
-            break;
-          } catch (error) {
-            syncAttempts++;
-            if (syncAttempts >= maxAttempts) {
-              log('warn', 'Initial sync timeout, proceeding anyway', {
-                attempts: syncAttempts,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            } else {
-              // Wait 500ms before trying again
-              await new Promise(resolve => setTimeout(resolve, 500));
-            }
-          }
-        }
+        // Wait for PathIndex to sync from remote
+        await waitForPathIndexSync(tonk);
+        log('info', 'PathIndex sync complete after initializeFromUrl');
 
         // Update the global tonk state
         tonkState = { status: 'ready', tonk, manifest };
@@ -1602,6 +1615,83 @@ async function handleMessage(
         tonkState = { status: 'failed', error: error as Error };
         postResponse({
           type: 'initializeFromUrl',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      break;
+
+    case 'initializeFromBytes':
+      log('info', 'Initializing from bytes', {
+        id: message.id,
+        byteLength: message.bundleBytes.byteLength,
+        serverUrl: message.serverUrl,
+        wsUrl: message.wsUrl,
+      });
+      try {
+        const serverUrl = message.serverUrl || TONK_SERVER_URL;
+        const wsUrlInit = message.wsUrl || serverUrl.replace(/^http/, 'ws');
+
+        log('info', 'Using server URL', { serverUrl });
+
+        if (tonkState.status === 'uninitialized') {
+          log('info', 'WASM not initialized, initializing now');
+          const wasmUrl = `${serverUrl}/tonk_core_bg.wasm`;
+          const cacheBustUrl = `${wasmUrl}?t=${Date.now()}`;
+          log('info', 'Fetching WASM from', { cacheBustUrl });
+          await initializeTonk({ wasmPath: cacheBustUrl });
+          log('info', 'WASM initialization completed for bytes loading');
+        }
+
+        const bundleBytes = new Uint8Array(message.bundleBytes);
+        log('info', 'Creating bundle from bytes', {
+          byteLength: bundleBytes.length,
+        });
+
+        const bundle = await Bundle.fromBytes(bundleBytes);
+        const manifest = await bundle.getManifest();
+        log('info', 'Bundle and manifest created successfully', {
+          rootId: manifest.rootId,
+        });
+
+        log('info', 'Creating TonkCore from bundle bytes');
+        const tonk = await TonkCore.fromBytes(bundleBytes, {
+          storage: { type: 'indexeddb' },
+        });
+        log('info', 'TonkCore created successfully');
+
+        wsUrl = wsUrlInit;
+        log('info', 'Connecting to websocket', { wsUrl });
+        if (wsUrl) {
+          await tonk.connectWebsocket(wsUrl);
+          log('info', 'Websocket connection established');
+          startHealthMonitoring();
+
+          // Wait for PathIndex to sync from remote
+          await waitForPathIndexSync(tonk);
+          log('info', 'PathIndex sync complete after initializeFromBytes');
+        }
+
+        tonkState = { status: 'ready', tonk, manifest };
+        log('info', 'Tonk state updated to ready from bytes');
+
+        await persistBundleBytes(bundleBytes);
+        log('info', 'Bundle bytes persisted to IndexedDB');
+
+        postResponse({
+          type: 'initializeFromBytes',
+          id: message.id,
+          success: true,
+        });
+      } catch (error) {
+        log('error', 'Failed to initialize from bytes', {
+          id: message.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        tonkState = { status: 'failed', error: error as Error };
+        postResponse({
+          type: 'initializeFromBytes',
           id: message.id,
           success: false,
           error: error instanceof Error ? error.message : String(error),

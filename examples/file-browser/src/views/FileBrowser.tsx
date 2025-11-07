@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { DirectoryEntry, NodeMetadata } from '@tonk/core';
+import { RefNode } from '@tonk/core';
 import { TonkService } from '../services/tonkService';
 import FileItem from '../components/FileItem';
 
@@ -8,9 +8,7 @@ const FileBrowser: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [currentPath, setCurrentPath] = useState<string>('/');
-  const [directoryContents, setDirectoryContents] = useState<
-    [DirectoryEntry, NodeMetadata][]
-  >([]);
+  const [directoryContents, setDirectoryContents] = useState<RefNode[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [newItemName, setNewItemName] = useState<string>('');
@@ -28,9 +26,73 @@ const FileBrowser: React.FC = () => {
     }
   }, [location]);
 
-  // Load directory contents
+  // Watch root directory for initial changes, with timeout fallback
   useEffect(() => {
-    loadDirectory(currentPath);
+    let watcher: any = null;
+    let timeoutId: NodeJS.Timeout | null = null;
+    let hasLoaded = false;
+
+    const tryLoadDirectory = async () => {
+      const result = await TonkService.listDirectory(currentPath);
+
+      // Consider loaded if we get data
+      if (result && result.length > 0) {
+        hasLoaded = true;
+        loadDirectory(currentPath);
+        // Clear timeout since we got the data
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        return true;
+      }
+      return false;
+    };
+
+    const setupWatcher = async () => {
+      try {
+        // Set up watcher for root directory
+        watcher = await TonkService.watchDirectory('/', async () => {
+          // Load directory when we notice changes (indicates sync)
+          if (!hasLoaded) {
+            await tryLoadDirectory();
+          }
+        });
+
+        // 1 sec fallback
+        timeoutId = setTimeout(async () => {
+          if (!hasLoaded) {
+            hasLoaded = true;
+            loadDirectory(currentPath);
+          }
+        }, 1000);
+      } catch (err) {
+        console.error('Error setting up directory watcher:', err);
+        loadDirectory(currentPath);
+      }
+    };
+
+    setupWatcher();
+
+    // Cleanup
+    return () => {
+      if (watcher) {
+        watcher.stop().catch((err: any) => {
+          console.error('Error stopping watcher:', err);
+        });
+      }
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, []);
+
+  // Load directory contents when path changes
+  useEffect(() => {
+    // Skip the initial mount since the watcher effect handles it
+    if (currentPath !== '/') {
+      loadDirectory(currentPath);
+    }
   }, [currentPath]);
 
   const loadDirectory = async (path: string) => {
@@ -40,7 +102,7 @@ const FileBrowser: React.FC = () => {
       const result = await TonkService.listDirectory(path);
       if (result) {
         // Sort directories first, then files, both alphabetically
-        const sorted = result.sort(([a], [b]) => {
+        const sorted = result.sort((a, b) => {
           if (a.type !== b.type) {
             return a.type === 'directory' ? -1 : 1;
           }
@@ -312,10 +374,9 @@ const FileBrowser: React.FC = () => {
               </div>
             ) : (
               <div className="divide-y divide-[#d2d2d7]">
-                {directoryContents.map(([item, metadata]) => (
+                {directoryContents.map(item => (
                   <FileItem
                     key={item.name}
-                    metadata={metadata}
                     item={item}
                     currentPath={currentPath}
                     onNavigate={handleNavigate}

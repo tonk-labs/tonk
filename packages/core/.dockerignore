@@ -1,0 +1,16 @@
+target/
+pkg/
+pkg-node/
+pkg-browser/
+pkg-bundler/
+node_modules/
+*.wasm
+*.so
+*.dylib
+*.dll
+examples/
+tests/
+.git/
+.github/
+*.md
+!README.md

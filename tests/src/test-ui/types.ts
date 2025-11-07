@@ -38,12 +38,6 @@ export interface TestImage {
 // Message types for VFS Worker communication
 export type VFSWorkerMessage =
   | { type: 'init'; manifest: ArrayBuffer; wsUrl: string }
-  | {
-      type: 'loadBundle';
-      id: string;
-      bundleBytes: ArrayBuffer;
-      serverUrl: string;
-    }
   | { type: 'readFile'; id: string; path: string }
   | {
       type: 'writeFile';
@@ -53,18 +47,35 @@ export type VFSWorkerMessage =
       create: boolean;
     }
   | { type: 'deleteFile'; id: string; path: string }
+  | { type: 'rename'; id: string; oldPath: string; newPath: string }
   | { type: 'listDirectory'; id: string; path: string }
   | { type: 'exists'; id: string; path: string }
   | { type: 'watchFile'; id: string; path: string }
   | { type: 'unwatchFile'; id: string; path: string }
   | { type: 'watchDirectory'; id: string; path: string }
   | { type: 'unwatchDirectory'; id: string; path: string }
+  | { type: 'toBytes'; id: string }
+  | { type: 'forkToBytes'; id: string }
   | { type: 'exportBundle'; id: string }
-  | { type: 'toBytes'; id: string };
+  | { type: 'loadBundle'; id: string; bundleBytes: ArrayBuffer }
+  | {
+      type: 'initializeFromUrl';
+      id: string;
+      manifestUrl?: string;
+      wasmUrl?: string;
+      wsUrl?: string;
+    }
+  | {
+      type: 'initializeFromBytes';
+      id: string;
+      bundleBytes: ArrayBuffer;
+      serverUrl?: string;
+      wsUrl?: string;
+    }
+  | { type: 'getServerUrl'; id: string };
+
 export type VFSWorkerResponse =
   | { type: 'init'; success: boolean; error?: string }
-  | { type: 'loadBundle'; id: string; success: boolean; error?: string }
-  | { type: 'ready'; needsBundle?: boolean }
   | {
       type: 'readFile';
       id: string;
@@ -74,6 +85,7 @@ export type VFSWorkerResponse =
     }
   | { type: 'writeFile'; id: string; success: boolean; error?: string }
   | { type: 'deleteFile'; id: string; success: boolean; error?: string }
+  | { type: 'rename'; id: string; success: boolean; error?: string }
   | {
       type: 'listDirectory';
       id: string;
@@ -97,7 +109,23 @@ export type VFSWorkerResponse =
       type: 'directoryChanged';
       watchId: string;
       path: string;
-      changeData: any;
+      changeData: unknown;
+    }
+  | {
+      type: 'toBytes';
+      id: string;
+      success: boolean;
+      data?: Uint8Array;
+      rootId?: string;
+      error?: string;
+    }
+  | {
+      type: 'forkToBytes';
+      id: string;
+      success: boolean;
+      data?: Uint8Array;
+      rootId?: string;
+      error?: string;
     }
   | {
       type: 'exportBundle';
@@ -107,13 +135,35 @@ export type VFSWorkerResponse =
       error?: string;
     }
   | {
-      type: 'toBytes';
+      type: 'loadBundle';
       id: string;
       success: boolean;
-      data?: Uint8Array;
-      rootId?: string;
       error?: string;
-    };
+    }
+  | {
+      type: 'initializeFromUrl';
+      id: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: 'initializeFromBytes';
+      id: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: 'getServerUrl';
+      id: string;
+      success: boolean;
+      data?: string;
+      error?: string;
+    }
+  | { type: 'disconnected' }
+  | { type: 'reconnecting'; attempt: number }
+  | { type: 'reconnected' }
+  | { type: 'reconnectionFailed' }
+  | { type: 'watchersReestablished'; count: number };
 
 // Performance metrics types
 export interface MemoryMetrics {
