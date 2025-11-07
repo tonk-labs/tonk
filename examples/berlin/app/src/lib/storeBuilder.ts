@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { PersistStorage } from 'zustand/middleware';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import type { StateCreator } from 'zustand';
 import { sync } from './middleware';
 
 export type VFSConfig = {
@@ -19,7 +20,7 @@ export type PersistConfig = {
 
 export type StoreConfig = VFSConfig | PersistConfig;
 
-export const StoreBuilder = <T>(
+export const StoreBuilder = <T extends object>(
 	initialState: T,
 	config: StoreConfig,
 ) => {
@@ -29,26 +30,28 @@ export const StoreBuilder = <T>(
 	const useStore =
 		config.type === 'vfs'
 			? create<StoreState>()(
-					sync(
-						immer(() => ({
+					sync<StoreState>(
+						immer<StoreState>(() => ({
 							...initialState,
-						})),
+						})) as StateCreator<StoreState>,
 						{
 							path: config.path,
 						}
 					)
 				)
 			: create<StoreState>()(
-					persist(
-						immer(() => ({
-							...initialState,
-						})),
-						{
-							name: config.name,
-							storage: config.storage,
-							partialize: config.partialize as (state: StoreState) => object,
-							version: config.version,
-						}
+					immer<StoreState>(
+						persist<StoreState>(
+							() => ({
+								...initialState,
+							}),
+							{
+								name: config.name,
+								storage: config.storage as PersistStorage<StoreState> | undefined,
+								partialize: config.partialize as any,
+								version: config.version,
+							}
+						) as StateCreator<StoreState, [['zustand/immer', never]], []>
 					)
 				);
 
