@@ -1,0 +1,85 @@
+import { useEffect, useState } from 'react';
+import { useEditor } from 'tldraw';
+import type { RefNode } from '@tonk/core';
+import { getVFSService } from '../../../lib/vfs-service';
+import { extractDesktopFile, getNextAutoLayoutPosition } from '../utils/fileMetadata';
+import type { DesktopFile } from '../types';
+
+export function useDesktopSync() {
+  const editor = useEditor();
+  const [files, setFiles] = useState<DesktopFile[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const vfs = getVFSService();
+    let watchId: string | null = null;
+
+    async function loadDesktopFiles() {
+      try {
+        const entries = (await vfs.listDirectory('/desktonk')) as RefNode[];
+        const filePromises = entries
+          .filter(entry => entry.type === 'document')
+          .map(async (entry) => {
+            const doc = await vfs.readFile(`/desktonk/${entry.name}`);
+            return extractDesktopFile(`/desktonk/${entry.name}`, doc);
+          });
+
+        const desktopFiles = await Promise.all(filePromises);
+        setFiles(desktopFiles);
+
+        // Create TLDraw shapes for each file
+        desktopFiles.forEach((file, index) => {
+          const position = file.desktopMeta?.x && file.desktopMeta?.y
+            ? { x: file.desktopMeta.x, y: file.desktopMeta.y }
+            : getNextAutoLayoutPosition(index);
+
+          editor.createShape({
+            type: 'file-icon',
+            x: position.x,
+            y: position.y,
+            props: {
+              filePath: file.path,
+              fileName: file.name,
+              mimeType: file.mimeType,
+              customIcon: file.desktopMeta?.icon,
+              appHandler: file.desktopMeta?.appHandler,
+              w: 80,
+              h: 100,
+            },
+          });
+        });
+
+        setIsLoading(false);
+      } catch (error) {
+        console.error('Failed to load desktop files:', error);
+        setIsLoading(false);
+      }
+    }
+
+    // Setup directory watcher
+    async function setupWatcher() {
+      try {
+        watchId = await vfs.watchDirectory('/desktonk', (changeData) => {
+          console.log('Directory changed:', changeData);
+          // Reload files on change
+          loadDesktopFiles();
+        });
+      } catch (error) {
+        console.error('Failed to setup directory watcher:', error);
+      }
+    }
+
+    if (vfs.isInitialized()) {
+      loadDesktopFiles();
+      setupWatcher();
+    }
+
+    return () => {
+      if (watchId) {
+        vfs.unwatchDirectory(watchId).catch(console.error);
+      }
+    };
+  }, [editor]);
+
+  return { files, isLoading };
+}
