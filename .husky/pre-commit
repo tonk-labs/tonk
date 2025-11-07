@@ -2,7 +2,6 @@
 
 echo "🚀 Running pre-commit hooks..."
 
-pnpm i
 # Run lint-staged for auto-fixing and formatting
 npx lint-staged
 LINT_EXIT_CODE=$?
