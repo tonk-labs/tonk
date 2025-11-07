@@ -6,12 +6,24 @@ import { syncCoordinator } from './syncCoordinator';
 import { showError, showWarning } from '../../../lib/notifications';
 
 /**
+ * Map of file paths to their in-progress save operations.
+ * Used to serialize concurrent saves to the same file.
+ */
+type SaveOperationMap = Map<string, Promise<void>>;
+
+/**
  * Debounce delay for position saves (in milliseconds).
  * Balances between responsiveness and reducing VFS write frequency.
  * Too short: excessive VFS writes during dragging.
  * Too long: delayed persistence, poor user experience.
  */
 const POSITION_SAVE_DEBOUNCE_MS = 500;
+
+/**
+ * Duration for error notifications about position save failures (in milliseconds).
+ * Longer than default since position persistence failure is important.
+ */
+const ERROR_NOTIFICATION_DURATION_MS = 7000;
 
 /**
  * Hook that listens for FileIcon shape position changes and persists them to VFS.
@@ -21,7 +33,7 @@ export function usePositionSync() {
   const editor = useEditor();
   const saveTimeoutRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const previousPositionsRef = useRef<Record<string, { x: number; y: number }>>({});
-  const saveInProgressRef = useRef<Map<string, Promise<void>>>(new Map());
+  const saveInProgressRef = useRef<SaveOperationMap>(new Map());
 
   useEffect(() => {
     // Listen to all changes in the editor's store
@@ -115,7 +127,7 @@ export function usePositionSync() {
 async function savePosition(
   editor: ReturnType<typeof useEditor>,
   shape: FileIconShape,
-  saveInProgress: Map<string, Promise<void>>
+  saveInProgress: SaveOperationMap
 ): Promise<void> {
   const shapeId = shape.id;
   const filePath = shape.props.filePath;
@@ -197,7 +209,7 @@ async function savePosition(
       // Show user-facing notification - this is a data loss scenario
       showError(
         `Failed to save position for "${shape.props.fileName}". Your icon arrangement may not persist.`,
-        7000 // Show for 7 seconds since this is important
+        ERROR_NOTIFICATION_DURATION_MS
       );
     } finally {
       // Always mark save as complete, even if it failed

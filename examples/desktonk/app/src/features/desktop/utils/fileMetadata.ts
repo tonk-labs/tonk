@@ -5,9 +5,9 @@ import { getMimeType } from './mimeResolver';
 /**
  * Grid layout constants for auto-positioning file icons.
  */
-const GRID_SPACING = 120; // pixels between icon centers
-const GRID_COLUMNS = 8; // number of icons per row before wrapping
-const GRID_START_OFFSET = 50; // pixels from top-left corner to first icon
+export const GRID_SPACING = 120; // pixels between icon centers
+export const GRID_COLUMNS = 8; // number of icons per row before wrapping
+export const GRID_START_OFFSET = 50; // pixels from top-left corner to first icon
 
 /**
  * Validates and safely extracts a number from metadata.

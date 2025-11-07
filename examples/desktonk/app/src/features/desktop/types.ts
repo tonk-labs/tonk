@@ -1,3 +1,6 @@
+/**
+ * Represents a file on the desktop with its metadata.
+ */
 export interface DesktopFile {
   path: string;
   name: string;
@@ -10,6 +13,10 @@ export interface DesktopFile {
   };
 }
 
+/**
+ * Props for the FileIcon shape in TLDraw.
+ * Defines the properties needed to render and interact with file icons on the desktop.
+ */
 export interface FileIconShapeProps {
   filePath: string;
   fileName: string;

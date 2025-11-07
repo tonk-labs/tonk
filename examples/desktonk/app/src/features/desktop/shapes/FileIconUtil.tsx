@@ -91,10 +91,20 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
     _shape: FileIconShape,
     info: TLResizeInfo<FileIconShape>
   ): Omit<TLShapePartial<FileIconShape>, 'id' | 'type'> | undefined {
+    // Calculate new dimensions with minimum constraints
+    const newWidth = info.scaleX * info.initialShape.props.w;
+    const newHeight = info.scaleY * info.initialShape.props.h;
+
+    // Validate dimensions are positive and finite
+    if (!isFinite(newWidth) || !isFinite(newHeight) || newWidth <= 0 || newHeight <= 0) {
+      console.warn('[FileIconUtil] Invalid resize dimensions, ignoring');
+      return undefined;
+    }
+
     return {
       props: {
-        w: Math.max(70, info.scaleX * info.initialShape.props.w),
-        h: Math.max(90, info.scaleY * info.initialShape.props.h),
+        w: Math.max(70, newWidth),
+        h: Math.max(90, newHeight),
       },
     };
   }
