@@ -46,31 +46,32 @@ const DesktopInner = track(() => {
   }
 
   // Show empty state overlay when no files exist (but still render TLDraw)
-  if (!isLoading && files.length === 0) {
-    return (
-      <div
-        style={{
-          position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          textAlign: 'center',
-          color: '#666',
-          fontSize: '1.25rem',
-          zIndex: 1000,
-          pointerEvents: 'none',
-        }}
-      >
-        <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📂</div>
-        <div>Desktop is empty</div>
-        <div style={{ fontSize: '1rem', marginTop: '0.5rem', color: '#888' }}>
-          Add files to the desktop directory to see them here
+  // This is an overlay, not a replacement - TLDraw canvas still renders for drag-and-drop
+  return (
+    <>
+      {!isLoading && files.length === 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            textAlign: 'center',
+            color: '#666',
+            fontSize: '1.25rem',
+            zIndex: 1000,
+            pointerEvents: 'none',
+          }}
+        >
+          <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📂</div>
+          <div>Desktop is empty</div>
+          <div style={{ fontSize: '1rem', marginTop: '0.5rem', color: '#888' }}>
+            Add files to the desktop directory to see them here
+          </div>
         </div>
-      </div>
-    );
-  }
-
-  return null;
+      )}
+    </>
+  );
 });
 
 function Desktop() {
