@@ -116,10 +116,19 @@
             echo "✓ Relay server already built"
           fi
 
-          # Build all packages
-          echo ""
-          echo "🔨 Building all packages..."
-          pnpm build
+          # Check if all packages are already built
+          if [ -f "packages/core/pkg-browser/tonk_core_bg.wasm" ] && \
+             [ -f "packages/core-js/dist/index.js" ] && \
+             [ -f "packages/keepsync/dist/index.js" ] && \
+             [ -f "packages/cli/dist/tonk.js" ] && \
+             [ -f "packages/create/dist/create.js" ] && \
+             [ -f "packages/host-web/dist/index.html" ]; then
+            echo "✓ All packages already built (skipping pnpm build)"
+          else
+            echo ""
+            echo "🔨 Building remaining packages..."
+            pnpm build
+          fi
 
           echo ""
           echo "✅ Development environment ready!"
