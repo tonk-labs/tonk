@@ -1,8 +1,0 @@
-{
-  "name": "minimal-app",
-  "version": "1.0.0",
-  "workers": {},
-  "server": {
-    "port": 3000
-  }
-}
