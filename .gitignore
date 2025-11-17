@@ -29,6 +29,7 @@ report.*.json
 .env.*.local
 .env.local
 .direnv
+.envrc
 
 # Act secrets (local GitHub Actions)
 .secrets
