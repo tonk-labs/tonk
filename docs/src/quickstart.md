@@ -7,7 +7,7 @@
 
 ### Option 1: With Nix (Recommended)
 
-The easiest way to get started is with Nix, which automatically sets up all dependencies including the relay server:
+The easiest way to get started is with Nix, which automatically sets up all dependencies:
 
 ```bash
 # Install Nix with flakes support
@@ -50,7 +50,8 @@ If you prefer not to use Nix:
 
 The most complete example is `latergram`. Here's how to run it:
 
-> **Note**: With Nix, the relay server is automatically available via `$TONK_RELAY_BINARY`. Without Nix, ensure you've set the `TONK_RELAY_BINARY` environment variable.
+> **Note**: With Nix, the relay server is automatically available via `$TONK_RELAY_BINARY`. Without
+> Nix, ensure you've set the `TONK_RELAY_BINARY` environment variable.
 
 1. **Bundle the latergram example**:
 
