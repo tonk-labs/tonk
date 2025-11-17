@@ -35,7 +35,7 @@ impl Stream for WebSocketAdapter {
                 Poll::Ready(Some(Ok(tungstenite_msg)))
             }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(tungstenite::Error::Io(
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                std::io::Error::other(e.to_string()),
             )))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
@@ -47,12 +47,9 @@ impl Sink<tungstenite::Message> for WebSocketAdapter {
     type Error = tungstenite::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.sink).poll_ready(cx).map_err(|e| {
-            tungstenite::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })
+        Pin::new(&mut self.sink)
+            .poll_ready(cx)
+            .map_err(|e| tungstenite::Error::Io(std::io::Error::other(e.to_string())))
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: tungstenite::Message) -> Result<(), Self::Error> {
@@ -69,36 +66,26 @@ impl Sink<tungstenite::Message> for WebSocketAdapter {
             tungstenite::Message::Ping(data) => Message::Ping(data),
             tungstenite::Message::Pong(data) => Message::Pong(data),
             tungstenite::Message::Frame(_) => {
-                return Err(tungstenite::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(tungstenite::Error::Io(std::io::Error::other(
                     "Raw frames not supported",
                 )))
             }
         };
-        Pin::new(&mut self.sink).start_send(axum_msg).map_err(|e| {
-            tungstenite::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })
+        Pin::new(&mut self.sink)
+            .start_send(axum_msg)
+            .map_err(|e| tungstenite::Error::Io(std::io::Error::other(e.to_string())))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.sink).poll_flush(cx).map_err(|e| {
-            tungstenite::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })
+        Pin::new(&mut self.sink)
+            .poll_flush(cx)
+            .map_err(|e| tungstenite::Error::Io(std::io::Error::other(e.to_string())))
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.sink).poll_close(cx).map_err(|e| {
-            tungstenite::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })
+        Pin::new(&mut self.sink)
+            .poll_close(cx)
+            .map_err(|e| tungstenite::Error::Io(std::io::Error::other(e.to_string())))
     }
 }
 

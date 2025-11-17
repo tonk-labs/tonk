@@ -110,7 +110,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Check that we received the change
-        let values = received_values.lock().unwrap();
+        let values = {
+            let guard = received_values.lock().unwrap();
+            guard.clone()
+        };
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], "\"test_value\"");
 
