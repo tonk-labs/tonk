@@ -8,14 +8,9 @@ export default [
   // Base JavaScript config
   js.configs.recommended,
 
-  // Node.js TypeScript files (CLI, Create, Server packages)
+  // Node.js TypeScript files
   {
-    files: [
-      'packages/cli/src/**/*.ts',
-      'packages/create/src/**/*.ts',
-      'packages/relay/src/**/*.ts',
-      'packages/core-js/src/**/*.ts',
-    ],
+    files: ['packages/relay/src/**/*.ts', 'packages/core-js/src/**/*.ts'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
@@ -47,12 +42,9 @@ export default [
     },
   },
 
-  // Browser/Universal TypeScript files (Keepsync package)
+  // Browser/Universal TypeScript files
   {
-    files: [
-      'packages/keepsync/src/**/*.ts',
-      'packages/host-web/src/**/*.ts'
-    ],
+    files: ['packages/host-web/src/**/*.ts'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
@@ -117,14 +109,6 @@ export default [
     },
   },
 
-  // CLI specific overrides
-  {
-    files: ['packages/cli/src/cli.ts'],
-    rules: {
-      'no-process-exit': 'off',
-    },
-  },
-
   // JavaScript files (scripts)
   {
     files: ['scripts/**/*.js'],
@@ -159,4 +143,3 @@ export default [
     ],
   },
 ];
-
