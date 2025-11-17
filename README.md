@@ -62,9 +62,11 @@ retain control of their tools and data).
 > instructions.
 
 ```bash
-# Build core
-cd packages/core-js
-pnpm install && pnpm build
+# Install dependencies
+pnpm install
+
+# Build packages
+pnpm build
 
 # Try the latergram example
 cd examples/latergram
