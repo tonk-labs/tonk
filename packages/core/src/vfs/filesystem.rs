@@ -167,6 +167,112 @@ impl VirtualFileSystem {
         })
     }
 
+    /// Add a child to its parent directory
+    async fn add_to_parent(
+        &self,
+        path: &str,
+        doc_id: DocumentId,
+        node_type: NodeType,
+    ) -> Result<()> {
+        if path == "/" {
+            return Ok(());
+        }
+
+        let parent_path = if let Some(last_slash) = path.rfind('/') {
+            if last_slash == 0 {
+                "/"
+            } else {
+                &path[..last_slash]
+            }
+        } else {
+            return Ok(());
+        };
+
+        let parent_handle = if parent_path == "/" {
+            self.samod
+                .find(self.root_id.clone())
+                .await
+                .map_err(|e| VfsError::SamodError(format!("Failed to find root: {e}")))?
+                .ok_or_else(|| VfsError::DocumentNotFound(self.root_id.to_string()))?
+        } else {
+            let index = self.read_path_index().await?;
+            if let Some(entry) = index.get_entry(parent_path) {
+                let pid = entry
+                    .doc_id
+                    .parse::<DocumentId>()
+                    .map_err(|e| VfsError::Other(anyhow::anyhow!("Invalid doc id: {}", e)))?;
+                self.samod
+                    .find(pid)
+                    .await
+                    .map_err(|e| VfsError::SamodError(format!("Failed to find parent: {e}")))?
+                    .ok_or_else(|| VfsError::DocumentNotFound(parent_path.to_string()))?
+            } else {
+                return Err(VfsError::DocumentNotFound(parent_path.to_string()));
+            }
+        };
+
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        let now = chrono::Utc::now();
+
+        let ref_node = RefNode {
+            pointer: doc_id,
+            node_type,
+            timestamps: Timestamps {
+                created: now,
+                modified: now,
+            },
+            name,
+        };
+
+        AutomergeHelpers::add_child_to_directory(&parent_handle, &ref_node)?;
+        Ok(())
+    }
+
+    /// Remove a child from its parent directory
+    async fn remove_from_parent(&self, path: &str) -> Result<()> {
+        if path == "/" {
+            return Ok(());
+        }
+
+        let parent_path = if let Some(last_slash) = path.rfind('/') {
+            if last_slash == 0 {
+                "/"
+            } else {
+                &path[..last_slash]
+            }
+        } else {
+            return Ok(());
+        };
+
+        let parent_handle = if parent_path == "/" {
+            self.samod
+                .find(self.root_id.clone())
+                .await
+                .map_err(|e| VfsError::SamodError(format!("Failed to find root: {e}")))?
+                .ok_or_else(|| VfsError::DocumentNotFound(self.root_id.to_string()))?
+        } else {
+            let index = self.read_path_index().await?;
+            if let Some(entry) = index.get_entry(parent_path) {
+                let pid = entry
+                    .doc_id
+                    .parse::<DocumentId>()
+                    .map_err(|e| VfsError::Other(anyhow::anyhow!("Invalid doc id: {}", e)))?;
+                self.samod
+                    .find(pid)
+                    .await
+                    .map_err(|e| VfsError::SamodError(format!("Failed to find parent: {e}")))?
+                    .ok_or_else(|| VfsError::DocumentNotFound(parent_path.to_string()))?
+            } else {
+                // Parent gone, ignore
+                return Ok(());
+            }
+        };
+
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        AutomergeHelpers::remove_child_from_directory(&parent_handle, &name)?;
+        Ok(())
+    }
+
     pub async fn to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
         use crate::bundle::{Manifest, Version};
         use std::io::{Cursor, Write};
@@ -376,6 +482,10 @@ impl VirtualFileSystem {
         })
         .await?;
 
+        // Add to parent directory
+        self.add_to_parent(path, doc_id.clone(), NodeType::Document)
+            .await?;
+
         // Emit event
         let _ = self.event_tx.send(VfsEvent::DocumentCreated {
             path: path.to_string(),
@@ -564,6 +674,11 @@ impl VirtualFileSystem {
             AutomergeHelpers::update_document_name(&doc_handle, to_name)?;
         }
 
+        // Update parents
+        self.remove_from_parent(from_path).await?;
+        self.add_to_parent(to_path, doc_id.clone(), node_type.clone())
+            .await?;
+
         // Emit events
         let _ = self.event_tx.send(VfsEvent::DocumentDeleted {
             path: from_path.to_string(),
@@ -627,6 +742,9 @@ impl VirtualFileSystem {
             .await?;
 
         if removed.is_some() {
+            // Remove from parent directory
+            self.remove_from_parent(path).await?;
+
             // Emit event
             let _ = self.event_tx.send(VfsEvent::DocumentDeleted {
                 path: path.to_string(),
@@ -704,6 +822,10 @@ impl VirtualFileSystem {
             index.set_path(path.to_string(), doc_id.to_string(), NodeType::Directory);
         })
         .await?;
+
+        // Add to parent directory
+        self.add_to_parent(path, doc_id.clone(), NodeType::Directory)
+            .await?;
 
         // Emit event
         let _ = self.event_tx.send(VfsEvent::DirectoryCreated {
@@ -1149,6 +1271,66 @@ mod tests {
         // Test watching root directory
         let root_watcher = vfs.watch_directory("/").await.unwrap();
         assert!(root_watcher.is_some());
+
+        let subdir_watcher = watcher.unwrap();
+        let subdir_changes = std::sync::Arc::new(std::sync::Mutex::new(0));
+
+        let _subdir_task = tokio::spawn({
+            let count = subdir_changes.clone();
+            async move {
+                subdir_watcher
+                    .on_change(move |_| {
+                        let mut c = count.lock().unwrap();
+                        *c += 1;
+                    })
+                    .await;
+            }
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Add a file to the directory
+        vfs.create_document("/mydir/file.txt", "content".to_string())
+            .await
+            .unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        assert!(
+            *subdir_changes.lock().unwrap() > 0,
+            "Subdir watcher failed to detect file creation"
+        );
+
+        let subdir_changes_del = std::sync::Arc::new(std::sync::Mutex::new(0));
+        // Note: previous watcher task is still running and will increment its counter too,
+        // but we'll spawn a new one to be clean/explicit about this phase.
+
+        // Use the same watcher instance (cloned logic/ref)
+        let watcher_for_del = vfs.watch_directory("/mydir").await.unwrap().unwrap();
+
+        let _del_task = tokio::spawn({
+            let count = subdir_changes_del.clone();
+            async move {
+                watcher_for_del
+                    .on_change(move |_| {
+                        let mut c = count.lock().unwrap();
+                        *c += 1;
+                    })
+                    .await;
+            }
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Delete the file
+        vfs.remove_document("/mydir/file.txt").await.unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        assert!(
+            *subdir_changes_del.lock().unwrap() > 0,
+            "Subdir watcher failed to detect file deletion"
+        );
     }
 
     #[tokio::test]
@@ -1225,6 +1407,81 @@ mod tests {
         assert_eq!(new_children.len(), 1);
         assert_eq!(new_children[0].name, "file.txt");
         assert_eq!(new_children[0].node_type, NodeType::Document);
+    }
+
+    #[tokio::test]
+    async fn test_move_document_watchers() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create directories
+        vfs.create_directory("/old").await.unwrap();
+        vfs.create_directory("/new").await.unwrap();
+
+        // Setup watchers
+        let old_watcher = vfs.watch_directory("/old").await.unwrap().unwrap();
+        let new_watcher = vfs.watch_directory("/new").await.unwrap().unwrap();
+
+        let old_changes = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let new_changes = std::sync::Arc::new(std::sync::Mutex::new(0));
+
+        let _old_task = tokio::spawn({
+            let count = old_changes.clone();
+            async move {
+                old_watcher
+                    .on_change(move |_| {
+                        *count.lock().unwrap() += 1;
+                    })
+                    .await;
+            }
+        });
+
+        let _new_task = tokio::spawn({
+            let count = new_changes.clone();
+            async move {
+                new_watcher
+                    .on_change(move |_| {
+                        *count.lock().unwrap() += 1;
+                    })
+                    .await;
+            }
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Create a file in /old
+        vfs.create_document("/old/file.txt", "Content".to_string())
+            .await
+            .unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        assert!(
+            *old_changes.lock().unwrap() > 0,
+            "Old directory should detect creation"
+        );
+        let old_count_after_create = *old_changes.lock().unwrap();
+        assert_eq!(
+            *new_changes.lock().unwrap(),
+            0,
+            "New directory should not detect creation"
+        );
+
+        // Move the file to /new
+        vfs.move_document("/old/file.txt", "/new/file.txt")
+            .await
+            .unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        assert!(
+            *old_changes.lock().unwrap() > old_count_after_create,
+            "Old directory should detect removal"
+        );
+        assert!(
+            *new_changes.lock().unwrap() > 0,
+            "New directory should detect addition"
+        );
     }
 
     #[tokio::test]
