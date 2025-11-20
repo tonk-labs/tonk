@@ -234,7 +234,6 @@ async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
 }
 
 // Helper to post messages back to main thread
-
 async function postResponse(response: any) {
   log('info', 'Posting response to main thread', {
     type: response.type,
@@ -1537,6 +1536,34 @@ async function handleMessage(
         success: true,
         data: TONK_SERVER_URL,
       });
+      break;
+
+    case 'getManifest':
+      log('info', 'Getting manifest', { id: message.id });
+      try {
+        const tonkInstance = getTonk();
+        if (!tonkInstance) {
+          throw new Error('Tonk not initialized');
+        }
+
+        postResponse({
+          type: 'getManifest',
+          id: message.id,
+          success: true,
+          data: tonkInstance.manifest,
+        });
+      } catch (error) {
+        log('error', 'Failed to get manifest', {
+          id: message.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        postResponse({
+          type: 'getManifest',
+          id: message.id,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       break;
 
     case 'initializeFromUrl':

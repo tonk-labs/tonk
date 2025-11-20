@@ -83,6 +83,26 @@ export function useServiceWorker() {
         return [];
       }
 
+      // Try to get apps from manifest entrypoints
+      try {
+        const manifestResponse = await sendMessage<ServiceWorkerMessage>({
+          type: 'getManifest',
+        });
+
+        if (manifestResponse.success && manifestResponse.data?.entrypoints) {
+          const apps = manifestResponse.data.entrypoints;
+          if (apps.length > 0) {
+            console.log('Extracted apps from manifest entrypoints:', apps);
+            return apps;
+          }
+        }
+      } catch (manifestError) {
+        console.log(
+          'Could not get manifest, falling back to directory listing'
+        );
+      }
+
+      // Fallback: use first listed root directory
       const response = await sendMessage<ServiceWorkerMessage>({
         type: 'listDirectory',
         path: '/',
@@ -209,7 +229,9 @@ export function useServiceWorker() {
       const bundleId = uploadResult.id;
 
       const manifestUrl = `${serverUrl}/api/bundles/${bundleId}`;
-      const shareUrl = `${window.location.origin}/?bundle=${encodeURIComponent(manifestUrl)}`;
+      const shareUrl = `${window.location.origin}/?bundle=${encodeURIComponent(
+        manifestUrl
+      )}`;
 
       // Generate QR code
       const QRCode = await import('https://esm.sh/qrcode@1.5.3');
