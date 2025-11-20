@@ -1272,55 +1272,65 @@ mod tests {
         let root_watcher = vfs.watch_directory("/").await.unwrap();
         assert!(root_watcher.is_some());
 
-        // VERIFY FIX: Ensure directory watcher detects changes
         let subdir_watcher = watcher.unwrap();
         let subdir_changes = std::sync::Arc::new(std::sync::Mutex::new(0));
-        
+
         let _subdir_task = tokio::spawn({
             let count = subdir_changes.clone();
             async move {
-                subdir_watcher.on_change(move |_| {
-                    let mut c = count.lock().unwrap();
-                    *c += 1;
-                }).await;
+                subdir_watcher
+                    .on_change(move |_| {
+                        let mut c = count.lock().unwrap();
+                        *c += 1;
+                    })
+                    .await;
             }
         });
-        
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        
-        // Add a file to the directory
-        vfs.create_document("/mydir/file.txt", "content".to_string()).await.unwrap();
-        
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        
-        assert!(*subdir_changes.lock().unwrap() > 0, "Subdir watcher failed to detect file creation");
 
-        // VERIFY FIX: Ensure deletion triggers watcher
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Add a file to the directory
+        vfs.create_document("/mydir/file.txt", "content".to_string())
+            .await
+            .unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        assert!(
+            *subdir_changes.lock().unwrap() > 0,
+            "Subdir watcher failed to detect file creation"
+        );
+
         let subdir_changes_del = std::sync::Arc::new(std::sync::Mutex::new(0));
         // Note: previous watcher task is still running and will increment its counter too,
         // but we'll spawn a new one to be clean/explicit about this phase.
-        
+
         // Use the same watcher instance (cloned logic/ref)
         let watcher_for_del = vfs.watch_directory("/mydir").await.unwrap().unwrap();
-        
+
         let _del_task = tokio::spawn({
             let count = subdir_changes_del.clone();
             async move {
-                watcher_for_del.on_change(move |_| {
-                    let mut c = count.lock().unwrap();
-                    *c += 1;
-                }).await;
+                watcher_for_del
+                    .on_change(move |_| {
+                        let mut c = count.lock().unwrap();
+                        *c += 1;
+                    })
+                    .await;
             }
         });
-        
+
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Delete the file
         vfs.remove_document("/mydir/file.txt").await.unwrap();
-        
+
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        
-        assert!(*subdir_changes_del.lock().unwrap() > 0, "Subdir watcher failed to detect file deletion");
+
+        assert!(
+            *subdir_changes_del.lock().unwrap() > 0,
+            "Subdir watcher failed to detect file deletion"
+        );
     }
 
     #[tokio::test]
@@ -1407,50 +1417,71 @@ mod tests {
         // Create directories
         vfs.create_directory("/old").await.unwrap();
         vfs.create_directory("/new").await.unwrap();
-        
+
         // Setup watchers
         let old_watcher = vfs.watch_directory("/old").await.unwrap().unwrap();
         let new_watcher = vfs.watch_directory("/new").await.unwrap().unwrap();
-        
+
         let old_changes = std::sync::Arc::new(std::sync::Mutex::new(0));
         let new_changes = std::sync::Arc::new(std::sync::Mutex::new(0));
-        
+
         let _old_task = tokio::spawn({
             let count = old_changes.clone();
             async move {
-                old_watcher.on_change(move |_| {
-                    *count.lock().unwrap() += 1;
-                }).await;
+                old_watcher
+                    .on_change(move |_| {
+                        *count.lock().unwrap() += 1;
+                    })
+                    .await;
             }
         });
-        
+
         let _new_task = tokio::spawn({
             let count = new_changes.clone();
             async move {
-                new_watcher.on_change(move |_| {
-                    *count.lock().unwrap() += 1;
-                }).await;
+                new_watcher
+                    .on_change(move |_| {
+                        *count.lock().unwrap() += 1;
+                    })
+                    .await;
             }
         });
-        
+
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Create a file in /old
-        vfs.create_document("/old/file.txt", "Content".to_string()).await.unwrap();
-        
+        vfs.create_document("/old/file.txt", "Content".to_string())
+            .await
+            .unwrap();
+
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        
-        assert!(*old_changes.lock().unwrap() > 0, "Old directory should detect creation");
+
+        assert!(
+            *old_changes.lock().unwrap() > 0,
+            "Old directory should detect creation"
+        );
         let old_count_after_create = *old_changes.lock().unwrap();
-        assert_eq!(*new_changes.lock().unwrap(), 0, "New directory should not detect creation");
+        assert_eq!(
+            *new_changes.lock().unwrap(),
+            0,
+            "New directory should not detect creation"
+        );
 
         // Move the file to /new
-        vfs.move_document("/old/file.txt", "/new/file.txt").await.unwrap();
-        
+        vfs.move_document("/old/file.txt", "/new/file.txt")
+            .await
+            .unwrap();
+
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        
-        assert!(*old_changes.lock().unwrap() > old_count_after_create, "Old directory should detect removal");
-        assert!(*new_changes.lock().unwrap() > 0, "New directory should detect addition");
+
+        assert!(
+            *old_changes.lock().unwrap() > old_count_after_create,
+            "Old directory should detect removal"
+        );
+        assert!(
+            *new_changes.lock().unwrap() > 0,
+            "New directory should detect addition"
+        );
     }
 
     #[tokio::test]
