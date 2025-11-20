@@ -81,7 +81,7 @@ impl TonkCoreBuilder {
                         .await
                 }
                 StorageConfig::Filesystem(path) => {
-                    std::fs::create_dir_all(&path).map_err(|e| VfsError::IoError(e))?;
+                    std::fs::create_dir_all(&path).map_err(VfsError::IoError)?;
                     let storage = FilesystemStorage::new(&path);
                     RepoBuilder::new(runtime)
                         .with_storage(storage)
@@ -245,13 +245,11 @@ impl TonkCoreBuilder {
             }
             #[cfg(not(target_arch = "wasm32"))]
             StorageConfig::Filesystem(storage_path) => {
-                std::fs::create_dir_all(storage_path).map_err(|e| VfsError::IoError(e))?;
+                std::fs::create_dir_all(storage_path).map_err(VfsError::IoError)?;
 
                 // Extract all storage files from bundle to the filesystem storage directory
                 let storage_prefix = BundlePath::from("storage");
-                let storage_entries = bundle
-                    .prefix(&storage_prefix)
-                    .map_err(|e| VfsError::Other(e))?;
+                let storage_entries = bundle.prefix(&storage_prefix).map_err(VfsError::Other)?;
 
                 for (bundle_path, data) in storage_entries {
                     let path_str = bundle_path.to_string();
@@ -260,10 +258,10 @@ impl TonkCoreBuilder {
                         let full_path = storage_path.join(relative_path);
 
                         if let Some(parent) = full_path.parent() {
-                            std::fs::create_dir_all(parent).map_err(|e| VfsError::IoError(e))?;
+                            std::fs::create_dir_all(parent).map_err(VfsError::IoError)?;
                         }
 
-                        std::fs::write(&full_path, data).map_err(|e| VfsError::IoError(e))?;
+                        std::fs::write(&full_path, data).map_err(VfsError::IoError)?;
                     }
                 }
 
@@ -550,7 +548,7 @@ impl TonkCore {
 
     /// Recursively copy a directory and its contents from source VFS to destination VFS
     fn copy_directory_recursive<'a>(
-        &'a self,
+        #[allow(clippy::only_used_in_recursion)] &'a self,
         source_vfs: &'a VirtualFileSystem,
         dest_vfs: &'a VirtualFileSystem,
         path: &'a str,

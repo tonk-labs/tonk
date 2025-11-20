@@ -1,7 +1,6 @@
 pub mod backend;
 pub mod filesystem;
 pub mod path_index;
-pub mod traversal;
 pub mod types;
 pub mod watcher;
 
