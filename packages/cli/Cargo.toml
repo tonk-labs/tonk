@@ -1,0 +1,62 @@
+[package]
+name = "tonk-cli"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tonk Labs"]
+description = "CLI tool for Tonk authentication and management"
+license = "MIT"
+
+[[bin]]
+name = "tonk"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Crypto
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
+bs58 = "0.5"
+sha2 = "0.10"
+hex = "0.4"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+
+# HTTP server
+axum = { version = "0.7", features = ["tokio"] }
+tower = "0.5"
+tokio = { version = "1.47", features = ["full"] }
+
+# Utilities
+anyhow = "1.0"
+thiserror = "2.0"
+uuid = { version = "1.0", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5.0"
+
+# For opening browser
+webbrowser = "1.0"
+
+[dev-dependencies]
+tempfile = "3.21"
+
+# Platform-specific keyring backends
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6", features = ["apple-native"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+keyring = { version = "3.6", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6", features = ["sync-secret-service"] }
+
+# Fallback for other platforms (FreeBSD, etc.)
+[target.'cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux")))'.dependencies]
+keyring = "3.6"

@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tonk Authorization</title>
+    <style>
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        max-width: 600px;
+        margin: 50px auto;
+        padding: 20px;
+        background: #f5f5f5;
+      }
+      .container {
+        background: white;
+        border-radius: 8px;
+        padding: 30px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #333;
+        margin-top: 0;
+      }
+      .info {
+        background: #e3f2fd;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 20px 0;
+        font-size: 14px;
+      }
+      .info code {
+        background: #fff;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 12px;
+        word-break: break-all;
+      }
+      button {
+        background: #1976d2;
+        color: white;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 5px;
+        font-size: 16px;
+        cursor: pointer;
+        width: 100%;
+        margin-top: 10px;
+      }
+      button:hover {
+        background: #1565c0;
+      }
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+      button.deny {
+        background: #666;
+      }
+      button.deny:hover {
+        background: #555;
+      }
+      .status {
+        margin-top: 20px;
+        padding: 15px;
+        border-radius: 5px;
+        display: none;
+      }
+      .status.success {
+        background: #c8e6c9;
+        color: #2e7d32;
+        display: block;
+      }
+      .status.error {
+        background: #ffcdd2;
+        color: #c62828;
+        display: block;
+      }
+      .status.loading {
+        background: #fff3e0;
+        color: #e65100;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🔐 Tonk Authorization</h1>
+
+      <div class="info">
+        <p>
+          <strong>Operator:</strong><br /><code id="operator">Loading...</code>
+        </p>
+        <p><strong>Command:</strong> <code id="command">Loading...</code></p>
+        <p><strong>Subject:</strong> <code id="subject">Loading...</code></p>
+      </div>
+
+      <button id="authorizeButton">Authorize with WebAuthn</button>
+
+      <button class="deny" id="denyButton">Deny</button>
+
+      <div id="status"></div>
+    </div>
+
+    <script type="module">
+      import * as ed25519 from 'https://esm.sh/@noble/ed25519@2.1.0';
+
+      // Parse URL parameters
+      const params = new URLSearchParams(window.location.search);
+      const operatorDid = params.get('as');
+      const command = params.get('cmd');
+      const subject = params.get('sub');
+      const callback = params.get('callback');
+      const durationSecs = parseInt(params.get('duration') || '2592000'); // Default 30 days
+
+      // Display parameters
+      document.getElementById('operator').textContent =
+        operatorDid || 'Not provided';
+      document.getElementById('command').textContent =
+        command || 'Not provided';
+      document.getElementById('subject').textContent =
+        subject || 'Not provided';
+
+      // Check if parameters are valid
+      if (!operatorDid || !command || !callback) {
+        showStatus(
+          'error',
+          'Missing required parameters. Please use the CLI to initiate authorization.'
+        );
+        document.getElementById('authorizeButton').disabled = true;
+        throw new Error('Missing parameters');
+      }
+
+      async function authorize() {
+        const authButton = document.getElementById('authorizeButton');
+        const denyButton = document.getElementById('denyButton');
+        authButton.disabled = true;
+        denyButton.disabled = true;
+
+        try {
+          showStatus('loading', 'Starting WebAuthn authentication...');
+
+          // Check WebAuthn support
+          if (!window.PublicKeyCredential) {
+            throw new Error('WebAuthn is not supported in this browser');
+          }
+
+          // Check PRF support
+          const prfSupported =
+            await PublicKeyCredential.isConditionalMediationAvailable();
+
+          const challenge = new Uint8Array(32);
+          crypto.getRandomValues(challenge);
+
+          // Try to get existing credential first, otherwise create new one
+          let credential;
+          let prfOutput;
+
+          try {
+            // Try to get existing credential
+            credential = await navigator.credentials.get({
+              publicKey: {
+                challenge: challenge,
+                timeout: 60000,
+                userVerification: 'preferred',
+                extensions: {
+                  prf: {
+                    eval: {
+                      first: new TextEncoder().encode('tonk-authority-v1'),
+                    },
+                  },
+                },
+              },
+            });
+
+            const results = credential.getClientExtensionResults();
+            if (results.prf && results.prf.results) {
+              prfOutput = results.prf.results.first;
+            } else {
+              throw new Error('PRF extension not supported or enabled');
+            }
+          } catch (e) {
+            // No existing credential, create new one
+            showStatus('loading', 'Creating new WebAuthn credential...');
+
+            credential = await navigator.credentials.create({
+              publicKey: {
+                challenge: challenge,
+                rp: {
+                  name: 'Tonk',
+                  id: window.location.hostname,
+                },
+                user: {
+                  id: crypto.getRandomValues(new Uint8Array(16)),
+                  name: 'tonk-user',
+                  displayName: 'Tonk User',
+                },
+                pubKeyCredParams: [
+                  { type: 'public-key', alg: -7 }, // ES256 (ECDSA with SHA-256, most widely supported)
+                  { type: 'public-key', alg: -257 }, // RS256 (RSA with SHA-256)
+                  { type: 'public-key', alg: -8 }, // EdDSA (if supported natively)
+                ],
+                authenticatorSelection: {
+                  userVerification: 'preferred',
+                  residentKey: 'preferred',
+                },
+                timeout: 60000,
+                extensions: {
+                  prf: {
+                    eval: {
+                      first: new TextEncoder().encode('tonk-authority-v1'),
+                    },
+                  },
+                },
+              },
+            });
+
+            const results = credential.getClientExtensionResults();
+            if (results.prf && results.prf.results) {
+              prfOutput = results.prf.results.first;
+            } else {
+              throw new Error(
+                'PRF extension not supported or enabled. Try Chrome/Edge with a platform authenticator.'
+              );
+            }
+          }
+
+          showStatus('loading', 'Deriving authority key from PRF...');
+
+          // Derive Ed25519 seed from PRF output using HKDF
+          const prfKey = await crypto.subtle.importKey(
+            'raw',
+            prfOutput,
+            'HKDF',
+            false,
+            ['deriveBits']
+          );
+
+          const authoritySeed = await crypto.subtle.deriveBits(
+            {
+              name: 'HKDF',
+              hash: 'SHA-256',
+              salt: new TextEncoder().encode('tonk-authority-v1'),
+              info: new TextEncoder().encode('ed25519'),
+            },
+            prfKey,
+            256 // 32 bytes
+          );
+
+          // Create Ed25519 keypair from seed
+          const authorityPrivateKey = new Uint8Array(authoritySeed);
+          const authorityPublicKey = await ed25519.getPublicKeyAsync(
+            authorityPrivateKey
+          );
+
+          // Derive did:key from public key
+          const authorityDid = await publicKeyToDid(authorityPublicKey);
+
+          showStatus('loading', 'Creating delegation...');
+
+          // Create delegation payload
+          const expiration = Math.floor(Date.now() / 1000) + durationSecs;
+          const payload = {
+            iss: authorityDid,
+            aud: operatorDid,
+            cmd: command,
+            sub: subject === 'null' ? null : subject,
+            exp: expiration,
+            pol: [],
+          };
+
+          // Sign the payload
+          const payloadBytes = new TextEncoder().encode(
+            JSON.stringify(payload)
+          );
+          const signature = await ed25519.signAsync(
+            payloadBytes,
+            authorityPrivateKey
+          );
+
+          // Create delegation
+          const delegation = {
+            payload: payload,
+            signature: bytesToBase64(signature),
+          };
+
+          showStatus('loading', 'Submitting authorization...');
+
+          // Submit via form POST
+          const form = document.createElement('form');
+          form.method = 'POST';
+          form.action = callback;
+
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'authorize';
+          input.value = JSON.stringify(delegation);
+
+          form.appendChild(input);
+          document.body.appendChild(form);
+          form.submit();
+        } catch (error) {
+          console.error('Authorization failed:', error);
+          showStatus('error', `❌ Authorization failed: ${error.message}`);
+          authButton.disabled = false;
+          denyButton.disabled = false;
+        }
+      }
+
+      function deny() {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = callback;
+
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'deny';
+        input.value = 'User denied authorization';
+
+        form.appendChild(input);
+        document.body.appendChild(form);
+        form.submit();
+      }
+
+      function showStatus(type, message) {
+        const status = document.getElementById('status');
+        status.className = `status ${type}`;
+        status.textContent = message;
+      }
+
+      async function publicKeyToDid(publicKey) {
+        // Multicodec prefix for Ed25519 public key: 0xed01
+        const multicodec = new Uint8Array([0xed, 0x01, ...publicKey]);
+
+        // Base58btc encode
+        const alphabet =
+          '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+        let num = 0n;
+        for (let i = 0; i < multicodec.length; i++) {
+          num = num * 256n + BigInt(multicodec[i]);
+        }
+
+        let encoded = '';
+        while (num > 0n) {
+          encoded = alphabet[Number(num % 58n)] + encoded;
+          num = num / 58n;
+        }
+
+        // Add leading zeros
+        for (let i = 0; i < multicodec.length && multicodec[i] === 0; i++) {
+          encoded = '1' + encoded;
+        }
+
+        return `did:key:z${encoded}`;
+      }
+
+      function bytesToBase64(bytes) {
+        const binString = Array.from(bytes, byte =>
+          String.fromCodePoint(byte)
+        ).join('');
+        return btoa(binString);
+      }
+
+      // Set up event listeners
+      document
+        .getElementById('authorizeButton')
+        .addEventListener('click', authorize);
+      document.getElementById('denyButton').addEventListener('click', deny);
+    </script>
+  </body>
+</html>
