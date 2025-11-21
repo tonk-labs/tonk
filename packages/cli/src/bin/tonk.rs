@@ -57,6 +57,17 @@ enum SpaceCommands {
         #[arg(short, long)]
         space: Option<String>,
     },
+
+    /// Join a space using an invitation file
+    Join {
+        /// Path to the invitation file
+        #[arg(short, long)]
+        invite: String,
+
+        /// Profile to join with (defaults to active profile)
+        #[arg(short, long)]
+        profile: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -76,6 +87,9 @@ async fn main() -> anyhow::Result<()> {
             }
             SpaceCommands::Invite { email, space } => {
                 tonk_cli::space::invite(email, space).await?;
+            }
+            SpaceCommands::Join { invite, profile } => {
+                tonk_cli::space::join(invite, profile).await?;
             }
         },
     }

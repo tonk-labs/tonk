@@ -253,3 +253,113 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
 
     Ok(())
 }
+
+/// Join a space using an invitation file
+pub async fn join(invite_path: String, profile_name: Option<String>) -> Result<()> {
+    println!("🔗 Joining space with invitation\n");
+
+    println!("   Invite file: {}", invite_path);
+
+    let profile = if let Some(name) = profile_name {
+        println!("   Using profile: {}\n", name);
+        name
+    } else {
+        println!("   Using active profile\n");
+        "default".to_string()
+    };
+
+    println!("⚠️  This command is not yet fully implemented.\n");
+    println!("    When UCAN library is available, this will:\n");
+    println!("    1. Decode the invite file");
+    println!("    2. Use time-limited invocation to read invitation from space");
+    println!("    3. Extract invitation signature");
+    println!("    4. Prompt for invite code from email");
+    println!("    5. Derive membership key: HKDF(signature, code)");
+    println!("    6. Create delegation: Membership → Profile");
+    println!("    7. Store delegations in space");
+    println!("    8. Mark space as joined\n");
+
+    // TODO: When UCAN library is available, implement join flow:
+    //
+    // 1. Read and parse invite file:
+    //    let invite_data = fs::read_to_string(&invite_path)?;
+    //    let invite: InviteFile = serde_json::from_str(&invite_data)?;
+    //
+    //    Expected structure:
+    //    {
+    //      "invite_code": "ABCDE",
+    //      "invitation_id": "bafy...",
+    //      "space_did": "did:key:z...",
+    //      "space_name": "My Space",
+    //      "inviter": "alice@example.com",
+    //      "invitee": "bob@example.com",
+    //      "membership_delegation": {...},
+    //      "access_invocation": {...}  // Time-limited UCAN for reading invitation
+    //    }
+    //
+    // 2. Use the time-limited access_invocation to read the invitation:
+    //    - The invocation allows reading /access/{did:mailto}/{invitation_id}
+    //    - This is valid for 7 days after invitation creation
+    //    - Read invitation delegation from space
+    //
+    // 3. Extract the invitation signature:
+    //    invitation_signature = invitation_delegation.signature
+    //
+    // 4. Prompt user to enter the invite code from their email:
+    //    print!("Enter invite code from email: ");
+    //    let mut code = String::new();
+    //    std::io::stdin().read_line(&mut code)?;
+    //    let code = code.trim();
+    //
+    // 5. Derive membership keypair:
+    //    membership_key = HKDF(invitation_signature, invite_code)
+    //    membership_did = keypair_to_did_key(membership_key)
+    //
+    // 6. Verify the derived membership DID matches the one in membership_delegation:
+    //    if membership_did != membership_delegation.aud {
+    //        bail!("Invalid invite code - membership DID doesn't match");
+    //    }
+    //
+    // 7. Get or create the profile to join with:
+    //    - Load profile keypair (or derive from authority if needed)
+    //    - profile_did = profile.to_did_key()
+    //
+    // 8. Create delegation from Membership → Profile:
+    //    - iss: membership_did
+    //    - aud: profile_did
+    //    - cmd: same capabilities as membership has (from membership_delegation)
+    //    - sub: space_did
+    //    - exp: null (permanent)
+    //    - Sign with membership_key
+    //
+    // 9. Store the membership delegation in space VFS:
+    //    ~/.tonk/spaces/{space_id}/access/{membership_did}/{hash}.json
+    //    (This delegation was created by inviter: Space → Membership)
+    //
+    // 10. Store the profile delegation in space VFS:
+    //     ~/.tonk/spaces/{space_id}/access/{profile_did}/{hash}.json
+    //     (This delegation we just created: Membership → Profile)
+    //
+    // 11. Also store delegations locally for this profile to access:
+    //     ~/.tonk/access/{profile_did}/spaces/{space_id}-membership.json
+    //     ~/.tonk/access/{profile_did}/spaces/{space_id}-profile.json
+    //
+    // 12. Create local space config if it doesn't exist:
+    //     - id: derive from space_did or use invitation_id
+    //     - name: from invite file
+    //     - did: space_did
+    //     - Save to ~/.tonk/spaces/{space_id}/config.json
+    //     - Note: We don't have the space private key (only owners do)
+    //
+    // 13. Update global config:
+    //     - Add space to list of joined spaces
+    //     - Optionally set as active space
+    //
+    // 14. Success message:
+    //     println!("✅ Successfully joined space: {}", space_name);
+    //     println!("   Your DID: {}", profile_did);
+    //     println!("   Membership: {}", membership_did);
+    //     println!("   Space: {}", space_did);
+
+    Ok(())
+}
