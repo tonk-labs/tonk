@@ -6,6 +6,8 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = []
 
 [dependencies]
 # CLI
@@ -31,7 +33,6 @@ tokio = { version = "1.47", features = ["full"] }
 # Utilities
 anyhow = "1.0"
 thiserror = "2.0"
-uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 

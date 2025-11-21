@@ -4261,7 +4261,6 @@ dependencies = [
  "tokio",
  "tower",
  "ucan_core",
- "uuid",
  "webbrowser",
 ]
 

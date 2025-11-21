@@ -156,7 +156,7 @@ impl Delegation {
     }
 
     /// Calculate hash of the delegation
-    fn hash(&self) -> String {
+    pub fn hash(&self) -> String {
         let json = serde_json::to_string(self).unwrap_or_default();
         let mut hasher = Sha256::new();
         hasher.update(json.as_bytes());

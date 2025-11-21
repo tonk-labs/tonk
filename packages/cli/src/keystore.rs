@@ -30,15 +30,10 @@ impl Keystore {
     /// If a keypair already exists, it will be loaded. Otherwise, a new one is generated and stored.
     pub fn get_or_create_keypair(&self) -> Result<Keypair, KeystoreError> {
         match self.get_keypair() {
-            Ok(keypair) => {
-                println!("✓ Using existing keypair from keyring");
-                Ok(keypair)
-            }
+            Ok(keypair) => Ok(keypair),
             Err(KeystoreError::KeyringError(keyring::Error::NoEntry)) => {
-                println!("⚙ Generating new keypair...");
                 let keypair = Keypair::generate();
                 self.store_keypair(&keypair)?;
-                println!("✓ Keypair stored securely in system keyring");
                 Ok(keypair)
             }
             Err(e) => Err(e),

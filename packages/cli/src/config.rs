@@ -9,6 +9,10 @@ pub struct GlobalConfig {
     /// The currently active space ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_space: Option<String>,
+
+    /// The currently active authority DID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_authority: Option<String>,
 }
 
 impl GlobalConfig {

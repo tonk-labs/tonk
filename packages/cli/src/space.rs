@@ -1,23 +1,26 @@
+use crate::authority;
 use crate::config::GlobalConfig;
 use crate::crypto::Keypair;
+use crate::delegation::{Delegation, DelegationPayload};
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
-use uuid::Uuid;
 
 /// Configuration for a space
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpaceConfig {
-    /// Unique identifier for the space
-    pub id: String,
-
     /// Human-readable name
     pub name: String,
 
-    /// Space DID (did:key)
+    /// Space DID (did:key) - serves as unique identifier
     pub did: String,
+
+    /// Owner DIDs - authorities that have full control over the space
+    pub owners: Vec<String>,
 
     /// When the space was created
     pub created_at: DateTime<Utc>,
@@ -29,11 +32,11 @@ pub struct SpaceConfig {
 
 impl SpaceConfig {
     /// Create a new space configuration
-    pub fn new(id: String, name: String, did: String, description: Option<String>) -> Self {
+    pub fn new(name: String, did: String, owners: Vec<String>, description: Option<String>) -> Self {
         Self {
-            id,
             name,
             did,
+            owners,
             created_at: Utc::now(),
             description,
         }
@@ -43,7 +46,8 @@ impl SpaceConfig {
     pub fn space_dir(&self) -> Result<PathBuf> {
         let home: PathBuf = dirs::home_dir().context("Could not determine home directory")?;
 
-        Ok(home.join(".tonk").join("spaces").join(&self.id))
+        // Use DID as the directory name (spaces are uniquely identified by their DID)
+        Ok(home.join(".tonk").join("spaces").join(&self.did))
     }
 
     /// Save the space configuration
@@ -88,24 +92,85 @@ impl SpaceConfig {
 }
 
 /// Create a new space
-pub async fn create(name: String, description: Option<String>) -> Result<()> {
+pub async fn create(name: String, owners: Option<Vec<String>>, description: Option<String>) -> Result<()> {
     println!("🚀 Creating space: {}\n", name);
+
+    // Get active authority (required for space creation)
+    let authority = authority::get_active_authority()?
+        .context("No active authority. Please run 'tonk login' first")?;
+
+    println!("👤 Authority: {}\n", authority::format_authority_did(&authority.did));
+
+    // Collect owner DIDs
+    let mut owner_dids = Vec::new();
+
+    // Always include the active authority as an owner
+    owner_dids.push(authority.did.clone());
+
+    // Handle additional owners
+    if let Some(provided_owners) = owners {
+        // Validate and add provided owners
+        for owner in &provided_owners {
+            if !owner.starts_with("did:key:") {
+                anyhow::bail!("Invalid owner DID: {}. Must be a did:key identifier", owner);
+            }
+            if owner != &authority.did && !owner_dids.contains(owner) {
+                owner_dids.push(owner.clone());
+            }
+        }
+    } else {
+        // Interactive mode: ask for additional owners
+        println!("Additional owners (did:key identifiers, one per line, empty line to finish):");
+        loop {
+            print!("> ");
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim();
+
+            if input.is_empty() {
+                break;
+            }
+
+            if !input.starts_with("did:key:") {
+                println!("   ⚠  Invalid DID format. Must start with 'did:key:'");
+                continue;
+            }
+
+            if input == authority.did {
+                println!("   ℹ  Authority already included as owner");
+                continue;
+            }
+
+            if owner_dids.contains(&input.to_string()) {
+                println!("   ℹ  Already added");
+                continue;
+            }
+
+            owner_dids.push(input.to_string());
+            println!("   ✓ Added");
+        }
+        println!();
+    }
+
+    println!("👥 Owners ({}):", owner_dids.len());
+    for owner in &owner_dids {
+        println!("   • {}", authority::format_authority_did(owner));
+    }
+    println!();
 
     // Generate space keypair
     let space_keypair = Keypair::generate();
     let space_did = space_keypair.to_did_key();
 
-    // Generate unique ID for the space
-    let space_id = Uuid::new_v4().to_string();
-
-    println!("🏠 Space DID: {}", space_did);
-    println!("   Space ID:  {}\n", space_id);
+    println!("🏠 Space DID: {}\n", space_did);
 
     // Create space config
     let space_config = SpaceConfig::new(
-        space_id.clone(),
         name.clone(),
         space_did.clone(),
+        owner_dids.clone(),
         description,
     );
 
@@ -120,33 +185,78 @@ pub async fn create(name: String, description: Option<String>) -> Result<()> {
         .context("Failed to save space keypair")?;
 
     let path: PathBuf = space_config.space_dir()?;
-    println!("   Saved to:  {}\n", path.display());
+    println!("   Config saved to: {}\n", path.display());
+
+    // Create delegations from space to each owner
+    println!("📜 Creating owner delegations...");
+    for owner_did in &owner_dids {
+        create_owner_delegation(&space_keypair, &space_did, owner_did)?;
+        println!("   ✓ {}", authority::format_authority_did(owner_did));
+    }
+    println!();
 
     // Update global config to set this as the active space
     let mut global_config: GlobalConfig =
         GlobalConfig::load().context("Failed to load global config")?;
 
-    global_config.active_space = Some(space_id);
+    global_config.active_space = Some(space_did.clone());
     global_config
         .save()
         .context("Failed to save global config")?;
 
-    println!("✅ Space created and set as active!\n");
+    println!("✅ Space created and set as active!");
+    println!("   Operators under these authorities now have access to the space.\n");
 
-    // TODO: When UCAN library is available, implement ownership delegation:
-    //
-    // 1. Get or create the active profile (derive from authority if needed)
-    // 2. Create UCAN delegation: Space DID → Profile DID with full capabilities
-    //    - iss: space_did
-    //    - aud: profile_did
-    //    - cmd: "/" (powerline - full access)
-    //    - sub: space_did (the space is the subject)
-    //    - exp: far future or null (permanent access)
-    // 3. Sign the delegation with the space keypair
-    // 4. Store delegation in space's authorization space:
-    //    ~/.tonk/spaces/{space_id}/access/{profile_did}/{hash}.json
-    // 5. Add profile_did to owners array in config (as cache/index)
-    // 6. Discard the space private key after delegation
+    Ok(())
+}
+
+/// Create a delegation from space to an owner
+fn create_owner_delegation(
+    space_keypair: &Keypair,
+    space_did: &str,
+    owner_did: &str,
+) -> Result<()> {
+    // Create delegation payload: Space → Owner with full access
+    let payload = DelegationPayload {
+        iss: space_did.to_string(),
+        aud: owner_did.to_string(),
+        cmd: "/".to_string(), // Full access
+        sub: Some(space_did.to_string()), // Subject is the space itself
+        exp: i64::MAX, // Never expires (permanent ownership)
+        pol: Vec::new(),
+    };
+
+    // Sign the payload
+    let payload_json = serde_json::to_string(&payload)?;
+    let signature_obj = space_keypair.sign(payload_json.as_bytes());
+    let signature = STANDARD.encode(signature_obj.to_bytes());
+
+    // Create delegation
+    let delegation = Delegation {
+        payload,
+        signature,
+    };
+
+    // Verify the signature
+    delegation.verify().context("Failed to verify delegation signature")?;
+
+    // Save delegation to owner's access directory
+    // This goes to: ~/.tonk/access/{owner_did}/{space_did}/{exp}-{hash}.json
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    let owner_access_dir = home
+        .join(".tonk")
+        .join("access")
+        .join(owner_did)
+        .join(space_did);
+
+    fs::create_dir_all(&owner_access_dir)?;
+
+    let hash = delegation.hash();
+    let filename = format!("{}-{}.json", delegation.payload.exp, hash);
+    let delegation_path = owner_access_dir.join(filename);
+
+    let delegation_json = serde_json::to_string_pretty(&delegation)?;
+    fs::write(&delegation_path, delegation_json)?;
 
     Ok(())
 }
@@ -158,7 +268,7 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     // Load the space to invite to
     let global_config = GlobalConfig::load().context("Failed to load global config")?;
 
-    let space_id = if let Some(name) = space_name {
+    let _space_id = if let Some(name) = space_name {
         // TODO: Look up space by name
         println!("   Using space: {}", name);
         name
@@ -260,7 +370,7 @@ pub async fn join(invite_path: String, profile_name: Option<String>) -> Result<(
 
     println!("   Invite file: {}", invite_path);
 
-    let profile = if let Some(name) = profile_name {
+    let _profile = if let Some(name) = profile_name {
         println!("   Using profile: {}\n", name);
         name
     } else {
