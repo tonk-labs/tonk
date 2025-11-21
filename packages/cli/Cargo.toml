@@ -1,14 +1,11 @@
 [package]
 name = "tonk-cli"
-version = "0.1.0"
-edition = "2021"
-authors = ["Tonk Labs"]
 description = "CLI tool for Tonk authentication and management"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 
-[[bin]]
-name = "tonk"
-path = "src/main.rs"
 
 [dependencies]
 # CLI
@@ -38,8 +35,11 @@ uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 
+ucan_core = { workspace = true }
+
 # For opening browser
 webbrowser = "1.0"
+
 
 [dev-dependencies]
 tempfile = "3.21"
