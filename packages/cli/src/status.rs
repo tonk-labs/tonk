@@ -45,53 +45,58 @@ fn collect_subject_access(
     }
 
     // Walk through subject/issuer directories
-    for entry in fs::read_dir(&access_dir).ok().into_iter().flatten() {
-        if let Ok(entry) = entry {
-            let subject_path = entry.path();
-            if !subject_path.is_dir() {
+    for entry in fs::read_dir(&access_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let subject_path = entry.path();
+        if !subject_path.is_dir() {
+            continue;
+        }
+
+        // Read delegation files in this directory
+        for delegation_entry in fs::read_dir(&subject_path)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let delegation_path = delegation_entry.path();
+
+            // Only process .cbor files
+            if delegation_path.extension().and_then(|e| e.to_str()) != Some("cbor") {
                 continue;
             }
 
-            // Read delegation files in this directory
-            for delegation_entry in fs::read_dir(&subject_path).ok().into_iter().flatten() {
-                if let Ok(delegation_entry) = delegation_entry {
-                    let delegation_path = delegation_entry.path();
+            if let Ok(cbor_bytes) = fs::read(&delegation_path)
+                && let Ok(delegation) = Delegation::from_cbor_bytes(&cbor_bytes)
+            {
+                // Only consider valid delegations
+                if !delegation.is_valid() {
+                    continue;
+                }
 
-                    if let Ok(json) = fs::read_to_string(&delegation_path) {
-                        if let Ok(delegation) = serde_json::from_str::<Delegation>(&json) {
-                            // Only consider valid delegations
-                            if !delegation.is_valid() {
-                                continue;
-                            }
+                let is_powerline = delegation.is_powerline();
 
-                            let is_powerline = delegation.payload.sub.is_none();
+                if is_powerline {
+                    // Powerline delegation - recurse into issuer's capabilities
+                    let issuer_access =
+                        collect_subject_access(&delegation.issuer(), home, visited, depth + 1);
 
-                            if is_powerline {
-                                // Powerline delegation - recurse into issuer's capabilities
-                                let issuer_access = collect_subject_access(
-                                    delegation.issuer(),
-                                    home,
-                                    visited,
-                                    depth + 1,
-                                );
-
-                                // Merge issuer's access into ours
-                                for (subject, commands) in issuer_access {
-                                    access
-                                        .entry(subject)
-                                        .or_insert_with(Vec::new)
-                                        .extend(commands);
-                                }
-                            } else {
-                                // Regular delegation - direct access to subject
-                                let subject = delegation.payload.sub.clone().unwrap();
-                                access
-                                    .entry(subject)
-                                    .or_insert_with(Vec::new)
-                                    .push((delegation.payload.cmd.clone(), delegation.payload.exp));
-                            }
-                        }
+                    // Merge issuer's access into ours
+                    for (subject, commands) in issuer_access {
+                        access.entry(subject).or_default().extend(commands);
                     }
+                } else {
+                    // Regular delegation - direct access to subject
+                    let subject = delegation.subject().to_string();
+                    let exp_secs = delegation.expiration().unwrap_or(0);
+                    access
+                        .entry(subject)
+                        .or_default()
+                        .push((delegation.command_str(), exp_secs));
                 }
             }
         }
@@ -177,21 +182,21 @@ pub async fn execute(verbose: bool) -> Result<()> {
             let delegation_path = delegation_entry.path();
 
             if !delegation_path.is_file()
-                || delegation_path.extension().and_then(|e| e.to_str()) != Some("json")
+                || delegation_path.extension().and_then(|e| e.to_str()) != Some("cbor")
             {
                 continue;
             }
 
             // Parse delegation
-            match fs::read_to_string(&delegation_path) {
-                Ok(json) => match serde_json::from_str::<Delegation>(&json) {
+            match fs::read(&delegation_path) {
+                Ok(cbor_bytes) => match Delegation::from_cbor_bytes(&cbor_bytes) {
                     Ok(delegation) => {
                         // Skip expired delegations
                         if !delegation.is_valid() {
                             continue;
                         }
 
-                        let is_powerline = delegation.payload.sub.is_none();
+                        let is_powerline = delegation.is_powerline();
 
                         if is_powerline {
                             // Track powerline delegations for later processing
@@ -202,13 +207,13 @@ pub async fn execute(verbose: bool) -> Result<()> {
                             ));
                         } else {
                             // Direct delegation to a subject
-                            let subject = delegation.payload.sub.clone().unwrap();
+                            let subject = delegation.subject().to_string();
                             subject_access
                                 .entry(subject)
-                                .or_insert_with(Vec::new)
+                                .or_default()
                                 .push(CommandAccess {
-                                    command: delegation.payload.cmd.clone(),
-                                    expiration: delegation.payload.exp,
+                                    command: delegation.command_str(),
+                                    expiration: delegation.expiration().unwrap_or(0),
                                     path: DelegationPath::Direct {
                                         issuer: delegation.issuer().to_string(),
                                     },
@@ -237,10 +242,10 @@ pub async fn execute(verbose: bool) -> Result<()> {
         // A powerline delegation grants access to the authority's DID itself
         subject_access
             .entry(authority_did.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(CommandAccess {
-                command: powerline_delegation.payload.cmd.clone(),
-                expiration: powerline_delegation.payload.exp,
+                command: powerline_delegation.command_str(),
+                expiration: powerline_delegation.expiration().unwrap_or(0),
                 path: DelegationPath::Direct {
                     issuer: authority_did.clone(),
                 },
@@ -256,7 +261,7 @@ pub async fn execute(verbose: bool) -> Result<()> {
             for (command, exp) in commands {
                 subject_access
                     .entry(subject.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(CommandAccess {
                         command,
                         expiration: exp,
@@ -298,7 +303,7 @@ pub async fn execute(verbose: bool) -> Result<()> {
         for access in accesses {
             command_groups
                 .entry((access.command.clone(), access.expiration))
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(access);
         }
 
@@ -327,12 +332,14 @@ pub async fn execute(verbose: bool) -> Result<()> {
                     }
                     DelegationPath::Via { authority, hops } => {
                         if verbose {
-                            println!(" [via {} ({} hop{})]", authority, hops, if *hops == 1 { "" } else { "s" });
-                        } else {
                             println!(
-                                " [via {}]",
-                                shorten_did(authority)
+                                " [via {} ({} hop{})]",
+                                authority,
+                                hops,
+                                if *hops == 1 { "" } else { "s" }
                             );
+                        } else {
+                            println!(" [via {}]", shorten_did(authority));
                         }
                     }
                 }
@@ -351,7 +358,13 @@ pub async fn execute(verbose: bool) -> Result<()> {
                         }
                         DelegationPath::Via { authority, hops } => {
                             if verbose {
-                                println!("  {}  • via {} ({} hop{})", nested_prefix, authority, hops, if *hops == 1 { "" } else { "s" });
+                                println!(
+                                    "  {}  • via {} ({} hop{})",
+                                    nested_prefix,
+                                    authority,
+                                    hops,
+                                    if *hops == 1 { "" } else { "s" }
+                                );
                             } else {
                                 println!("  {}  • via {}", nested_prefix, shorten_did(authority));
                             }
@@ -369,7 +382,10 @@ pub async fn execute(verbose: bool) -> Result<()> {
                     // Load and display metadata if available
                     if let Ok(Some(metadata)) = access.delegation.load_metadata() {
                         let site_type = if metadata.is_local { "Local" } else { "Remote" };
-                        println!("  {}  Source: {} ({})", nested_prefix, metadata.site, site_type);
+                        println!(
+                            "  {}  Source: {} ({})",
+                            nested_prefix, metadata.site, site_type
+                        );
                     }
                 }
             }

@@ -25,4 +25,4 @@ inherits = "release"
 strip = "debuginfo"
 
 [workspace.dependencies]
-ucan_core = { git = "https://github.com/ucan-wg/rs-ucan.git", branch = "v1-2025-edition", package = "ucan_core" }
+ucan_core = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "v1-2025-edition", package = "ucan_core" }

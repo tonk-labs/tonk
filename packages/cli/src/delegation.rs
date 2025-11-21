@@ -1,10 +1,15 @@
-use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_ipld_dagcbor::EncodeError;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
+use std::{collections::TryReserveError, convert::Infallible};
 use thiserror::Error;
+use ucan_core::time::timestamp::Timestamp;
+use ucan_core::{
+    Delegation as UcanDelegation, delegation::subject::DelegatedSubject, did::Ed25519Did,
+};
 
 #[derive(Error, Debug)]
 pub enum DelegationError {
@@ -14,50 +19,26 @@ pub enum DelegationError {
     #[error("Serialization error: {0}")]
     SerializationError(#[from] serde_json::Error),
 
+    #[error("CBOR serialization error: {0}")]
+    CborError(#[from] serde_ipld_dagcbor::DecodeError<Infallible>),
+
+    #[error("CBOR encoding error: {0}")]
+    CborEncodeError(String),
+
     #[error("Delegation not found")]
     NotFound,
 
-    #[error("Invalid signature")]
-    InvalidSignature,
+    #[error("Invalid delegation: {0}")]
+    InvalidDelegation(String),
 
-    #[error("Invalid issuer DID: {0}")]
-    InvalidIssuerDid(String),
+    #[error("Delegation expired")]
+    Expired,
+
+    #[error("Delegation not yet valid (notBefore in future)")]
+    NotYetValid,
 
     #[error("Base64 decode error: {0}")]
     Base64Error(#[from] base64::DecodeError),
-}
-
-/// Represents a capability delegation payload (simplified UCAN)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DelegationPayload {
-    /// Issuer DID (authority)
-    pub iss: String,
-
-    /// Audience DID (operator)
-    pub aud: String,
-
-    /// Command/capability
-    pub cmd: String,
-
-    /// Subject (null for account-level)
-    pub sub: Option<String>,
-
-    /// Expiration timestamp (Unix epoch seconds)
-    pub exp: i64,
-
-    /// Policy (empty for now)
-    #[serde(default)]
-    pub pol: Vec<serde_json::Value>,
-}
-
-/// Represents a signed delegation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Delegation {
-    /// The delegation payload
-    pub payload: DelegationPayload,
-
-    /// Signature over the payload
-    pub signature: String,
 }
 
 /// Metadata about how a delegation was obtained
@@ -77,128 +58,150 @@ pub struct DelegationMetadata {
     pub extra: serde_json::Value,
 }
 
+/// Wrapper around ucan_core::Delegation with storage and validation methods
+#[derive(Debug, Clone)]
+pub struct Delegation(UcanDelegation<Ed25519Did>);
+
 impl Delegation {
-    /// Check if the delegation is still valid (not expired)
+    /// Create from a UCAN delegation
+    pub fn from_ucan(delegation: UcanDelegation<Ed25519Did>) -> Self {
+        Self(delegation)
+    }
+
+    /// Get the inner UCAN delegation
+    pub fn inner(&self) -> &UcanDelegation<Ed25519Did> {
+        &self.0
+    }
+
+    /// Deserialize from DAG-CBOR bytes
+    pub fn from_cbor_bytes(bytes: &[u8]) -> Result<Self, DelegationError> {
+        let delegation: UcanDelegation<Ed25519Did> = serde_ipld_dagcbor::from_slice(bytes)?;
+        Ok(Self(delegation))
+    }
+
+    /// Serialize to DAG-CBOR bytes
+    pub fn to_cbor_bytes(&self) -> Result<Vec<u8>, DelegationError> {
+        serde_ipld_dagcbor::to_vec(&self.0).map_err(|e: EncodeError<TryReserveError>| {
+            DelegationError::CborEncodeError(e.to_string())
+        })
+    }
+
+    /// Check if the delegation is still valid (not expired and notBefore passed)
     pub fn is_valid(&self) -> bool {
-        let now = chrono::Utc::now().timestamp();
-        self.payload.exp > now
+        let now = chrono::Utc::now().timestamp() as u64;
+
+        // Check expiration
+        if let Some(exp) = self.0.expiration() {
+            let exp_secs = exp.to_unix();
+            if exp_secs <= now {
+                return false;
+            }
+        }
+
+        // Check notBefore
+        if let Some(nbf) = self.0.not_before() {
+            let nbf_secs = nbf.to_unix();
+            if nbf_secs > now {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Get the audience (operator DID)
-    pub fn audience(&self) -> &str {
-        &self.payload.aud
+    pub fn audience(&self) -> String {
+        self.0.audience().to_string()
     }
 
     /// Get the issuer (authority DID)
-    pub fn issuer(&self) -> &str {
-        &self.payload.iss
+    pub fn issuer(&self) -> String {
+        self.0.issuer().to_string()
     }
 
-    /// Verify the signature using the issuer's public key
-    pub fn verify(&self) -> Result<(), DelegationError> {
-        // Extract public key from issuer DID (did:key:z...)
-        let issuer_pubkey = Self::extract_pubkey_from_did(&self.payload.iss)?;
-
-        // Serialize payload for verification
-        let payload_bytes = serde_json::to_string(&self.payload)
-            .map_err(|e| DelegationError::SerializationError(e))?;
-
-        // Decode signature
-        let signature_bytes = STANDARD.decode(&self.signature)?;
-
-        // Verify signature
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-
-        let verifying_key = VerifyingKey::from_bytes(&issuer_pubkey)
-            .map_err(|_| DelegationError::InvalidIssuerDid("Invalid public key".to_string()))?;
-
-        let signature = Signature::from_bytes(
-            &signature_bytes
-                .try_into()
-                .map_err(|_| DelegationError::InvalidSignature)?,
-        );
-
-        verifying_key
-            .verify(payload_bytes.as_bytes(), &signature)
-            .map_err(|_| DelegationError::InvalidSignature)?;
-
-        Ok(())
+    /// Get the subject
+    pub fn subject(&self) -> &DelegatedSubject<Ed25519Did> {
+        self.0.subject()
     }
 
-    /// Extract Ed25519 public key from did:key
-    fn extract_pubkey_from_did(did: &str) -> Result<[u8; 32], DelegationError> {
-        // did:key:z{base58btc-multicodec-pubkey}
-        if !did.starts_with("did:key:z") {
-            return Err(DelegationError::InvalidIssuerDid(
-                "DID must start with 'did:key:z'".to_string(),
-            ));
-        }
-
-        let encoded = &did[9..]; // Remove "did:key:z" prefix
-
-        // Base58 decode
-        let decoded = bs58::decode(encoded).into_vec().map_err(|e| {
-            DelegationError::InvalidIssuerDid(format!("Base58 decode failed: {}", e))
-        })?;
-
-        // Check multicodec prefix (0xed01 for Ed25519)
-        if decoded.len() < 34 || decoded[0] != 0xed || decoded[1] != 0x01 {
-            return Err(DelegationError::InvalidIssuerDid(
-                "Invalid multicodec prefix (expected 0xed01 for Ed25519)".to_string(),
-            ));
-        }
-
-        // Extract 32-byte public key
-        let mut pubkey = [0u8; 32];
-        pubkey.copy_from_slice(&decoded[2..34]);
-
-        Ok(pubkey)
+    /// Check if this is a powerline delegation (subject is *)
+    pub fn is_powerline(&self) -> bool {
+        matches!(self.0.subject(), DelegatedSubject::Any)
     }
 
-    /// Calculate hash of the delegation
-    fn hash(&self) -> String {
-        let json = serde_json::to_string(self).unwrap_or_default();
+    /// Get the command as a slash-separated string
+    pub fn command_str(&self) -> String {
+        self.0.command().join("/")
+    }
+
+    /// Get the commands
+    pub fn command(&self) -> &Vec<String> {
+        self.0.command()
+    }
+
+    /// Get expiration timestamp (Unix epoch seconds)
+    pub fn expiration(&self) -> Option<i64> {
+        self.0.expiration().map(|ts: Timestamp| ts.to_unix() as i64)
+    }
+
+    /// Calculate hash of the delegation (for storage path)
+    fn hash(&self) -> Result<String, DelegationError> {
+        let cbor_bytes = self.to_cbor_bytes()?;
         let mut hasher = Sha256::new();
-        hasher.update(json.as_bytes());
+        hasher.update(&cbor_bytes);
         let result = hasher.finalize();
-        hex::encode(result)
+        Ok(hex::encode(result))
     }
 
     /// Get the delegation storage path based on delegation fields
     fn storage_path(&self) -> Result<PathBuf, DelegationError> {
-        let home = dirs::home_dir().ok_or_else(|| {
+        let home: PathBuf = dirs::home_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine home directory",
             ))
         })?;
 
-        // Build path: ~/.tonk/access/{aud}/{sub or iss}/{exp}-{hash}.json
-        // When sub is null (powerline), use issuer DID as directory name
-        let access_dir = home.join(".tonk").join("access").join(&self.payload.aud);
+        // Build path: ~/.tonk/access/{aud}/{sub or iss}/{exp}-{hash}.cbor
+        let audience = self.audience();
+        let access_dir = home.join(".tonk").join("access").join(&audience);
 
-        let sub_dir = if let Some(ref sub) = self.payload.sub {
-            access_dir.join(sub)
-        } else {
-            // Powerline delegation - use issuer as directory name
-            access_dir.join(&self.payload.iss)
+        let sub_dir = match self.subject() {
+            DelegatedSubject::Specific(did) => {
+                // Specific subject
+                access_dir.join(did.to_string())
+            }
+            DelegatedSubject::Any => {
+                // Powerline delegation - use issuer as directory name
+                access_dir.join(self.issuer())
+            }
         };
 
         // Create directory structure
         fs::create_dir_all(&sub_dir)?;
 
-        let hash = self.hash();
-        let filename = format!("{}-{}.json", self.payload.exp, hash);
+        let hash = self.hash()?;
+        let exp = self.expiration().unwrap_or(0);
+        let filename = format!("{}-{}.cbor", exp, hash);
 
         Ok(sub_dir.join(filename))
     }
 
-    /// Save delegation to local storage
+    /// Save delegation to local storage (both CBOR and JSON)
     pub fn save(&self) -> Result<(), DelegationError> {
-        let path = self.storage_path()?;
-        let json = serde_json::to_string_pretty(self)?;
-        fs::write(&path, json)?;
-        println!("   Saved to: {}", path.display());
+        let cbor_path: PathBuf = self.storage_path()?;
+
+        // Save as DAG-CBOR (primary format)
+        let cbor_bytes = self.to_cbor_bytes()?;
+        fs::write(&cbor_path, cbor_bytes)?;
+        println!("   Saved to: {}", cbor_path.display());
+
+        // Save as JSON (for human inspection)
+        let json_path = cbor_path.with_extension("json");
+        let json = serde_json::to_string_pretty(&self.0)?;
+        fs::write(&json_path, json)?;
+        println!("   JSON export: {}", json_path.display());
+
         Ok(())
     }
 
@@ -208,14 +211,14 @@ impl Delegation {
         self.save()?;
 
         // Save metadata
-        let home = dirs::home_dir().ok_or_else(|| {
+        let home: PathBuf = dirs::home_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine home directory",
             ))
         })?;
 
-        let hash = self.hash();
+        let hash: String = self.hash()?;
         let meta_dir = home.join(".tonk").join("meta").join(&hash);
         fs::create_dir_all(&meta_dir)?;
 
@@ -229,14 +232,14 @@ impl Delegation {
 
     /// Load metadata for this delegation
     pub fn load_metadata(&self) -> Result<Option<DelegationMetadata>, DelegationError> {
-        let home = dirs::home_dir().ok_or_else(|| {
+        let home: PathBuf = dirs::home_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine home directory",
             ))
         })?;
 
-        let hash = self.hash();
+        let hash = self.hash()?;
         let meta_path = home
             .join(".tonk")
             .join("meta")
@@ -252,7 +255,7 @@ impl Delegation {
         Ok(Some(metadata))
     }
 
-    /// Load delegation from local storage (for future use)
+    /// Load delegation from CBOR file (for future use)
     #[allow(dead_code)]
     pub fn load(
         aud: &str,
@@ -260,7 +263,7 @@ impl Delegation {
         exp: i64,
         hash: &str,
     ) -> Result<Self, DelegationError> {
-        let home = dirs::home_dir().ok_or_else(|| {
+        let home: PathBuf = dirs::home_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine home directory",
@@ -271,28 +274,52 @@ impl Delegation {
         let sub_dir = if let Some(sub) = sub {
             access_dir.join(sub)
         } else {
-            access_dir.join("null")
+            access_dir.join("*")
         };
 
-        let filename = format!("{}-{}.json", exp, hash);
+        let filename = format!("{}-{}.cbor", exp, hash);
         let path = sub_dir.join(filename);
 
         if !path.exists() {
             return Err(DelegationError::NotFound);
         }
 
-        let json = fs::read_to_string(path)?;
-        let delegation: Delegation = serde_json::from_str(&json)?;
-        Ok(delegation)
+        let cbor_bytes = fs::read(path)?;
+        Self::from_cbor_bytes(&cbor_bytes)
     }
 
     /// Delete the stored delegation (for future use)
     #[allow(dead_code)]
     pub fn delete(&self) -> Result<(), DelegationError> {
-        let path = self.storage_path()?;
-        if path.exists() {
-            fs::remove_file(path)?;
+        let cbor_path: PathBuf = self.storage_path()?;
+        let json_path = cbor_path.with_extension("json");
+
+        if cbor_path.exists() {
+            fs::remove_file(cbor_path)?;
+        }
+        if json_path.exists() {
+            fs::remove_file(json_path)?;
         }
         Ok(())
+    }
+}
+
+// Implement Serialize/Deserialize by delegating to inner type
+impl Serialize for Delegation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Delegation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let delegation = UcanDelegation::<Ed25519Did>::deserialize(deserializer)?;
+        Ok(Self(delegation))
     }
 }
