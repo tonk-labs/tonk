@@ -2,11 +2,11 @@ use crate::delegation::{Delegation, DelegationMetadata};
 use crate::keystore::Keystore;
 use anyhow::{Context, Result};
 use axum::{
+    Router,
     extract::{Form, State},
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::{get, post},
-    Router,
 };
 use base64::Engine as _;
 use serde::Deserialize;
@@ -178,7 +178,9 @@ async fn handle_callback(
         state.shutdown.notify_one();
         return (
             StatusCode::OK,
-            Html("<html><body><h1>Authorization Denied</h1><p>You can close this window.</p></body></html>"),
+            Html(
+                "<html><body><h1>Authorization Denied</h1><p>You can close this window.</p></body></html>",
+            ),
         );
     }
 
@@ -196,6 +198,12 @@ async fn handle_callback(
             }
         };
 
+        println!("📦 Received {} bytes of CBOR data", decoded.len());
+        println!(
+            "🔍 First 100 bytes (hex): {}",
+            hex::encode(&decoded[..decoded.len().min(100)])
+        );
+
         // Parse DAG-CBOR encoded UCAN
         match Delegation::from_cbor_bytes(&decoded) {
             Ok(delegation) => {
@@ -212,7 +220,9 @@ async fn handle_callback(
                     state.shutdown.notify_one();
                     return (
                         StatusCode::BAD_REQUEST,
-                        Html("<html><body><h1>Error</h1><p>Delegation audience mismatch.</p></body></html>"),
+                        Html(
+                            "<html><body><h1>Error</h1><p>Delegation audience mismatch.</p></body></html>",
+                        ),
                     );
                 }
 
@@ -243,7 +253,9 @@ async fn handle_callback(
                     state.shutdown.notify_one();
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Html("<html><body><h1>Error</h1><p>Failed to save delegation.</p></body></html>"),
+                        Html(
+                            "<html><body><h1>Error</h1><p>Failed to save delegation.</p></body></html>",
+                        ),
                     );
                 }
 
@@ -252,15 +264,29 @@ async fn handle_callback(
 
                 (
                     StatusCode::OK,
-                    Html("<html><body><h1>✅ Authorization Successful!</h1><p>You can close this window and return to the CLI.</p></body></html>"),
+                    Html(
+                        "<html><body><h1>✅ Authorization Successful!</h1><p>You can close this window and return to the CLI.</p></body></html>",
+                    ),
                 )
             }
             Err(e) => {
                 println!("❌ Failed to parse delegation: {}", e);
+                println!("📋 CBOR data (full hex): {}", hex::encode(&decoded));
+
+                // Try to parse as generic CBOR to see structure
+                if let Ok(value) = serde_ipld_dagcbor::from_slice::<serde_json::Value>(&decoded) {
+                    println!(
+                        "📄 CBOR structure (as JSON): {}",
+                        serde_json::to_string_pretty(&value).unwrap_or_default()
+                    );
+                }
+
                 state.shutdown.notify_one();
                 (
                     StatusCode::BAD_REQUEST,
-                    Html("<html><body><h1>Error</h1><p>Failed to parse delegation.</p></body></html>"),
+                    Html(
+                        "<html><body><h1>Error</h1><p>Failed to parse delegation.</p></body></html>",
+                    ),
                 )
             }
         }
@@ -268,7 +294,9 @@ async fn handle_callback(
         state.shutdown.notify_one();
         (
             StatusCode::BAD_REQUEST,
-            Html("<html><body><h1>Error</h1><p>No authorization or denial received.</p></body></html>"),
+            Html(
+                "<html><body><h1>Error</h1><p>No authorization or denial received.</p></body></html>",
+            ),
         )
     }
 }
