@@ -1,7 +1,9 @@
 pub mod config;
 pub mod crypto;
 pub mod delegation;
+pub mod invite;
 pub mod keystore;
 pub mod login;
+pub mod profile;
 pub mod space;
 pub mod status;

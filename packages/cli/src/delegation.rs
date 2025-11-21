@@ -1,4 +1,6 @@
+use crate::crypto::Keypair;
 use chrono::{DateTime, Utc};
+use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_ipld_dagcbor::EncodeError;
 use sha2::{Digest, Sha256};
@@ -6,10 +8,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::{collections::TryReserveError, convert::Infallible};
 use thiserror::Error;
+use ucan_core::did::{Ed25519Did, Ed25519Signer};
 use ucan_core::time::timestamp::Timestamp;
-use ucan_core::{
-    Delegation as UcanDelegation, delegation::subject::DelegatedSubject, did::Ed25519Did,
-};
+use ucan_core::{Delegation as UcanDelegation, delegation::subject::DelegatedSubject};
 
 #[derive(Error, Debug)]
 pub enum DelegationError {
@@ -302,6 +303,90 @@ impl Delegation {
         }
         Ok(())
     }
+
+    /// Get the delegation hash as bytes
+    /// This is used as a stable, deterministic identifier for the delegation
+    ///
+    /// Used for deriving membership keys from invitations
+    pub fn hash_bytes(&self) -> Result<Vec<u8>, DelegationError> {
+        let hash = self.hash()?;
+        Ok(hex::decode(&hash).expect("hash is valid hex"))
+    }
+}
+
+/// Convert a Keypair to an Ed25519Signer (for signing delegations)
+pub fn keypair_to_signer(keypair: &Keypair) -> Ed25519Signer {
+    let signing_key = SigningKey::from_bytes(&keypair.to_bytes());
+    Ed25519Signer::new(signing_key)
+}
+
+/// Convert a Keypair to an Ed25519Did (for audience/subject)
+pub fn keypair_to_did(keypair: &Keypair) -> Ed25519Did {
+    let verifying_key = keypair.verifying_key();
+    verifying_key.into()
+}
+
+/// Create an ownership delegation (full access to a space)
+/// This is used when creating a space: Space DID → Profile DID
+pub fn create_ownership_delegation(
+    issuer_keypair: &Keypair,
+    audience_keypair: &Keypair,
+    subject_keypair: &Keypair,
+) -> Result<UcanDelegation<Ed25519Did>, DelegationError> {
+    let issuer_signer = keypair_to_signer(issuer_keypair);
+    let audience_did = keypair_to_did(audience_keypair);
+    let subject_did = keypair_to_did(subject_keypair);
+
+    UcanDelegation::builder()
+        .issuer(issuer_signer)
+        .audience(audience_did)
+        .subject(DelegatedSubject::Specific(subject_did))
+        .command(vec!["read".to_string(), "write".to_string()])
+        .try_build()
+        .map_err(|e| DelegationError::InvalidDelegation(e.to_string()))
+}
+
+/// Create a capability delegation with specific permissions
+/// Commands: "read", "write", or both
+pub fn create_capability_delegation(
+    issuer_keypair: &Keypair,
+    audience_did: Ed25519Did,
+    subject_did: Ed25519Did,
+    capabilities: &[&str],
+) -> Result<UcanDelegation<Ed25519Did>, DelegationError> {
+    let issuer_signer = keypair_to_signer(issuer_keypair);
+    let command: Vec<String> = capabilities.iter().map(|s| s.to_string()).collect();
+
+    UcanDelegation::builder()
+        .issuer(issuer_signer)
+        .audience(audience_did)
+        .subject(DelegatedSubject::Specific(subject_did))
+        .command(command)
+        .try_build()
+        .map_err(|e| DelegationError::InvalidDelegation(e.to_string()))
+}
+
+/// Create a read-only delegation
+pub fn create_read_delegation(
+    issuer_keypair: &Keypair,
+    audience_did: Ed25519Did,
+    subject_did: Ed25519Did,
+) -> Result<UcanDelegation<Ed25519Did>, DelegationError> {
+    create_capability_delegation(issuer_keypair, audience_did, subject_did, &["read"])
+}
+
+/// Create a read-write delegation
+pub fn create_read_write_delegation(
+    issuer_keypair: &Keypair,
+    audience_did: Ed25519Did,
+    subject_did: Ed25519Did,
+) -> Result<UcanDelegation<Ed25519Did>, DelegationError> {
+    create_capability_delegation(
+        issuer_keypair,
+        audience_did,
+        subject_did,
+        &["read", "write"],
+    )
 }
 
 // Implement Serialize/Deserialize by delegating to inner type
