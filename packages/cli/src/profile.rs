@@ -166,6 +166,11 @@ fn get_active_authority_delegation() -> Result<Delegation> {
     }
 
     // Look for powerline delegations
+    let mut checked_count = 0;
+    let mut found_delegations = 0;
+    let mut valid_count = 0;
+    let mut powerline_count = 0;
+
     for entry in fs::read_dir(&access_dir).context("Failed to read access directory")? {
         let entry = entry?;
         let dir_path = entry.path();
@@ -173,6 +178,8 @@ fn get_active_authority_delegation() -> Result<Delegation> {
         if !dir_path.is_dir() {
             continue;
         }
+
+        eprintln!("DEBUG: Checking directory: {}", dir_path.display());
 
         // Read delegation files in this directory
         for delegation_entry in fs::read_dir(&dir_path)? {
@@ -185,18 +192,49 @@ fn get_active_authority_delegation() -> Result<Delegation> {
                 continue;
             }
 
+            checked_count += 1;
+            eprintln!("DEBUG: Checking file: {}", delegation_path.display());
+
             // Parse delegation
-            if let Ok(cbor_bytes) = fs::read(&delegation_path)
-                && let Ok(delegation) = Delegation::from_cbor_bytes(&cbor_bytes)
-            {
-                // Check if valid and is powerline
-                if delegation.is_valid() && delegation.is_powerline() {
-                    return Ok(delegation);
+            match fs::read(&delegation_path) {
+                Ok(cbor_bytes) => {
+                    eprintln!("DEBUG: Read {} bytes", cbor_bytes.len());
+                    match Delegation::from_cbor_bytes(&cbor_bytes) {
+                        Ok(delegation) => {
+                            found_delegations += 1;
+                            let is_valid = delegation.is_valid();
+                            let is_powerline = delegation.is_powerline();
+                            eprintln!(
+                                "DEBUG: Parsed delegation - valid: {}, powerline: {}",
+                                is_valid, is_powerline
+                            );
+                            if is_valid {
+                                valid_count += 1;
+                            }
+                            if is_powerline {
+                                powerline_count += 1;
+                            }
+                            if is_valid && is_powerline {
+                                eprintln!("DEBUG: Found valid powerline delegation!");
+                                return Ok(delegation);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("DEBUG: Failed to parse delegation: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("DEBUG: Failed to read file: {}", e);
                 }
             }
         }
     }
 
+    eprintln!(
+        "DEBUG: Checked {} files, found {} delegations, {} valid, {} powerline",
+        checked_count, found_delegations, valid_count, powerline_count
+    );
     anyhow::bail!("No valid authority delegation found. Run 'tonk login' to authenticate.")
 }
 
