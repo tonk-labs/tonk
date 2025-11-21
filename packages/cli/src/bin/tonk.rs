@@ -47,6 +47,16 @@ enum SpaceCommands {
         #[arg(short, long)]
         description: Option<String>,
     },
+
+    /// Invite a collaborator to a space
+    Invite {
+        /// Email address of the invitee (e.g., alice@example.com)
+        email: String,
+
+        /// Name of the space (defaults to active space)
+        #[arg(short, long)]
+        space: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -63,6 +73,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Space { command } => match command {
             SpaceCommands::Create { name, description } => {
                 tonk_cli::space::create(name, description).await?;
+            }
+            SpaceCommands::Invite { email, space } => {
+                tonk_cli::space::invite(email, space).await?;
             }
         },
     }

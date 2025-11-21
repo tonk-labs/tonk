@@ -150,3 +150,106 @@ pub async fn create(name: String, description: Option<String>) -> Result<()> {
 
     Ok(())
 }
+
+/// Invite a collaborator to a space
+pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
+    println!("🎫 Inviting {} to space\n", email);
+
+    // Load the space to invite to
+    let global_config = GlobalConfig::load().context("Failed to load global config")?;
+
+    let space_id = if let Some(name) = space_name {
+        // TODO: Look up space by name
+        println!("   Using space: {}", name);
+        name
+    } else if let Some(active_id) = global_config.active_space {
+        println!("   Using active space");
+        active_id
+    } else {
+        anyhow::bail!("No active space. Create one with 'tonk space create' or specify --space");
+    };
+
+    // Convert email to did:mailto
+    let invitee_did = format!("did:mailto:{}", email);
+    println!("   Invitee DID: {}\n", invitee_did);
+
+    println!("⚠️  This command is not yet fully implemented.\n");
+    println!("    When UCAN library is available, this will:\n");
+    println!(
+        "    1. Create UCAN delegation: Space → did:mailto:{}",
+        email
+    );
+    println!(
+        "    2. Store invitation in space VFS at /access/{}/{{}}",
+        invitee_did
+    );
+    println!("    3. Generate membership keypair");
+    println!("    4. Create delegation: Space → Membership DID");
+    println!("    5. Derive invite code from invitation signature");
+    println!("    6. Output invite file containing:");
+    println!("       - Invite code (short secret)");
+    println!("       - Invitation CID");
+    println!("       - Space DID");
+    println!("       - Membership delegation");
+    println!("       - Time-limited invocation for reading invitation\n");
+
+    // TODO: When UCAN library is available, implement invitation flow:
+    //
+    // 1. Load space config and keypair from ~/.tonk/spaces/{space_id}/
+    //
+    // 2. Create invitation delegation:
+    //    - iss: space_did (or inviter's membership/profile DID)
+    //    - aud: did:mailto:{email}
+    //    - cmd: desired capabilities (e.g., "/read", "/write")
+    //    - sub: space_did
+    //    - exp: null (permanent) or future timestamp
+    //
+    // 3. Sign delegation with inviter's key
+    //
+    // 4. Compute invitation ID:
+    //    invitation_id = hash(delegation)
+    //
+    // 5. Store delegation in space VFS:
+    //    ~/.tonk/spaces/{space_id}/access/{did:mailto}/invitations/{invitation_id}.json
+    //
+    // 6. Derive invite code:
+    //    full_secret = inviter.sign(invitation_id)
+    //    invite_code = full_secret.slice(-5)  // Last 5 chars for user-friendly code
+    //
+    // 7. Generate membership keypair:
+    //    membership_key = HKDF(delegation.signature, invite_code)
+    //    membership_did = keypair_to_did_key(membership_key)
+    //
+    // 8. Create membership delegation:
+    //    - iss: space_did
+    //    - aud: membership_did
+    //    - cmd: same capabilities as invitation
+    //    - sub: space_did
+    //    - exp: null (permanent)
+    //
+    // 9. Store membership delegation:
+    //    ~/.tonk/spaces/{space_id}/access/{membership_did}/{hash}.json
+    //
+    // 10. Create time-limited UCAN invocation for reading invitation (expires in 7 days):
+    //     - Allows reading /access/{did:mailto}/{invitation_id}
+    //
+    // 11. Create invite file containing:
+    //     {
+    //       "invite_code": "ABCDE",
+    //       "invitation_id": "bafy...",
+    //       "space_did": "did:key:z...",
+    //       "space_name": "My Space",
+    //       "inviter": "alice@example.com",
+    //       "invitee": "bob@example.com",
+    //       "membership_delegation": {...},
+    //       "access_invocation": {...}  // Time-limited UCAN for reading invitation
+    //     }
+    //
+    // 12. Save invite file to: ./space-{space_name}-invite-{timestamp}.json
+    //
+    // 13. Print instructions for sharing:
+    //     - Send invite file to invitee
+    //     - Invitee uses: tonk space join --invite <file>
+
+    Ok(())
+}
