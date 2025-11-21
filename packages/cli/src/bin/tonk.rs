@@ -28,6 +28,46 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    /// Manage spaces (collaboration units)
+    Space {
+        #[command(subcommand)]
+        command: SpaceCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SpaceCommands {
+    /// Create a new space
+    Create {
+        /// Name of the space
+        name: String,
+
+        /// Optional description
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+
+    /// Invite a collaborator to a space
+    Invite {
+        /// Email address of the invitee (e.g., alice@example.com)
+        email: String,
+
+        /// Name of the space (defaults to active space)
+        #[arg(short, long)]
+        space: Option<String>,
+    },
+
+    /// Join a space using an invitation file
+    Join {
+        /// Path to the invitation file
+        #[arg(short, long)]
+        invite: String,
+
+        /// Profile to join with (defaults to active profile)
+        #[arg(short, long)]
+        profile: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -41,6 +81,17 @@ async fn main() -> anyhow::Result<()> {
         Commands::Status { verbose } => {
             tonk_cli::status::execute(verbose).await?;
         }
+        Commands::Space { command } => match command {
+            SpaceCommands::Create { name, description } => {
+                tonk_cli::space::create(name, description).await?;
+            }
+            SpaceCommands::Invite { email, space } => {
+                tonk_cli::space::invite(email, space).await?;
+            }
+            SpaceCommands::Join { invite, profile } => {
+                tonk_cli::space::join(invite, profile).await?;
+            }
+        },
     }
 
     Ok(())
