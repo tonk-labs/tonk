@@ -1,5 +1,7 @@
 use crate::config::GlobalConfig;
 use crate::crypto::Keypair;
+use crate::delegation::{self, Delegation};
+use crate::profile;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -133,20 +135,39 @@ pub async fn create(name: String, description: Option<String>) -> Result<()> {
 
     println!("✅ Space created and set as active!\n");
 
-    // TODO: When UCAN library is available, implement ownership delegation:
-    //
-    // 1. Get or create the active profile (derive from authority if needed)
-    // 2. Create UCAN delegation: Space DID → Profile DID with full capabilities
-    //    - iss: space_did
-    //    - aud: profile_did
-    //    - cmd: "/" (powerline - full access)
-    //    - sub: space_did (the space is the subject)
-    //    - exp: far future or null (permanent access)
-    // 3. Sign the delegation with the space keypair
-    // 4. Store delegation in space's authorization space:
-    //    ~/.tonk/spaces/{space_id}/access/{profile_did}/{hash}.json
-    // 5. Add profile_did to owners array in config (as cache/index)
-    // 6. Discard the space private key after delegation
+    // Step 1: Get or create the active profile (derive from authority if needed)
+    println!("🔐 Setting up ownership delegation...\n");
+    let (profile, profile_keypair) = profile::get_or_create_default()
+        .context("Failed to get or create profile")?;
+
+    println!("👤 Profile DID: {}", profile.did);
+    println!("   Profile ID:  {}\n", profile.id);
+
+    // Step 2: Create UCAN delegation: Space DID → Profile DID with full capabilities
+    let ownership_delegation = delegation::create_ownership_delegation(
+        &space_keypair,
+        &profile_keypair,
+        &space_keypair,
+    )
+    .context("Failed to create ownership delegation")?;
+
+    // Step 3: Save the delegation
+    let cli_delegation = Delegation::from_ucan(ownership_delegation);
+    cli_delegation
+        .save()
+        .context("Failed to save ownership delegation")?;
+
+    println!();
+
+    // Step 4: Discard the space private key after delegation
+    let key_path = space_config.space_dir()?.join("key.json");
+    if key_path.exists() {
+        fs::remove_file(&key_path).context("Failed to delete space private key")?;
+        println!("🔒 Space private key deleted (access via delegation only)\n");
+    }
+
+    println!("✅ Ownership delegation complete!");
+    println!("   You now have full access to this space via your profile.\n");
 
     Ok(())
 }
