@@ -28,6 +28,25 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    /// Manage spaces (collaboration units)
+    Space {
+        #[command(subcommand)]
+        command: SpaceCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SpaceCommands {
+    /// Create a new space
+    Create {
+        /// Name of the space
+        name: String,
+
+        /// Optional description
+        #[arg(short, long)]
+        description: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -41,6 +60,11 @@ async fn main() -> anyhow::Result<()> {
         Commands::Status { verbose } => {
             tonk_cli::status::execute(verbose).await?;
         }
+        Commands::Space { command } => match command {
+            SpaceCommands::Create { name, description } => {
+                tonk_cli::space::create(name, description).await?;
+            }
+        },
     }
 
     Ok(())
