@@ -8,6 +8,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use base64::Engine as _;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -182,23 +183,26 @@ async fn handle_callback(
     }
 
     if let Some(authorize) = form.authorize {
-        match serde_json::from_str::<Delegation>(&authorize) {
+        // Decode base64-encoded UCAN
+        let decoded = match base64::engine::general_purpose::STANDARD.decode(&authorize) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                println!("❌ Failed to decode base64: {}", e);
+                state.shutdown.notify_one();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Html("<html><body><h1>Error</h1><p>Invalid base64 encoding.</p></body></html>"),
+                );
+            }
+        };
+
+        // Parse DAG-CBOR encoded UCAN
+        match Delegation::from_cbor_bytes(&decoded) {
             Ok(delegation) => {
                 println!("✅ Received delegation!");
                 println!("   Issuer: {}", delegation.issuer());
                 println!("   Audience: {}", delegation.audience());
-                println!("   Command: {}", delegation.payload.cmd);
-
-                // Validate signature
-                if let Err(e) = delegation.verify() {
-                    println!("❌ Invalid signature: {}", e);
-                    state.shutdown.notify_one();
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Html("<html><body><h1>Error</h1><p>Invalid signature.</p></body></html>"),
-                    );
-                }
-                println!("✓ Signature verified");
+                println!("   Command: {}", delegation.command_str());
 
                 // Validate audience matches operator DID
                 if delegation.audience() != state.operator_did.as_str() {
