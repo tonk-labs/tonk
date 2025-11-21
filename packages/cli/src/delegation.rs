@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -112,9 +112,11 @@ impl Delegation {
         let verifying_key = VerifyingKey::from_bytes(&issuer_pubkey)
             .map_err(|_| DelegationError::InvalidIssuerDid("Invalid public key".to_string()))?;
 
-        let signature = Signature::from_bytes(&signature_bytes.try_into().map_err(|_| {
-            DelegationError::InvalidSignature
-        })?);
+        let signature = Signature::from_bytes(
+            &signature_bytes
+                .try_into()
+                .map_err(|_| DelegationError::InvalidSignature)?,
+        );
 
         verifying_key
             .verify(payload_bytes.as_bytes(), &signature)
@@ -135,9 +137,9 @@ impl Delegation {
         let encoded = &did[9..]; // Remove "did:key:z" prefix
 
         // Base58 decode
-        let decoded = bs58::decode(encoded)
-            .into_vec()
-            .map_err(|e| DelegationError::InvalidIssuerDid(format!("Base58 decode failed: {}", e)))?;
+        let decoded = bs58::decode(encoded).into_vec().map_err(|e| {
+            DelegationError::InvalidIssuerDid(format!("Base58 decode failed: {}", e))
+        })?;
 
         // Check multicodec prefix (0xed01 for Ed25519)
         if decoded.len() < 34 || decoded[0] != 0xed || decoded[1] != 0x01 {
@@ -235,7 +237,11 @@ impl Delegation {
         })?;
 
         let hash = self.hash();
-        let meta_path = home.join(".tonk").join("meta").join(&hash).join("site.json");
+        let meta_path = home
+            .join(".tonk")
+            .join("meta")
+            .join(&hash)
+            .join("site.json");
 
         if !meta_path.exists() {
             return Ok(None);
@@ -248,7 +254,12 @@ impl Delegation {
 
     /// Load delegation from local storage (for future use)
     #[allow(dead_code)]
-    pub fn load(aud: &str, sub: Option<&str>, exp: i64, hash: &str) -> Result<Self, DelegationError> {
+    pub fn load(
+        aud: &str,
+        sub: Option<&str>,
+        exp: i64,
+        hash: &str,
+    ) -> Result<Self, DelegationError> {
         let home = dirs::home_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,

@@ -1,9 +1,3 @@
-mod crypto;
-mod delegation;
-mod keystore;
-mod login;
-mod status;
-
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -42,10 +36,10 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Login { via, duration } => {
-            login::execute(via, duration).await?;
+            tonk_cli::login::execute(via, duration).await?;
         }
         Commands::Status { verbose } => {
-            status::execute(verbose).await?;
+            tonk_cli::status::execute(verbose).await?;
         }
     }
 
