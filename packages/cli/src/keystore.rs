@@ -1,5 +1,5 @@
 use crate::crypto::Keypair;
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use keyring::Entry;
 use thiserror::Error;
 
@@ -68,7 +68,7 @@ impl Keystore {
     /// Store a keypair in the keystore
     fn store_keypair(&self, keypair: &Keypair) -> Result<(), KeystoreError> {
         let bytes = keypair.to_bytes();
-        let encoded = STANDARD.encode(&bytes);
+        let encoded = STANDARD.encode(bytes);
         self.entry.set_password(&encoded)?;
         Ok(())
     }
