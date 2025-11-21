@@ -107,6 +107,7 @@
 
     <script type="module">
       import * as ed25519 from 'https://esm.sh/@noble/ed25519@2.1.0';
+      import { encode as encodeDagCbor } from 'https://esm.sh/@ipld/dag-cbor@9.2.1';
 
       // Parse URL parameters
       const params = new URLSearchParams(window.location.search);
@@ -252,40 +253,63 @@
 
           // Create Ed25519 keypair from seed
           const authorityPrivateKey = new Uint8Array(authoritySeed);
-          const authorityPublicKey = await ed25519.getPublicKeyAsync(
-            authorityPrivateKey
-          );
+          const authorityPublicKey =
+            await ed25519.getPublicKeyAsync(authorityPrivateKey);
 
           // Derive did:key from public key
           const authorityDid = await publicKeyToDid(authorityPublicKey);
 
-          showStatus('loading', 'Creating delegation...');
+          showStatus('loading', 'Creating UCAN delegation...');
 
-          // Create delegation payload
+          // Generate nonce (16 random bytes)
+          const nonce = crypto.getRandomValues(new Uint8Array(16));
+
+          // Create UCAN payload
           const expiration = Math.floor(Date.now() / 1000) + durationSecs;
           const payload = {
             iss: authorityDid,
             aud: operatorDid,
+            sub: subject === 'null' ? '*' : subject,
             cmd: command,
-            sub: subject === 'null' ? null : subject,
-            exp: expiration,
             pol: [],
+            exp: expiration,
+            nbf: null,
+            meta: {},
+            nonce: nonce,
           };
 
+          // Serialize payload to DAG-CBOR for signing
+          const payloadBytes = encodeDagCbor(payload);
+
           // Sign the payload
-          const payloadBytes = new TextEncoder().encode(
-            JSON.stringify(payload)
-          );
           const signature = await ed25519.signAsync(
             payloadBytes,
             authorityPrivateKey
           );
 
-          // Create delegation
-          const delegation = {
-            payload: payload,
-            signature: bytesToBase64(signature),
+          // Create varsig header bytes (LEB128-encoded tags for Ed25519 + DAG-CBOR)
+          // Format: [varsig_tag, version, sig_alg, curve, hash, codec]
+          // 0x34 = varsig tag, 0x01 = v1, 0xed 0x01 = Ed25519, 0xed 0x01 = Ed25519 curve, 0x13 = SHA-256, 0x71 = dag-cbor
+          const varsigHeader = new Uint8Array([
+            0x34, 0x01, 0xed, 0x01, 0xed, 0x01, 0x13, 0x71,
+          ]);
+
+          // Create UCAN as [signature, envelope_payload] tuple
+          // envelope_payload = { h: varsig_header_bytes, <version_key>: payload }
+          // The payload must be nested under a version key
+          const envelopePayload = {
+            h: varsigHeader,
+            'ucan/dlg@1.0.0-rc.1': payload,
           };
+
+          // Create UCAN as [signature, envelope_payload] tuple
+          const ucan = [signature, envelopePayload];
+
+          // Encode UCAN as DAG-CBOR
+          const ucanBytes = encodeDagCbor(ucan);
+
+          // Base64 encode for transmission
+          const ucanBase64 = bytesToBase64(ucanBytes);
 
           showStatus('loading', 'Submitting authorization...');
 
@@ -297,7 +321,7 @@
           const input = document.createElement('input');
           input.type = 'hidden';
           input.name = 'authorize';
-          input.value = JSON.stringify(delegation);
+          input.value = ucanBase64;
 
           form.appendChild(input);
           document.body.appendChild(form);
