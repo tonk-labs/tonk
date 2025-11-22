@@ -1,14 +1,158 @@
 use crate::authority;
-use crate::config::GlobalConfig;
 use crate::crypto::Keypair;
 use crate::delegation::{Delegation, DelegationPayload};
+use crate::keystore::Keystore;
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
+
+/// Format time remaining until expiration
+fn format_time_remaining(exp: i64) -> String {
+    let now = chrono::Utc::now().timestamp();
+    let remaining = exp - now;
+
+    if remaining < 0 {
+        return "EXPIRED".to_string();
+    }
+
+    if remaining == i64::MAX - now {
+        return "never".to_string();
+    }
+
+    let days = remaining / 86400;
+    let hours = (remaining % 86400) / 3600;
+    let mins = (remaining % 3600) / 60;
+
+    if days > 365 {
+        "never".to_string()
+    } else if days > 0 {
+        format!("{}d {}h", days, hours)
+    } else if hours > 0 {
+        format!("{}h {}m", hours, mins)
+    } else {
+        format!("{}m", mins)
+    }
+}
+
+/// List all spaces accessible by the active authority
+pub async fn list() -> Result<()> {
+    // Get operator DID
+    let keystore = Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore
+        .get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+    let operator_did = operator.to_did_key();
+
+    // Get active authority
+    let authorities = authority::get_authorities()?;
+    if authorities.is_empty() {
+        println!("⚠  No active session");
+        println!("   Run 'tonk login' to authenticate\n");
+        return Ok(());
+    }
+
+    let active_authority = crate::session::get_active_authority_from_list(&authorities)?;
+
+    // Get active space from state
+    let active_space_did = crate::state::get_active_space(&active_authority.did)?;
+
+    // Collect spaces for active authority
+    let spaces = crate::session::collect_spaces_for_authority(&operator_did, &active_authority.did)?;
+
+    if spaces.is_empty() {
+        println!("⚠  No accessible spaces\n");
+        return Ok(());
+    }
+
+    // Sort spaces: auth space first, then alphabetically
+    let mut sorted_spaces: Vec<_> = spaces.values().collect();
+    sorted_spaces.sort_by(|a, b| match (a.is_auth_space, b.is_auth_space) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.space_did.cmp(&b.space_did),
+    });
+
+    // Display each space
+    for space in sorted_spaces {
+        let is_active = active_space_did.as_ref() == Some(&space.space_did);
+        let dim_start = if is_active { "" } else { "\x1b[2m" };
+        let dim_end = if is_active { "" } else { "\x1b[0m" };
+
+        // Top separator
+        if is_active {
+            println!("════════════════════════════════════════════════════════════════");
+        } else {
+            println!("{}────────────────────────────────────────────────────────────────{}", dim_start, dim_end);
+        }
+
+        // Try to load space metadata to get the name
+        let space_name = if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(&space.space_did) {
+            Some(meta.name)
+        } else {
+            None
+        };
+
+        let emoji = if space.is_auth_space { "🔐" } else { "🏠" };
+        if space.is_auth_space {
+            if let Some(name) = &space_name {
+                if name != &space.space_did {
+                    println!("{}{} {} ({}) (authorization space){}", dim_start, emoji, name, space.space_did, dim_end);
+                } else {
+                    println!("{}{} {} (authorization space){}", dim_start, emoji, space.space_did, dim_end);
+                }
+            } else {
+                println!("{}{} {} (authorization space){}", dim_start, emoji, space.space_did, dim_end);
+            }
+        } else {
+            if let Some(name) = &space_name {
+                if name != &space.space_did {
+                    println!("{}{} {} ({}){}", dim_start, emoji, name, space.space_did, dim_end);
+                } else {
+                    println!("{}{} {}{}", dim_start, emoji, space.space_did, dim_end);
+                }
+            } else {
+                println!("{}{} {}{}", dim_start, emoji, space.space_did, dim_end);
+            }
+        }
+
+        // Group and deduplicate commands
+        let mut command_exps: HashMap<String, i64> = HashMap::new();
+        for (cmd, exp) in &space.commands {
+            command_exps
+                .entry(cmd.clone())
+                .and_modify(|e| *e = (*e).max(*exp))
+                .or_insert(*exp);
+        }
+
+        let mut commands: Vec<_> = command_exps.into_iter().collect();
+        commands.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (j, (cmd, exp)) in commands.iter().enumerate() {
+            let is_last = j == commands.len() - 1;
+            let prefix = if is_last { "└─" } else { "├─" };
+            let time_str = format_time_remaining(*exp);
+            if time_str == "never" {
+                println!("{}   {} ⚙️  {}{}", dim_start, prefix, cmd, dim_end);
+            } else {
+                println!("{}   {} ⚙️  {} (expires: {}){}", dim_start, prefix, cmd, time_str, dim_end);
+            }
+        }
+
+        // Bottom separator
+        if is_active {
+            println!("════════════════════════════════════════════════════════════════\n");
+        } else {
+            println!("{}────────────────────────────────────────────────────────────────{}\n", dim_start, dim_end);
+        }
+    }
+
+    Ok(())
+}
 
 /// Configuration for a space
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,7 +188,7 @@ impl SpaceConfig {
 
     /// Get the directory path for this space
     pub fn space_dir(&self) -> Result<PathBuf> {
-        let home: PathBuf = dirs::home_dir().context("Could not determine home directory")?;
+        let home: PathBuf = crate::util::home_dir().context("Could not determine home directory")?;
 
         // Use DID as the directory name (spaces are uniquely identified by their DID)
         Ok(home.join(".tonk").join("spaces").join(&self.did))
@@ -195,14 +339,18 @@ pub async fn create(name: String, owners: Option<Vec<String>>, description: Opti
     }
     println!();
 
-    // Update global config to set this as the active space
-    let mut global_config: GlobalConfig =
-        GlobalConfig::load().context("Failed to load global config")?;
+    // Save space metadata
+    let space_metadata = crate::metadata::SpaceMetadata::new(
+        name.clone(),
+        owner_dids.clone(),
+    );
+    space_metadata.save(&space_did)?;
 
-    global_config.active_space = Some(space_did.clone());
-    global_config
-        .save()
-        .context("Failed to save global config")?;
+    // Add space to the current session
+    crate::state::add_space_to_session(&authority.did, &space_did)?;
+
+    // Set this as the active space for the current session
+    crate::state::set_active_space(&authority.did, &space_did)?;
 
     println!("✅ Space created and set as active!");
     println!("   Operators under these authorities now have access to the space.\n");
@@ -242,7 +390,7 @@ fn create_owner_delegation(
 
     // Save delegation to owner's access directory
     // This goes to: ~/.tonk/access/{owner_did}/{space_did}/{exp}-{hash}.json
-    let home = dirs::home_dir().context("Could not determine home directory")?;
+    let home = crate::util::home_dir().context("Could not determine home directory")?;
     let owner_access_dir = home
         .join(".tonk")
         .join("access")
@@ -261,215 +409,339 @@ fn create_owner_delegation(
     Ok(())
 }
 
+/// Invitation file format
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InviteFile {
+    /// Secret - hash of the invitation delegation
+    secret: String,
+
+    /// Invite code - last 5 characters of signed hash (base58btc)
+    code: String,
+
+    /// Authorization chain: [space → authority, authority → operator, operator → membership]
+    authorization: Vec<Delegation>,
+}
+
 /// Invite a collaborator to a space
 pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     println!("🎫 Inviting {} to space\n", email);
 
-    // Load the space to invite to
-    let global_config = GlobalConfig::load().context("Failed to load global config")?;
+    // Get operator keypair
+    let keystore = Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore.get_or_create_keypair()?;
+    let operator_did = operator.to_did_key();
 
-    let _space_id = if let Some(name) = space_name {
-        // TODO: Look up space by name
-        println!("   Using space: {}", name);
-        name
-    } else if let Some(active_id) = global_config.active_space {
-        println!("   Using active space");
+    // Get active authority
+    let authority = authority::get_active_authority()?
+        .context("No active authority. Please run 'tonk login' first")?;
+
+    // Get the space to invite to
+    let space_did = if let Some(name) = &space_name {
+        // Look up space by name from active session's spaces
+        let spaces = crate::state::list_spaces_for_session(&authority.did)?;
+
+        // Try to find space by looking up metadata
+        let mut found_did = None;
+        for space_did in &spaces {
+            if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(space_did) {
+                if &meta.name == name {
+                    found_did = Some(space_did.clone());
+                    break;
+                }
+            }
+        }
+
+        found_did.context(format!("Space '{}' not found", name))?
+    } else if let Some(active_id) = crate::state::get_active_space(&authority.did)? {
         active_id
     } else {
         anyhow::bail!("No active space. Create one with 'tonk space create' or specify --space");
     };
 
+    // Load space metadata to get the name
+    let space_meta = crate::metadata::SpaceMetadata::load(&space_did)?
+        .context("Space metadata not found")?;
+
+    println!("📍 Space: {} ({})\n", space_meta.name, space_did);
+
     // Convert email to did:mailto
     let invitee_did = format!("did:mailto:{}", email);
-    println!("   Invitee DID: {}\n", invitee_did);
+    println!("📧 Invitee: {}\n", invitee_did);
 
-    println!("⚠️  This command is not yet fully implemented.\n");
-    println!("    When UCAN library is available, this will:\n");
-    println!(
-        "    1. Create UCAN delegation: Space → did:mailto:{}",
-        email
-    );
-    println!(
-        "    2. Store invitation in space VFS at /access/{}/{{}}",
-        invitee_did
-    );
-    println!("    3. Generate membership keypair");
-    println!("    4. Create delegation: Space → Membership DID");
-    println!("    5. Derive invite code from invitation signature");
-    println!("    6. Output invite file containing:");
-    println!("       - Invite code (short secret)");
-    println!("       - Invitation CID");
-    println!("       - Space DID");
-    println!("       - Membership delegation");
-    println!("       - Time-limited invocation for reading invitation\n");
+    // Step 1: Create delegation from operator → did:mailto (invitation)
+    println!("1️⃣  Creating invitation delegation...");
+    let invitation_payload = DelegationPayload {
+        iss: operator_did.clone(),
+        aud: invitee_did.clone(),
+        cmd: "/".to_string(),
+        sub: Some(space_did.clone()),
+        exp: i64::MAX, // Never expires
+        pol: Vec::new(),
+    };
 
-    // TODO: When UCAN library is available, implement invitation flow:
-    //
-    // 1. Load space config and keypair from ~/.tonk/spaces/{space_id}/
-    //
-    // 2. Create invitation delegation:
-    //    - iss: space_did (or inviter's membership/profile DID)
-    //    - aud: did:mailto:{email}
-    //    - cmd: desired capabilities (e.g., "/read", "/write")
-    //    - sub: space_did
-    //    - exp: null (permanent) or future timestamp
-    //
-    // 3. Sign delegation with inviter's key
-    //
-    // 4. Compute invitation ID:
-    //    invitation_id = hash(delegation)
-    //
-    // 5. Store delegation in space VFS:
-    //    ~/.tonk/spaces/{space_id}/access/{did:mailto}/invitations/{invitation_id}.json
-    //
-    // 6. Derive invite code:
-    //    full_secret = inviter.sign(invitation_id)
-    //    invite_code = full_secret.slice(-5)  // Last 5 chars for user-friendly code
-    //
-    // 7. Generate membership keypair:
-    //    membership_key = HKDF(delegation.signature, invite_code)
-    //    membership_did = keypair_to_did_key(membership_key)
-    //
-    // 8. Create membership delegation:
-    //    - iss: space_did
-    //    - aud: membership_did
-    //    - cmd: same capabilities as invitation
-    //    - sub: space_did
-    //    - exp: null (permanent)
-    //
-    // 9. Store membership delegation:
-    //    ~/.tonk/spaces/{space_id}/access/{membership_did}/{hash}.json
-    //
-    // 10. Create time-limited UCAN invocation for reading invitation (expires in 7 days):
-    //     - Allows reading /access/{did:mailto}/{invitation_id}
-    //
-    // 11. Create invite file containing:
-    //     {
-    //       "invite_code": "ABCDE",
-    //       "invitation_id": "bafy...",
-    //       "space_did": "did:key:z...",
-    //       "space_name": "My Space",
-    //       "inviter": "alice@example.com",
-    //       "invitee": "bob@example.com",
-    //       "membership_delegation": {...},
-    //       "access_invocation": {...}  // Time-limited UCAN for reading invitation
-    //     }
-    //
-    // 12. Save invite file to: ./space-{space_name}-invite-{timestamp}.json
-    //
-    // 13. Print instructions for sharing:
-    //     - Send invite file to invitee
-    //     - Invitee uses: tonk space join --invite <file>
+    let invitation_json = serde_json::to_string(&invitation_payload)?;
+    let invitation_signature = operator.sign(invitation_json.as_bytes());
+    let invitation = Delegation {
+        payload: invitation_payload,
+        signature: STANDARD.encode(invitation_signature.to_bytes()),
+    };
+
+    // Step 2: Store invitation under ~/.tonk/access/did:mailto:.../did:key:space/...
+    println!("2️⃣  Storing invitation...");
+    let invitation_hash = invitation.hash();
+    let home = crate::util::home_dir().context("Could not determine home directory")?;
+    let invitation_dir = home
+        .join(".tonk")
+        .join("access")
+        .join(&invitee_did)
+        .join(&space_did);
+    fs::create_dir_all(&invitation_dir)?;
+
+    let invitation_path = invitation_dir.join(format!("{}-{}.json", invitation.payload.exp, invitation_hash));
+    fs::write(&invitation_path, serde_json::to_string_pretty(&invitation)?)?;
+    println!("   ✓ Saved invitation");
+
+    // Step 3: Generate invite code - sign hash with operator key, take last 5 chars in base58btc
+    println!("3️⃣  Generating invite code...");
+    let hash_signature = operator.sign(invitation_hash.as_bytes());
+    let hash_sig_bytes = hash_signature.to_bytes();
+    let hash_sig_b58 = bs58::encode(&hash_sig_bytes).into_string();
+    let invite_code = hash_sig_b58.chars().rev().take(5).collect::<String>()
+        .chars().rev().collect::<String>(); // Take last 5 chars
+    println!("   ✓ Code: {}", invite_code);
+
+    // Step 4: Derive membership keypair using HKDF(hash + code)
+    println!("4️⃣  Deriving membership principal...");
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    let ikm = format!("{}{}", invitation_hash, invite_code);
+    let hk = Hkdf::<Sha256>::new(None, ikm.as_bytes());
+    let mut okm = [0u8; 32];
+    hk.expand(b"tonk-membership-v1", &mut okm)
+        .map_err(|e| anyhow::anyhow!("HKDF expand failed: {:?}", e))?;
+
+    let membership_keypair = Keypair::from_bytes(&okm);
+    let membership_did = membership_keypair.to_did_key();
+    println!("   ✓ Membership: {}", membership_did);
+
+    // Step 5: Create delegation from operator → membership
+    println!("5️⃣  Creating operator → membership delegation...");
+    let membership_payload = DelegationPayload {
+        iss: operator_did.clone(),
+        aud: membership_did.clone(),
+        cmd: "/".to_string(),
+        sub: Some(space_did.clone()),
+        exp: i64::MAX,
+        pol: Vec::new(),
+    };
+
+    let membership_json = serde_json::to_string(&membership_payload)?;
+    let membership_signature = operator.sign(membership_json.as_bytes());
+    let operator_to_membership = Delegation {
+        payload: membership_payload,
+        signature: STANDARD.encode(membership_signature.to_bytes()),
+    };
+
+    // Step 6: Build delegation chain - we need space → authority and authority → operator
+    println!("6️⃣  Building delegation chain...");
+
+    // Find space → authority delegation
+    let space_to_authority = find_delegation(&space_did, &authority.did)?
+        .context("Space → authority delegation not found")?;
+
+    // Find authority → operator delegation
+    let authority_to_operator = find_delegation(&authority.did, &operator_did)?
+        .context("Authority → operator delegation not found")?;
+
+    let authorization_chain = vec![
+        space_to_authority,
+        authority_to_operator,
+        operator_to_membership,
+    ];
+    println!("   ✓ Chain: space → authority → operator → membership");
+
+    // Step 7: Create invite file
+    println!("7️⃣  Creating invite file...");
+    let invite_file = InviteFile {
+        secret: invitation_hash,
+        code: invite_code,
+        authorization: authorization_chain,
+    };
+
+    let invite_filename = format!("{}.invite", space_meta.name.replace(" ", "_"));
+    let invite_json = serde_json::to_string_pretty(&invite_file)?;
+    fs::write(&invite_filename, invite_json)?;
+
+    println!("\n✅ Invitation created!");
+    println!("   File: {}", invite_filename);
+    println!("   Share this file with {} to grant them access\n", email);
 
     Ok(())
 }
 
+/// Find a delegation from issuer to audience for a specific subject
+fn find_delegation(issuer: &str, audience: &str) -> Result<Option<Delegation>> {
+    let home = crate::util::home_dir().context("Could not determine home directory")?;
+    let access_dir = home.join(".tonk").join("access").join(audience).join(issuer);
+
+    if !access_dir.exists() {
+        return Ok(None);
+    }
+
+    // Find the most recent valid delegation
+    let mut delegations = Vec::new();
+    for entry in fs::read_dir(&access_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        if let Ok(json) = fs::read_to_string(&path) {
+            if let Ok(delegation) = serde_json::from_str::<Delegation>(&json) {
+                if delegation.is_valid() {
+                    delegations.push(delegation);
+                }
+            }
+        }
+    }
+
+    // Return the one with the latest expiration
+    delegations.sort_by(|a, b| b.payload.exp.cmp(&a.payload.exp));
+    Ok(delegations.into_iter().next())
+}
+
 /// Join a space using an invitation file
-pub async fn join(invite_path: String, profile_name: Option<String>) -> Result<()> {
+pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<()> {
     println!("🔗 Joining space with invitation\n");
 
-    println!("   Invite file: {}", invite_path);
+    // Step 1: Read and parse invite file
+    println!("1️⃣  Reading invite file...");
+    let invite_data = fs::read_to_string(&invite_path)
+        .context("Failed to read invite file")?;
+    let invite: InviteFile = serde_json::from_str(&invite_data)
+        .context("Failed to parse invite file")?;
+    println!("   ✓ Loaded invitation");
 
-    let _profile = if let Some(name) = profile_name {
-        println!("   Using profile: {}\n", name);
-        name
-    } else {
-        println!("   Using active profile\n");
-        "default".to_string()
+    // Extract space DID from authorization chain
+    let space_did = invite.authorization.first()
+        .context("Authorization chain is empty")?
+        .payload.iss.clone();
+
+    // Extract operator → membership delegation (last in chain)
+    let operator_to_membership = invite.authorization.last()
+        .context("Authorization chain is empty")?;
+
+    println!("   Space DID: {}", space_did);
+
+    // Step 2: Reconstruct membership keypair
+    println!("2️⃣  Reconstructing membership keypair...");
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    let ikm = format!("{}{}", invite.secret, invite.code);
+    let hk = Hkdf::<Sha256>::new(None, ikm.as_bytes());
+    let mut okm = [0u8; 32];
+    hk.expand(b"tonk-membership-v1", &mut okm)
+        .map_err(|e| anyhow::anyhow!("HKDF expand failed: {:?}", e))?;
+
+    let membership_keypair = Keypair::from_bytes(&okm);
+    let reconstructed_membership_did = membership_keypair.to_did_key();
+    println!("   ✓ Reconstructed: {}", reconstructed_membership_did);
+
+    // Step 3: Verify membership DID matches authorization chain
+    println!("3️⃣  Verifying membership principal...");
+    let expected_membership_did = &operator_to_membership.payload.aud;
+
+    if &reconstructed_membership_did != expected_membership_did {
+        anyhow::bail!(
+            "Membership verification failed!\n   Expected: {}\n   Got: {}",
+            expected_membership_did,
+            reconstructed_membership_did
+        );
+    }
+    println!("   ✓ Membership verified!");
+
+    // Step 4: Get active authority to delegate to
+    println!("4️⃣  Getting active authority...");
+    let authority = authority::get_active_authority()?
+        .context("No active authority. Please run 'tonk login' first")?;
+    println!("   ✓ Authority: {}", authority.did);
+
+    // Step 5: Create membership → authority delegation
+    println!("5️⃣  Creating membership → authority delegation...");
+    let membership_to_authority_payload = DelegationPayload {
+        iss: reconstructed_membership_did.clone(),
+        aud: authority.did.clone(),
+        cmd: "/".to_string(),
+        sub: Some(space_did.clone()),
+        exp: i64::MAX,
+        pol: Vec::new(),
     };
 
-    println!("⚠️  This command is not yet fully implemented.\n");
-    println!("    When UCAN library is available, this will:\n");
-    println!("    1. Decode the invite file");
-    println!("    2. Use time-limited invocation to read invitation from space");
-    println!("    3. Extract invitation signature");
-    println!("    4. Prompt for invite code from email");
-    println!("    5. Derive membership key: HKDF(signature, code)");
-    println!("    6. Create delegation: Membership → Profile");
-    println!("    7. Store delegations in space");
-    println!("    8. Mark space as joined\n");
+    let membership_json = serde_json::to_string(&membership_to_authority_payload)?;
+    let membership_signature = membership_keypair.sign(membership_json.as_bytes());
+    let membership_to_authority = Delegation {
+        payload: membership_to_authority_payload,
+        signature: STANDARD.encode(membership_signature.to_bytes()),
+    };
+    println!("   ✓ Delegation created");
 
-    // TODO: When UCAN library is available, implement join flow:
-    //
-    // 1. Read and parse invite file:
-    //    let invite_data = fs::read_to_string(&invite_path)?;
-    //    let invite: InviteFile = serde_json::from_str(&invite_data)?;
-    //
-    //    Expected structure:
-    //    {
-    //      "invite_code": "ABCDE",
-    //      "invitation_id": "bafy...",
-    //      "space_did": "did:key:z...",
-    //      "space_name": "My Space",
-    //      "inviter": "alice@example.com",
-    //      "invitee": "bob@example.com",
-    //      "membership_delegation": {...},
-    //      "access_invocation": {...}  // Time-limited UCAN for reading invitation
-    //    }
-    //
-    // 2. Use the time-limited access_invocation to read the invitation:
-    //    - The invocation allows reading /access/{did:mailto}/{invitation_id}
-    //    - This is valid for 7 days after invitation creation
-    //    - Read invitation delegation from space
-    //
-    // 3. Extract the invitation signature:
-    //    invitation_signature = invitation_delegation.signature
-    //
-    // 4. Prompt user to enter the invite code from their email:
-    //    print!("Enter invite code from email: ");
-    //    let mut code = String::new();
-    //    std::io::stdin().read_line(&mut code)?;
-    //    let code = code.trim();
-    //
-    // 5. Derive membership keypair:
-    //    membership_key = HKDF(invitation_signature, invite_code)
-    //    membership_did = keypair_to_did_key(membership_key)
-    //
-    // 6. Verify the derived membership DID matches the one in membership_delegation:
-    //    if membership_did != membership_delegation.aud {
-    //        bail!("Invalid invite code - membership DID doesn't match");
-    //    }
-    //
-    // 7. Get or create the profile to join with:
-    //    - Load profile keypair (or derive from authority if needed)
-    //    - profile_did = profile.to_did_key()
-    //
-    // 8. Create delegation from Membership → Profile:
-    //    - iss: membership_did
-    //    - aud: profile_did
-    //    - cmd: same capabilities as membership has (from membership_delegation)
-    //    - sub: space_did
-    //    - exp: null (permanent)
-    //    - Sign with membership_key
-    //
-    // 9. Store the membership delegation in space VFS:
-    //    ~/.tonk/spaces/{space_id}/access/{membership_did}/{hash}.json
-    //    (This delegation was created by inviter: Space → Membership)
-    //
-    // 10. Store the profile delegation in space VFS:
-    //     ~/.tonk/spaces/{space_id}/access/{profile_did}/{hash}.json
-    //     (This delegation we just created: Membership → Profile)
-    //
-    // 11. Also store delegations locally for this profile to access:
-    //     ~/.tonk/access/{profile_did}/spaces/{space_id}-membership.json
-    //     ~/.tonk/access/{profile_did}/spaces/{space_id}-profile.json
-    //
-    // 12. Create local space config if it doesn't exist:
-    //     - id: derive from space_did or use invitation_id
-    //     - name: from invite file
-    //     - did: space_did
-    //     - Save to ~/.tonk/spaces/{space_id}/config.json
-    //     - Note: We don't have the space private key (only owners do)
-    //
-    // 13. Update global config:
-    //     - Add space to list of joined spaces
-    //     - Optionally set as active space
-    //
-    // 14. Success message:
-    //     println!("✅ Successfully joined space: {}", space_name);
-    //     println!("   Your DID: {}", profile_did);
-    //     println!("   Membership: {}", membership_did);
-    //     println!("   Space: {}", space_did);
+    // Step 6: Import all delegations to local access directory
+    println!("6️⃣  Importing delegation chain...");
+    let home = crate::util::home_dir().context("Could not determine home directory")?;
+
+    // Import each delegation in the authorization chain
+    for (i, delegation) in invite.authorization.iter().enumerate() {
+        let aud = &delegation.payload.aud;
+        let iss = &delegation.payload.iss;
+
+        let access_dir = home.join(".tonk").join("access").join(aud).join(iss);
+        fs::create_dir_all(&access_dir)?;
+
+        let hash = delegation.hash();
+        let filename = format!("{}-{}.json", delegation.payload.exp, hash);
+        let delegation_path = access_dir.join(filename);
+
+        fs::write(&delegation_path, serde_json::to_string_pretty(delegation)?)?;
+        println!("   ✓ Imported delegation {} of {}", i + 1, invite.authorization.len());
+    }
+
+    // Import the membership → authority delegation
+    let membership_access_dir = home
+        .join(".tonk")
+        .join("access")
+        .join(&authority.did)
+        .join(&reconstructed_membership_did);
+    fs::create_dir_all(&membership_access_dir)?;
+
+    let membership_hash = membership_to_authority.hash();
+    let membership_filename = format!("{}-{}.json", membership_to_authority.payload.exp, membership_hash);
+    let membership_path = membership_access_dir.join(membership_filename);
+    fs::write(&membership_path, serde_json::to_string_pretty(&membership_to_authority)?)?;
+    println!("   ✓ Imported membership → authority delegation");
+
+    // Step 7: Add space to active session
+    println!("7️⃣  Adding space to session...");
+    crate::state::add_space_to_session(&authority.did, &space_did)?;
+    crate::state::set_active_space(&authority.did, &space_did)?;
+    println!("   ✓ Space added to session");
+
+    // Load or create space metadata
+    if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(&space_did) {
+        println!("\n✅ Successfully joined space!");
+        println!("   Space: {}", meta.name);
+        println!("   DID: {}", space_did);
+        println!("   Membership: {}", reconstructed_membership_did);
+        println!("   Authority: {}\n", authority.did);
+    } else {
+        println!("\n✅ Successfully joined space!");
+        println!("   DID: {}", space_did);
+        println!("   Membership: {}", reconstructed_membership_did);
+        println!("   Authority: {}\n", authority.did);
+    }
 
     Ok(())
 }

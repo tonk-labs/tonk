@@ -1,6 +1,8 @@
 use crate::crypto::Keypair;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use keyring::Entry;
+use std::fs;
+use std::path::PathBuf;
 use thiserror::Error;
 
 const SERVICE_NAME: &str = "tonk-cli";
@@ -13,17 +15,42 @@ pub enum KeystoreError {
 
     #[error("Invalid key data: {0}")]
     InvalidKeyData(String),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+}
+
+enum KeystoreBackend {
+    OsKeyring(Entry),
+    File(PathBuf),
 }
 
 pub struct Keystore {
-    entry: Entry,
+    backend: KeystoreBackend,
 }
 
 impl Keystore {
     /// Create a new keystore instance
+    /// When TONK_HOME is set, uses file-based storage instead of OS keyring
     pub fn new() -> Result<Self, KeystoreError> {
-        let entry = Entry::new(SERVICE_NAME, KEY_NAME)?;
-        Ok(Self { entry })
+        let backend = if let Some(home) = crate::util::home_dir() {
+            // Check if TONK_HOME is set
+            if std::env::var("TONK_HOME").is_ok() {
+                // Use file-based storage
+                let key_path = home.join(".tonk").join("operator-key");
+                KeystoreBackend::File(key_path)
+            } else {
+                // Use OS keyring
+                let entry = Entry::new(SERVICE_NAME, KEY_NAME)?;
+                KeystoreBackend::OsKeyring(entry)
+            }
+        } else {
+            // Fallback to OS keyring if no home directory
+            let entry = Entry::new(SERVICE_NAME, KEY_NAME)?;
+            KeystoreBackend::OsKeyring(entry)
+        };
+
+        Ok(Self { backend })
     }
 
     /// Get or create a keypair from the keystore
@@ -31,7 +58,7 @@ impl Keystore {
     pub fn get_or_create_keypair(&self) -> Result<Keypair, KeystoreError> {
         match self.get_keypair() {
             Ok(keypair) => Ok(keypair),
-            Err(KeystoreError::KeyringError(keyring::Error::NoEntry)) => {
+            Err(KeystoreError::KeyringError(keyring::Error::NoEntry)) | Err(KeystoreError::IoError(_)) => {
                 let keypair = Keypair::generate();
                 self.store_keypair(&keypair)?;
                 Ok(keypair)
@@ -42,9 +69,15 @@ impl Keystore {
 
     /// Get an existing keypair from the keystore
     fn get_keypair(&self) -> Result<Keypair, KeystoreError> {
-        let password = self.entry.get_password()?;
+        let encoded = match &self.backend {
+            KeystoreBackend::OsKeyring(entry) => entry.get_password()?,
+            KeystoreBackend::File(path) => {
+                fs::read_to_string(path)?
+            }
+        };
+
         let bytes = STANDARD
-            .decode(&password)
+            .decode(&encoded.trim())
             .map_err(|e| KeystoreError::InvalidKeyData(e.to_string()))?;
 
         if bytes.len() != 32 {
@@ -64,14 +97,35 @@ impl Keystore {
     fn store_keypair(&self, keypair: &Keypair) -> Result<(), KeystoreError> {
         let bytes = keypair.to_bytes();
         let encoded = STANDARD.encode(&bytes);
-        self.entry.set_password(&encoded)?;
+
+        match &self.backend {
+            KeystoreBackend::OsKeyring(entry) => {
+                entry.set_password(&encoded)?;
+            }
+            KeystoreBackend::File(path) => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, encoded)?;
+            }
+        }
+
         Ok(())
     }
 
     /// Delete the stored keypair (for logout/reset)
     #[allow(dead_code)]
     pub fn delete_keypair(&self) -> Result<(), KeystoreError> {
-        self.entry.delete_credential()?;
+        match &self.backend {
+            KeystoreBackend::OsKeyring(entry) => {
+                entry.delete_credential()?;
+            }
+            KeystoreBackend::File(path) => {
+                if path.exists() {
+                    fs::remove_file(path)?;
+                }
+            }
+        }
         Ok(())
     }
 }

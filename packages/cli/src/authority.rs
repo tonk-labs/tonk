@@ -25,7 +25,7 @@ pub fn get_authorities() -> Result<Vec<Authority>> {
         .context("Failed to get operator keypair")?;
     let operator_did = operator.to_did_key();
 
-    let home = dirs::home_dir().context("Could not determine home directory")?;
+    let home = crate::util::home_dir().context("Could not determine home directory")?;
     let access_dir = home.join(".tonk").join("access").join(&operator_did);
 
     if !access_dir.exists() {
@@ -98,8 +98,17 @@ pub fn get_active_authority() -> Result<Option<Authority>> {
         return Ok(None);
     }
 
-    // For now, just return the first authority
-    // TODO: Track active authority in GlobalConfig
+    // Use state to get active session
+    let active_did = crate::state::get_active_session()?;
+
+    if let Some(active_did) = active_did {
+        // Try to find the active authority
+        if let Some(auth) = authorities.iter().find(|a| a.did == active_did) {
+            return Ok(Some(auth.clone()));
+        }
+    }
+
+    // Default to first authority if no active one is set or not found
     Ok(Some(authorities[0].clone()))
 }
 

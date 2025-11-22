@@ -35,20 +35,20 @@ fn format_time_remaining(exp: i64) -> String {
 
 /// Represents a space with its accessible commands
 #[derive(Debug, Clone)]
-struct SpaceAccess {
-    space_did: String,
-    commands: Vec<(String, i64)>, // (command, expiration)
-    is_auth_space: bool,          // True if this is the authority's own DID (authorization space)
+pub struct SpaceAccess {
+    pub space_did: String,
+    pub commands: Vec<(String, i64)>, // (command, expiration)
+    pub is_auth_space: bool,          // True if this is the authority's own DID (authorization space)
 }
 
-/// Get the active authority from the list based on config
-fn get_active_authority_from_list(
+/// Get the active authority from the list based on state
+pub fn get_active_authority_from_list(
     authorities: &[authority::Authority],
 ) -> Result<authority::Authority> {
-    let config = crate::config::GlobalConfig::load()?;
+    let active_did = crate::state::get_active_session()?;
 
-    if let Some(active_did) = config.active_authority {
-        // Try to find the configured active authority
+    if let Some(active_did) = active_did {
+        // Try to find the active authority
         if let Some(auth) = authorities.iter().find(|a| a.did == active_did) {
             return Ok(auth.clone());
         }
@@ -86,12 +86,15 @@ pub async fn set(authority_did: String) -> Result<()> {
         );
     }
 
-    // Save to config
-    let mut config = crate::config::GlobalConfig::load()?;
-    config.active_authority = Some(authority_did.clone());
-    config.save()?;
+    // Set active session
+    crate::state::set_active_session(&authority_did)?;
 
     println!("✅ Switched to session: {}", authority_did);
+
+    // Restore active space for this session (if any)
+    if let Some(active_space) = crate::state::get_active_space(&authority_did)? {
+        println!("   Active space: {}", active_space);
+    }
 
     Ok(())
 }
@@ -176,23 +179,52 @@ pub async fn list() -> Result<()> {
             });
 
             for space in sorted_spaces {
+                // Try to load space metadata to get the name
+                let space_name = if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(&space.space_did) {
+                    Some(meta.name)
+                } else {
+                    None
+                };
+
                 let emoji = if space.is_auth_space { "🔐" } else { "🏠" };
                 if space.is_auth_space {
-                    println!(
-                        "{}   {} {} (authorization space){}",
-                        dim_start,
-                        emoji,
-                        space.space_did,
-                        dim_end
-                    );
+                    if let Some(name) = &space_name {
+                        if name != &space.space_did {
+                            println!(
+                                "{}   {} {} ({}) (authorization space){}",
+                                dim_start, emoji, name, space.space_did, dim_end
+                            );
+                        } else {
+                            println!(
+                                "{}   {} {} (authorization space){}",
+                                dim_start, emoji, space.space_did, dim_end
+                            );
+                        }
+                    } else {
+                        println!(
+                            "{}   {} {} (authorization space){}",
+                            dim_start, emoji, space.space_did, dim_end
+                        );
+                    }
                 } else {
-                    println!(
-                        "{}   {} {}{}",
-                        dim_start,
-                        emoji,
-                        space.space_did,
-                        dim_end
-                    );
+                    if let Some(name) = &space_name {
+                        if name != &space.space_did {
+                            println!(
+                                "{}   {} {} ({}){}",
+                                dim_start, emoji, name, space.space_did, dim_end
+                            );
+                        } else {
+                            println!(
+                                "{}   {} {}{}",
+                                dim_start, emoji, space.space_did, dim_end
+                            );
+                        }
+                    } else {
+                        println!(
+                            "{}   {} {}{}",
+                            dim_start, emoji, space.space_did, dim_end
+                        );
+                    }
                 }
 
                 // Group and deduplicate commands
@@ -211,10 +243,17 @@ pub async fn list() -> Result<()> {
                     let is_last = j == commands.len() - 1;
                     let prefix = if is_last { "└─" } else { "├─" };
                     let time_str = format_time_remaining(*exp);
-                    println!(
-                        "{}      {} ⚙️  {} (expires: {}){}",
-                        dim_start, prefix, cmd, time_str, dim_end
-                    );
+                    if time_str == "never" {
+                        println!(
+                            "{}      {} ⚙️  {}{}",
+                            dim_start, prefix, cmd, dim_end
+                        );
+                    } else {
+                        println!(
+                            "{}      {} ⚙️  {} (expires: {}){}",
+                            dim_start, prefix, cmd, time_str, dim_end
+                        );
+                    }
                 }
             }
         }
@@ -234,11 +273,11 @@ pub async fn list() -> Result<()> {
 }
 
 /// Collect all spaces accessible under a specific authority
-fn collect_spaces_for_authority(
+pub fn collect_spaces_for_authority(
     _operator_did: &str,
     authority_did: &str,
 ) -> Result<HashMap<String, SpaceAccess>> {
-    let home = dirs::home_dir().context("Could not determine home directory")?;
+    let home = crate::util::home_dir().context("Could not determine home directory")?;
 
     // First, collect what the authority has direct access to
     let mut spaces: HashMap<String, SpaceAccess> = HashMap::new();

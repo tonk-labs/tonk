@@ -31,7 +31,7 @@ enum Commands {
     /// Manage spaces (collaboration units)
     Space {
         #[command(subcommand)]
-        command: SpaceCommands,
+        command: Option<SpaceCommands>,
     },
 }
 
@@ -106,13 +106,16 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Commands::Space { command } => match command {
-            SpaceCommands::Create { name, owners, description } => {
+            None => {
+                tonk_cli::space::list().await?;
+            }
+            Some(SpaceCommands::Create { name, owners, description }) => {
                 tonk_cli::space::create(name, owners, description).await?;
             }
-            SpaceCommands::Invite { email, space } => {
+            Some(SpaceCommands::Invite { email, space }) => {
                 tonk_cli::space::invite(email, space).await?;
             }
-            SpaceCommands::Join { invite, profile } => {
+            Some(SpaceCommands::Join { invite, profile }) => {
                 tonk_cli::space::join(invite, profile).await?;
             }
         },

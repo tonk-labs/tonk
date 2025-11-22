@@ -166,7 +166,7 @@ impl Delegation {
 
     /// Get the delegation storage path based on delegation fields
     fn storage_path(&self) -> Result<PathBuf, DelegationError> {
-        let home = dirs::home_dir().ok_or_else(|| {
+        let home = crate::util::home_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine home directory",
@@ -208,7 +208,7 @@ impl Delegation {
         self.save()?;
 
         // Save metadata
-        let home = dirs::home_dir().ok_or_else(|| {
+        let home = crate::util::home_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine home directory",
@@ -229,7 +229,7 @@ impl Delegation {
 
     /// Load metadata for this delegation
     pub fn load_metadata(&self) -> Result<Option<DelegationMetadata>, DelegationError> {
-        let home = dirs::home_dir().ok_or_else(|| {
+        let home = crate::util::home_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine home directory",
@@ -260,7 +260,7 @@ impl Delegation {
         exp: i64,
         hash: &str,
     ) -> Result<Self, DelegationError> {
-        let home = dirs::home_dir().ok_or_else(|| {
+        let home = crate::util::home_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine home directory",
