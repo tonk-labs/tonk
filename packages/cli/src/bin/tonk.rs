@@ -22,17 +22,28 @@ enum Commands {
         duration: String,
     },
 
-    /// Show operator identity and current delegations
-    Status {
-        /// Show detailed information (file paths, full DIDs, etc.)
-        #[arg(short, long)]
-        verbose: bool,
+    /// Manage sessions (authority contexts)
+    Session {
+        #[command(subcommand)]
+        command: Option<SessionCommands>,
     },
 
     /// Manage spaces (collaboration units)
     Space {
         #[command(subcommand)]
-        command: SpaceCommands,
+        command: Option<SpaceCommands>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionCommands {
+    /// Show the current session DID
+    Current,
+
+    /// Switch to a different session
+    Set {
+        /// Authority DID to switch to
+        authority_did: String,
     },
 }
 
@@ -42,6 +53,11 @@ enum SpaceCommands {
     Create {
         /// Name of the space
         name: String,
+
+        /// Owner DIDs (did:key identifiers). If not provided, will prompt interactively.
+        /// The active authority is always included as an owner.
+        #[arg(short, long)]
+        owners: Option<Vec<String>>,
 
         /// Optional description
         #[arg(short, long)]
@@ -78,17 +94,28 @@ async fn main() -> anyhow::Result<()> {
         Commands::Login { via, duration } => {
             tonk_cli::login::execute(via, duration).await?;
         }
-        Commands::Status { verbose } => {
-            tonk_cli::status::execute(verbose).await?;
-        }
-        Commands::Space { command } => match command {
-            SpaceCommands::Create { name, description } => {
-                tonk_cli::space::create(name, description).await?;
+        Commands::Session { command } => match command {
+            None => {
+                tonk_cli::session::list().await?;
             }
-            SpaceCommands::Invite { email, space } => {
+            Some(SessionCommands::Current) => {
+                tonk_cli::session::show_current().await?;
+            }
+            Some(SessionCommands::Set { authority_did }) => {
+                tonk_cli::session::set(authority_did).await?;
+            }
+        },
+        Commands::Space { command } => match command {
+            None => {
+                tonk_cli::space::list().await?;
+            }
+            Some(SpaceCommands::Create { name, owners, description }) => {
+                tonk_cli::space::create(name, owners, description).await?;
+            }
+            Some(SpaceCommands::Invite { email, space }) => {
                 tonk_cli::space::invite(email, space).await?;
             }
-            SpaceCommands::Join { invite, profile } => {
+            Some(SpaceCommands::Join { invite, profile }) => {
                 tonk_cli::space::join(invite, profile).await?;
             }
         },

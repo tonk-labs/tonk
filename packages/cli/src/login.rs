@@ -243,6 +243,21 @@ async fn handle_callback(
                     );
                 }
 
+                // Create and save session metadata
+                let authority_did = delegation.issuer();
+                let session_meta = crate::metadata::SessionMetadata::new(
+                    authority_did.to_string(),
+                    state.auth_url.to_string(),
+                );
+                if let Err(e) = session_meta.save(authority_did) {
+                    println!("⚠ Failed to save session metadata: {}", e);
+                }
+
+                // Set as active session
+                if let Err(e) = crate::state::set_active_session(authority_did) {
+                    println!("⚠ Failed to set active session: {}", e);
+                }
+
                 // Trigger shutdown
                 state.shutdown.notify_one();
 

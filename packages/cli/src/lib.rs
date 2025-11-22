@@ -1,7 +1,10 @@
-pub mod config;
+pub mod authority;
 pub mod crypto;
 pub mod delegation;
 pub mod keystore;
 pub mod login;
+pub mod metadata;
+pub mod session;
 pub mod space;
-pub mod status;
+pub mod state;
+pub mod util;
