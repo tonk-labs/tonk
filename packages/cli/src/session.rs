@@ -39,6 +39,7 @@ pub struct SpaceAccess {
     pub space_did: String,
     pub commands: Vec<(String, i64)>, // (command, expiration)
     pub is_auth_space: bool, // True if this is the authority's own DID (authorization space)
+    pub authorization_chains: HashMap<String, Vec<Delegation>>, // (command -> delegation chain to operator)
 }
 
 /// Get the active authority from the list based on state
@@ -100,7 +101,7 @@ pub async fn set(authority_did: String) -> Result<()> {
 }
 
 /// List all available sessions
-pub async fn list() -> Result<()> {
+pub async fn list(verbose: bool) -> Result<()> {
     // Get operator DID
     let keystore = Keystore::new().context("Failed to initialize keystore")?;
     let operator = keystore
@@ -112,7 +113,7 @@ pub async fn list() -> Result<()> {
     let authorities = authority::get_authorities()?;
 
     if authorities.is_empty() {
-        println!("🤖 Operator: {}\n", operator_did);
+        println!("🫆 Operator: {}\n", operator_did);
         println!("🚏 No active sessions found");
         println!("👤 Run 'tonk login' to create an authorization session\n");
         return Ok(());
@@ -120,6 +121,9 @@ pub async fn list() -> Result<()> {
 
     // Get active authority
     let active_authority = get_active_authority_from_list(&authorities)?;
+
+    // Get home directory for chain building
+    let home = crate::util::home_dir().context("Could not determine home directory")?;
 
     // Sort authorities to show active one first
     let mut sorted_authorities = authorities.clone();
@@ -151,15 +155,15 @@ pub async fn list() -> Result<()> {
 
         // Authority and Operator
         println!("{}👤 Authority: {}{}", dim_start, auth.did, dim_end);
-        println!("{}🤖 Operator:  {}{}", dim_start, operator_did, dim_end);
+        println!("{}🫆 Operator:  {}{}", dim_start, operator_did, dim_end);
 
         // Collect spaces for this authority
         let spaces = collect_spaces_for_authority(&operator_did, &auth.did)?;
 
         if spaces.is_empty() {
-            println!("{}🎟️  Access: none{}", dim_start, dim_end);
+            println!("{}🪪  Access: none{}", dim_start, dim_end);
         } else {
-            println!("{}🎟️  Access:{}", dim_start, dim_end);
+            println!("{}🪪  Access:{}", dim_start, dim_end);
 
             // Sort spaces: auth space first, then alphabetically
             let mut sorted_spaces: Vec<_> = spaces.values().collect();
@@ -238,6 +242,57 @@ pub async fn list() -> Result<()> {
                             dim_start, prefix, cmd, time_str, dim_end
                         );
                     }
+
+                    // Show delegation chain in verbose mode
+                    if verbose {
+                        // Build the complete authorization chain for this command
+                        if let Ok(chain) = build_authorization_chain(
+                            &space.space_did,
+                            cmd,
+                            &operator_did,
+                            &auth.did,
+                            &home,
+                        ) {
+                            // Chain is built: [authority→operator, ..., space→authority]
+                            // Display from operator (top) to space (bottom/root)
+                            let mut shown_dids = HashSet::new();
+                            let mut chain_dids = Vec::new();
+
+                            // Collect all DIDs in the chain in order: operator → ... → space
+                            // Start with operator (audience of first delegation)
+                            if !chain.is_empty() {
+                                let first_del = &chain[0];
+                                if !shown_dids.contains(&first_del.payload.aud) {
+                                    chain_dids.push((first_del.payload.aud.clone(), first_del.payload.sub.is_none()));
+                                    shown_dids.insert(first_del.payload.aud.clone());
+                                }
+                            }
+
+                            // Add each issuer in the chain
+                            for delegation in chain.iter() {
+                                if !shown_dids.contains(&delegation.payload.iss) {
+                                    chain_dids.push((delegation.payload.iss.clone(), delegation.payload.sub.is_none()));
+                                    shown_dids.insert(delegation.payload.iss.clone());
+                                }
+                            }
+
+                            // Add the final subject (space) if different
+                            if let Some(last_del) = chain.last() {
+                                if let Some(ref sub) = last_del.payload.sub {
+                                    if !shown_dids.contains(sub) {
+                                        chain_dids.push((sub.clone(), false));
+                                    }
+                                }
+                            }
+
+                            // Display the chain with tree nesting
+                            for (idx, (did, is_powerline)) in chain_dids.iter().enumerate() {
+                                let emoji = if *is_powerline { "🎫" } else { "🎟️ " };
+                                let indent = "         ".to_string() + &"   ".repeat(idx);
+                                println!("{}{}└─{} {}{}", dim_start, indent, emoji, did, dim_end);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -254,6 +309,172 @@ pub async fn list() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Build the complete authorization chain from space to operator
+/// Returns the chain in order: [delegation closest to operator, ..., delegation from space]
+fn build_authorization_chain(
+    space_did: &str,
+    cmd: &str,
+    operator_did: &str,
+    authority_did: &str,
+    home: &std::path::Path,
+) -> Result<Vec<Delegation>> {
+    let mut chain = Vec::new();
+    let mut visited = HashSet::new();
+
+    // Start by finding the delegation from authority to operator (powerline)
+    if let Some(auth_to_op) = find_delegation_for_chain(authority_did, operator_did, home)? {
+        chain.push(auth_to_op);
+    }
+
+    // Now trace backwards from authority to space
+    trace_to_space(
+        space_did,
+        cmd,
+        authority_did,
+        home,
+        &mut chain,
+        &mut visited,
+        0,
+    )?;
+
+    Ok(chain)
+}
+
+/// Trace backwards from current DID to the space
+fn trace_to_space(
+    space_did: &str,
+    cmd: &str,
+    current_did: &str,
+    home: &std::path::Path,
+    chain: &mut Vec<Delegation>,
+    visited: &mut HashSet<String>,
+    depth: usize,
+) -> Result<()> {
+    if depth > 10 || visited.contains(current_did) {
+        return Ok(());
+    }
+    visited.insert(current_did.to_string());
+
+    // Look for delegations TO current_did
+    let access_dir = home.join(".tonk").join("access").join(current_did);
+    if !access_dir.exists() {
+        return Ok(());
+    }
+
+    // Find delegations that grant access to this space/command
+    for entry in fs::read_dir(&access_dir)? {
+        let entry = entry?;
+        let issuer_dir = entry.path();
+
+        if !issuer_dir.is_dir() {
+            continue;
+        }
+
+        let issuer_did = issuer_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        if !issuer_did.starts_with("did:key:") {
+            continue;
+        }
+
+        // Look for delegation files
+        for del_entry in fs::read_dir(&issuer_dir)? {
+            let del_entry = del_entry?;
+            let del_path = del_entry.path();
+
+            if !del_path.is_file() || del_path.extension().and_then(|e| e.to_str()) != Some("json")
+            {
+                continue;
+            }
+
+            if let Ok(json) = fs::read_to_string(&del_path) {
+                if let Ok(delegation) = serde_json::from_str::<Delegation>(&json) {
+                    if !delegation.is_valid() {
+                        continue;
+                    }
+
+                    // Check if this delegation is relevant
+                    let is_relevant = if let Some(ref sub) = delegation.payload.sub {
+                        // Regular delegation - must be for our space and command
+                        sub == space_did
+                            && (delegation.payload.cmd == cmd
+                                || delegation.payload.cmd == "/"
+                                || cmd.starts_with(&delegation.payload.cmd))
+                    } else {
+                        // Powerline - must be for the right command
+                        delegation.payload.cmd == cmd
+                            || delegation.payload.cmd == "/"
+                            || cmd.starts_with(&delegation.payload.cmd)
+                    };
+
+                    if is_relevant {
+                        chain.push(delegation.clone());
+
+                        // If issuer is not the space itself, keep tracing
+                        if issuer_did != space_did {
+                            trace_to_space(
+                                space_did,
+                                cmd,
+                                issuer_did,
+                                home,
+                                chain,
+                                visited,
+                                depth + 1,
+                            )?;
+                        }
+
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Find a delegation from issuer to audience
+fn find_delegation_for_chain(
+    issuer_did: &str,
+    audience_did: &str,
+    home: &std::path::Path,
+) -> Result<Option<Delegation>> {
+    let access_dir = home
+        .join(".tonk")
+        .join("access")
+        .join(audience_did)
+        .join(issuer_did);
+
+    if !access_dir.exists() {
+        return Ok(None);
+    }
+
+    // Find the most recent valid delegation
+    let mut delegations = Vec::new();
+    for entry in fs::read_dir(&access_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        if let Ok(json) = fs::read_to_string(&path) {
+            if let Ok(delegation) = serde_json::from_str::<Delegation>(&json) {
+                if delegation.is_valid() {
+                    delegations.push(delegation);
+                }
+            }
+        }
+    }
+
+    // Return the one with the latest expiration
+    delegations.sort_by(|a, b| b.payload.exp.cmp(&a.payload.exp));
+    Ok(delegations.into_iter().next())
 }
 
 /// Collect all spaces accessible under a specific authority
@@ -273,6 +494,7 @@ pub fn collect_spaces_for_authority(
             space_did: authority_did.to_string(),
             commands: vec![("/".to_string(), i64::MAX)], // Full self-access, never expires
             is_auth_space: true,
+            authorization_chains: HashMap::new(), // Self-access has no chain
         },
     );
 
@@ -326,6 +548,7 @@ pub fn collect_spaces_for_authority(
                                     space_did: issuer_did.clone(),
                                     commands: Vec::new(),
                                     is_auth_space: true, // Issuer of powerline is always auth space
+                                    authorization_chains: HashMap::new(),
                                 })
                                 .commands
                                 .push((delegation.payload.cmd.clone(), delegation.payload.exp));
@@ -338,6 +561,7 @@ pub fn collect_spaces_for_authority(
                                     space_did: subject_did.clone(),
                                     commands: Vec::new(),
                                     is_auth_space,
+                                    authorization_chains: HashMap::new(),
                                 })
                                 .commands
                                 .push((delegation.payload.cmd.clone(), delegation.payload.exp));
@@ -420,6 +644,7 @@ fn collect_spaces_recursive(
                                     space_did: subject.clone(),
                                     commands: Vec::new(),
                                     is_auth_space: subject == authority_did,
+                                    authorization_chains: HashMap::new(),
                                 })
                                 .commands
                                 .push((delegation.payload.cmd.clone(), delegation.payload.exp));

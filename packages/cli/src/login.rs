@@ -2,11 +2,11 @@ use crate::delegation::{Delegation, DelegationMetadata};
 use crate::keystore::Keystore;
 use anyhow::{Context, Result};
 use axum::{
+    Router,
     extract::{Form, State},
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::{get, post},
-    Router,
 };
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -70,7 +70,7 @@ pub async fn execute(via: Option<String>, duration: String) -> Result<()> {
 
     // Generate operator DID
     let operator_did = operator.to_did_key();
-    println!("🤖 Operator: {}\n", operator_did);
+    println!("🫆 Operator: {}\n", operator_did);
 
     // Find available port for callback server
     let callback_port = find_available_port(8089)?;
@@ -177,7 +177,9 @@ async fn handle_callback(
         state.shutdown.notify_one();
         return (
             StatusCode::OK,
-            Html("<html><body><h1>Authorization Denied</h1><p>You can close this window.</p></body></html>"),
+            Html(
+                "<html><body><h1>Authorization Denied</h1><p>You can close this window.</p></body></html>",
+            ),
         );
     }
 
@@ -208,7 +210,9 @@ async fn handle_callback(
                     state.shutdown.notify_one();
                     return (
                         StatusCode::BAD_REQUEST,
-                        Html("<html><body><h1>Error</h1><p>Delegation audience mismatch.</p></body></html>"),
+                        Html(
+                            "<html><body><h1>Error</h1><p>Delegation audience mismatch.</p></body></html>",
+                        ),
                     );
                 }
 
@@ -239,7 +243,9 @@ async fn handle_callback(
                     state.shutdown.notify_one();
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Html("<html><body><h1>Error</h1><p>Failed to save delegation.</p></body></html>"),
+                        Html(
+                            "<html><body><h1>Error</h1><p>Failed to save delegation.</p></body></html>",
+                        ),
                     );
                 }
 
@@ -263,7 +269,9 @@ async fn handle_callback(
 
                 (
                     StatusCode::OK,
-                    Html("<html><body><h1>✅ Authorization Successful!</h1><p>You can close this window and return to the CLI.</p></body></html>"),
+                    Html(
+                        "<html><body><h1>✅ Authorization Successful!</h1><p>You can close this window and return to the CLI.</p></body></html>",
+                    ),
                 )
             }
             Err(e) => {
@@ -271,7 +279,9 @@ async fn handle_callback(
                 state.shutdown.notify_one();
                 (
                     StatusCode::BAD_REQUEST,
-                    Html("<html><body><h1>Error</h1><p>Failed to parse delegation.</p></body></html>"),
+                    Html(
+                        "<html><body><h1>Error</h1><p>Failed to parse delegation.</p></body></html>",
+                    ),
                 )
             }
         }
@@ -279,7 +289,9 @@ async fn handle_callback(
         state.shutdown.notify_one();
         (
             StatusCode::BAD_REQUEST,
-            Html("<html><body><h1>Error</h1><p>No authorization or denial received.</p></body></html>"),
+            Html(
+                "<html><body><h1>Error</h1><p>No authorization or denial received.</p></body></html>",
+            ),
         )
     }
 }

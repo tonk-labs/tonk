@@ -5,9 +5,11 @@ A command-line tool for Tonk authentication using WebAuthn PRF extension and cap
 ## Overview
 
 The Tonk CLI implements a secure authentication flow that combines:
+
 - **WebAuthn with PRF Extension**: Derives cryptographic keys from biometric authentication
 - **Operator Model**: CLI generates a persistent operator keypair stored in OS keyring
-- **Capability Delegation**: Authority (derived from WebAuthn) delegates capabilities to the operator
+- **Capability Delegation**: Authority (derived from WebAuthn) delegates capabilities to the
+  operator
 - **Simplified UCAN**: Uses a lightweight delegation format that can be upgraded to full UCAN later
 
 ## Quick Start
@@ -105,18 +107,21 @@ cargo build --release
 ### Key Components
 
 #### 1. Operator Keypair (`crypto.rs`, `keystore.rs`)
+
 - **Purpose**: Represents the CLI program itself
 - **Storage**: OS keyring (macOS Keychain, Windows Credential Manager, Linux Secret Service)
 - **Lifetime**: Persistent across sessions
 - **DID Format**: `did:key:z{base58btc-encoded-ed25519-pubkey}`
 
 #### 2. Authority (`auth.html`)
+
 - **Derivation**: WebAuthn PRF extension → HKDF → Ed25519 keypair
 - **Purpose**: User's cryptographic identity derived from biometric auth
 - **Storage**: Non-extractable (exists only during auth session in browser)
 - **PRF Salt**: `"tonk-authority-v1"`
 
 #### 3. Delegation (`delegation.rs`)
+
 - **Format**: Simplified UCAN structure
   ```rust
   {
@@ -135,6 +140,7 @@ cargo build --release
 - **Validation**: Checked for expiration and audience match
 
 #### 4. Two-Server Architecture (`login.rs`)
+
 - **Auth Server** (optional, localhost:8088): Serves `auth.html`
 - **Callback Server** (required, localhost:8089): Receives delegation via form POST
 - **Port Discovery**: Automatically finds available ports
@@ -146,16 +152,19 @@ cargo build --release
 Authenticate and obtain delegated capabilities.
 
 **Options:**
+
 - `--via <URL>`: Optional authentication URL (default: local auth server)
 - `--duration <DURATION>`: Session duration (default: "30d")
 
 **Duration Format:**
+
 - `s` - seconds
 - `m` - minutes
 - `h` - hours
 - `d` - days
 
 **Examples:**
+
 ```bash
 # Local auth with default 30-day session
 tonk login
@@ -172,17 +181,20 @@ tonk login --via https://auth.tonk.xyz --duration 1h
 Display operator identity and access to subjects (spaces/DIDs).
 
 **Options:**
+
 - `--verbose`, `-v`: Show detailed information (full DIDs, file paths, metadata)
 
 **What it shows:**
+
 - **Operator DID** - Your CLI's identity (shortened by default)
 - **Subjects** - What DIDs/spaces you have access to
-- **Commands** - Capabilities for each subject (e.g., `/` for full access, `/store/*` for specific commands)
+- **Commands** - Capabilities for each subject (e.g., `/` for full access, `/store/*` for specific
+  commands)
 - **Expiration** - Human-readable time remaining (e.g., "5d 3h", "2h 15m")
 - **Delegation path** - Whether access is `[direct]` or `[via authority]`
 
-**Powerline Delegations:**
-When a delegation has `sub: null`, it's a powerline delegation that:
+**Powerline Delegations:** When a delegation has `sub: null`, it's a powerline delegation that:
+
 1. Grants access to the **issuer's DID itself** (the authority)
 2. Grants access to **everything the authority has access to** (recursive)
 
@@ -199,10 +211,11 @@ tonk status --verbose
 ```
 
 **Normal Output:**
+
 ```
 📊 Status
 
-🤖 Operator: did:key:z6Mkpp5...biCPbAv9
+🫆 Operator: did:key:z6Mkpp5...biCPbAv9
 
 📜 Access:
 
@@ -215,6 +228,7 @@ tonk status --verbose
 ```
 
 **Verbose Output (`--verbose`):**
+
 ```
 📊 Status
 
@@ -237,6 +251,7 @@ tonk status --verbose
 ```
 
 **Tree Structure:**
+
 - Each subject is a top-level entry
 - Commands are shown as tree branches under each subject
 - `[direct]` means you have a direct delegation to that subject
@@ -248,29 +263,31 @@ tonk status --verbose
 
 When opening the auth page (local or remote), the following query parameters are passed:
 
-| Parameter  | Description                          | Example                 |
-|------------|--------------------------------------|-------------------------|
-| `as`       | Operator DID (audience)              | `did:key:z6Mk...`      |
-| `cmd`      | Command/capability being requested   | `/` (powerline access) |
-| `sub`      | Subject (resource identifier)        | `null`                 |
-| `callback` | Callback URL for form POST           | `http://localhost:8089`|
-| `duration` | Session duration in seconds          | `2592000` (30 days)    |
+| Parameter  | Description                        | Example                 |
+| ---------- | ---------------------------------- | ----------------------- |
+| `as`       | Operator DID (audience)            | `did:key:z6Mk...`       |
+| `cmd`      | Command/capability being requested | `/` (powerline access)  |
+| `sub`      | Subject (resource identifier)      | `null`                  |
+| `callback` | Callback URL for form POST         | `http://localhost:8089` |
+| `duration` | Session duration in seconds        | `2592000` (30 days)     |
 
 ## Callback Protocol
 
 The auth page must POST to the `callback` URL with one of:
 
 **Authorization:**
+
 ```html
 <form method="POST" action="{callback}">
-  <input name="authorize" value='{"payload":{...},"signature":"..."}'>
+  <input name="authorize" value='{"payload":{...},"signature":"..."}' />
 </form>
 ```
 
 **Denial:**
+
 ```html
 <form method="POST" action="{callback}">
-  <input name="deny" value="User denied authorization">
+  <input name="deny" value="User denied authorization" />
 </form>
 ```
 
@@ -293,20 +310,24 @@ const credential = await navigator.credentials.create({
   extensions: {
     prf: {
       eval: {
-        first: new TextEncoder().encode("tonk-authority-v1")
-      }
-    }
-  }
+        first: new TextEncoder().encode('tonk-authority-v1'),
+      },
+    },
+  },
 });
 const prfOutput = credential.getClientExtensionResults().prf.results.first;
 
 // 2. Derive Ed25519 seed using HKDF
-const authoritySeed = await crypto.subtle.deriveBits({
-  name: "HKDF",
-  hash: "SHA-256",
-  salt: new TextEncoder().encode("tonk-authority-v1"),
-  info: new TextEncoder().encode("ed25519")
-}, prfKey, 256);
+const authoritySeed = await crypto.subtle.deriveBits(
+  {
+    name: 'HKDF',
+    hash: 'SHA-256',
+    salt: new TextEncoder().encode('tonk-authority-v1'),
+    info: new TextEncoder().encode('ed25519'),
+  },
+  prfKey,
+  256
+);
 
 // 3. Generate Ed25519 keypair
 const authorityPrivateKey = new Uint8Array(authoritySeed);
@@ -335,6 +356,7 @@ packages/cli/
 ## Storage Structure
 
 Delegations are stored in a hierarchical structure:
+
 ```
 ~/.tonk/access/{aud}/{sub or iss}/{exp}-{hash}.json
 ```
@@ -342,9 +364,11 @@ Delegations are stored in a hierarchical structure:
 - **Regular delegation** (with specific subject): `{aud}/{sub}/{exp}-{hash}.json`
 - **Powerline delegation** (sub is null): `{aud}/{iss}/{exp}-{hash}.json`
 
-When `sub` is `null`, the issuer DID is used as the directory name instead, making it easy to identify powerline delegations.
+When `sub` is `null`, the issuer DID is used as the directory name instead, making it easy to
+identify powerline delegations.
 
 Example:
+
 ```
 ~/.tonk/
 └── access/
@@ -358,6 +382,7 @@ Example:
 ## Dependencies
 
 ### Rust
+
 - `clap` - CLI argument parsing
 - `ed25519-dalek` - Ed25519 cryptography
 - `keyring` - OS keyring access
@@ -366,6 +391,7 @@ Example:
 - `serde` + `serde_json` - Serialization
 
 ### Browser (auth.html)
+
 - `@noble/ed25519` (via esm.sh) - Ed25519 signing
 - Web Crypto API - HKDF key derivation
 - WebAuthn API - Biometric authentication with PRF
@@ -381,6 +407,7 @@ Example:
 ## Future Enhancements
 
 ### UCAN Migration
+
 The current simplified delegation format SHOULD be upgraded to full UCAN
 
 ## Development

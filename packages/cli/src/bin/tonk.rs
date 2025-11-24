@@ -26,6 +26,10 @@ enum Commands {
     Session {
         #[command(subcommand)]
         command: Option<SessionCommands>,
+
+        /// Show verbose output including delegation chains
+        #[arg(short, long)]
+        verbose: bool,
     },
 
     /// Manage spaces (collaboration units)
@@ -106,9 +110,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Login { via, duration } => {
             tonk_cli::login::execute(via, duration).await?;
         }
-        Commands::Session { command } => match command {
+        Commands::Session { command, verbose } => match command {
             None => {
-                tonk_cli::session::list().await?;
+                tonk_cli::session::list(verbose).await?;
             }
             Some(SessionCommands::Current) => {
                 tonk_cli::session::show_current().await?;

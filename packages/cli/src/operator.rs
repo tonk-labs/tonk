@@ -9,7 +9,7 @@ pub fn generate() -> Result<()> {
     let did = keypair.to_did_key();
 
     println!("Generated new operator key:\n");
-    println!("🤖 {}", did);
+    println!("🫆 {}", did);
     println!("🔑 {}", key_b58);
     println!("\nTo use this operator:");
     println!("  export TONK_OPERATOR_KEY={}", key_b58);
