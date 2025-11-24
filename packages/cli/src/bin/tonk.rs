@@ -33,6 +33,12 @@ enum Commands {
         #[command(subcommand)]
         command: Option<SpaceCommands>,
     },
+
+    /// Operator commands
+    Operator {
+        #[command(subcommand)]
+        command: OperatorCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -86,6 +92,12 @@ enum SpaceCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum OperatorCommands {
+    /// Generate a new operator key (base58btc encoded)
+    Generate,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -117,6 +129,11 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(SpaceCommands::Join { invite, profile }) => {
                 tonk_cli::space::join(invite, profile).await?;
+            }
+        },
+        Commands::Operator { command } => match command {
+            OperatorCommands::Generate => {
+                tonk_cli::operator::generate()?;
             }
         },
     }

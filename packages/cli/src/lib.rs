@@ -4,6 +4,7 @@ pub mod delegation;
 pub mod keystore;
 pub mod login;
 pub mod metadata;
+pub mod operator;
 pub mod session;
 pub mod space;
 pub mod state;

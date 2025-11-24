@@ -4,12 +4,10 @@ use crate::delegation::{Delegation, DelegationPayload};
 use crate::keystore::Keystore;
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
 
 /// Format time remaining until expiration
 fn format_time_remaining(exp: i64) -> String {
@@ -154,89 +152,9 @@ pub async fn list() -> Result<()> {
     Ok(())
 }
 
-/// Configuration for a space
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpaceConfig {
-    /// Human-readable name
-    pub name: String,
-
-    /// Space DID (did:key) - serves as unique identifier
-    pub did: String,
-
-    /// Owner DIDs - authorities that have full control over the space
-    pub owners: Vec<String>,
-
-    /// When the space was created
-    pub created_at: DateTime<Utc>,
-
-    /// Optional description
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-impl SpaceConfig {
-    /// Create a new space configuration
-    pub fn new(name: String, did: String, owners: Vec<String>, description: Option<String>) -> Self {
-        Self {
-            name,
-            did,
-            owners,
-            created_at: Utc::now(),
-            description,
-        }
-    }
-
-    /// Get the directory path for this space
-    pub fn space_dir(&self) -> Result<PathBuf> {
-        let home: PathBuf = crate::util::home_dir().context("Could not determine home directory")?;
-
-        // Use DID as the directory name (spaces are uniquely identified by their DID)
-        Ok(home.join(".tonk").join("spaces").join(&self.did))
-    }
-
-    /// Save the space configuration
-    pub fn save(&self) -> Result<()> {
-        let space_dir: PathBuf = self.space_dir()?;
-
-        // Create space directory
-        fs::create_dir_all(&space_dir).context("Failed to create space directory")?;
-
-        // Save config.json
-        let config_path = space_dir.join("config.json");
-        let json =
-            serde_json::to_string_pretty(self).context("Failed to serialize space config")?;
-
-        fs::write(&config_path, json).context("Failed to write space config")?;
-
-        Ok(())
-    }
-
-    /// Save the space keypair
-    pub fn save_keypair(&self, keypair: &Keypair) -> Result<()> {
-        let space_dir: PathBuf = self.space_dir()?;
-
-        // Ensure directory exists
-        fs::create_dir_all(&space_dir).context("Failed to create space directory")?;
-
-        // Save keypair as JSON with the secret key bytes
-        let key_data = serde_json::json!({
-            "secret_key": hex::encode(keypair.to_bytes()),
-            "public_key": hex::encode(keypair.verifying_key().as_bytes()),
-            "did": keypair.to_did_key(),
-        });
-
-        let key_path = space_dir.join("key.json");
-        let json =
-            serde_json::to_string_pretty(&key_data).context("Failed to serialize keypair")?;
-
-        fs::write(&key_path, json).context("Failed to write keypair")?;
-
-        Ok(())
-    }
-}
 
 /// Create a new space
-pub async fn create(name: String, owners: Option<Vec<String>>, description: Option<String>) -> Result<()> {
+pub async fn create(name: String, owners: Option<Vec<String>>, _description: Option<String>) -> Result<()> {
     println!("🚀 Creating space: {}\n", name);
 
     // Get active authority (required for space creation)
@@ -304,32 +222,11 @@ pub async fn create(name: String, owners: Option<Vec<String>>, description: Opti
     }
     println!();
 
-    // Generate space keypair
+    // Generate space keypair (temporary - used only for signing owner delegations)
     let space_keypair = Keypair::generate();
     let space_did = space_keypair.to_did_key();
 
     println!("🏠 Space DID: {}\n", space_did);
-
-    // Create space config
-    let space_config = SpaceConfig::new(
-        name.clone(),
-        space_did.clone(),
-        owner_dids.clone(),
-        description,
-    );
-
-    // Save space configuration
-    space_config
-        .save()
-        .context("Failed to save space configuration")?;
-
-    // Save space keypair
-    space_config
-        .save_keypair(&space_keypair)
-        .context("Failed to save space keypair")?;
-
-    let path: PathBuf = space_config.space_dir()?;
-    println!("   Config saved to: {}\n", path.display());
 
     // Create delegations from space to each owner
     println!("📜 Creating owner delegations...");

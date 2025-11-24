@@ -38,7 +38,7 @@ fn format_time_remaining(exp: i64) -> String {
 pub struct SpaceAccess {
     pub space_did: String,
     pub commands: Vec<(String, i64)>, // (command, expiration)
-    pub is_auth_space: bool,          // True if this is the authority's own DID (authorization space)
+    pub is_auth_space: bool, // True if this is the authority's own DID (authorization space)
 }
 
 /// Get the active authority from the list based on state
@@ -63,8 +63,8 @@ pub async fn show_current() -> Result<()> {
     let authorities = authority::get_authorities()?;
 
     if authorities.is_empty() {
-        println!("⚠  No sessions");
-        println!("   Run 'tonk login' to authenticate\n");
+        println!("🚏 No active sessions found");
+        println!("👤 Run 'tonk login' to create an authorization session\n");
         return Ok(());
     }
 
@@ -112,8 +112,9 @@ pub async fn list() -> Result<()> {
     let authorities = authority::get_authorities()?;
 
     if authorities.is_empty() {
-        println!("⚠  No sessions");
-        println!("   Run 'tonk login' to authenticate\n");
+        println!("🤖 Operator: {}\n", operator_did);
+        println!("🚏 No active sessions found");
+        println!("👤 Run 'tonk login' to create an authorization session\n");
         return Ok(());
     }
 
@@ -149,18 +150,8 @@ pub async fn list() -> Result<()> {
         }
 
         // Authority and Operator
-        println!(
-            "{}👤 Authority: {}{}",
-            dim_start,
-            auth.did,
-            dim_end
-        );
-        println!(
-            "{}🤖 Operator:  {}{}",
-            dim_start,
-            operator_did,
-            dim_end
-        );
+        println!("{}👤 Authority: {}{}", dim_start, auth.did, dim_end);
+        println!("{}🤖 Operator:  {}{}", dim_start, operator_did, dim_end);
 
         // Collect spaces for this authority
         let spaces = collect_spaces_for_authority(&operator_did, &auth.did)?;
@@ -180,7 +171,9 @@ pub async fn list() -> Result<()> {
 
             for space in sorted_spaces {
                 // Try to load space metadata to get the name
-                let space_name = if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(&space.space_did) {
+                let space_name = if let Ok(Some(meta)) =
+                    crate::metadata::SpaceMetadata::load(&space.space_did)
+                {
                     Some(meta.name)
                 } else {
                     None
@@ -214,16 +207,10 @@ pub async fn list() -> Result<()> {
                                 dim_start, emoji, name, space.space_did, dim_end
                             );
                         } else {
-                            println!(
-                                "{}   {} {}{}",
-                                dim_start, emoji, space.space_did, dim_end
-                            );
+                            println!("{}   {} {}{}", dim_start, emoji, space.space_did, dim_end);
                         }
                     } else {
-                        println!(
-                            "{}   {} {}{}",
-                            dim_start, emoji, space.space_did, dim_end
-                        );
+                        println!("{}   {} {}{}", dim_start, emoji, space.space_did, dim_end);
                     }
                 }
 
@@ -244,10 +231,7 @@ pub async fn list() -> Result<()> {
                     let prefix = if is_last { "└─" } else { "├─" };
                     let time_str = format_time_remaining(*exp);
                     if time_str == "never" {
-                        println!(
-                            "{}      {} ⚙️  {}{}",
-                            dim_start, prefix, cmd, dim_end
-                        );
+                        println!("{}      {} ⚙️  {}{}", dim_start, prefix, cmd, dim_end);
                     } else {
                         println!(
                             "{}      {} ⚙️  {} (expires: {}){}",
