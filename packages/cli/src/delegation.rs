@@ -1,4 +1,6 @@
 use crate::crypto::Keypair;
+use anyhow::Result;
+use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -188,20 +190,26 @@ impl Delegation {
         Ok(sub_dir.join(filename))
     }
 
-    /// Save delegation to local storage (both CBOR and JSON)
+    /// Save delegation to local storage
     pub fn save(&self) -> Result<(), DelegationError> {
         let cbor_path: PathBuf = self.storage_path()?;
 
-        // Save as DAG-CBOR (primary format)
+        // Save as DAG-CBOR
         let cbor_bytes = self.to_cbor_bytes()?;
         fs::write(&cbor_path, cbor_bytes)?;
         println!("   Saved to: {}", cbor_path.display());
 
-        // Save as JSON (for human inspection)
-        let json_path = cbor_path.with_extension("json");
-        let json = serde_json::to_string_pretty(&self.0)?;
-        fs::write(&json_path, json)?;
-        println!("   JSON export: {}", json_path.display());
+        Ok(())
+    }
+
+    /// Save delegation to local storage using provided raw CBOR bytes
+    /// This preserves the exact bytes received without re-serialization
+    pub fn save_raw(&self, raw_cbor: &[u8]) -> Result<(), DelegationError> {
+        let cbor_path: PathBuf = self.storage_path()?;
+
+        // Save the original CBOR bytes without re-serialization
+        fs::write(&cbor_path, raw_cbor)?;
+        println!("   Saved to: {}", cbor_path.display());
 
         Ok(())
     }
@@ -210,6 +218,32 @@ impl Delegation {
     pub fn save_with_metadata(&self, metadata: &DelegationMetadata) -> Result<(), DelegationError> {
         // Save the delegation first
         self.save()?;
+
+        // Save metadata
+        let home: PathBuf = crate::util::home_dir().ok_or_else(|| {
+            DelegationError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Could not determine home directory",
+            ))
+        })?;
+
+        let hash: String = self.hash()?;
+        let meta_dir = home.join(".tonk").join("meta").join(&hash);
+        fs::create_dir_all(&meta_dir)?;
+
+        let meta_path = meta_dir.join("site.json");
+        let meta_json = serde_json::to_string_pretty(metadata)?;
+        fs::write(&meta_path, meta_json)?;
+
+        println!("   Metadata saved to: {}", meta_path.display());
+        Ok(())
+    }
+
+    /// Save delegation with metadata using provided raw CBOR bytes
+    /// This preserves the exact bytes received without re-serialization
+    pub fn save_raw_with_metadata(&self, raw_cbor: &[u8], metadata: &DelegationMetadata) -> Result<(), DelegationError> {
+        // Save the delegation using raw bytes
+        self.save_raw(raw_cbor)?;
 
         // Save metadata
         let home: PathBuf = crate::util::home_dir().ok_or_else(|| {
@@ -293,13 +327,9 @@ impl Delegation {
     #[allow(dead_code)]
     pub fn delete(&self) -> Result<(), DelegationError> {
         let cbor_path: PathBuf = self.storage_path()?;
-        let json_path = cbor_path.with_extension("json");
 
         if cbor_path.exists() {
             fs::remove_file(cbor_path)?;
-        }
-        if json_path.exists() {
-            fs::remove_file(json_path)?;
         }
         Ok(())
     }
@@ -407,4 +437,131 @@ impl<'de> Deserialize<'de> for Delegation {
         let delegation = UcanDelegation::<Ed25519Did>::deserialize(deserializer)?;
         Ok(Self(delegation))
     }
+}
+
+/// Inspect a base64-encoded CBOR delegation or a delegation file and print detailed information
+pub fn inspect(input: String) -> Result<()> {
+    println!("🔍 Inspecting delegation...\n");
+
+    // Determine if input is a file path or base64 string
+    let decoded = if std::path::Path::new(&input).exists() {
+        // Read from file
+        println!("📂 Reading from file: {}", input);
+        fs::read(&input)
+            .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?
+    } else {
+        // Decode base64
+        println!("📥 Decoding base64...");
+        base64::engine::general_purpose::STANDARD
+            .decode(&input)
+            .map_err(|e| anyhow::anyhow!("Failed to decode base64: {}", e))?
+    };
+
+    println!("   ✓ Loaded {} bytes", decoded.len());
+    println!("   Hex (first 200): {}\n", hex::encode(&decoded[..decoded.len().min(200)]));
+
+    // Try to parse as UCAN delegation
+    println!("🎫 Parsing as UCAN delegation...");
+    match Delegation::from_cbor_bytes(&decoded) {
+        Ok(delegation) => {
+            println!("   ✓ Valid UCAN delegation!\n");
+
+            println!("📋 Delegation Details:");
+            println!("   Issuer:   {}", delegation.issuer());
+            println!("   Audience: {}", delegation.audience());
+            println!("   Command:  {}", delegation.command_str());
+
+            match delegation.subject() {
+                DelegatedSubject::Any => {
+                    println!("   Subject:  * (powerline - any subject)");
+                }
+                DelegatedSubject::Specific(did) => {
+                    println!("   Subject:  {}", did);
+                }
+            }
+
+            if let Some(exp) = delegation.expiration() {
+                let exp_time = chrono::DateTime::from_timestamp(exp, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_else(|| "invalid timestamp".to_string());
+                println!("   Expires:  {} ({})", exp_time, exp);
+            } else {
+                println!("   Expires:  never");
+            }
+
+            if let Some(nbf) = delegation.0.not_before() {
+                let nbf_secs = nbf.to_unix() as i64;
+                let nbf_time = chrono::DateTime::from_timestamp(nbf_secs, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_else(|| "invalid timestamp".to_string());
+                println!("   Not before: {} ({})", nbf_time, nbf_secs);
+            }
+
+            println!("\n✅ Delegation is valid: {}", delegation.is_valid());
+
+            // Check serialization roundtrip
+            println!("\n🔄 Serialization roundtrip test:");
+            match delegation.to_cbor_bytes() {
+                Ok(reserialized) => {
+                    println!("   Original size:    {} bytes", decoded.len());
+                    println!("   Reserialized:     {} bytes", reserialized.len());
+                    if decoded == reserialized {
+                        println!("   ✓ Perfect roundtrip!");
+                    } else {
+                        println!("   ✗ Bytes differ after re-serialization");
+                        println!("   Original (first 200):     {}", hex::encode(&decoded[..decoded.len().min(200)]));
+                        println!("   Reserialized (first 200): {}", hex::encode(&reserialized[..reserialized.len().min(200)]));
+
+                        // Find first difference
+                        for (i, (a, b)) in decoded.iter().zip(reserialized.iter()).enumerate() {
+                            if a != b {
+                                println!("   First diff at byte {}: {:02x} -> {:02x}", i, a, b);
+                                break;
+                            }
+                        }
+
+                        // Try to parse the reserialized bytes
+                        println!("\n   🧪 Testing if reserialized bytes can be parsed:");
+                        match Delegation::from_cbor_bytes(&reserialized) {
+                            Ok(_) => {
+                                println!("   ✓ Reserialized bytes CAN be parsed!");
+                            }
+                            Err(e) => {
+                                println!("   ✗ Reserialized bytes CANNOT be parsed!");
+                                println!("   Error: {}", e);
+                            }
+                        }
+
+                        // Save both versions for external analysis
+                        println!("\n   💾 Saving versions for comparison:");
+                        let temp_orig = "/tmp/delegation_original.cbor";
+                        let temp_reser = "/tmp/delegation_reserialized.cbor";
+                        std::fs::write(temp_orig, &decoded).ok();
+                        std::fs::write(temp_reser, &reserialized).ok();
+                        println!("   Original:      {}", temp_orig);
+                        println!("   Reserialized:  {}", temp_reser);
+                        println!("\n   You can analyze with: cbor2diag.rb or similar tools");
+                        println!("   Or compare: xxd {} > /tmp/orig.txt", temp_orig);
+                        println!("              xxd {} > /tmp/reser.txt", temp_reser);
+                        println!("              diff /tmp/orig.txt /tmp/reser.txt")
+                    }
+                }
+                Err(e) => {
+                    println!("   ✗ Re-serialization failed: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            println!("   ✗ Failed to parse as UCAN delegation");
+            println!("   Error: {}\n", e);
+
+            println!("❌ This delegation cannot be parsed by ucan_core");
+            println!("   This may indicate:");
+            println!("   - Incompatible UCAN library versions");
+            println!("   - Different serialization format");
+            println!("   - Corrupted or invalid data");
+        }
+    }
+
+    Ok(())
 }

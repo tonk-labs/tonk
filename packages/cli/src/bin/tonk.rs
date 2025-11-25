@@ -16,10 +16,6 @@ enum Commands {
         /// If not provided, serves auth page locally.
         #[arg(long)]
         via: Option<String>,
-
-        /// Session duration (e.g., "30d", "7d", "1h"). Defaults to 30 days.
-        #[arg(long, default_value = "30d")]
-        duration: String,
     },
 
     /// Manage sessions (authority contexts)
@@ -42,6 +38,12 @@ enum Commands {
     Operator {
         #[command(subcommand)]
         command: OperatorCommands,
+    },
+
+    /// Delegation inspection and debugging
+    Delegation {
+        #[command(subcommand)]
+        command: DelegationCommands,
     },
 }
 
@@ -102,13 +104,22 @@ enum OperatorCommands {
     Generate,
 }
 
+#[derive(Subcommand)]
+enum DelegationCommands {
+    /// Inspect a base64-encoded CBOR delegation or a delegation file
+    Inspect {
+        /// Base64-encoded CBOR delegation string or path to .cbor file
+        input: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Login { via, duration } => {
-            tonk_cli::login::execute(via, duration).await?;
+        Commands::Login { via } => {
+            tonk_cli::login::execute(via).await?;
         }
         Commands::Session { command, verbose } => match command {
             None => {
@@ -138,6 +149,11 @@ async fn main() -> anyhow::Result<()> {
         Commands::Operator { command } => match command {
             OperatorCommands::Generate => {
                 tonk_cli::operator::generate()?;
+            }
+        },
+        Commands::Delegation { command } => match command {
+            DelegationCommands::Inspect { input } => {
+                tonk_cli::delegation::inspect(input)?;
             }
         },
     }

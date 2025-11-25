@@ -107,27 +107,27 @@
 
     <script type="module">
       import { Delegation } from 'https://esm.sh/iso-ucan@0.4.2/delegation';
-      import { EdDSASigner } from 'https://esm.sh/iso-signatures@2.2.1/signers/eddsa';
-      import { encode as encodeDagCbor } from 'https://esm.sh/@ipld/dag-cbor@9.2.1';
+      import { EdDSASigner } from 'https://esm.sh/iso-signatures@0.5.1/signers/eddsa';
+      import { tag } from 'https://esm.sh/iso-base/varint';
+      import { base64pad } from 'https://esm.sh/iso-base/rfc4648';
 
       // Parse URL parameters
       const params = new URLSearchParams(window.location.search);
-      const operatorDid = params.get('as');
+      const operator = params.get('as');
       const command = params.get('cmd');
       const subject = params.get('sub');
       const callback = params.get('callback');
-      const durationSecs = parseInt(params.get('duration') || '2592000'); // Default 30 days
 
       // Display parameters
       document.getElementById('operator').textContent =
-        operatorDid || 'Not provided';
+        operator || 'Not provided';
       document.getElementById('command').textContent =
         command || 'Not provided';
       document.getElementById('subject').textContent =
         subject || 'Not provided';
 
       // Check if parameters are valid
-      if (!operatorDid || !command || !callback) {
+      if (!operator || !command || !callback) {
         showStatus(
           'error',
           'Missing required parameters. Please use the CLI to initiate authorization.'
@@ -253,26 +253,28 @@
           );
 
           // Create Ed25519 signer from seed
-          const authorityPrivateKey = new Uint8Array(authoritySeed);
+          const authorityPrivateKey = tag(
+            EdDSASigner.code,
+            new Uint8Array(authoritySeed)
+          );
 
           // Convert to base64 for EdDSASigner.import()
-          const privateKeyBase64 = bytesToBase64(authorityPrivateKey);
-          const authoritySigner = await EdDSASigner.import(privateKeyBase64);
+          const privateKeyBase64 = base64pad.encode(authorityPrivateKey);
+          const issuer = await EdDSASigner.import(privateKeyBase64);
 
           showStatus('loading', 'Creating UCAN delegation...');
 
-          // Calculate expiration time
+          // activation time
           const nowInSeconds = Math.floor(Date.now() / 1000);
-          const expiration = nowInSeconds + durationSecs;
 
           // Create delegation using iso-ucan
           const delegation = await Delegation.create({
-            iss: authoritySigner,
-            aud: operatorDid,
-            sub: subject === 'null' ? null : subject,
+            iss: issuer,
+            aud: operator,
+            sub: subject === '*' ? null : subject,
             cmd: command,
             pol: [],
-            exp: expiration,
+            exp: null,
             nbf: nowInSeconds,
             meta: {},
           });
@@ -322,13 +324,6 @@
         const status = document.getElementById('status');
         status.className = `status ${type}`;
         status.textContent = message;
-      }
-
-      function bytesToBase64(bytes) {
-        const binString = Array.from(bytes, byte =>
-          String.fromCodePoint(byte)
-        ).join('');
-        return btoa(binString);
       }
 
       // Set up event listeners

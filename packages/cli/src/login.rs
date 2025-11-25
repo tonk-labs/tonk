@@ -31,37 +31,9 @@ struct AppState {
     auth_url: Arc<String>,
 }
 
-/// Parse duration string (e.g., "30d", "7d", "1h") into seconds
-fn parse_duration(duration_str: &str) -> Result<i64> {
-    let duration_str = duration_str.trim();
-    if duration_str.is_empty() {
-        anyhow::bail!("Duration string is empty");
-    }
-
-    let (num_str, unit) = duration_str.split_at(duration_str.len() - 1);
-    let num: i64 = num_str.parse().context("Invalid duration number")?;
-
-    let seconds = match unit {
-        "s" => num,
-        "m" => num * 60,
-        "h" => num * 3600,
-        "d" => num * 86400,
-        _ => anyhow::bail!("Invalid duration unit. Use 's', 'm', 'h', or 'd'"),
-    };
-
-    Ok(seconds)
-}
-
 /// Execute the login flow
-pub async fn execute(via: Option<String>, duration: String) -> Result<()> {
+pub async fn execute(via: Option<String>) -> Result<()> {
     println!("🔐 Login...\n");
-
-    // Parse duration
-    let duration_secs = parse_duration(&duration).context("Failed to parse duration")?;
-    println!(
-        "📅 Session duration: {} ({} seconds)",
-        duration, duration_secs
-    );
 
     // Get or create operator keypair
     let keystore = Keystore::new().context("Failed to initialize keystore")?;
@@ -82,8 +54,8 @@ pub async fn execute(via: Option<String>, duration: String) -> Result<()> {
         Some(base_url) => {
             // Use provided auth URL
             let url = format!(
-                "{}?as={}&cmd=/&sub=null&callback={}&duration={}",
-                base_url, operator_did, callback_url, duration_secs
+                "{}?as={}&cmd=/&sub=*&callback={}",
+                base_url, operator_did, callback_url
             );
             (url, base_url.clone())
         }
@@ -104,8 +76,8 @@ pub async fn execute(via: Option<String>, duration: String) -> Result<()> {
             });
 
             let url = format!(
-                "http://localhost:{}?as={}&cmd=/&sub=null&callback={}&duration={}",
-                auth_port, operator_did, callback_url, duration_secs
+                "http://localhost:{}?as={}&cmd=/&sub=*&callback={}",
+                auth_port, operator_did, callback_url
             );
             let site = format!("http://localhost:{}", auth_port);
             (url, site)
@@ -212,6 +184,25 @@ async fn handle_callback(
                 println!("   Audience: {}", delegation.audience());
                 println!("   Command: {}", delegation.command_str());
 
+                // Debug: Check serialization roundtrip
+                match delegation.to_cbor_bytes() {
+                    Ok(reserialized) => {
+                        println!("🔄 Re-serialization check:");
+                        println!("   Original size:  {} bytes", decoded.len());
+                        println!("   Reserialized:   {} bytes", reserialized.len());
+                        if decoded != reserialized {
+                            println!("   ⚠ WARNING: Bytes differ after re-serialization!");
+                            println!("   Original first 100:      {}", hex::encode(&decoded[..decoded.len().min(100)]));
+                            println!("   Reserialized first 100:  {}", hex::encode(&reserialized[..reserialized.len().min(100)]));
+                        } else {
+                            println!("   ✓ Serialization roundtrip OK");
+                        }
+                    }
+                    Err(e) => {
+                        println!("   ✗ Re-serialization failed: {}", e);
+                    }
+                }
+
                 // Validate audience matches operator DID
                 if delegation.audience() != state.operator_did.as_str() {
                     println!("❌ Delegation audience mismatch!");
@@ -247,8 +238,8 @@ async fn handle_callback(
                     extra: serde_json::Value::Null,
                 };
 
-                // Save delegation with metadata
-                if let Err(e) = delegation.save_with_metadata(&metadata) {
+                // Save delegation with metadata using raw bytes to preserve exact format
+                if let Err(e) = delegation.save_raw_with_metadata(&decoded, &metadata) {
                     println!("⚠ Failed to save delegation: {}", e);
                     state.shutdown.notify_one();
                     return (
