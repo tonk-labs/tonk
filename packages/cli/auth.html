@@ -106,7 +106,9 @@
     </div>
 
     <script type="module">
-      import * as ed25519 from 'https://esm.sh/@noble/ed25519@2.1.0';
+      import { Delegation } from 'https://esm.sh/iso-ucan@0.4.2/delegation';
+      import { EdDSASigner } from 'https://esm.sh/iso-signatures@2.2.1/signers/eddsa';
+      import { encode as encodeDagCbor } from 'https://esm.sh/@ipld/dag-cbor@9.2.1';
 
       // Parse URL parameters
       const params = new URLSearchParams(window.location.search);
@@ -250,42 +252,33 @@
             256 // 32 bytes
           );
 
-          // Create Ed25519 keypair from seed
+          // Create Ed25519 signer from seed
           const authorityPrivateKey = new Uint8Array(authoritySeed);
-          const authorityPublicKey = await ed25519.getPublicKeyAsync(
-            authorityPrivateKey
-          );
 
-          // Derive did:key from public key
-          const authorityDid = await publicKeyToDid(authorityPublicKey);
+          // Convert to base64 for EdDSASigner.import()
+          const privateKeyBase64 = bytesToBase64(authorityPrivateKey);
+          const authoritySigner = await EdDSASigner.import(privateKeyBase64);
 
-          showStatus('loading', 'Creating delegation...');
+          showStatus('loading', 'Creating UCAN delegation...');
 
-          // Create delegation payload
-          const expiration = Math.floor(Date.now() / 1000) + durationSecs;
-          const payload = {
-            iss: authorityDid,
+          // Calculate expiration time
+          const nowInSeconds = Math.floor(Date.now() / 1000);
+          const expiration = nowInSeconds + durationSecs;
+
+          // Create delegation using iso-ucan
+          const delegation = await Delegation.create({
+            iss: authoritySigner,
             aud: operatorDid,
-            cmd: command,
             sub: subject === 'null' ? null : subject,
-            exp: expiration,
+            cmd: command,
             pol: [],
-          };
+            exp: expiration,
+            nbf: nowInSeconds,
+            meta: {},
+          });
 
-          // Sign the payload
-          const payloadBytes = new TextEncoder().encode(
-            JSON.stringify(payload)
-          );
-          const signature = await ed25519.signAsync(
-            payloadBytes,
-            authorityPrivateKey
-          );
-
-          // Create delegation
-          const delegation = {
-            payload: payload,
-            signature: bytesToBase64(signature),
-          };
+          // iso-ucan's Delegation.toString() returns base64-encoded token
+          const ucanBase64 = delegation.toString();
 
           showStatus('loading', 'Submitting authorization...');
 
@@ -297,7 +290,7 @@
           const input = document.createElement('input');
           input.type = 'hidden';
           input.name = 'authorize';
-          input.value = JSON.stringify(delegation);
+          input.value = ucanBase64;
 
           form.appendChild(input);
           document.body.appendChild(form);
@@ -329,32 +322,6 @@
         const status = document.getElementById('status');
         status.className = `status ${type}`;
         status.textContent = message;
-      }
-
-      async function publicKeyToDid(publicKey) {
-        // Multicodec prefix for Ed25519 public key: 0xed01
-        const multicodec = new Uint8Array([0xed, 0x01, ...publicKey]);
-
-        // Base58btc encode
-        const alphabet =
-          '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-        let num = 0n;
-        for (let i = 0; i < multicodec.length; i++) {
-          num = num * 256n + BigInt(multicodec[i]);
-        }
-
-        let encoded = '';
-        while (num > 0n) {
-          encoded = alphabet[Number(num % 58n)] + encoded;
-          num = num / 58n;
-        }
-
-        // Add leading zeros
-        for (let i = 0; i < multicodec.length && multicodec[i] === 0; i++) {
-          encoded = '1' + encoded;
-        }
-
-        return `did:key:z${encoded}`;
       }
 
       function bytesToBase64(bytes) {

@@ -8,6 +8,7 @@ use axum::{
     response::{Html, IntoResponse},
     routing::{get, post},
 };
+use base64::Engine as _;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -184,23 +185,32 @@ async fn handle_callback(
     }
 
     if let Some(authorize) = form.authorize {
-        match serde_json::from_str::<Delegation>(&authorize) {
+        // Decode base64-encoded UCAN
+        let decoded = match base64::engine::general_purpose::STANDARD.decode(&authorize) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                println!("❌ Failed to decode base64: {}", e);
+                state.shutdown.notify_one();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Html("<html><body><h1>Error</h1><p>Invalid base64 encoding.</p></body></html>"),
+                );
+            }
+        };
+
+        println!("📦 Received {} bytes of CBOR data", decoded.len());
+        println!(
+            "🔍 First 100 bytes (hex): {}",
+            hex::encode(&decoded[..decoded.len().min(100)])
+        );
+
+        // Parse DAG-CBOR encoded UCAN
+        match Delegation::from_cbor_bytes(&decoded) {
             Ok(delegation) => {
                 println!("✅ Received delegation!");
                 println!("   Issuer: {}", delegation.issuer());
                 println!("   Audience: {}", delegation.audience());
-                println!("   Command: {}", delegation.payload.cmd);
-
-                // Validate signature
-                if let Err(e) = delegation.verify() {
-                    println!("❌ Invalid signature: {}", e);
-                    state.shutdown.notify_one();
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Html("<html><body><h1>Error</h1><p>Invalid signature.</p></body></html>"),
-                    );
-                }
-                println!("✓ Signature verified");
+                println!("   Command: {}", delegation.command_str());
 
                 // Validate audience matches operator DID
                 if delegation.audience() != state.operator_did.as_str() {
@@ -252,15 +262,15 @@ async fn handle_callback(
                 // Create and save session metadata
                 let authority_did = delegation.issuer();
                 let session_meta = crate::metadata::SessionMetadata::new(
-                    authority_did.to_string(),
+                    authority_did.clone(),
                     state.auth_url.to_string(),
                 );
-                if let Err(e) = session_meta.save(authority_did) {
+                if let Err(e) = session_meta.save(&authority_did) {
                     println!("⚠ Failed to save session metadata: {}", e);
                 }
 
                 // Set as active session
-                if let Err(e) = crate::state::set_active_session(authority_did) {
+                if let Err(e) = crate::state::set_active_session(&authority_did) {
                     println!("⚠ Failed to set active session: {}", e);
                 }
 
@@ -276,6 +286,16 @@ async fn handle_callback(
             }
             Err(e) => {
                 println!("❌ Failed to parse delegation: {}", e);
+                println!("📋 CBOR data (full hex): {}", hex::encode(&decoded));
+
+                // Try to parse as generic CBOR to see structure
+                if let Ok(value) = serde_ipld_dagcbor::from_slice::<serde_json::Value>(&decoded) {
+                    println!(
+                        "📄 CBOR structure (as JSON): {}",
+                        serde_json::to_string_pretty(&value).unwrap_or_default()
+                    );
+                }
+
                 state.shutdown.notify_one();
                 (
                     StatusCode::BAD_REQUEST,

@@ -4,6 +4,7 @@ use crate::keystore::Keystore;
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use ucan_core::delegation::subject::DelegatedSubject;
 
 /// Format time remaining until expiration
 fn format_time_remaining(exp: i64) -> String {
@@ -262,25 +263,28 @@ pub async fn list(verbose: bool) -> Result<()> {
                             // Start with operator (audience of first delegation)
                             if !chain.is_empty() {
                                 let first_del = &chain[0];
-                                if !shown_dids.contains(&first_del.payload.aud) {
-                                    chain_dids.push((first_del.payload.aud.clone(), first_del.payload.sub.is_none()));
-                                    shown_dids.insert(first_del.payload.aud.clone());
+                                let aud = first_del.audience();
+                                if !shown_dids.contains(&aud) {
+                                    chain_dids.push((aud.clone(), first_del.is_powerline()));
+                                    shown_dids.insert(aud);
                                 }
                             }
 
                             // Add each issuer in the chain
                             for delegation in chain.iter() {
-                                if !shown_dids.contains(&delegation.payload.iss) {
-                                    chain_dids.push((delegation.payload.iss.clone(), delegation.payload.sub.is_none()));
-                                    shown_dids.insert(delegation.payload.iss.clone());
+                                let iss = delegation.issuer();
+                                if !shown_dids.contains(&iss) {
+                                    chain_dids.push((iss.clone(), delegation.is_powerline()));
+                                    shown_dids.insert(iss);
                                 }
                             }
 
                             // Add the final subject (space) if different
                             if let Some(last_del) = chain.last() {
-                                if let Some(ref sub) = last_del.payload.sub {
-                                    if !shown_dids.contains(sub) {
-                                        chain_dids.push((sub.clone(), false));
+                                if let DelegatedSubject::Specific(sub_did) = last_del.subject() {
+                                    let sub = sub_did.to_string();
+                                    if !shown_dids.contains(&sub) {
+                                        chain_dids.push((sub, false));
                                     }
                                 }
                             }
@@ -386,29 +390,35 @@ fn trace_to_space(
             let del_entry = del_entry?;
             let del_path = del_entry.path();
 
-            if !del_path.is_file() || del_path.extension().and_then(|e| e.to_str()) != Some("json")
+            if !del_path.is_file() || del_path.extension().and_then(|e| e.to_str()) != Some("cbor")
             {
                 continue;
             }
 
-            if let Ok(json) = fs::read_to_string(&del_path) {
-                if let Ok(delegation) = serde_json::from_str::<Delegation>(&json) {
+            if let Ok(cbor_bytes) = fs::read(&del_path) {
+                if let Ok(delegation) = Delegation::from_cbor_bytes(&cbor_bytes) {
                     if !delegation.is_valid() {
                         continue;
                     }
 
+                    let cmd_str = delegation.command_str();
+
                     // Check if this delegation is relevant
-                    let is_relevant = if let Some(ref sub) = delegation.payload.sub {
-                        // Regular delegation - must be for our space and command
-                        sub == space_did
-                            && (delegation.payload.cmd == cmd
-                                || delegation.payload.cmd == "/"
-                                || cmd.starts_with(&delegation.payload.cmd))
-                    } else {
-                        // Powerline - must be for the right command
-                        delegation.payload.cmd == cmd
-                            || delegation.payload.cmd == "/"
-                            || cmd.starts_with(&delegation.payload.cmd)
+                    let is_relevant = match delegation.subject() {
+                        DelegatedSubject::Specific(sub_did) => {
+                            // Regular delegation - must be for our space and command
+                            let sub = sub_did.to_string();
+                            sub == space_did
+                                && (cmd_str == cmd
+                                    || cmd_str == "/"
+                                    || cmd.starts_with(&cmd_str))
+                        }
+                        DelegatedSubject::Any => {
+                            // Powerline - must be for the right command
+                            cmd_str == cmd
+                                || cmd_str == "/"
+                                || cmd.starts_with(&cmd_str)
+                        }
                     };
 
                     if is_relevant {
@@ -459,12 +469,12 @@ fn find_delegation_for_chain(
         let entry = entry?;
         let path = entry.path();
 
-        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("cbor") {
             continue;
         }
 
-        if let Ok(json) = fs::read_to_string(&path) {
-            if let Ok(delegation) = serde_json::from_str::<Delegation>(&json) {
+        if let Ok(cbor_bytes) = fs::read(&path) {
+            if let Ok(delegation) = Delegation::from_cbor_bytes(&cbor_bytes) {
                 if delegation.is_valid() {
                     delegations.push(delegation);
                 }
@@ -473,7 +483,11 @@ fn find_delegation_for_chain(
     }
 
     // Return the one with the latest expiration
-    delegations.sort_by(|a, b| b.payload.exp.cmp(&a.payload.exp));
+    delegations.sort_by(|a, b| {
+        let exp_a = a.expiration().unwrap_or(0);
+        let exp_b = b.expiration().unwrap_or(0);
+        exp_b.cmp(&exp_a)
+    });
     Ok(delegations.into_iter().next())
 }
 
@@ -527,44 +541,51 @@ pub fn collect_spaces_for_authority(
                 let delegation_path = delegation_entry.path();
 
                 if !delegation_path.is_file()
-                    || delegation_path.extension().and_then(|e| e.to_str()) != Some("json")
+                    || delegation_path.extension().and_then(|e| e.to_str()) != Some("cbor")
                 {
                     continue;
                 }
 
-                if let Ok(json) = fs::read_to_string(&delegation_path) {
-                    if let Ok(delegation) = serde_json::from_str::<Delegation>(&json) {
+                if let Ok(cbor_bytes) = fs::read(&delegation_path) {
+                    if let Ok(delegation) = Delegation::from_cbor_bytes(&cbor_bytes) {
                         // Only consider valid delegations
                         if !delegation.is_valid() {
                             continue;
                         }
 
-                        // Check if this is a powerline delegation (sub: null)
-                        if delegation.payload.sub.is_none() {
-                            // Powerline: issuer becomes an authorization space
-                            spaces
-                                .entry(issuer_did.clone())
-                                .or_insert_with(|| SpaceAccess {
-                                    space_did: issuer_did.clone(),
-                                    commands: Vec::new(),
-                                    is_auth_space: true, // Issuer of powerline is always auth space
-                                    authorization_chains: HashMap::new(),
-                                })
-                                .commands
-                                .push((delegation.payload.cmd.clone(), delegation.payload.exp));
-                        } else if let Some(ref subject_did) = delegation.payload.sub {
-                            // Regular delegation to a space
-                            let is_auth_space = subject_did == authority_did;
-                            spaces
-                                .entry(subject_did.clone())
-                                .or_insert_with(|| SpaceAccess {
-                                    space_did: subject_did.clone(),
-                                    commands: Vec::new(),
-                                    is_auth_space,
-                                    authorization_chains: HashMap::new(),
-                                })
-                                .commands
-                                .push((delegation.payload.cmd.clone(), delegation.payload.exp));
+                        let exp = delegation.expiration().unwrap_or(i64::MAX);
+                        let cmd = delegation.command_str();
+
+                        // Check if this is a powerline delegation
+                        match delegation.subject() {
+                            DelegatedSubject::Any => {
+                                // Powerline: issuer becomes an authorization space
+                                spaces
+                                    .entry(issuer_did.clone())
+                                    .or_insert_with(|| SpaceAccess {
+                                        space_did: issuer_did.clone(),
+                                        commands: Vec::new(),
+                                        is_auth_space: true, // Issuer of powerline is always auth space
+                                        authorization_chains: HashMap::new(),
+                                    })
+                                    .commands
+                                    .push((cmd, exp));
+                            }
+                            DelegatedSubject::Specific(subject_did_ref) => {
+                                // Regular delegation to a space
+                                let subject_did = subject_did_ref.to_string();
+                                let is_auth_space = subject_did == authority_did;
+                                spaces
+                                    .entry(subject_did.clone())
+                                    .or_insert_with(|| SpaceAccess {
+                                        space_did: subject_did.clone(),
+                                        commands: Vec::new(),
+                                        is_auth_space,
+                                        authorization_chains: HashMap::new(),
+                                    })
+                                    .commands
+                                    .push((cmd, exp));
+                            }
                         }
                     }
                 }
@@ -617,27 +638,37 @@ fn collect_spaces_recursive(
             let delegation_entry = delegation_entry?;
             let delegation_path = delegation_entry.path();
 
-            if let Ok(json) = fs::read_to_string(&delegation_path) {
-                if let Ok(delegation) = serde_json::from_str::<Delegation>(&json) {
+            if !delegation_path.is_file()
+                || delegation_path.extension().and_then(|e| e.to_str()) != Some("cbor")
+            {
+                continue;
+            }
+
+            if let Ok(cbor_bytes) = fs::read(&delegation_path) {
+                if let Ok(delegation) = Delegation::from_cbor_bytes(&cbor_bytes) {
                     if !delegation.is_valid() {
                         continue;
                     }
 
-                    let is_powerline = delegation.payload.sub.is_none();
+                    let is_powerline = delegation.is_powerline();
 
                     if is_powerline {
                         // Recurse into issuer's capabilities
+                        let issuer = delegation.issuer();
                         collect_spaces_recursive(
                             authority_did,
-                            delegation.issuer(),
+                            &issuer,
                             home,
                             visited,
                             spaces,
                             depth + 1,
                         )?;
-                    } else if let Some(ref subject) = delegation.payload.sub {
+                    } else if let DelegatedSubject::Specific(subject_did) = delegation.subject() {
                         // Regular delegation to a space
+                        let subject = subject_did.to_string();
                         if subject.starts_with("did:key:") {
+                            let exp = delegation.expiration().unwrap_or(i64::MAX);
+                            let cmd = delegation.command_str();
                             spaces
                                 .entry(subject.clone())
                                 .or_insert_with(|| SpaceAccess {
@@ -647,7 +678,7 @@ fn collect_spaces_recursive(
                                     authorization_chains: HashMap::new(),
                                 })
                                 .commands
-                                .push((delegation.payload.cmd.clone(), delegation.payload.exp));
+                                .push((cmd, exp));
                         }
                     }
                 }
