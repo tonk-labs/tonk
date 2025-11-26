@@ -40,6 +40,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 
 ucan_core = { workspace = true }
+varsig = { workspace = true }
 
 # For opening browser
 webbrowser = "1.0"

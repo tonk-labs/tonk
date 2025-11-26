@@ -26,3 +26,4 @@ strip = "debuginfo"
 
 [workspace.dependencies]
 ucan_core = { git = "https://github.com/gozala/rs-ucan.git", branch = "v1-2025-edition", package = "ucan_core" }
+varsig = { git = "https://github.com/gozala/rs-ucan.git", branch = "v1-2025-edition", package = "varsig" }

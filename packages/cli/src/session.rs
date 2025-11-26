@@ -376,14 +376,8 @@ fn trace_to_space(
             continue;
         }
 
-        let issuer_did = issuer_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        if !issuer_did.starts_with("did:key:") {
-            continue;
-        }
+        // Note: directory name is either issuer (for powerline) or subject (for specific subject)
+        // We need to read the delegation to get the actual issuer
 
         // Look for delegation files
         for del_entry in fs::read_dir(&issuer_dir)? {
@@ -402,6 +396,7 @@ fn trace_to_space(
                     }
 
                     let cmd_str = delegation.command_str();
+                    let actual_issuer = delegation.issuer(); // Get the real issuer from the delegation
 
                     // Check if this delegation is relevant
                     let is_relevant = match delegation.subject() {
@@ -425,11 +420,11 @@ fn trace_to_space(
                         chain.push(delegation.clone());
 
                         // If issuer is not the space itself, keep tracing
-                        if issuer_did != space_did {
+                        if actual_issuer != space_did {
                             trace_to_space(
                                 space_did,
                                 cmd,
-                                issuer_did,
+                                &actual_issuer,
                                 home,
                                 chain,
                                 visited,

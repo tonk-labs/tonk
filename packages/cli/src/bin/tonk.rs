@@ -40,10 +40,10 @@ enum Commands {
         command: OperatorCommands,
     },
 
-    /// Delegation inspection and debugging
-    Delegation {
+    /// Inspect delegations and invites
+    Inspect {
         #[command(subcommand)]
-        command: DelegationCommands,
+        command: InspectCommands,
     },
 }
 
@@ -105,11 +105,17 @@ enum OperatorCommands {
 }
 
 #[derive(Subcommand)]
-enum DelegationCommands {
-    /// Inspect a base64-encoded CBOR delegation or a delegation file
-    Inspect {
+enum InspectCommands {
+    /// Inspect a delegation (base64-encoded CBOR or .cbor file)
+    Delegation {
         /// Base64-encoded CBOR delegation string or path to .cbor file
         input: String,
+    },
+
+    /// Inspect an invite file
+    Invite {
+        /// Path to .invite file
+        path: String,
     },
 }
 
@@ -151,9 +157,12 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::operator::generate()?;
             }
         },
-        Commands::Delegation { command } => match command {
-            DelegationCommands::Inspect { input } => {
+        Commands::Inspect { command } => match command {
+            InspectCommands::Delegation { input } => {
                 tonk_cli::delegation::inspect(input)?;
+            }
+            InspectCommands::Invite { path } => {
+                tonk_cli::space::inspect_invite(path)?;
             }
         },
     }

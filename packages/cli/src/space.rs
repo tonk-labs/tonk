@@ -4,11 +4,12 @@ use crate::delegation::{Delegation, keypair_to_signer};
 use crate::keystore::Keystore;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use ucan_core::{Delegation as UcanDelegation, delegation::subject::DelegatedSubject};
-use ucan_core::did::Ed25519Did;
+use ucan_core::did::{Did, Ed25519Did, Ed25519Signer};
 
 /// Format time remaining until expiration
 fn format_time_remaining(exp: i64) -> String {
@@ -349,32 +350,77 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     let invitee_did = format!("did:mailto:{}", email);
     println!("📧 Invitee: {}\n", invitee_did);
 
-    // Step 1: Create delegation from operator → did:mailto (invitation)
+    // Step 1: Create invitation delegation (operator → did:mailto)
     println!("1️⃣  Creating invitation delegation...");
 
-    // Parse DIDs
-    let invitee_did_parsed: Ed25519Did = invitee_did.parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse invitee DID: {:?}", e))?;
-    let space_did_parsed: Ed25519Did = space_did.parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
+    // Parse DIDs as UniversalDid
+    use crate::did::UniversalDid;
+    let operator_did_universal: UniversalDid = operator_did.parse()?;
+    let invitee_did_universal: UniversalDid = invitee_did.parse()?;
+    let space_did_universal: UniversalDid = space_did.parse()?;
 
-    // Build delegation using ucan_core
-    let operator_signer = keypair_to_signer(&operator);
-    let invitation_ucan: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
-        .issuer(operator_signer)
-        .audience(invitee_did_parsed)
-        .subject(DelegatedSubject::Specific(space_did_parsed))
+    // Create a signer from the operator keypair
+    // We need to create a custom signer that works with UniversalDid
+    use ucan_core::did::DidSigner;
+
+    #[derive(Serialize, Deserialize)]
+    struct UniversalDidSigner {
+        did: UniversalDid,
+        signer: Ed25519Signer,
+    }
+
+    impl DidSigner for UniversalDidSigner {
+        type Did = UniversalDid;
+
+        fn did(&self) -> &Self::Did {
+            &self.did
+        }
+
+        fn signer(&self) -> &<<Self::Did as Did>::VarsigConfig as varsig::signer::Sign>::Signer {
+            self.signer.signer()
+        }
+    }
+
+    let operator_signer_inner = keypair_to_signer(&operator);
+    let operator_universal_signer = UniversalDidSigner {
+        did: operator_did_universal.clone(),
+        signer: operator_signer_inner,
+    };
+
+    // Build invitation delegation using ucan_core
+    let invitation_ucan: UcanDelegation<UniversalDid> = UcanDelegation::builder()
+        .issuer(operator_universal_signer)
+        .audience(invitee_did_universal)
+        .subject(DelegatedSubject::Specific(space_did_universal))
         .command(vec!["/".to_string()])
         .try_build()
         .map_err(|e| anyhow::anyhow!("Failed to build invitation: {}", e))?;
 
-    let invitation = Delegation::from_ucan(invitation_ucan);
-
-    // Step 2: Store invitation
+    // Step 2: Serialize and store invitation
     println!("2️⃣  Storing invitation...");
-    invitation.save()?;
-    let invitation_hash_bytes = invitation.hash_bytes()?;
+
+    // Serialize to CBOR
+    let invitation_cbor = serde_ipld_dagcbor::to_vec(&invitation_ucan)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize invitation: {}", e))?;
+
+    // Compute hash
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&invitation_cbor);
+    let invitation_hash_bytes = hasher.finalize();
     let invitation_hash = hex::encode(&invitation_hash_bytes);
+
+    // Save to storage (in the operator's access directory for the invitee)
+    let home = crate::util::home_dir().context("Could not determine home directory")?;
+    let access_dir = home
+        .join(".tonk")
+        .join("access")
+        .join(&invitee_did)
+        .join(&operator_did);
+    fs::create_dir_all(&access_dir)?;
+
+    let cbor_path = access_dir.join(format!("{}.cbor", invitation_hash));
+    fs::write(&cbor_path, &invitation_cbor)?;
+
     println!("   ✓ Saved invitation");
 
     // Step 3: Generate invite code - sign hash with operator key, take last 5 chars in base58btc
@@ -404,7 +450,9 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     // Step 5: Create delegation from operator → membership
     println!("5️⃣  Creating operator → membership delegation...");
 
-    // Parse membership DID
+    // Parse DIDs
+    let space_did_parsed: Ed25519Did = space_did.parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
     let membership_did_parsed: Ed25519Did = membership_did.parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse membership DID: {:?}", e))?;
 
@@ -438,7 +486,7 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     ];
     println!("   ✓ Chain: space → authority → operator → membership");
 
-    // Step 7: Create invite file
+    // Step 7: Create invite file (use CBOR encoding)
     println!("7️⃣  Creating invite file...");
     let invite_file = InviteFile {
         secret: invitation_hash,
@@ -447,12 +495,72 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     };
 
     let invite_filename = format!("{}.invite", space_meta.name.replace(" ", "_"));
-    let invite_json = serde_json::to_string_pretty(&invite_file)?;
-    fs::write(&invite_filename, invite_json)?;
+    let invite_cbor = serde_ipld_dagcbor::to_vec(&invite_file)?;
+    fs::write(&invite_filename, invite_cbor)?;
 
     println!("\n✅ Invitation created!");
     println!("   File: {}", invite_filename);
     println!("   Share this file with {} to grant them access\n", email);
+
+    Ok(())
+}
+
+/// Inspect an invite file and show its contents
+pub fn inspect_invite(path: String) -> Result<()> {
+    println!("🔍 Inspecting invite file...\n");
+
+    // Read and parse invite file (CBOR format)
+    println!("📂 Reading file: {}", path);
+    let invite_data = fs::read(&path)
+        .context("Failed to read invite file")?;
+
+    let invite: InviteFile = serde_ipld_dagcbor::from_slice(&invite_data)
+        .context("Failed to parse invite file (expected CBOR format)")?;
+
+    println!("   ✓ Loaded {} bytes\n", invite_data.len());
+
+    // Show invite details
+    println!("📋 Invite Details:");
+    println!("   Secret (hash): {}", invite.secret);
+    println!("   Invite code:   {}", invite.code);
+    println!("   Chain length:  {} delegations\n", invite.authorization.len());
+
+    // Show each delegation in the authorization chain
+    println!("🔗 Authorization Chain:");
+    for (i, delegation) in invite.authorization.iter().enumerate() {
+        println!("\n   {}. Delegation {} → {}",
+            i + 1,
+            delegation.issuer(),
+            delegation.audience()
+        );
+        println!("      Subject:  {}", match delegation.subject() {
+            DelegatedSubject::Specific(did) => did.to_string(),
+            DelegatedSubject::Any => "*".to_string(),
+        });
+        println!("      Command:  {}", delegation.command().join(", "));
+        println!("      Valid:    {}", delegation.is_valid());
+
+        if let Some(exp) = delegation.expiration() {
+            let exp_date = chrono::DateTime::from_timestamp(exp, 0)
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_else(|| format!("Invalid timestamp: {}", exp));
+            println!("      Expires:  {}", exp_date);
+        } else {
+            println!("      Expires:  never");
+        }
+    }
+
+    // Extract space DID from first delegation
+    if let Some(first) = invite.authorization.first() {
+        println!("\n📍 Space DID: {}", first.issuer());
+    }
+
+    // Extract membership DID from last delegation
+    if let Some(last) = invite.authorization.last() {
+        println!("🎟️  Membership DID: {}", last.audience());
+    }
+
+    println!("\n✅ Invite file is valid!\n");
 
     Ok(())
 }
@@ -498,12 +606,12 @@ fn find_delegation(issuer: &str, audience: &str) -> Result<Option<Delegation>> {
 pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<()> {
     println!("🔗 Joining space with invitation\n");
 
-    // Step 1: Read and parse invite file
+    // Step 1: Read and parse invite file (CBOR format)
     println!("1️⃣  Reading invite file...");
-    let invite_data = fs::read_to_string(&invite_path)
+    let invite_data = fs::read(&invite_path)
         .context("Failed to read invite file")?;
-    let invite: InviteFile = serde_json::from_str(&invite_data)
-        .context("Failed to parse invite file")?;
+    let invite: InviteFile = serde_ipld_dagcbor::from_slice(&invite_data)
+        .context("Failed to parse invite file (expected CBOR format)")?;
     println!("   ✓ Loaded invitation");
 
     // Extract space DID from authorization chain
@@ -573,6 +681,17 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
     let membership_to_authority = Delegation::from_ucan(membership_to_authority_ucan);
     println!("   ✓ Delegation created");
 
+    // Note: We don't create authority → operator here because:
+    // 1. That delegation already exists from the login flow
+    // 2. We don't have the authority's keypair (it's derived from passkey in browser)
+    // The membership → authority delegation connects to the existing auth chain
+
+    // Get the local operator DID for verification
+    let keystore = Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore.get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+    let operator_did = operator.to_did_key();
+
     // Step 6: Import all delegations to local access directory
     println!("6️⃣  Importing delegation chain...");
 
@@ -586,8 +705,21 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
     membership_to_authority.save()?;
     println!("   ✓ Imported membership → authority delegation");
 
-    // Step 7: Add space to active session
-    println!("7️⃣  Adding space to session...");
+    // Step 7: Verify the authority → operator delegation exists
+    println!("7️⃣  Verifying authority → operator delegation...");
+    let authority_to_operator_exists = find_delegation(&authority.did, &operator_did)?;
+
+    if authority_to_operator_exists.is_none() {
+        anyhow::bail!(
+            "Missing authority → operator delegation!\n   Authority: {}\n   Operator: {}\n   This should have been created during login.",
+            authority.did,
+            operator_did
+        );
+    }
+    println!("   ✓ Authority → operator delegation exists");
+
+    // Step 8: Add space to active session
+    println!("8️⃣  Adding space to session...");
     crate::state::add_space_to_session(&authority.did, &space_did)?;
     crate::state::set_active_space(&authority.did, &space_did)?;
     println!("   ✓ Space added to session");
