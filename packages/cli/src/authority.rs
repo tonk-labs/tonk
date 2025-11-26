@@ -49,25 +49,24 @@ pub fn get_authorities() -> Result<Vec<Authority>> {
             let delegation_path = delegation_entry.path();
 
             if !delegation_path.is_file()
-                || delegation_path.extension().and_then(|e| e.to_str()) != Some("json")
+                || delegation_path.extension().and_then(|e| e.to_str()) != Some("cbor")
             {
                 continue;
             }
 
             // Parse delegation
-            if let Ok(json) = fs::read_to_string(&delegation_path) {
-                if let Ok(delegation) = serde_json::from_str::<Delegation>(&json) {
+            if let Ok(cbor_bytes) = fs::read(&delegation_path) {
+                if let Ok(delegation) = Delegation::from_cbor_bytes(&cbor_bytes) {
                     // Only consider valid powerline delegations
                     if !delegation.is_valid() {
                         continue;
                     }
 
-                    let is_powerline = delegation.payload.sub.is_none();
-                    if !is_powerline {
+                    if !delegation.is_powerline() {
                         continue;
                     }
 
-                    let authority_did = delegation.issuer().to_string();
+                    let authority_did = delegation.issuer();
 
                     // Track this authority
                     authorities
@@ -75,10 +74,10 @@ pub fn get_authorities() -> Result<Vec<Authority>> {
                         .or_insert_with(|| Authority {
                             did: authority_did,
                             commands: Vec::new(),
-                            expiration: delegation.payload.exp,
+                            expiration: delegation.expiration().unwrap_or(i64::MAX),
                         })
                         .commands
-                        .push(delegation.payload.cmd.clone());
+                        .push(delegation.command_str());
                 }
             }
         }
