@@ -204,19 +204,17 @@ pub async fn list(verbose: bool) -> Result<()> {
                             dim_start, emoji, space.space_did, dim_end
                         );
                     }
-                } else {
-                    if let Some(name) = &space_name {
-                        if name != &space.space_did {
-                            println!(
-                                "{}   {} {} ({}){}",
-                                dim_start, emoji, name, space.space_did, dim_end
-                            );
-                        } else {
-                            println!("{}   {} {}{}", dim_start, emoji, space.space_did, dim_end);
-                        }
+                } else if let Some(name) = &space_name {
+                    if name != &space.space_did {
+                        println!(
+                            "{}   {} {} ({}){}",
+                            dim_start, emoji, name, space.space_did, dim_end
+                        );
                     } else {
                         println!("{}   {} {}{}", dim_start, emoji, space.space_did, dim_end);
                     }
+                } else {
+                    println!("{}   {} {}{}", dim_start, emoji, space.space_did, dim_end);
                 }
 
                 // Group and deduplicate commands

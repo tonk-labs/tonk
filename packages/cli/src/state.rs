@@ -23,15 +23,15 @@ fn operator_dir() -> Result<PathBuf> {
     Ok(tonk_dir()?.join("operator").join(operator_did))
 }
 
-/// Get the active session DID from ~/.tonk/operator/{operator-did}/session.json
+/// Get the active session DID from ~/.tonk/operator/{operator-did}/session/@active
 pub fn get_active_session() -> Result<Option<String>> {
-    let session_file = operator_dir()?.join("session.json");
+    let active_file = operator_dir()?.join("session").join("@active");
 
-    if !session_file.exists() {
+    if !active_file.exists() {
         return Ok(None);
     }
 
-    let content = fs::read_to_string(&session_file)
+    let content = fs::read_to_string(&active_file)
         .context("Failed to read active session file")?;
 
     let did = content.trim().to_string();
@@ -42,16 +42,16 @@ pub fn get_active_session() -> Result<Option<String>> {
     }
 }
 
-/// Set the active session DID in ~/.tonk/operator/{operator-did}/session.json
+/// Set the active session DID in ~/.tonk/operator/{operator-did}/session/@active
 pub fn set_active_session(authority_did: &str) -> Result<()> {
-    let session_file = operator_dir()?.join("session.json");
+    let active_file = operator_dir()?.join("session").join("@active");
 
     // Ensure parent directory exists
-    if let Some(parent) = session_file.parent() {
+    if let Some(parent) = active_file.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    fs::write(&session_file, authority_did)
+    fs::write(&active_file, authority_did)
         .context("Failed to write active session file")?;
 
     Ok(())
@@ -84,18 +84,19 @@ pub fn list_sessions() -> Result<Vec<String>> {
     Ok(sessions)
 }
 
-/// Get the active space DID for a session from ~/.tonk/operator/{operator-did}/session/{authority}/space.json
+/// Get the active space DID for a session from ~/.tonk/operator/{operator-did}/session/{authority}/space/@active
 pub fn get_active_space(authority_did: &str) -> Result<Option<String>> {
-    let space_file = operator_dir()?
+    let active_file = operator_dir()?
         .join("session")
         .join(authority_did)
-        .join("space.json");
+        .join("space")
+        .join("@active");
 
-    if !space_file.exists() {
+    if !active_file.exists() {
         return Ok(None);
     }
 
-    let content = fs::read_to_string(&space_file)
+    let content = fs::read_to_string(&active_file)
         .context("Failed to read active space file")?;
 
     let did = content.trim().to_string();
@@ -106,19 +107,20 @@ pub fn get_active_space(authority_did: &str) -> Result<Option<String>> {
     }
 }
 
-/// Set the active space DID for a session in ~/.tonk/operator/{operator-did}/session/{authority}/space.json
+/// Set the active space DID for a session in ~/.tonk/operator/{operator-did}/session/{authority}/space/@active
 pub fn set_active_space(authority_did: &str, space_did: &str) -> Result<()> {
-    let space_file = operator_dir()?
+    let active_file = operator_dir()?
         .join("session")
         .join(authority_did)
-        .join("space.json");
+        .join("space")
+        .join("@active");
 
     // Ensure parent directory exists
-    if let Some(parent) = space_file.parent() {
+    if let Some(parent) = active_file.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    fs::write(&space_file, space_did)
+    fs::write(&active_file, space_did)
         .context("Failed to write active space file")?;
 
     Ok(())
@@ -155,7 +157,7 @@ pub fn list_spaces_for_session(authority_did: &str) -> Result<Vec<String>> {
         let entry = entry?;
         let path = entry.path();
 
-        // Skip the "space" file itself (active space marker)
+        // Skip the @active file (active space marker)
         if path.is_file() {
             continue;
         }

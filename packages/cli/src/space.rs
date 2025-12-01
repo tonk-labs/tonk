@@ -2,6 +2,7 @@ use crate::authority;
 use crate::crypto::Keypair;
 use crate::delegation::{Delegation, keypair_to_signer};
 use crate::keystore::Keystore;
+use crate::session::collect_spaces_for_authority;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -122,19 +123,17 @@ pub async fn list() -> Result<()> {
                     dim_start, emoji, space.space_did, dim_end
                 );
             }
-        } else {
-            if let Some(name) = &space_name {
-                if name != &space.space_did {
-                    println!(
-                        "{}{} {} ({}){}",
-                        dim_start, emoji, name, space.space_did, dim_end
-                    );
-                } else {
-                    println!("{}{} {}{}", dim_start, emoji, space.space_did, dim_end);
-                }
+        } else if let Some(name) = &space_name {
+            if name != &space.space_did {
+                println!(
+                    "{}{} {} ({}){}",
+                    dim_start, emoji, name, space.space_did, dim_end
+                );
             } else {
                 println!("{}{} {}{}", dim_start, emoji, space.space_did, dim_end);
             }
+        } else {
+            println!("{}{} {}{}", dim_start, emoji, space.space_did, dim_end);
         }
 
         // Group and deduplicate commands
@@ -172,6 +171,95 @@ pub async fn list() -> Result<()> {
                 dim_start, dim_end
             );
         }
+    }
+
+    Ok(())
+}
+
+/// Show the current space DID
+pub async fn show_current() -> Result<()> {
+    // Get active authority
+    let authority = crate::authority::get_active_authority()?
+        .context("No active session. Please run `tonk login` first.")?;
+
+    // Get active space
+    let active_space = crate::state::get_active_space(&authority.did)?;
+
+    match active_space {
+        Some(space_did) => {
+            // Try to load space metadata to show name
+            if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(&space_did) {
+                println!("🏠 {} ({})", metadata.name, space_did);
+            } else {
+                println!("🏠 {}", space_did);
+            }
+        }
+        None => {
+            println!("No active space set for current session.");
+            println!("Use `tonk space set <name-or-did>` to select a space.");
+        }
+    }
+
+    Ok(())
+}
+
+/// Switch to a different space (by name or DID)
+pub async fn set(space_identifier: String) -> Result<()> {
+    // Get operator and authority
+    let keystore = crate::keystore::Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore
+        .get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+    let operator_did = operator.to_did_key();
+
+    let authority = crate::authority::get_active_authority()?
+        .context("No active session. Please run `tonk login` first.")?;
+
+    // Collect available spaces
+    let spaces = collect_spaces_for_authority(&operator_did, &authority.did)?;
+
+    // Find space by name or DID
+    let space_did = if space_identifier.starts_with("did:key:") {
+        // Direct DID lookup
+        if spaces.contains_key(&space_identifier) {
+            space_identifier
+        } else {
+            anyhow::bail!("Space {} not found or not accessible", space_identifier);
+        }
+    } else {
+        // Name lookup
+        let matching_spaces: Vec<String> = spaces
+            .keys()
+            .filter(|space_did| {
+                if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(space_did) {
+                    metadata.name == space_identifier
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        if matching_spaces.is_empty() {
+            anyhow::bail!("No space found with name '{}'", space_identifier);
+        } else if matching_spaces.len() > 1 {
+            anyhow::bail!(
+                "Multiple spaces found with name '{}'. Use the DID instead.",
+                space_identifier
+            );
+        } else {
+            matching_spaces[0].clone()
+        }
+    };
+
+    // Set as active space
+    crate::state::set_active_space(&authority.did, &space_did)?;
+
+    // Show confirmation
+    if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(&space_did) {
+        println!("✅ Switched to space: {} ({})", metadata.name, space_did);
+    } else {
+        println!("✅ Switched to space: {}", space_did);
     }
 
     Ok(())
@@ -435,7 +523,7 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     let mut hasher = sha2::Sha256::new();
     hasher.update(&invitation_cbor);
     let invitation_hash_bytes = hasher.finalize();
-    let invitation_hash = hex::encode(&invitation_hash_bytes);
+    let invitation_hash = hex::encode(invitation_hash_bytes);
 
     // Save to storage (in the operator's access directory for the invitee)
     let home = crate::util::home_dir().context("Could not determine home directory")?;

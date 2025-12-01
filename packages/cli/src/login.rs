@@ -170,12 +170,6 @@ async fn handle_callback(
             }
         };
 
-        println!("📦 Received {} bytes of CBOR data", decoded.len());
-        println!(
-            "🔍 First 100 bytes (hex): {}",
-            hex::encode(&decoded[..decoded.len().min(100)])
-        );
-
         // Parse DAG-CBOR encoded UCAN
         match Delegation::from_cbor_bytes(&decoded) {
             Ok(delegation) => {
@@ -183,25 +177,6 @@ async fn handle_callback(
                 println!("   Issuer: {}", delegation.issuer());
                 println!("   Audience: {}", delegation.audience());
                 println!("   Command: {}", delegation.command_str());
-
-                // Debug: Check serialization roundtrip
-                match delegation.to_cbor_bytes() {
-                    Ok(reserialized) => {
-                        println!("🔄 Re-serialization check:");
-                        println!("   Original size:  {} bytes", decoded.len());
-                        println!("   Reserialized:   {} bytes", reserialized.len());
-                        if decoded != reserialized {
-                            println!("   ⚠ WARNING: Bytes differ after re-serialization!");
-                            println!("   Original first 100:      {}", hex::encode(&decoded[..decoded.len().min(100)]));
-                            println!("   Reserialized first 100:  {}", hex::encode(&reserialized[..reserialized.len().min(100)]));
-                        } else {
-                            println!("   ✓ Serialization roundtrip OK");
-                        }
-                    }
-                    Err(e) => {
-                        println!("   ✗ Re-serialization failed: {}", e);
-                    }
-                }
 
                 // Validate audience matches operator DID
                 if delegation.audience() != state.operator_did.as_str() {
@@ -277,16 +252,6 @@ async fn handle_callback(
             }
             Err(e) => {
                 println!("❌ Failed to parse delegation: {}", e);
-                println!("📋 CBOR data (full hex): {}", hex::encode(&decoded));
-
-                // Try to parse as generic CBOR to see structure
-                if let Ok(value) = serde_ipld_dagcbor::from_slice::<serde_json::Value>(&decoded) {
-                    println!(
-                        "📄 CBOR structure (as JSON): {}",
-                        serde_json::to_string_pretty(&value).unwrap_or_default()
-                    );
-                }
-
                 state.shutdown.notify_one();
                 (
                     StatusCode::BAD_REQUEST,

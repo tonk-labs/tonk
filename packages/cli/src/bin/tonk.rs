@@ -61,6 +61,15 @@ enum SessionCommands {
 
 #[derive(Subcommand)]
 enum SpaceCommands {
+    /// Show the current space DID
+    Current,
+
+    /// Switch to a different space
+    Set {
+        /// Space name or DID to switch to
+        space: String,
+    },
+
     /// Create a new space
     Create {
         /// Name of the space
@@ -141,6 +150,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Space { command } => match command {
             None => {
                 tonk_cli::space::list().await?;
+            }
+            Some(SpaceCommands::Current) => {
+                tonk_cli::space::show_current().await?;
+            }
+            Some(SpaceCommands::Set { space }) => {
+                tonk_cli::space::set(space).await?;
             }
             Some(SpaceCommands::Create { name, owners, description }) => {
                 tonk_cli::space::create(name, owners, description).await?;
