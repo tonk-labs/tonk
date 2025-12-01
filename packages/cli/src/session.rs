@@ -4,7 +4,7 @@ use crate::keystore::Keystore;
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use ucan_core::delegation::subject::DelegatedSubject;
+use ucan::delegation::subject::DelegatedSubject;
 
 /// Format time remaining until expiration
 fn format_time_remaining(exp: i64) -> String {
@@ -404,15 +404,11 @@ fn trace_to_space(
                             // Regular delegation - must be for our space and command
                             let sub = sub_did.to_string();
                             sub == space_did
-                                && (cmd_str == cmd
-                                    || cmd_str == "/"
-                                    || cmd.starts_with(&cmd_str))
+                                && (cmd_str == cmd || cmd_str == "/" || cmd.starts_with(&cmd_str))
                         }
                         DelegatedSubject::Any => {
                             // Powerline - must be for the right command
-                            cmd_str == cmd
-                                || cmd_str == "/"
-                                || cmd.starts_with(&cmd_str)
+                            cmd_str == cmd || cmd_str == "/" || cmd.starts_with(&cmd_str)
                         }
                     };
 

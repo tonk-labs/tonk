@@ -1,14 +1,14 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
-use ucan_core::did::{Did, Ed25519Did};
-use varsig::signature::eddsa::EdDsa;
+use ucan::did::{Did, Ed25519Did};
 use varsig::curve::Edwards25519;
 use varsig::hash::Sha2_512;
+use varsig::signature::eddsa::EdDsa;
 
 /// A universal DID type that can be either Ed25519 or mailto.
-/// This allows us to use ucan_core's Delegation<D> with mixed DID types.
+/// This allows us to use ucan's Delegation<D> with mixed DID types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UniversalDid {
     Ed25519(Ed25519Did),
@@ -61,7 +61,8 @@ impl FromStr for UniversalDid {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.starts_with("did:mailto:") {
-            let email = s.strip_prefix("did:mailto:")
+            let email = s
+                .strip_prefix("did:mailto:")
                 .ok_or_else(|| anyhow!("Failed to parse did:mailto"))?
                 .to_string();
 
@@ -71,11 +72,14 @@ impl FromStr for UniversalDid {
 
             Ok(UniversalDid::Mailto(email))
         } else if s.starts_with("did:key:") {
-            let ed25519_did: Ed25519Did = s.parse()
+            let ed25519_did: Ed25519Did = s
+                .parse()
                 .map_err(|e| anyhow!("Failed to parse did:key: {:?}", e))?;
             Ok(UniversalDid::Ed25519(ed25519_did))
         } else {
-            Err(anyhow!("Unsupported DID method, expected did:key or did:mailto"))
+            Err(anyhow!(
+                "Unsupported DID method, expected did:key or did:mailto"
+            ))
         }
     }
 }
@@ -109,35 +113,44 @@ impl From<Ed25519Did> for UniversalDid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ucan::did::Did;
 
     #[test]
-    fn test_did_mailto_creation() {
-        let did = DidMailto::new("user@example.com".to_string());
+    fn test_universal_did_mailto_creation() {
+        let did = UniversalDid::mailto("user@example.com".to_string());
         assert_eq!(did.to_string(), "did:mailto:user@example.com");
-        assert_eq!(did.email(), "user@example.com");
         assert_eq!(did.did_method(), "mailto");
     }
 
     #[test]
-    fn test_did_mailto_parsing() {
-        let did: DidMailto = "did:mailto:user@example.com".parse().unwrap();
-        assert_eq!(did.email(), "user@example.com");
+    fn test_universal_did_mailto_parsing() {
+        let did: UniversalDid = "did:mailto:user@example.com".parse().unwrap();
+        assert_eq!(did.to_string(), "did:mailto:user@example.com");
+        assert_eq!(did.did_method(), "mailto");
     }
 
     #[test]
-    fn test_did_mailto_invalid() {
-        assert!("not-a-did".parse::<DidMailto>().is_err());
-        assert!("did:key:z6Mk...".parse::<DidMailto>().is_err());
-        assert!("did:mailto:".parse::<DidMailto>().is_err());
+    fn test_universal_did_invalid() {
+        assert!("not-a-did".parse::<UniversalDid>().is_err());
+        assert!("did:mailto:".parse::<UniversalDid>().is_err());
     }
 
     #[test]
-    fn test_did_mailto_serialization() {
-        let did = DidMailto::new("user@example.com".to_string());
+    fn test_universal_did_mailto_serialization() {
+        let did = UniversalDid::mailto("user@example.com".to_string());
         let json = serde_json::to_string(&did).unwrap();
         assert_eq!(json, r#""did:mailto:user@example.com""#);
 
-        let deserialized: DidMailto = serde_json::from_str(&json).unwrap();
+        let deserialized: UniversalDid = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, did);
+    }
+
+    #[test]
+    fn test_universal_did_ed25519_parsing() {
+        // Test that we can still parse did:key
+        let did_str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let did: UniversalDid = did_str.parse().unwrap();
+        assert_eq!(did.to_string(), did_str);
+        assert_eq!(did.did_method(), "key");
     }
 }

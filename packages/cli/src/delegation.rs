@@ -10,9 +10,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::{collections::TryReserveError, convert::Infallible};
 use thiserror::Error;
-use ucan_core::did::{Ed25519Did, Ed25519Signer};
-use ucan_core::time::timestamp::Timestamp;
-use ucan_core::{Delegation as UcanDelegation, delegation::subject::DelegatedSubject};
+use ucan::did::{Ed25519Did, Ed25519Signer};
+use ucan::time::timestamp::Timestamp;
+use ucan::{Delegation as UcanDelegation, delegation::subject::DelegatedSubject};
 
 #[derive(Error, Debug)]
 pub enum DelegationError {
@@ -61,7 +61,7 @@ pub struct DelegationMetadata {
     pub extra: serde_json::Value,
 }
 
-/// Wrapper around ucan_core::Delegation with storage and validation methods
+/// Wrapper around ucan::Delegation with storage and validation methods
 #[derive(Debug, Clone)]
 pub struct Delegation(UcanDelegation<Ed25519Did>);
 
@@ -134,12 +134,12 @@ impl Delegation {
 
     /// Get the command as a slash-separated string
     pub fn command_str(&self) -> String {
-        self.0.command().join("/")
+        self.command().join("/")
     }
 
     /// Get the commands
     pub fn command(&self) -> &Vec<String> {
-        self.0.command()
+        self.0.command().segments()
     }
 
     /// Get expiration timestamp (Unix epoch seconds)
@@ -241,7 +241,11 @@ impl Delegation {
 
     /// Save delegation with metadata using provided raw CBOR bytes
     /// This preserves the exact bytes received without re-serialization
-    pub fn save_raw_with_metadata(&self, raw_cbor: &[u8], metadata: &DelegationMetadata) -> Result<(), DelegationError> {
+    pub fn save_raw_with_metadata(
+        &self,
+        raw_cbor: &[u8],
+        metadata: &DelegationMetadata,
+    ) -> Result<(), DelegationError> {
         // Save the delegation using raw bytes
         self.save_raw(raw_cbor)?;
 
@@ -447,8 +451,7 @@ pub fn inspect(input: String) -> Result<()> {
     let decoded = if std::path::Path::new(&input).exists() {
         // Read from file
         println!("📂 Reading from file: {}", input);
-        fs::read(&input)
-            .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?
+        fs::read(&input).map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?
     } else {
         // Decode base64
         println!("📥 Decoding base64...");
@@ -458,7 +461,10 @@ pub fn inspect(input: String) -> Result<()> {
     };
 
     println!("   ✓ Loaded {} bytes", decoded.len());
-    println!("   Hex (first 200): {}\n", hex::encode(&decoded[..decoded.len().min(200)]));
+    println!(
+        "   Hex (first 200): {}\n",
+        hex::encode(&decoded[..decoded.len().min(200)])
+    );
 
     // Try to parse as UCAN delegation
     println!("🎫 Parsing as UCAN delegation...");
@@ -509,8 +515,14 @@ pub fn inspect(input: String) -> Result<()> {
                         println!("   ✓ Perfect roundtrip!");
                     } else {
                         println!("   ✗ Bytes differ after re-serialization");
-                        println!("   Original (first 200):     {}", hex::encode(&decoded[..decoded.len().min(200)]));
-                        println!("   Reserialized (first 200): {}", hex::encode(&reserialized[..reserialized.len().min(200)]));
+                        println!(
+                            "   Original (first 200):     {}",
+                            hex::encode(&decoded[..decoded.len().min(200)])
+                        );
+                        println!(
+                            "   Reserialized (first 200): {}",
+                            hex::encode(&reserialized[..reserialized.len().min(200)])
+                        );
 
                         // Find first difference
                         for (i, (a, b)) in decoded.iter().zip(reserialized.iter()).enumerate() {
@@ -555,7 +567,7 @@ pub fn inspect(input: String) -> Result<()> {
             println!("   ✗ Failed to parse as UCAN delegation");
             println!("   Error: {}\n", e);
 
-            println!("❌ This delegation cannot be parsed by ucan_core");
+            println!("❌ This delegation cannot be parsed by ucan");
             println!("   This may indicate:");
             println!("   - Incompatible UCAN library versions");
             println!("   - Different serialization format");

@@ -8,8 +8,8 @@ use sha2::Digest;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use ucan_core::{Delegation as UcanDelegation, delegation::subject::DelegatedSubject};
-use ucan_core::did::{Did, Ed25519Did, Ed25519Signer};
+use ucan::did::{Did, Ed25519Did, Ed25519Signer};
+use ucan::{Delegation as UcanDelegation, delegation::subject::DelegatedSubject};
 
 /// Format time remaining until expiration
 fn format_time_remaining(exp: i64) -> String {
@@ -62,7 +62,8 @@ pub async fn list() -> Result<()> {
     let active_space_did = crate::state::get_active_space(&active_authority.did)?;
 
     // Collect spaces for active authority
-    let spaces = crate::session::collect_spaces_for_authority(&operator_did, &active_authority.did)?;
+    let spaces =
+        crate::session::collect_spaces_for_authority(&operator_did, &active_authority.did)?;
 
     if spaces.is_empty() {
         println!("⚠  No accessible spaces\n");
@@ -87,31 +88,47 @@ pub async fn list() -> Result<()> {
         if is_active {
             println!("════════════════════════════════════════════════════════════════");
         } else {
-            println!("{}────────────────────────────────────────────────────────────────{}", dim_start, dim_end);
+            println!(
+                "{}────────────────────────────────────────────────────────────────{}",
+                dim_start, dim_end
+            );
         }
 
         // Try to load space metadata to get the name
-        let space_name = if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(&space.space_did) {
-            Some(meta.name)
-        } else {
-            None
-        };
+        let space_name =
+            if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(&space.space_did) {
+                Some(meta.name)
+            } else {
+                None
+            };
 
         let emoji = if space.is_auth_space { "🔐" } else { "🏠" };
         if space.is_auth_space {
             if let Some(name) = &space_name {
                 if name != &space.space_did {
-                    println!("{}{} {} ({}) (authorization space){}", dim_start, emoji, name, space.space_did, dim_end);
+                    println!(
+                        "{}{} {} ({}) (authorization space){}",
+                        dim_start, emoji, name, space.space_did, dim_end
+                    );
                 } else {
-                    println!("{}{} {} (authorization space){}", dim_start, emoji, space.space_did, dim_end);
+                    println!(
+                        "{}{} {} (authorization space){}",
+                        dim_start, emoji, space.space_did, dim_end
+                    );
                 }
             } else {
-                println!("{}{} {} (authorization space){}", dim_start, emoji, space.space_did, dim_end);
+                println!(
+                    "{}{} {} (authorization space){}",
+                    dim_start, emoji, space.space_did, dim_end
+                );
             }
         } else {
             if let Some(name) = &space_name {
                 if name != &space.space_did {
-                    println!("{}{} {} ({}){}", dim_start, emoji, name, space.space_did, dim_end);
+                    println!(
+                        "{}{} {} ({}){}",
+                        dim_start, emoji, name, space.space_did, dim_end
+                    );
                 } else {
                     println!("{}{} {}{}", dim_start, emoji, space.space_did, dim_end);
                 }
@@ -139,7 +156,10 @@ pub async fn list() -> Result<()> {
             if time_str == "never" {
                 println!("{}   {} ⚙️  {}{}", dim_start, prefix, cmd, dim_end);
             } else {
-                println!("{}   {} ⚙️  {} (expires: {}){}", dim_start, prefix, cmd, time_str, dim_end);
+                println!(
+                    "{}   {} ⚙️  {} (expires: {}){}",
+                    dim_start, prefix, cmd, time_str, dim_end
+                );
             }
         }
 
@@ -147,23 +167,32 @@ pub async fn list() -> Result<()> {
         if is_active {
             println!("════════════════════════════════════════════════════════════════\n");
         } else {
-            println!("{}────────────────────────────────────────────────────────────────{}\n", dim_start, dim_end);
+            println!(
+                "{}────────────────────────────────────────────────────────────────{}\n",
+                dim_start, dim_end
+            );
         }
     }
 
     Ok(())
 }
 
-
 /// Create a new space
-pub async fn create(name: String, owners: Option<Vec<String>>, _description: Option<String>) -> Result<()> {
+pub async fn create(
+    name: String,
+    owners: Option<Vec<String>>,
+    _description: Option<String>,
+) -> Result<()> {
     println!("🚀 Creating space: {}\n", name);
 
     // Get active authority (required for space creation)
     let authority = authority::get_active_authority()?
         .context("No active authority. Please run 'tonk login' first")?;
 
-    println!("👤 Authority: {}\n", authority::format_authority_did(&authority.did));
+    println!(
+        "👤 Authority: {}\n",
+        authority::format_authority_did(&authority.did)
+    );
 
     // Collect owner DIDs
     let mut owner_dids = Vec::new();
@@ -239,10 +268,7 @@ pub async fn create(name: String, owners: Option<Vec<String>>, _description: Opt
     println!();
 
     // Save space metadata
-    let space_metadata = crate::metadata::SpaceMetadata::new(
-        name.clone(),
-        owner_dids.clone(),
-    );
+    let space_metadata = crate::metadata::SpaceMetadata::new(name.clone(), owner_dids.clone());
     space_metadata.save(&space_did)?;
 
     // Add space to the current session
@@ -264,14 +290,16 @@ fn create_owner_delegation(
     owner_did: &str,
 ) -> Result<()> {
     // Parse owner DID
-    let owner_did_parsed: Ed25519Did = owner_did.parse()
+    let owner_did_parsed: Ed25519Did = owner_did
+        .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse owner DID: {:?}", e))?;
 
     // Parse space DID for subject
-    let space_did_parsed: Ed25519Did = space_did.parse()
+    let space_did_parsed: Ed25519Did = space_did
+        .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
 
-    // Create delegation using ucan_core builder: Space → Owner with full access
+    // Create delegation using ucan builder: Space → Owner with full access
     let issuer_signer = keypair_to_signer(space_keypair);
 
     let ucan_delegation: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
@@ -341,8 +369,8 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     };
 
     // Load space metadata to get the name
-    let space_meta = crate::metadata::SpaceMetadata::load(&space_did)?
-        .context("Space metadata not found")?;
+    let space_meta =
+        crate::metadata::SpaceMetadata::load(&space_did)?.context("Space metadata not found")?;
 
     println!("📍 Space: {} ({})\n", space_meta.name, space_did);
 
@@ -361,9 +389,9 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
 
     // Create a signer from the operator keypair
     // We need to create a custom signer that works with UniversalDid
-    use ucan_core::did::DidSigner;
+    use ucan::did::DidSigner;
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Serialize)]
     struct UniversalDidSigner {
         did: UniversalDid,
         signer: Ed25519Signer,
@@ -387,7 +415,7 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
         signer: operator_signer_inner,
     };
 
-    // Build invitation delegation using ucan_core
+    // Build invitation delegation using ucan
     let invitation_ucan: UcanDelegation<UniversalDid> = UcanDelegation::builder()
         .issuer(operator_universal_signer)
         .audience(invitee_did_universal)
@@ -428,8 +456,14 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     let hash_signature = operator.sign(invitation_hash.as_bytes());
     let hash_sig_bytes = hash_signature.to_bytes();
     let hash_sig_b58 = bs58::encode(&hash_sig_bytes).into_string();
-    let invite_code = hash_sig_b58.chars().rev().take(5).collect::<String>()
-        .chars().rev().collect::<String>(); // Take last 5 chars
+    let invite_code = hash_sig_b58
+        .chars()
+        .rev()
+        .take(5)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>(); // Take last 5 chars
     println!("   ✓ Code: {}", invite_code);
 
     // Step 4: Derive membership keypair using HKDF(hash + code)
@@ -451,12 +485,14 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     println!("5️⃣  Creating operator → membership delegation...");
 
     // Parse DIDs
-    let space_did_parsed: Ed25519Did = space_did.parse()
+    let space_did_parsed: Ed25519Did = space_did
+        .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
-    let membership_did_parsed: Ed25519Did = membership_did.parse()
+    let membership_did_parsed: Ed25519Did = membership_did
+        .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse membership DID: {:?}", e))?;
 
-    // Build delegation using ucan_core
+    // Build delegation using ucan
     let operator_signer2 = keypair_to_signer(&operator);
     let membership_ucan: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
         .issuer(operator_signer2)
@@ -511,8 +547,7 @@ pub fn inspect_invite(path: String) -> Result<()> {
 
     // Read and parse invite file (CBOR format)
     println!("📂 Reading file: {}", path);
-    let invite_data = fs::read(&path)
-        .context("Failed to read invite file")?;
+    let invite_data = fs::read(&path).context("Failed to read invite file")?;
 
     let invite: InviteFile = serde_ipld_dagcbor::from_slice(&invite_data)
         .context("Failed to parse invite file (expected CBOR format)")?;
@@ -523,20 +558,27 @@ pub fn inspect_invite(path: String) -> Result<()> {
     println!("📋 Invite Details:");
     println!("   Secret (hash): {}", invite.secret);
     println!("   Invite code:   {}", invite.code);
-    println!("   Chain length:  {} delegations\n", invite.authorization.len());
+    println!(
+        "   Chain length:  {} delegations\n",
+        invite.authorization.len()
+    );
 
     // Show each delegation in the authorization chain
     println!("🔗 Authorization Chain:");
     for (i, delegation) in invite.authorization.iter().enumerate() {
-        println!("\n   {}. Delegation {} → {}",
+        println!(
+            "\n   {}. Delegation {} → {}",
             i + 1,
             delegation.issuer(),
             delegation.audience()
         );
-        println!("      Subject:  {}", match delegation.subject() {
-            DelegatedSubject::Specific(did) => did.to_string(),
-            DelegatedSubject::Any => "*".to_string(),
-        });
+        println!(
+            "      Subject:  {}",
+            match delegation.subject() {
+                DelegatedSubject::Specific(did) => did.to_string(),
+                DelegatedSubject::Any => "*".to_string(),
+            }
+        );
         println!("      Command:  {}", delegation.command().join(", "));
         println!("      Valid:    {}", delegation.is_valid());
 
@@ -568,7 +610,11 @@ pub fn inspect_invite(path: String) -> Result<()> {
 /// Find a delegation from issuer to audience for a specific subject
 fn find_delegation(issuer: &str, audience: &str) -> Result<Option<Delegation>> {
     let home = crate::util::home_dir().context("Could not determine home directory")?;
-    let access_dir = home.join(".tonk").join("access").join(audience).join(issuer);
+    let access_dir = home
+        .join(".tonk")
+        .join("access")
+        .join(audience)
+        .join(issuer);
 
     if !access_dir.exists() {
         return Ok(None);
@@ -608,19 +654,22 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
 
     // Step 1: Read and parse invite file (CBOR format)
     println!("1️⃣  Reading invite file...");
-    let invite_data = fs::read(&invite_path)
-        .context("Failed to read invite file")?;
+    let invite_data = fs::read(&invite_path).context("Failed to read invite file")?;
     let invite: InviteFile = serde_ipld_dagcbor::from_slice(&invite_data)
         .context("Failed to parse invite file (expected CBOR format)")?;
     println!("   ✓ Loaded invitation");
 
     // Extract space DID from authorization chain
-    let space_did = invite.authorization.first()
+    let space_did = invite
+        .authorization
+        .first()
         .context("Authorization chain is empty")?
         .issuer();
 
     // Extract operator → membership delegation (last in chain)
-    let operator_to_membership = invite.authorization.last()
+    let operator_to_membership = invite
+        .authorization
+        .last()
         .context("Authorization chain is empty")?;
 
     println!("   Space DID: {}", space_did);
@@ -663,12 +712,15 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
     println!("5️⃣  Creating membership → authority delegation...");
 
     // Parse DIDs
-    let authority_did_parsed: Ed25519Did = authority.did.parse()
+    let authority_did_parsed: Ed25519Did = authority
+        .did
+        .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse authority DID: {:?}", e))?;
-    let space_did_parsed: Ed25519Did = space_did.parse()
+    let space_did_parsed: Ed25519Did = space_did
+        .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
 
-    // Build delegation using ucan_core
+    // Build delegation using ucan
     let membership_signer = keypair_to_signer(&membership_keypair);
     let membership_to_authority_ucan: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
         .issuer(membership_signer)
@@ -688,7 +740,8 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
 
     // Get the local operator DID for verification
     let keystore = Keystore::new().context("Failed to initialize keystore")?;
-    let operator = keystore.get_or_create_keypair()
+    let operator = keystore
+        .get_or_create_keypair()
         .context("Failed to get operator keypair")?;
     let operator_did = operator.to_did_key();
 
@@ -698,7 +751,11 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
     // Import each delegation in the authorization chain
     for (i, delegation) in invite.authorization.iter().enumerate() {
         delegation.save()?;
-        println!("   ✓ Imported delegation {} of {}", i + 1, invite.authorization.len());
+        println!(
+            "   ✓ Imported delegation {} of {}",
+            i + 1,
+            invite.authorization.len()
+        );
     }
 
     // Import the membership → authority delegation
