@@ -22,13 +22,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tower_http::cors::{Any, CorsLayer};
 use zip::ZipArchive;
 
+/// Embedded WASM binary from @tonk/core npm module
+const WASM_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tonk_core_bg.wasm"));
+
 pub struct AppState {
     pub repo: Arc<Repo>,
     pub bundle_storage: Arc<BundleStorageAdapter>,
     pub s3_storage: Option<Arc<S3Storage>>,
     pub connection_count: Arc<AtomicUsize>,
     pub start_time: SystemTime,
-    pub wasm_path: PathBuf,
     pub blank_tonk_path: PathBuf,
 }
 
@@ -40,7 +42,6 @@ impl RelayServer {
     pub async fn create(
         repo: Arc<Repo>,
         bundle_path: PathBuf,
-        wasm_path: PathBuf,
         blank_tonk_path: PathBuf,
         s3_config: (String, String),
         connection_count: Arc<AtomicUsize>,
@@ -55,7 +56,6 @@ impl RelayServer {
             s3_storage,
             connection_count,
             start_time: SystemTime::now(),
-            wasm_path,
             blank_tonk_path,
         });
 
@@ -146,10 +146,8 @@ async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
     );
 }
 
-async fn serve_wasm(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse> {
-    let wasm_bytes = tokio::fs::read(&state.wasm_path).await?;
-
-    Ok((
+async fn serve_wasm() -> impl IntoResponse {
+    (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/wasm"),
@@ -157,8 +155,8 @@ async fn serve_wasm(State(state): State<Arc<AppState>>) -> Result<impl IntoRespo
             (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::ACCESS_CONTROL_ALLOW_METHODS, "GET, HEAD, OPTIONS"),
         ],
-        wasm_bytes,
-    ))
+        WASM_BYTES,
+    )
 }
 
 async fn serve_manifest(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse> {

@@ -198,6 +198,21 @@ importers:
         specifier: workspace:*
         version: link:../core-js
 
+  packages/relay-js:
+    optionalDependencies:
+      '@tonk/relay-darwin-arm64':
+        specifier: workspace:*
+        version: link:../relay-js-darwin-arm64
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.1
+      typescript:
+        specifier: ^5.3.3
+        version: 5.9.3
+
+  packages/relay-js-darwin-arm64: {}
+
   packages/sprinkles:
     dependencies:
       '@tonk/core':
@@ -1108,6 +1123,9 @@ packages:
 
   '@types/node@20.19.21':
     resolution: {integrity: sha512-CsGG2P3I5y48RPMfprQGfy4JPRZ6csfC3ltBZSRItG3ngggmNY/qs2uZKp4p9VbrpqNNSMzUZNFZKzgOGnd/VA==}
+
+  '@types/node@22.19.1':
+    resolution: {integrity: sha512-LCCV0HdSZZZb34qifBsyWlUmok6W7ouER+oQIGBScS8EsZsQbrtFTUrDX4hOl+CS6p7cnNC4td+qrSVGSCTUfQ==}
 
   '@types/node@24.7.2':
     resolution: {integrity: sha512-/NbVmcGTP+lj5oa4yiYxxeBjRivKQ5Ns1eSZeB99ExsEQ6rX5XYU1Zy/gGxY/ilqtD4Etx9mKyrPxZRetiahhA==}
@@ -3418,7 +3436,7 @@ snapshots:
   '@types/body-parser@1.19.6':
     dependencies:
       '@types/connect': 3.4.38
-      '@types/node': 20.19.21
+      '@types/node': 24.7.2
 
   '@types/bun@1.3.0(@types/react@19.2.2)':
     dependencies:
@@ -3428,7 +3446,7 @@ snapshots:
 
   '@types/connect@3.4.38':
     dependencies:
-      '@types/node': 20.19.21
+      '@types/node': 24.7.2
 
   '@types/cors@2.8.19':
     dependencies:
@@ -3438,7 +3456,7 @@ snapshots:
 
   '@types/express-serve-static-core@5.1.0':
     dependencies:
-      '@types/node': 20.19.21
+      '@types/node': 24.7.2
       '@types/qs': 6.14.0
       '@types/range-parser': 1.2.7
       '@types/send': 1.2.0
@@ -3456,6 +3474,10 @@ snapshots:
   '@types/mime@1.3.5': {}
 
   '@types/node@20.19.21':
+    dependencies:
+      undici-types: 6.21.0
+
+  '@types/node@22.19.1':
     dependencies:
       undici-types: 6.21.0
 
@@ -3478,16 +3500,16 @@ snapshots:
   '@types/send@0.17.5':
     dependencies:
       '@types/mime': 1.3.5
-      '@types/node': 20.19.21
+      '@types/node': 24.7.2
 
   '@types/send@1.2.0':
     dependencies:
-      '@types/node': 20.19.21
+      '@types/node': 24.7.2
 
   '@types/serve-static@1.15.9':
     dependencies:
       '@types/http-errors': 2.0.5
-      '@types/node': 20.19.21
+      '@types/node': 24.7.2
       '@types/send': 0.17.5
 
   '@typescript-eslint/eslint-plugin@8.38.0(@typescript-eslint/parser@8.38.0(eslint@9.31.0(jiti@2.6.1))(typescript@5.8.3))(eslint@9.31.0(jiti@2.6.1))(typescript@5.8.3)':
@@ -3808,7 +3830,7 @@ snapshots:
 
   bun-types@1.3.0(@types/react@19.2.2):
     dependencies:
-      '@types/node': 20.19.21
+      '@types/node': 24.7.2
       '@types/react': 19.2.2
 
   bytes@3.0.0: {}
