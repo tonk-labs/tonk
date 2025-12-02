@@ -1,5 +1,6 @@
 import { initializeTonkWithEmbeddedWasm, isInitialized } from './init.js';
 import type { TonkConfig } from './core.js';
+import { WASM_BASE64 } from './generated/wasm-data.js';
 import {
   // Main classes
   TonkCore,
@@ -159,3 +160,6 @@ export const createBundleFromBytes = factories.createBundleFromBytes;
 
 // Version export
 export const VERSION = '0.1.0';
+
+// Export embedded WASM data for direct access
+export { WASM_BASE64 };
