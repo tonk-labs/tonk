@@ -1,0 +1,8 @@
+{
+  "name": "@tonk/relay-build",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tonk/core": "workspace:*"
+  }
+}

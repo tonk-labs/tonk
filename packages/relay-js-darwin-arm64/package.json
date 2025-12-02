@@ -1,0 +1,18 @@
+{
+  "name": "@tonk/relay-darwin-arm64",
+  "version": "0.1.0",
+  "description": "Tonk relay binary for macOS ARM64 (Apple Silicon)",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": ["bin/"],
+  "preferUnplugged": true,
+  "author": "Tonk Labs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonk-labs/tonk.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "@tonk/relay",
+  "version": "0.1.1",
+  "description": "Tonk relay server",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "tonk-relay": "./bin/relay.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "bin/",
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "optionalDependencies": {
+    "@tonk/relay-darwin-arm64": "workspace:*"
+  },
+  "keywords": [
+    "tonk",
+    "relay",
+    "local-first",
+    "sync",
+    "automerge"
+  ],
+  "author": "Tonk Labs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonk-labs/tonk.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.3.3"
+  }
+}

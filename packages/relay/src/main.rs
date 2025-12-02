@@ -75,17 +75,9 @@ async fn main() -> Result<()> {
     .parse()
     .expect("Invalid server address");
 
-    let wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("core-js")
-        .join("dist")
-        .join("tonk_core_bg.wasm");
-
-    let relay_server = RelayServer::create(
+    let relay_server: RelayServer = RelayServer::create(
         Arc::clone(&repo),
         bundle_path.clone(),
-        wasm_path,
         bundle_path.clone(),
         s3_config,
         Arc::clone(&connection_count),
