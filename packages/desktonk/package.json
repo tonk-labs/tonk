@@ -1,5 +1,5 @@
 {
-  "name": "@tonk/app",
+  "name": "@tonk/desktonk",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -39,7 +39,7 @@
     "@tiptap/pm": "^3.8.0",
     "@tiptap/react": "^3.8.0",
     "@tiptap/starter-kit": "^3.8.0",
-    "@tonk/core": "0.1.1",
+    "@tonk/core": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "immer": "^10.1.3",

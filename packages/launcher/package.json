@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@base-ui-components/react": "^1.0.0-beta.6",
-    "@tonk/core": "0.1.1",
+    "@tonk/core": "workspace:*",
     "clsx": "^2.1.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
