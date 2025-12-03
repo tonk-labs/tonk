@@ -1,0 +1,22 @@
+id: component-export-props
+language: typescript
+severity: warning
+
+rule:
+  all:
+    - kind: function_declaration
+    - pattern: export function $COMPONENT($$$PARAMS)
+    - inside:
+        kind: program
+        regex: 'src/.*/components/'
+    - not:
+        inside:
+          has:
+            pattern: export interface $COMPONENT Props
+
+message: |
+  Components should export their props interface.
+  
+  Example:
+    export interface SidebarProps { ... }
+    export function Sidebar(props: SidebarProps) { ... }

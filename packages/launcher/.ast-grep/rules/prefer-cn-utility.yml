@@ -1,0 +1,18 @@
+id: prefer-cn-utility
+language: tsx
+severity: warning
+
+rule:
+  kind: jsx_attribute
+  all:
+    - has:
+        kind: property_identifier
+        regex: '^className$'
+    - has:
+        kind: template_string
+
+message: |
+  Use cn() utility for conditional classes instead of template literals.
+  
+  Bad:  className={`flex ${active ? 'bg-blue' : ''}`}
+  Good: className={cn("flex", active && "bg-blue")}

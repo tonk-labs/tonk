@@ -1,0 +1,20 @@
+id: no-console-log
+language: typescript
+severity: warning
+
+rule:
+  pattern: console.log($$$ARGS)
+  not:
+    inside:
+      any:
+        - pattern: if (import.meta.env.DEV)
+        - kind: program
+          regex: '\.test\.(ts|tsx)$'
+
+message: |
+  console.log() should not be used in production code.
+  
+  Allowed: console.error(), console.warn()
+  Exception: Inside if (import.meta.env.DEV) blocks
+  
+  Remove before committing or wrap in DEV check.

@@ -1,0 +1,58 @@
+@import "tailwindcss";
+@import "./fonts.css";
+
+/* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
+@variant dark (&:where(.dark, .dark *));
+
+/* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
+@theme {
+  --font-gestalt: "Gestalte", sans-serif;
+  --animate-shine: shine 5s linear infinite;
+
+  --color-night-50: #f6f6f7;
+  --color-night-100: #e3e3e6;
+  --color-night-200: #c6c6cc;
+  --color-night-300: #a3a3ac;
+  --color-night-400: #80808b;
+  --color-night-500: #63636f;
+  --color-night-600: #4d4d57;
+  --color-night-700: #3d3d45;
+  --color-night-800: #313137;
+  --color-night-900: #1A1A1E;
+  --color-night-950: #121214;
+
+  @keyframes shine {
+    to {
+      background-position: 200% center;
+    }
+  }
+}
+
+@layer base {
+  :root {
+    font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+    font-weight: 400;
+
+    color-scheme: light dark;
+    
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply m-0 flex min-w-[320px] min-h-screen place-items-center;
+    @apply bg-white text-gray-900;
+    @apply dark:bg-[#242424] dark:text-white/87;
+  }
+
+  #root {
+    @apply w-screen;
+  }
+}

@@ -1,0 +1,50 @@
+id: no-cross-feature-imports
+language: typescript
+severity: error
+
+rule:
+  any:
+    # Launcher cannot import from runtime
+    - pattern: import { $$$IMPORT } from '@/runtime/$$$PATH'
+      inside:
+        kind: program
+        regex: 'src/launcher/'
+    
+    # Runtime cannot import from launcher
+    - pattern: import { $$$IMPORT } from '@/launcher/$$$PATH'
+      inside:
+        kind: program
+        regex: 'src/runtime/'
+    
+    # Auth cannot import from launcher or runtime
+    - pattern: import { $$$IMPORT } from '@/launcher/$$$PATH'
+      inside:
+        kind: program
+        regex: 'src/auth/'
+    - pattern: import { $$$IMPORT } from '@/runtime/$$$PATH'
+      inside:
+        kind: program
+        regex: 'src/auth/'
+    
+    # Shared cannot import from features
+    - pattern: import { $$$IMPORT } from '@/launcher/$$$PATH'
+      inside:
+        kind: program
+        regex: 'src/shared/'
+    - pattern: import { $$$IMPORT } from '@/runtime/$$$PATH'
+      inside:
+        kind: program
+        regex: 'src/shared/'
+    - pattern: import { $$$IMPORT } from '@/auth/$$$PATH'
+      inside:
+        kind: program
+        regex: 'src/shared/'
+
+message: |
+  Cross-feature imports are not allowed.
+  
+  Features should be composed at the app level, not imported directly.
+  Shared code should go in src/shared/
+  
+  Allowed: @/shared/*, @/lib/*
+  Not allowed: Cross-feature imports

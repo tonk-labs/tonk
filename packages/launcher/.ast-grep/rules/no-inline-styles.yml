@@ -1,0 +1,17 @@
+id: no-inline-styles
+language: tsx
+severity: error
+
+rule:
+  pattern: <$TAG style={{ $$$STYLES }}>
+  not:
+    has:
+      # Allow single dynamic property
+      pattern: 'style={{ $PROP: $VAR }}'
+
+message: |
+  Inline styles are not allowed. Use Tailwind CSS classes instead.
+  
+  Exception: Single dynamic property (e.g., backgroundColor: user.color)
+  
+  Fix: Use className with Tailwind utilities
