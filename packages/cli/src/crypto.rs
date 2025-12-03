@@ -1,4 +1,4 @@
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 
 /// Represents an Ed25519 keypair
@@ -44,6 +44,11 @@ impl Keypair {
         let encoded = bs58::encode(&multicodec_key).into_string();
 
         format!("did:key:z{}", encoded)
+    }
+
+    /// Sign a message with this keypair
+    pub fn sign(&self, message: &[u8]) -> Signature {
+        self.signing_key.sign(message)
     }
 }
 

@@ -25,4 +25,5 @@ inherits = "release"
 strip = "debuginfo"
 
 [workspace.dependencies]
-ucan_core = { git = "https://github.com/ucan-wg/rs-ucan.git", branch = "v1-2025-edition", package = "ucan_core" }
+ucan = { git = "https://github.com/ucan-wg/rs-ucan.git", branch = "main", package = "ucan" }
+varsig = { git = "https://github.com/ucan-wg/rs-ucan.git", branch = "main", package = "varsig" }
