@@ -1,0 +1,9 @@
+procs:
+  launcher:
+    shell: cd ../launcher && bun run dev
+
+  desktonk:
+    shell: bunx vite
+
+  relay:
+    shell: bun scripts/run-relay.ts

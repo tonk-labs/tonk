@@ -1,9 +1,0 @@
-procs:
-  launcher:
-    shell: cd packages/launcher && pnpm run dev
-
-  desktonk:
-    shell: cd packages/desktonk && pnpm run dev
-
-  relay:
-    shell: bun scripts/run-relay.ts
