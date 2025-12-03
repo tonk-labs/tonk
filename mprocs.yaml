@@ -1,0 +1,12 @@
+procs:
+  launcher:
+    shell: cd packages/launcher && pnpm run dev
+
+  desktonk:
+    shell: cd packages/desktonk && pnpm run dev
+
+  relay:
+    shell: pnpm --filter @tonk/relay-js run start
+
+  host-web:
+    shell: cd packages/host-web && pnpm run dev
