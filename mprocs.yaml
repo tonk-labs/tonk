@@ -7,6 +7,3 @@ procs:
 
   relay:
     shell: pnpm --filter @tonk/relay-js run start
-
-  host-web:
-    shell: cd packages/host-web && pnpm run dev
