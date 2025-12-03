@@ -9,10 +9,11 @@ export const FHS = {
 
   // Application State (variable data)
   // Replaces /opt/ and /src/stores/ usage
-  STATE_ROOT: '/var/lib/sprinkplate',
+  STATE_ROOT: '/var/lib/desktonk',
 
   // Helpers
   getStorePath: (name: string) => `${FHS.STATE_ROOT}/stores/${name}.json`,
 
-  getServicePath: (service: string, file: string) => `${FHS.STATE_ROOT}/${service}/${file}`,
+  getServicePath: (service: string, file: string) =>
+    `${FHS.STATE_ROOT}/${service}/${file}`,
 } as const;

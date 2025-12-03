@@ -10,7 +10,7 @@ export function RootLayout() {
   return (
     <div className="flex h-screen w-screen overflow-hidden">
       {/* Main content area */}
-      <div className="flex-1 min-w-0 overflow-auto z-0">
+      <div className="flex-1 min-w-0 overflow-auto z-0 w-40">
         <Outlet />
       </div>
 

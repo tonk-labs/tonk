@@ -23,16 +23,16 @@ const STORAGE_VERSION = 1;
 
 export const useFeatureFlagStore = create<FeatureFlagStore>()(
   persist(
-    (set) => ({
+    set => ({
       flags: DEFAULT_FLAGS,
       setFlag: (key, value) =>
-        set((state) => ({
+        set(state => ({
           flags: { ...state.flags, [key]: value },
         })),
       resetFlags: () => set({ flags: DEFAULT_FLAGS }),
     }),
     {
-      name: 'sprinkplate-feature-flags',
+      name: 'desktonk-feature-flags',
       version: STORAGE_VERSION,
       migrate: (persistedState: unknown, version: number) => {
         // Migrate old state to include any new flags with defaults

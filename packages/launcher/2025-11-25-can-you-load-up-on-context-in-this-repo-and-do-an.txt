@@ -1,7 +1,7 @@
 
  ▐▛███▜▌   Claude Code v2.0.53
 ▝▜█████▛▘  Opus 4.5 · Claude Max
-  ▘▘ ▝▝    ~/Node/sprinkplate/packages/launcher
+  ▘▘ ▝▝    ~/Node/tonk/packages/launcher
 ══════════════════ Conversation compacted · ctrl+o for history ═════════════════
 
 > /compact 
