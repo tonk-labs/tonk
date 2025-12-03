@@ -221,15 +221,15 @@ async function getAllFilesFromVfs(
 /**
  * Creates a bundle from the dist/ folder
  */
-async function createBundle(outputPath?: string, copyToServer: boolean = false) {
+async function createBundle(outputPath?: string, copyToServer: boolean = false, bundleName?: string) {
   try {
     console.log('Initializing TonkCore...');
 
     // Initialize TonkCore
     const tonk = await TonkCore.create();
 
-    // Get project name from current directory
-    const projectName = process.cwd().split('/').pop() || 'tonk-project';
+    // Use provided bundle name, or default to 'app'
+    const projectName = bundleName || 'app';
 
     // The entrypoint must be the directory containing the app,
     // e.g. if files are in /my-app/index.html, entrypoint is "my-app"
@@ -448,22 +448,24 @@ Usage:
 
 Commands:
   create [output]     Create a bundle from dist/ folder
-                      Optional: specify output path (default: latergram.tonk)
-  
+                      Optional: specify output path (default: app.tonk)
+
   unpack <bundle> <output-dir>
                       Unpack a bundle into the specified directory
-  
+
   list <bundle>       List all directories and files in a bundle
 
 Examples:
   npm run bundle-builder create
   npm run bundle-builder create my-app.tonk
+  npm run bundle-builder create --name myapp
   npm run bundle-builder create --copy-to-server
-  npm run bundle-builder create my-app.tonk --copy-to-server
+  npm run bundle-builder create my-app.tonk --name myapp --copy-to-server
   npm run bundle-builder unpack test-wasm.tonk ./unpacked
   npm run bundle-builder list test-wasm.tonk
 
 Options:
+  --name, -n <name>  Set the bundle name/entrypoint (default: app)
   --copy-to-server   Copy the created bundle to the server/ directory
   --help, -h         Show this help message
 `);
@@ -487,9 +489,22 @@ async function main() {
       // Parse arguments for create command
       const createArgs = args.slice(1);
       const copyToServer = createArgs.includes('--copy-to-server');
-      const outputPath = createArgs.find((arg) => !arg.startsWith('--'));
 
-      await createBundle(outputPath, copyToServer);
+      // Parse --name or -n argument
+      let bundleName: string | undefined;
+      const nameIndex = createArgs.findIndex((arg) => arg === '--name' || arg === '-n');
+      if (nameIndex !== -1 && createArgs[nameIndex + 1]) {
+        bundleName = createArgs[nameIndex + 1];
+      }
+
+      // Output path is any non-flag argument that isn't the bundle name value
+      const outputPath = createArgs.find((arg, idx) =>
+        !arg.startsWith('--') &&
+        !arg.startsWith('-') &&
+        idx !== nameIndex + 1
+      );
+
+      await createBundle(outputPath, copyToServer, bundleName);
       break;
     }
 
