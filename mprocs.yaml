@@ -6,4 +6,4 @@ procs:
     shell: cd packages/desktonk && pnpm run dev
 
   relay:
-    shell: pnpm --filter @tonk/relay-js run start
+    shell: bun scripts/run-relay.ts
