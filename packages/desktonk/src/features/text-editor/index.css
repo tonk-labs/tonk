@@ -1,0 +1,121 @@
+/**
+ * Main CSS Entry Point
+ *
+ * Import order is CRITICAL for proper cascade behavior.
+ * Files are organized from lowest to highest specificity:
+ * 1. Base variables
+ * 2. ProseMirror core (global editor styles)
+ * 3. Node-specific styles (headings, lists, etc)
+ * 4. Extension styles (line numbers)
+ * 5. Layout styles (positioning, padding)
+ * 6. Instance overrides (simple-editor customizations)
+ */
+
+/* =====================
+   1. VARIABLES & FONTS
+   (Tailwind imported globally in global.css)
+   ===================== */
+@import "tailwindcss";
+@import "./styles/_fonts.css";
+@import "./styles/_variables.css";
+@import './styles/_keyframe-animations.css';
+
+@theme {
+  /* Page Background */
+  --color-page-background: var(--color-page-background);
+
+  /* Primary/Brand */
+  --color-primary: var(--color-primary);
+  --color-primary-hover: var(--color-primary-hover);
+  --color-primary-light: var(--color-primary-light);
+  --color-primary-foreground: var(--color-text-on-color);
+
+  /* Background & Surface */
+  --color-background: var(--color-background);
+  --color-surface: var(--color-surface);
+  --color-surface-hover: var(--color-surface-hover);
+
+  /* Text */
+  --color-foreground: var(--color-text-primary);
+  --color-text-primary: var(--color-text-primary);
+  --color-text-secondary: var(--color-text-secondary);
+  --color-text-tertiary: var(--color-text-tertiary);
+  --color-text-on-color: var(--color-text-on-color);
+
+  /* Borders */
+  --color-border: var(--color-border);
+  --color-border-subtle: var(--color-border-subtle);
+  --color-border-strong: var(--color-border-strong);
+  --color-input: var(--color-border);
+
+  /* States */
+  --color-success: var(--color-success);
+  --color-success-light: var(--color-success-light);
+  --color-success-text: var(--color-success-text);
+  --color-warning: var(--color-warning);
+  --color-warning-light: var(--color-warning-light);
+  --color-warning-text: var(--color-warning-text);
+  --color-error: var(--color-error);
+  --color-error-light: var(--color-error-light);
+  --color-error-text: var(--color-error-text);
+  --color-info: var(--color-info);
+  --color-info-light: var(--color-info-light);
+  --color-info-text: var(--color-info-text);
+
+  /* Legacy aliases for compatibility */
+  --color-destructive: var(--color-error);
+  --color-destructive-foreground: var(--color-text-on-color);
+  --color-secondary: var(--color-surface);
+  --color-secondary-foreground: var(--color-text-primary);
+  --color-accent: var(--color-surface-hover);
+  --color-accent-foreground: var(--color-text-primary);
+
+  /* Interactive */
+  --color-interactive: var(--color-interactive);
+  --color-interactive-hover: var(--color-interactive-hover);
+  --color-focus: var(--color-focus);
+
+  /* Editor */
+  --color-selection: var(--color-selection);
+  --color-cursor: var(--color-cursor);
+
+  /* Shadows */
+  --shadow-xs: var(--shadow-xs);
+  --shadow-elevated-md: var(--shadow-elevated-md);
+
+  /* Radius */
+  --radius-xxs: var(--radius-xxs);
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  /* Font */
+  --font-mono: 'Berkeley Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+/* =====================
+   2. PROSEMIRROR BASE
+   (Global editor styles - lowest priority)
+   ===================== */
+@import "./styles/prosemirror-base.css";
+
+/* =====================
+   3. NODE-SPECIFIC STYLES
+   (Paragraph, headings, lists, etc)
+   ===================== */
+@import "../editor/components/tiptap-node/paragraph-node/paragraph-node.css";
+@import "../editor/components/tiptap-node/heading-node/heading-node.css";
+@import "../editor/components/tiptap-node/list-node/list-node.css";
+@import "../editor/components/tiptap-node/blockquote-node/blockquote-node.css";
+@import "../editor/components/tiptap-node/code-block-node/code-block-node.css";
+@import "../editor/components/tiptap-node/image-node/image-node.css";
+@import "../editor/components/tiptap-node/horizontal-rule-node/horizontal-rule-node.css";
+@import "../editor/components/tiptap-node/image-upload-node/image-upload-node.css";
+
+/* =====================
+   4. EXTENSION STYLES
+   (Line numbers, etc)
+   ===================== */
+@import "../editor/components/tiptap-ui-primitive/line-numbers/LineNumbers.css";

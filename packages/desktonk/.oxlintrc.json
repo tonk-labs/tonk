@@ -1,0 +1,8 @@
+{
+  "rules": {
+    "react": "allow",
+    "react-hooks": "allow",
+    "jsx-a11y": "warn"
+  },
+  "ignore": ["dist", "node_modules"]
+}

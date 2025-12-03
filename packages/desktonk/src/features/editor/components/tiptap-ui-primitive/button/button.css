@@ -1,0 +1,281 @@
+.tiptap-button {
+  font-size: 0.875rem;
+  font-weight: 500;
+  font-feature-settings: "salt" on, "cv01" on;
+  line-height: 1.15;
+  height: 2rem;
+  min-width: 2rem;
+  border: none;
+  padding: 0.5rem;
+  gap: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--tt-radius-lg, 0.75rem);
+  transition-property: background, color, opacity;
+  transition-duration: var(--tt-transition-duration-default);
+  transition-timing-function: var(--tt-transition-easing-default);
+}
+.tiptap-button:focus-visible {
+  outline: none;
+}
+.tiptap-button[data-highlighted=true], .tiptap-button[data-focus-visible=true] {
+  background-color: var(--tt-button-hover-bg-color);
+  color: var(--tt-button-hover-text-color);
+}
+.tiptap-button[data-weight=small] {
+  width: 1.5rem;
+  min-width: 1.5rem;
+  padding-right: 0;
+  padding-left: 0;
+}
+.tiptap-button {
+  /* button size large */
+}
+.tiptap-button[data-size=large] {
+  font-size: 0.9375rem;
+  height: 2.375rem;
+  min-width: 2.375rem;
+  padding: 0.625rem;
+}
+.tiptap-button {
+  /* button size small */
+}
+.tiptap-button[data-size=small] {
+  font-size: 0.75rem;
+  line-height: 1.2;
+  height: 1.5rem;
+  min-width: 1.5rem;
+  padding: 0.3125rem;
+  border-radius: var(--tt-radius-md, 0.5rem);
+}
+.tiptap-button {
+  /* trim / expand text of the button */
+}
+.tiptap-button .tiptap-button-text {
+  padding: 0 0.125rem;
+  flex-grow: 1;
+  text-align: left;
+  line-height: 1.5rem;
+}
+.tiptap-button[data-text-trim=on] .tiptap-button-text {
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.tiptap-button {
+  /* global icon settings */
+}
+.tiptap-button .tiptap-button-icon,
+.tiptap-button .tiptap-button-icon-sub,
+.tiptap-button .tiptap-button-dropdown-arrows,
+.tiptap-button .tiptap-button-dropdown-small {
+  flex-shrink: 0;
+}
+.tiptap-button {
+  /* standard icon, what is used */
+}
+.tiptap-button .tiptap-button-icon {
+  width: 1rem;
+  height: 1rem;
+}
+.tiptap-button[data-size=large] .tiptap-button-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+.tiptap-button[data-size=small] .tiptap-button-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+.tiptap-button {
+  /* if 2 icons are used and this icon should be more subtle */
+}
+.tiptap-button .tiptap-button-icon-sub {
+  width: 1rem;
+  height: 1rem;
+}
+.tiptap-button[data-size=large] .tiptap-button-icon-sub {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+.tiptap-button[data-size=small] .tiptap-button-icon-sub {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+.tiptap-button {
+  /* dropdown menus or arrows that are slightly smaller */
+}
+.tiptap-button .tiptap-button-dropdown-arrows {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+.tiptap-button[data-size=large] .tiptap-button-dropdown-arrows {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+.tiptap-button[data-size=small] .tiptap-button-dropdown-arrows {
+  width: 0.625rem;
+  height: 0.625rem;
+}
+.tiptap-button {
+  /* dropdown menu for icon buttons only */
+}
+.tiptap-button .tiptap-button-dropdown-small {
+  width: 0.625rem;
+  height: 0.625rem;
+}
+.tiptap-button[data-size=large] .tiptap-button-dropdown-small {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+.tiptap-button[data-size=small] .tiptap-button-dropdown-small {
+  width: 0.5rem;
+  height: 0.5rem;
+}
+.tiptap-button {
+  /* button only has icons */
+}
+.tiptap-button:has(> svg):not(:has(> :not(svg))) {
+  gap: 0.125rem;
+}
+.tiptap-button:has(> svg):not(:has(> :not(svg)))[data-size=large], .tiptap-button:has(> svg):not(:has(> :not(svg)))[data-size=small] {
+  gap: 0.125rem;
+}
+.tiptap-button {
+  /* button only has 2 icons and one of them is dropdown small */
+}
+.tiptap-button:has(> svg:nth-of-type(2)):has(> .tiptap-button-dropdown-small):not(:has(> svg:nth-of-type(3))):not(:has(> .tiptap-button-text)) {
+  gap: 0;
+  padding-right: 0.25rem;
+}
+.tiptap-button:has(> svg:nth-of-type(2)):has(> .tiptap-button-dropdown-small):not(:has(> svg:nth-of-type(3))):not(:has(> .tiptap-button-text))[data-size=large] {
+  padding-right: 0.375rem;
+}
+.tiptap-button:has(> svg:nth-of-type(2)):has(> .tiptap-button-dropdown-small):not(:has(> svg:nth-of-type(3))):not(:has(> .tiptap-button-text))[data-size=small] {
+  padding-right: 0.25rem;
+}
+.tiptap-button {
+  /* Emoji is used in a button */
+}
+.tiptap-button .tiptap-button-emoji {
+  width: 1rem;
+  display: flex;
+  justify-content: center;
+}
+.tiptap-button[data-size=large] .tiptap-button-emoji {
+  width: 1.125rem;
+}
+.tiptap-button[data-size=small] .tiptap-button-emoji {
+  width: 0.875rem;
+}
+
+/* --------------------------------------------
+----------- BUTTON COLOR SETTINGS -------------
+-------------------------------------------- */
+.tiptap-button {
+  background-color: var(--tt-button-default-bg-color);
+  color: var(--tt-button-default-text-color);
+}
+.tiptap-button .tiptap-button-icon {
+  color: var(--tt-button-default-icon-color);
+}
+.tiptap-button .tiptap-button-icon-sub {
+  color: var(--tt-button-default-icon-sub-color);
+}
+.tiptap-button .tiptap-button-dropdown-arrows {
+  color: var(--tt-button-default-dropdown-arrows-color);
+}
+.tiptap-button .tiptap-button-dropdown-small {
+  color: var(--tt-button-default-dropdown-arrows-color);
+}
+.tiptap-button {
+  /* hover state of a button */
+}
+.tiptap-button:hover:not([data-active-item=true]):not([disabled]), .tiptap-button[data-active-item=true]:not([disabled]), .tiptap-button[data-highlighted]:not([disabled]):not([data-highlighted=false]) {
+  background-color: var(--tt-button-hover-bg-color);
+  color: var(--tt-button-hover-text-color);
+}
+.tiptap-button:hover:not([data-active-item=true]):not([disabled]) .tiptap-button-icon, .tiptap-button[data-active-item=true]:not([disabled]) .tiptap-button-icon, .tiptap-button[data-highlighted]:not([disabled]):not([data-highlighted=false]) .tiptap-button-icon {
+  color: var(--tt-button-hover-icon-color);
+}
+.tiptap-button:hover:not([data-active-item=true]):not([disabled]) .tiptap-button-icon-sub, .tiptap-button[data-active-item=true]:not([disabled]) .tiptap-button-icon-sub, .tiptap-button[data-highlighted]:not([disabled]):not([data-highlighted=false]) .tiptap-button-icon-sub {
+  color: var(--tt-button-hover-icon-sub-color);
+}
+.tiptap-button:hover:not([data-active-item=true]):not([disabled]) .tiptap-button-dropdown-arrows,
+.tiptap-button:hover:not([data-active-item=true]):not([disabled]) .tiptap-button-dropdown-small, .tiptap-button[data-active-item=true]:not([disabled]) .tiptap-button-dropdown-arrows,
+.tiptap-button[data-active-item=true]:not([disabled]) .tiptap-button-dropdown-small, .tiptap-button[data-highlighted]:not([disabled]):not([data-highlighted=false]) .tiptap-button-dropdown-arrows,
+.tiptap-button[data-highlighted]:not([disabled]):not([data-highlighted=false]) .tiptap-button-dropdown-small {
+  color: var(--tt-button-hover-dropdown-arrows-color);
+}
+.tiptap-button {
+  /* Active state of a button */
+}
+.tiptap-button[data-active-state=on]:not([disabled]), .tiptap-button[data-state=open]:not([disabled]) {
+  background-color: var(--tt-button-active-bg-color);
+  color: var(--tt-button-active-text-color);
+}
+.tiptap-button[data-active-state=on]:not([disabled]) .tiptap-button-icon, .tiptap-button[data-state=open]:not([disabled]) .tiptap-button-icon {
+  color: var(--tt-button-active-icon-color);
+}
+.tiptap-button[data-active-state=on]:not([disabled]) .tiptap-button-icon-sub, .tiptap-button[data-state=open]:not([disabled]) .tiptap-button-icon-sub {
+  color: var(--tt-button-active-icon-sub-color);
+}
+.tiptap-button[data-active-state=on]:not([disabled]) .tiptap-button-dropdown-arrows,
+.tiptap-button[data-active-state=on]:not([disabled]) .tiptap-button-dropdown-small, .tiptap-button[data-state=open]:not([disabled]) .tiptap-button-dropdown-arrows,
+.tiptap-button[data-state=open]:not([disabled]) .tiptap-button-dropdown-small {
+  color: var(--tt-button-active-dropdown-arrows-color);
+}
+.tiptap-button[data-active-state=on]:not([disabled]):hover, .tiptap-button[data-state=open]:not([disabled]):hover {
+  background-color: var(--tt-button-active-hover-bg-color);
+}
+.tiptap-button[data-active-state=on]:not([disabled]), .tiptap-button[data-state=open]:not([disabled]) {
+  /* Emphasized */
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=emphasized], .tiptap-button[data-state=open]:not([disabled])[data-appearance=emphasized] {
+  background-color: var(--tt-button-active-bg-color-emphasized);
+  color: var(--tt-button-active-text-color-emphasized);
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=emphasized] .tiptap-button-icon, .tiptap-button[data-state=open]:not([disabled])[data-appearance=emphasized] .tiptap-button-icon {
+  color: var(--tt-button-active-icon-color-emphasized);
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=emphasized] .tiptap-button-icon-sub, .tiptap-button[data-state=open]:not([disabled])[data-appearance=emphasized] .tiptap-button-icon-sub {
+  color: var(--tt-button-active-icon-sub-color-emphasized);
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=emphasized] .tiptap-button-dropdown-arrows,
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=emphasized] .tiptap-button-dropdown-small, .tiptap-button[data-state=open]:not([disabled])[data-appearance=emphasized] .tiptap-button-dropdown-arrows,
+.tiptap-button[data-state=open]:not([disabled])[data-appearance=emphasized] .tiptap-button-dropdown-small {
+  color: var(--tt-button-active-dropdown-arrows-color-emphasized);
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=emphasized]:hover, .tiptap-button[data-state=open]:not([disabled])[data-appearance=emphasized]:hover {
+  background-color: var(--tt-button-active-hover-bg-color-emphasized);
+}
+.tiptap-button[data-active-state=on]:not([disabled]), .tiptap-button[data-state=open]:not([disabled]) {
+  /* Subdued */
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=subdued], .tiptap-button[data-state=open]:not([disabled])[data-appearance=subdued] {
+  background-color: var(--tt-button-active-bg-color-subdued);
+  color: var(--tt-button-active-text-color-subdued);
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=subdued] .tiptap-button-icon, .tiptap-button[data-state=open]:not([disabled])[data-appearance=subdued] .tiptap-button-icon {
+  color: var(--tt-button-active-icon-color-subdued);
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=subdued] .tiptap-button-icon-sub, .tiptap-button[data-state=open]:not([disabled])[data-appearance=subdued] .tiptap-button-icon-sub {
+  color: var(--tt-button-active-icon-sub-color-subdued);
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=subdued] .tiptap-button-dropdown-arrows,
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=subdued] .tiptap-button-dropdown-small, .tiptap-button[data-state=open]:not([disabled])[data-appearance=subdued] .tiptap-button-dropdown-arrows,
+.tiptap-button[data-state=open]:not([disabled])[data-appearance=subdued] .tiptap-button-dropdown-small {
+  color: var(--tt-button-active-dropdown-arrows-color-subdued);
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=subdued]:hover, .tiptap-button[data-state=open]:not([disabled])[data-appearance=subdued]:hover {
+  background-color: var(--tt-button-active-hover-bg-color-subdued);
+}
+.tiptap-button[data-active-state=on]:not([disabled])[data-appearance=subdued]:hover .tiptap-button-icon, .tiptap-button[data-state=open]:not([disabled])[data-appearance=subdued]:hover .tiptap-button-icon {
+  color: var(--tt-button-active-icon-color-subdued);
+}
+.tiptap-button:disabled {
+  background-color: var(--tt-button-disabled-bg-color);
+  color: var(--tt-button-disabled-text-color);
+}
+.tiptap-button:disabled .tiptap-button-icon {
+  color: var(--tt-button-disabled-icon-color);
+}

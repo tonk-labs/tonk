@@ -1,0 +1,43 @@
+@import "tailwindcss";
+@import "./styles/_variables.css";
+
+/* Enable dark mode variant */
+/* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
+@variant dark (&:where(.dark, .dark *));
+
+/* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
+@theme {
+  /* Members bar colors */
+  --color-members-bg: #f5f5f5;
+  --color-members-border: #e0e0e0;
+  --color-members-text: #666666;
+  --color-members-text-muted: #999999;
+  --color-status-online: #43b581;
+
+  /* Night palette (matches launcher) */
+  --color-night-50: #f6f6f7;
+  --color-night-100: #e3e3e6;
+  --color-night-200: #c6c6cc;
+  --color-night-300: #a3a3ac;
+  --color-night-400: #80808b;
+  --color-night-500: #63636f;
+  --color-night-600: #4d4d57;
+  --color-night-700: #3d3d45;
+  --color-night-800: #313137;
+  --color-night-900: #1A1A1E;
+  --color-night-950: #121214;
+
+  /* Font */
+  --font-mono: 'Berkeley Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+html, body {
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
+}
+
+/* Fix for TLDraw icon visibility - icons use CSS masks and need a background color */
+/* biome-ignore lint/complexity/noImportantStyles: required to override tldraw styles */
+:global(.tlui-icon) {
+  background-color: currentColor !important;
+}

@@ -1,0 +1,34 @@
+.tiptap.ProseMirror h1,
+.tiptap.ProseMirror h2,
+.tiptap.ProseMirror h3,
+.tiptap.ProseMirror h4 {
+  position: relative;
+  color: inherit;
+  font-style: inherit;
+}
+.tiptap.ProseMirror h1:first-child,
+.tiptap.ProseMirror h2:first-child,
+.tiptap.ProseMirror h3:first-child,
+.tiptap.ProseMirror h4:first-child {
+  margin-top: 0;
+}
+.tiptap.ProseMirror h1 {
+  font-size: 1.5em;
+  font-weight: 700;
+  margin-top: 3em;
+}
+.tiptap.ProseMirror h2 {
+  font-size: 1.25em;
+  font-weight: 700;
+  margin-top: 2.5em;
+}
+.tiptap.ProseMirror h3 {
+  font-size: 1.125em;
+  font-weight: 600;
+  margin-top: 2em;
+}
+.tiptap.ProseMirror h4 {
+  font-size: 1em;
+  font-weight: 600;
+  margin-top: 2em;
+}
