@@ -1,9 +1,9 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { useEditorStore } from '@/features/editor/stores/editorStore';
-import { generateTextThumbnailFromContent } from '@/features/desktop/utils/thumbnailGenerator';
-import { getDesktopService } from '@/features/desktop';
-import type { VFSService } from '@/lib/vfs-service';
 import type { JSONContent } from '@tiptap/react';
+import type { VFSService } from '@tonk/host-web/client';
+import { useCallback, useEffect, useRef } from 'react';
+import { getDesktopService } from '@/features/desktop';
+import { generateTextThumbnailFromContent } from '@/features/desktop/utils/thumbnailGenerator';
+import { useEditorStore } from '@/features/editor/stores/editorStore';
 
 interface UseEditorVFSSaveOptions {
   filePath: string | null;
@@ -15,9 +15,15 @@ interface UseEditorVFSSaveOptions {
  * Hook that auto-saves editor content to VFS when changes occur.
  * Debounces writes to avoid excessive VFS operations.
  */
-export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditorVFSSaveOptions) {
+export function useEditorVFSSave({
+  filePath,
+  vfs,
+  debounceMs = 1000,
+}: UseEditorVFSSaveOptions) {
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const thumbnailTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const thumbnailTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
   const lastSavedContentRef = useRef<string | null>(null);
 
   const saveToVFS = useCallback(
@@ -46,17 +52,29 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
           try {
             // Extract file name from path
             const fileName = filePath.split('/').pop() || 'file.txt';
-            console.log('[EditorVFSSave] Starting thumbnail regeneration for:', fileName);
+            console.log(
+              '[EditorVFSSave] Starting thumbnail regeneration for:',
+              fileName
+            );
 
             // Generate new thumbnail
-            const thumbnail = await generateTextThumbnailFromContent(text, fileName);
-            console.log('[EditorVFSSave] Thumbnail generated:', thumbnail ? 'YES' : 'NO');
+            const thumbnail = await generateTextThumbnailFromContent(
+              text,
+              fileName
+            );
+            console.log(
+              '[EditorVFSSave] Thumbnail generated:',
+              thumbnail ? 'YES' : 'NO'
+            );
 
             if (thumbnail) {
               // Read existing file to preserve other desktopMeta fields
               const existingFile = await vfs.readFile(filePath);
-              const content = existingFile?.content as Record<string, unknown> | undefined;
-              const existingMeta = (content?.desktopMeta as Record<string, unknown>) || {};
+              const content = existingFile?.content as
+                | Record<string, unknown>
+                | undefined;
+              const existingMeta =
+                (content?.desktopMeta as Record<string, unknown>) || {};
               console.log('[EditorVFSSave] Existing meta:', existingMeta);
 
               // Write back with updated thumbnail, preserving other fields
@@ -78,7 +96,10 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
               console.log('[EditorVFSSave] reloadFile complete');
             }
           } catch (error) {
-            console.warn(`Failed to regenerate thumbnail for ${filePath}:`, error);
+            console.warn(
+              `Failed to regenerate thumbnail for ${filePath}:`,
+              error
+            );
           }
         }, 2000); // 2 second debounce for thumbnail regeneration
       } catch (error) {
@@ -92,7 +113,7 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
     if (!filePath || !vfs) return;
 
     // Subscribe to editor store changes
-    const unsubscribe = useEditorStore.subscribe((state) => {
+    const unsubscribe = useEditorStore.subscribe(state => {
       if (!state.document) return;
 
       // Clear pending save
@@ -137,11 +158,11 @@ function jsonContentToText(content: JSONContent): string {
   if (!content.content) return '';
 
   return content.content
-    .map((node) => {
+    .map(node => {
       if (node.type === 'paragraph') {
         if (!node.content) return '';
         return node.content
-          .map((child) => {
+          .map(child => {
             if (child.type === 'text') return child.text || '';
             return '';
           })
@@ -150,7 +171,7 @@ function jsonContentToText(content: JSONContent): string {
       // Handle other node types as needed
       if (node.type === 'heading' && node.content) {
         return node.content
-          .map((child) => (child.type === 'text' ? child.text || '' : ''))
+          .map(child => (child.type === 'text' ? child.text || '' : ''))
           .join('');
       }
       return '';

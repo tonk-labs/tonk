@@ -1,11 +1,17 @@
-import type { DocumentData, JsonValue } from '@tonk/core';
 import mime from 'mime';
-import type { DocumentContent, VFSWorkerMessage, VFSWorkerResponse } from './types';
-import { bytesToString, stringToBytes } from './vfs-utils';
+import type {
+  DocumentData,
+  JsonValue,
+  DocumentContent,
+  VFSWorkerMessage,
+  VFSWorkerResponse,
+  ConnectionState,
+  ConnectionStateListener,
+  WatcherMetadata,
+} from './types';
+import { bytesToString, stringToBytes, uint8ArrayToBase64 } from './vfs-utils';
 
 const verbose = () => false;
-
-type ConnectionState = 'disconnected' | 'connecting' | 'open' | 'connected' | 'reconnecting';
 
 export class VFSService {
   private initialized = false;
@@ -18,11 +24,10 @@ export class VFSService {
     }
   >();
   private watchers = new Map<string, (documentData: DocumentData) => void>();
-  // biome-ignore lint/suspicious/noExplicitAny: Change data structure is dynamic
-  private directoryWatchers = new Map<string, (changeData: any) => void>();
-  private watcherMetadata = new Map<string, { path: string; type: 'file' | 'directory' }>();
+  private directoryWatchers = new Map<string, (changeData: unknown) => void>();
+  private watcherMetadata = new Map<string, WatcherMetadata>();
   private connectionState: ConnectionState = 'disconnected';
-  private connectionListeners = new Set<(state: ConnectionState) => void>();
+  private connectionListeners = new Set<ConnectionStateListener>();
   private messageHandler: (event: MessageEvent) => void;
 
   constructor() {
@@ -44,7 +49,7 @@ export class VFSService {
     }
   }
 
-  onConnectionStateChange(listener: (state: ConnectionState) => void): () => void {
+  onConnectionStateChange(listener: ConnectionStateListener): () => void {
     this.connectionListeners.add(listener);
     listener(this.connectionState);
     return () => {
@@ -67,15 +72,16 @@ export class VFSService {
     return this.connectionState;
   }
 
-  private handleMessage(event: MessageEvent) {
+  private handleMessage(event: MessageEvent): void {
     const response = event.data as VFSWorkerResponse;
 
-    // biome-ignore lint/suspicious/noExplicitAny: Ready message structure is specific
-    if ((response as any).type === 'ready') {
+    // Handle ready message
+    if ((response as { type: string }).type === 'ready') {
       verbose() && console.log('[VFSService] Service Worker is ready');
       return;
     }
 
+    // Handle connection state messages
     if (response.type === 'disconnected') {
       this.notifyConnectionStateChange('disconnected');
       return;
@@ -96,10 +102,15 @@ export class VFSService {
       return;
     }
 
+    // Handle watch notifications
     if (response.type === 'fileChanged' && 'watchId' in response) {
       const callback = this.watchers.get(response.watchId);
       if (callback) {
-        callback(response.documentData);
+        try {
+          callback(response.documentData);
+        } catch (error) {
+          console.error('[VFSService] Error in file watcher callback:', error);
+        }
       }
       return;
     }
@@ -107,11 +118,16 @@ export class VFSService {
     if (response.type === 'directoryChanged' && 'watchId' in response) {
       const callback = this.directoryWatchers.get(response.watchId);
       if (callback) {
-        callback(response.changeData);
+        try {
+          callback(response.changeData);
+        } catch (error) {
+          console.error('[VFSService] Error in directory watcher callback:', error);
+        }
       }
       return;
     }
 
+    // Handle request-response messages
     if ('id' in response && response.id) {
       const pending = this.pendingRequests.get(response.id);
       if (pending) {
@@ -143,7 +159,7 @@ export class VFSService {
       };
       navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
 
-      // Fallback
+      // Fallback timeout
       setTimeout(() => {
         if (navigator.serviceWorker.controller) {
           navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
@@ -158,7 +174,7 @@ export class VFSService {
     await this.ensureServiceWorker();
 
     try {
-      // Check if already initialized/running by asking for server URL or Manifest
+      // Check if already initialized/running by asking for server URL
       const id = this.generateId();
       await this.sendMessage({ type: 'getServerUrl', id });
 
@@ -265,13 +281,7 @@ export class VFSService {
   ): Promise<void> {
     let bytesData: string;
     if (bytes instanceof Uint8Array) {
-      let binaryString = '';
-      const chunkSize = 8192;
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        const chunk = bytes.subarray(i, i + chunkSize);
-        binaryString += String.fromCharCode.apply(null, Array.from(chunk));
-      }
-      bytesData = btoa(binaryString);
+      bytesData = uint8ArrayToBase64(bytes);
     } else {
       bytesData = bytes;
     }
@@ -373,8 +383,7 @@ export class VFSService {
 
   async watchDirectory(
     path: string,
-    // biome-ignore lint/suspicious/noExplicitAny: Change data structure is dynamic
-    callback: (changeData: any) => void
+    callback: (changeData: unknown) => void
   ): Promise<string> {
     const id = this.generateId();
     this.directoryWatchers.set(id, callback);
@@ -445,6 +454,8 @@ export class VFSService {
     this.pendingRequests.clear();
     this.watchers.clear();
     this.directoryWatchers.clear();
+    this.watcherMetadata.clear();
+    this.connectionListeners.clear();
     this.initialized = false;
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       navigator.serviceWorker.removeEventListener('message', this.messageHandler);
@@ -452,6 +463,7 @@ export class VFSService {
   }
 }
 
+// Singleton instance management
 let vfsServiceInstance: VFSService | null = null;
 
 export function getVFSService(): VFSService {

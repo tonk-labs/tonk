@@ -64,6 +64,7 @@
         "@tiptap/react": "^3.8.0",
         "@tiptap/starter-kit": "^3.8.0",
         "@tonk/core": "0.1.1",
+        "@tonk/host-web": "workspace:../host-web",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "immer": "^10.1.3",
@@ -1761,8 +1762,6 @@
     "@tldraw/editor/@tiptap/react": ["@tiptap/react@3.6.2", "", { "dependencies": { "@types/use-sync-external-store": "0.0.6", "fast-deep-equal": "3.1.3", "use-sync-external-store": "1.6.0" }, "optionalDependencies": { "@tiptap/extension-bubble-menu": "3.12.0", "@tiptap/extension-floating-menu": "3.12.0" }, "peerDependencies": { "@tiptap/core": "3.12.0", "@tiptap/pm": "3.12.0", "@types/react": "19.2.7", "@types/react-dom": "19.2.3", "react": "19.2.0", "react-dom": "19.2.0" } }, "sha512-jgG+bM/GDvI6jnqW3YyLtr/vOR6iO2ta9PYVzoWqNYIxISsMOJeRfinsIqB8l6hkiGZApn9bQji6oUXTc59fgA=="],
 
     "@tldraw/editor/eventemitter3": ["eventemitter3@4.0.7", "", {}, "sha512-8guHBZCwKnFhYdHr2ysuRWErTwhoN2X8XELRlrRwpmfeY2jjuUN4taQMsULKUVo1K4DvZl+0pgfyoysHxvmvEw=="],
-
-    "@tonk/desktonk/@tonk/relay-darwin-arm64": ["@tonk/relay-darwin-arm64@0.1.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-YCSRbmjM4EFeJQTtUjpZLfvsbk/+AkWaQPyiK4HOuKGE9oA/t8rVpEg1J07M9Kr6os91OH3TMg+d/hCLuHDLJA=="],
 
     "@tonk/host-web/@types/node": ["@types/node@20.19.25", "", { "dependencies": { "undici-types": "6.21.0" } }, "sha512-ZsJzA5thDQMSQO788d7IocwwQbI8B5OPzmqNvpf3NY/+MHDAS759Wo0gd2WQeXYt5AAAQjzcrTVC6SKCuYgoCQ=="],
 

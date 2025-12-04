@@ -2,6 +2,12 @@
   "name": "@tonk/host-web",
   "version": "0.0.1",
   "description": "Host shell to bootstrap a tonk on the web",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/vfs-client/index.ts",
+    "./service-worker": "./src/service-worker/index.ts"
+  },
   "scripts": {
     "dev": "npm run build:sw && npm run copy-sw-for-dev && serve src",
     "dev:with-proxy": "npm run build:sw && npm run copy-sw-for-dev && PORT=4000 NODE_ENV=development vite dev --port=4000",

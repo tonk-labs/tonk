@@ -1,14 +1,20 @@
-import { useState, useEffect } from 'react';
-import { getVFSService } from '../lib/vfs-service';
+import { getVFSService } from '@tonk/host-web/client';
+import { useEffect, useState } from 'react';
 
-type ConnectionState = 'disconnected' | 'connecting' | 'open' | 'connected' | 'reconnecting';
+type ConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'open'
+  | 'connected'
+  | 'reconnecting';
 
 export function useVFS() {
   const [vfs] = useState(() => getVFSService());
-  const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
+  const [connectionState, setConnectionState] =
+    useState<ConnectionState>('disconnected');
 
   useEffect(() => {
-    return vfs.onConnectionStateChange((state) => {
+    return vfs.onConnectionStateChange(state => {
       console.log('[useVFS] Connection state changed:', state);
       setConnectionState(state);
     });
