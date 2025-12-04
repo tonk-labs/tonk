@@ -7,21 +7,22 @@ export function ChatTypingIndicator() {
   const { getOnlineUsers } = usePresence();
   const users = getOnlineUsers();
 
-  if (typingUsers.size === 0) return null;
+  const typingUserIds = Object.keys(typingUsers);
+  if (typingUserIds.length === 0) return null;
 
-  const typingUserNames = Array.from(typingUsers)
-    .map((userId) => {
+  const typingUserNames = typingUserIds
+    .map(userId => {
       const user = users.find((u: User) => u.id === userId);
       return user?.name || 'Unknown';
     })
     .slice(0, 3); // Show max 3 names
 
   const displayText =
-    typingUsers.size === 1
+    typingUserIds.length === 1
       ? `${typingUserNames[0]} is typing...`
-      : typingUsers.size === 2
+      : typingUserIds.length === 2
         ? `${typingUserNames[0]} and ${typingUserNames[1]} are typing...`
-        : `${typingUserNames.slice(0, 2).join(', ')} and ${typingUsers.size - 2} others are typing...`;
+        : `${typingUserNames.slice(0, 2).join(', ')} and ${typingUserIds.length - 2} others are typing...`;
 
   return (
     <div className="px-3 py-2">

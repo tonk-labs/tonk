@@ -4,7 +4,6 @@ import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
 import Image from '@tiptap/extension-image';
 import TextAlign from '@tiptap/extension-text-align';
-// import { TextStyle } from '@tiptap/r';
 import { Color } from '@tiptap/extension-color';
 import { Highlight } from '@tiptap/extension-highlight';
 import TaskList from '@tiptap/extension-task-list';
@@ -60,7 +59,6 @@ export function Editor() {
           class: 'text-blue-600 underline',
         },
       }),
-      // TextStyle,
       Color,
     ],
     editorProps: {

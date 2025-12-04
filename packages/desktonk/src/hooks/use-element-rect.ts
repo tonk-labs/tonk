@@ -136,7 +136,7 @@ export function useElementRect({
 
     return () => {
       // biome-ignore lint/suspicious/useIterableCallbackReturn: forEach cleanup functions return void
-      cleanup.forEach((fn) => fn());
+      cleanup.forEach(fn => fn());
       setRect(initialRect);
     };
   }, [enabled, getTargetElement, updateRect, useResizeObserver]);
@@ -147,19 +147,11 @@ export function useElementRect({
 /**
  * Convenience hook for tracking document.body rect
  */
-export function useBodyRect(options: Omit<ElementRectOptions, 'element'> = {}): RectState {
+export function useBodyRect(
+  options: Omit<ElementRectOptions, 'element'> = {}
+): RectState {
   return useElementRect({
     ...options,
     element: isClientSide() ? document.body : null,
   });
-}
-
-/**
- * Convenience hook for tracking a ref element's rect
- */
-export function useRefRect<T extends Element>(
-  ref: React.RefObject<T>,
-  options: Omit<ElementRectOptions, 'element'> = {}
-): RectState {
-  return useElementRect({ ...options, element: ref });
 }

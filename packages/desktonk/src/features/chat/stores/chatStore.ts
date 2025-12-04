@@ -4,14 +4,14 @@ import type { ChatMessage, WindowState, ChatConfig } from '../types';
 
 interface ChatState {
   messages: ChatMessage[];
-  typingUsers: Set<string>;
+  typingUsers: Record<string, boolean>;
   windowState: WindowState;
   config: ChatConfig;
 }
 
 const initialState: ChatState = {
   messages: [],
-  typingUsers: new Set(),
+  typingUsers: {},
   windowState: {
     isOpen: false,
     position: { x: 100, y: 100 },
@@ -36,7 +36,7 @@ const createChatActions = () => {
      * Add a message to the store (optimistic update)
      */
     addMessage: (message: ChatMessage) => {
-      store.set((state) => {
+      store.set(state => {
         state.messages.push(message);
 
         // Enforce history limit
@@ -52,11 +52,11 @@ const createChatActions = () => {
      * Set typing status for a user
      */
     setUserTyping: (userId: string, isTyping: boolean) => {
-      store.set((state) => {
+      store.set(state => {
         if (isTyping) {
-          state.typingUsers.add(userId);
+          state.typingUsers[userId] = true;
         } else {
-          state.typingUsers.delete(userId);
+          delete state.typingUsers[userId];
         }
       });
     },
@@ -65,7 +65,7 @@ const createChatActions = () => {
      * Toggle chat window open/close
      */
     toggleWindow: () => {
-      store.set((state) => {
+      store.set(state => {
         state.windowState.isOpen = !state.windowState.isOpen;
       });
     },
@@ -74,7 +74,7 @@ const createChatActions = () => {
      * Update window position
      */
     updateWindowPosition: (x: number, y: number) => {
-      store.set((state) => {
+      store.set(state => {
         state.windowState.position = { x, y };
       });
     },
@@ -83,11 +83,11 @@ const createChatActions = () => {
      * Add or remove reaction to a message
      */
     toggleReaction: (messageId: string, emoji: string, userId: string) => {
-      store.set((state) => {
-        const message = state.messages.find((m) => m.id === messageId);
+      store.set(state => {
+        const message = state.messages.find(m => m.id === messageId);
         if (!message) return;
 
-        const reaction = message.reactions.find((r) => r.emoji === emoji);
+        const reaction = message.reactions.find(r => r.emoji === emoji);
 
         if (reaction) {
           const userIndex = reaction.userIds.indexOf(userId);
@@ -96,7 +96,9 @@ const createChatActions = () => {
             reaction.userIds.splice(userIndex, 1);
             // Remove reaction if no users left
             if (reaction.userIds.length === 0) {
-              message.reactions = message.reactions.filter((r) => r.emoji !== emoji);
+              message.reactions = message.reactions.filter(
+                r => r.emoji !== emoji
+              );
             }
           } else {
             // Add user to reaction
@@ -113,7 +115,7 @@ const createChatActions = () => {
      * Clear all messages
      */
     clearMessages: () => {
-      store.set((state) => {
+      store.set(state => {
         state.messages = [];
       });
     },
@@ -121,8 +123,11 @@ const createChatActions = () => {
     /**
      * Hydrate messages from loaded data (e.g., VFS)
      */
-    hydrateMessages: (messages: ChatMessage[], config?: Partial<ChatConfig>) => {
-      store.set((state) => {
+    hydrateMessages: (
+      messages: ChatMessage[],
+      config?: Partial<ChatConfig>
+    ) => {
+      store.set(state => {
         state.messages = messages;
         if (config) {
           state.config = { ...state.config, ...config };

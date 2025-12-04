@@ -1,4 +1,9 @@
-import type { JsonValue, DocumentData, RefNode, Manifest } from '@tonk/core/slim';
+import type {
+  JsonValue,
+  DocumentData,
+  RefNode,
+  Manifest,
+} from '@tonk/core/slim';
 
 /**
  * Represents the metadata of a Tonk bundle.
@@ -21,31 +26,6 @@ export interface BundleData extends Bundle {
   /** Cached full manifest to skip redundant Bundle.fromBytes in service worker */
   manifest?: Manifest;
 }
-
-/**
- * Configuration for the runtime environment.
- */
-export interface RuntimeConfig {
-  bundleId: string;
-  operatorDid?: string;
-}
-
-/**
- * Messages sent from the UI/Client to the Service Worker.
- */
-export type SWMessage =
-  | { type: 'ping' }
-  | { type: 'getBundle'; bundleId: string }
-  | { type: 'getBundleList' };
-
-/**
- * Responses sent from the Service Worker to the UI/Client.
- */
-export type SWResponse =
-  | { type: 'pong' }
-  | { type: 'bundle'; data: BundleData }
-  | { type: 'bundleList'; data: Bundle[] }
-  | { type: 'error'; message: string };
 
 // --- VFS Types (Ported from packages/app/src/lib/types.ts) ---
 
