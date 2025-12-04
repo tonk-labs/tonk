@@ -1,6 +1,6 @@
+import { getVFSService } from '@tonk/host-web/client';
 import { useEffect, useRef, useState } from 'react';
 import { useEditor } from 'tldraw';
-import { getVFSService } from '../../../lib/vfs-service';
 import { useVFS } from '../../../hooks/useVFS';
 
 const CANVAS_STATE_PATH = '/.state/desktop';
@@ -44,7 +44,10 @@ export function useCanvasPersistence() {
         console.log('[useCanvasPersistence] Raw JSON length:', json.length);
 
         const snapshot = JSON.parse(json);
-        console.log('[useCanvasPersistence] Snapshot keys:', Object.keys(snapshot));
+        console.log(
+          '[useCanvasPersistence] Snapshot keys:',
+          Object.keys(snapshot)
+        );
 
         if (!cancelled && snapshot.document) {
           // Filter out file-icon shapes from the snapshot before loading
@@ -57,7 +60,9 @@ export function useCanvasPersistence() {
                 Object.entries(snapshot.document.store).filter(
                   // biome-ignore lint/suspicious/noExplicitAny: tldraw snapshot value type
                   ([_key, value]: [string, any]) =>
-                    !(value?.type === 'shape' && value?.typeName === 'file-icon')
+                    !(
+                      value?.type === 'shape' && value?.typeName === 'file-icon'
+                    )
                 )
               ),
             },
@@ -110,19 +115,33 @@ export function useCanvasPersistence() {
           try {
             // Get snapshot returns { document, session }
             const snapshot = editor.getSnapshot();
-            console.log('[useCanvasPersistence] Snapshot keys:', Object.keys(snapshot));
+            console.log(
+              '[useCanvasPersistence] Snapshot keys:',
+              Object.keys(snapshot)
+            );
 
             // Get all shapes to count them
             const allShapes = editor.getCurrentPageShapes();
-            const fileIconShapes = allShapes.filter((s) => s.type === 'file-icon');
-            const otherShapes = allShapes.filter((s) => s.type !== 'file-icon');
+            const fileIconShapes = allShapes.filter(
+              s => s.type === 'file-icon'
+            );
+            const otherShapes = allShapes.filter(s => s.type !== 'file-icon');
 
-            console.log('[useCanvasPersistence] Total shapes:', allShapes.length);
-            console.log('[useCanvasPersistence] File-icon shapes:', fileIconShapes.length);
-            console.log('[useCanvasPersistence] Other shapes to save:', otherShapes.length);
+            console.log(
+              '[useCanvasPersistence] Total shapes:',
+              allShapes.length
+            );
+            console.log(
+              '[useCanvasPersistence] File-icon shapes:',
+              fileIconShapes.length
+            );
+            console.log(
+              '[useCanvasPersistence] Other shapes to save:',
+              otherShapes.length
+            );
             console.log(
               '[useCanvasPersistence] Shape types being saved:',
-              otherShapes.map((s) => s.type).slice(0, 10)
+              otherShapes.map(s => s.type).slice(0, 10)
             );
 
             // Filter out file-icon shapes when saving (they're managed by VFS, not canvas state)
@@ -135,7 +154,10 @@ export function useCanvasPersistence() {
                   Object.entries(snapshot.document.store).filter(
                     // biome-ignore lint/suspicious/noExplicitAny: tldraw snapshot value type
                     ([_key, value]: [string, any]) =>
-                      !(value?.type === 'shape' && value?.typeName === 'file-icon')
+                      !(
+                        value?.type === 'shape' &&
+                        value?.typeName === 'file-icon'
+                      )
                   )
                 ),
               },
@@ -174,10 +196,20 @@ export function useCanvasPersistence() {
 
             // Check if file exists to determine if we should create or update
             const exists = await vfs.exists(CANVAS_STATE_PATH);
-            await vfs.writeStringAsBytes(CANVAS_STATE_PATH, JSON.stringify(toSave), !exists);
-            console.log('[useCanvasPersistence] ✅ Saved canvas state to', CANVAS_STATE_PATH);
+            await vfs.writeStringAsBytes(
+              CANVAS_STATE_PATH,
+              JSON.stringify(toSave),
+              !exists
+            );
+            console.log(
+              '[useCanvasPersistence] ✅ Saved canvas state to',
+              CANVAS_STATE_PATH
+            );
           } catch (err) {
-            console.error('[useCanvasPersistence] ❌ Canvas state save failed', err);
+            console.error(
+              '[useCanvasPersistence] ❌ Canvas state save failed',
+              err
+            );
           }
         }, SAVE_DEBOUNCE_MS);
       },
@@ -208,13 +240,15 @@ export function useCanvasPersistence() {
 
     const setupWatcher = async () => {
       try {
-        watchId = await vfs.watchFile(CANVAS_STATE_PATH, async (content) => {
+        watchId = await vfs.watchFile(CANVAS_STATE_PATH, async content => {
           // Prevent loading during external update to avoid loops
           if (isLoadingExternal) return;
 
           try {
             isLoadingExternal = true;
-            console.log('[useCanvasPersistence] External canvas state change detected');
+            console.log(
+              '[useCanvasPersistence] External canvas state change detected'
+            );
 
             const json = (content.content as { text?: string })?.text || '';
             if (!json) {
@@ -233,7 +267,10 @@ export function useCanvasPersistence() {
                   Object.entries(snapshot.document.store).filter(
                     // biome-ignore lint/suspicious/noExplicitAny: Value type from tldraw snapshot is not strictly typed
                     ([_key, value]: [string, any]) =>
-                      !(value?.type === 'shape' && value?.typeName === 'file-icon')
+                      !(
+                        value?.type === 'shape' &&
+                        value?.typeName === 'file-icon'
+                      )
                   )
                 ),
               },
@@ -241,17 +278,28 @@ export function useCanvasPersistence() {
 
             // Load the updated snapshot from other tab
             editor.loadSnapshot(filteredSnapshot);
-            console.log('[useCanvasPersistence] ✅ Loaded external canvas state update');
+            console.log(
+              '[useCanvasPersistence] ✅ Loaded external canvas state update'
+            );
           } catch (err) {
-            console.error('[useCanvasPersistence] Error loading external canvas state:', err);
+            console.error(
+              '[useCanvasPersistence] Error loading external canvas state:',
+              err
+            );
           } finally {
             isLoadingExternal = false;
           }
         });
 
-        console.log('[useCanvasPersistence] File watcher set up for', CANVAS_STATE_PATH);
+        console.log(
+          '[useCanvasPersistence] File watcher set up for',
+          CANVAS_STATE_PATH
+        );
       } catch (err) {
-        console.error('[useCanvasPersistence] Error setting up file watcher:', err);
+        console.error(
+          '[useCanvasPersistence] Error setting up file watcher:',
+          err
+        );
       }
     };
 
@@ -259,7 +307,7 @@ export function useCanvasPersistence() {
 
     return () => {
       if (watchId) {
-        vfs.unwatchFile(watchId).catch((err) => {
+        vfs.unwatchFile(watchId).catch(err => {
           console.warn('[useCanvasPersistence] Error unwatching file:', err);
         });
       }

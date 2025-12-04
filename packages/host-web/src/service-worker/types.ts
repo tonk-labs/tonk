@@ -1,11 +1,35 @@
-import type { JsonValue, DocumentData, RefNode } from '@tonk/core';
+import type { JsonValue, DocumentData, RefNode, Manifest } from '@tonk/core';
+import type { TonkCore } from '@tonk/core/slim';
 
+// Re-export core types for convenience
+export type { JsonValue, DocumentData, RefNode, Manifest };
+
+// Document content for write operations
 export type DocumentContent = {
   content: JsonValue;
   bytes?: string;
 };
 
-// Message types for VFS Worker communication
+// TonkCore state machine
+export type TonkState =
+  | { status: 'uninitialized' }
+  | { status: 'loading'; promise: Promise<{ tonk: TonkCore; manifest: Manifest }> }
+  | { status: 'ready'; tonk: TonkCore; manifest: Manifest }
+  | { status: 'failed'; error: Error };
+
+// Watcher handle from TonkCore
+export interface WatcherHandle {
+  stop: () => void;
+  document_id?: string;
+}
+
+// Service worker fetch event interface
+export interface FetchEvent extends Event {
+  request: Request;
+  respondWith(response: Promise<Response> | Response): void;
+}
+
+// Message types for VFS Worker communication (requests from client)
 export type VFSWorkerMessage =
   | { type: 'init'; manifest: ArrayBuffer; wsUrl: string }
   | { type: 'readFile'; id: string; path: string }
@@ -26,7 +50,7 @@ export type VFSWorkerMessage =
   | { type: 'unwatchDirectory'; id: string; path: string }
   | { type: 'toBytes'; id: string }
   | { type: 'forkToBytes'; id: string }
-  | { type: 'loadBundle'; id: string; bundleBytes: ArrayBuffer }
+  | { type: 'loadBundle'; id: string; bundleBytes: ArrayBuffer; serverUrl?: string }
   | {
       type: 'initializeFromUrl';
       id: string;
@@ -34,7 +58,6 @@ export type VFSWorkerMessage =
       wasmUrl?: string;
       wsUrl?: string;
     }
-  | { type: 'getServerUrl'; id: string }
   | {
       type: 'initializeFromBytes';
       id: string;
@@ -42,11 +65,14 @@ export type VFSWorkerMessage =
       serverUrl?: string;
       wsUrl?: string;
     }
-  | { type: 'handshake'; id: string };
+  | { type: 'getServerUrl'; id: string }
+  | { type: 'getManifest'; id: string }
+  | { type: 'setAppSlug'; slug: string };
 
+// Response types for VFS Worker communication (responses to client)
 export type VFSWorkerResponse =
+  // Operation responses (with id matching request)
   | { type: 'init'; success: boolean; error?: string }
-  | { type: 'handshake'; id: string; success: boolean; error?: string }
   | {
       type: 'readFile';
       id: string;
@@ -73,15 +99,8 @@ export type VFSWorkerResponse =
     }
   | { type: 'watchFile'; id: string; success: boolean; error?: string }
   | { type: 'unwatchFile'; id: string; success: boolean; error?: string }
-  | { type: 'fileChanged'; watchId: string; documentData: DocumentData }
   | { type: 'watchDirectory'; id: string; success: boolean; error?: string }
   | { type: 'unwatchDirectory'; id: string; success: boolean; error?: string }
-  | {
-      type: 'directoryChanged';
-      watchId: string;
-      path: string;
-      changeData: unknown;
-    }
   | {
       type: 'toBytes';
       id: string;
@@ -98,18 +117,9 @@ export type VFSWorkerResponse =
       rootId?: string;
       error?: string;
     }
-  | {
-      type: 'loadBundle';
-      id: string;
-      success: boolean;
-      error?: string;
-    }
-  | {
-      type: 'initializeFromUrl';
-      id: string;
-      success: boolean;
-      error?: string;
-    }
+  | { type: 'loadBundle'; id: string; success: boolean; error?: string }
+  | { type: 'initializeFromUrl'; id: string; success: boolean; error?: string }
+  | { type: 'initializeFromBytes'; id: string; success: boolean; error?: string }
   | {
       type: 'getServerUrl';
       id: string;
@@ -117,8 +127,24 @@ export type VFSWorkerResponse =
       data?: string;
       error?: string;
     }
+  | {
+      type: 'getManifest';
+      id: string;
+      success: boolean;
+      data?: Manifest;
+      error?: string;
+    }
+  // Watch event notifications (no id, matched by watchId)
+  | { type: 'fileChanged'; watchId: string; documentData: DocumentData }
+  | { type: 'directoryChanged'; watchId: string; path: string; changeData: unknown }
+  // Connection status events (broadcast, no id)
+  | { type: 'ready'; needsBundle?: boolean }
   | { type: 'disconnected' }
   | { type: 'reconnecting'; attempt: number }
   | { type: 'reconnected' }
   | { type: 'reconnectionFailed' }
-  | { type: 'watchersReestablished'; count: number };
+  | { type: 'watchersReestablished'; count: number }
+  // Service worker lifecycle events
+  | { type: 'swReady'; autoInitialized: boolean; needsBundle?: boolean }
+  | { type: 'swInitializing' }
+  | { type: 'needsReinit'; appSlug: string | null; reason: string };
