@@ -4,42 +4,90 @@ import {
   JsonValue,
   DirectoryNode,
   DocumentWatcher,
+  Bundle,
+  Manifest,
 } from '@tonk/core';
 
 let tonkInstance: TonkCore | null = null;
 let isInitialized = false;
+let currentWsUrl: string | null = null;
+
+/**
+ * Filter network URIs to only HTTP(S) relay URLs
+ */
+function getHttpRelays(networkUris: string[]): string[] {
+  return networkUris.filter(
+    uri => uri.startsWith('http://') || uri.startsWith('https://')
+  );
+}
 
 /**
  * Service for interacting with tonk file system
  */
 export const TonkService = {
   /**
-   * Initialize TonkCore with a relay server
-   * @param relayUrl URL of the relay server (e.g., http://localhost:8081)
+   * Initialize TonkCore from bundle bytes
+   * @param bundleBytes The bundle data as Uint8Array
+   * @param wsUrlOverride Optional WebSocket URL to override manifest's networkUris
+   * @returns The parsed manifest
    */
-  async initialize(relayUrl: string): Promise<void> {
-    const manifestUrl = `${relayUrl}/.manifest.tonk`;
-    const wsUrl = relayUrl.replace(/^http/, 'ws');
-
+  async initializeFromBundle(
+    bundleBytes: Uint8Array,
+    wsUrlOverride?: string
+  ): Promise<{ manifest: Manifest; connectedRelay: string | null }> {
     try {
-      const response = await fetch(manifestUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch manifest: ${response.statusText}`);
+      // Parse bundle to get manifest
+      const bundle = await Bundle.fromBytes(bundleBytes);
+      const manifest = await bundle.getManifest();
+      bundle.free();
+
+      // Create TonkCore with IndexedDB storage
+      tonkInstance = await TonkCore.fromBytes(bundleBytes, {
+        storage: { type: 'indexeddb' },
+      });
+
+      // Determine relay URL: override > first HTTP relay from manifest
+      const httpRelays = getHttpRelays(manifest.networkUris || []);
+      const relayUrl = wsUrlOverride || httpRelays[0];
+      let connectedRelay: string | null = null;
+
+      // Connect to relay if available
+      if (relayUrl) {
+        const wsUrl = relayUrl.replace(/^http/, 'ws');
+        await tonkInstance.connectWebsocket(wsUrl);
+        currentWsUrl = wsUrl;
+        connectedRelay = relayUrl;
       }
 
-      const manifest = await response.arrayBuffer();
-      const manifestBytes = new Uint8Array(manifest);
-
-      tonkInstance = await TonkCore.fromBytes(manifestBytes);
-
-      await tonkInstance.connectWebsocket(wsUrl);
       isInitialized = true;
+      return { manifest, connectedRelay };
     } catch (error) {
       isInitialized = false;
       tonkInstance = null;
+      currentWsUrl = null;
       console.error('Failed to initialize TonkCore:', error);
       throw error;
     }
+  },
+
+  /**
+   * Connect to a relay WebSocket
+   * @param relayUrl HTTP(S) URL of the relay server
+   */
+  async connectRelay(relayUrl: string): Promise<void> {
+    if (!tonkInstance) {
+      throw new Error('TonkCore not initialized. Load a bundle first.');
+    }
+    const wsUrl = relayUrl.replace(/^http/, 'ws');
+    await tonkInstance.connectWebsocket(wsUrl);
+    currentWsUrl = wsUrl;
+  },
+
+  /**
+   * Get the currently connected relay URL
+   */
+  getConnectedRelay(): string | null {
+    return currentWsUrl ? currentWsUrl.replace(/^ws/, 'http') : null;
   },
 
   /**
