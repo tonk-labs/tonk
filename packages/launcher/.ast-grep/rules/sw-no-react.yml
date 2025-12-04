@@ -1,0 +1,15 @@
+id: sw-no-react
+language: typescript
+severity: error
+
+rule:
+  pattern: import { $$$ } from 'react'
+  inside:
+    kind: program
+    regex: 'sw\.ts$'
+
+message: |
+  Service worker cannot import React.
+  
+  Service workers run in a worker context without DOM.
+  Use vanilla JavaScript/TypeScript only.

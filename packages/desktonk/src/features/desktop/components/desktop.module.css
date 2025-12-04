@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+/* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
+@variant dark (&:where(.dark, .dark *));
+
+.desktopContainer {
+  @apply relative w-full h-full;
+}
+
+.tldrawContainer {
+  @apply w-full h-full;
+}
+
+/* Fix for TLDraw icon visibility - icons use CSS masks and need a background color */
+/* biome-ignore lint/complexity/noImportantStyles: required to override tldraw styles */
+:global(.tlui-icon) {
+  background-color: currentColor !important;
+}
+
+/* Drag and drop visual feedback */
+.desktopContainer.draggingOver {
+  background-color: hsl(0, 0%, 0%, 2%);
+}
+
+.dropOverlay {
+  @apply absolute inset-0 flex items-center justify-center bg-black/20 pointer-events-none z-[10000];
+}
+
+.dropMessage {
+  @apply px-8 py-7 bg-[hsl(0,0%,99%)] rounded-lg shadow-lg text-center text-black text-sm font-medium flex flex-col items-center gap-4;
+}
+
+.dropIcon {
+  @apply text-[2.5rem] opacity-80;
+}

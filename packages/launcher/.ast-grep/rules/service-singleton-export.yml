@@ -1,0 +1,25 @@
+id: service-singleton-export
+language: typescript
+severity: warning
+
+rule:
+  all:
+    - kind: class_declaration
+    - pattern: class $SERVICE { $$$ }
+    - inside:
+        kind: program
+        regex: '/services/'
+    - not:
+        inside:
+          has:
+            pattern: export const $INSTANCE = new $SERVICE()
+
+message: |
+  Services should export a singleton instance.
+  
+  Add at bottom of file:
+    export const {serviceName} = new {ServiceName}();
+  
+  Example:
+    class BundleStorage { ... }
+    export const bundleStorage = new BundleStorage();

@@ -1,0 +1,521 @@
+:root {
+  /******************
+  Basics
+  ******************/
+  overflow-wrap: break-word;
+  text-size-adjust: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /******************
+  IBM Carbon Design System Colors
+  ******************/
+
+  /* Red */
+  --carbon-red-10: #FFF1F1;
+  --carbon-red-20: #FFD7D9;
+  --carbon-red-30: #FFB3B8;
+  --carbon-red-40: #FF8389;
+  --carbon-red-50: #FA4D56;
+  --carbon-red-60: #DA1E28;
+  --carbon-red-70: #A2191F;
+  --carbon-red-80: #750E13;
+  --carbon-red-90: #520408;
+  --carbon-red-100: #2D0709;
+
+  /* Magenta */
+  --carbon-magenta-10: #FFF0F7;
+  --carbon-magenta-20: #FFD6E8;
+  --carbon-magenta-30: #FFAFD2;
+  --carbon-magenta-40: #FF7EB6;
+  --carbon-magenta-50: #EE5396;
+  --carbon-magenta-60: #D12771;
+  --carbon-magenta-70: #9F1853;
+  --carbon-magenta-80: #740937;
+  --carbon-magenta-90: #510224;
+  --carbon-magenta-100: #2A0A18;
+
+  /* Purple */
+  --carbon-purple-10: #F6F2FF;
+  --carbon-purple-20: #E8DAFF;
+  --carbon-purple-30: #D4BBFF;
+  --carbon-purple-40: #BE95FF;
+  --carbon-purple-50: #A56EFF;
+  --carbon-purple-60: #8A3FFC;
+  --carbon-purple-70: #6929C4;
+  --carbon-purple-80: #491D8B;
+  --carbon-purple-90: #31135E;
+  --carbon-purple-100: #1C0F30;
+
+  /* Blue */
+  --carbon-blue-10: #EDF5FF;
+  --carbon-blue-20: #D0E2FF;
+  --carbon-blue-30: #A6C8FF;
+  --carbon-blue-40: #78A9FF;
+  --carbon-blue-50: #4589FF;
+  --carbon-blue-60: #0F62FE;
+  --carbon-blue-70: #0043CE;
+  --carbon-blue-80: #002D9C;
+  --carbon-blue-90: #001D6C;
+  --carbon-blue-100: #001141;
+
+  /* Cyan */
+  --carbon-cyan-10: #E5F6FF;
+  --carbon-cyan-20: #BAE6FF;
+  --carbon-cyan-30: #82CFFF;
+  --carbon-cyan-40: #33B1FF;
+  --carbon-cyan-50: #1192E8;
+  --carbon-cyan-60: #0072C3;
+  --carbon-cyan-70: #00539A;
+  --carbon-cyan-80: #003A6D;
+  --carbon-cyan-90: #012749;
+  --carbon-cyan-100: #061727;
+
+  /* Teal */
+  --carbon-teal-10: #D9FBFB;
+  --carbon-teal-20: #9EF0F0;
+  --carbon-teal-30: #3DDBD9;
+  --carbon-teal-40: #08BDBA;
+  --carbon-teal-50: #009D9A;
+  --carbon-teal-60: #007D79;
+  --carbon-teal-70: #005D5D;
+  --carbon-teal-80: #004144;
+  --carbon-teal-90: #022B30;
+  --carbon-teal-100: #081A1C;
+
+  /* Green */
+  --carbon-green-10: #DEFBE6;
+  --carbon-green-20: #A7F0BA;
+  --carbon-green-30: #6FDC8C;
+  --carbon-green-40: #42BE65;
+  --carbon-green-50: #24A148;
+  --carbon-green-60: #198038;
+  --carbon-green-70: #0E6027;
+  --carbon-green-80: #044317;
+  --carbon-green-90: #022D0D;
+  --carbon-green-100: #071908;
+
+  /* Cool Gray */
+  --carbon-cool-gray-10: #F2F4F8;
+  --carbon-cool-gray-20: #DDE1E6;
+  --carbon-cool-gray-30: #C1C7CD;
+  --carbon-cool-gray-40: #A2A9B0;
+  --carbon-cool-gray-50: #878D96;
+  --carbon-cool-gray-60: #697077;
+  --carbon-cool-gray-70: #4D5358;
+  --carbon-cool-gray-80: #343A3F;
+  --carbon-cool-gray-90: #21272A;
+  --carbon-cool-gray-100: #121619;
+
+  /* Gray */
+  --carbon-gray-10: #F4F4F4;
+  --carbon-gray-20: #E0E0E0;
+  --carbon-gray-30: #C6C6C6;
+  --carbon-gray-40: #A8A8A8;
+  --carbon-gray-50: #8D8D8D;
+  --carbon-gray-60: #6F6F6F;
+  --carbon-gray-70: #525252;
+  --carbon-gray-80: #393939;
+  --carbon-gray-90: #262626;
+  --carbon-gray-100: #161616;
+
+  /* Warm Gray */
+  --carbon-warm-gray-10: #F7F3F2;
+  --carbon-warm-gray-20: #E5E0DF;
+  --carbon-warm-gray-30: #CAC5C4;
+  --carbon-warm-gray-40: #ADA8A8;
+  --carbon-warm-gray-50: #8F8B8B;
+  --carbon-warm-gray-60: #736F6F;
+  --carbon-warm-gray-70: #565151;
+  --carbon-warm-gray-80: #3C3838;
+  --carbon-warm-gray-90: #272525;
+  --carbon-warm-gray-100: #171414;
+
+  /* Night palette (matches launcher) */
+  --night-50: #f6f6f7;
+  --night-100: #e3e3e6;
+  --night-200: #c6c6cc;
+  --night-300: #a3a3ac;
+  --night-400: #80808b;
+  --night-500: #63636f;
+  --night-600: #4d4d57;
+  --night-700: #3d3d45;
+  --night-800: #313137;
+  --night-900: #1A1A1E;
+  --night-950: #121214;
+
+  /* Alert Colors */
+  --carbon-alert-20: #F1C21B;
+  --carbon-alert-40: #FF832B;
+  --carbon-alert-50: #24A148;
+  --carbon-alert-60: #DA1E28;
+
+  /* Base Colors */
+  --carbon-white: #FFFFFF;
+  --carbon-black: #000000;
+
+  /******************
+  Semantic Color Mappings - Light Mode
+  ******************/
+
+  /* Primary/Brand - Blue 50 */
+  --color-primary: var(--carbon-blue-50);
+  --color-primary-hover: var(--carbon-blue-60);
+  --color-primary-light: var(--carbon-blue-20);
+
+  /* Background & Surface */
+  --color-background: var(--carbon-white);
+  --color-surface: var(--carbon-warm-gray-10);
+  --color-surface-hover: var(--carbon-warm-gray-20);
+
+  /* Text */
+  --color-text-primary: var(--carbon-warm-gray-100);
+  --color-text-secondary: var(--carbon-warm-gray-70);
+  --color-text-tertiary: var(--carbon-warm-gray-50);
+  --color-text-on-color: var(--carbon-white);
+
+  /* Borders */
+  --color-border-subtle: var(--carbon-warm-gray-20);
+  --color-border: var(--carbon-warm-gray-30);
+  --color-border-strong: var(--carbon-warm-gray-50);
+
+  /* States - Success */
+  --color-success: var(--carbon-green-50);
+  --color-success-light: var(--carbon-green-10);
+  --color-success-text: var(--carbon-green-70);
+
+  /* States - Warning */
+  --color-warning: var(--carbon-alert-20);
+  --color-warning-light: #FEF9C3;
+  --color-warning-text: #713F12;
+
+  /* States - Error */
+  --color-error: var(--carbon-red-60);
+  --color-error-light: var(--carbon-red-10);
+  --color-error-text: var(--carbon-red-80);
+
+  /* States - Info */
+  --color-info: var(--carbon-blue-60);
+  --color-info-light: var(--carbon-blue-10);
+  --color-info-text: var(--carbon-blue-80);
+
+  /* Interactive */
+  --color-interactive: var(--carbon-blue-50);
+  --color-interactive-hover: var(--carbon-blue-60);
+  --color-focus: var(--carbon-blue-60);
+
+  /* Editor-specific */
+  --color-selection: rgba(69, 137, 255, 0.2);
+  --color-cursor: var(--carbon-blue-50);
+
+  /******************
+  Shadow variables
+  ******************/
+  --shadow-xs: 0px 1px 2px 0px rgba(17, 24, 39, 0.05);
+  --shadow-elevated-md:
+    0px 16px 48px 0px rgba(17, 24, 39, 0.04),
+    0px 12px 24px 0px rgba(17, 24, 39, 0.04),
+    0px 6px 8px 0px rgba(17, 24, 39, 0.02),
+    0px 2px 3px 0px rgba(17, 24, 39, 0.02);
+
+  /**************************************************
+       Radius variables
+    **************************************************/
+  --radius-xxs: 0.125rem; /* 2px */
+  --radius-xs: 0.25rem; /* 4px */
+  --radius-sm: 0.375rem; /* 6px */
+  --radius-md: 0.5rem; /* 8px */
+  --radius-lg: 0.75rem; /* 12px */
+  --radius-xl: 1rem; /* 16px */
+
+  /**************************************************
+       Transition variables
+    **************************************************/
+  --transition-duration-short: 0.1s;
+  --transition-duration-default: 0.2s;
+  --transition-duration-long: 0.64s;
+  --transition-easing-default: cubic-bezier(0.46, 0.03, 0.52, 0.96);
+  --transition-easing-cubic: cubic-bezier(0.65, 0.05, 0.36, 1);
+  --transition-easing-quart: cubic-bezier(0.77, 0, 0.18, 1);
+  --transition-easing-circ: cubic-bezier(0.79, 0.14, 0.15, 0.86);
+  --transition-easing-back: cubic-bezier(0.68, -0.55, 0.27, 1.55);
+}
+
+:root,
+:root *,
+:root ::before,
+:root ::after {
+  box-sizing: border-box;
+  transition: none var(--transition-duration-default) var(--transition-easing-default);
+}
+
+/******************
+Dark Mode Overrides
+******************/
+.dark {
+  /* Primary/Brand - Blue 40 (lighter for dark mode) */
+  --color-primary: var(--carbon-blue-40);
+  --color-primary-hover: var(--carbon-blue-30);
+  --color-primary-light: var(--carbon-blue-90);
+
+  /* Background & Surface - using night palette to match launcher */
+  --color-background: var(--night-900);
+  --color-surface: var(--night-800);
+  --color-surface-hover: var(--night-700);
+
+  /* Text - using night palette */
+  --color-text-primary: var(--night-50);
+  --color-text-secondary: var(--night-200);
+  --color-text-tertiary: var(--night-400);
+  --color-text-on-color: var(--night-950);
+
+  /* Borders - using night palette */
+  --color-border-subtle: var(--night-700);
+  --color-border: var(--night-600);
+  --color-border-strong: var(--night-400);
+
+  /* States - Success */
+  --color-success: var(--carbon-green-40);
+  --color-success-light: var(--carbon-green-90);
+  --color-success-text: var(--carbon-green-30);
+
+  /* States - Warning */
+  --color-warning: var(--carbon-alert-20);
+  --color-warning-light: #422006;
+  --color-warning-text: #FEF3C7;
+
+  /* States - Error */
+  --color-error: var(--carbon-red-50);
+  --color-error-light: var(--carbon-red-90);
+  --color-error-text: var(--carbon-red-30);
+
+  /* States - Info */
+  --color-info: var(--carbon-blue-40);
+  --color-info-light: var(--carbon-blue-90);
+  --color-info-text: var(--carbon-blue-20);
+
+  /* Interactive */
+  --color-interactive: var(--carbon-blue-40);
+  --color-interactive-hover: var(--carbon-blue-30);
+  --color-focus: var(--carbon-blue-40);
+
+  /* Editor-specific */
+  --color-selection: rgba(69, 137, 255, 0.3);
+  --color-cursor: var(--carbon-blue-40);
+
+  /* Shadows */
+  --shadow-xs: 0px 1px 2px 0px rgba(0, 0, 0, 0.2);
+  --shadow-elevated-md:
+    0px 16px 48px 0px rgba(0, 0, 0, 0.5),
+    0px 12px 24px 0px rgba(0, 0, 0, 0.24),
+    0px 6px 8px 0px rgba(0, 0, 0, 0.22),
+    0px 2px 3px 0px rgba(0, 0, 0, 0.12);
+}
+
+/******************
+Backward Compatibility Aliases (Legacy --tt- variables)
+******************/
+:root {
+  /* Legacy gray light mode - map to Warm Gray */
+  --tt-gray-light-50: var(--carbon-warm-gray-10);
+  --tt-gray-light-100: var(--carbon-warm-gray-10);
+  --tt-gray-light-200: var(--carbon-warm-gray-20);
+  --tt-gray-light-300: var(--carbon-warm-gray-30);
+  --tt-gray-light-400: var(--carbon-warm-gray-40);
+  --tt-gray-light-500: var(--carbon-warm-gray-50);
+  --tt-gray-light-600: var(--carbon-warm-gray-60);
+  --tt-gray-light-700: var(--carbon-warm-gray-70);
+  --tt-gray-light-800: var(--carbon-warm-gray-80);
+  --tt-gray-light-900: var(--carbon-warm-gray-90);
+
+  /* Legacy gray alpha light mode */
+  --tt-gray-light-a-50: rgba(115, 111, 111, 0.04);
+  --tt-gray-light-a-100: rgba(115, 111, 111, 0.05);
+  --tt-gray-light-a-200: rgba(115, 111, 111, 0.1);
+  --tt-gray-light-a-300: rgba(115, 111, 111, 0.2);
+  --tt-gray-light-a-400: rgba(115, 111, 111, 0.42);
+  --tt-gray-light-a-500: rgba(115, 111, 111, 0.64);
+  --tt-gray-light-a-600: rgba(115, 111, 111, 0.78);
+  --tt-gray-light-a-700: rgba(115, 111, 111, 0.87);
+  --tt-gray-light-a-800: rgba(115, 111, 111, 0.95);
+  --tt-gray-light-a-900: rgba(115, 111, 111, 0.98);
+
+  /* Legacy brand colors - map to Blue */
+  --tt-brand-color-50: var(--carbon-blue-10);
+  --tt-brand-color-100: var(--carbon-blue-20);
+  --tt-brand-color-200: var(--carbon-blue-30);
+  --tt-brand-color-300: var(--carbon-blue-40);
+  --tt-brand-color-400: var(--carbon-blue-40);
+  --tt-brand-color-500: var(--carbon-blue-50);
+  --tt-brand-color-600: var(--carbon-blue-60);
+  --tt-brand-color-700: var(--carbon-blue-70);
+  --tt-brand-color-800: var(--carbon-blue-80);
+  --tt-brand-color-900: var(--carbon-blue-90);
+  --tt-brand-color-950: var(--carbon-blue-100);
+
+  /* Legacy semantic colors - Green */
+  --tt-color-green-inc-5: var(--carbon-green-10);
+  --tt-color-green-inc-4: var(--carbon-green-10);
+  --tt-color-green-inc-3: var(--carbon-green-20);
+  --tt-color-green-inc-2: var(--carbon-green-30);
+  --tt-color-green-inc-1: var(--carbon-green-40);
+  --tt-color-green-base: var(--carbon-green-50);
+  --tt-color-green-dec-1: var(--carbon-green-60);
+  --tt-color-green-dec-2: var(--carbon-green-70);
+  --tt-color-green-dec-3: var(--carbon-green-80);
+  --tt-color-green-dec-4: var(--carbon-green-90);
+  --tt-color-green-dec-5: var(--carbon-green-100);
+
+  /* Legacy semantic colors - Yellow */
+  --tt-color-yellow-inc-5: #FEF9C3;
+  --tt-color-yellow-inc-4: #FEF3C7;
+  --tt-color-yellow-inc-3: #FDE68A;
+  --tt-color-yellow-inc-2: #FCD34D;
+  --tt-color-yellow-inc-1: #FBBF24;
+  --tt-color-yellow-base: var(--carbon-alert-20);
+  --tt-color-yellow-dec-1: #D97706;
+  --tt-color-yellow-dec-2: #B45309;
+  --tt-color-yellow-dec-3: #92400E;
+  --tt-color-yellow-dec-4: #78350F;
+  --tt-color-yellow-dec-5: #422006;
+
+  /* Legacy semantic colors - Red */
+  --tt-color-red-inc-5: var(--carbon-red-10);
+  --tt-color-red-inc-4: var(--carbon-red-20);
+  --tt-color-red-inc-3: var(--carbon-red-30);
+  --tt-color-red-inc-2: var(--carbon-red-40);
+  --tt-color-red-inc-1: var(--carbon-red-50);
+  --tt-color-red-base: var(--carbon-red-60);
+  --tt-color-red-dec-1: var(--carbon-red-70);
+  --tt-color-red-dec-2: var(--carbon-red-80);
+  --tt-color-red-dec-3: var(--carbon-red-80);
+  --tt-color-red-dec-4: var(--carbon-red-90);
+  --tt-color-red-dec-5: var(--carbon-red-100);
+
+  /* Legacy basic colors */
+  --white: var(--carbon-white);
+  --black: var(--carbon-warm-gray-100);
+  --transparent: transparent;
+
+  /* Legacy global colors */
+  --tt-bg-color: var(--color-background);
+  --tt-border-color: var(--color-border);
+  --tt-border-color-tint: var(--color-border-subtle);
+  --tt-sidebar-bg-color: var(--color-surface);
+  --tt-scrollbar-color: var(--color-border);
+  --tt-cursor-color: var(--color-cursor);
+  --tt-selection-color: var(--color-selection);
+  --tt-card-bg-color: var(--color-background);
+  --tt-card-border-color: var(--color-border-subtle);
+
+  /* Legacy shadows */
+  --tt-shadow-elevated-md: var(--shadow-elevated-md);
+
+  /* Legacy radius */
+  --tt-radius-xxs: var(--radius-xxs);
+  --tt-radius-xs: var(--radius-xs);
+  --tt-radius-sm: var(--radius-sm);
+  --tt-radius-md: var(--radius-md);
+  --tt-radius-lg: var(--radius-lg);
+  --tt-radius-xl: var(--radius-xl);
+
+  /* Legacy transition */
+  --tt-transition-duration-short: var(--transition-duration-short);
+  --tt-transition-duration-default: var(--transition-duration-default);
+  --tt-transition-duration-long: var(--transition-duration-long);
+  --tt-transition-easing-default: var(--transition-easing-default);
+  --tt-transition-easing-cubic: var(--transition-easing-cubic);
+  --tt-transition-easing-quart: var(--transition-easing-quart);
+  --tt-transition-easing-circ: var(--transition-easing-circ);
+  --tt-transition-easing-back: var(--transition-easing-back);
+
+  /* Legacy text colors */
+  --tt-color-text-gray: var(--carbon-warm-gray-60);
+  --tt-color-text-brown: #8B6F47;
+  --tt-color-text-orange: #D97706;
+  --tt-color-text-yellow: #CA8A04;
+  --tt-color-text-green: var(--carbon-green-60);
+  --tt-color-text-blue: var(--carbon-blue-60);
+  --tt-color-text-purple: var(--carbon-purple-60);
+  --tt-color-text-pink: var(--carbon-magenta-60);
+  --tt-color-text-red: var(--carbon-red-60);
+
+  /* Legacy highlight colors */
+  --tt-color-highlight-yellow: #FEF9C3;
+  --tt-color-highlight-green: var(--carbon-green-10);
+  --tt-color-highlight-blue: var(--carbon-blue-10);
+  --tt-color-highlight-purple: var(--carbon-purple-10);
+  --tt-color-highlight-red: var(--carbon-red-10);
+  --tt-color-highlight-gray: var(--carbon-warm-gray-10);
+  --tt-color-highlight-brown: #F5F5F4;
+  --tt-color-highlight-orange: #FFEDD5;
+  --tt-color-highlight-pink: var(--carbon-magenta-10);
+
+  /* Legacy contrast */
+  --tt-accent-contrast: 8%;
+  --tt-destructive-contrast: 8%;
+  --tt-foreground-contrast: 8%;
+}
+
+.dark {
+  /* Legacy gray dark mode - using night palette */
+  --tt-gray-dark-50: var(--night-900);
+  --tt-gray-dark-100: var(--night-900);
+  --tt-gray-dark-200: var(--night-800);
+  --tt-gray-dark-300: var(--night-700);
+  --tt-gray-dark-400: var(--night-600);
+  --tt-gray-dark-500: var(--night-500);
+  --tt-gray-dark-600: var(--night-400);
+  --tt-gray-dark-700: var(--night-300);
+  --tt-gray-dark-800: var(--night-200);
+  --tt-gray-dark-900: var(--night-100);
+
+  /* Legacy gray alpha dark mode - using night-50 base */
+  --tt-gray-dark-a-50: rgba(246, 246, 247, 0.05);
+  --tt-gray-dark-a-100: rgba(246, 246, 247, 0.07);
+  --tt-gray-dark-a-200: rgba(246, 246, 247, 0.11);
+  --tt-gray-dark-a-300: rgba(246, 246, 247, 0.22);
+  --tt-gray-dark-a-400: rgba(246, 246, 247, 0.37);
+  --tt-gray-dark-a-500: rgba(246, 246, 247, 0.5);
+  --tt-gray-dark-a-600: rgba(246, 246, 247, 0.64);
+  --tt-gray-dark-a-700: rgba(246, 246, 247, 0.75);
+  --tt-gray-dark-a-800: rgba(246, 246, 247, 0.88);
+  --tt-gray-dark-a-900: rgba(246, 246, 247, 0.96);
+
+  /* Legacy global colors - dark mode */
+  --tt-bg-color: var(--color-background);
+  --tt-border-color: var(--color-border);
+  --tt-border-color-tint: var(--color-border-subtle);
+  --tt-sidebar-bg-color: var(--color-surface);
+  --tt-scrollbar-color: var(--color-border);
+  --tt-cursor-color: var(--color-cursor);
+  --tt-selection-color: var(--color-selection);
+  --tt-card-bg-color: var(--color-surface);
+  --tt-card-border-color: var(--color-border-subtle);
+
+  /* Legacy text colors - dark mode */
+  --tt-color-text-gray: var(--night-400);
+  --tt-color-text-brown: #A78B6F;
+  --tt-color-text-orange: #FB923C;
+  --tt-color-text-yellow: #FCD34D;
+  --tt-color-text-green: var(--carbon-green-40);
+  --tt-color-text-blue: var(--carbon-blue-40);
+  --tt-color-text-purple: var(--carbon-purple-40);
+  --tt-color-text-pink: var(--carbon-magenta-40);
+  --tt-color-text-red: var(--carbon-red-40);
+
+  /* Legacy highlight colors - dark mode */
+  --tt-color-highlight-yellow: #422006;
+  --tt-color-highlight-green: var(--carbon-green-90);
+  --tt-color-highlight-blue: var(--carbon-blue-90);
+  --tt-color-highlight-purple: var(--carbon-purple-90);
+  --tt-color-highlight-red: var(--carbon-red-90);
+  --tt-color-highlight-gray: var(--night-800);
+  --tt-color-highlight-brown: #3C2A21;
+  --tt-color-highlight-orange: #52350F;
+  --tt-color-highlight-pink: var(--carbon-magenta-90);
+
+  /* Legacy basic colors - dark mode */
+  --black: var(--night-950);
+}

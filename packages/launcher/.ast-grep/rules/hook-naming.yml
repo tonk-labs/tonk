@@ -1,0 +1,24 @@
+id: hook-naming
+language: typescript
+severity: error
+
+rule:
+  all:
+    - kind: function_declaration
+    - pattern: export function $NAME($$$PARAMS) { $$$ }
+    - has:
+        pattern: useState
+    - not:
+        pattern: export function use$$$REST
+    - inside:
+        kind: program
+        not:
+          regex: '/components/'
+
+message: |
+  React hooks must start with 'use' prefix.
+  
+  Found: $NAME
+  Expected: use{Name}
+  
+  File should also be in hooks/ directory.

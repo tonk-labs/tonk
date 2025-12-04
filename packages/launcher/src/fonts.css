@@ -1,0 +1,55 @@
+@font-face {
+  font-family: "Gestalte";
+  src: url("/fonts/gestalte-extralight.otf") format("opentype");
+  font-weight: 200;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Gestalte";
+  src: url("/fonts/gestalte-light.otf") format("opentype");
+  font-weight: 300;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Gestalte";
+  src: url("/fonts/gestalte-regular.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Gestalte";
+  src: url("/fonts/gestalte-book.otf") format("opentype");
+  font-weight: 450;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Gestalte";
+  src: url("/fonts/gestalte-medium.otf") format("opentype");
+  font-weight: 500;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Gestalte";
+  src: url("/fonts/gestalte-bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Gestalte";
+  src: url("/fonts/gestalte-heavy.otf") format("opentype");
+  font-weight: 800;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Gestalte";
+  src: url("/fonts/gestalte-black.otf") format("opentype");
+  font-weight: 900;
+  font-style: normal;
+}

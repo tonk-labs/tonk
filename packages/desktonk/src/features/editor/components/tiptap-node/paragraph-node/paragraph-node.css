@@ -1,0 +1,19 @@
+/**
+ * Paragraph Node Styles
+ *
+ * Styles specific to paragraph elements only.
+ *
+ * NOTE: This file was previously 214 lines and contained global editor styles.
+ * Those have been moved to /src/styles/prosemirror-base.css
+ * This file now only contains paragraph-specific spacing and layout.
+ */
+
+/* =====================
+   PARAGRAPH SPACING
+   ===================== */
+.tiptap.ProseMirror p:not(:first-child) {
+  font-size: 1rem;
+  line-height: 1.6;
+  font-weight: normal;
+  margin-top: 20px;
+}

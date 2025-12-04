@@ -1,0 +1,69 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.7/schema.json",
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error"
+      },
+      "style": {
+        "useConst": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noDebugger": "error",
+        "noVar": "error"
+      },
+      "a11y": {
+        "noSvgWithoutTitle": "off",
+        "useSemanticElements": "off"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "trailingCommas": "es5",
+      "semicolons": "always",
+      "arrowParentheses": "always"
+    }
+  },
+  // "css": {
+  //   "parser": {
+  //     "cssModules": true,
+  //     "tailwindDirectives": true
+  //   },
+  //   "formatter": {
+  //     "enabled": true,
+  //     "indentStyle": "space",
+  //     "indentWidth": 2
+  //   }
+  // },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": [
+      "**",
+      "!!**/*.css",
+      "!!**/sw-host.ts",
+      "!!**/dist",
+      "!!**/dist-sw",
+      "!**/public/app",
+      "!**/node_modules",
+      "!**/.git",
+      "!**/*.config.ts",
+      "!**/*.config.js",
+      "!!**/dist-runtime"
+    ]
+  }
+}

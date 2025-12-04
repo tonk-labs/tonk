@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <script>
+      document.documentElement.classList.toggle(
+        "dark",
+        localStorage.theme === "dark" ||
+          (!("theme" in localStorage) &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches)
+      );
+    </script>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/bear.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Desktonk</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: white;
+      }
+
+      #initial-loader {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: white;
+        opacity: 0;
+        transition: opacity 0.3s ease-in;
+      }
+
+      #initial-loader.visible {
+        opacity: 1;
+      }
+
+      #initial-loader .loader-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      }
+
+      #initial-loader .rainbow-mask {
+        height: 6rem;
+        width: 6rem;
+        -webkit-mask: url('/tonk.svg') no-repeat center;
+        -webkit-mask-size: contain;
+        mask: url('/tonk.svg') no-repeat center;
+        mask-size: contain;
+        background: linear-gradient(
+          90deg,
+          #e6c767 0%,
+          #8dbec8 25%,
+          #a8d8b9 50%,
+          #f4a7a7 75%,
+          #e6c767 100%
+        );
+        background-size: 300% 100%;
+        animation: scroll-rainbow 3s linear infinite;
+      }
+
+      @keyframes scroll-rainbow {
+        0% {
+          background-position: 0% 50%;
+        }
+        100% {
+          background-position: 100% 50%;
+        }
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="initial-loader">
+      <div class="loader-content">
+        <div class="rainbow-mask"></div>
+      </div>
+    </div>
+    <div id="root"></div>
+    <script>
+      // Only show loader after 200ms delay to avoid flash on fast loads
+      setTimeout(() => {
+        const loader = document.getElementById('initial-loader');
+        if (loader && !document.getElementById('root').hasChildNodes()) {
+          loader.classList.add('visible');
+        }
+      }, 200);
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
