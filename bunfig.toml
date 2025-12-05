@@ -1,0 +1,16 @@
+[install.security]
+scanner = "@socketsecurity/bun-security-scanner"
+
+[install]
+# Disable workspace linking for semver dependencies - packages use published npm versions
+linkWorkspacePackages = false
+# At least 3 days old
+minimumReleaseAge = 259200
+# Exclude first-party Tonk packages from release age check
+minimumReleaseAgeExcludes = [
+  "@tonk/core",
+  "@tonk/relay",
+  "@tonk/relay-darwin-arm64",
+]
+# Use hoisted linker for consistent dependency resolution
+linker = "hoisted"

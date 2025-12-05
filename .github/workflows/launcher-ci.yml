@@ -1,0 +1,252 @@
+name: Launcher / Desktonk CI
+
+on:
+  push:
+    branches: 
+      - '*'
+    paths:
+      - 'packages/launcher/**'
+      - 'packages/desktonk/**'
+  pull_request:
+    branches:
+      - '*'
+    paths:
+      - 'packages/launcher/**'
+      - 'packages/desktonk/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================
+  # CHANGE DETECTION
+  # ============================================
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      launcher: ${{ steps.filter.outputs.launcher }}
+      desktonk: ${{ steps.filter.outputs.desktonk }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            launcher:
+              - 'packages/launcher/**'
+            desktonk:
+              - 'packages/desktonk/**'
+
+  # ============================================
+  # LAUNCHER - Test
+  # ============================================
+  launcher-test:
+    name: Launcher Tests
+    needs: changes
+    if: needs.changes.outputs.launcher == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-launcher-${{ hashFiles('packages/launcher/bun.lockb', 'bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-launcher-
+
+      - name: Install dependencies
+        run: bun install
+        working-directory: packages/launcher
+
+      - name: Run tests
+        run: bun run test -- --reporter=github-actions --reporter=default
+        working-directory: packages/launcher
+
+  # ============================================
+  # LAUNCHER - Lint
+  # ============================================
+  launcher-lint:
+    name: Launcher Lint
+    needs: changes
+    if: needs.changes.outputs.launcher == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Biome
+        uses: biomejs/setup-biome@v2
+        with:
+          version: latest
+
+      - name: Run Biome CI
+        run: biome ci .
+        working-directory: packages/launcher
+
+      - name: Setup Bun (for ast-grep)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Run ast-grep architectural lint
+        run: bunx @ast-grep/cli scan
+        working-directory: packages/launcher
+
+  # ============================================
+  # LAUNCHER - Build
+  # ============================================
+  launcher-build:
+    name: Launcher Build
+    needs: changes
+    if: needs.changes.outputs.launcher == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-launcher-${{ hashFiles('packages/launcher/bun.lockb', 'bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-launcher-
+
+      - name: Install dependencies
+        run: bun install
+        working-directory: packages/launcher
+
+      - name: Build
+        run: bun run build
+        working-directory: packages/launcher
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-dist
+          path: packages/launcher/dist/
+          retention-days: 7
+
+  # ============================================
+  # DESKTONK - Lint
+  # ============================================
+  desktonk-lint:
+    name: Desktonk Lint
+    needs: changes
+    if: needs.changes.outputs.desktonk == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Biome
+        uses: biomejs/setup-biome@v2
+        with:
+          version: latest
+
+      - name: Run Biome CI
+        run: biome ci .
+        working-directory: packages/desktonk
+
+      - name: Setup Bun (for oxlint)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies (for oxlint)
+        run: bun install
+        working-directory: packages/desktonk
+
+      - name: Run Oxlint
+        run: bun run lint:oxlint
+        working-directory: packages/desktonk
+
+  # ============================================
+  # DESKTONK - Build
+  # ============================================
+  desktonk-build:
+    name: Desktonk Build
+    needs: changes
+    if: needs.changes.outputs.desktonk == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-desktonk-${{ hashFiles('packages/desktonk/bun.lockb', 'bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-desktonk-
+
+      - name: Install dependencies
+        run: bun install
+        working-directory: packages/desktonk
+
+      - name: Build
+        run: bun run build
+        working-directory: packages/desktonk
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktonk-dist
+          path: packages/desktonk/dist/
+          retention-days: 7
+
+  # ============================================
+  # CI STATUS (Required check for branch protection)
+  # ============================================
+  ci-pass:
+    name: CI Pass
+    needs: [changes, launcher-test, launcher-lint, launcher-build, desktonk-lint, desktonk-build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI Status
+        run: |
+          echo "## CI Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Launcher Test | ${{ needs.launcher-test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Launcher Lint | ${{ needs.launcher-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Launcher Build | ${{ needs.launcher-build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Desktonk Lint | ${{ needs.desktonk-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Desktonk Build | ${{ needs.desktonk-build.result }} |" >> $GITHUB_STEP_SUMMARY
+
+          # Fail if any job failed (skipped is OK)
+          if [[ "${{ needs.launcher-test.result }}" == "failure" ]] || \
+             [[ "${{ needs.launcher-lint.result }}" == "failure" ]] || \
+             [[ "${{ needs.launcher-build.result }}" == "failure" ]] || \
+             [[ "${{ needs.desktonk-lint.result }}" == "failure" ]] || \
+             [[ "${{ needs.desktonk-build.result }}" == "failure" ]]; then
+            echo ""
+            echo "::error::One or more CI jobs failed"
+            exit 1
+          fi
+
+          echo ""
+          echo "All CI checks passed!" >> $GITHUB_STEP_SUMMARY

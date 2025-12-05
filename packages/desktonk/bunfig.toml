@@ -1,0 +1,16 @@
+[install.security]
+scanner = "@socketsecurity/bun-security-scanner"
+
+[install]
+# Avoid linking `@tonk/core` locally
+linkWorkspacePackages = false
+# At least 3 days old
+minimumReleaseAge = 259200
+# Exclude first-party Tonk packages from release age check
+minimumReleaseAgeExcludes = [
+  "@tonk/core",
+  "@tonk/relay",
+  "@tonk/relay-darwin-arm64",
+]
+# Use hoisted linker for consistent dependency resolution
+linker = "hoisted"
