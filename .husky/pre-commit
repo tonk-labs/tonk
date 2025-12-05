@@ -2,9 +2,9 @@
 
 echo "🚀 Running pre-commit hooks..."
 
-pnpm i
+bun install
 # Run lint-staged for auto-fixing and formatting
-npx lint-staged
+bunx lint-staged
 LINT_EXIT_CODE=$?
 
 # Check if lint-staged was successful

@@ -16,15 +16,15 @@ git checkout main
 git pull origin main
 
 echo "📦 Installing dependencies..."
-pnpm install
+bun install
 
 echo "🔨 Rebuilding core-js (includes WASM)..."
 cd packages/core-js
-pnpm build --frozen-lockfile
+bun run build
 
 echo "🔨 Rebuilding host-web..."
 cd ../host-web
-pnpm build
+bun run build
 
 echo "🔄 Restarting host-web service..."
 sudo systemctl restart host-web.service

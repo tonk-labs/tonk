@@ -8,15 +8,15 @@
     "server"
   ],
   "scripts": {
-    "dev": "concurrently \"pnpm dev:client\" \"pnpm dev:server\"",
+    "dev": "concurrently \"bun dev:client\" \"bun dev:server\"",
     "dev:client": "vite",
-    "dev:server": "pnpm --filter server dev",
+    "dev:server": "bun --filter server dev",
     "clean": "rm -rf bundle",
-    "build": "npm run clean && tsc && tsx scripts/build.ts",
+    "build": "bun run clean && tsc && bun scripts/build.ts",
     "serve": "vite preview",
     "deployment": "tonk deploy",
-    "test": "jest",
-    "test:watch": "jest --watch"
+    "test": "bun test",
+    "test:watch": "bun test --watch"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
@@ -45,7 +45,7 @@
     "@automerge/automerge-repo": "^2.2.0",
     "@automerge/automerge-repo-network-websocket": "^2.2.0",
     "@automerge/automerge-repo-storage-indexeddb": "^2.2.0",
-    "@tonk/core": "file:../../packages/core-js",
+    "@tonk/core": "workspace:*",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

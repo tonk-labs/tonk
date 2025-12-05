@@ -28,15 +28,15 @@
     "LICENSE"
   ],
   "scripts": {
-    "embed-wasm": "tsx ./scripts/embed-wasm.ts",
-    "build": "npm run build:docker",
-    "build:wasm": "cd ../core && npm run build:browser && cp -r pkg-browser/* ../core-js/dist/ && cd ../core-js/ && npm run embed-wasm",
+    "embed-wasm": "bun ./scripts/embed-wasm.ts",
+    "build": "bun run build:docker",
+    "build:wasm": "cd ../core && bun run build:browser && cp -r pkg-browser/* ../core-js/dist/ && cd ../core-js/ && bun run embed-wasm",
     "build:docker": "./build-docker.sh",
     "build:wrapper": "tsc",
     "clean": "rm -rf dist",
-    "prebuild": "npm run clean && mkdir -p dist",
-    "prepublishOnly": "npm run build",
-    "test": "npm run build && node --experimental-strip-types --test test/*.test.ts"
+    "prebuild": "bun run clean && mkdir -p dist",
+    "prepublishOnly": "bun run build",
+    "test": "bun run build && bun test"
   },
   "repository": {
     "type": "git",

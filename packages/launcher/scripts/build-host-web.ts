@@ -35,11 +35,11 @@ try {
 
   // 1. Build SW
   console.log('Running vite build -c vite.sw.config.ts...');
-  execSync('npx vite build -c vite.sw.config.ts', { cwd: LAUNCHER_DIR, stdio: 'inherit', env });
+  execSync('bunx vite build -c vite.sw.config.ts', { cwd: LAUNCHER_DIR, stdio: 'inherit', env });
 
   // 2. Build Runtime App
   console.log('Running vite build -c vite.runtime.config.ts...');
-  execSync('npx vite build -c vite.runtime.config.ts', {
+  execSync('bunx vite build -c vite.runtime.config.ts', {
     cwd: LAUNCHER_DIR,
     stdio: 'inherit',
     env,

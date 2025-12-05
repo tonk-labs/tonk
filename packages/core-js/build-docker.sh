@@ -25,8 +25,8 @@ cd ../core-js
 
 echo ""
 echo "🔨 Building TypeScript wrapper..."
-npm run embed-wasm
-npm run build:wrapper
+bun run embed-wasm
+bun run build:wrapper
 
 echo ""
 echo "✅ Build complete!"

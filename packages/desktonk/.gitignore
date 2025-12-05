@@ -5,6 +5,7 @@ node_modules/
 .yarn/install-state.gz
 
 # Build outputs
+automerge-repo-data/
 dist/
 dist-ssr/
 build/

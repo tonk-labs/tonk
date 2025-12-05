@@ -39,12 +39,14 @@ else
   echo "✓ Node.js already installed ($(node --version))"
 fi
 
-echo "📦 Installing pnpm..."
-if ! command -v pnpm &>/dev/null; then
-  npm install -g pnpm
-  echo "✓ pnpm installed"
+echo "📦 Installing Bun..."
+if ! command -v bun &>/dev/null; then
+  curl -fsSL https://bun.sh/install | bash
+  export BUN_INSTALL="$HOME/.bun"
+  export PATH="$BUN_INSTALL/bin:$PATH"
+  echo "✓ Bun installed"
 else
-  echo "✓ pnpm already installed"
+  echo "✓ Bun already installed"
 fi
 
 echo "✅ Worker setup complete!"

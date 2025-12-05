@@ -40,13 +40,13 @@ else
   echo "✓ Node.js already installed"
 fi
 
-echo "📦 Installing pnpm..."
-if ! command -v pnpm &>/dev/null; then
-  curl -fsSL https://get.pnpm.io/install.sh | sh -
-  export PNPM_HOME="/home/ec2-user/.local/share/pnpm"
-  export PATH="$PNPM_HOME:$PATH"
+echo "📦 Installing Bun..."
+if ! command -v bun &>/dev/null; then
+  curl -fsSL https://bun.sh/install | bash
+  export BUN_INSTALL="$HOME/.bun"
+  export PATH="$BUN_INSTALL/bin:$PATH"
 else
-  echo "✓ pnpm already installed"
+  echo "✓ Bun already installed"
 fi
 
 echo "📥 Cloning repository..."
@@ -59,14 +59,13 @@ fi
 cd /home/ec2-user/tonk
 
 echo "📦 Installing dependencies..."
-pnpm install
+bun install
 cd packages/relay
 cargo build --release
 
 echo "🔨 Building core-js (includes WASM)..."
 cd ../core-js
-pnpm install
-pnpm build
+bun run build
 
 echo "⚙️  Setting up systemd service..."
 sudo cp /home/ec2-user/tonk/packages/relay/relay.service /etc/systemd/system/

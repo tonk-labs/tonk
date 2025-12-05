@@ -1,8 +1,0 @@
-[
-  {
-    "path": "/ping",
-    "methods": [
-      "GET"
-    ]
-  }
-]

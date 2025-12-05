@@ -35,7 +35,7 @@
 
           # Node.js and package managers
           nodejs_22
-          pnpm_9
+          bun
 
           # TypeScript and build tools
           typescript
@@ -59,7 +59,7 @@
           echo "═══════════════════════════════════════════════════"
           echo ""
           echo "Node.js:     $(node --version)"
-          echo "pnpm:        $(pnpm --version)"
+          echo "bun:         $(bun --version)"
           echo "TypeScript:  $(tsc --version)"
           echo "Rust:        $(rustc --version)"
           echo ""
@@ -73,7 +73,7 @@
           # Install dependencies
           if [ ! -d "node_modules" ]; then
             echo "📦 Installing dependencies..."
-            pnpm install --frozen-lockfile
+            bun install --frozen-lockfile
           else
             echo "✓ Dependencies already installed"
           fi
@@ -82,16 +82,16 @@
           if [ ! -d "packages/core/pkg-browser" ]; then
             echo ""
             echo "🦀 Building Rust WASM package (packages/core)..."
-            cd packages/core && pnpm run build:browser && cd ../..
+            cd packages/core && bun run build:browser && cd ../..
           else
             echo "✓ WASM package already built"
           fi
 
           # Build TypeScript wrapper
-          if [ ! -d "packages/core-js/dist" ]; then
+          if [ ! -f "packages/core-js/dist/index.js" ]; then
             echo ""
             echo "📘 Building TypeScript wrapper (packages/core-js)..."
-            cd packages/core-js && pnpm run build && cd ../..
+            cd packages/core-js && bun run build && cd ../..
           else
             echo "✓ TypeScript wrapper already built"
           fi
@@ -109,11 +109,11 @@
           if [ -f "packages/core/pkg-browser/tonk_core_bg.wasm" ] && \
              [ -f "packages/core-js/dist/index.js" ] && \
              [ -f "packages/host-web/dist/index.html" ]; then
-            echo "✓ All packages already built (skipping pnpm build)"
+            echo "✓ All packages already built (skipping bun build)"
           else
             echo ""
             echo "🔨 Building remaining packages..."
-            pnpm build
+            bun run build
           fi
 
           echo ""
@@ -128,13 +128,15 @@
           echo "  packages/core-js     - JavaScript bindings"
           echo "  packages/host-web    - Web host environment"
           echo "  packages/relay       - Basic relay server"
+          echo "  packages/launcher    - Tonk Launcher"
+          echo "  packages/desktonk    - Bundle development environment"
           echo "  examples/            - Example applications"
           echo ""
           echo "Quick Start:"
-          echo "  • pnpm install       - Install dependencies"
-          echo "  • pnpm build         - Build all packages"
-          echo "  • pnpm test          - Run tests"
-          echo "  • cd examples/demo && pnpm run dev  - Start demo"
+          echo "  • bun install        - Install dependencies"
+          echo "  • bun run build      - Build all packages"
+          echo "  • bun run test       - Run tests"
+          echo "  • cd examples/file-browser && bun run dev  - Start demo"
           echo ""
         '';
       in

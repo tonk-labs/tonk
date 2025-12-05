@@ -36,7 +36,7 @@ execSync("tsx server/src/index.ts --routes", {
 
 console.log("Building server...");
 // Build server
-execSync("pnpm build", { cwd: serverDir, stdio: "inherit" });
+execSync("bun run build", { cwd: serverDir, stdio: "inherit" });
 
 console.log("Creating bundle structure...");
 
