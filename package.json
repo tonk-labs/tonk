@@ -15,7 +15,7 @@
   },
   "scripts": {
     "prepare": "husky",
-    "build": "cd packages/core && bun run build && cd ../core-js && bun run build && cd ../relay-js && bun run build && cd ../host-web && bun run build && cd ../launcher && bun run build && cd ../desktonk && bun run build",
+    "build": "cd packages/core && bun run build && cd ../core-js && bun run build && cd ../relay-js && bun run build && cd ../launcher && bun run build && cd ../desktonk && bun run build",
     "test": "cd tests && bun test",
     "docs:distribute": "bun utils/distribute-from-docs.js",
     "docs:dev": "mdbook serve docs --open --port 4069",

@@ -7,7 +7,7 @@ export default defineConfig({
     outDir: 'src/test-ui/public',
     emptyOutDir: false,
     rollupOptions: {
-      input: resolve(__dirname, '../packages/host-web/src/service-worker.ts'),
+      input: resolve(__dirname, '../packages/launcher/src/launcher/sw/index.ts'),
       output: {
         entryFileNames: 'service-worker.js',
         format: 'es',
