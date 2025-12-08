@@ -10,7 +10,10 @@ export interface DesktopFile {
     y?: number;
     icon?: string;
     appHandler?: string;
+    /** @deprecated Use thumbnailPath instead. Kept for backwards compatibility. */
     thumbnail?: string;
+    /** VFS path to the thumbnail image file */
+    thumbnailPath?: string;
   };
 }
 
@@ -23,7 +26,8 @@ export interface FileIconShapeProps {
   fileName: string;
   mimeType: string;
   customIcon?: string;
-  thumbnail?: string;
+  /** VFS path to the thumbnail image file */
+  thumbnailPath?: string;
   appHandler?: string;
   w: number;
   h: number;

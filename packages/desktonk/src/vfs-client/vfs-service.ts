@@ -334,7 +334,7 @@ export class VFSService {
   async patchFile(
     path: string,
     jsonPath: string[],
-    value: JsonValue
+    value: JsonValue | string | number | boolean | null
   ): Promise<boolean> {
     if (!path) {
       console.error('[VFSService] patchFile called with no path');

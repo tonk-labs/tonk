@@ -1,9 +1,13 @@
 import type { JSONContent } from '@tiptap/react';
-import type { VFSService } from '@/vfs-client';
 import { useCallback, useEffect, useRef } from 'react';
-import { getDesktopService } from '@/features/desktop';
+import {
+  getDesktopService,
+  invalidateThumbnailCache,
+} from '@/features/desktop';
+import { THUMBNAILS_DIRECTORY } from '@/features/desktop/constants';
 import { generateTextThumbnailFromContent } from '@/features/desktop/utils/thumbnailGenerator';
 import { useEditorStore } from '@/features/editor/stores/editorStore';
+import type { VFSService } from '@/vfs-client';
 
 interface UseEditorVFSSaveOptions {
   filePath: string | null;
@@ -66,27 +70,56 @@ export function useEditorVFSSave({
 
         thumbnailTimeoutRef.current = setTimeout(async () => {
           try {
-            // Extract file name from path
+            // Extract file name and fileId from path
             const fileName = filePath.split('/').pop() || 'file.txt';
+            const fileId = fileName.startsWith('.')
+              ? fileName
+              : fileName.replace(/\.[^.]+$/, '');
             console.log(
               '[EditorVFSSave] Starting thumbnail regeneration for:',
               fileName
             );
 
             // Generate new thumbnail
-            const thumbnail = await generateTextThumbnailFromContent(
+            const thumbnailDataUrl = await generateTextThumbnailFromContent(
               text,
               fileName
             );
             console.log(
               '[EditorVFSSave] Thumbnail generated:',
-              thumbnail ? 'YES' : 'NO'
+              thumbnailDataUrl ? 'YES' : 'NO'
             );
 
-            if (thumbnail) {
-              // Use patchFile to update only the thumbnail field
-              await vfs.patchFile(filePath, ['desktopMeta', 'thumbnail'], thumbnail);
-              console.log('[EditorVFSSave] ✅ Patched thumbnail');
+            if (thumbnailDataUrl) {
+              // Write thumbnail to separate file
+              const thumbnailPath = `${THUMBNAILS_DIRECTORY}/${fileId}.png`;
+              const base64Data = thumbnailDataUrl.split(',')[1];
+
+              await vfs.writeFile(
+                thumbnailPath,
+                {
+                  content: {
+                    data: base64Data,
+                    mimeType: 'image/png',
+                  },
+                },
+                true // create if not exists
+              );
+              console.log(
+                '[EditorVFSSave] ✅ Wrote thumbnail to:',
+                thumbnailPath
+              );
+
+              // Patch file to update thumbnailPath reference
+              await vfs.patchFile(
+                filePath,
+                ['desktopMeta', 'thumbnailPath'],
+                thumbnailPath
+              );
+              console.log('[EditorVFSSave] ✅ Patched thumbnailPath');
+
+              // Invalidate thumbnail cache so component reloads
+              invalidateThumbnailCache(thumbnailPath);
 
               // Notify desktop service to refresh the file icon
               const desktopService = getDesktopService();

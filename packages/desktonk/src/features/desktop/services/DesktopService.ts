@@ -1,5 +1,5 @@
 import { getVFSService } from '@/vfs-client';
-import { DESKTOP_DIRECTORY, LAYOUT_DIRECTORY } from '../constants';
+import { DESKTOP_DIRECTORY, LAYOUT_DIRECTORY, THUMBNAILS_DIRECTORY } from '../constants';
 import type { DesktopFile } from '../types';
 import {
   extractDesktopFile,
@@ -253,13 +253,22 @@ export class DesktopService {
    */
   async onFileDeleted(fileId: string): Promise<void> {
     const positionPath = `${LAYOUT_DIRECTORY}/${fileId}.json`;
+    const thumbnailPath = `${THUMBNAILS_DIRECTORY}/${fileId}.png`;
     const vfs = getVFSService();
 
     try {
-      const exists = await vfs.exists(positionPath);
-      if (exists) {
+      // Delete position file
+      const positionExists = await vfs.exists(positionPath);
+      if (positionExists) {
         await vfs.deleteFile(positionPath);
         console.log('[DesktopService] Position file deleted:', fileId);
+      }
+
+      // Delete thumbnail file
+      const thumbnailExists = await vfs.exists(thumbnailPath);
+      if (thumbnailExists) {
+        await vfs.deleteFile(thumbnailPath);
+        console.log('[DesktopService] Thumbnail file deleted:', fileId);
       }
 
       // Clean up local state
@@ -267,7 +276,7 @@ export class DesktopService {
       this.files.delete(fileId);
       this.notifyListeners();
     } catch (error) {
-      console.error('[DesktopService] Failed to delete position file:', error);
+      console.error('[DesktopService] Failed to delete associated files:', error);
     }
   }
 
@@ -363,6 +372,16 @@ export class DesktopService {
         LAYOUT_DIRECTORY
       );
       await vfs.writeFile(`${LAYOUT_DIRECTORY}/.keep`, { content: {} }, true);
+    }
+
+    // Ensure thumbnails directory exists
+    const thumbnailsDirExists = await vfs.exists(THUMBNAILS_DIRECTORY);
+    if (!thumbnailsDirExists) {
+      console.log(
+        '[DesktopService] Creating thumbnails directory:',
+        THUMBNAILS_DIRECTORY
+      );
+      await vfs.writeFile(`${THUMBNAILS_DIRECTORY}/.keep`, { content: {} }, true);
     }
   }
 

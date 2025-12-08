@@ -53,7 +53,7 @@ export type VFSWorkerMessage =
       id: string;
       path: string;
       jsonPath: string[];
-      value: JsonValue;
+      value: JsonValue | string | number | boolean | null;
     };
 
 // Response types for VFS Worker communication (responses to client)

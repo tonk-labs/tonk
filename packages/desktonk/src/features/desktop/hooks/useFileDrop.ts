@@ -1,7 +1,7 @@
-import { getVFSService } from '@/vfs-client';
 import { useCallback, useState } from 'react';
 import { useEditor, useToasts } from 'tldraw';
-import { DESKTOP_DIRECTORY } from '../constants';
+import { getVFSService } from '@/vfs-client';
+import { DESKTOP_DIRECTORY, THUMBNAILS_DIRECTORY } from '../constants';
 import { getDesktopService } from '../services/DesktopService';
 import { getMimeType } from '../utils/mimeResolver';
 import {
@@ -163,9 +163,10 @@ export function useFileDrop() {
           name => fileName === name || fileName === name.toLowerCase()
         );
 
-        let thumbnail: string | undefined;
+        // Generate thumbnail
+        let thumbnailDataUrl: string | undefined;
         if (mimeType.startsWith('image/')) {
-          thumbnail = (await generateImageThumbnail(file)) || undefined;
+          thumbnailDataUrl = (await generateImageThumbnail(file)) || undefined;
         } else if (
           mimeType.startsWith('text/') ||
           mimeType === 'application/json' ||
@@ -175,13 +176,47 @@ export function useFileDrop() {
           mimeType === 'text/x-yaml' ||
           isExtensionlessText
         ) {
-          thumbnail = (await generateTextThumbnail(file)) || undefined;
+          thumbnailDataUrl = (await generateTextThumbnail(file)) || undefined;
         }
 
-        // Desktop metadata (for thumbnail/icon storage)
+        // If thumbnail was generated, store it in a separate file
+        let thumbnailPath: string | undefined;
+        if (thumbnailDataUrl) {
+          // Extract fileId for thumbnail path
+          const fileId = file.name.startsWith('.')
+            ? file.name
+            : file.name.replace(/\.[^.]+$/, '');
+          thumbnailPath = `${THUMBNAILS_DIRECTORY}/${fileId}.png`;
+
+          // Extract base64 data from data URL (format: data:image/png;base64,XXXX)
+          const base64Data = thumbnailDataUrl.split(',')[1];
+
+          // Write thumbnail to separate VFS file
+          try {
+            await vfs.writeFile(
+              thumbnailPath,
+              {
+                content: {
+                  data: base64Data,
+                  mimeType: 'image/png',
+                },
+              },
+              true // create=true
+            );
+            console.log('[useFileDrop] Thumbnail written to:', thumbnailPath);
+          } catch (thumbnailError) {
+            console.warn(
+              '[useFileDrop] Failed to write thumbnail, continuing without:',
+              thumbnailError
+            );
+            thumbnailPath = undefined;
+          }
+        }
+
+        // Desktop metadata (store thumbnailPath instead of inline thumbnail)
         const desktopMeta = {
           mimeType,
-          ...(thumbnail && { thumbnail }),
+          ...(thumbnailPath && { thumbnailPath }),
         };
 
         // Write to VFS - different methods for text vs binary
