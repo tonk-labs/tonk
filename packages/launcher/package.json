@@ -7,7 +7,7 @@
     "setup-wasm": "bun scripts/setup-wasm.ts",
     "clean:vite-cache": "rm -rf node_modules/.vite",
     "dev": "bun run clean:vite-cache && bun run setup-wasm && bun run build:sw:dev && (bun run watch:sw & vite)",
-    "build": "bun run build:host && tsc -b && vite build",
+    "build": "tsc -b && vite build",
     "build:runtime": "bun run scripts/build-runtime.ts",
     "build:sw:dev": "TONK_SERVE_LOCAL=true vite build -c vite.sw.config.ts && cp dist-sw/service-worker-bundled.js public/app/service-worker-bundled.js",
     "watch:sw": "TONK_SERVE_LOCAL=true vite build -c vite.sw.config.ts --watch & bun scripts/watch-sw-copy.ts",
@@ -57,4 +57,3 @@
     "vite": "npm:rolldown-vite@7.1.14"
   }
 }
-
