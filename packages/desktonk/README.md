@@ -1,6 +1,7 @@
 # Desktonk
 
-A desktop-like canvas application built with React, tldraw, and TipTap. Runs as a Tonk app inside the launcher.
+A desktop-like canvas application built with React, tldraw, and TipTap. Runs as a Tonk app inside
+the launcher.
 
 ## Features
 
@@ -28,10 +29,10 @@ src/
 
 ## Routes
 
-| Path           | Component       | Description                    |
-| -------------- | --------------- | ------------------------------ |
-| `/`            | Desktop         | Main canvas view               |
-| `/text-editor` | TextEditorApp   | Rich text editor (with ?file=) |
+| Path           | Component     | Description                    |
+| -------------- | ------------- | ------------------------------ |
+| `/`            | Desktop       | Main canvas view               |
+| `/text-editor` | TextEditorApp | Rich text editor (with ?file=) |
 
 ## Development
 
