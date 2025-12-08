@@ -29,7 +29,6 @@ jobs:
       - name: Disable security scanner for CI
         run: find . -name bunfig.toml -exec sed -i '/\[install.security\]/,/^$/d' {} \;
       - run: bun install
-        working-directory: packages/desktonk
       # Full lint: biome + oxlint
       - run: bun run lint
         working-directory: packages/desktonk
@@ -43,6 +42,5 @@ jobs:
       - name: Disable security scanner for CI
         run: find . -name bunfig.toml -exec sed -i '/\[install.security\]/,/^$/d' {} \;
       - run: bun install
-        working-directory: packages/desktonk
       - run: bun run build
         working-directory: packages/desktonk
