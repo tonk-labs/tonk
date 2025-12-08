@@ -1,6 +1,7 @@
 # Worker Keepsync Examples
 
-This section shows examples of how to use keepsync in background workers. These examples demonstrate data fetching, processing, and storage patterns for Node.js environments.
+This section shows examples of how to use keepsync in background workers. These examples demonstrate
+data fetching, processing, and storage patterns for Node.js environments.
 
 ## API Data Fetching Worker
 
@@ -34,6 +35,7 @@ To run this example:
 1. Create a new Tonk worker: `tonk create` (choose Worker)
 2. Replace the generated code with the example above
 3. Configure your API endpoints and credentials
-4. Start the worker: `pnpm dev`
+4. Start the worker: `bun run dev`
 
-The worker will fetch data and store it in keepsync, making it available to all connected applications! 
+The worker will fetch data and store it in keepsync, making it available to all connected
+applications!

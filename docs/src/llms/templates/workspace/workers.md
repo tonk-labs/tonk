@@ -217,24 +217,24 @@ workspace root!**
 ```bash
 # CORRECT - Run from within the worker directory:
 cd workers/your-worker-name/
-pnpm install      # Install dependencies
-pnpm dev         # Start with hot reload
-pnpm build       # Compile TypeScript
-pnpm start       # Run production build
+bun install      # Install dependencies
+bun run dev         # Start with hot reload
+bun run build       # Compile TypeScript
+bun run start       # Run production build
 
 # INCORRECT - Do NOT run from workspace root:
 # npm run dev     # ❌ This will fail - no dev script in workspace root
 ```
 
 1. `cd workers/your-worker-name/` - **Always navigate to the worker directory first**
-2. `pnpm install` - Install dependencies
-3. `pnpm dev` - Start with hot reload
-4. `pnpm build` - Compile TypeScript
-5. `pnpm start` - Run production build
+2. `bun install` - Install dependencies
+3. `bun run dev` - Start with hot reload
+4. `bun run build` - Compile TypeScript
+5. `bun run start` - Run production build
 
 ### Production Deployment
 
-1. `pnpm build` - Compile for production
+1. `bun run build` - Compile for production
 2. `tonk worker register` - Register with Tonk platform
 3. Process manager handles lifecycle
 4. Health checks monitor status

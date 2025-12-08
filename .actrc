@@ -1,3 +1,0 @@
---container-architecture linux/amd64
--P ubuntu-latest=oven/bun:1
---pull=false
