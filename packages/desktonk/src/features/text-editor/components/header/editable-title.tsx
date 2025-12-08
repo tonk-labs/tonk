@@ -1,4 +1,4 @@
-import { getVFSService } from '@tonk/host-web/client';
+import { getVFSService } from '@/vfs-client';
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { useEditorStore } from '@/features/editor/stores/editorStore';

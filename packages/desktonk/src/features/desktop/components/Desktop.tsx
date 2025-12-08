@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Tldraw, track, useEditor, useToasts } from 'tldraw';
 import 'tldraw/tldraw.css';
-import { getVFSService } from '@tonk/host-web/client';
+import { getVFSService } from '@/vfs-client';
 import type { TLShapeId } from 'tldraw';
 import { useFeatureFlag } from '../../../hooks/useFeatureFlag';
 import { useCanvasPersistence } from '../hooks';

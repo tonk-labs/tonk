@@ -44,7 +44,7 @@ export default [
 
   // Browser/Universal TypeScript files
   {
-    files: ['packages/host-web/src/**/*.ts'],
+    files: ['packages/launcher/src/**/*.ts', 'packages/desktonk/src/**/*.ts'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {

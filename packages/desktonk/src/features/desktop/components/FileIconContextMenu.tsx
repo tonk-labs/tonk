@@ -1,4 +1,4 @@
-import { getVFSService } from '@tonk/host-web/client';
+import { getVFSService } from '@/vfs-client';
 import {
   DefaultContextMenu,
   DefaultContextMenuContent,

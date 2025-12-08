@@ -1,4 +1,4 @@
-import { getVFSService } from '@tonk/host-web/client';
+import { getVFSService } from '@/vfs-client';
 import { useCallback, useState } from 'react';
 import { useEditor, useToasts } from 'tldraw';
 import { DESKTOP_DIRECTORY } from '../constants';

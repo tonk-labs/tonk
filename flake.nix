@@ -105,17 +105,6 @@
             echo "✓ Relay server already built"
           fi
 
-          # Check if all packages are already built
-          if [ -f "packages/core/pkg-browser/tonk_core_bg.wasm" ] && \
-             [ -f "packages/core-js/dist/index.js" ] && \
-             [ -f "packages/host-web/dist/index.html" ]; then
-            echo "✓ All packages already built (skipping pnpm build)"
-          else
-            echo ""
-            echo "🔨 Building remaining packages..."
-            pnpm build
-          fi
-
           echo ""
           echo "✅ Development environment ready!"
           echo ""
@@ -126,7 +115,6 @@
           echo "Project Structure:"
           echo "  packages/core        - Tonk CRDT core (Rust)"
           echo "  packages/core-js     - JavaScript bindings"
-          echo "  packages/host-web    - Web host environment"
           echo "  packages/relay       - Basic relay server"
           echo "  examples/            - Example applications"
           echo ""

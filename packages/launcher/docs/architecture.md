@@ -189,7 +189,7 @@ public/app/
 bun run build:host
 ```
 
-This runs `scripts/build-host-web.ts` which:
+This runs `scripts/build-runtime.ts` which:
 
 1. Builds service worker → `dist-sw/`
 2. Builds runtime app → `dist-runtime/`
@@ -353,5 +353,5 @@ Check that:
 | `vite.config.ts`                         | Launcher vite config       |
 | `vite.sw.config.ts`                      | Service worker vite config |
 | `vite.runtime.config.ts`                 | Runtime app vite config    |
-| `scripts/build-host-web.ts`              | Full build script          |
+| `scripts/build-runtime.ts`               | Full build script          |
 | `scripts/watch-sw-copy.ts`               | SW watch/copy script       |

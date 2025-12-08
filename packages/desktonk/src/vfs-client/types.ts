@@ -1,5 +1,4 @@
 import type { JsonValue, DocumentData, RefNode, Manifest } from '@tonk/core';
-import type { TonkCore } from '@tonk/core/slim';
 
 // Re-export core types for convenience
 export type { JsonValue, DocumentData, RefNode, Manifest };
@@ -9,25 +8,6 @@ export type DocumentContent = {
   content: JsonValue;
   bytes?: string;
 };
-
-// TonkCore state machine
-export type TonkState =
-  | { status: 'uninitialized' }
-  | { status: 'loading'; promise: Promise<{ tonk: TonkCore; manifest: Manifest }> }
-  | { status: 'ready'; tonk: TonkCore; manifest: Manifest }
-  | { status: 'failed'; error: Error };
-
-// Watcher handle from TonkCore
-export interface WatcherHandle {
-  stop: () => void;
-  document_id?: string;
-}
-
-// Service worker fetch event interface
-export interface FetchEvent extends Event {
-  request: Request;
-  respondWith(response: Promise<Response> | Response): void;
-}
 
 // Message types for VFS Worker communication (requests from client)
 export type VFSWorkerMessage =
@@ -148,3 +128,18 @@ export type VFSWorkerResponse =
   | { type: 'swReady'; autoInitialized: boolean; needsBundle?: boolean }
   | { type: 'swInitializing' }
   | { type: 'needsReinit'; appSlug: string | null; reason: string };
+
+// Client-specific types
+export type ConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'open'
+  | 'connected'
+  | 'reconnecting';
+
+export type ConnectionStateListener = (state: ConnectionState) => void;
+
+export interface WatcherMetadata {
+  path: string;
+  type: 'file' | 'directory';
+}

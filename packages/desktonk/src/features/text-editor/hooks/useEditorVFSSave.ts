@@ -1,5 +1,5 @@
 import type { JSONContent } from '@tiptap/react';
-import type { VFSService } from '@tonk/host-web/client';
+import type { VFSService } from '@/vfs-client';
 import { useCallback, useEffect, useRef } from 'react';
 import { getDesktopService } from '@/features/desktop';
 import { generateTextThumbnailFromContent } from '@/features/desktop/utils/thumbnailGenerator';

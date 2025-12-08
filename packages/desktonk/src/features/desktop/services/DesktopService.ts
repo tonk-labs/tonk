@@ -1,4 +1,4 @@
-import { getVFSService } from '@tonk/host-web/client';
+import { getVFSService } from '@/vfs-client';
 import { DESKTOP_DIRECTORY, LAYOUT_DIRECTORY } from '../constants';
 import type { DesktopFile } from '../types';
 import {

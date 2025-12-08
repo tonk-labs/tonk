@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process';
-import { cpSync, rmSync, mkdirSync, existsSync } from 'node:fs';
-import { resolve, join, dirname } from 'node:path';
+import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
 
 const ROOT = resolve(__dirname, '../../..');
 const LAUNCHER_DIR = join(ROOT, 'packages/launcher');
@@ -23,7 +23,7 @@ function getTonkCoreWasmPath(): string {
 
 const WASM_PATH = getTonkCoreWasmPath();
 
-console.log('Building inlined host-web (runtime)...');
+console.log('Building runtime...');
 
 try {
   const env = {
@@ -35,7 +35,11 @@ try {
 
   // 1. Build SW
   console.log('Running vite build -c vite.sw.config.ts...');
-  execSync('npx vite build -c vite.sw.config.ts', { cwd: LAUNCHER_DIR, stdio: 'inherit', env });
+  execSync('npx vite build -c vite.sw.config.ts', {
+    cwd: LAUNCHER_DIR,
+    stdio: 'inherit',
+    env,
+  });
 
   // 2. Build Runtime App
   console.log('Running vite build -c vite.runtime.config.ts...');

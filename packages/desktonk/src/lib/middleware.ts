@@ -1,5 +1,5 @@
 import type { DocumentData } from '@tonk/core';
-import { getVFSService } from '@tonk/host-web/client';
+import { getVFSService } from '@/vfs-client';
 import type { StateCreator } from 'zustand';
 
 // biome-ignore lint/suspicious/noExplicitAny: Middleware types are complex
