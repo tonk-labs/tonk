@@ -16,15 +16,14 @@ enum Commands {
         /// If not provided, serves auth page locally.
         #[arg(long)]
         via: Option<String>,
-
-        /// Session duration (e.g., "30d", "7d", "1h"). Defaults to 30 days.
-        #[arg(long, default_value = "30d")]
-        duration: String,
     },
 
-    /// Show operator identity and current delegations
-    Status {
-        /// Show detailed information (file paths, full DIDs, etc.)
+    /// Manage sessions (authority contexts)
+    Session {
+        #[command(subcommand)]
+        command: Option<SessionCommands>,
+
+        /// Show verbose output including delegation chains
         #[arg(short, long)]
         verbose: bool,
     },
@@ -32,16 +31,54 @@ enum Commands {
     /// Manage spaces (collaboration units)
     Space {
         #[command(subcommand)]
-        command: SpaceCommands,
+        command: Option<SpaceCommands>,
+    },
+
+    /// Operator commands
+    Operator {
+        #[command(subcommand)]
+        command: OperatorCommands,
+    },
+
+    /// Inspect delegations and invites
+    Inspect {
+        #[command(subcommand)]
+        command: InspectCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionCommands {
+    /// Show the current session DID
+    Current,
+
+    /// Switch to a different session
+    Set {
+        /// Authority DID to switch to
+        authority_did: String,
     },
 }
 
 #[derive(Subcommand)]
 enum SpaceCommands {
+    /// Show the current space DID
+    Current,
+
+    /// Switch to a different space
+    Set {
+        /// Space name or DID to switch to
+        space: String,
+    },
+
     /// Create a new space
     Create {
         /// Name of the space
         name: String,
+
+        /// Owner DIDs (did:key identifiers). If not provided, will prompt interactively.
+        /// The active authority is always included as an owner.
+        #[arg(short, long)]
+        owners: Option<Vec<String>>,
 
         /// Optional description
         #[arg(short, long)]
@@ -70,26 +107,77 @@ enum SpaceCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum OperatorCommands {
+    /// Generate a new operator key (base58btc encoded)
+    Generate,
+}
+
+#[derive(Subcommand)]
+enum InspectCommands {
+    /// Inspect a delegation (base64-encoded CBOR or .cbor file)
+    Delegation {
+        /// Base64-encoded CBOR delegation string or path to .cbor file
+        input: String,
+    },
+
+    /// Inspect an invite file
+    Invite {
+        /// Path to .invite file
+        path: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Login { via, duration } => {
-            tonk_cli::login::execute(via, duration).await?;
+        Commands::Login { via } => {
+            tonk_cli::login::execute(via).await?;
         }
-        Commands::Status { verbose } => {
-            tonk_cli::status::execute(verbose).await?;
-        }
-        Commands::Space { command } => match command {
-            SpaceCommands::Create { name, description } => {
-                tonk_cli::space::create(name, description).await?;
+        Commands::Session { command, verbose } => match command {
+            None => {
+                tonk_cli::session::list(verbose).await?;
             }
-            SpaceCommands::Invite { email, space } => {
+            Some(SessionCommands::Current) => {
+                tonk_cli::session::show_current().await?;
+            }
+            Some(SessionCommands::Set { authority_did }) => {
+                tonk_cli::session::set(authority_did).await?;
+            }
+        },
+        Commands::Space { command } => match command {
+            None => {
+                tonk_cli::space::list().await?;
+            }
+            Some(SpaceCommands::Current) => {
+                tonk_cli::space::show_current().await?;
+            }
+            Some(SpaceCommands::Set { space }) => {
+                tonk_cli::space::set(space).await?;
+            }
+            Some(SpaceCommands::Create { name, owners, description }) => {
+                tonk_cli::space::create(name, owners, description).await?;
+            }
+            Some(SpaceCommands::Invite { email, space }) => {
                 tonk_cli::space::invite(email, space).await?;
             }
-            SpaceCommands::Join { invite, profile } => {
+            Some(SpaceCommands::Join { invite, profile }) => {
                 tonk_cli::space::join(invite, profile).await?;
+            }
+        },
+        Commands::Operator { command } => match command {
+            OperatorCommands::Generate => {
+                tonk_cli::operator::generate()?;
+            }
+        },
+        Commands::Inspect { command } => match command {
+            InspectCommands::Delegation { input } => {
+                tonk_cli::delegation::inspect(input)?;
+            }
+            InspectCommands::Invite { path } => {
+                tonk_cli::space::inspect_invite(path)?;
             }
         },
     }

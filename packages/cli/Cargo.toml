@@ -6,10 +6,13 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = []
 
 [dependencies]
 # CLI
 clap = { version = "4.5", features = ["derive"] }
+dialoguer = "0.11"
 
 # Crypto
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
@@ -17,11 +20,13 @@ rand = "0.8"
 bs58 = "0.5"
 sha2 = "0.10"
 hex = "0.4"
+hkdf = "0.12"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"
+serde_ipld_dagcbor = "0.6.3"
 
 # HTTP server
 axum = { version = "0.7", features = ["tokio"] }
@@ -31,11 +36,11 @@ tokio = { version = "1.47", features = ["full"] }
 # Utilities
 anyhow = "1.0"
 thiserror = "2.0"
-uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 
-ucan_core = { workspace = true }
+ucan = { workspace = true }
+varsig = { workspace = true }
 
 # For opening browser
 webbrowser = "1.0"

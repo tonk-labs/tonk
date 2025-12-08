@@ -1,5 +1,5 @@
 use crate::crypto::Keypair;
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use keyring::Entry;
 use thiserror::Error;
 
@@ -27,22 +27,43 @@ impl Keystore {
     }
 
     /// Get or create a keypair from the keystore
-    /// If a keypair already exists, it will be loaded. Otherwise, a new one is generated and stored.
+    /// If TONK_OPERATOR_KEY env var is set, uses that key (base58btc encoded)
+    /// Otherwise uses OS keyring
     pub fn get_or_create_keypair(&self) -> Result<Keypair, KeystoreError> {
+        // Check for TONK_OPERATOR_KEY environment variable first
+        if let Ok(operator_key) = std::env::var("TONK_OPERATOR_KEY") {
+            return self.keypair_from_env_key(&operator_key);
+        }
+
+        // Fall back to OS keyring
         match self.get_keypair() {
-            Ok(keypair) => {
-                println!("✓ Using existing keypair from keyring");
-                Ok(keypair)
-            }
+            Ok(keypair) => Ok(keypair),
             Err(KeystoreError::KeyringError(keyring::Error::NoEntry)) => {
-                println!("⚙ Generating new keypair...");
                 let keypair = Keypair::generate();
                 self.store_keypair(&keypair)?;
-                println!("✓ Keypair stored securely in system keyring");
                 Ok(keypair)
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Load keypair from base58btc-encoded key in TONK_OPERATOR_KEY
+    fn keypair_from_env_key(&self, key_b58: &str) -> Result<Keypair, KeystoreError> {
+        let key_bytes = bs58::decode(key_b58)
+            .into_vec()
+            .map_err(|e| KeystoreError::InvalidKeyData(format!("Invalid base58btc key: {}", e)))?;
+
+        if key_bytes.len() != 32 {
+            return Err(KeystoreError::InvalidKeyData(format!(
+                "TONK_OPERATOR_KEY must be 32 bytes, got {}",
+                key_bytes.len()
+            )));
+        }
+
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&key_bytes);
+
+        Ok(Keypair::from_bytes(&bytes))
     }
 
     /// Get an existing keypair from the keystore
@@ -68,7 +89,7 @@ impl Keystore {
     /// Store a keypair in the keystore
     fn store_keypair(&self, keypair: &Keypair) -> Result<(), KeystoreError> {
         let bytes = keypair.to_bytes();
-        let encoded = STANDARD.encode(&bytes);
+        let encoded = STANDARD.encode(bytes);
         self.entry.set_password(&encoded)?;
         Ok(())
     }
