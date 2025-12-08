@@ -194,3 +194,43 @@ export async function handleExists(message: { id: string; path: string }): Promi
     });
   }
 }
+
+export async function handlePatchFile(message: {
+  id: string;
+  path: string;
+  jsonPath: string[];
+  value: unknown;
+}): Promise<void> {
+  logger.debug('Patching file', { path: message.path, jsonPath: message.jsonPath });
+  try {
+    const tonkInstance = getTonk();
+    if (!tonkInstance) {
+      throw new Error('Tonk not initialized');
+    }
+
+    const result = await tonkInstance.tonk.patchFile(
+      message.path,
+      message.jsonPath,
+      message.value
+    );
+
+    logger.debug('File patch completed', { path: message.path, result });
+    postResponse({
+      type: 'patchFile',
+      id: message.id,
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    logger.error('Failed to patch file', {
+      path: message.path,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    postResponse({
+      type: 'patchFile',
+      id: message.id,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}

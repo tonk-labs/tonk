@@ -331,6 +331,25 @@ export class VFSService {
     );
   }
 
+  async patchFile(
+    path: string,
+    jsonPath: string[],
+    value: JsonValue
+  ): Promise<boolean> {
+    if (!path) {
+      console.error('[VFSService] patchFile called with no path');
+      throw new Error('Path is required for patchFile');
+    }
+    const id = this.generateId();
+    return this.sendMessage<boolean>({
+      type: 'patchFile',
+      id,
+      path,
+      jsonPath,
+      value,
+    });
+  }
+
   async readBytesAsString(path: string): Promise<string> {
     const documentData = await this.readFile(path);
 

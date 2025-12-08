@@ -25,6 +25,22 @@ export function useEditorVFSSave({
     null
   );
   const lastSavedContentRef = useRef<string | null>(null);
+  const lastFilePathRef = useRef<string | null>(null);
+
+  // Initialize lastSavedContentRef with current content when file opens
+  // This prevents unnecessary saves when closing without changes
+  useEffect(() => {
+    // Reset when file changes
+    if (filePath !== lastFilePathRef.current) {
+      lastFilePathRef.current = filePath;
+      const currentDocument = useEditorStore.getState().document;
+      if (currentDocument) {
+        lastSavedContentRef.current = jsonContentToText(currentDocument);
+      } else {
+        lastSavedContentRef.current = null;
+      }
+    }
+  }, [filePath]);
 
   const saveToVFS = useCallback(
     async (content: JSONContent) => {
@@ -68,26 +84,9 @@ export function useEditorVFSSave({
             );
 
             if (thumbnail) {
-              // Read existing file to preserve other desktopMeta fields
-              const existingFile = await vfs.readFile(filePath);
-              const content = existingFile?.content as
-                | Record<string, unknown>
-                | undefined;
-              const existingMeta =
-                (content?.desktopMeta as Record<string, unknown>) || {};
-              console.log('[EditorVFSSave] Existing meta:', existingMeta);
-
-              // Write back with updated thumbnail, preserving other fields
-              await vfs.writeFile(filePath, {
-                content: {
-                  text,
-                  desktopMeta: {
-                    ...existingMeta,
-                    thumbnail,
-                  },
-                },
-              });
-              console.log('[EditorVFSSave] Wrote file with thumbnail');
+              // Use patchFile to update only the thumbnail field
+              await vfs.patchFile(filePath, ['desktopMeta', 'thumbnail'], thumbnail);
+              console.log('[EditorVFSSave] ✅ Patched thumbnail');
 
               // Notify desktop service to refresh the file icon
               const desktopService = getDesktopService();

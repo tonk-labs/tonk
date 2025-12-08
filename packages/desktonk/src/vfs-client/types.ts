@@ -47,7 +47,14 @@ export type VFSWorkerMessage =
     }
   | { type: 'getServerUrl'; id: string }
   | { type: 'getManifest'; id: string }
-  | { type: 'setAppSlug'; slug: string };
+  | { type: 'setAppSlug'; slug: string }
+  | {
+      type: 'patchFile';
+      id: string;
+      path: string;
+      jsonPath: string[];
+      value: JsonValue;
+    };
 
 // Response types for VFS Worker communication (responses to client)
 export type VFSWorkerResponse =
@@ -61,6 +68,7 @@ export type VFSWorkerResponse =
       error?: string;
     }
   | { type: 'writeFile'; id: string; success: boolean; error?: string }
+  | { type: 'patchFile'; id: string; success: boolean; data?: boolean; error?: string }
   | { type: 'deleteFile'; id: string; success: boolean; error?: string }
   | { type: 'rename'; id: string; success: boolean; error?: string }
   | {

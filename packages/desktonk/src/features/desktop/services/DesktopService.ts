@@ -164,23 +164,30 @@ export class DesktopService {
     const filePath = file?.path || `${DESKTOP_DIRECTORY}/${fileId}`;
 
     const positionPath = `${LAYOUT_DIRECTORY}/${fileId}.json`;
-    const positionData: PositionData = {
-      x,
-      y,
-      fileId,
-      filePath,
-      updatedAt: Date.now(),
-    };
 
     try {
       const vfs = getVFSService();
       const exists = await vfs.exists(positionPath);
 
-      await vfs.writeFile(
-        positionPath,
-        { content: positionData },
-        !exists // create if doesn't exist
-      );
+      if (exists) {
+        // Incremental update - only patch changed fields
+        // This reduces Automerge storage overhead vs full document replacement
+        await Promise.all([
+          vfs.patchFile(positionPath, ['x'], x),
+          vfs.patchFile(positionPath, ['y'], y),
+          vfs.patchFile(positionPath, ['updatedAt'], Date.now()),
+        ]);
+      } else {
+        // Create new file with full content
+        const positionData: PositionData = {
+          x,
+          y,
+          fileId,
+          filePath,
+          updatedAt: Date.now(),
+        };
+        await vfs.writeFile(positionPath, { content: positionData }, true);
+      }
 
       console.log('[DesktopService] Position saved:', fileId, { x, y });
     } catch (error) {
