@@ -102,9 +102,34 @@ RuntimeApp Flow:
 
 ### 4. Service Worker
 
-**File:** `src/launcher/sw-host.ts`
+**Directory:** `src/launcher/sw/`
 
-The service worker is the core of the system. It:
+The service worker is the core of the system, organized into modular components:
+
+```
+src/launcher/sw/
+├── index.ts              # Entry point, event listeners
+├── state.ts              # State management (BundleState machine)
+├── cache.ts              # Cache API persistence
+├── tonk-lifecycle.ts     # TonkCore init, bundle loading
+├── connection.ts         # WebSocket health/reconnect
+├── fetch-handler.ts      # Fetch interception, VFS serving
+├── wasm-init.ts          # WASM initialization
+├── types.ts              # Type definitions
+├── message-handlers/
+│   ├── index.ts          # Message router
+│   ├── file-ops.ts       # read/write/delete/rename/exists
+│   ├── directory-ops.ts  # listDirectory
+│   ├── watch-ops.ts      # file/directory watchers
+│   ├── bundle-ops.ts     # loadBundle, toBytes, forkToBytes
+│   └── init-ops.ts       # init, initializeFrom*, getManifest
+└── utils/
+    ├── logging.ts        # log() helper
+    ├── path.ts           # determinePath()
+    └── response.ts       # postResponse(), targetToResponse()
+```
+
+It:
 
 - Manages TonkCore (the VFS/CRDT engine)
 - Intercepts fetch requests and serves files from the VFS
@@ -346,7 +371,10 @@ Check that:
 | `src/main.tsx`                           | Launcher entry             |
 | `src/runtime/RuntimeApp.tsx`             | Runtime/iframe app         |
 | `src/runtime/main.tsx`                   | Runtime entry              |
-| `src/launcher/sw-host.ts`                | Service worker             |
+| `src/launcher/sw/index.ts`               | Service worker entry       |
+| `src/launcher/sw/state.ts`               | Bundle state machine       |
+| `src/launcher/sw/tonk-lifecycle.ts`      | TonkCore lifecycle mgmt    |
+| `src/launcher/sw/fetch-handler.ts`       | Request interception       |
 | `src/launcher/services/bundleStorage.ts` | IndexedDB bundle storage   |
 | `src/launcher/services/bundleManager.ts` | Bundle import/management   |
 | `src/runtime/hooks/useServiceWorker.ts`  | SW communication hook      |

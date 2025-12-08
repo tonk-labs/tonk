@@ -16,7 +16,7 @@ git checkout main
 git pull origin main
 
 echo "📦 Installing dependencies..."
-pnpm install
+bun install
 
 echo "🔨 Rebuilding relay..."
 cd packages/relay
@@ -24,7 +24,7 @@ cargo build --release
 
 echo "🔨 Rebuilding core-js..."
 cd ../core-js
-pnpm build --frozen-lockfile
+bun run build
 
 echo "🔄 Restarting relay service..."
 sudo systemctl restart relay.service

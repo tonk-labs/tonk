@@ -14,7 +14,7 @@ mkdir -p dist
 # Build WASM in the core package
 echo "Building WASM bindings..."
 cd ../core
-npm run build:browser
+bun run build:browser
 
 # Copy built files
 echo "Copying WASM files..."
@@ -25,8 +25,8 @@ cd ../core-js
 
 # Build TypeScript wrapper
 echo "Building TypeScript wrapper..."
-npm run build:wasm
-npm run build:wrapper
+bun run build:wasm
+bun run build:wrapper
 
 echo "Build complete!"
 echo ""

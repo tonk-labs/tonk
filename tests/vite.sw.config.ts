@@ -14,6 +14,10 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    esbuildOptions: { target: 'esnext' },
+    include: ['@tonk/core/slim'],
+  },
   define: {
     'process.env': {},
     global: 'globalThis',
@@ -31,6 +35,9 @@ export default defineConfig({
       buffer: 'buffer',
       process: 'process/browser',
       util: 'util',
+      // Resolve workspace packages (order matters - more specific first)
+      '@tonk/core/slim': resolve(__dirname, '../packages/core-js/dist/index-slim.js'),
+      '@tonk/core': resolve(__dirname, '../packages/core-js'),
     },
   },
 });

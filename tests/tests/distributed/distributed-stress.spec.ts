@@ -664,7 +664,7 @@ async function deployWorkersToInstances(
         );
 
         console.log(`  [${workerId}] Installing dependencies...`);
-        await exec(`${sshBase} "cd ~/worker && pnpm install"`);
+        await exec(`${sshBase} "cd ~/worker && bun install"`);
 
         console.log(`  [${workerId}] Installing Playwright browsers...`);
         await exec(
@@ -673,7 +673,7 @@ async function deployWorkersToInstances(
 
         console.log(`  [${workerId}] Starting Vite dev server...`);
         exec(
-          `${sshBase} "cd ~/worker && nohup pnpm dev --host 0.0.0.0 --port 5173 > vite.log 2>&1 < /dev/null &"`
+          `${sshBase} "cd ~/worker && nohup bun run dev --host 0.0.0.0 --port 5173 > vite.log 2>&1 < /dev/null &"`
         ).catch(() => {});
 
         console.log(`  [${workerId}] Waiting for Vite server to be ready...`);
@@ -811,7 +811,7 @@ async function deployCoordinatorToInstance(
     );
 
     console.log('  Installing dependencies...');
-    execSync(`${sshBase} "cd ~/coordinator && pnpm install"`, {
+    execSync(`${sshBase} "cd ~/coordinator && bun install"`, {
       stdio: 'inherit',
     });
 

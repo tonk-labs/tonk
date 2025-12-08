@@ -73,35 +73,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "18"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: latest
-
-      - name: Install root dependencies
-        run: pnpm install
-
-      - name: Install package dependencies
-        run: |
-          cd packages/${{ matrix.package }}
-          pnpm install
+      - name: Install dependencies
+        run: bun install
 
       - name: Build package
         run: |
           cd packages/${{ matrix.package }}
-          pnpm run build
+          bun run build
 
       - name: Run tests
         run: |
           cd packages/${{ matrix.package }}
-          if npm run | grep -q "test"; then
-            pnpm run test
+          if bun run 2>&1 | grep -q "test"; then
+            bun run test
           else
             echo "No test script found, skipping tests"
           fi
@@ -109,7 +104,7 @@ jobs:
       - name: Run linting
         run: |
           cd packages/${{ matrix.package }}
-          pnpm run lint
+          bun run lint
 
       - name: Get package version
         id: get-version
@@ -137,7 +132,7 @@ jobs:
         if: steps.check-npm.outputs.exists == 'false' && inputs.dry_run != 'true'
         run: |
           cd packages/${{ matrix.package }}
-          pnpm publish --access public --no-git-checks
+          npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -146,7 +141,7 @@ jobs:
         run: |
           cd packages/${{ matrix.package }}
           echo "DRY RUN: Would publish package with command:"
-          echo "pnpm publish --access public --no-git-checks"
+          echo "npm publish --access public"
           echo "Package: $(node -p "require('./package.json').name")"
           echo "Version: $(node -p "require('./package.json').version")"
 

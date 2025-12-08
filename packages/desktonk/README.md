@@ -1,83 +1,59 @@
-# React + TypeScript + Vite
+# Desktonk
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A desktop-like canvas application built with React, tldraw, and TipTap. Runs as a Tonk app inside the launcher.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react)
-  uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in
-  [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc)
-  uses [SWC](https://swc.rs/) for Fast Refresh
+- **Desktop Canvas** - An infinite tldraw canvas with file/folder icons you can arrange
+- **Text Editor** - TipTap-based rich text editor with collaborative editing support
+- **Chat** - Integrated chat window
+- **Presence** - Real-time user presence indicators
+- **Dark Mode** - System-aware theme with manual toggle
 
-## React Compiler
+## Architecture
 
-The React Compiler is not enabled on this template because of its impact on dev & build
-performances. To add it, see
-[this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable
-type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-]);
+```
+src/
+├── features/
+│   ├── desktop/          # tldraw canvas with file icons
+│   ├── text-editor/      # TipTap editor app
+│   ├── editor/           # TipTap components and UI
+│   ├── chat/             # Chat window
+│   └── presence/         # User presence tracking
+├── contexts/             # React contexts (feature flags)
+├── components/           # Shared UI components
+├── hooks/                # Custom hooks (useVFS, etc.)
+└── Router.tsx            # Route definitions
 ```
 
-You can also install
-[eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x)
-and
-[eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom)
-for React-specific lint rules:
+## Routes
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x';
-import reactDom from 'eslint-plugin-react-dom';
+| Path           | Component       | Description                    |
+| -------------- | --------------- | ------------------------------ |
+| `/`            | Desktop         | Main canvas view               |
+| `/text-editor` | TextEditorApp   | Rich text editor (with ?file=) |
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-]);
+## Development
+
+```bash
+# Start dev server with relay
+bun run dev
+
+# Build the app
+bun run build
+
+# Create a .tonk bundle
+bun run bundle
+
+# Lint and format
+bun run lint
+bun run format
 ```
+
+## Dependencies
+
+- **tldraw** - Canvas framework
+- **TipTap** - Rich text editor
+- **@tonk/core** - Tonk VFS integration
+- **Zustand** - State management
+- **React Router** - Routing
