@@ -1,6 +1,6 @@
-import { getVFSService } from '@/vfs-client';
 import { useEffect, useRef, useState } from 'react';
 import { useEditor } from 'tldraw';
+import { getVFSService } from '@/vfs-client';
 import { useVFS } from '../../../hooks/useVFS';
 
 const CANVAS_STATE_PATH = '/.state/desktop';
@@ -34,10 +34,8 @@ export function useCanvasPersistence() {
     (async () => {
       try {
         const exists = await vfs.exists(CANVAS_STATE_PATH);
-        console.log('[useCanvasPersistence] Load check - file exists:', exists);
 
         if (!exists) {
-          console.log('[useCanvasPersistence] No saved canvas state found');
           hasLoadedRef.current = true;
           setIsReady(true);
           return;
@@ -49,11 +47,6 @@ export function useCanvasPersistence() {
           store: Record<string, unknown>;
         };
 
-        console.log(
-          '[useCanvasPersistence] Loaded content keys:',
-          Object.keys(content)
-        );
-
         if (!cancelled && content.schema && content.store) {
           // Reconstruct tldraw snapshot format
           const snapshot = {
@@ -64,7 +57,6 @@ export function useCanvasPersistence() {
           };
 
           // Use editor.loadSnapshot to restore the canvas state
-          console.log('[useCanvasPersistence] About to load snapshot...');
           editor.loadSnapshot(snapshot);
 
           // Initialize tracking ref
@@ -72,17 +64,9 @@ export function useCanvasPersistence() {
 
           hasLoadedRef.current = true;
           setIsReady(true);
-          console.log(
-            '[useCanvasPersistence] Successfully loaded canvas snapshot'
-          );
-          console.log(
-            '[useCanvasPersistence] Shapes after load:',
-            editor.getCurrentPageShapes().length
-          );
         } else {
           hasLoadedRef.current = true;
           setIsReady(true);
-          console.log('[useCanvasPersistence] No valid snapshot to restore');
         }
       } catch (err) {
         console.error('[useCanvasPersistence] Canvas state load failed', err);
@@ -119,9 +103,6 @@ export function useCanvasPersistence() {
 
             if (!exists) {
               // First save: create full document
-              console.log(
-                '[useCanvasPersistence] Creating new canvas state file'
-              );
               await vfs.writeFile(
                 CANVAS_STATE_PATH,
                 {
@@ -133,11 +114,6 @@ export function useCanvasPersistence() {
                 true
               );
               previousStoreRef.current = { ...store };
-              console.log(
-                '[useCanvasPersistence] ✅ Created canvas state with',
-                Object.keys(store).length,
-                'entries'
-              );
               return;
             }
 
@@ -165,11 +141,6 @@ export function useCanvasPersistence() {
 
             if (patches.length > 0) {
               await Promise.all(patches);
-              console.log(
-                `[useCanvasPersistence] ✅ Patched ${patches.length} entries`
-              );
-            } else {
-              console.log('[useCanvasPersistence] No changes to save');
             }
 
             previousStoreRef.current = { ...store };
@@ -214,9 +185,6 @@ export function useCanvasPersistence() {
 
           try {
             isLoadingExternal = true;
-            console.log(
-              '[useCanvasPersistence] External canvas state change detected'
-            );
 
             const content = docData.content as {
               schema: unknown;
@@ -224,7 +192,6 @@ export function useCanvasPersistence() {
             };
 
             if (!content || !content.schema || !content.store) {
-              console.log('[useCanvasPersistence] Empty external canvas state');
               return;
             }
 
@@ -241,10 +208,6 @@ export function useCanvasPersistence() {
 
             // Update our tracking ref
             previousStoreRef.current = { ...content.store };
-
-            console.log(
-              '[useCanvasPersistence] ✅ Loaded external canvas state update'
-            );
           } catch (err) {
             console.error(
               '[useCanvasPersistence] Error loading external canvas state:',
@@ -254,11 +217,6 @@ export function useCanvasPersistence() {
             isLoadingExternal = false;
           }
         });
-
-        console.log(
-          '[useCanvasPersistence] File watcher set up for',
-          CANVAS_STATE_PATH
-        );
       } catch (err) {
         console.error(
           '[useCanvasPersistence] Error setting up file watcher:',

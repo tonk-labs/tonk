@@ -116,7 +116,6 @@ export function useEditorVFSSave({
                 ['desktopMeta', 'thumbnailPath'],
                 thumbnailPath
               );
-              console.log('[EditorVFSSave] ✅ Patched thumbnailPath');
 
               // Invalidate thumbnail cache so component reloads
               invalidateThumbnailCache(thumbnailPath);

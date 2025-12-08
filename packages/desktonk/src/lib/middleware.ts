@@ -1,6 +1,6 @@
 import type { DocumentData } from '@tonk/core';
-import { getVFSService } from '@/vfs-client';
 import type { StateCreator } from 'zustand';
+import { getVFSService } from '@/vfs-client';
 
 // biome-ignore lint/suspicious/noExplicitAny: Middleware types are complex
 interface SyncOptions<T = any> {
@@ -48,7 +48,7 @@ export const sync =
       return serializable;
     };
 
-    // Helper to save state to file (debounced) - uses incremental patching
+    // Helper to save state to file (debounced)
     const saveToFile = (state: T, create = false) => {
       if (!vfs.isInitialized()) return;
 
@@ -94,9 +94,6 @@ export const sync =
 
             if (patches.length > 0) {
               await Promise.all(patches);
-              console.log(
-                `[sync] ✅ Patched ${patches.length} keys in ${options.path}`
-              );
             }
 
             previousState = { ...content };

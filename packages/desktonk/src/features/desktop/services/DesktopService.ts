@@ -1,5 +1,9 @@
 import { getVFSService } from '@/vfs-client';
-import { DESKTOP_DIRECTORY, LAYOUT_DIRECTORY, THUMBNAILS_DIRECTORY } from '../constants';
+import {
+  DESKTOP_DIRECTORY,
+  LAYOUT_DIRECTORY,
+  THUMBNAILS_DIRECTORY,
+} from '../constants';
 import type { DesktopFile } from '../types';
 import {
   extractDesktopFile,
@@ -73,8 +77,6 @@ export class DesktopService {
       throw new Error('VFS must be initialized before DesktopService');
     }
 
-    console.log('[DesktopService] Initializing...');
-
     try {
       // Ensure directories exist
       await this.ensureDirectories();
@@ -89,12 +91,6 @@ export class DesktopService {
       this.initialized = true;
       this.isLoading = false;
       this.notifyListeners();
-
-      console.log(
-        '[DesktopService] Initialized with',
-        this.files.size,
-        'files'
-      );
     } catch (error) {
       console.error('[DesktopService] Initialization failed:', error);
       this.isLoading = false;
@@ -188,8 +184,6 @@ export class DesktopService {
         };
         await vfs.writeFile(positionPath, { content: positionData }, true);
       }
-
-      console.log('[DesktopService] Position saved:', fileId, { x, y });
     } catch (error) {
       console.error('[DesktopService] Failed to save position:', error);
       // Don't throw - position is already updated in local state
@@ -223,7 +217,6 @@ export class DesktopService {
       const doc = await vfs.readFile(path);
       const file = extractDesktopFile(path, doc);
       this.files.set(fileId, file);
-      console.log('[DesktopService] Loaded new file:', fileId);
     } catch (error) {
       console.error('[DesktopService] Failed to load new file:', path, error);
       return;
@@ -236,10 +229,6 @@ export class DesktopService {
       const index = this.files.size;
       const { x, y } = getNextAutoLayoutPosition(index);
 
-      console.log('[DesktopService] Auto-positioning new file:', fileId, {
-        x,
-        y,
-      });
       this.setPosition(fileId, x, y);
     }
 
@@ -261,14 +250,12 @@ export class DesktopService {
       const positionExists = await vfs.exists(positionPath);
       if (positionExists) {
         await vfs.deleteFile(positionPath);
-        console.log('[DesktopService] Position file deleted:', fileId);
       }
 
       // Delete thumbnail file
       const thumbnailExists = await vfs.exists(thumbnailPath);
       if (thumbnailExists) {
         await vfs.deleteFile(thumbnailPath);
-        console.log('[DesktopService] Thumbnail file deleted:', fileId);
       }
 
       // Clean up local state
@@ -276,7 +263,10 @@ export class DesktopService {
       this.files.delete(fileId);
       this.notifyListeners();
     } catch (error) {
-      console.error('[DesktopService] Failed to delete associated files:', error);
+      console.error(
+        '[DesktopService] Failed to delete associated files:',
+        error
+      );
     }
   }
 
@@ -298,7 +288,6 @@ export class DesktopService {
       const file = extractDesktopFile(path, doc);
       this.files.set(fileId, file);
       this.notifyListeners();
-      console.log('[DesktopService] Reloaded file:', fileId);
     } catch (error) {
       console.warn('[DesktopService] Failed to reload file:', path, error);
     }
@@ -343,8 +332,6 @@ export class DesktopService {
     this.positions.clear();
     this.listeners.clear();
     this.initialized = false;
-
-    console.log('[DesktopService] Destroyed');
   }
 
   // ============================================================================
@@ -381,7 +368,11 @@ export class DesktopService {
         '[DesktopService] Creating thumbnails directory:',
         THUMBNAILS_DIRECTORY
       );
-      await vfs.writeFile(`${THUMBNAILS_DIRECTORY}/.keep`, { content: {} }, true);
+      await vfs.writeFile(
+        `${THUMBNAILS_DIRECTORY}/.keep`,
+        { content: {} },
+        true
+      );
     }
   }
 
@@ -427,8 +418,6 @@ export class DesktopService {
           const fileId = this.pathToFileId(file.path);
           this.files.set(fileId, file);
         });
-
-      console.log('[DesktopService] Loaded', this.files.size, 'files');
     } catch (error) {
       console.error('[DesktopService] Failed to load files:', error);
     }
@@ -494,8 +483,6 @@ export class DesktopService {
           const data = r.value;
           this.positions.set(data.fileId, { x: data.x, y: data.y });
         });
-
-      console.log('[DesktopService] Loaded', this.positions.size, 'positions');
     } catch (error) {
       console.error('[DesktopService] Failed to load positions:', error);
     }
@@ -574,18 +561,8 @@ export class DesktopService {
         const watchId = await vfs.watchFile(
           positionPath,
           async documentData => {
-            console.log(
-              '[DesktopService] Position file changed:',
-              fileId,
-              documentData
-            );
-
             // Check if file was deleted (VFS might send null/empty on deletion)
             if (!documentData || !documentData.content) {
-              console.log(
-                '[DesktopService] Position file deleted remotely:',
-                fileId
-              );
               // File was deleted - clean up
               this.positions.delete(fileId);
               this.files.delete(fileId);
@@ -610,7 +587,6 @@ export class DesktopService {
         );
 
         this.positionFileWatchers.set(fileId, watchId);
-        console.log(`[DesktopService] Watching position file: ${fileId}`);
       } catch (err) {
         console.error(
           `[DesktopService] Error setting up watcher for ${fileId}:`,
@@ -618,11 +594,6 @@ export class DesktopService {
         );
       }
     }
-
-    console.log(
-      '[DesktopService] Position file watchers set up:',
-      this.positionFileWatchers.size
-    );
   }
 
   private async handleFilesChange(): Promise<void> {
@@ -635,7 +606,6 @@ export class DesktopService {
       if (!previousFiles.has(fileId)) {
         const file = this.files.get(fileId);
         if (file) {
-          console.log('[DesktopService] New file detected:', fileId);
           await this.onFileAdded(file.path);
         }
       }
@@ -644,7 +614,6 @@ export class DesktopService {
     // Detect deleted files
     for (const fileId of previousFiles) {
       if (!currentFiles.has(fileId)) {
-        console.log('[DesktopService] File deleted detected:', fileId);
         await this.onFileDeleted(fileId);
       }
     }
