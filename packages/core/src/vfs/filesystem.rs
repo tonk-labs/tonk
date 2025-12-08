@@ -566,6 +566,92 @@ impl VirtualFileSystem {
         }
     }
 
+    /// Patch a document at a specific JSON path
+    pub async fn patch_document(
+        &self,
+        path: &str,
+        json_path: &[String],
+        value: serde_json::Value,
+    ) -> Result<bool> {
+        if path == "/" {
+            return Err(VfsError::RootPathError);
+        }
+
+        // Prepend "content" to the path since content is stored under "content" key
+        let mut full_path = vec!["content".to_string()];
+        full_path.extend(json_path.iter().cloned());
+
+        match self.find_document(path).await? {
+            Some(doc_handle) => {
+                AutomergeHelpers::patch_document(&doc_handle, &full_path, value)?;
+
+                // Update timestamp in index
+                self.update_path_index(|index| {
+                    if let Some(entry) = index.paths.get_mut(path) {
+                        entry.modified = chrono::Utc::now();
+                    }
+                })
+                .await?;
+
+                // Emit event
+                let _ = self.event_tx.send(VfsEvent::DocumentUpdated {
+                    path: path.to_string(),
+                    doc_id: doc_handle.document_id().clone(),
+                });
+
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Splice text at a specific JSON path within a document
+    pub async fn splice_text(
+        &self,
+        path: &str,
+        json_path: &[String],
+        index: usize,
+        delete_count: isize,
+        insert: &str,
+    ) -> Result<bool> {
+        if path == "/" {
+            return Err(VfsError::RootPathError);
+        }
+
+        // Prepend "content" to the path since content is stored under "content" key
+        let mut full_path = vec!["content".to_string()];
+        full_path.extend(json_path.iter().cloned());
+
+        match self.find_document(path).await? {
+            Some(doc_handle) => {
+                AutomergeHelpers::splice_text(
+                    &doc_handle,
+                    &full_path,
+                    index,
+                    delete_count,
+                    insert,
+                )?;
+
+                // Update timestamp in index
+                self.update_path_index(|index| {
+                    if let Some(entry) = index.paths.get_mut(path) {
+                        entry.modified = chrono::Utc::now();
+                    }
+                })
+                .await?;
+
+                // Emit event
+                let _ = self.event_tx.send(VfsEvent::DocumentUpdated {
+                    path: path.to_string(),
+                    doc_id: doc_handle.document_id().clone(),
+                });
+
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// Move a document or directory from one path to another
     pub async fn move_document(&self, from_path: &str, to_path: &str) -> Result<bool> {
         // Check for empty paths
