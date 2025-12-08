@@ -21,16 +21,12 @@
     "docs:dev": "mdbook serve docs --open --port 4069",
     "lint": "eslint packages/*/src/**/*.ts",
     "lint:fix": "eslint packages/*/src/**/*.ts --fix",
-    "format": "prettier --write packages/*/src/**/*.ts *.md packages/*/README.md",
-    "format:check": "prettier --check packages/*/src/**/*.ts *.md packages/*/README.md",
+    "format": "prettier --write *.md packages/*/README.md && bun --filter '*' format",
+    "format:check": "prettier --check *.md packages/*/README.md && bun --filter '*' format:check",
     "lint:all": "bun run lint && bun run format:check",
     "fix:all": "bun run lint:fix && bun run format"
   },
   "lint-staged": {
-    "packages/*/src/**/*.{ts,tsx}": [
-      "eslint --fix",
-      "prettier --write"
-    ],
     "*.{md,json}": [
       "prettier --write"
     ]

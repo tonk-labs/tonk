@@ -111,10 +111,7 @@ Enjoy exploring Desktonk!`,
   },
 ];
 
-async function waitForVFSInitialization(
-  maxAttempts = 50,
-  intervalMs = 100
-): Promise<void> {
+async function waitForVFSInitialization(maxAttempts = 50, intervalMs = 100): Promise<void> {
   const vfs = getVFSService();
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -126,12 +123,10 @@ async function waitForVFSInitialization(
     console.log(
       `[CreateSamples] Waiting for VFS initialization (attempt ${attempt + 1}/${maxAttempts})...`
     );
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 
-  throw new Error(
-    'VFS initialization timeout - make sure the VFS service is running'
-  );
+  throw new Error('VFS initialization timeout - make sure the VFS service is running');
 }
 
 export async function createSampleFiles(): Promise<void> {
@@ -184,14 +179,10 @@ export async function createSampleFiles(): Promise<void> {
       }
     }
 
-    console.log(
-      `[CreateSamples] Successfully created ${sampleFiles.length} sample files!`
-    );
+    console.log(`[CreateSamples] Successfully created ${sampleFiles.length} sample files!`);
     console.log('[CreateSamples] Sample files:');
     for (const file of sampleFiles) {
-      console.log(
-        `  - ${file.path} (${file.desktopMeta.x}, ${file.desktopMeta.y})`
-      );
+      console.log(`  - ${file.path} (${file.desktopMeta.x}, ${file.desktopMeta.y})`);
     }
   } catch (error) {
     console.error('[CreateSamples] Error creating sample files:', error);

@@ -153,12 +153,7 @@ export type VFSWorkerResponse =
   | { type: 'needsReinit'; appSlug: string | null; reason: string };
 
 // Client-specific types
-export type ConnectionState =
-  | 'disconnected'
-  | 'connecting'
-  | 'open'
-  | 'connected'
-  | 'reconnecting';
+export type ConnectionState = 'disconnected' | 'connecting' | 'open' | 'connected' | 'reconnecting';
 
 export type ConnectionStateListener = (state: ConnectionState) => void;
 
