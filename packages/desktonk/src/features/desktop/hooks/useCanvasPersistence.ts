@@ -4,7 +4,6 @@ import { getVFSService, type JsonValue } from '@/vfs-client';
 import { useVFS } from '../../../hooks/useVFS';
 
 const CANVAS_STATE_PATH = '/.state/desktop';
-const SAVE_DEBOUNCE_MS = 500;
 
 export function useCanvasPersistence() {
   const editor = useEditor();
@@ -85,77 +84,71 @@ export function useCanvasPersistence() {
     }
 
     const vfs = getVFSService();
-    let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    // Save canvas state on changes (debounced)
+    // Save canvas state on changes
     const unsubscribe = editor.store.listen(
-      () => {
-        if (saveTimeout) clearTimeout(saveTimeout);
+      async () => {
+        try {
+          const snapshot = editor.getSnapshot();
+          const store = snapshot.document.store;
 
-        saveTimeout = setTimeout(async () => {
-          try {
-            const snapshot = editor.getSnapshot();
-            const store = snapshot.document.store;
+          const exists = await vfs.exists(CANVAS_STATE_PATH);
 
-            const exists = await vfs.exists(CANVAS_STATE_PATH);
-
-            if (!exists) {
-              // First save: create full document
-              await vfs.writeFile(
-                CANVAS_STATE_PATH,
-                {
-                  content: {
-                    schema: snapshot.document.schema as unknown as JsonValue,
-                    store: store as unknown as JsonValue,
-                  },
+          if (!exists) {
+            // First save: create full document
+            await vfs.writeFile(
+              CANVAS_STATE_PATH,
+              {
+                content: {
+                  schema: snapshot.document.schema as unknown as JsonValue,
+                  store: store as unknown as JsonValue,
                 },
-                true
-              );
-              previousStoreRef.current = { ...store };
-              return;
-            }
-
-            // Incremental save: patch only changed entries
-            const patches: Promise<boolean>[] = [];
-
-            // Check for new/modified entries
-            for (const [key, value] of Object.entries(store)) {
-              const prev = previousStoreRef.current[key];
-              if (!prev || JSON.stringify(prev) !== JSON.stringify(value)) {
-                patches.push(
-                  vfs.patchFile(CANVAS_STATE_PATH, ['store', key], value as unknown as JsonValue)
-                );
-              }
-            }
-
-            // Check for deleted entries
-            for (const key of Object.keys(previousStoreRef.current)) {
-              if (!(key in store)) {
-                patches.push(
-                  vfs.patchFile(CANVAS_STATE_PATH, ['store', key], null)
-                );
-              }
-            }
-
-            if (patches.length > 0) {
-              await Promise.all(patches);
-            }
-
-            previousStoreRef.current = { ...store };
-          } catch (err) {
-            console.error(
-              '[useCanvasPersistence] ❌ Canvas state save failed',
-              err
+              },
+              true
             );
+            previousStoreRef.current = { ...store };
+            return;
           }
-        }, SAVE_DEBOUNCE_MS);
+
+          // Incremental save: patch only changed entries
+          const patches: Promise<boolean>[] = [];
+
+          // Check for new/modified entries
+          for (const [key, value] of Object.entries(store)) {
+            const prev = previousStoreRef.current[key];
+            if (!prev || JSON.stringify(prev) !== JSON.stringify(value)) {
+              patches.push(
+                vfs.patchFile(CANVAS_STATE_PATH, ['store', key], value as unknown as JsonValue)
+              );
+            }
+          }
+
+          // Check for deleted entries
+          for (const key of Object.keys(previousStoreRef.current)) {
+            if (!(key in store)) {
+              patches.push(
+                vfs.patchFile(CANVAS_STATE_PATH, ['store', key], null)
+              );
+            }
+          }
+
+          if (patches.length > 0) {
+            await Promise.all(patches);
+          }
+
+          previousStoreRef.current = { ...store };
+        } catch (err) {
+          console.error(
+            '[useCanvasPersistence] ❌ Canvas state save failed',
+            err
+          );
+        }
       },
       { source: 'user', scope: 'document' }
     );
 
     return () => {
       unsubscribe();
-      if (saveTimeout) clearTimeout(saveTimeout);
     };
   }, [editor, connectionState]);
 

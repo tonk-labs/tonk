@@ -1026,7 +1026,10 @@ export class TonkCore {
         }
         callback({
           ...doc,
-          content: JSON.parse(doc.content),
+          content:
+            typeof doc.content === 'string'
+              ? JSON.parse(doc.content)
+              : doc.content,
           bytes: normalizedBytes,
         });
       });
