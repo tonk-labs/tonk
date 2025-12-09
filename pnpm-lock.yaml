@@ -143,9 +143,6 @@ importers:
       '@tonk/core':
         specifier: 0.1.1
         version: 0.1.1
-      '@tonk/host-web':
-        specifier: workspace:../host-web
-        version: link:../host-web
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -6589,7 +6586,7 @@ snapshots:
       '@tiptap/pm': 3.12.0
     optional: true
 
-  '@tiptap/extension-bubble-menu@3.12.0(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))(@tiptap/pm@3.6.2)':
+  '@tiptap/extension-bubble-menu@3.12.0(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))(@tiptap/pm@3.6.2)':
     dependencies:
       '@floating-ui/dom': 1.7.4
       '@tiptap/core': 3.6.2(@tiptap/pm@3.6.2)
@@ -6617,7 +6614,7 @@ snapshots:
     dependencies:
       '@tiptap/core': 3.12.0(@tiptap/pm@3.12.0)
 
-  '@tiptap/extension-code@3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))':
+  '@tiptap/extension-code@3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))':
     dependencies:
       '@tiptap/core': 3.6.2(@tiptap/pm@3.6.2)
 
@@ -6640,7 +6637,7 @@ snapshots:
       '@tiptap/pm': 3.12.0
     optional: true
 
-  '@tiptap/extension-floating-menu@3.12.0(@floating-ui/dom@1.7.4)(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))(@tiptap/pm@3.6.2)':
+  '@tiptap/extension-floating-menu@3.12.0(@floating-ui/dom@1.7.4)(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))(@tiptap/pm@3.6.2)':
     dependencies:
       '@floating-ui/dom': 1.7.4
       '@tiptap/core': 3.6.2(@tiptap/pm@3.6.2)
@@ -6663,7 +6660,7 @@ snapshots:
     dependencies:
       '@tiptap/core': 3.6.2(@tiptap/pm@3.6.2)
 
-  '@tiptap/extension-highlight@3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))':
+  '@tiptap/extension-highlight@3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))':
     dependencies:
       '@tiptap/core': 3.6.2(@tiptap/pm@3.6.2)
 
@@ -6723,7 +6720,7 @@ snapshots:
       '@tiptap/core': 3.6.2(@tiptap/pm@3.6.2)
       '@tiptap/pm': 3.12.0
 
-  '@tiptap/extension-list@3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))(@tiptap/pm@3.6.2)':
+  '@tiptap/extension-list@3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))(@tiptap/pm@3.6.2)':
     dependencies:
       '@tiptap/core': 3.6.2(@tiptap/pm@3.6.2)
       '@tiptap/pm': 3.6.2
@@ -6855,7 +6852,7 @@ snapshots:
     transitivePeerDependencies:
       - '@floating-ui/dom'
 
-  '@tiptap/react@3.6.2(@floating-ui/dom@1.7.4)(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))(@tiptap/pm@3.6.2)(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)':
+  '@tiptap/react@3.6.2(@floating-ui/dom@1.7.4)(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))(@tiptap/pm@3.6.2)(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)':
     dependencies:
       '@tiptap/core': 3.6.2(@tiptap/pm@3.6.2)
       '@tiptap/pm': 3.6.2
@@ -6867,8 +6864,8 @@ snapshots:
       react-dom: 19.2.0(react@19.2.0)
       use-sync-external-store: 1.6.0(react@19.2.0)
     optionalDependencies:
-      '@tiptap/extension-bubble-menu': 3.12.0(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))(@tiptap/pm@3.6.2)
-      '@tiptap/extension-floating-menu': 3.12.0(@floating-ui/dom@1.7.4)(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))(@tiptap/pm@3.6.2)
+      '@tiptap/extension-bubble-menu': 3.12.0(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))(@tiptap/pm@3.6.2)
+      '@tiptap/extension-floating-menu': 3.12.0(@floating-ui/dom@1.7.4)(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))(@tiptap/pm@3.6.2)
     transitivePeerDependencies:
       - '@floating-ui/dom'
 
@@ -6930,7 +6927,7 @@ snapshots:
     dependencies:
       '@tiptap/core': 3.6.2(@tiptap/pm@3.6.2)
       '@tiptap/pm': 3.6.2
-      '@tiptap/react': 3.6.2(@floating-ui/dom@1.7.4)(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))(@tiptap/pm@3.6.2)(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+      '@tiptap/react': 3.6.2(@floating-ui/dom@1.7.4)(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))(@tiptap/pm@3.6.2)(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       '@tldraw/state': 4.2.0
       '@tldraw/state-react': 4.2.0(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       '@tldraw/store': 4.2.0(react@19.2.0)
@@ -9012,11 +9009,11 @@ snapshots:
   tldraw@4.2.0(@floating-ui/dom@1.7.4)(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.0(react@19.2.0))(react@19.2.0):
     dependencies:
       '@tiptap/core': 3.6.2(@tiptap/pm@3.6.2)
-      '@tiptap/extension-code': 3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))
-      '@tiptap/extension-highlight': 3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))
-      '@tiptap/extension-list': 3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))(@tiptap/pm@3.6.2)
+      '@tiptap/extension-code': 3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))
+      '@tiptap/extension-highlight': 3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))
+      '@tiptap/extension-list': 3.6.2(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))(@tiptap/pm@3.6.2)
       '@tiptap/pm': 3.6.2
-      '@tiptap/react': 3.6.2(@floating-ui/dom@1.7.4)(@tiptap/core@3.6.2(@tiptap/pm@3.12.0))(@tiptap/pm@3.6.2)(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+      '@tiptap/react': 3.6.2(@floating-ui/dom@1.7.4)(@tiptap/core@3.6.2(@tiptap/pm@3.6.2))(@tiptap/pm@3.6.2)(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       '@tiptap/starter-kit': 3.6.2
       '@tldraw/editor': 4.2.0(@floating-ui/dom@1.7.4)(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       '@tldraw/store': 4.2.0(react@19.2.0)

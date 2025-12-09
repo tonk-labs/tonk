@@ -105,6 +105,29 @@
             echo "✓ Relay server already built"
           fi
 
+          # Copy relay binary to platform-specific JS package
+          RELAY_BINARY="packages/relay/target/release/tonk-relay"
+          if [ -f "$RELAY_BINARY" ]; then
+            ARCH=$(uname -m)
+            case "$ARCH" in
+              arm64|aarch64) PLATFORM_PKG="packages/relay-js-darwin-arm64" ;;
+              x86_64) PLATFORM_PKG="packages/relay-js-darwin-x64" ;;
+              *) PLATFORM_PKG="" ;;
+            esac
+
+            if [ -n "$PLATFORM_PKG" ] && [ -d "$PLATFORM_PKG" ]; then
+              mkdir -p "$PLATFORM_PKG/bin"
+              if [ ! -f "$PLATFORM_PKG/bin/tonk-relay" ] || [ "$RELAY_BINARY" -nt "$PLATFORM_PKG/bin/tonk-relay" ]; then
+                echo ""
+                echo "📦 Copying relay binary to $PLATFORM_PKG..."
+                cp "$RELAY_BINARY" "$PLATFORM_PKG/bin/tonk-relay"
+                chmod +x "$PLATFORM_PKG/bin/tonk-relay"
+              else
+                echo "✓ Relay binary already in $PLATFORM_PKG"
+              fi
+            fi
+          fi
+
           echo ""
           echo "✅ Development environment ready!"
           echo ""

@@ -2,8 +2,8 @@ import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Tldraw, track, useEditor, useToasts } from 'tldraw';
 import 'tldraw/tldraw.css';
-import { getVFSService } from '@/vfs-client';
 import type { TLShapeId } from 'tldraw';
+import { getVFSService } from '@/vfs-client';
 import { useFeatureFlag } from '../../../hooks/useFeatureFlag';
 import { useCanvasPersistence } from '../hooks';
 import { useDesktop, useDesktopActions } from '../hooks/useDesktop';
@@ -132,7 +132,7 @@ const DesktopInner = track(() => {
               fileName: file.name,
               mimeType: file.mimeType,
               customIcon: file.desktopMeta?.icon,
-              thumbnail: file.desktopMeta?.thumbnail,
+              thumbnailPath: file.desktopMeta?.thumbnailPath,
               appHandler: file.desktopMeta?.appHandler,
               w: 80,
               h: 100,

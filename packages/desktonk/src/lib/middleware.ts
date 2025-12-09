@@ -1,6 +1,6 @@
-import type { DocumentData } from '@tonk/core';
-import { getVFSService } from '@/vfs-client';
+import type { DocumentData, JsonValue } from '@tonk/core';
 import type { StateCreator } from 'zustand';
+import { getVFSService } from '@/vfs-client';
 
 // biome-ignore lint/suspicious/noExplicitAny: Middleware types are complex
 interface SyncOptions<T = any> {
@@ -32,6 +32,10 @@ export const sync =
     let saveTimeout: ReturnType<typeof setTimeout> | null = null;
     const SAVE_DEBOUNCE_MS = 2000; // Debounce saves by 2 seconds
 
+    // Track previous state for incremental patching
+    // biome-ignore lint/suspicious/noExplicitAny: State type is dynamic
+    let previousState: Record<string, any> = {};
+
     // Helper to serialize state for storage
     // biome-ignore lint/suspicious/noExplicitAny: State type is dynamic
     const serializeState = (state: T): any => {
@@ -58,13 +62,41 @@ export const sync =
         async () => {
           try {
             const content = serializeState(state);
-            // Try to update first, create if it doesn't exist
-            try {
-              await vfs.writeFile(options.path, { content }, create);
-            } catch {
-              // If update fails, try creating the file
+
+            if (create) {
+              // First save: create full document
               await vfs.writeFile(options.path, { content }, true);
+              previousState = { ...content };
+              console.log(`[sync] Created new file: ${options.path}`);
+              return;
             }
+
+            // Incremental save: patch only changed keys
+            const patches: Promise<boolean>[] = [];
+
+            // Check for new/modified keys
+            for (const [key, value] of Object.entries(content)) {
+              const prev = previousState[key];
+              if (
+                prev === undefined ||
+                JSON.stringify(prev) !== JSON.stringify(value)
+              ) {
+                patches.push(vfs.patchFile(options.path, [key], value as JsonValue));
+              }
+            }
+
+            // Check for deleted keys
+            for (const key of Object.keys(previousState)) {
+              if (!(key in content)) {
+                patches.push(vfs.patchFile(options.path, [key], null));
+              }
+            }
+
+            if (patches.length > 0) {
+              await Promise.all(patches);
+            }
+
+            previousState = { ...content };
           } catch (error) {
             console.warn(`Error saving state to ${options.path}:`, error);
           }
@@ -80,6 +112,8 @@ export const sync =
       try {
         const content = await vfs.readFile(options.path);
         if (content) {
+          // Initialize previousState for incremental patching
+          previousState = JSON.parse(JSON.stringify(content.content));
           return content.content as Partial<T>;
         }
       } catch {
@@ -111,6 +145,8 @@ export const sync =
         watchId = await vfs.watchFile(options.path, (content: DocumentData) => {
           try {
             const parsedState = content.content as Partial<T>;
+            // Update previousState to match external changes
+            previousState = JSON.parse(JSON.stringify(parsedState));
             // Merge external changes into current state
             const currentState = get();
             const mergedState = { ...currentState, ...parsedState };

@@ -318,6 +318,58 @@ impl WasmTonkCore {
         })
     }
 
+    /// Patch a document at a specific JSON path
+    #[wasm_bindgen(js_name = patchFile)]
+    pub fn patch_file(&self, path: String, json_path: JsValue, value: JsValue) -> Promise {
+        let tonk = Arc::clone(&self.tonk);
+        future_to_promise(async move {
+            let tonk = tonk.lock().await;
+            let vfs = tonk.vfs();
+
+            // Deserialize the JSON path array
+            let json_path_vec: Vec<String> = serde_wasm_bindgen::from_value(json_path)
+                .map_err(|e| js_error(format!("Invalid json_path: {}", e)))?;
+
+            // Deserialize the value
+            let value: serde_json::Value = serde_wasm_bindgen::from_value(value)
+                .map_err(|e| js_error(format!("Invalid value: {}", e)))?;
+
+            match vfs.patch_document(&path, &json_path_vec, value).await {
+                Ok(updated) => Ok(JsValue::from_bool(updated)),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
+    /// Splice text at a specific JSON path within a document
+    #[wasm_bindgen(js_name = spliceText)]
+    pub fn splice_text(
+        &self,
+        path: String,
+        json_path: JsValue,
+        index: usize,
+        delete_count: i32,
+        insert: String,
+    ) -> Promise {
+        let tonk = Arc::clone(&self.tonk);
+        future_to_promise(async move {
+            let tonk = tonk.lock().await;
+            let vfs = tonk.vfs();
+
+            // Deserialize the JSON path array
+            let json_path_vec: Vec<String> = serde_wasm_bindgen::from_value(json_path)
+                .map_err(|e| js_error(format!("Invalid json_path: {}", e)))?;
+
+            match vfs
+                .splice_text(&path, &json_path_vec, index, delete_count as isize, &insert)
+                .await
+            {
+                Ok(updated) => Ok(JsValue::from_bool(updated)),
+                Err(e) => Err(js_error(e)),
+            }
+        })
+    }
+
     #[wasm_bindgen(js_name = deleteFile)]
     pub fn delete_file(&self, path: String) -> Promise {
         let tonk = Arc::clone(&self.tonk);
