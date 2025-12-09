@@ -1,9 +1,14 @@
+use crate::delegation::Delegation;
+use crate::ownership::Ownership;
 use dialog_artifacts::replica::{Branch, BranchId, Issuer, Replica};
-use dialog_query::claim::{Attribute, Claim, Relation, Transaction, TransactionError};
-use dialog_query::{Entity, Session, Value};
+use dialog_artifacts::selector::Constrained;
+use dialog_artifacts::{Artifact, ArtifactSelector, ArtifactStore, DialogArtifactsError};
+use dialog_query::claim::{Transaction, TransactionError};
+use dialog_query::query::Source;
+use dialog_query::{DeductiveRule, Session};
 use dialog_storage::FileSystemStorageBackend;
+use futures_core::Stream;
 use std::path::PathBuf;
-use std::str::FromStr;
 use thiserror::Error;
 
 /// Type alias for the filesystem-backed storage
@@ -34,110 +39,8 @@ pub enum SpaceError {
     InvalidAttribute(String),
 }
 
-/// Represents a delegation to be stored as facts in the space.
-/// Implements `Claim` to be asserted via `Session::edit` API.
-pub struct DelegationClaim {
-    /// The CID of the delegation (used as entity)
-    pub cid: String,
-    /// The raw bytes of the delegation
-    pub bytes: Vec<u8>,
-    /// The issuer DID
-    pub issuer: String,
-    /// The audience DID
-    pub audience: String,
-    /// The subject DID (the space DID)
-    pub subject: String,
-    /// The command being delegated
-    pub command: String,
-}
-
-impl Claim for DelegationClaim {
-    fn assert(self, transaction: &mut Transaction) {
-        // Parse entity from CID - if this fails, we skip (can't assert without valid entity)
-        let entity = match Entity::from_str(&self.cid) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-
-        // Helper to create relations - skip if attribute parsing fails
-        let mut add_relation = |attr_str: &str, value: Value| {
-            if let Ok(attr) = Attribute::from_str(attr_str) {
-                Relation::new(attr, entity.clone(), value).assert(transaction);
-            }
-        };
-
-        // Store the raw delegation bytes
-        add_relation("db/blob", Value::Bytes(self.bytes));
-
-        // Store the issuer DID
-        add_relation("ucan/issuer", Value::String(self.issuer));
-
-        // Store the audience DID
-        add_relation("ucan/audience", Value::String(self.audience));
-
-        // Store the subject DID
-        add_relation("ucan/subject", Value::String(self.subject));
-
-        // Store the command
-        add_relation("ucan/cmd", Value::String(self.command));
-    }
-
-    fn retract(self, transaction: &mut Transaction) {
-        // Parse entity from CID
-        let entity = match Entity::from_str(&self.cid) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-
-        // Helper to create relations for retraction
-        let mut remove_relation = |attr_str: &str, value: Value| {
-            if let Ok(attr) = Attribute::from_str(attr_str) {
-                Relation::new(attr, entity.clone(), value).retract(transaction);
-            }
-        };
-
-        remove_relation("db/blob", Value::Bytes(self.bytes));
-        remove_relation("ucan/issuer", Value::String(self.issuer));
-        remove_relation("ucan/audience", Value::String(self.audience));
-        remove_relation("ucan/subject", Value::String(self.subject));
-        remove_relation("ucan/cmd", Value::String(self.command));
-    }
-}
-
-/// Represents space ownership - links a space DID to a delegation CID.
-/// Implements `Claim` to be asserted via `Session::edit` API.
-pub struct OwnerClaim {
-    /// The space DID
-    pub space_did: String,
-    /// The delegation CID that grants ownership
-    pub delegation_cid: String,
-}
-
-impl Claim for OwnerClaim {
-    fn assert(self, transaction: &mut Transaction) {
-        let entity = match Entity::from_str(&self.space_did) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-
-        if let Ok(attr) = Attribute::from_str("space/owner") {
-            Relation::new(attr, entity, Value::String(self.delegation_cid)).assert(transaction);
-        }
-    }
-
-    fn retract(self, transaction: &mut Transaction) {
-        let entity = match Entity::from_str(&self.space_did) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-
-        if let Ok(attr) = Attribute::from_str("space/owner") {
-            Relation::new(attr, entity, Value::String(self.delegation_cid)).retract(transaction);
-        }
-    }
-}
-
 /// Represents a Space - a collaboration unit backed by a dialog-db branch
+#[derive(Clone)]
 pub struct Space {
     /// The DID of this space
     pub did: String,
@@ -152,7 +55,7 @@ impl Space {
     /// * `space_did` - The DID of the space (derived from space keypair by CLI)
     /// * `issuer` - The Issuer (operator) that will sign operations
     /// * `storage_path` - Path to store the space's facts (from CLI's add_space_to_session)
-    /// * `delegations` - List of delegations to store in the space
+    /// * `delegations` - List of delegations to store in the space as ownership claims
     ///
     /// # Returns
     /// A new Space instance with the replica, branch, and delegations set up
@@ -160,7 +63,7 @@ impl Space {
         space_did: String,
         issuer: Issuer,
         storage_path: PathBuf,
-        delegations: Vec<DelegationClaim>,
+        delegations: Vec<Delegation>,
     ) -> Result<Self, SpaceError> {
         // Create the filesystem backend at the provided path
         let backend = FsBackend::new(&storage_path).await?;
@@ -175,19 +78,13 @@ impl Space {
         // Create session for the branch
         let mut session = Session::open(branch);
 
-        // Build transaction with all delegations and owner claims
+        // Build transaction with all ownership claims (which include delegations)
         let mut transaction = session.edit();
 
         for delegation in delegations {
-            // Store owner claim linking space to this delegation
-            let owner_claim = OwnerClaim {
-                space_did: space_did.clone(),
-                delegation_cid: delegation.cid.clone(),
-            };
-
-            // Assert both the delegation and ownership
-            transaction.assert(delegation);
-            transaction.assert(owner_claim);
+            // Create ownership claim from delegation - this will assert both
+            // the delegation facts and the space/owner relation
+            transaction.assert(Ownership::from(delegation));
         }
 
         // Commit the transaction
@@ -232,25 +129,36 @@ impl Space {
         })
     }
 
-    /// Add a new delegation to the space.
-    pub async fn add_delegation(&mut self, delegation: DelegationClaim) -> Result<(), SpaceError> {
-        let mut transaction = self.session.edit();
+    /// Create a new transaction for editing facts in this space.
+    ///
+    /// Returns a Transaction that can be used to assert or retract facts.
+    /// Call `commit()` to persist the changes.
+    pub fn edit(&self) -> Transaction {
+        self.session.edit()
+    }
 
-        // Store owner claim linking space to this delegation
-        let owner_claim = OwnerClaim {
-            space_did: self.did.clone(),
-            delegation_cid: delegation.cid.clone(),
-        };
-
-        transaction.assert(delegation);
-        transaction.assert(owner_claim);
-
+    /// Commit a transaction to the space.
+    ///
+    /// Takes ownership of a Transaction and commits all its operations.
+    pub async fn commit(&mut self, transaction: Transaction) -> Result<(), SpaceError> {
         self.session.commit(transaction).await?;
         Ok(())
     }
+}
 
-    /// Get a reference to the session for querying
-    pub fn session(&self) -> &Session<Branch<FsBackend>> {
-        &self.session
+/// Implement ArtifactStore for Space by delegating to the inner session
+impl ArtifactStore for Space {
+    fn select(
+        &self,
+        artifact_selector: ArtifactSelector<Constrained>,
+    ) -> impl Stream<Item = Result<Artifact, DialogArtifactsError>> + Send + 'static {
+        self.session.select(artifact_selector)
+    }
+}
+
+/// Implement Source for Space by delegating to the inner session
+impl Source for Space {
+    fn resolve_rules(&self, operator: &str) -> Vec<DeductiveRule> {
+        self.session.resolve_rules(operator)
     }
 }

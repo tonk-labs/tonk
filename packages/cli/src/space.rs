@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use tonk_space::{DelegationClaim, Issuer, Space};
+use tonk_space::{Delegation as SpaceDelegation, Issuer, Space};
 use ucan::did::{Did, Ed25519Did, Ed25519Signer};
 use ucan::{Delegation as UcanDelegation, delegation::subject::DelegatedSubject};
 
@@ -358,15 +358,15 @@ pub async fn create(
 
     // Create delegations from space to each owner and collect for storage
     println!("📜 Creating owner delegations...");
-    let mut delegation_claims: Vec<DelegationClaim> = Vec::new();
+    let mut delegations: Vec<SpaceDelegation> = Vec::new();
     for owner_did in &owner_dids {
         let delegation = create_owner_delegation(&space_keypair, &space_did, owner_did)?;
 
-        // Convert to DelegationClaim for Space storage
-        let claim: DelegationClaim = (&delegation)
+        // Convert to tonk_space::Delegation for Space storage
+        let space_delegation: SpaceDelegation = (&delegation)
             .try_into()
-            .context("Failed to convert delegation to claim")?;
-        delegation_claims.push(claim);
+            .context("Failed to convert delegation")?;
+        delegations.push(space_delegation);
 
         // Also save to filesystem (existing behavior)
         delegation.save()?;
@@ -385,7 +385,7 @@ pub async fn create(
     let storage_path = get_space_storage_path(&operator_did, &authority.did, &space_did)?;
     let issuer = Issuer::from_secret(&operator.to_bytes());
 
-    Space::create(space_did.clone(), issuer, storage_path, delegation_claims)
+    Space::create(space_did.clone(), issuer, storage_path, delegations)
         .await
         .context("Failed to create space database")?;
     println!("   ✓ Delegations stored in main branch");

@@ -4678,6 +4678,7 @@ dependencies = [
  "dialog-storage",
  "dirs",
  "ed25519-dalek",
+ "futures-core",
  "futures-util",
  "rand 0.8.5",
  "thiserror 2.0.17",

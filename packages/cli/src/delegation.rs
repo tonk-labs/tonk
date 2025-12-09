@@ -443,7 +443,7 @@ impl<'de> Deserialize<'de> for Delegation {
     }
 }
 
-impl TryFrom<&Delegation> for tonk_space::DelegationClaim {
+impl TryFrom<&Delegation> for tonk_space::Delegation {
     type Error = DelegationError;
 
     fn try_from(delegation: &Delegation) -> Result<Self, Self::Error> {
@@ -473,7 +473,7 @@ impl TryFrom<&Delegation> for tonk_space::DelegationClaim {
             DelegatedSubject::Any => "*".to_string(),
         };
 
-        Ok(tonk_space::DelegationClaim {
+        Ok(tonk_space::Delegation {
             cid,
             bytes: cbor_bytes,
             issuer: delegation.issuer(),
@@ -645,10 +645,10 @@ mod tests {
 
         let delegation = Delegation::from_ucan(delegation);
 
-        // Convert to DelegationClaim
-        let claim: tonk_space::DelegationClaim = (&delegation)
+        // Convert to tonk_space::Delegation
+        let claim: tonk_space::Delegation = (&delegation)
             .try_into()
-            .expect("Failed to convert delegation to claim");
+            .expect("Failed to convert delegation");
 
         // The CID should be a valid URI that Entity::from_str can parse
         assert!(

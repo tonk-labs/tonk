@@ -20,6 +20,7 @@ dirs = "5"
 
 # Async
 futures-util = "0.3"
+futures-core = "0.3"
 
 # Dialog DB
 dialog-storage = { workspace = true }
