@@ -45,6 +45,12 @@ enum Commands {
         #[command(subcommand)]
         command: InspectCommands,
     },
+
+    /// Manage facts in the active space
+    Fact {
+        #[command(subcommand)]
+        command: FactCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -105,6 +111,16 @@ enum SpaceCommands {
         #[arg(short, long)]
         profile: Option<String>,
     },
+
+    /// Delete a space
+    Delete {
+        /// Space name or DID to delete
+        space: String,
+
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -125,6 +141,61 @@ enum InspectCommands {
     Invite {
         /// Path to .invite file
         path: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum FactCommands {
+    /// Assert a fact into the active space
+    Assert {
+        /// The attribute (e.g., "user/name")
+        #[arg(long, allow_hyphen_values = true)]
+        the: String,
+
+        /// The entity identifier. Can be:
+        /// - ~/path - derives entity from operator signature
+        /// - URI (e.g., did:key:..., https://...) - used as-is
+        /// - any string - hashed to create entity
+        #[arg(long, allow_hyphen_values = true)]
+        of: String,
+
+        /// The value to assert (all remaining words joined with spaces)
+        #[arg(long, required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        is: Vec<String>,
+    },
+
+    /// Retract a fact from the active space
+    Retract {
+        /// The attribute (e.g., "user/name")
+        #[arg(long, allow_hyphen_values = true)]
+        the: String,
+
+        /// The entity identifier
+        #[arg(long, allow_hyphen_values = true)]
+        of: String,
+
+        /// The value to retract (all remaining words joined with spaces)
+        #[arg(long, required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        is: Vec<String>,
+    },
+
+    /// Find facts in the active space
+    Find {
+        /// Filter by attribute (e.g., "user/name")
+        #[arg(long, allow_hyphen_values = true)]
+        the: Option<String>,
+
+        /// Filter by entity identifier
+        #[arg(long, allow_hyphen_values = true)]
+        of: Option<String>,
+
+        /// Filter by value
+        #[arg(long, allow_hyphen_values = true)]
+        is: Option<String>,
+
+        /// Format for decoding byte values (cbor, json, text, ucan)
+        #[arg(long, short)]
+        format: Option<String>,
     },
 }
 
@@ -166,6 +237,9 @@ async fn main() -> anyhow::Result<()> {
             Some(SpaceCommands::Join { invite, profile }) => {
                 tonk_cli::space::join(invite, profile).await?;
             }
+            Some(SpaceCommands::Delete { space, force }) => {
+                tonk_cli::space::delete(space, force).await?;
+            }
         },
         Commands::Operator { command } => match command {
             OperatorCommands::Generate => {
@@ -178,6 +252,19 @@ async fn main() -> anyhow::Result<()> {
             }
             InspectCommands::Invite { path } => {
                 tonk_cli::space::inspect_invite(path)?;
+            }
+        },
+        Commands::Fact { command } => match command {
+            FactCommands::Assert { the, of, is } => {
+                let is_value = is.join(" ").trim().to_string();
+                tonk_cli::fact::assert(the, of, is_value).await?;
+            }
+            FactCommands::Retract { the, of, is } => {
+                let is_value = is.join(" ").trim().to_string();
+                tonk_cli::fact::retract(the, of, is_value).await?;
+            }
+            FactCommands::Find { the, of, is, format } => {
+                tonk_cli::fact::find(the, of, is, format).await?;
             }
         },
     }

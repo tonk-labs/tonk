@@ -443,6 +443,47 @@ impl<'de> Deserialize<'de> for Delegation {
     }
 }
 
+impl TryFrom<&Delegation> for tonk_space::DelegationClaim {
+    type Error = DelegationError;
+
+    fn try_from(delegation: &Delegation) -> Result<Self, Self::Error> {
+        use dialog_query::Entity;
+        use std::str::FromStr;
+
+        let cbor_bytes = delegation.to_cbor_bytes()?;
+
+        // Use hash as CID (content-addressed identifier)
+        // Format as ucan:{base58btc} URI for Entity::from_str()
+        let hash_bytes = delegation.hash_bytes()?;
+        let hash_b58 = bs58::encode(&hash_bytes).into_string();
+        let cid = format!("ucan:{}", hash_b58);
+
+        // Validate that CID is a valid Entity URI - fail early rather than
+        // silently skipping in Claim::assert()
+        Entity::from_str(&cid).map_err(|e| {
+            DelegationError::InvalidDelegation(format!(
+                "CID '{}' is not a valid Entity URI: {:?}",
+                cid, e
+            ))
+        })?;
+
+        // Get subject as string
+        let subject = match delegation.subject() {
+            DelegatedSubject::Specific(did) => did.to_string(),
+            DelegatedSubject::Any => "*".to_string(),
+        };
+
+        Ok(tonk_space::DelegationClaim {
+            cid,
+            bytes: cbor_bytes,
+            issuer: delegation.issuer(),
+            audience: delegation.audience(),
+            subject,
+            command: delegation.command_str(),
+        })
+    }
+}
+
 /// Inspect a base64-encoded CBOR delegation or a delegation file and print detailed information
 pub fn inspect(input: String) -> Result<()> {
     println!("🔍 Inspecting delegation...\n");
@@ -576,4 +617,72 @@ pub fn inspect(input: String) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dialog_query::Entity;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_delegation_claim_cid_is_valid_uri() {
+        // Create a test delegation
+        let keypair = crate::crypto::Keypair::generate();
+        let audience_keypair = crate::crypto::Keypair::generate();
+
+        let issuer_signer = keypair_to_signer(&keypair);
+        let audience_did = keypair_to_did(&audience_keypair);
+        let subject_did = keypair_to_did(&keypair);
+
+        let delegation: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
+            .issuer(issuer_signer)
+            .audience(audience_did)
+            .subject(DelegatedSubject::Specific(subject_did))
+            .command(vec!["/".to_string()])
+            .try_build()
+            .expect("Failed to build delegation");
+
+        let delegation = Delegation::from_ucan(delegation);
+
+        // Convert to DelegationClaim
+        let claim: tonk_space::DelegationClaim = (&delegation)
+            .try_into()
+            .expect("Failed to convert delegation to claim");
+
+        // The CID should be a valid URI that Entity::from_str can parse
+        assert!(
+            claim.cid.starts_with("ucan:"),
+            "CID should be formatted as ucan: URI: {}",
+            claim.cid
+        );
+
+        // Verify Entity::from_str can parse it
+        let entity = Entity::from_str(&claim.cid);
+        assert!(
+            entity.is_ok(),
+            "CID should be parseable as Entity: {}",
+            claim.cid
+        );
+    }
+
+    #[test]
+    fn test_plain_hash_is_not_valid_entity() {
+        // This test documents why we need the ucan: prefix.
+        // A plain hash is NOT a valid URI and Entity::from_str will reject it.
+        let plain_hash = "abc123def456";
+        let result = Entity::from_str(plain_hash);
+        assert!(
+            result.is_err(),
+            "Plain hash should NOT be parseable as Entity"
+        );
+
+        // But with ucan: prefix it works
+        let ucan_uri = format!("ucan:{}", plain_hash);
+        let result = Entity::from_str(&ucan_uri);
+        assert!(
+            result.is_ok(),
+            "ucan: URI should be parseable as Entity"
+        );
+    }
 }

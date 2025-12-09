@@ -9,6 +9,8 @@ use sha2::Digest;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
+use std::path::PathBuf;
+use tonk_space::{DelegationClaim, Issuer, Space};
 use ucan::did::{Did, Ed25519Did, Ed25519Signer};
 use ucan::{Delegation as UcanDelegation, delegation::subject::DelegatedSubject};
 
@@ -273,6 +275,13 @@ pub async fn create(
 ) -> Result<()> {
     println!("🚀 Creating space: {}\n", name);
 
+    // Get operator keypair
+    let keystore = Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore
+        .get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+    let operator_did = operator.to_did_key();
+
     // Get active authority (required for space creation)
     let authority = authority::get_active_authority()?
         .context("No active authority. Please run 'tonk login' first")?;
@@ -347,20 +356,39 @@ pub async fn create(
 
     println!("🏠 Space DID: {}\n", space_did);
 
-    // Create delegations from space to each owner
+    // Create delegations from space to each owner and collect for storage
     println!("📜 Creating owner delegations...");
+    let mut delegation_claims: Vec<DelegationClaim> = Vec::new();
     for owner_did in &owner_dids {
-        create_owner_delegation(&space_keypair, &space_did, owner_did)?;
+        let delegation = create_owner_delegation(&space_keypair, &space_did, owner_did)?;
+
+        // Convert to DelegationClaim for Space storage
+        let claim: DelegationClaim = (&delegation)
+            .try_into()
+            .context("Failed to convert delegation to claim")?;
+        delegation_claims.push(claim);
+
+        // Also save to filesystem (existing behavior)
+        delegation.save()?;
         println!("   ✓ {}", authority::format_authority_did(owner_did));
     }
-    println!();
 
     // Save space metadata
     let space_metadata = crate::metadata::SpaceMetadata::new(name.clone(), owner_dids.clone());
     space_metadata.save(&space_did)?;
 
-    // Add space to the current session
+    // Add space to the current session (creates the space directory)
     crate::state::add_space_to_session(&authority.did, &space_did)?;
+
+    // Create Space with dialog-db storage
+    println!("📦 Storing delegations in space database...");
+    let storage_path = get_space_storage_path(&operator_did, &authority.did, &space_did)?;
+    let issuer = Issuer::from_secret(&operator.to_bytes());
+
+    Space::create(space_did.clone(), issuer, storage_path, delegation_claims)
+        .await
+        .context("Failed to create space database")?;
+    println!("   ✓ Delegations stored in main branch");
 
     // Set this as the active space for the current session
     crate::state::set_active_space(&authority.did, &space_did)?;
@@ -371,12 +399,27 @@ pub async fn create(
     Ok(())
 }
 
+/// Get the storage path for a space's facts database
+fn get_space_storage_path(operator_did: &str, authority_did: &str, space_did: &str) -> Result<PathBuf> {
+    let home = crate::util::home_dir().context("Could not determine home directory")?;
+    let path = home
+        .join(".tonk")
+        .join("operator")
+        .join(operator_did)
+        .join("session")
+        .join(authority_did)
+        .join("space")
+        .join(space_did)
+        .join("facts");
+    Ok(path)
+}
+
 /// Create a delegation from space to an owner
 fn create_owner_delegation(
     space_keypair: &Keypair,
     space_did: &str,
     owner_did: &str,
-) -> Result<()> {
+) -> Result<Delegation> {
     // Parse owner DID
     let owner_did_parsed: Ed25519Did = owner_did
         .parse()
@@ -398,13 +441,8 @@ fn create_owner_delegation(
         .try_build()
         .map_err(|e| anyhow::anyhow!("Failed to build delegation: {}", e))?;
 
-    // Wrap in our Delegation type
-    let delegation = Delegation::from_ucan(ucan_delegation);
-
-    // Save delegation
-    delegation.save()?;
-
-    Ok(())
+    // Wrap in our Delegation type and return
+    Ok(Delegation::from_ucan(ucan_delegation))
 }
 
 /// Invitation file format
@@ -882,6 +920,123 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
         println!("   Membership: {}", reconstructed_membership_did);
         println!("   Authority: {}\n", authority.did);
     }
+
+    Ok(())
+}
+
+/// Delete a space
+pub async fn delete(space_identifier: String, force: bool) -> Result<()> {
+    // Get operator and authority
+    let keystore = crate::keystore::Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore
+        .get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+    let operator_did = operator.to_did_key();
+
+    let authority = crate::authority::get_active_authority()?
+        .context("No active session. Please run `tonk login` first.")?;
+
+    // Collect available spaces
+    let spaces = collect_spaces_for_authority(&operator_did, &authority.did)?;
+
+    // Find space by name or DID
+    let space_did = if space_identifier.starts_with("did:key:") {
+        // Direct DID lookup
+        if spaces.contains_key(&space_identifier) {
+            space_identifier.clone()
+        } else {
+            anyhow::bail!("Space {} not found or not accessible", space_identifier);
+        }
+    } else {
+        // Name lookup
+        let matching_spaces: Vec<String> = spaces
+            .keys()
+            .filter(|space_did| {
+                if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(space_did) {
+                    metadata.name == space_identifier
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        if matching_spaces.is_empty() {
+            anyhow::bail!("No space found with name '{}'", space_identifier);
+        } else if matching_spaces.len() > 1 {
+            anyhow::bail!(
+                "Multiple spaces found with name '{}'. Use the DID instead.",
+                space_identifier
+            );
+        } else {
+            matching_spaces[0].clone()
+        }
+    };
+
+    // Get space name for display
+    let space_name = if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(&space_did) {
+        metadata.name
+    } else {
+        space_did.clone()
+    };
+
+    // Confirm deletion unless --force
+    if !force {
+        println!("⚠️  About to delete space: {} ({})", space_name, space_did);
+        println!("   This will remove the space and all its data from this session.\n");
+
+        use dialoguer::Confirm;
+        let confirmed = Confirm::new()
+            .with_prompt("Are you sure you want to delete this space?")
+            .default(false)
+            .interact()?;
+
+        if !confirmed {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    println!("🗑️  Deleting space: {}\n", space_name);
+
+    // Remove space from session (this also clears active space if needed)
+    crate::state::remove_space_from_session(&authority.did, &space_did)?;
+    println!("   ✓ Removed from session");
+
+    // Delete space metadata
+    if crate::metadata::SpaceMetadata::delete(&space_did).is_ok() {
+        println!("   ✓ Deleted metadata");
+    }
+
+    // Delete delegations from this space (in access directory)
+    let home = crate::util::home_dir().context("Could not determine home directory")?;
+    let access_dir = home.join(".tonk").join("access");
+
+    if access_dir.exists() {
+        let mut deleted_delegations = 0;
+        // Look through all audience directories
+        for audience_entry in fs::read_dir(&access_dir)? {
+            let audience_entry = audience_entry?;
+            let audience_path = audience_entry.path();
+
+            if !audience_path.is_dir() {
+                continue;
+            }
+
+            // Look for directories named with the space_did (delegations from the space)
+            let space_delegation_dir = audience_path.join(&space_did);
+            if space_delegation_dir.exists() && space_delegation_dir.is_dir() {
+                fs::remove_dir_all(&space_delegation_dir)?;
+                deleted_delegations += 1;
+            }
+        }
+
+        if deleted_delegations > 0 {
+            println!("   ✓ Deleted {} delegation chain(s)", deleted_delegations);
+        }
+    }
+
+    println!("\n✅ Space deleted: {}", space_name);
 
     Ok(())
 }

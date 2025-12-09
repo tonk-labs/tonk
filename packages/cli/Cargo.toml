@@ -14,6 +14,15 @@ default = []
 clap = { version = "4.5", features = ["derive"] }
 dialoguer = "0.11"
 
+# Tonk packages
+tonk-space = { path = "../space" }
+
+# Dialog DB
+dialog-storage = { workspace = true }
+dialog-query = { workspace = true }
+dialog-artifacts = { workspace = true }
+futures-util = "0.3"
+
 # Crypto
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand = "0.8"
@@ -21,6 +30,7 @@ bs58 = "0.5"
 sha2 = "0.10"
 hex = "0.4"
 hkdf = "0.12"
+blake3 = "1"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

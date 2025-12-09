@@ -174,3 +174,42 @@ pub fn list_spaces_for_session(authority_did: &str) -> Result<Vec<String>> {
     spaces.sort();
     Ok(spaces)
 }
+
+/// Remove a space from a session by deleting ~/.tonk/operator/{operator-did}/session/{authority}/space/{space-did}/
+pub fn remove_space_from_session(authority_did: &str, space_did: &str) -> Result<()> {
+    let space_dir = operator_dir()?
+        .join("session")
+        .join(authority_did)
+        .join("space")
+        .join(space_did);
+
+    if space_dir.exists() {
+        fs::remove_dir_all(&space_dir)
+            .context("Failed to remove space directory")?;
+    }
+
+    // If this was the active space, clear it
+    if let Ok(Some(active)) = get_active_space(authority_did) {
+        if active == space_did {
+            clear_active_space(authority_did)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Clear the active space for a session
+pub fn clear_active_space(authority_did: &str) -> Result<()> {
+    let active_file = operator_dir()?
+        .join("session")
+        .join(authority_did)
+        .join("space")
+        .join("@active");
+
+    if active_file.exists() {
+        fs::remove_file(&active_file)
+            .context("Failed to remove active space file")?;
+    }
+
+    Ok(())
+}

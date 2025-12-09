@@ -125,4 +125,16 @@ impl SpaceMetadata {
 
         Ok(())
     }
+
+    /// Delete space metadata from ~/.tonk/meta/{space-did}/
+    pub fn delete(space_did: &str) -> Result<()> {
+        let meta_dir = tonk_dir()?.join("meta").join(space_did);
+
+        if meta_dir.exists() {
+            fs::remove_dir_all(&meta_dir)
+                .context("Failed to delete space metadata directory")?;
+        }
+
+        Ok(())
+    }
 }

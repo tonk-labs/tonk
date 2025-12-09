@@ -1,5 +1,5 @@
 [workspace]
-members = ["packages/cli", "packages/core", "packages/relay"]
+members = ["packages/cli", "packages/core", "packages/relay", "packages/space"]
 resolver = "2"
 
 [workspace.package]
@@ -27,3 +27,9 @@ strip = "debuginfo"
 [workspace.dependencies]
 ucan = { git = "https://github.com/ucan-wg/rs-ucan.git", branch = "main", package = "ucan" }
 varsig = { git = "https://github.com/ucan-wg/rs-ucan.git", branch = "main", package = "varsig" }
+
+# Dialog DB
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }

@@ -1,0 +1,30 @@
+[package]
+name = "tonk-space"
+description = "Core space primitives for Tonk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Crypto
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
+bs58 = "0.5"
+
+# Error handling
+thiserror = "2"
+
+# Filesystem
+dirs = "5"
+
+# Async
+futures-util = "0.3"
+
+# Dialog DB
+dialog-storage = { workspace = true }
+dialog-query = { workspace = true }
+dialog-artifacts = { workspace = true }
+dialog-common = { workspace = true }
+
+[dev-dependencies]

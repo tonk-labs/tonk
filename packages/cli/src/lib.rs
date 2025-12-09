@@ -2,6 +2,7 @@ pub mod authority;
 pub mod crypto;
 pub mod delegation;
 pub mod did;
+pub mod fact;
 pub mod keystore;
 pub mod login;
 pub mod metadata;
