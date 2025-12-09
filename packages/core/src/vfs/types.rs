@@ -10,6 +10,25 @@ pub enum NodeType {
     Directory,
 }
 
+impl NodeType {
+    /// Returns the string representation of the node type
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NodeType::Document => "document",
+            NodeType::Directory => "directory",
+        }
+    }
+
+    /// Parse from string representation
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "document" => Some(NodeType::Document),
+            "directory" => Some(NodeType::Directory),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Timestamps {
     pub created: DateTime<Utc>,

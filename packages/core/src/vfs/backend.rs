@@ -937,7 +937,7 @@ impl AutomergeHelpers {
         })
     }
 
-    /// Patch a document at a specific path (incremental update)
+    /// Patch a document at a specific path
     /// path: ["content", "x"] -> updates doc.content.x
     pub fn patch_document(
         handle: &DocHandle,
@@ -1079,6 +1079,405 @@ impl AutomergeHelpers {
             Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
             tx.commit();
             Ok(())
+        })
+    }
+
+    // ============================================================================
+    // Path Index Helpers (Native Automerge Structure)
+    // ============================================================================
+
+    /// Initialize a document as a path index with native Automerge structure
+    ///
+    /// Structure:
+    /// ```text
+    /// ROOT
+    /// ├── type: "path_index"
+    /// ├── version: 2
+    /// ├── last_updated: i64
+    /// └── entries: Map (path -> entry)
+    /// ```
+    pub fn init_as_path_index(handle: &DocHandle) -> Result<()> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "type", "path_index")?;
+            tx.put(automerge::ROOT, "version", 2i64)?;
+            tx.put(
+                automerge::ROOT,
+                "last_updated",
+                chrono::Utc::now().timestamp_millis(),
+            )?;
+            tx.put_object(automerge::ROOT, "entries", ObjType::Map)?;
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Read the entire path index from native Automerge structure
+    pub fn read_path_index_native(handle: &DocHandle) -> Result<crate::vfs::path_index::PathIndex> {
+        use crate::vfs::path_index::PathIndex;
+
+        handle.with_document(|doc| {
+            let mut index = PathIndex::new();
+
+            // Read last_updated
+            if let Ok(Some((Value::Scalar(s), _))) = doc.get(automerge::ROOT, "last_updated") {
+                if let Some(ts) = s.to_i64() {
+                    if let Some(dt) = chrono::DateTime::from_timestamp_millis(ts) {
+                        index.last_updated = dt;
+                    }
+                }
+            }
+
+            // Read entries map
+            if let Ok(Some((Value::Object(ObjType::Map), entries_id))) =
+                doc.get(automerge::ROOT, "entries")
+            {
+                // Iterate over all keys in the entries map
+                for key in doc.keys(entries_id.clone()) {
+                    if let Ok(Some((Value::Object(ObjType::Map), entry_id))) =
+                        doc.get(entries_id.clone(), key.as_str())
+                    {
+                        if let Some(entry) = Self::read_path_entry_from_obj(doc, entry_id.clone()) {
+                            index.paths.insert(key.to_string(), entry);
+                        }
+                    }
+                }
+            }
+
+            Ok(index)
+        })
+    }
+
+    /// Read a single PathEntry from an Automerge object
+    fn read_path_entry_from_obj(
+        doc: &automerge::Automerge,
+        entry_id: automerge::ObjId,
+    ) -> Option<crate::vfs::path_index::PathEntry> {
+        use crate::vfs::path_index::PathEntry;
+
+        let doc_id = doc
+            .get(entry_id.clone(), "doc_id")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| Self::extract_string_value(&v))?;
+
+        let node_type_str = doc
+            .get(entry_id.clone(), "node_type")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| Self::extract_string_value(&v))?;
+
+        let node_type = NodeType::from_str(&node_type_str)?;
+
+        let created = doc
+            .get(entry_id.clone(), "created")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| {
+                if let Value::Scalar(s) = v {
+                    s.to_i64().and_then(chrono::DateTime::from_timestamp_millis)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(chrono::Utc::now);
+
+        let modified = doc
+            .get(entry_id, "modified")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| {
+                if let Value::Scalar(s) = v {
+                    s.to_i64().and_then(chrono::DateTime::from_timestamp_millis)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(chrono::Utc::now);
+
+        Some(PathEntry {
+            doc_id,
+            node_type,
+            created,
+            modified,
+        })
+    }
+
+    /// Set or update a single path entry
+    pub fn set_path_entry(
+        handle: &DocHandle,
+        path: &str,
+        doc_id: &str,
+        node_type: NodeType,
+        created: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<()> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            let now = chrono::Utc::now();
+
+            // Get or create entries map
+            let entries_id = match tx.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => tx.put_object(automerge::ROOT, "entries", ObjType::Map)?,
+            };
+
+            // Check if entry already exists to preserve created timestamp
+            let existing_created =
+                tx.get(entries_id.clone(), path)
+                    .ok()
+                    .flatten()
+                    .and_then(|(v, entry_id)| {
+                        if let Value::Object(ObjType::Map) = v {
+                            tx.get(entry_id, "created")
+                                .ok()
+                                .flatten()
+                                .and_then(|(v, _)| {
+                                    if let Value::Scalar(s) = v {
+                                        s.to_i64().and_then(chrono::DateTime::from_timestamp_millis)
+                                    } else {
+                                        None
+                                    }
+                                })
+                        } else {
+                            None
+                        }
+                    });
+
+            // Create or replace the entry
+            let entry_id = tx.put_object(entries_id, path, ObjType::Map)?;
+            tx.put(entry_id.clone(), "doc_id", doc_id)?;
+            tx.put(entry_id.clone(), "node_type", node_type.as_str())?;
+            tx.put(
+                entry_id.clone(),
+                "created",
+                created
+                    .or(existing_created)
+                    .unwrap_or(now)
+                    .timestamp_millis(),
+            )?;
+            tx.put(entry_id, "modified", now.timestamp_millis())?;
+
+            // Update last_updated
+            tx.put(automerge::ROOT, "last_updated", now.timestamp_millis())?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Update only the modified timestamp for a path
+    pub fn update_path_modified(handle: &DocHandle, path: &str) -> Result<bool> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            let now = chrono::Utc::now();
+
+            // Get entries map
+            let entries_id = match tx.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(false),
+            };
+
+            // Get the entry for this path
+            let entry_id = match tx.get(entries_id, path) {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(false),
+            };
+
+            // Update only the modified timestamp
+            tx.put(entry_id, "modified", now.timestamp_millis())?;
+            tx.put(automerge::ROOT, "last_updated", now.timestamp_millis())?;
+
+            tx.commit();
+            Ok(true)
+        })
+    }
+
+    /// Remove a path entry
+    pub fn remove_path_entry(handle: &DocHandle, path: &str) -> Result<bool> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+
+            // Get entries map
+            let entries_id = match tx.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(false),
+            };
+
+            // Check if entry exists
+            let exists = tx.get(entries_id.clone(), path).ok().flatten().is_some();
+            if !exists {
+                return Ok(false);
+            }
+
+            // Delete the entry
+            tx.delete(entries_id, path)?;
+
+            // Update last_updated
+            tx.put(
+                automerge::ROOT,
+                "last_updated",
+                chrono::Utc::now().timestamp_millis(),
+            )?;
+
+            tx.commit();
+            Ok(true)
+        })
+    }
+
+    /// Move a path entry (preserves metadata except modified timestamp)
+    pub fn move_path_entry(handle: &DocHandle, from: &str, to: &str) -> Result<bool> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            let now = chrono::Utc::now();
+
+            // Get entries map
+            let entries_id = match tx.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(false),
+            };
+
+            // Read the existing entry
+            let (doc_id, node_type, created) = match tx.get(entries_id.clone(), from) {
+                Ok(Some((Value::Object(ObjType::Map), entry_id))) => {
+                    let doc_id = tx
+                        .get(entry_id.clone(), "doc_id")
+                        .ok()
+                        .flatten()
+                        .and_then(|(v, _)| Self::extract_string_value(&v));
+
+                    let node_type_str = tx
+                        .get(entry_id.clone(), "node_type")
+                        .ok()
+                        .flatten()
+                        .and_then(|(v, _)| Self::extract_string_value(&v));
+
+                    let created = tx
+                        .get(entry_id, "created")
+                        .ok()
+                        .flatten()
+                        .and_then(|(v, _)| {
+                            if let Value::Scalar(s) = v {
+                                s.to_i64()
+                            } else {
+                                None
+                            }
+                        });
+
+                    match (doc_id, node_type_str) {
+                        (Some(d), Some(n)) => (d, n, created),
+                        _ => return Ok(false),
+                    }
+                }
+                _ => return Ok(false),
+            };
+
+            // Delete the old entry
+            tx.delete(entries_id.clone(), from)?;
+
+            // Create the new entry
+            let new_entry_id = tx.put_object(entries_id, to, ObjType::Map)?;
+            tx.put(new_entry_id.clone(), "doc_id", doc_id.as_str())?;
+            tx.put(new_entry_id.clone(), "node_type", node_type.as_str())?;
+            tx.put(
+                new_entry_id.clone(),
+                "created",
+                created.unwrap_or_else(|| now.timestamp_millis()),
+            )?;
+            tx.put(new_entry_id, "modified", now.timestamp_millis())?;
+
+            // Update last_updated
+            tx.put(automerge::ROOT, "last_updated", now.timestamp_millis())?;
+
+            tx.commit();
+            Ok(true)
+        })
+    }
+
+    /// Check if a path exists
+    pub fn path_exists(handle: &DocHandle, path: &str) -> Result<bool> {
+        handle.with_document(|doc| {
+            // Get entries map
+            let entries_id = match doc.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(false),
+            };
+
+            // Check if entry exists
+            Ok(doc.get(entries_id, path).ok().flatten().is_some())
+        })
+    }
+
+    /// Get a single path entry
+    pub fn get_path_entry(
+        handle: &DocHandle,
+        path: &str,
+    ) -> Result<Option<crate::vfs::path_index::PathEntry>> {
+        handle.with_document(|doc| {
+            // Get entries map
+            let entries_id = match doc.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(None),
+            };
+
+            // Get the entry
+            match doc.get(entries_id, path) {
+                Ok(Some((Value::Object(ObjType::Map), entry_id))) => {
+                    Ok(Self::read_path_entry_from_obj(doc, entry_id))
+                }
+                _ => Ok(None),
+            }
+        })
+    }
+
+    /// List children of a directory path
+    pub fn list_path_children(
+        handle: &DocHandle,
+        dir_path: &str,
+    ) -> Result<Vec<(String, crate::vfs::path_index::PathEntry)>> {
+        handle.with_document(|doc| {
+            let mut children = Vec::new();
+
+            // Get entries map
+            let entries_id = match doc.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(children),
+            };
+
+            let normalized_dir = dir_path.trim_end_matches('/');
+            let prefix = if normalized_dir.is_empty() || normalized_dir == "/" {
+                "/"
+            } else {
+                normalized_dir
+            };
+
+            // Iterate over all keys
+            for key in doc.keys(entries_id.clone()) {
+                let path = key.to_string();
+
+                // Check if this is a direct child
+                if path.starts_with(prefix) && path != prefix {
+                    let remainder = if prefix == "/" {
+                        &path[1..]
+                    } else if path.len() > prefix.len() {
+                        &path[prefix.len() + 1..]
+                    } else {
+                        continue;
+                    };
+
+                    // Only direct children (no more slashes)
+                    if !remainder.contains('/') {
+                        if let Ok(Some((Value::Object(ObjType::Map), entry_id))) =
+                            doc.get(entries_id.clone(), key.as_str())
+                        {
+                            if let Some(entry) = Self::read_path_entry_from_obj(doc, entry_id) {
+                                children.push((path, entry));
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(children)
         })
     }
 }

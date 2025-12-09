@@ -5,7 +5,6 @@ use crate::vfs::path_index::PathIndex;
 use crate::vfs::types::*;
 use crate::vfs::watcher::DocumentWatcher;
 use crate::Bundle;
-use automerge::transaction::Transactable;
 use automerge::Automerge;
 use bytes::Bytes;
 use samod::storage::StorageKey;
@@ -36,20 +35,17 @@ impl VirtualFileSystem {
             .await
             .map_err(|e| VfsError::SamodError(format!("Failed to create path index: {e}")))?;
 
+        // Initialize with native Automerge structure
+        AutomergeHelpers::init_as_path_index(&index_handle)?;
+
         let root_id = index_handle.document_id().clone();
         let (event_tx, _) = broadcast::channel(100);
 
-        let vfs = Self {
+        Ok(Self {
             samod,
             root_id,
             event_tx,
-        };
-
-        // Initialize empty path index
-        let empty_index = PathIndex::new();
-        vfs.write_path_index(&empty_index).await?;
-
-        Ok(vfs)
+        })
     }
 
     /// Create a new VFS from a bundle
@@ -83,56 +79,43 @@ impl VirtualFileSystem {
         })
     }
 
-    /// Read the path index from the root document
-    async fn read_path_index(&self) -> Result<PathIndex> {
-        let handle = self
-            .samod
+    /// Get the path index document handle
+    async fn get_path_index_handle(&self) -> Result<DocHandle> {
+        self.samod
             .find(self.root_id.clone())
             .await
             .map_err(|e| VfsError::SamodError(format!("Failed to find path index: {e}")))?
-            .ok_or_else(|| VfsError::Other(anyhow::anyhow!("Path index not found")))?;
-
-        handle.with_document(|doc| {
-            use automerge::ReadDoc;
-            // Read the JSON string and deserialize
-            let index_json = doc
-                .get(automerge::ROOT, "path_index")
-                .map_err(VfsError::AutomergeError)?
-                .and_then(|(value, _)| AutomergeHelpers::extract_string_value(&value))
-                .ok_or_else(|| VfsError::Other(anyhow::anyhow!("Path index data not found")))?;
-
-            serde_json::from_str(&index_json).map_err(VfsError::SerializationError)
-        })
+            .ok_or_else(|| VfsError::Other(anyhow::anyhow!("Path index not found")))
     }
 
-    /// Write the path index to the root document
-    async fn write_path_index(&self, index: &PathIndex) -> Result<()> {
-        let handle = self
-            .samod
-            .find(self.root_id.clone()) // root_id points to path index!
-            .await
-            .map_err(|e| VfsError::SamodError(format!("Failed to find path index: {e}")))?
-            .ok_or_else(|| VfsError::Other(anyhow::anyhow!("Path index not found")))?;
-
-        handle.with_document(|doc| {
-            let mut tx = doc.transaction();
-            // Serialize to JSON string like other VFS documents
-            let index_json = serde_json::to_string(index).map_err(VfsError::SerializationError)?;
-            tx.put(automerge::ROOT, "path_index", index_json)?;
-            tx.commit();
-            Ok(())
-        })
+    /// Read the path index from the root document
+    async fn read_path_index(&self) -> Result<PathIndex> {
+        let handle = self.get_path_index_handle().await?;
+        AutomergeHelpers::read_path_index_native(&handle)
     }
 
-    /// Update path index atomically with a closure
-    async fn update_path_index<F, R>(&self, update_fn: F) -> Result<R>
-    where
-        F: FnOnce(&mut PathIndex) -> R,
-    {
-        let mut index = self.read_path_index().await?;
-        let result = update_fn(&mut index);
-        self.write_path_index(&index).await?;
-        Ok(result)
+    /// Set a single path entry
+    async fn set_path(&self, path: &str, doc_id: &str, node_type: NodeType) -> Result<()> {
+        let handle = self.get_path_index_handle().await?;
+        AutomergeHelpers::set_path_entry(&handle, path, doc_id, node_type, None)
+    }
+
+    /// Update only the modified timestamp for a path
+    async fn update_path_modified(&self, path: &str) -> Result<bool> {
+        let handle = self.get_path_index_handle().await?;
+        AutomergeHelpers::update_path_modified(&handle, path)
+    }
+
+    /// Remove a path entry
+    async fn remove_path(&self, path: &str) -> Result<bool> {
+        let handle = self.get_path_index_handle().await?;
+        AutomergeHelpers::remove_path_entry(&handle, path)
+    }
+
+    /// Move a path entry (preserves metadata)
+    async fn move_path(&self, from: &str, to: &str) -> Result<bool> {
+        let handle = self.get_path_index_handle().await?;
+        AutomergeHelpers::move_path_entry(&handle, from, to)
     }
 
     /// Create parent directories for a path if they don't exist
@@ -477,10 +460,8 @@ impl VirtualFileSystem {
 
         // Update path index
         let doc_id = doc_handle.document_id().clone();
-        self.update_path_index(|index| {
-            index.set_path(path.to_string(), doc_id.to_string(), NodeType::Document);
-        })
-        .await?;
+        self.set_path(path, &doc_id.to_string(), NodeType::Document)
+            .await?;
 
         // Add to parent directory
         self.add_to_parent(path, doc_id.clone(), NodeType::Document)
@@ -547,12 +528,7 @@ impl VirtualFileSystem {
                 }
 
                 // Update timestamp in index
-                self.update_path_index(|index| {
-                    if let Some(entry) = index.paths.get_mut(path) {
-                        entry.modified = chrono::Utc::now();
-                    }
-                })
-                .await?;
+                self.update_path_modified(path).await?;
 
                 // Emit event
                 let _ = self.event_tx.send(VfsEvent::DocumentUpdated {
@@ -586,12 +562,7 @@ impl VirtualFileSystem {
                 AutomergeHelpers::patch_document(&doc_handle, &full_path, value)?;
 
                 // Update timestamp in index
-                self.update_path_index(|index| {
-                    if let Some(entry) = index.paths.get_mut(path) {
-                        entry.modified = chrono::Utc::now();
-                    }
-                })
-                .await?;
+                self.update_path_modified(path).await?;
 
                 // Emit event
                 let _ = self.event_tx.send(VfsEvent::DocumentUpdated {
@@ -633,12 +604,7 @@ impl VirtualFileSystem {
                 )?;
 
                 // Update timestamp in index
-                self.update_path_index(|index| {
-                    if let Some(entry) = index.paths.get_mut(path) {
-                        entry.modified = chrono::Utc::now();
-                    }
-                })
-                .await?;
+                self.update_path_modified(path).await?;
 
                 // Emit event
                 let _ = self.event_tx.send(VfsEvent::DocumentUpdated {
@@ -718,32 +684,25 @@ impl VirtualFileSystem {
         }
 
         // Update in index - also update all children if it's a directory
-        self.update_path_index(|index| {
-            // If it's a directory, we need to move all children too
-            if node_type == NodeType::Directory {
-                // Collect all children paths
-                let mut children_to_move = Vec::new();
-                for path in index.all_paths() {
-                    if path.starts_with(&format!("{}/", from_path)) {
-                        children_to_move.push(path.clone());
-                    }
-                }
-
-                // Move all children
-                for child_path in children_to_move {
-                    let new_child_path = child_path.replacen(from_path, to_path, 1);
-                    index.move_path(&child_path, &new_child_path).map_err(|e| {
-                        VfsError::Other(anyhow::anyhow!("Failed to move child: {}", e))
-                    })?;
+        // If it's a directory, we need to move all children too
+        if node_type == NodeType::Directory {
+            // Collect all children paths
+            let mut children_to_move = Vec::new();
+            for path in index.all_paths() {
+                if path.starts_with(&format!("{}/", from_path)) {
+                    children_to_move.push(path.clone());
                 }
             }
 
-            // Move the directory/document itself
-            index
-                .move_path(from_path, to_path)
-                .map_err(VfsError::PathNotFound)
-        })
-        .await??;
+            // Move all children
+            for child_path in children_to_move {
+                let new_child_path = child_path.replacen(from_path, to_path, 1);
+                self.move_path(&child_path, &new_child_path).await?;
+            }
+        }
+
+        // Move the directory/document itself
+        self.move_path(from_path, to_path).await?;
 
         // Update the internal document name if the name changed
         let from_name = from_path.rsplit('/').next().unwrap_or(from_path);
@@ -823,11 +782,9 @@ impl VirtualFileSystem {
         }
 
         // Remove from index
-        let removed = self
-            .update_path_index(|index| index.remove_path(path))
-            .await?;
+        let removed = self.remove_path(path).await?;
 
-        if removed.is_some() {
+        if removed {
             // Remove from parent directory
             self.remove_from_parent(path).await?;
 
@@ -904,10 +861,8 @@ impl VirtualFileSystem {
 
         // Update path index
         let doc_id = dir_handle.document_id().clone();
-        self.update_path_index(|index| {
-            index.set_path(path.to_string(), doc_id.to_string(), NodeType::Directory);
-        })
-        .await?;
+        self.set_path(path, &doc_id.to_string(), NodeType::Directory)
+            .await?;
 
         // Add to parent directory
         self.add_to_parent(path, doc_id.clone(), NodeType::Directory)
@@ -1147,63 +1102,54 @@ mod tests {
 
     #[tokio::test]
     async fn test_document_update() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+        struct TestContent {
+            text: String,
+        }
+
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
-        // Create a document
-        let doc_handle = vfs
-            .create_document("/test.txt", "Initial content".to_string())
-            .await
-            .unwrap();
+        // Create a document with structured content
+        let initial = TestContent {
+            text: "Initial content".to_string(),
+        };
+        let doc_handle = vfs.create_document("/test.txt", initial).await.unwrap();
         let doc_id = doc_handle.document_id().clone();
 
-        // Verify initial content
+        // Verify initial content using the proper helper
         let handle = vfs.find_document("/test.txt").await.unwrap().unwrap();
-        let initial_content: String = handle.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(initial_content, "\"Initial content\"");
+        let doc_node: crate::vfs::types::DocNode<TestContent> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content.text, "Initial content");
 
         // Update the document
+        let updated_content = TestContent {
+            text: "Updated content".to_string(),
+        };
         let updated = vfs
-            .update_document("/test.txt", "Updated content".to_string())
+            .update_document("/test.txt", updated_content)
             .await
             .unwrap();
         assert!(updated);
 
         // Verify updated content
         let handle = vfs.find_document("/test.txt").await.unwrap().unwrap();
-        let updated_content: String = handle.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(updated_content, "\"Updated content\"");
+        let doc_node: crate::vfs::types::DocNode<TestContent> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content.text, "Updated content");
 
         // Verify document ID remains the same
         assert_eq!(handle.document_id(), &doc_id);
 
         // Try to update a non-existent document
+        let non_existent = TestContent {
+            text: "Content".to_string(),
+        };
         let updated = vfs
-            .update_document("/non-existent.txt", "Content".to_string())
+            .update_document("/non-existent.txt", non_existent)
             .await
             .unwrap();
         assert!(!updated);
@@ -1266,37 +1212,39 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_in_nested_directory() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+        struct TestContent {
+            text: String,
+        }
+
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
-        // Create a document in a nested directory
-        vfs.create_document("/a/b/c/file.txt", "Original content".to_string())
+        // Create a document in a nested directory with structured content
+        let original = TestContent {
+            text: "Original content".to_string(),
+        };
+        vfs.create_document("/a/b/c/file.txt", original)
             .await
             .unwrap();
 
         // Update the nested document
+        let new_content = TestContent {
+            text: "New content".to_string(),
+        };
         let updated = vfs
-            .update_document("/a/b/c/file.txt", "New content".to_string())
+            .update_document("/a/b/c/file.txt", new_content)
             .await
             .unwrap();
         assert!(updated);
 
-        // Verify the update
+        // Verify the update using the proper helper
         let handle = vfs.find_document("/a/b/c/file.txt").await.unwrap().unwrap();
-        let content: String = handle.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content, "\"New content\"");
+        let doc_node: crate::vfs::types::DocNode<TestContent> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content.text, "New content");
     }
 
     #[tokio::test]
@@ -2011,16 +1959,10 @@ mod tests {
         let index = vfs.read_path_index().await.unwrap();
         assert_eq!(index.paths.len(), 0);
 
-        // Update the path index
-        vfs.update_path_index(|index| {
-            index.set_path(
-                "/test.json".to_string(),
-                "doc123".to_string(),
-                NodeType::Document,
-            );
-        })
-        .await
-        .unwrap();
+        // Update the path index using incremental set_path
+        vfs.set_path("/test.json", "doc123", NodeType::Document)
+            .await
+            .unwrap();
 
         // Verify the update
         let index = vfs.read_path_index().await.unwrap();
@@ -2029,20 +1971,12 @@ mod tests {
         assert_eq!(index.get_doc_id("/test.json"), Some(&"doc123".to_string()));
 
         // Update again with more entries
-        vfs.update_path_index(|index| {
-            index.set_path(
-                "/dir/file.json".to_string(),
-                "doc456".to_string(),
-                NodeType::Document,
-            );
-            index.set_path(
-                "/dir".to_string(),
-                "doc789".to_string(),
-                NodeType::Directory,
-            );
-        })
-        .await
-        .unwrap();
+        vfs.set_path("/dir/file.json", "doc456", NodeType::Document)
+            .await
+            .unwrap();
+        vfs.set_path("/dir", "doc789", NodeType::Directory)
+            .await
+            .unwrap();
 
         // Verify multiple entries
         let index = vfs.read_path_index().await.unwrap();
