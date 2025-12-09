@@ -1,4 +1,4 @@
-import type { DocumentData } from '@tonk/core';
+import type { DocumentData, JsonValue } from '@tonk/core';
 import type { StateCreator } from 'zustand';
 import { getVFSService } from '@/vfs-client';
 
@@ -81,7 +81,7 @@ export const sync =
                 prev === undefined ||
                 JSON.stringify(prev) !== JSON.stringify(value)
               ) {
-                patches.push(vfs.patchFile(options.path, [key], value));
+                patches.push(vfs.patchFile(options.path, [key], value as JsonValue));
               }
             }
 

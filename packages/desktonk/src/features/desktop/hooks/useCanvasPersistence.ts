@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { useEditor } from 'tldraw';
-import { getVFSService } from '@/vfs-client';
+import { useEditor, type TLStoreSnapshot } from 'tldraw';
+import { getVFSService, type JsonValue } from '@/vfs-client';
 import { useVFS } from '../../../hooks/useVFS';
 
 const CANVAS_STATE_PATH = '/.state/desktop';
@@ -42,18 +42,16 @@ export function useCanvasPersistence() {
         }
 
         const doc = await vfs.readFile(CANVAS_STATE_PATH);
-        const content = doc.content as {
-          schema: unknown;
-          store: Record<string, unknown>;
+        const content = doc.content as unknown as {
+          schema: TLStoreSnapshot['schema'];
+          store: TLStoreSnapshot['store'];
         };
 
         if (!cancelled && content.schema && content.store) {
           // Reconstruct tldraw snapshot format
-          const snapshot = {
-            document: {
-              schema: content.schema,
-              store: content.store,
-            },
+          const snapshot: TLStoreSnapshot = {
+            schema: content.schema,
+            store: content.store,
           };
 
           // Use editor.loadSnapshot to restore the canvas state
@@ -97,7 +95,7 @@ export function useCanvasPersistence() {
         saveTimeout = setTimeout(async () => {
           try {
             const snapshot = editor.getSnapshot();
-            const store = snapshot.document.store as Record<string, unknown>;
+            const store = snapshot.document.store;
 
             const exists = await vfs.exists(CANVAS_STATE_PATH);
 
@@ -107,8 +105,8 @@ export function useCanvasPersistence() {
                 CANVAS_STATE_PATH,
                 {
                   content: {
-                    schema: snapshot.document.schema,
-                    store: store,
+                    schema: snapshot.document.schema as unknown as JsonValue,
+                    store: store as unknown as JsonValue,
                   },
                 },
                 true
@@ -125,7 +123,7 @@ export function useCanvasPersistence() {
               const prev = previousStoreRef.current[key];
               if (!prev || JSON.stringify(prev) !== JSON.stringify(value)) {
                 patches.push(
-                  vfs.patchFile(CANVAS_STATE_PATH, ['store', key], value)
+                  vfs.patchFile(CANVAS_STATE_PATH, ['store', key], value as unknown as JsonValue)
                 );
               }
             }
@@ -186,9 +184,9 @@ export function useCanvasPersistence() {
           try {
             isLoadingExternal = true;
 
-            const content = docData.content as {
-              schema: unknown;
-              store: Record<string, unknown>;
+            const content = docData.content as unknown as {
+              schema: TLStoreSnapshot['schema'];
+              store: TLStoreSnapshot['store'];
             };
 
             if (!content || !content.schema || !content.store) {
@@ -196,11 +194,9 @@ export function useCanvasPersistence() {
             }
 
             // Reconstruct tldraw snapshot format
-            const snapshot = {
-              document: {
-                schema: content.schema,
-                store: content.store,
-              },
+            const snapshot: TLStoreSnapshot = {
+              schema: content.schema,
+              store: content.store,
             };
 
             // Load the updated snapshot from other tab
