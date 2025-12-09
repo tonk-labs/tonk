@@ -47,8 +47,8 @@
     "@automerge/automerge-repo-storage-indexeddb": "^2.2.0",
     "@tonk/core": "file:../../packages/core-js",
     "lucide-react": "^0.475.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "react": "^19.1.2",
+    "react-dom": "^19.1.2",
     "zustand": "^5.0.3"
   },
   "author": "tonk-labs",
