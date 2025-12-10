@@ -1,16 +1,15 @@
 {
   "type": "module",
   "devDependencies": {
+    "@biomejs/biome": "^2.3.8",
     "@eslint/js": "^9.31.0",
     "@socketsecurity/bun-security-scanner": "^1.1.1",
     "@typescript-eslint/eslint-plugin": "^8.38.0",
     "@typescript-eslint/parser": "^8.38.0",
     "eslint": "^9.31.0",
-    "eslint-config-prettier": "^10.1.8",
     "globals": "^16.3.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.2",
-    "prettier": "^3.6.2",
     "typescript": "^5.3.3"
   },
   "scripts": {
@@ -21,14 +20,14 @@
     "docs:dev": "mdbook serve docs --open --port 4069",
     "lint": "eslint packages/*/src/**/*.ts",
     "lint:fix": "eslint packages/*/src/**/*.ts --fix",
-    "format": "prettier --write *.md packages/*/README.md && bun --filter '*' format",
-    "format:check": "prettier --check *.md packages/*/README.md && bun --filter '*' format:check",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
     "lint:all": "bun run lint && bun run format:check",
     "fix:all": "bun run lint:fix && bun run format"
   },
   "lint-staged": {
-    "*.{md,json}": [
-      "prettier --write"
+    "*.{ts,tsx,js,jsx,json,md}": [
+      "biome format --write --no-errors-on-unmatched"
     ]
   },
   "overrides": {

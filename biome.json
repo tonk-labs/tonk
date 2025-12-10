@@ -1,0 +1,55 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.8/schema.json",
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 80,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "trailingCommas": "es5",
+      "semicolons": "always",
+      "arrowParentheses": "asNeeded",
+      "bracketSpacing": true
+    }
+  },
+  "json": {
+    "formatter": {
+      "lineWidth": 120
+    }
+  },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": [
+      "**",
+      "!!**/.direnv",
+      "!!**/dist",
+      "!!**/dev-dist",
+      "!!**/node_modules",
+      "!!**/coverage",
+      "!**/*.min.js",
+      "!**/*.min.css",
+      "!**/pnpm-lock.yaml",
+      "!**/package-lock.json",
+      "!**/yarn.lock",
+      "!!**/.next",
+      "!!**/.nuxt",
+      "!!**/.output",
+      "!!**/.vuepress/dist",
+      "!!**/.serverless",
+      "!!**/.fusebox",
+      "!!**/.dynamodb",
+      "!**/.tern-port",
+      "!!**/.vscode-test",
+      "!!**/.nyc_output",
+      "!!**/lib-cov",
+      "!!**/logs",
+      "!**/*.log",
+      "!**/public"
+    ]
+  }
+}
