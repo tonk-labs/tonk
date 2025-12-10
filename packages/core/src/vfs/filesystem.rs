@@ -476,17 +476,17 @@ impl VirtualFileSystem {
         Ok(doc_handle)
     }
 
-    /// Update a document at the specified path
-    pub async fn update_document<T>(&self, path: &str, content: T) -> Result<bool>
+    /// Set a document at the specified path
+    pub async fn set_document<T>(&self, path: &str, content: T) -> Result<bool>
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
     {
-        self.update_document_inner(path, content, Bytes::new(), false)
+        self.set_document_inner(path, content, Bytes::new(), false)
             .await
     }
 
-    /// Update a document at the specified path using bytes
-    pub async fn update_document_with_bytes<T>(
+    /// Set a document at the specified path using bytes
+    pub async fn set_document_with_bytes<T>(
         &self,
         path: &str,
         content: T,
@@ -495,11 +495,11 @@ impl VirtualFileSystem {
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
     {
-        self.update_document_inner(path, content, bytes, true).await
+        self.set_document_inner(path, content, bytes, true).await
     }
 
-    /// Update an existing document at the specified path
-    async fn update_document_inner<T>(
+    /// Set an existing document at the specified path
+    async fn set_document_inner<T>(
         &self,
         path: &str,
         content: T,
@@ -516,15 +516,15 @@ impl VirtualFileSystem {
         // Find the existing document
         match self.find_document(path).await? {
             Some(doc_handle) => {
-                // Update content
+                // Set content
                 if use_bytes {
-                    AutomergeHelpers::update_document_content_with_bytes(
+                    AutomergeHelpers::set_document_content_with_bytes(
                         &doc_handle,
                         content,
                         bytes,
                     )?;
                 } else {
-                    AutomergeHelpers::update_document_content(&doc_handle, content)?;
+                    AutomergeHelpers::set_document_content(&doc_handle, content)?;
                 }
 
                 // Update timestamp in index
@@ -537,6 +537,34 @@ impl VirtualFileSystem {
                 });
 
                 Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Update a document with intelligent diffing
+    pub async fn update_document<T>(&self, path: &str, content: T) -> Result<bool>
+    where
+        T: serde::Serialize + Send + 'static,
+    {
+        if path == "/" {
+            return Err(VfsError::RootPathError);
+        }
+
+        match self.find_document(path).await? {
+            Some(doc_handle) => {
+                let changed = AutomergeHelpers::update_document_content(&doc_handle, content)?;
+
+                if changed {
+                    self.update_path_modified(path).await?;
+
+                    let _ = self.event_tx.send(VfsEvent::DocumentUpdated {
+                        path: path.to_string(),
+                        doc_id: doc_handle.document_id().clone(),
+                    });
+                }
+
+                Ok(changed)
             }
             None => Ok(false),
         }
@@ -1041,7 +1069,7 @@ mod tests {
         }
 
         // Update the document
-        vfs.update_document("/test.txt", "Updated".to_string())
+        vfs.set_document("/test.txt", "Updated".to_string())
             .await
             .unwrap();
 
@@ -1071,7 +1099,7 @@ mod tests {
         let result = vfs.create_directory("/").await;
         assert!(matches!(result, Err(VfsError::RootPathError)));
 
-        let result = vfs.update_document("/", "content".to_string()).await;
+        let result = vfs.set_document("/", "content".to_string()).await;
         assert!(matches!(result, Err(VfsError::RootPathError)));
     }
 
@@ -1101,7 +1129,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_document_update() {
+    async fn test_document_set() {
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1130,7 +1158,7 @@ mod tests {
             text: "Updated content".to_string(),
         };
         let updated = vfs
-            .update_document("/test.txt", updated_content)
+            .set_document("/test.txt", updated_content)
             .await
             .unwrap();
         assert!(updated);
@@ -1149,7 +1177,7 @@ mod tests {
             text: "Content".to_string(),
         };
         let updated = vfs
-            .update_document("/non-existent.txt", non_existent)
+            .set_document("/non-existent.txt", non_existent)
             .await
             .unwrap();
         assert!(!updated);
@@ -1211,7 +1239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_in_nested_directory() {
+    async fn test_set_in_nested_directory() {
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1235,7 +1263,7 @@ mod tests {
             text: "New content".to_string(),
         };
         let updated = vfs
-            .update_document("/a/b/c/file.txt", new_content)
+            .set_document("/a/b/c/file.txt", new_content)
             .await
             .unwrap();
         assert!(updated);
@@ -1984,5 +2012,157 @@ mod tests {
         assert!(index.has_path("/test.json"));
         assert!(index.has_path("/dir"));
         assert!(index.has_path("/dir/file.json"));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_adds_new_keys() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document
+        let initial = serde_json::json!({ "a": 1 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update with new key
+        let updated = serde_json::json!({ "a": 1, "b": 2 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 1, "b": 2 }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_removes_missing_keys() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document with two keys
+        let initial = serde_json::json!({ "a": 1, "b": 2 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update with only one key - should remove "b"
+        let updated = serde_json::json!({ "a": 1 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content - "b" should be gone
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 1 }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_changes_values() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document
+        let initial = serde_json::json!({ "a": 1 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update value
+        let updated = serde_json::json!({ "a": 2 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 2 }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_nested_diff() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document with nested structure
+        let initial = serde_json::json!({ "x": { "a": 1 } });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update nested object - add key and change value
+        let updated = serde_json::json!({ "x": { "a": 2, "b": 3 } });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "x": { "a": 2, "b": 3 } }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_unchanged_returns_false() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document
+        let initial = serde_json::json!({ "a": 1 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update with same content
+        let updated = serde_json::json!({ "a": 1 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(!changed);
+    }
+
+    #[tokio::test]
+    async fn test_update_document_array_replacement() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document with array
+        let initial = serde_json::json!({ "items": [1, 2, 3] });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update array
+        let updated = serde_json::json!({ "items": [1, 2, 4] });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "items": [1, 2, 4] }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_type_change() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document with object
+        let initial = serde_json::json!({ "a": { "nested": true } });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Change type from object to scalar
+        let updated = serde_json::json!({ "a": 1 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 1 }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_non_existent_returns_false() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Try to update non-existent document
+        let content = serde_json::json!({ "a": 1 });
+        let changed = vfs.update_document("/non-existent.json", content).await.unwrap();
+        assert!(!changed);
     }
 }

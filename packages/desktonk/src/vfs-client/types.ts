@@ -59,7 +59,8 @@ export type VFSWorkerMessage =
       path: string;
       jsonPath: string[];
       value: JsonValue | string | number | boolean | null;
-    };
+    }
+  | { type: 'updateFile'; id: string; path: string; content: JsonValue };
 
 // Response types for VFS Worker communication (responses to client)
 export type VFSWorkerResponse =
@@ -74,6 +75,7 @@ export type VFSWorkerResponse =
     }
   | { type: 'writeFile'; id: string; success: boolean; error?: string }
   | { type: 'patchFile'; id: string; success: boolean; data?: boolean; error?: string }
+  | { type: 'updateFile'; id: string; success: boolean; data?: boolean; error?: string }
   | { type: 'deleteFile'; id: string; success: boolean; error?: string }
   | { type: 'rename'; id: string; success: boolean; error?: string }
   | {

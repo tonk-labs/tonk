@@ -1,4 +1,9 @@
-import type { JsonValue, DocumentData, RefNode, Manifest } from '@tonk/core/slim';
+import type {
+  DocumentData,
+  JsonValue,
+  Manifest,
+  RefNode,
+} from '@tonk/core/slim';
 
 // Re-export core types for convenience
 export type { JsonValue, DocumentData, RefNode, Manifest };
@@ -30,7 +35,12 @@ export type VFSWorkerMessage =
   | { type: 'unwatchDirectory'; id: string; path: string }
   | { type: 'toBytes'; id: string }
   | { type: 'forkToBytes'; id: string }
-  | { type: 'loadBundle'; id: string; bundleBytes: ArrayBuffer; serverUrl?: string }
+  | {
+      type: 'loadBundle';
+      id: string;
+      bundleBytes: ArrayBuffer;
+      serverUrl?: string;
+    }
   | {
       type: 'initializeFromUrl';
       id: string;
@@ -54,7 +64,8 @@ export type VFSWorkerMessage =
       path: string;
       jsonPath: string[];
       value: JsonValue;
-    };
+    }
+  | { type: 'updateFile'; id: string; path: string; content: JsonValue };
 
 // Response types for VFS Worker communication (responses to client)
 export type VFSWorkerResponse =
@@ -68,7 +79,20 @@ export type VFSWorkerResponse =
       error?: string;
     }
   | { type: 'writeFile'; id: string; success: boolean; error?: string }
-  | { type: 'patchFile'; id: string; success: boolean; data?: boolean; error?: string }
+  | {
+      type: 'patchFile';
+      id: string;
+      success: boolean;
+      data?: boolean;
+      error?: string;
+    }
+  | {
+      type: 'updateFile';
+      id: string;
+      success: boolean;
+      data?: boolean;
+      error?: string;
+    }
   | { type: 'deleteFile'; id: string; success: boolean; error?: string }
   | { type: 'rename'; id: string; success: boolean; error?: string }
   | {
@@ -107,7 +131,12 @@ export type VFSWorkerResponse =
     }
   | { type: 'loadBundle'; id: string; success: boolean; error?: string }
   | { type: 'initializeFromUrl'; id: string; success: boolean; error?: string }
-  | { type: 'initializeFromBytes'; id: string; success: boolean; error?: string }
+  | {
+      type: 'initializeFromBytes';
+      id: string;
+      success: boolean;
+      error?: string;
+    }
   | {
       type: 'getServerUrl';
       id: string;
@@ -124,7 +153,12 @@ export type VFSWorkerResponse =
     }
   // Watch event notifications (no id, matched by watchId)
   | { type: 'fileChanged'; watchId: string; documentData: DocumentData }
-  | { type: 'directoryChanged'; watchId: string; path: string; changeData: unknown }
+  | {
+      type: 'directoryChanged';
+      watchId: string;
+      path: string;
+      changeData: unknown;
+    }
   // Connection status events (broadcast, no id)
   | { type: 'ready'; needsBundle?: boolean }
   | { type: 'disconnected' }

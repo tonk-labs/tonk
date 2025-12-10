@@ -57,9 +57,7 @@ export function useEditorVFSSave({
         // Skip if content hasn't changed
         if (text === lastSavedContentRef.current) return;
 
-        await vfs.writeFile(filePath, {
-          content: { text },
-        });
+        await vfs.updateFile(filePath, { text });
 
         lastSavedContentRef.current = text;
 
