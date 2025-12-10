@@ -1,5 +1,5 @@
 import type { JSONContent } from '@tiptap/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button/button';
 import { ChatWindow, useChat } from '@/features/chat';
@@ -11,7 +11,6 @@ import Layout from '@/features/text-editor/components/layout/layout';
 import { useVFS } from '@/hooks/useVFS';
 import { useEditorVFSSave } from './hooks/useEditorVFSSave';
 import './index.css';
-import styles from './textEditor.module.css';
 
 function TextEditorApp() {
   const [searchParams] = useSearchParams();
@@ -135,48 +134,37 @@ function TextEditorApp() {
     loadFile();
   }, [filePath, vfs, connectionState, setDocument, setTitle]);
 
-  // Handle error state
-  if (error) {
-    return (
-      <div className={styles.textEditorContainer}>
-        <Layout>
-          <div className="flex items-center justify-center h-full">
+  const content = useMemo(() => {
+    if (error) {
+      return (<div className="flex items-center justify-center h-full">
             <div className="text-center">
               <h2 className="text-xl font-bold text-red-600 mb-4">Error</h2>
-              <p className="text-gray-300 mb-6">{error}</p>
+              <p className="mb-6">{error}</p>
               <Button variant="default" onClick={() => navigate('/')}>
                 Return to Desktop
               </Button>
             </div>
-          </div>
-        </Layout>
-      </div>
-    );
-  }
-
-  // Handle loading state
-  if (loading || connectionState !== 'connected') {
-    return (
-      <div className={styles.textEditorContainer}>
-        <Layout>
-          <div className="flex items-center justify-center h-full">
+          </div>);
+    }
+    if (loading || connectionState !== 'connected') {
+      return (<div className="flex items-center justify-center h-full">
             <div className="text-center">
-              <p className="text-gray-300">
+              <p>
                 {connectionState !== 'connected'
                   ? `Connecting to VFS... (${connectionState})`
                   : 'Loading file...'}
               </p>
             </div>
-          </div>
-        </Layout>
-      </div>
-    );
-  }
+          </div>);
+    }
+
+    return (<Editor />);
+  },[connectionState, error, loading, navigate]);
 
   return (
-    <div className={styles.textEditorContainer}>
+    <div className={"p-4 m-0 min-w-[320px] min-h-screen bg-[#f2f3f4] overflow-clip w-full h-screen relative dark:bg-[#0e1317] text-gray-300"}>
       <Layout>
-        <Editor />
+        {content}
       </Layout>
 
       {/* Intercom-style floating chat button */}

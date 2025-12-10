@@ -16,6 +16,10 @@
   @apply bg-white relative max-w-[900px] w-[80%] h-full overflow-visible;
 }
 
+.dark main #editor-paper {
+    @apply text-white bg-black;
+}
+
 .toolbar-wrapper {
   @apply w-full overflow-auto flex absolute m-0 p-0 top-0 items-center justify-center;
 }
@@ -32,6 +36,7 @@ body {
   --tt-toolbar-height: 44px;
   --tt-theme-text: var(--tt-gray-light-900);
 }
+
 .dark body {
   --tt-theme-text: var(--tt-gray-dark-900);
 }
@@ -56,4 +61,8 @@ body {
 
 main .tiptap-toolbar[data-variant="fixed"] {
   @apply bg-[#E8EEF4];
+}
+
+.dark main .tiptap-toolbar[data-variant=fixed] {
+  @apply bg-[#192129];
 }

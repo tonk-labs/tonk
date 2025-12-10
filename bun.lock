@@ -4,15 +4,16 @@
   "workspaces": {
     "": {
       "devDependencies": {
-        "@biomejs/biome": "^2.3.8",
         "@eslint/js": "^9.31.0",
         "@socketsecurity/bun-security-scanner": "^1.1.1",
         "@typescript-eslint/eslint-plugin": "^8.38.0",
         "@typescript-eslint/parser": "^8.38.0",
         "eslint": "^9.31.0",
+        "eslint-config-prettier": "^10.1.8",
         "globals": "^16.3.0",
         "husky": "^9.1.7",
         "lint-staged": "^16.1.2",
+        "prettier": "^3.6.2",
         "typescript": "^5.3.3",
       },
     },
@@ -26,8 +27,8 @@
         "@automerge/automerge-repo-storage-indexeddb": "^2.2.0",
         "@tonk/core": "workspace:*",
         "lucide-react": "^0.475.0",
-        "react": "^19.1.2",
-        "react-dom": "^19.1.2",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
         "zustand": "^5.0.3",
       },
       "devDependencies": {
@@ -66,7 +67,7 @@
     },
     "packages/core-js": {
       "name": "@tonk/core",
-      "version": "0.1.3",
+      "version": "0.1.1",
       "devDependencies": {
         "@types/node": "^24.3.0",
         "esbuild": "^0.25.11",
@@ -100,7 +101,7 @@
         "@tiptap/pm": "^3.8.0",
         "@tiptap/react": "^3.8.0",
         "@tiptap/starter-kit": "^3.8.0",
-        "@tonk/core": "0.1.1",
+        "@tonk/core": "0.1.2",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "immer": "^10.1.3",
@@ -144,10 +145,10 @@
       "version": "0.0.0",
       "dependencies": {
         "@base-ui-components/react": "^1.0.0-beta.6",
-        "@tonk/core": "^0.1.3",
+        "@tonk/core": "0.1.2",
         "clsx": "^2.1.1",
-        "react": "^19.1.2",
-        "react-dom": "^19.1.2",
+        "react": "^19.1.1",
+        "react-dom": "^19.1.1",
         "react-icons": "^5.5.0",
         "tailwind-merge": "^3.4.0",
       },
@@ -1718,6 +1719,8 @@
 
     "eslint": ["eslint@9.39.1", "", { "dependencies": { "@eslint-community/eslint-utils": "4.9.0", "@eslint-community/regexpp": "4.12.2", "@eslint/config-array": "0.21.1", "@eslint/config-helpers": "0.4.2", "@eslint/core": "0.17.0", "@eslint/eslintrc": "3.3.3", "@eslint/js": "9.39.1", "@eslint/plugin-kit": "0.4.1", "@humanfs/node": "0.16.7", "@humanwhocodes/module-importer": "1.0.1", "@humanwhocodes/retry": "0.4.3", "@types/estree": "1.0.8", "ajv": "6.12.6", "chalk": "4.1.2", "cross-spawn": "7.0.6", "debug": "4.4.3", "escape-string-regexp": "4.0.0", "eslint-scope": "8.4.0", "eslint-visitor-keys": "4.2.1", "espree": "10.4.0", "esquery": "1.6.0", "esutils": "2.0.3", "fast-deep-equal": "3.1.3", "file-entry-cache": "8.0.0", "find-up": "5.0.0", "glob-parent": "6.0.2", "ignore": "5.3.2", "imurmurhash": "0.1.4", "is-glob": "4.0.3", "json-stable-stringify-without-jsonify": "1.0.1", "lodash.merge": "4.6.2", "minimatch": "3.1.2", "natural-compare": "1.4.0", "optionator": "0.9.4" }, "optionalDependencies": { "jiti": "2.6.1" }, "bin": { "eslint": "bin/eslint.js" } }, "sha512-BhHmn2yNOFA9H9JmmIVKJmd288g9hrVRDkdoIgRCRuSySRUHH7r/DI6aAXW9T1WwUuY3DFgrcaqB+deURBLR5g=="],
 
+    "eslint-config-prettier": ["eslint-config-prettier@10.1.8", "", { "peerDependencies": { "eslint": "9.39.1" }, "bin": { "eslint-config-prettier": "bin/cli.js" } }, "sha512-82GZUjRS0p/jganf6q1rEO25VSoHH0hKPCTrgillPjdI/3bgBhAE1QzHrHTizjpRvy6pGAvKjDJtk2pF9NDq8w=="],
+
     "eslint-scope": ["eslint-scope@8.4.0", "", { "dependencies": { "esrecurse": "4.3.0", "estraverse": "5.3.0" } }, "sha512-sNXOfKCn74rt8RICKMvJS7XKV/Xk9kA7DyJr8mJik3S7Cwgy3qlkkmyS2uQB3jiJg6VNdZd/pDBJu0nvG2NlTg=="],
 
     "eslint-visitor-keys": ["eslint-visitor-keys@4.2.1", "", {}, "sha512-Uhdk5sfqcee/9H/rCOJikYz67o0a2Tw2hGRPOG2Y1R2dg7brRe1uG0yaNQDHu+TO/uQPF/5eCapvYSmHUjt7JQ=="],
@@ -2309,6 +2312,8 @@
     "postcss-value-parser": ["postcss-value-parser@4.2.0", "", {}, "sha512-1NNCs6uurfkVbeXG4S8JFT9t19m45ICnif8zWLd5oPSZ50QnwMfK+H3jv408d4jw/7Bttv5axS5IiHoLaVNHeQ=="],
 
     "prelude-ls": ["prelude-ls@1.2.1", "", {}, "sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g=="],
+
+    "prettier": ["prettier@3.7.4", "", { "bin": { "prettier": "bin/prettier.cjs" } }, "sha512-v6UNi1+3hSlVvv8fSaoUbggEM5VErKmmpGA7Pl3HF8V6uKY7rvClBOJlH6yNwQtfTueNkGVpOv/mtWL9L4bgRA=="],
 
     "pretty-bytes": ["pretty-bytes@6.1.1", "", {}, "sha512-mQUvGU6aUFQ+rNvTIAcZuWGRT9a6f6Yrg9bHs4ImKF+HZCEK+plBvnAZYSIQztknZF2qnzNtr6F8s0+IuptdlQ=="],
 
@@ -2902,13 +2907,13 @@
 
     "@tldraw/editor/eventemitter3": ["eventemitter3@4.0.7", "", {}, "sha512-8guHBZCwKnFhYdHr2ysuRWErTwhoN2X8XELRlrRwpmfeY2jjuUN4taQMsULKUVo1K4DvZl+0pgfyoysHxvmvEw=="],
 
-    "@tonk/desktonk/@tonk/core": ["@tonk/core@0.1.1", "", {}, "sha512-H8VFsFpBP59q1lqgP+DLD5Jg1aVe3X3PfRZ+e9UmqgLoyRL9KfH9XGCfYLI6bcn23ZGuS26wVwswcDgF/hmwuA=="],
+    "@tonk/desktonk/@tonk/core": ["@tonk/core@0.1.2", "", {}, "sha512-4nRtVDBZjavbz1MvAmCDvVWJfNGSwTVD82lrhhU68YHrwMlFBwIv0ALyC3zgSHspkU6n19tT9ct/qhHD2/s7og=="],
 
     "@tonk/desktonk/@tonk/relay": ["@tonk/relay@0.1.1", "", { "optionalDependencies": { "@tonk/relay-darwin-arm64": "0.1.0" }, "bin": { "tonk-relay": "bin/relay.js" } }, "sha512-xehj7YxHm42jmxwXt4OtgJeiHR9l3UiA/B7/UOkYfkqFD4aploR+T/bd7EYm4JBhi3ucfT0KYx7uA6R3mu7fGQ=="],
 
     "@tonk/desktonk/@tonk/relay-darwin-arm64": ["@tonk/relay-darwin-arm64@0.1.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-YCSRbmjM4EFeJQTtUjpZLfvsbk/+AkWaQPyiK4HOuKGE9oA/t8rVpEg1J07M9Kr6os91OH3TMg+d/hCLuHDLJA=="],
 
-    "@tonk/launcher/@tonk/core": ["@tonk/core@0.1.3", "", {}, "sha512-pi5Q5f57EvvC4ZTnEVvT2IX/HU60NHBCulru6fmEP5KItFCcOuUkyE2euCGcsRQtS6mdHM8QmwSZvRP3wiKb7Q=="],
+    "@tonk/launcher/@tonk/core": ["@tonk/core@0.1.2", "", {}, "sha512-4nRtVDBZjavbz1MvAmCDvVWJfNGSwTVD82lrhhU68YHrwMlFBwIv0ALyC3zgSHspkU6n19tT9ct/qhHD2/s7og=="],
 
     "@tonk/relay/@types/node": ["@types/node@22.19.1", "", { "dependencies": { "undici-types": "6.21.0" } }, "sha512-LCCV0HdSZZZb34qifBsyWlUmok6W7ouER+oQIGBScS8EsZsQbrtFTUrDX4hOl+CS6p7cnNC4td+qrSVGSCTUfQ=="],
 
