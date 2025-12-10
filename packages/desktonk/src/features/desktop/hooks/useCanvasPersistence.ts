@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useEditor, type TLStoreSnapshot } from 'tldraw';
+import { type TLStoreSnapshot, useEditor } from 'tldraw';
 import { getVFSService, type JsonValue } from '@/vfs-client';
 import { useVFS } from '../../../hooks/useVFS';
 
@@ -10,9 +10,6 @@ export function useCanvasPersistence() {
   const { connectionState } = useVFS();
   const hasLoadedRef = useRef(false);
   const [isReady, setIsReady] = useState(false);
-
-  // Track previous store state for diffing
-  const previousStoreRef = useRef<Record<string, unknown>>({});
 
   // Load canvas state once on mount
   useEffect(() => {
@@ -56,9 +53,6 @@ export function useCanvasPersistence() {
           // Use editor.loadSnapshot to restore the canvas state
           editor.loadSnapshot(snapshot);
 
-          // Initialize tracking ref
-          previousStoreRef.current = { ...content.store };
-
           hasLoadedRef.current = true;
           setIsReady(true);
         } else {
@@ -90,53 +84,20 @@ export function useCanvasPersistence() {
       async () => {
         try {
           const snapshot = editor.getSnapshot();
-          const store = snapshot.document.store;
+          const content = {
+            schema: snapshot.document.schema as unknown as JsonValue,
+            store: snapshot.document.store as unknown as JsonValue,
+          };
 
           const exists = await vfs.exists(CANVAS_STATE_PATH);
 
           if (!exists) {
             // First save: create full document
-            await vfs.writeFile(
-              CANVAS_STATE_PATH,
-              {
-                content: {
-                  schema: snapshot.document.schema as unknown as JsonValue,
-                  store: store as unknown as JsonValue,
-                },
-              },
-              true
-            );
-            previousStoreRef.current = { ...store };
+            await vfs.writeFile(CANVAS_STATE_PATH, { content }, true);
             return;
           }
 
-          // Incremental save: patch only changed entries
-          const patches: Promise<boolean>[] = [];
-
-          // Check for new/modified entries
-          for (const [key, value] of Object.entries(store)) {
-            const prev = previousStoreRef.current[key];
-            if (!prev || JSON.stringify(prev) !== JSON.stringify(value)) {
-              patches.push(
-                vfs.patchFile(CANVAS_STATE_PATH, ['store', key], value as unknown as JsonValue)
-              );
-            }
-          }
-
-          // Check for deleted entries
-          for (const key of Object.keys(previousStoreRef.current)) {
-            if (!(key in store)) {
-              patches.push(
-                vfs.patchFile(CANVAS_STATE_PATH, ['store', key], null)
-              );
-            }
-          }
-
-          if (patches.length > 0) {
-            await Promise.all(patches);
-          }
-
-          previousStoreRef.current = { ...store };
+          await vfs.updateFile(CANVAS_STATE_PATH, content);
         } catch (err) {
           console.error(
             '[useCanvasPersistence] ❌ Canvas state save failed',
@@ -194,9 +155,6 @@ export function useCanvasPersistence() {
 
             // Load the updated snapshot from other tab
             editor.loadSnapshot(snapshot);
-
-            // Update our tracking ref
-            previousStoreRef.current = { ...content.store };
           } catch (err) {
             console.error(
               '[useCanvasPersistence] Error loading external canvas state:',
