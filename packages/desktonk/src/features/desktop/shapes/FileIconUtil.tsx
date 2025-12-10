@@ -24,6 +24,7 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
     customIcon: T.optional(T.string),
     thumbnail: T.optional(T.string),
     thumbnailPath: T.optional(T.string),
+    thumbnailVersion: T.optional(T.number),
     appHandler: T.optional(T.string),
     w: T.number,
     h: T.number,

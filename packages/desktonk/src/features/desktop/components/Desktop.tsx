@@ -107,14 +107,35 @@ const DesktopInner = track(() => {
       const existingShape = existingShapes.get(shapeId);
 
       if (existingShape) {
-        // Update existing shape if position changed
-        if (existingShape.x !== position.x || existingShape.y !== position.y) {
-          console.log('[Desktop] Updating shape position:', fileId, position);
+        // Check if position or props changed
+        // biome-ignore lint/suspicious/noExplicitAny: Shape props type
+        const existingProps = (existingShape as any).props || {};
+        const positionChanged =
+          existingShape.x !== position.x || existingShape.y !== position.y;
+        const propsChanged =
+          existingProps.thumbnailPath !== file.desktopMeta?.thumbnailPath ||
+          existingProps.thumbnailVersion !== file.desktopMeta?.thumbnailVersion ||
+          existingProps.mimeType !== file.mimeType ||
+          existingProps.customIcon !== file.desktopMeta?.icon;
+
+        if (positionChanged || propsChanged) {
+          console.log('[Desktop] Updating shape:', fileId, {
+            positionChanged,
+            propsChanged,
+            thumbnailVersion: file.desktopMeta?.thumbnailVersion,
+          });
           editor.updateShape({
             id: shapeId as unknown as TLShapeId,
             type: 'file-icon',
             x: position.x,
             y: position.y,
+            props: {
+              ...existingProps,
+              thumbnailPath: file.desktopMeta?.thumbnailPath,
+              thumbnailVersion: file.desktopMeta?.thumbnailVersion,
+              mimeType: file.mimeType,
+              customIcon: file.desktopMeta?.icon,
+            },
           });
         }
         existingShapes.delete(shapeId);
@@ -133,6 +154,7 @@ const DesktopInner = track(() => {
               mimeType: file.mimeType,
               customIcon: file.desktopMeta?.icon,
               thumbnailPath: file.desktopMeta?.thumbnailPath,
+              thumbnailVersion: file.desktopMeta?.thumbnailVersion,
               appHandler: file.desktopMeta?.appHandler,
               w: 80,
               h: 100,

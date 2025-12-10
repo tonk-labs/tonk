@@ -23,6 +23,12 @@ const loadListeners = new Map<
 >();
 
 /**
+ * Listeners for cache invalidation.
+ * Components subscribe to be notified when their thumbnail is invalidated.
+ */
+const invalidationListeners = new Map<string, Set<() => void>>();
+
+/**
  * Hook for lazy-loading thumbnails from VFS.
  *
  * @param thumbnailPath - VFS path to the thumbnail file (e.g., /var/lib/desktonk/thumbnails/myfile.png)
@@ -46,6 +52,33 @@ export function useThumbnail(thumbnailPath: string | undefined): {
     return !!thumbnailPath;
   });
 
+  // Counter to force reload when thumbnail is invalidated
+  const [reloadTrigger, setReloadTrigger] = useState(0);
+
+  // Subscribe to invalidation events for this thumbnail path
+  useEffect(() => {
+    if (!thumbnailPath) return;
+
+    const handleInvalidation = () => {
+      // Clear local state and trigger reload
+      setThumbnail(null);
+      setIsLoading(true);
+      setReloadTrigger((prev) => prev + 1);
+    };
+
+    if (!invalidationListeners.has(thumbnailPath)) {
+      invalidationListeners.set(thumbnailPath, new Set());
+    }
+    invalidationListeners.get(thumbnailPath)!.add(handleInvalidation);
+
+    return () => {
+      invalidationListeners.get(thumbnailPath)?.delete(handleInvalidation);
+      if (invalidationListeners.get(thumbnailPath)?.size === 0) {
+        invalidationListeners.delete(thumbnailPath);
+      }
+    };
+  }, [thumbnailPath]);
+
   useEffect(() => {
     // If no thumbnail path, nothing to load
     if (!thumbnailPath) {
@@ -54,7 +87,7 @@ export function useThumbnail(thumbnailPath: string | undefined): {
       return;
     }
 
-    // Check cache first
+    // Check cache first (skip if reloadTrigger changed, meaning cache was invalidated)
     if (thumbnailCache.has(thumbnailPath)) {
       setThumbnail(thumbnailCache.get(thumbnailPath)!);
       setIsLoading(false);
@@ -148,7 +181,7 @@ export function useThumbnail(thumbnailPath: string | undefined): {
     };
 
     loadThumbnail();
-  }, [thumbnailPath]);
+  }, [thumbnailPath, reloadTrigger]);
 
   return { thumbnail, isLoading };
 }
@@ -156,9 +189,18 @@ export function useThumbnail(thumbnailPath: string | undefined): {
 /**
  * Clears a specific thumbnail from the cache.
  * Call this when a thumbnail is regenerated to force reload.
+ * Notifies any components currently displaying this thumbnail to reload.
  */
 export function invalidateThumbnailCache(thumbnailPath: string): void {
   thumbnailCache.delete(thumbnailPath);
+
+  // Notify any components currently displaying this thumbnail
+  const listeners = invalidationListeners.get(thumbnailPath);
+  if (listeners) {
+    for (const listener of listeners) {
+      listener();
+    }
+  }
 }
 
 /**

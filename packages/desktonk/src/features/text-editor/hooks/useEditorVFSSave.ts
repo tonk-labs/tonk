@@ -16,6 +16,64 @@ interface UseEditorVFSSaveOptions {
 }
 
 /**
+ * Generate and save thumbnail for a file.
+ * Called once when leaving the editor (on unmount).
+ */
+async function generateThumbnail(
+  text: string,
+  filePath: string,
+  vfs: VFSService
+): Promise<void> {
+  const fileName = filePath.split('/').pop() || 'file.txt';
+  const fileId = fileName.startsWith('.')
+    ? fileName
+    : fileName.replace(/\.[^.]+$/, '');
+
+  console.log('[EditorVFSSave] Generating thumbnail on unmount for:', fileName);
+
+  const thumbnailDataUrl = await generateTextThumbnailFromContent(text, fileName);
+  if (!thumbnailDataUrl) return;
+
+  const thumbnailPath = `${THUMBNAILS_DIRECTORY}/${fileId}.png`;
+  const base64Data = thumbnailDataUrl.split(',')[1];
+
+  // Write thumbnail file
+  const thumbnailExists = await vfs.exists(thumbnailPath);
+  await vfs.writeFile(
+    thumbnailPath,
+    {
+      content: {
+        data: base64Data,
+        mimeType: 'image/png',
+      },
+    },
+    !thumbnailExists
+  );
+
+  // Update file with thumbnailPath and version - preserve existing content
+  const currentDoc = await vfs.readFile(filePath);
+  const currentContent = currentDoc.content as Record<string, unknown>;
+  const currentDesktopMeta = (currentContent?.desktopMeta as Record<string, unknown>) || {};
+
+  // Use updateFile with merged content including updated desktopMeta
+  await vfs.updateFile(filePath, {
+    ...currentContent,
+    desktopMeta: {
+      ...currentDesktopMeta,
+      thumbnailPath,
+      thumbnailVersion: Date.now(),
+    },
+  });
+
+  // Invalidate cache and notify desktop
+  invalidateThumbnailCache(thumbnailPath);
+  const desktopService = getDesktopService();
+  await desktopService.reloadFile(filePath);
+
+  console.log('[EditorVFSSave] ✅ Thumbnail generated on unmount:', thumbnailPath);
+}
+
+/**
  * Hook that auto-saves editor content to VFS when changes occur.
  * Debounces writes to avoid excessive VFS operations.
  */
@@ -25,9 +83,6 @@ export function useEditorVFSSave({
   debounceMs = 1000,
 }: UseEditorVFSSaveOptions) {
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const thumbnailTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
   const lastSavedContentRef = useRef<string | null>(null);
   const lastFilePathRef = useRef<string | null>(null);
 
@@ -57,80 +112,25 @@ export function useEditorVFSSave({
         // Skip if content hasn't changed
         if (text === lastSavedContentRef.current) return;
 
-        await vfs.updateFile(filePath, { text });
-
-        lastSavedContentRef.current = text;
-
-        // Schedule thumbnail regeneration (more debounced since it's expensive)
-        if (thumbnailTimeoutRef.current) {
-          clearTimeout(thumbnailTimeoutRef.current);
+        // Read existing file to preserve desktopMeta
+        let existingDesktopMeta: Record<string, unknown> | undefined;
+        try {
+          const existingDoc = await vfs.readFile(filePath);
+          const existingContent = existingDoc.content as Record<string, unknown>;
+          if (existingContent?.desktopMeta && typeof existingContent.desktopMeta === 'object') {
+            existingDesktopMeta = existingContent.desktopMeta as Record<string, unknown>;
+          }
+        } catch {
+          // File might not exist yet, that's fine
         }
 
-        thumbnailTimeoutRef.current = setTimeout(async () => {
-          try {
-            // Extract file name and fileId from path
-            const fileName = filePath.split('/').pop() || 'file.txt';
-            const fileId = fileName.startsWith('.')
-              ? fileName
-              : fileName.replace(/\.[^.]+$/, '');
-            console.log(
-              '[EditorVFSSave] Starting thumbnail regeneration for:',
-              fileName
-            );
+        // Use updateFile with merged content
+        await vfs.updateFile(filePath, {
+          text,
+          ...(existingDesktopMeta && { desktopMeta: existingDesktopMeta }),
+        });
 
-            // Generate new thumbnail
-            const thumbnailDataUrl = await generateTextThumbnailFromContent(
-              text,
-              fileName
-            );
-            console.log(
-              '[EditorVFSSave] Thumbnail generated:',
-              thumbnailDataUrl ? 'YES' : 'NO'
-            );
-
-            if (thumbnailDataUrl) {
-              // Write thumbnail to separate file
-              const thumbnailPath = `${THUMBNAILS_DIRECTORY}/${fileId}.png`;
-              const base64Data = thumbnailDataUrl.split(',')[1];
-
-              await vfs.writeFile(
-                thumbnailPath,
-                {
-                  content: {
-                    data: base64Data,
-                    mimeType: 'image/png',
-                  },
-                },
-                true // create if not exists
-              );
-              console.log(
-                '[EditorVFSSave] ✅ Wrote thumbnail to:',
-                thumbnailPath
-              );
-
-              // Patch file to update thumbnailPath reference
-              await vfs.patchFile(
-                filePath,
-                ['desktopMeta', 'thumbnailPath'],
-                thumbnailPath
-              );
-
-              // Invalidate thumbnail cache so component reloads
-              invalidateThumbnailCache(thumbnailPath);
-
-              // Notify desktop service to refresh the file icon
-              const desktopService = getDesktopService();
-              console.log('[EditorVFSSave] Calling reloadFile:', filePath);
-              await desktopService.reloadFile(filePath);
-              console.log('[EditorVFSSave] reloadFile complete');
-            }
-          } catch (error) {
-            console.warn(
-              `Failed to regenerate thumbnail for ${filePath}:`,
-              error
-            );
-          }
-        }, 2000); // 2 second debounce for thumbnail regeneration
+        lastSavedContentRef.current = text;
       } catch (error) {
         console.warn(`Failed to save editor content to ${filePath}:`, error);
       }
@@ -158,22 +158,27 @@ export function useEditorVFSSave({
       }, debounceMs);
     });
 
-    // Cleanup on unmount - save immediately to prevent data loss
+    // Cleanup on unmount - save content and generate thumbnail
     return () => {
       unsubscribe();
 
-      // Clear pending timeouts
+      // Clear pending save timeout
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
       }
-      if (thumbnailTimeoutRef.current) {
-        clearTimeout(thumbnailTimeoutRef.current);
-      }
 
-      // Final save with current content (don't wait for debounce)
+      // Final save with current content and generate thumbnail
       const currentDocument = useEditorStore.getState().document;
-      if (currentDocument) {
+      if (currentDocument && filePath) {
+        const text = jsonContentToText(currentDocument);
+
+        // Save content first (sync-ish via fire-and-forget)
         saveToVFS(currentDocument);
+
+        // Generate thumbnail (fire-and-forget, will complete after navigation)
+        generateThumbnail(text, filePath, vfs).catch((error) => {
+          console.warn('[EditorVFSSave] Failed to generate thumbnail on unmount:', error);
+        });
       }
     };
   }, [filePath, vfs, debounceMs, saveToVFS]);

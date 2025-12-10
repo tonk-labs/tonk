@@ -88,6 +88,7 @@ export function extractDesktopFile(
           icon: safeString(validatedMeta.icon),
           appHandler: safeString(validatedMeta.appHandler),
           thumbnailPath: safeString(validatedMeta.thumbnailPath),
+          thumbnailVersion: safeNumber(validatedMeta.thumbnailVersion),
         }
       : undefined,
   };
