@@ -2013,4 +2013,156 @@ mod tests {
         assert!(index.has_path("/dir"));
         assert!(index.has_path("/dir/file.json"));
     }
+
+    #[tokio::test]
+    async fn test_update_document_adds_new_keys() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document
+        let initial = serde_json::json!({ "a": 1 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update with new key
+        let updated = serde_json::json!({ "a": 1, "b": 2 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 1, "b": 2 }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_removes_missing_keys() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document with two keys
+        let initial = serde_json::json!({ "a": 1, "b": 2 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update with only one key - should remove "b"
+        let updated = serde_json::json!({ "a": 1 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content - "b" should be gone
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 1 }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_changes_values() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document
+        let initial = serde_json::json!({ "a": 1 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update value
+        let updated = serde_json::json!({ "a": 2 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 2 }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_nested_diff() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document with nested structure
+        let initial = serde_json::json!({ "x": { "a": 1 } });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update nested object - add key and change value
+        let updated = serde_json::json!({ "x": { "a": 2, "b": 3 } });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "x": { "a": 2, "b": 3 } }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_unchanged_returns_false() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document
+        let initial = serde_json::json!({ "a": 1 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update with same content
+        let updated = serde_json::json!({ "a": 1 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(!changed);
+    }
+
+    #[tokio::test]
+    async fn test_update_document_array_replacement() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document with array
+        let initial = serde_json::json!({ "items": [1, 2, 3] });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update array
+        let updated = serde_json::json!({ "items": [1, 2, 4] });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "items": [1, 2, 4] }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_type_change() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document with object
+        let initial = serde_json::json!({ "a": { "nested": true } });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Change type from object to scalar
+        let updated = serde_json::json!({ "a": 1 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify content
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 1 }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_non_existent_returns_false() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Try to update non-existent document
+        let content = serde_json::json!({ "a": 1 });
+        let changed = vfs.update_document("/non-existent.json", content).await.unwrap();
+        assert!(!changed);
+    }
 }
