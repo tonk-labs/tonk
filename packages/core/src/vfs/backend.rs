@@ -843,8 +843,8 @@ impl AutomergeHelpers {
         })
     }
 
-    /// Update content of an existing document
-    pub fn update_document_content<T>(handle: &DocHandle, content: T) -> Result<()>
+    /// Set content of an existing document
+    pub fn set_document_content<T>(handle: &DocHandle, content: T) -> Result<()>
     where
         T: serde::Serialize,
     {
@@ -886,8 +886,8 @@ impl AutomergeHelpers {
         })
     }
 
-    /// Update content and binary data of an existing document
-    pub fn update_document_content_with_bytes<T>(
+    /// Set content and binary data of an existing document
+    pub fn set_document_content_with_bytes<T>(
         handle: &DocHandle,
         content: T,
         bytes: Bytes,
@@ -934,6 +934,238 @@ impl AutomergeHelpers {
 
             tx.commit();
             Ok(())
+        })
+    }
+
+    // ============================================================
+    // Smart Update / Reconciliation Helpers
+    // ============================================================
+
+    /// Check if two JSON values are structurally equal
+    fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+        match (a, b) {
+            (serde_json::Value::Null, serde_json::Value::Null) => true,
+            (serde_json::Value::Bool(a), serde_json::Value::Bool(b)) => a == b,
+            (serde_json::Value::Number(a), serde_json::Value::Number(b)) => a == b,
+            (serde_json::Value::String(a), serde_json::Value::String(b)) => a == b,
+            (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                a.iter().zip(b.iter()).all(|(x, y)| Self::json_values_equal(x, y))
+            }
+            (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                a.iter().all(|(k, v)| b.get(k).map_or(false, |bv| Self::json_values_equal(v, bv)))
+            }
+            _ => false,
+        }
+    }
+
+    /// Reconcile arrays - currently does full replacement if different.
+    /// Isolated for easy future upgrade to smarter diffing.
+    fn reconcile_arrays(
+        tx: &mut automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+        key: &str,
+        _old_arr: &[serde_json::Value],
+        new_arr: &[serde_json::Value],
+    ) -> Result<bool> {
+        // V1: Full replacement - delete old, create new
+        let _ = tx.delete(obj_id.clone(), key);
+        let list_obj = tx.put_object(obj_id, key, ObjType::List)?;
+        for (i, item) in new_arr.iter().enumerate() {
+            Self::insert_json_value(tx, list_obj.clone(), i, item)?;
+        }
+        Ok(true)
+    }
+
+    /// Reconcile two JSON objects, applying minimal changes
+    fn reconcile_objects(
+        tx: &mut automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+        old_map: &serde_json::Map<String, serde_json::Value>,
+        new_map: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<bool> {
+        let mut changed = false;
+
+        // Delete keys that exist in old but not in new
+        for key in old_map.keys() {
+            if !new_map.contains_key(key) {
+                tx.delete(obj_id.clone(), key.as_str())?;
+                changed = true;
+            }
+        }
+
+        // Add or update keys from new
+        for (key, new_value) in new_map {
+            match old_map.get(key) {
+                None => {
+                    // Key doesn't exist in old - add it
+                    Self::put_json_value(tx, obj_id.clone(), key, new_value)?;
+                    changed = true;
+                }
+                Some(old_value) => {
+                    // Key exists - check if values differ
+                    if !Self::json_values_equal(old_value, new_value) {
+                        // Values differ - recurse or replace
+                        let did_change = Self::reconcile_json_values_at_key(
+                            tx,
+                            obj_id.clone(),
+                            key,
+                            old_value,
+                            new_value,
+                        )?;
+                        changed = changed || did_change;
+                    }
+                }
+            }
+        }
+
+        Ok(changed)
+    }
+
+    /// Reconcile a JSON value at a specific key within an object
+    fn reconcile_json_values_at_key(
+        tx: &mut automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+        key: &str,
+        old_value: &serde_json::Value,
+        new_value: &serde_json::Value,
+    ) -> Result<bool> {
+        match (old_value, new_value) {
+            // Both objects - recurse
+            (serde_json::Value::Object(old_map), serde_json::Value::Object(new_map)) => {
+                // Get the nested object ID
+                if let Ok(Some((Value::Object(ObjType::Map), nested_obj_id))) =
+                    tx.get(obj_id.clone(), key)
+                {
+                    Self::reconcile_objects(tx, nested_obj_id, old_map, new_map)
+                } else {
+                    // Object doesn't exist or is wrong type - replace
+                    Self::put_json_value(tx, obj_id, key, new_value)?;
+                    Ok(true)
+                }
+            }
+            // Both arrays - use array reconciliation
+            (serde_json::Value::Array(old_arr), serde_json::Value::Array(new_arr)) => {
+                if Self::json_values_equal(old_value, new_value) {
+                    Ok(false)
+                } else {
+                    Self::reconcile_arrays(tx, obj_id, key, old_arr, new_arr)
+                }
+            }
+            // Different types or scalar values - replace
+            _ => {
+                Self::put_json_value(tx, obj_id, key, new_value)?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Update document content with intelligent diffing
+    pub fn update_document_content<T>(handle: &DocHandle, content: T) -> Result<bool>
+    where
+        T: serde::Serialize,
+    {
+        handle.with_document(|doc| {
+            // Convert new content to JSON
+            let new_json =
+                serde_json::to_value(&content).map_err(VfsError::SerializationError)?;
+
+            // Read current content
+            let content_result = doc.get(automerge::ROOT, "content");
+            let (has_content, content_obj_id) = match content_result {
+                Ok(Some((Value::Object(_), obj_id))) => (true, Some(obj_id)),
+                _ => (false, None),
+            };
+
+            // Read existing content as JSON before starting transaction
+            let old_json = if has_content {
+                Some(Self::read_automerge_value(doc, content_obj_id.clone().unwrap())?)
+            } else {
+                None
+            };
+
+            let mut tx = doc.transaction();
+
+            if old_json.is_none() {
+                // No existing content - just set it
+                match &new_json {
+                    serde_json::Value::Object(map) => {
+                        let content_obj =
+                            tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                        for (k, v) in map {
+                            Self::put_json_value(&mut tx, content_obj.clone(), k, v)?;
+                        }
+                    }
+                    serde_json::Value::Array(arr) => {
+                        let content_obj =
+                            tx.put_object(automerge::ROOT, "content", ObjType::List)?;
+                        for (i, item) in arr.iter().enumerate() {
+                            Self::insert_json_value(&mut tx, content_obj.clone(), i, item)?;
+                        }
+                    }
+                    _ => {
+                        let content_obj =
+                            tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                        Self::put_json_value(&mut tx, content_obj, "value", &new_json)?;
+                    }
+                }
+                Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+                tx.commit();
+                return Ok(true);
+            }
+
+            // At this point, old_json is Some since we handled the None case above
+            let old_json = old_json.unwrap();
+
+            // Check if values are equal
+            if Self::json_values_equal(&old_json, &new_json) {
+                return Ok(false);
+            }
+
+            // Reconcile based on types
+            let changed = match (&old_json, &new_json) {
+                (serde_json::Value::Object(old_map), serde_json::Value::Object(new_map)) => {
+                    Self::reconcile_objects(&mut tx, content_obj_id.unwrap(), old_map, new_map)?
+                }
+                _ => {
+                    // Type mismatch or non-object content - full replacement
+                    let _ = tx.delete(automerge::ROOT, "content");
+                    match &new_json {
+                        serde_json::Value::Object(map) => {
+                            let content_obj =
+                                tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                            for (k, v) in map {
+                                Self::put_json_value(&mut tx, content_obj.clone(), k, v)?;
+                            }
+                        }
+                        serde_json::Value::Array(arr) => {
+                            let content_obj =
+                                tx.put_object(automerge::ROOT, "content", ObjType::List)?;
+                            for (i, item) in arr.iter().enumerate() {
+                                Self::insert_json_value(&mut tx, content_obj.clone(), i, item)?;
+                            }
+                        }
+                        _ => {
+                            let content_obj =
+                                tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                            Self::put_json_value(&mut tx, content_obj, "value", &new_json)?;
+                        }
+                    }
+                    true
+                }
+            };
+
+            if changed {
+                Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+            }
+
+            tx.commit();
+            Ok(changed)
         })
     }
 

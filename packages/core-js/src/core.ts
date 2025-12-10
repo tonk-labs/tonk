@@ -714,11 +714,11 @@ export class TonkCore {
   }
 
   /**
-   * Update an existing file with the given content.
+   * Set an existing file with the given content.
    *
-   * @param path - Absolute path of the file to update
+   * @param path - Absolute path of the file to set
    * @param content - Content to write to the file (any JSON-serializable value)
-   * @returns true if the file was updated, false if it didn't exist
+   * @returns true if the file was set, false if it didn't exist
    * @throws {FileSystemError} If the path is invalid
    *
    * @example
@@ -727,41 +727,39 @@ export class TonkCore {
    * await createFile('/hello.txt', 'Hello, World!');
    *
    * // Overwrite it with a string
-   * await updateFile('/hello.txt', 'See you later!');
+   * await setFile('/hello.txt', 'See you later!');
    *
-   * // Update with an object
-   * await updateFile('/config.json', { theme: 'light', fontSize: 16 });
+   * // Set with an object
+   * await setFile('/config.json', { theme: 'light', fontSize: 16 });
    * ```
    */
-  async updateFile(path: string, content: JsonValue): Promise<boolean> {
+  async setFile(path: string, content: JsonValue): Promise<boolean> {
     try {
-      return await this.#wasm.updateFile(path, content);
+      return await this.#wasm.setFile(path, content);
     } catch (error) {
-      throw new FileSystemError(`Failed to update file at ${path}: ${error}`);
+      throw new FileSystemError(`Failed to set file at ${path}: ${error}`);
     }
   }
 
   /**
-   * Update an existing file with the given content.
+   * Set an existing file with the given content and bytes.
    *
-   * @param path - Absolute path of the file to update
+   * @param path - Absolute path of the file to set
    * @param content - Content to write to the file (any JSON-serializable value)
-   * @returns true if the file was updated, false if it didn't exist
+   * @param bytes - Binary data to store
+   * @returns true if the file was set, false if it didn't exist
    * @throws {FileSystemError} If the path is invalid
    *
    * @example
    * ```typescript
-   * // Create a text file
-   * await createFile('/hello.txt', 'Hello, World!');
+   * // Create a file with bytes
+   * await createFileWithBytes('/image.json', { type: 'png' }, imageData);
    *
-   * // Overwrite it with a string
-   * await updateFile('/hello.txt', 'See you later!');
-   *
-   * // Update with an object
-   * await updateFile('/config.json', { theme: 'light', fontSize: 16 });
+   * // Overwrite it
+   * await setFileWithBytes('/image.json', { type: 'jpeg' }, newImageData);
    * ```
    */
-  async updateFileWithBytes(
+  async setFileWithBytes(
     path: string,
     content: JsonValue,
     bytes: Uint8Array | string
@@ -769,11 +767,37 @@ export class TonkCore {
     try {
       let normalizedBytes: Uint8Array =
         typeof bytes === 'string' ? extractBytes(bytes) : bytes;
-      return await this.#wasm.updateFileWithBytes(
+      return await this.#wasm.setFileWithBytes(
         path,
         content,
         normalizedBytes
       );
+    } catch (error) {
+      throw new FileSystemError(`Failed to set file at ${path}: ${error}`);
+    }
+  }
+
+  /**
+   * Update an existing file with intelligent diffing.
+   * Compares the new content against existing content and applies minimal patches.
+   *
+   * @param path - Absolute path of the file to update
+   * @param content - New content for the file (any JSON-serializable value)
+   * @returns true if changes were made, false if content was unchanged or file didn't exist
+   * @throws {FileSystemError} If the path is invalid
+   *
+   * @example
+   * ```typescript
+   * // Only the 'theme' field will be patched, other fields remain untouched
+   * await updateFile('/config.json', { theme: 'dark', fontSize: 14 });
+   *
+   * // Adding new keys and removing missing ones
+   * await updateFile('/data.json', { newKey: 'value' }); // removes old keys not in new content
+   * ```
+   */
+  async updateFile(path: string, content: JsonValue): Promise<boolean> {
+    try {
+      return await (this.#wasm as any).updateFile(path, content);
     } catch (error) {
       throw new FileSystemError(`Failed to update file at ${path}: ${error}`);
     }
