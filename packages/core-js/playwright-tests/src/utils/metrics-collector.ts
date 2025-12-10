@@ -1,7 +1,7 @@
-import {
+import type {
   BenchmarkMetrics,
-  MemoryMetrics,
   LatencyMetrics,
+  MemoryMetrics,
 } from '../test-ui/types';
 
 /**

@@ -46,7 +46,9 @@ export async function restoreAppSlug(): Promise<string | null> {
   }
 }
 
-export async function persistBundleBytes(bytes: Uint8Array | null): Promise<void> {
+export async function persistBundleBytes(
+  bytes: Uint8Array | null
+): Promise<void> {
   try {
     const cache = await caches.open(CACHE_NAME);
 
@@ -134,5 +136,9 @@ export async function restoreWsUrl(): Promise<string | null> {
 
 // Clear all cached state
 export async function clearAllCache(): Promise<void> {
-  await Promise.all([persistAppSlug(null), persistBundleBytes(null), persistWsUrl(null)]);
+  await Promise.all([
+    persistAppSlug(null),
+    persistBundleBytes(null),
+    persistWsUrl(null),
+  ]);
 }

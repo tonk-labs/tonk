@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { getVFSService } from './vfs-service';
 
 interface ServerConfig {

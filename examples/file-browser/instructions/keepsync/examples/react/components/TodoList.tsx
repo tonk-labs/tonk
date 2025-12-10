@@ -1,5 +1,5 @@
-import React from "react";
-import { Todo, useTodoStore } from "../stores/todoStore";
+import React from 'react';
+import { type Todo, useTodoStore } from '../stores/todoStore';
 
 const TodoList = () => {
   const { todos, deleteTodo, toggleTodo } = useTodoStore();
@@ -13,7 +13,7 @@ const TodoList = () => {
       {todos.map((todo: Todo) => (
         <li
           key={todo.id}
-          className={`todo-item ${todo.completed ? "completed" : ""}`}
+          className={`todo-item ${todo.completed ? 'completed' : ''}`}
         >
           <input
             type="checkbox"

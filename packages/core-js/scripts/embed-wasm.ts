@@ -1,6 +1,6 @@
-import { generateWasmBase64 } from './encode-wasm.ts';
-import path from 'path';
 import fs from 'fs';
+import path from 'path';
+import { generateWasmBase64 } from './encode-wasm.ts';
 
 const WASM_FILES = [
   {

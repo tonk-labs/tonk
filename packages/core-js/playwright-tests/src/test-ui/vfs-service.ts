@@ -1,12 +1,12 @@
+import type { DocumentData, JsonValue } from '@tonk/core';
+import mime from 'mime';
+import TonkWorker from './tonk-worker.ts?worker';
 import type {
+  DocumentContent,
   VFSWorkerMessage,
   VFSWorkerResponse,
-  DocumentContent,
 } from './types';
-import type { DocumentData, JsonValue } from '@tonk/core';
 import { bytesToString, stringToBytes } from './vfs-utils';
-import TonkWorker from './tonk-worker.ts?worker';
-import mime from 'mime';
 
 const verbose = () => false;
 

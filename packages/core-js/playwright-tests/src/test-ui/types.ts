@@ -1,5 +1,5 @@
-import type { DocumentData, RefNode, JsonValue } from '../../../src/core.js';
 import type { ChildProcess } from 'child_process';
+import type { DocumentData, JsonValue, RefNode } from '../../../src/core.js';
 
 export type DocumentContent = {
   content: JsonValue;

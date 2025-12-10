@@ -1,4 +1,4 @@
-import React from "react";
+import React from 'react';
 
 /**
  * A simple Hello World view component that demonstrates basic layout and styling

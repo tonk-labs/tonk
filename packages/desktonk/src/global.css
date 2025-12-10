@@ -3,7 +3,9 @@
 
 /* Enable dark mode variant */
 /* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
-@variant dark (&:where(.dark, .dark *));
+@variant dark
+(
+&:where(.dark, .dark *));
 
 /* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
 @theme {

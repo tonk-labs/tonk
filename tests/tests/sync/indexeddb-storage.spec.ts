@@ -1,19 +1,19 @@
 import {
-  test,
   expect,
   setupTestWithServer,
+  test,
   waitForVFSConnection,
 } from '../fixtures';
 import {
   clearIndexedDB,
-  stopRelayServer,
-  restartRelayServer,
-  waitForReconnection,
-  verifyFileContent,
   createFile,
-  updateFile,
   fileExists,
   getIndexedDBDatabases,
+  restartRelayServer,
+  stopRelayServer,
+  updateFile,
+  verifyFileContent,
+  waitForReconnection,
   waitForSync,
 } from './indexeddb-helpers';
 

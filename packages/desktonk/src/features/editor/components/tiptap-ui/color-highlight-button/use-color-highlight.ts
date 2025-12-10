@@ -1,18 +1,15 @@
 'use client';
 
-import * as React from 'react';
 import type { Editor } from '@tiptap/react';
-import { useHotkeys } from 'react-hotkeys-hook';
-
-// --- Hooks ---
-import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
-import { useIsMobile } from '@/hooks/use-mobile';
-
-// --- Lib ---
-import { isMarkInSchema, isNodeTypeSelected } from '@/lib/utils';
-
 // --- Icons ---
 import { Highlighter } from 'lucide-react';
+import * as React from 'react';
+import { useHotkeys } from 'react-hotkeys-hook';
+import { useIsMobile } from '@/hooks/use-mobile';
+// --- Hooks ---
+import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
+// --- Lib ---
+import { isMarkInSchema, isNodeTypeSelected } from '@/lib/utils';
 
 export const COLOR_HIGHLIGHT_SHORTCUT_KEY = 'mod+shift+h';
 export const HIGHLIGHT_COLORS = [
@@ -97,20 +94,27 @@ export interface UseColorHighlightConfig {
 }
 
 export function pickHighlightColorsByValue(values: string[]) {
-  const colorMap = new Map(HIGHLIGHT_COLORS.map((color) => [color.value, color]));
+  const colorMap = new Map(HIGHLIGHT_COLORS.map(color => [color.value, color]));
   return values
-    .map((value) => colorMap.get(value))
+    .map(value => colorMap.get(value))
     .filter((color): color is (typeof HIGHLIGHT_COLORS)[number] => !!color);
 }
 
 export function canColorHighlight(editor: Editor | null): boolean {
   if (!editor || !editor.isEditable) return false;
-  if (!isMarkInSchema('highlight', editor) || isNodeTypeSelected(editor, ['image'])) return false;
+  if (
+    !isMarkInSchema('highlight', editor) ||
+    isNodeTypeSelected(editor, ['image'])
+  )
+    return false;
 
   return editor.can().setMark('highlight');
 }
 
-export function isColorHighlightActive(editor: Editor | null, highlightColor?: string): boolean {
+export function isColorHighlightActive(
+  editor: Editor | null,
+  highlightColor?: string
+): boolean {
   if (!editor || !editor.isEditable) return false;
   return highlightColor
     ? editor.isActive('highlight', { color: highlightColor })
@@ -172,12 +176,15 @@ export function useColorHighlight(config: UseColorHighlightConfig) {
   }, [editor, hideWhenUnavailable]);
 
   const handleColorHighlight = React.useCallback(() => {
-    if (!editor || !canColorHighlightState || !highlightColor || !label) return false;
+    if (!editor || !canColorHighlightState || !highlightColor || !label)
+      return false;
 
     if (editor.state.storedMarks) {
       const highlightMarkType = editor.schema.marks.highlight;
       if (highlightMarkType) {
-        editor.view.dispatch(editor.state.tr.removeStoredMark(highlightMarkType));
+        editor.view.dispatch(
+          editor.state.tr.removeStoredMark(highlightMarkType)
+        );
       }
     }
 
@@ -204,7 +211,7 @@ export function useColorHighlight(config: UseColorHighlightConfig) {
 
   useHotkeys(
     COLOR_HIGHLIGHT_SHORTCUT_KEY,
-    (event) => {
+    event => {
       event.preventDefault();
       handleColorHighlight();
     },

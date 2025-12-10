@@ -1,7 +1,7 @@
-import { test, expect } from '../fixtures';
 import { ConnectionManager } from '../../src/utils/connection-manager';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
 import { UptimeLogger } from '../../src/utils/uptime-logger';
+import { expect, test } from '../fixtures';
 
 interface ThrottleScenario {
   name: string;

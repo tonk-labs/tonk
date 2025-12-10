@@ -1,3 +1,7 @@
-export { useDesktop, useDesktopActions } from './useDesktop';
 export { useCanvasPersistence } from './useCanvasPersistence';
-export { useThumbnail, invalidateThumbnailCache, clearThumbnailCache } from './useThumbnail';
+export { useDesktop, useDesktopActions } from './useDesktop';
+export {
+  clearThumbnailCache,
+  invalidateThumbnailCache,
+  useThumbnail,
+} from './useThumbnail';

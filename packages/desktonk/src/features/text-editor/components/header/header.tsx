@@ -1,7 +1,7 @@
-import { DownloadIcon, Share2Icon, ArrowLeft } from 'lucide-react';
+import { ArrowLeft, DownloadIcon, Share2Icon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { Button } from '../../../../components/ui/button/button';
 import { PresenceIndicators } from '@/features/presence';
+import { Button } from '../../../../components/ui/button/button';
 import { EditableTitle } from './editable-title';
 
 export default function Header() {

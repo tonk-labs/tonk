@@ -1,7 +1,11 @@
-import { test, expect } from '../fixtures';
-import { setupTestWithServer, waitForVFSConnection } from '../fixtures';
 import { imageGenerator } from '../../src/utils/image-generator';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
+import {
+  expect,
+  setupTestWithServer,
+  test,
+  waitForVFSConnection,
+} from '../fixtures';
 
 test.describe('Large File Handling Tests', () => {
   test('should handle files up to 100MB efficiently', async ({
@@ -43,10 +47,7 @@ test.describe('Large File Handling Tests', () => {
             const vfsService = (window as any).vfsService;
             if (!vfsService) throw new Error('VFS service not available');
 
-            await vfsService.writeFile(
-              imageName,
-              image.data
-            );
+            await vfsService.writeFile(imageName, image.data);
           },
           {
             image,
@@ -150,10 +151,7 @@ test.describe('Large File Handling Tests', () => {
         await page.evaluate(
           async ({ image, imageName }: { image: any; imageName: string }) => {
             const vfsService = (window as any).vfsService;
-            await vfsService.writeFile(
-              imageName,
-              image.data
-            );
+            await vfsService.writeFile(imageName, image.data);
           },
           {
             image,
@@ -234,10 +232,7 @@ test.describe('Large File Handling Tests', () => {
         await page.evaluate(
           async ({ image, imageName }: { image: any; imageName: string }) => {
             const vfsService = (window as any).vfsService;
-            await vfsService.writeFile(
-              imageName,
-              image.data
-            );
+            await vfsService.writeFile(imageName, image.data);
           },
           {
             image,

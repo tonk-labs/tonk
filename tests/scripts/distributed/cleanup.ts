@@ -1,11 +1,11 @@
 #!/usr/bin/env tsx
 
 import {
-  EC2Client,
-  DescribeInstancesCommand,
-  TerminateInstancesCommand,
-  DescribeSecurityGroupsCommand,
   DeleteSecurityGroupCommand,
+  DescribeInstancesCommand,
+  DescribeSecurityGroupsCommand,
+  EC2Client,
+  TerminateInstancesCommand,
 } from '@aws-sdk/client-ec2';
 
 const REGION = process.env.AWS_REGION || 'eu-north-1';

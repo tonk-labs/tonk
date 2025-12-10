@@ -1,14 +1,14 @@
-import express from 'express';
-import cors from 'cors';
-import { WebSocketServer } from 'ws';
 import {
-  Chunk,
+  type Chunk,
   Repo,
-  RepoConfig,
-  StorageAdapterInterface,
-  StorageKey,
+  type RepoConfig,
+  type StorageAdapterInterface,
+  type StorageKey,
 } from '@automerge/automerge-repo';
 import { NodeWSServerAdapter } from '@automerge/automerge-repo-network-websocket';
+import cors from 'cors';
+import express from 'express';
+import { WebSocketServer } from 'ws';
 
 class Server {
   #socket: WebSocketServer;
@@ -35,7 +35,7 @@ class Server {
       // network: [new NodeWSServerAdapter(this.#socket) as any],
       network: [new NodeWSServerAdapter(this.#socket as any)],
       storage: this.#storage,
-      /** @ts-ignore @type {(import("automerge-repo").PeerId)}  */
+      /** @ts-expect-error @type {(import("automerge-repo").PeerId)}  */
       peerId: `storage-server` as PeerId,
       // Since this is a server, we don't share generously — meaning we only sync documents they already
       // know about and can ask for by ID.
@@ -115,7 +115,7 @@ class InMemoryStorageAdapter implements StorageAdapterInterface {
     this.#data.delete(key);
   }
   async loadRange(keyPrefix: StorageKey): Promise<Chunk[]> {
-    let result: Chunk[] = [];
+    const result: Chunk[] = [];
     for (const [key, value] of this.#data.entries()) {
       if (isPrefixOf(keyPrefix, key)) {
         result.push({

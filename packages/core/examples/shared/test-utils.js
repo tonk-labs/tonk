@@ -151,7 +151,7 @@ async function retry(fn, maxAttempts = 3, baseDelayMs = 100) {
       lastError = error;
       if (attempt === maxAttempts) break;
 
-      const delay = baseDelayMs * Math.pow(2, attempt - 1);
+      const delay = baseDelayMs * 2 ** (attempt - 1);
       await sleep(delay);
     }
   }

@@ -1,5 +1,5 @@
-import { useEffect } from 'react';
 import throttle from 'lodash.throttle';
+import { useEffect } from 'react';
 import { usePresence } from '../stores/presenceStore';
 
 const THROTTLE_MS = 4 * 60 * 1000; // Update every 4 minutes (before 5 min timeout)

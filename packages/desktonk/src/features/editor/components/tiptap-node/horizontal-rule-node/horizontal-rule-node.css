@@ -13,7 +13,7 @@
   height: 1px;
   background-color: var(--horizontal-rule-color);
 }
-.tiptap.ProseMirror [data-type=horizontalRule] {
+.tiptap.ProseMirror [data-type="horizontalRule"] {
   margin-top: 2.25em;
   margin-bottom: 2.25em;
   padding-top: 0.75rem;

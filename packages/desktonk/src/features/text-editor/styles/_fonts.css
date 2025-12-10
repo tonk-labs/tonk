@@ -6,16 +6,18 @@
 
 /* IBM Plex Mono - Regular */
 @font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-Regular.ttf') format('truetype');
+  font-family: "IBM Plex Mono";
+  src: url("../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-Regular.ttf")
+    format("truetype");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-Italic.ttf') format('truetype');
+  font-family: "IBM Plex Mono";
+  src: url("../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-Italic.ttf")
+    format("truetype");
   font-weight: 400;
   font-style: italic;
   font-display: swap;
@@ -23,16 +25,18 @@
 
 /* IBM Plex Mono - Light */
 @font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-Light.ttf') format('truetype');
+  font-family: "IBM Plex Mono";
+  src: url("../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-Light.ttf")
+    format("truetype");
   font-weight: 300;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-LightItalic.ttf') format('truetype');
+  font-family: "IBM Plex Mono";
+  src: url("../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-LightItalic.ttf")
+    format("truetype");
   font-weight: 300;
   font-style: italic;
   font-display: swap;
@@ -40,16 +44,18 @@
 
 /* IBM Plex Mono - Medium */
 @font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-Medium.ttf') format('truetype');
+  font-family: "IBM Plex Mono";
+  src: url("../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-Medium.ttf")
+    format("truetype");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-MediumItalic.ttf') format('truetype');
+  font-family: "IBM Plex Mono";
+  src: url("../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-MediumItalic.ttf")
+    format("truetype");
   font-weight: 500;
   font-style: italic;
   font-display: swap;
@@ -57,16 +63,18 @@
 
 /* IBM Plex Mono - SemiBold */
 @font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-SemiBold.ttf') format('truetype');
+  font-family: "IBM Plex Mono";
+  src: url("../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-SemiBold.ttf")
+    format("truetype");
   font-weight: 600;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-SemiBoldItalic.ttf') format('truetype');
+  font-family: "IBM Plex Mono";
+  src: url("../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-SemiBoldItalic.ttf")
+    format("truetype");
   font-weight: 600;
   font-style: italic;
   font-display: swap;
@@ -74,16 +82,18 @@
 
 /* IBM Plex Mono - Bold */
 @font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-Bold.ttf') format('truetype');
+  font-family: "IBM Plex Mono";
+  src: url("../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-Bold.ttf")
+    format("truetype");
   font-weight: 700;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-BoldItalic.ttf') format('truetype');
+  font-family: "IBM Plex Mono";
+  src: url("../../../assets/fonts/IBM_Plex_Mono/IBMPlexMono-BoldItalic.ttf")
+    format("truetype");
   font-weight: 700;
   font-style: italic;
   font-display: swap;
@@ -91,16 +101,18 @@
 
 /* Berkeley Mono - Regular */
 @font-face {
-  font-family: 'Berkeley Mono';
-  src: url('../../../assets/fonts/Berkeley_Mono/BerkeleyMono-Regular.ttf') format('truetype');
+  font-family: "Berkeley Mono";
+  src: url("../../../assets/fonts/Berkeley_Mono/BerkeleyMono-Regular.ttf")
+    format("truetype");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'Berkeley Mono';
-  src: url('../../../assets/fonts/Berkeley_Mono/BerkeleyMono-Italic.ttf') format('truetype');
+  font-family: "Berkeley Mono";
+  src: url("../../../assets/fonts/Berkeley_Mono/BerkeleyMono-Italic.ttf")
+    format("truetype");
   font-weight: 400;
   font-style: italic;
   font-display: swap;
@@ -108,16 +120,18 @@
 
 /* Berkeley Mono - Bold */
 @font-face {
-  font-family: 'Berkeley Mono';
-  src: url('../../../assets/fonts/Berkeley_Mono/BerkeleyMono-Bold.ttf') format('truetype');
+  font-family: "Berkeley Mono";
+  src: url("../../../assets/fonts/Berkeley_Mono/BerkeleyMono-Bold.ttf")
+    format("truetype");
   font-weight: 700;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'Berkeley Mono';
-  src: url('../../../assets/fonts/Berkeley_Mono/BerkeleyMono-BoldItalic.ttf') format('truetype');
+  font-family: "Berkeley Mono";
+  src: url("../../../assets/fonts/Berkeley_Mono/BerkeleyMono-BoldItalic.ttf")
+    format("truetype");
   font-weight: 700;
   font-style: italic;
   font-display: swap;

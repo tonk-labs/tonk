@@ -1,6 +1,6 @@
-import { test as base, Page } from '@playwright/test';
+import { test as base, type Page } from '@playwright/test';
 import { serverManager } from '../src/server/server-manager';
-import { ServerInstance } from '../src/test-ui/types';
+import type { ServerInstance } from '../src/test-ui/types';
 
 // Extend basic test with server fixture
 export const test = base.extend<{

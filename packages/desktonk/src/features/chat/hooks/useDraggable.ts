@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, type MouseEvent } from 'react';
+import { type MouseEvent, useCallback, useRef, useState } from 'react';
 
 export interface Position {
   x: number;

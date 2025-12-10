@@ -1,9 +1,9 @@
-import { useEffect, useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { bundleStorage } from '../launcher/services/bundleStorage';
 import { ErrorScreen } from './components/screens/ErrorScreen';
 import { LoadingScreen } from './components/screens/LoadingScreen';
 import { TonkProvider, useTonk } from './context/TonkContext';
 import { useServiceWorker } from './hooks/useServiceWorker';
-import { bundleStorage } from '../launcher/services/bundleStorage';
 import { ScreenState } from './types';
 
 function AppContent() {
@@ -13,7 +13,7 @@ function AppContent() {
 
   // Wait for service worker to be ready
   const waitForServiceWorkerReady = useCallback(async () => {
-    return new Promise<void>((resolve) => {
+    return new Promise<void>(resolve => {
       let timeoutId: number | undefined;
       let resolved = false;
 
@@ -21,7 +21,10 @@ function AppContent() {
         if (!resolved) {
           resolved = true;
           if (timeoutId) clearTimeout(timeoutId);
-          navigator.serviceWorker.removeEventListener('message', messageHandler);
+          navigator.serviceWorker.removeEventListener(
+            'message',
+            messageHandler
+          );
           resolve();
         }
       };
@@ -44,7 +47,9 @@ function AppContent() {
       // Short timeout - ping should respond quickly if SW is healthy
       timeoutId = window.setTimeout(() => {
         if (!resolved) {
-          console.log('Service worker ready check timed out, proceeding anyway');
+          console.log(
+            'Service worker ready check timed out, proceeding anyway'
+          );
           maybeResolve();
         }
       }, 500);
@@ -133,7 +138,8 @@ function AppContent() {
           }
         } catch (error: unknown) {
           console.error('Error loading bundle from IndexedDB:', error);
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           showError(`Error loading bundle: ${message}`);
         }
       } else {
@@ -153,7 +159,7 @@ function AppContent() {
 
         navigator.serviceWorker
           .register(serviceWorkerUrl, { type: 'module' })
-          .then((registration) => {
+          .then(registration => {
             if (import.meta.env.DEV) {
               setInterval(() => {
                 registration.update();
@@ -165,8 +171,13 @@ function AppContent() {
               if (newWorker) {
                 console.log('[SW] New service worker installing...');
                 newWorker.addEventListener('statechange', () => {
-                  if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                    console.log('[SW] New service worker installed, reloading...');
+                  if (
+                    newWorker.state === 'installed' &&
+                    navigator.serviceWorker.controller
+                  ) {
+                    console.log(
+                      '[SW] New service worker installed, reloading...'
+                    );
                     newWorker.postMessage({ type: 'skipWaiting' });
                     window.location.reload();
                   }
@@ -174,7 +185,7 @@ function AppContent() {
               }
             });
           })
-          .catch((err) => {
+          .catch(err => {
             console.log('ServiceWorker registration failed: ', err);
             const errorMsg =
               'Service Worker registration failed.\n\n' +
@@ -185,17 +196,26 @@ function AppContent() {
           });
 
         console.log('Waiting for service worker to take control...');
-        navigator.serviceWorker.addEventListener('controllerchange', async () => {
-          console.log('Service worker now controlling the page');
-          await initialize();
-        });
+        navigator.serviceWorker.addEventListener(
+          'controllerchange',
+          async () => {
+            console.log('Service worker now controlling the page');
+            await initialize();
+          }
+        );
       }
     } else {
       const errorMsg = 'Service Workers are not supported in this browser.';
       showError(errorMsg);
       notifyServiceWorkerSupport(false, errorMsg);
     }
-  }, [bootFirstApp, sendMessage, showLoadingScreen, showError, waitForServiceWorkerReady]);
+  }, [
+    bootFirstApp,
+    sendMessage,
+    showLoadingScreen,
+    showError,
+    waitForServiceWorkerReady,
+  ]);
 
   return (
     <div className="w-full h-full">

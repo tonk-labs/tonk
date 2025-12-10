@@ -29,7 +29,7 @@
 .tiptap-image-upload {
   margin: 2rem 0;
 }
-.tiptap-image-upload input[type=file] {
+.tiptap-image-upload input[type="file"] {
   display: none;
 }
 .tiptap-image-upload .tiptap-image-upload-dropzone {
@@ -102,11 +102,17 @@
 }
 .tiptap-image-upload .tiptap-image-upload-drag-area.drag-active {
   border-color: var(--tiptap-image-upload-border-active);
-  background-color: rgba(var(--tiptap-image-upload-active-rgb, 0, 123, 255), 0.05);
+  background-color: rgba(
+    var(--tiptap-image-upload-active-rgb, 0, 123, 255),
+    0.05
+  );
 }
 .tiptap-image-upload .tiptap-image-upload-drag-area.drag-over {
   border-color: var(--tiptap-image-upload-border-active);
-  background-color: rgba(var(--tiptap-image-upload-active-rgb, 0, 123, 255), 0.1);
+  background-color: rgba(
+    var(--tiptap-image-upload-active-rgb, 0, 123, 255),
+    0.1
+  );
 }
 .tiptap-image-upload .tiptap-image-upload-content {
   display: flex;
@@ -141,13 +147,17 @@
   border-radius: var(--tt-radius-md, 0.5rem);
   overflow: hidden;
 }
-.tiptap-image-upload .tiptap-image-upload-preview .tiptap-image-upload-progress {
+.tiptap-image-upload
+  .tiptap-image-upload-preview
+  .tiptap-image-upload-progress {
   position: absolute;
   inset: 0;
   background-color: var(--tiptap-image-upload-progress-bg);
   transition: all 300ms ease-out;
 }
-.tiptap-image-upload .tiptap-image-upload-preview .tiptap-image-upload-preview-content {
+.tiptap-image-upload
+  .tiptap-image-upload-preview
+  .tiptap-image-upload-preview-content {
   position: relative;
   border: 1px solid var(--tiptap-image-upload-border);
   border-radius: var(--tt-radius-md, 0.5rem);
@@ -156,18 +166,27 @@
   align-items: center;
   justify-content: space-between;
 }
-.tiptap-image-upload .tiptap-image-upload-preview .tiptap-image-upload-file-info {
+.tiptap-image-upload
+  .tiptap-image-upload-preview
+  .tiptap-image-upload-file-info {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   height: 2rem;
 }
-.tiptap-image-upload .tiptap-image-upload-preview .tiptap-image-upload-file-info .tiptap-image-upload-file-icon {
+.tiptap-image-upload
+  .tiptap-image-upload-preview
+  .tiptap-image-upload-file-info
+  .tiptap-image-upload-file-icon {
   padding: 0.5rem;
   background-color: var(--tiptap-image-upload-icon-bg);
   border-radius: var(--tt-radius-lg, 0.75rem);
 }
-.tiptap-image-upload .tiptap-image-upload-preview .tiptap-image-upload-file-info .tiptap-image-upload-file-icon svg {
+.tiptap-image-upload
+  .tiptap-image-upload-preview
+  .tiptap-image-upload-file-info
+  .tiptap-image-upload-file-icon
+  svg {
   width: 0.875rem;
   height: 0.875rem;
   color: var(--tiptap-image-upload-icon-color);
@@ -181,13 +200,18 @@
   align-items: center;
   gap: 0.5rem;
 }
-.tiptap-image-upload .tiptap-image-upload-preview .tiptap-image-upload-actions .tiptap-image-upload-progress-text {
+.tiptap-image-upload
+  .tiptap-image-upload-preview
+  .tiptap-image-upload-actions
+  .tiptap-image-upload-progress-text {
   font-size: 0.75rem;
   color: var(--tiptap-image-upload-border-active);
   font-weight: 600;
 }
 
-.tiptap.ProseMirror.ProseMirror-focused .ProseMirror-selectednode .tiptap-image-upload-drag-area {
+.tiptap.ProseMirror.ProseMirror-focused
+  .ProseMirror-selectednode
+  .tiptap-image-upload-drag-area {
   border-color: var(--tiptap-image-upload-active);
 }
 

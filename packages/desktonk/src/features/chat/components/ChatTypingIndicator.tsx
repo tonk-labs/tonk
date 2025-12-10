@@ -1,5 +1,5 @@
 import { Badge } from '../../editor/components/tiptap-ui-primitive/badge/badge';
-import { usePresence, type User } from '../../presence/stores/presenceStore';
+import { type User, usePresence } from '../../presence/stores/presenceStore';
 import { useChat } from '../stores/chatStore';
 
 export function ChatTypingIndicator() {
@@ -10,7 +10,7 @@ export function ChatTypingIndicator() {
   if (typingUsers.size === 0) return null;
 
   const typingUserNames = Array.from(typingUsers)
-    .map((userId) => {
+    .map(userId => {
       const user = users.find((u: User) => u.id === userId);
       return user?.name || 'Unknown';
     })

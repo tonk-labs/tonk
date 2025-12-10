@@ -18,8 +18,15 @@ export function useServiceWorker() {
       const messageWithId = { ...message, id: requestId };
 
       const messageHandler = (event: MessageEvent) => {
-        if (event.data && event.data.type === message.type && event.data.id === requestId) {
-          navigator.serviceWorker.removeEventListener('message', messageHandler);
+        if (
+          event.data &&
+          event.data.type === message.type &&
+          event.data.id === requestId
+        ) {
+          navigator.serviceWorker.removeEventListener(
+            'message',
+            messageHandler
+          );
 
           if (event.data.success) {
             resolve(event.data as T);
@@ -62,7 +69,9 @@ export function useServiceWorker() {
           }
         }
       } catch (_manifestError) {
-        console.log('Could not get manifest, falling back to directory listing');
+        console.log(
+          'Could not get manifest, falling back to directory listing'
+        );
       }
 
       // Fallback: use first listed root directory
@@ -82,7 +91,8 @@ export function useServiceWorker() {
       return [];
     } catch (error: unknown) {
       // If VFS not initialized, return empty array instead of failing
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       if (errorMessage?.includes('not initialized')) {
         console.log('VFS not initialized yet, returning empty app list');
         return [];

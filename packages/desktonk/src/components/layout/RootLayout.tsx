@@ -1,7 +1,7 @@
 import { Outlet } from 'react-router-dom';
-import { useFeatureFlag } from '@/hooks/useFeatureFlag';
-import { useMembersBar } from '@/features/members-bar/stores/membersBarStore';
 import { MembersBar } from '@/features/members-bar/components/MembersBar';
+import { useMembersBar } from '@/features/members-bar/stores/membersBarStore';
+import { useFeatureFlag } from '@/hooks/useFeatureFlag';
 
 export function RootLayout() {
   const showMembersBar = useFeatureFlag('showMembersBar');

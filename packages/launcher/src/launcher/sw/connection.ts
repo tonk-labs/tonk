@@ -1,14 +1,14 @@
-import { logger } from './utils/logging';
-import { postResponse } from './utils/response';
 import {
   getActiveBundle,
-  setConnectionHealth,
+  getWatcherEntries,
   incrementReconnectAttempts,
   resetReconnectAttempts,
+  setConnectionHealth,
   setHealthCheckInterval,
-  getWatcherEntries,
 } from './state';
-import { MAX_RECONNECT_ATTEMPTS, HEALTH_CHECK_INTERVAL } from './types';
+import { HEALTH_CHECK_INTERVAL, MAX_RECONNECT_ATTEMPTS } from './types';
+import { logger } from './utils/logging';
+import { postResponse } from './utils/response';
 
 // Continuous retry flag
 const continuousRetryEnabled = true;
@@ -66,7 +66,7 @@ export async function attemptReconnect(): Promise<void> {
   try {
     await activeBundle.tonk.connectWebsocket(wsUrl);
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     const isConnected = await activeBundle.tonk.isConnected();
 

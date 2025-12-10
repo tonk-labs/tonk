@@ -1,5 +1,5 @@
-import fs from "fs";
-import path from "path";
+import fs from 'fs';
+import path from 'path';
 
 /**
  * Route structure for nginx generation
@@ -15,7 +15,7 @@ export interface Route {
  */
 export function loadRoutesFromFile(filePath: string): Route[] {
   try {
-    const content = fs.readFileSync(filePath, "utf8");
+    const content = fs.readFileSync(filePath, 'utf8');
     const routes: Route[] = JSON.parse(content);
     return routes;
   } catch (error) {
@@ -32,18 +32,18 @@ export function generateNginxRoutes(routes: Route[]): string {
   // Group routes by path to avoid overlapping location blocks
   const routesByPath = new Map<string, Set<string>>();
 
-  routes.forEach((route) => {
+  routes.forEach(route => {
     const { path, methods } = route;
 
     // Remove /api prefix for nginx location blocks since main server strips it
-    const nginxPath = path.startsWith("/api") ? path.substring(4) : path;
+    const nginxPath = path.startsWith('/api') ? path.substring(4) : path;
 
     if (!routesByPath.has(nginxPath)) {
       routesByPath.set(nginxPath, new Set());
     }
 
     // Add all methods for this path
-    methods.forEach((method) => {
+    methods.forEach(method => {
       routesByPath.get(nginxPath)!.add(method.toUpperCase());
     });
   });
@@ -56,7 +56,7 @@ export function generateNginxRoutes(routes: Route[]): string {
     const nginxPathRegex = convertExpressPathToNginx(nginxPath);
 
     // Determine if we should use exact match or regex
-    const hasParameters = nginxPath.includes(":");
+    const hasParameters = nginxPath.includes(':');
     const locationDirective = hasParameters
       ? `location ~ ^${nginxPathRegex}$`
       : `location = ${nginxPath}`;
@@ -65,14 +65,14 @@ export function generateNginxRoutes(routes: Route[]): string {
     const methodRestriction =
       methodsArray.length > 0
         ? `    # Only allow specific HTTP methods
-    if ($request_method !~ ^(${methodsArray.join("|")})$) {
-        add_header Allow "${methodsArray.join(", ")}" always;
+    if ($request_method !~ ^(${methodsArray.join('|')})$) {
+        add_header Allow "${methodsArray.join(', ')}" always;
         return 405;
     }
     `
-        : "";
+        : '';
 
-    const locationBlock = `# Route: ${methodsArray.join(", ")} /api${nginxPath}
+    const locationBlock = `# Route: ${methodsArray.join(', ')} /api${nginxPath}
 ${locationDirective} {
 ${methodRestriction}
     # Proxy to the custom server - add /api prefix back since Express strips it
@@ -105,7 +105,7 @@ ${methodRestriction}
 }`;
     locationBlocks.push(locationBlock);
   });
-  return locationBlocks.join("\n\n");
+  return locationBlocks.join('\n\n');
 }
 
 /**
@@ -116,12 +116,12 @@ export function generateNginxConfigFromFile(
   outputPath: string,
   port: number,
   bundleName: string,
-  bundlePath: string,
+  bundlePath: string
 ): void {
   const routes = loadRoutesFromFile(routesFilePath);
 
   if (routes.length === 0) {
-    console.warn("No routes found or error loading routes file");
+    console.warn('No routes found or error loading routes file');
     return;
   }
 
@@ -157,7 +157,7 @@ ${nginxLocationBlocks}
  */
 function convertExpressPathToNginx(expressPath: string): string {
   return expressPath
-    .replace(/:[^\/]+/g, "([^/]+)") // Convert :param to regex capture group
-    .replace(/\//g, "\\/") // Escape forward slashes for regex
-    .replace(/\./g, "\\."); // Escape dots for regex
+    .replace(/:[^/]+/g, '([^/]+)') // Convert :param to regex capture group
+    .replace(/\//g, '\\/') // Escape forward slashes for regex
+    .replace(/\./g, '\\.'); // Escape dots for regex
 }

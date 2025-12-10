@@ -18,7 +18,8 @@
 .tiptap.ProseMirror blockquote p {
   margin-top: 0;
 }
-.tiptap.ProseMirror blockquote::before, .tiptap.ProseMirror blockquote.is-empty::before {
+.tiptap.ProseMirror blockquote::before,
+.tiptap.ProseMirror blockquote.is-empty::before {
   position: absolute;
   bottom: 0;
   left: 0;

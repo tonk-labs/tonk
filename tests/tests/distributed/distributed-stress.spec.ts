@@ -1,16 +1,16 @@
-import { test, expect } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { exec as execCallback, execSync } from 'child_process';
+import { promises as fs } from 'fs';
+import { join } from 'path';
+import { promisify } from 'util';
 import { AWSInfrastructure } from '../../src/distributed/aws-infrastructure';
 import { MetricsAggregator } from '../../src/distributed/metrics-aggregator';
-import { getScenario } from './test-scenarios.config';
 import type {
   EC2Config,
   ProvisionedInstance,
   TestPhase,
 } from '../../src/distributed/types';
-import { execSync, exec as execCallback } from 'child_process';
-import { promisify } from 'util';
-import { join } from 'path';
-import { promises as fs } from 'fs';
+import { getScenario } from './test-scenarios.config';
 
 const exec = promisify(execCallback);
 
@@ -204,7 +204,7 @@ async function runDistributedTest(scenarioName: string) {
       console.log(`✓ ${successCount}/${scenario.workerCount} workers started`);
 
       if (successCount < scenario.workerCount) {
-        console.warn(`⚠️  Only ${successCount} workers started successfully`);
+        console.warn(`!  Only ${successCount} workers started successfully`);
         startCommands.forEach((r: any) => {
           if (!r.success) {
             console.error(`  Worker ${r.workerId} failed: ${r.error}`);
@@ -293,7 +293,7 @@ async function runDistributedTest(scenarioName: string) {
 
         const health = await checkWorkerHealth(coordinatorUrl);
         if (health.stale.length > 0) {
-          console.warn(`⚠️  Stale workers: ${health.stale.join(', ')}`);
+          console.warn(`!  Stale workers: ${health.stale.join(', ')}`);
         }
       }
 
@@ -364,19 +364,19 @@ async function runDistributedTest(scenarioName: string) {
 
     if (anomalies.latencySpikes.length > 0) {
       console.log(
-        `⚠️  Detected ${anomalies.latencySpikes.length} latency spikes`
+        `!  Detected ${anomalies.latencySpikes.length} latency spikes`
       );
     }
 
     if (anomalies.connectionDrops.length > 0) {
       console.log(
-        `⚠️  Detected ${anomalies.connectionDrops.length} connection drops`
+        `!  Detected ${anomalies.connectionDrops.length} connection drops`
       );
     }
 
     if (anomalies.memoryLeaks.growthMB > 100) {
       console.log(
-        `⚠️  Possible memory leak: +${anomalies.memoryLeaks.growthMB.toFixed(2)}MB`
+        `!  Possible memory leak: +${anomalies.memoryLeaks.growthMB.toFixed(2)}MB`
       );
     }
 
@@ -392,7 +392,7 @@ async function runDistributedTest(scenarioName: string) {
     });
 
     if (report.errorReport && report.errorReport.totalErrors > 0) {
-      console.log('\n⚠️  ERROR SUMMARY');
+      console.log('\n!  ERROR SUMMARY');
       console.log('='.repeat(80));
       console.log(`Total Errors: ${report.errorReport.totalErrors}`);
       console.log('\nErrors by Type:');
@@ -1064,12 +1064,12 @@ function getPhaseEmoji(phase: TestPhase): string {
     case 'stress':
       return '💥';
     case 'cooldown':
-      return '❄️';
+      return '❄';
     case 'report':
       return '📊';
     case 'teardown':
       return '🧹';
     default:
-      return '▶️';
+      return '▶';
   }
 }

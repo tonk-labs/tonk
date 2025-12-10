@@ -1,4 +1,4 @@
-import type { TonkCore, Manifest } from '@tonk/core/slim';
+import type { Manifest, TonkCore } from '@tonk/core/slim';
 
 // Service Worker global scope types
 declare global {

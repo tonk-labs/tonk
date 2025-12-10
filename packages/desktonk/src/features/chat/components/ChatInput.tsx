@@ -1,8 +1,8 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../../../components/ui/button/button';
 import { Input } from '../../editor/components/tiptap-ui-primitive/input/input';
-import { useChat } from '../stores/chatStore';
 import { usePresence } from '../../presence/stores/presenceStore';
+import { useChat } from '../stores/chatStore';
 
 export function ChatInput() {
   const [text, setText] = useState('');
@@ -75,7 +75,7 @@ export function ChatInput() {
       <div className="flex gap-2">
         <Input
           value={text}
-          onChange={(e) => {
+          onChange={e => {
             setText(e.target.value);
             handleTyping();
           }}

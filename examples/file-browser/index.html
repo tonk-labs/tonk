@@ -20,8 +20,8 @@
         if ("serviceWorker" in navigator) {
           navigator.serviceWorker
             .getRegistrations()
-            .then(function (registrations) {
-              for (let registration of registrations) {
+            .then((registrations) => {
+              for (const registration of registrations) {
                 registration.unregister();
                 console.log("DEV MODE: Unregistered service worker");
               }

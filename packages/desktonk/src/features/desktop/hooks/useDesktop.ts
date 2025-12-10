@@ -1,5 +1,8 @@
-import { useState, useEffect } from 'react';
-import { getDesktopService, type DesktopState } from '../services/DesktopService';
+import { useEffect, useState } from 'react';
+import {
+  type DesktopState,
+  getDesktopService,
+} from '../services/DesktopService';
 
 /**
  * React hook to consume desktop state from DesktopService.
@@ -15,13 +18,15 @@ import { getDesktopService, type DesktopState } from '../services/DesktopService
  * ```
  */
 export function useDesktop(): DesktopState {
-  const [state, setState] = useState<DesktopState>(() => getDesktopService().getState());
+  const [state, setState] = useState<DesktopState>(() =>
+    getDesktopService().getState()
+  );
 
   useEffect(() => {
     const service = getDesktopService();
 
     // Subscribe to service updates
-    const unsubscribe = service.subscribe((newState) => {
+    const unsubscribe = service.subscribe(newState => {
       setState(newState);
     });
 
@@ -49,7 +54,8 @@ export function useDesktopActions() {
   const service = getDesktopService();
 
   return {
-    setPosition: (fileId: string, x: number, y: number) => service.setPosition(fileId, x, y),
+    setPosition: (fileId: string, x: number, y: number) =>
+      service.setPosition(fileId, x, y),
 
     getPosition: (fileId: string) => service.getPosition(fileId),
 

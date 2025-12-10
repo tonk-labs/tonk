@@ -14,5 +14,6 @@ export const FHS = {
   // Helpers
   getStorePath: (name: string) => `${FHS.STATE_ROOT}/stores/${name}.json`,
 
-  getServicePath: (service: string, file: string) => `${FHS.STATE_ROOT}/${service}/${file}`,
+  getServicePath: (service: string, file: string) =>
+    `${FHS.STATE_ROOT}/${service}/${file}`,
 } as const;

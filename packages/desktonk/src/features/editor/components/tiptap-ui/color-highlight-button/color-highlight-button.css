@@ -25,9 +25,9 @@
   mix-blend-mode: lighten;
 }
 
-.tiptap-button[data-active-state=on] .tiptap-button-highlight::after {
+.tiptap-button[data-active-state="on"] .tiptap-button-highlight::after {
   filter: brightness(80%);
 }
-.dark .tiptap-button[data-active-state=on] .tiptap-button-highlight::after {
+.dark .tiptap-button[data-active-state="on"] .tiptap-button-highlight::after {
   filter: brightness(180%);
 }

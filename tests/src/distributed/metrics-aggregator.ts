@@ -1,13 +1,13 @@
-import type {
-  RelayMetrics,
-  WorkerMetrics,
-  AggregateMetrics,
-  WorkerInfo,
-  TestReport,
-  TestPhase,
-} from './types';
 import { promises as fs } from 'fs';
 import { join } from 'path';
+import type {
+  AggregateMetrics,
+  RelayMetrics,
+  TestPhase,
+  TestReport,
+  WorkerInfo,
+  WorkerMetrics,
+} from './types';
 
 export class MetricsAggregator {
   private relayUrl: string;

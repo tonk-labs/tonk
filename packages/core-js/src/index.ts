@@ -1,30 +1,27 @@
-import { initializeTonkWithEmbeddedWasm, isInitialized } from './init.js';
 import type { TonkConfig } from './core.js';
-import { WASM_BASE64 } from './generated/wasm-data.js';
 import {
-  // Main classes
-  TonkCore,
   Bundle,
-  Manifest,
-
-  // Types
-  type DocumentData,
-  type DocumentWatcher,
-  type RefNode,
-  type DirectoryNode,
-  type DocumentTimestamps,
   type BundleEntry,
-  type JsonValue,
-
-  // Error classes
-  TonkError,
-  ConnectionError,
-  FileSystemError,
   BundleError,
-
+  ConnectionError,
   // Factory function helper
   createFactoryFunctions,
+  type DirectoryNode,
+  // Types
+  type DocumentData,
+  type DocumentTimestamps,
+  type DocumentWatcher,
+  FileSystemError,
+  type JsonValue,
+  type Manifest,
+  type RefNode,
+  // Main classes
+  TonkCore,
+  // Error classes
+  TonkError,
 } from './core.js';
+import { WASM_BASE64 } from './generated/wasm-data.js';
+import { initializeTonkWithEmbeddedWasm, isInitialized } from './init.js';
 
 // Auto-initialize on import for convenience
 await initializeTonkWithEmbeddedWasm();
@@ -68,7 +65,6 @@ export {
   // Main classes
   TonkCore,
   Bundle,
-
   // Types
   type DocumentData,
   type DocumentWatcher,
@@ -79,7 +75,6 @@ export {
   type RefNode,
   type DirectoryNode,
   type JsonValue,
-
   // Error classes
   TonkError,
   ConnectionError,

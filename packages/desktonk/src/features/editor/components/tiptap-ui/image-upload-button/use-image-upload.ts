@@ -1,18 +1,15 @@
 'use client';
 
-import * as React from 'react';
-import { useHotkeys } from 'react-hotkeys-hook';
 import type { Editor } from '@tiptap/react';
-
-// --- Hooks ---
-import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
-import { useIsMobile } from '@/hooks/use-mobile';
-
-// --- Lib ---
-import { isExtensionAvailable, isNodeTypeSelected } from '@/lib/utils';
-
 // --- Icons ---
 import { ImagePlus } from 'lucide-react';
+import * as React from 'react';
+import { useHotkeys } from 'react-hotkeys-hook';
+import { useIsMobile } from '@/hooks/use-mobile';
+// --- Hooks ---
+import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
+// --- Lib ---
+import { isExtensionAvailable, isNodeTypeSelected } from '@/lib/utils';
 
 export const IMAGE_UPLOAD_SHORTCUT_KEY = 'mod+shift+i';
 
@@ -40,7 +37,10 @@ export interface UseImageUploadConfig {
  */
 export function canInsertImage(editor: Editor | null): boolean {
   if (!editor || !editor.isEditable) return false;
-  if (!isExtensionAvailable(editor, 'imageUpload') || isNodeTypeSelected(editor, ['image']))
+  if (
+    !isExtensionAvailable(editor, 'imageUpload') ||
+    isNodeTypeSelected(editor, ['image'])
+  )
     return false;
 
   return editor.can().insertContent({ type: 'imageUpload' });
@@ -130,7 +130,11 @@ export function shouldShowButton(props: {
  * ```
  */
 export function useImageUpload(config?: UseImageUploadConfig) {
-  const { editor: providedEditor, hideWhenUnavailable = false, onInserted } = config || {};
+  const {
+    editor: providedEditor,
+    hideWhenUnavailable = false,
+    onInserted,
+  } = config || {};
 
   const { editor } = useTiptapEditor(providedEditor);
   const isMobile = useIsMobile();
@@ -166,7 +170,7 @@ export function useImageUpload(config?: UseImageUploadConfig) {
 
   useHotkeys(
     IMAGE_UPLOAD_SHORTCUT_KEY,
-    (event) => {
+    event => {
       event.preventDefault();
       handleImage();
     },

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { getBinaryPath } from './binary.js';
 
 export { getBinaryPath };
@@ -49,10 +49,7 @@ export interface RelayOptions {
 export function startRelay(options: RelayOptions): ChildProcess {
   const binary = getBinaryPath();
 
-  const args = [
-    String(options.port ?? 8081),
-    options.bundlePath,
-  ];
+  const args = [String(options.port ?? 8081), options.bundlePath];
 
   if (options.storagePath) {
     args.push(options.storagePath);
@@ -80,7 +77,7 @@ export function runRelay(options: RelayOptions): Promise<number> {
     const child = startRelay(options);
 
     child.on('error', reject);
-    child.on('exit', (code) => {
+    child.on('exit', code => {
       resolve(code ?? 0);
     });
   });

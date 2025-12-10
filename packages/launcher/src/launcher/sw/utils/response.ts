@@ -5,7 +5,10 @@ import { log } from './logging';
 export async function postResponse(response: unknown) {
   log('info', 'Posting response to main thread', {
     type: (response as { type?: string }).type,
-    success: 'success' in (response as object) ? (response as { success: boolean }).success : 'N/A',
+    success:
+      'success' in (response as object)
+        ? (response as { success: boolean }).success
+        : 'N/A',
   });
 
   // Get all clients and post message to each
@@ -31,7 +34,9 @@ export async function targetToResponse(target: {
     }
     return new Response(bytes, {
       headers: {
-        'Content-Type': (target.content as { mime?: string }).mime || 'application/octet-stream',
+        'Content-Type':
+          (target.content as { mime?: string }).mime ||
+          'application/octet-stream',
       },
     });
   } else {

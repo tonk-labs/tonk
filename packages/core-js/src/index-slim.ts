@@ -20,34 +20,30 @@
 
 import { createFactoryFunctions } from './core.js';
 
-// Export initialization functions
-export { initializeTonk, isInitialized } from './init.js';
-
 // Re-export wrapper classes and types
 export {
-  // Main classes
-  TonkCore,
   Bundle,
-
-  // Types
-  type DocumentData,
-  type Manifest,
-  type RefNode,
-  type DirectoryNode,
-  type DocumentTimestamps,
   type BundleEntry,
-  type TonkConfig,
-  type JsonValue,
-
-  // Error classes
-  TonkError,
-  ConnectionError,
-  FileSystemError,
   BundleError,
-
+  ConnectionError,
   // Factory function helper
   createFactoryFunctions,
+  type DirectoryNode,
+  // Types
+  type DocumentData,
+  type DocumentTimestamps,
+  FileSystemError,
+  type JsonValue,
+  type Manifest,
+  type RefNode,
+  type TonkConfig,
+  // Main classes
+  TonkCore,
+  // Error classes
+  TonkError,
 } from './core.js';
+// Export initialization functions
+export { initializeTonk, isInitialized } from './init.js';
 
 // Create factory functions with lazy-loaded WASM module
 const lazyFactories = createFactoryFunctions();

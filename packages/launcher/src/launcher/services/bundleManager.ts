@@ -1,7 +1,7 @@
 import type { Manifest } from '@tonk/core/slim';
 import { Bundle, initializeTonk } from '@tonk/core/slim';
-import { bundleStorage } from './bundleStorage';
 import type { Bundle as BundleType } from '../types';
+import { bundleStorage } from './bundleStorage';
 
 export class BundleManager {
   private initPromise: Promise<void> | null = null;

@@ -1,5 +1,5 @@
-import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
+import { Component } from 'react';
 
 interface Props {
   children: ReactNode;
@@ -62,10 +62,19 @@ export class DesktopErrorBoundary extends Component<Props, State> {
             backgroundColor: '#f5f5f5',
           }}
         >
-          <h1 style={{ fontSize: '2rem', marginBottom: '1rem', color: '#333' }}>Desktop Error</h1>
-          <p style={{ fontSize: '1rem', marginBottom: '2rem', color: '#666', maxWidth: '600px' }}>
-            The desktop encountered an error and couldn't render. This might be due to corrupted
-            shape data or a TLDraw rendering issue.
+          <h1 style={{ fontSize: '2rem', marginBottom: '1rem', color: '#333' }}>
+            Desktop Error
+          </h1>
+          <p
+            style={{
+              fontSize: '1rem',
+              marginBottom: '2rem',
+              color: '#666',
+              maxWidth: '600px',
+            }}
+          >
+            The desktop encountered an error and couldn't render. This might be
+            due to corrupted shape data or a TLDraw rendering issue.
           </p>
           {this.state.error && (
             <details
@@ -79,7 +88,13 @@ export class DesktopErrorBoundary extends Component<Props, State> {
                 textAlign: 'left',
               }}
             >
-              <summary style={{ cursor: 'pointer', fontWeight: 'bold', marginBottom: '0.5rem' }}>
+              <summary
+                style={{
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                  marginBottom: '0.5rem',
+                }}
+              >
                 Error Details
               </summary>
               <pre
@@ -108,16 +123,16 @@ export class DesktopErrorBoundary extends Component<Props, State> {
               cursor: 'pointer',
               fontWeight: 'bold',
             }}
-            onMouseOver={(e) => {
+            onMouseOver={e => {
               e.currentTarget.style.backgroundColor = '#0056b3';
             }}
-            onFocus={(e) => {
+            onFocus={e => {
               e.currentTarget.style.backgroundColor = '#0056b3';
             }}
-            onMouseOut={(e) => {
+            onMouseOut={e => {
               e.currentTarget.style.backgroundColor = '#007bff';
             }}
-            onBlur={(e) => {
+            onBlur={e => {
               e.currentTarget.style.backgroundColor = '#007bff';
             }}
           >

@@ -1,7 +1,9 @@
 @import "tailwindcss";
 
 /* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
-@variant dark (&:where(.dark, .dark *));
+@variant dark
+(
+&:where(.dark, .dark *));
 
 .desktopContainer {
   @apply relative w-full h-full;

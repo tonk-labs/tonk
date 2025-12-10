@@ -1,4 +1,4 @@
-import type { JsonValue, DocumentData, RefNode, Manifest } from '@tonk/core';
+import type { DocumentData, JsonValue, Manifest, RefNode } from '@tonk/core';
 
 // Re-export core types for convenience
 export type { JsonValue, DocumentData, RefNode, Manifest };
@@ -74,8 +74,20 @@ export type VFSWorkerResponse =
       error?: string;
     }
   | { type: 'writeFile'; id: string; success: boolean; error?: string }
-  | { type: 'patchFile'; id: string; success: boolean; data?: boolean; error?: string }
-  | { type: 'updateFile'; id: string; success: boolean; data?: boolean; error?: string }
+  | {
+      type: 'patchFile';
+      id: string;
+      success: boolean;
+      data?: boolean;
+      error?: string;
+    }
+  | {
+      type: 'updateFile';
+      id: string;
+      success: boolean;
+      data?: boolean;
+      error?: string;
+    }
   | { type: 'deleteFile'; id: string; success: boolean; error?: string }
   | { type: 'rename'; id: string; success: boolean; error?: string }
   | {
@@ -155,7 +167,12 @@ export type VFSWorkerResponse =
   | { type: 'needsReinit'; appSlug: string | null; reason: string };
 
 // Client-specific types
-export type ConnectionState = 'disconnected' | 'connecting' | 'open' | 'connected' | 'reconnecting';
+export type ConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'open'
+  | 'connected'
+  | 'reconnecting';
 
 export type ConnectionStateListener = (state: ConnectionState) => void;
 

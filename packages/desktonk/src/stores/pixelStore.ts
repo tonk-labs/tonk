@@ -17,7 +17,7 @@ interface PixelState {
 
 export const usePixelStore = create<PixelState>()(
   sync(
-    (set) => ({
+    set => ({
       pixels: {},
       selectedColor: '#000000',
 

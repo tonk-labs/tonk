@@ -14,9 +14,9 @@ class SimpleTestClient {
   async connect() {
     return new Promise((resolve, reject) => {
       console.log(`[${this.clientId}] Connecting to ${this.serverUrl}`);
-      
+
       this.ws = new WebSocket(this.serverUrl);
-      
+
       this.ws.on('open', () => {
         console.log(`[${this.clientId}] Connected to server`);
         this.connected = true;
@@ -25,14 +25,19 @@ class SimpleTestClient {
 
       this.ws.on('message', (data, isBinary) => {
         const message = isBinary ? data : data.toString();
-        console.log(`[${this.clientId}] Received: ${isBinary ? `${data.length} bytes (binary)` : message}`);
-        
+        console.log(
+          `[${this.clientId}] Received: ${isBinary ? `${data.length} bytes (binary)` : message}`
+        );
+
         // Call message handlers
         this.messageHandlers.forEach(handler => {
           try {
             handler(data, isBinary);
           } catch (error) {
-            console.error(`[${this.clientId}] Error in message handler:`, error);
+            console.error(
+              `[${this.clientId}] Error in message handler:`,
+              error
+            );
           }
         });
       });
@@ -42,7 +47,7 @@ class SimpleTestClient {
         this.connected = false;
       });
 
-      this.ws.on('error', (error) => {
+      this.ws.on('error', error => {
         console.error(`[${this.clientId}] WebSocket error:`, error);
         reject(error);
       });
@@ -55,7 +60,9 @@ class SimpleTestClient {
     }
 
     const isBinary = Buffer.isBuffer(data);
-    console.log(`[${this.clientId}] Sending: ${isBinary ? `${data.length} bytes (binary)` : data}`);
+    console.log(
+      `[${this.clientId}] Sending: ${isBinary ? `${data.length} bytes (binary)` : data}`
+    );
     this.ws.send(data);
   }
 
@@ -103,7 +110,10 @@ async function testBasicRelay() {
     client1.send('Hello from client 1');
     await new Promise(resolve => setTimeout(resolve, 100));
 
-    if (client2Messages.length === 1 && client2Messages[0].data === 'Hello from client 1') {
+    if (
+      client2Messages.length === 1 &&
+      client2Messages[0].data === 'Hello from client 1'
+    ) {
       console.log('✅ Text message relay working');
     } else {
       console.log('❌ Text message relay failed');
@@ -115,9 +125,11 @@ async function testBasicRelay() {
     client2.send(binaryData);
     await new Promise(resolve => setTimeout(resolve, 100));
 
-    if (client1Messages.length === 1 && 
-        Buffer.isBuffer(client1Messages[0].data) && 
-        client1Messages[0].data.equals(binaryData)) {
+    if (
+      client1Messages.length === 1 &&
+      Buffer.isBuffer(client1Messages[0].data) &&
+      client1Messages[0].data.equals(binaryData)
+    ) {
       console.log('✅ Binary message relay working');
     } else {
       console.log('❌ Binary message relay failed');
@@ -125,7 +137,6 @@ async function testBasicRelay() {
     }
 
     console.log('=== Basic Relay Test Complete ===\n');
-
   } catch (error) {
     console.error('Test failed:', error);
   } finally {
@@ -139,11 +150,13 @@ export { SimpleTestClient, testBasicRelay };
 
 // Run basic test if this file is executed directly
 if (process.argv[1] === new URL(import.meta.url).pathname) {
-  testBasicRelay().then(() => {
-    console.log('Test completed');
-    process.exit(0);
-  }).catch(error => {
-    console.error('Test failed:', error);
-    process.exit(1);
-  });
+  testBasicRelay()
+    .then(() => {
+      console.log('Test completed');
+      process.exit(0);
+    })
+    .catch(error => {
+      console.error('Test failed:', error);
+      process.exit(1);
+    });
 }

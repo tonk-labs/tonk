@@ -12,7 +12,7 @@ const {
   PerfTimer,
 } = require('../../shared/test-utils');
 
-describe('Basic Integration Tests', function () {
+describe('Basic Integration Tests', () => {
   let wasm;
 
   before(async function () {
@@ -20,8 +20,8 @@ describe('Basic Integration Tests', function () {
     wasm = await initWasm();
   });
 
-  describe('Sync Engine', function () {
-    it('should create a sync engine with random peer ID', async function () {
+  describe('Sync Engine', () => {
+    it('should create a sync engine with random peer ID', async () => {
       const engine = await wasm.create_sync_engine();
       expect(engine).to.not.be.undefined;
 
@@ -30,7 +30,7 @@ describe('Basic Integration Tests', function () {
       expect(peerId.length).to.be.greaterThan(0);
     });
 
-    it('should create a sync engine with specific peer ID', async function () {
+    it('should create a sync engine with specific peer ID', async () => {
       const customPeerId = generatePeerId();
       const engine = await wasm.create_sync_engine_with_peer_id(customPeerId);
       expect(engine).to.not.be.undefined;
@@ -39,22 +39,22 @@ describe('Basic Integration Tests', function () {
       expect(peerId).to.equal(customPeerId);
     });
 
-    it('should provide access to VFS', async function () {
+    it('should provide access to VFS', async () => {
       const engine = await wasm.create_sync_engine();
       const vfs = await engine.getVfs();
       expect(vfs).to.not.be.undefined;
     });
   });
 
-  describe('Virtual File System', function () {
+  describe('Virtual File System', () => {
     let engine, vfs;
 
-    beforeEach(async function () {
+    beforeEach(async () => {
       engine = await wasm.create_sync_engine();
       vfs = await engine.getVfs();
     });
 
-    it('should create and read files', async function () {
+    it('should create and read files', async () => {
       const path = '/test/hello.txt';
       const content = TestData.simpleText;
 
@@ -65,7 +65,7 @@ describe('Basic Integration Tests', function () {
       // Note: Reading file content would require WASM binding implementation
     });
 
-    it('should create directories', async function () {
+    it('should create directories', async () => {
       const path = '/documents';
 
       await vfs.createDirectory(path);
@@ -73,7 +73,7 @@ describe('Basic Integration Tests', function () {
       expect(exists).to.be.true;
     });
 
-    it('should handle nested directory creation', async function () {
+    it('should handle nested directory creation', async () => {
       const path = '/projects/web/src/components';
 
       await vfs.createDirectory(path);
@@ -81,7 +81,7 @@ describe('Basic Integration Tests', function () {
       expect(exists).to.be.true;
     });
 
-    it('should list directory contents', async function () {
+    it('should list directory contents', async () => {
       // Create test structure
       await vfs.createDirectory('/docs');
       await vfs.createFile('/docs/readme.md', 'README content');
@@ -96,7 +96,7 @@ describe('Basic Integration Tests', function () {
       expect(names).to.include('guide.md');
     });
 
-    it('should delete files', async function () {
+    it('should delete files', async () => {
       const path = '/temp/deleteme.txt';
 
       await vfs.createFile(path, 'temporary content');
@@ -107,7 +107,7 @@ describe('Basic Integration Tests', function () {
       expect(await vfs.exists(path)).to.be.false;
     });
 
-    it('should get file metadata', async function () {
+    it('should get file metadata', async () => {
       const path = '/data/info.json';
       const content = TestData.jsonConfig;
 
@@ -124,19 +124,19 @@ describe('Basic Integration Tests', function () {
       // Additional metadata checks would depend on WASM implementation
     });
 
-    it('should handle non-existent paths gracefully', async function () {
+    it('should handle non-existent paths gracefully', async () => {
       const exists = await vfs.exists('/non/existent/path.txt');
       expect(exists).to.be.false;
     });
   });
 
-  describe('Bundle Operations', function () {
-    it('should create an empty bundle', async function () {
+  describe('Bundle Operations', () => {
+    it('should create an empty bundle', async () => {
       const bundle = await wasm.create_bundle();
       expect(bundle).to.not.be.undefined;
     });
 
-    it('should store and retrieve data', async function () {
+    it('should store and retrieve data', async () => {
       const bundle = await wasm.create_bundle();
       const key = 'test/data.txt';
       const value = new TextEncoder().encode(TestData.simpleText);
@@ -148,7 +148,7 @@ describe('Basic Integration Tests', function () {
       assertUint8ArraysEqual(retrieved, value);
     });
 
-    it('should list keys', async function () {
+    it('should list keys', async () => {
       const bundle = await wasm.create_bundle();
       const keys = ['file1.txt', 'file2.txt', 'dir/file3.txt'];
 
@@ -166,7 +166,7 @@ describe('Basic Integration Tests', function () {
       }
     });
 
-    it('should delete keys', async function () {
+    it('should delete keys', async () => {
       const bundle = await wasm.create_bundle();
       const key = 'deleteme.txt';
       const value = new TextEncoder().encode('delete this');
@@ -185,7 +185,7 @@ describe('Basic Integration Tests', function () {
       }
     });
 
-    it('should handle binary data', async function () {
+    it('should handle binary data', async () => {
       const bundle = await wasm.create_bundle();
       const key = 'binary.data';
       const value = TestData.binaryData;
@@ -213,15 +213,15 @@ describe('Basic Integration Tests', function () {
     });
   });
 
-  describe('Error Handling', function () {
+  describe('Error Handling', () => {
     let engine, vfs;
 
-    beforeEach(async function () {
+    beforeEach(async () => {
       engine = await wasm.create_sync_engine();
       vfs = await engine.getVfs();
     });
 
-    it('should handle invalid paths', async function () {
+    it('should handle invalid paths', async () => {
       try {
         await vfs.createFile('', 'content');
         expect.fail('Expected error for empty path');
@@ -230,7 +230,7 @@ describe('Basic Integration Tests', function () {
       }
     });
 
-    it('should handle duplicate file creation', async function () {
+    it('should handle duplicate file creation', async () => {
       const path = '/duplicate.txt';
 
       await vfs.createFile(path, 'first content');
@@ -244,8 +244,8 @@ describe('Basic Integration Tests', function () {
     });
   });
 
-  describe('Performance', function () {
-    it('should create multiple engines efficiently', async function () {
+  describe('Performance', () => {
+    it('should create multiple engines efficiently', async () => {
       const timer = new PerfTimer('Multiple engine creation');
       const engines = [];
 
@@ -258,7 +258,7 @@ describe('Basic Integration Tests', function () {
       expect(duration).to.be.lessThan(2000); // Should complete within 2 seconds
     });
 
-    it('should handle concurrent VFS operations', async function () {
+    it('should handle concurrent VFS operations', async () => {
       const engine = await wasm.create_sync_engine();
       const vfs = await engine.getVfs();
 

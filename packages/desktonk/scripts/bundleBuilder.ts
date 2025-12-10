@@ -1,6 +1,13 @@
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { TonkCore } from '@tonk/core';
-import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync, existsSync } from 'node:fs';
-import { join, relative, dirname } from 'node:path';
 import mime from 'mime';
 
 /**
@@ -16,7 +23,8 @@ function determineMimeType(path?: string): string {
 
   // Extract file extension
   const lastDot = cleanPath.lastIndexOf('.');
-  const extension = lastDot !== -1 ? cleanPath.substring(lastDot).toLowerCase() : '';
+  const extension =
+    lastDot !== -1 ? cleanPath.substring(lastDot).toLowerCase() : '';
 
   // Common web file types with their MIME types
   const mimeTypes: Record<string, string> = {
@@ -95,9 +103,11 @@ function determineMimeType(path?: string): string {
     // Documents
     '.pdf': 'application/pdf',
     '.doc': 'application/msword',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.docx':
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.xls': 'application/vnd.ms-excel',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.xlsx':
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 
     // Web assembly
     '.wasm': 'application/wasm',
@@ -154,7 +164,9 @@ function base64ToUint8Array(base64: string): Uint8Array {
  * Recursively reads all files from a directory and returns them as an array
  * of objects containing the relative path and file data as Uint8Array
  */
-function readDistFiles(distPath: string): Array<{ relativePath: string; fileData: Uint8Array }> {
+function readDistFiles(
+  distPath: string
+): Array<{ relativePath: string; fileData: Uint8Array }> {
   const files: Array<{ relativePath: string; fileData: Uint8Array }> = [];
 
   function walkDirectory(currentPath: string, basePath: string) {
@@ -199,7 +211,10 @@ async function getAllFilesFromVfs(
       const entries = await tonk.listDirectory(currentPath);
 
       for (const entry of entries) {
-        const fullPath = currentPath === '/' ? `/${entry.name}` : `${currentPath}/${entry.name}`;
+        const fullPath =
+          currentPath === '/'
+            ? `/${entry.name}`
+            : `${currentPath}/${entry.name}`;
 
         if (entry.type === 'directory') {
           // Add directory to queue for processing
@@ -245,7 +260,9 @@ async function createBundle(
     const distPath = join(process.cwd(), 'dist');
 
     if (!existsSync(distPath)) {
-      throw new Error('dist/ folder not found. Please run "npm run build" first.');
+      throw new Error(
+        'dist/ folder not found. Please run "npm run build" first.'
+      );
     }
 
     const distFiles = readDistFiles(distPath);
@@ -264,7 +281,9 @@ async function createBundle(
         relativePath: `/desktonk${relativePath}`,
         fileData,
       }));
-      console.log(`Found ${sampleFiles.length} sample files to add to /desktonk`);
+      console.log(
+        `Found ${sampleFiles.length} sample files to add to /desktonk`
+      );
     } else {
       console.warn('sample_files/ folder not found, skipping sample files');
     }
@@ -287,7 +306,11 @@ async function createBundle(
       const mimeType = determineMimeType(relativePath);
       console.log(`Adding file: ${modifiedPath} (${mimeType})`);
       // Use createFileWithBytes with MIME type
-      await tonk.createFileWithBytes(modifiedPath, { mime: mimeType }, fileData);
+      await tonk.createFileWithBytes(
+        modifiedPath,
+        { mime: mimeType },
+        fileData
+      );
     }
 
     console.log('Creating bundle...');
@@ -364,12 +387,16 @@ async function unpackBundle(bundlePath: string, outputDir: string) {
 
       // Handle DocumentData format: { content: JsonObject, bytes: string }
       if (!fileResult.bytes) {
-        throw new Error(`File ${filePath} has no bytes data - corrupted bundle?`);
+        throw new Error(
+          `File ${filePath} has no bytes data - corrupted bundle?`
+        );
       }
       const fileData = base64ToUint8Array(fileResult.bytes);
 
       // Use the actual VFS path structure (remove leading slash for file system)
-      const cleanPath = filePath.startsWith('/') ? filePath.substring(1) : filePath;
+      const cleanPath = filePath.startsWith('/')
+        ? filePath.substring(1)
+        : filePath;
       const outputPath = join(outputDir, cleanPath);
 
       // Create directory structure if needed
@@ -496,14 +523,17 @@ async function main() {
 
       // Parse --name or -n argument
       let bundleName: string | undefined;
-      const nameIndex = createArgs.findIndex((arg) => arg === '--name' || arg === '-n');
+      const nameIndex = createArgs.findIndex(
+        arg => arg === '--name' || arg === '-n'
+      );
       if (nameIndex !== -1 && createArgs[nameIndex + 1]) {
         bundleName = createArgs[nameIndex + 1];
       }
 
       // Output path is any non-flag argument that isn't the bundle name value
       const outputPath = createArgs.find(
-        (arg, idx) => !arg.startsWith('--') && !arg.startsWith('-') && idx !== nameIndex + 1
+        (arg, idx) =>
+          !arg.startsWith('--') && !arg.startsWith('-') && idx !== nameIndex + 1
       );
 
       await createBundle(outputPath, copyToServer, bundleName);
@@ -512,8 +542,12 @@ async function main() {
 
     case 'unpack': {
       if (args.length < 3) {
-        console.error('Error: unpack command requires bundle path and output directory');
-        console.log('Usage: npm run bundle-builder unpack <bundle> <output-dir>');
+        console.error(
+          'Error: unpack command requires bundle path and output directory'
+        );
+        console.log(
+          'Usage: npm run bundle-builder unpack <bundle> <output-dir>'
+        );
         process.exit(1);
       }
       await unpackBundle(args[1], args[2]);

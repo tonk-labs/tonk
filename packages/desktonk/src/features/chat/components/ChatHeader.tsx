@@ -12,7 +12,12 @@ export function ChatHeader() {
       <div className="flex items-center justify-between">
         <h3 className="font-mono font-medium text-sm">Chat</h3>
         <div className="flex gap-1">
-          <Button variant="ghost" size="icon-sm" onClick={toggleWindow} aria-label="Close chat">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={toggleWindow}
+            aria-label="Close chat"
+          >
             <svg
               width="16"
               height="16"

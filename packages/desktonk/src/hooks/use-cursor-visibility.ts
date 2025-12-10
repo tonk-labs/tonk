@@ -1,5 +1,5 @@
-import * as React from 'react';
 import type { Editor } from '@tiptap/react';
+import * as React from 'react';
 import { useWindowSize } from '@/hooks/use-window-size';
 import { useBodyRect } from './use-element-rect';
 
@@ -22,7 +22,10 @@ export interface CursorVisibilityOptions {
  * @param options.overlayHeight Toolbar height to account for
  * @returns The bounding rect of the body
  */
-export function useCursorVisibility({ editor, overlayHeight = 0 }: CursorVisibilityOptions) {
+export function useCursorVisibility({
+  editor,
+  overlayHeight = 0,
+}: CursorVisibilityOptions) {
   const { height: windowHeight } = useWindowSize();
   const rect = useBodyRect({
     enabled: true,

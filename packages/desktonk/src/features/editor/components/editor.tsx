@@ -1,24 +1,24 @@
-import { useEditor } from '@tiptap/react';
-import { useEffect, useMemo } from 'react';
-import StarterKit from '@tiptap/starter-kit';
-import Link from '@tiptap/extension-link';
-import Image from '@tiptap/extension-image';
-import TextAlign from '@tiptap/extension-text-align';
 // import { TextStyle } from '@tiptap/r';
 import { Color } from '@tiptap/extension-color';
 import { Highlight } from '@tiptap/extension-highlight';
-import TaskList from '@tiptap/extension-task-list';
-import TaskItem from '@tiptap/extension-task-item';
-import Typography from '@tiptap/extension-typography';
-import Superscript from '@tiptap/extension-superscript';
-import Subscript from '@tiptap/extension-subscript';
 import HorizontalRule from '@tiptap/extension-horizontal-rule';
+import Image from '@tiptap/extension-image';
+import Link from '@tiptap/extension-link';
+import Subscript from '@tiptap/extension-subscript';
+import Superscript from '@tiptap/extension-superscript';
+import TaskItem from '@tiptap/extension-task-item';
+import TaskList from '@tiptap/extension-task-list';
+import TextAlign from '@tiptap/extension-text-align';
+import Typography from '@tiptap/extension-typography';
 import { Selection } from '@tiptap/extensions';
+import { useEditor } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import { useEffect, useMemo } from 'react';
 import { ImageUploadNode } from '@/features/editor/components/tiptap-node/image-upload-node/image-upload-node-extension';
-import { LineNumbers } from './tiptap-ui-primitive/line-numbers/LineNumbers';
+import { handleImageUpload } from '@/lib/utils';
 import { useEditorStore } from '../stores/editorStore';
 import { SimpleEditor } from './tiptap/simple-editor';
-import { handleImageUpload } from '@/lib/utils';
+import { LineNumbers } from './tiptap-ui-primitive/line-numbers/LineNumbers';
 import './editor.css';
 
 export function Editor() {

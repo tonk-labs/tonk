@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import type { Manifest } from '@tonk/core';
+import type React from 'react';
+import { useState } from 'react';
 import { Route, Routes } from 'react-router-dom';
-import { Manifest } from '@tonk/core';
-import { FileBrowser, FileViewer } from './views';
-import { TonkService } from './services/tonkService';
 import BundleLoader from './components/BundleLoader';
 import RelayControls from './components/RelayControls';
+import { TonkService } from './services/tonkService';
+import { FileBrowser, FileViewer } from './views';
 
 type AppState =
   | { status: 'no-bundle' }
@@ -24,7 +25,8 @@ const App: React.FC = () => {
     } catch (err) {
       setState({
         status: 'error',
-        message: err instanceof Error ? err.message : 'Failed to initialize bundle',
+        message:
+          err instanceof Error ? err.message : 'Failed to initialize bundle',
       });
     }
   };

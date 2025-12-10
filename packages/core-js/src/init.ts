@@ -1,6 +1,6 @@
-import init, { initSync } from './tonk_core.js';
 import type { TonkConfig } from './core.js';
 import { WASM_BASE64 } from './generated/wasm-data.js';
+import init, { initSync } from './tonk_core.js';
 
 // Track initialization state
 let initialized = false;

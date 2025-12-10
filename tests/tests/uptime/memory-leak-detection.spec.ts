@@ -1,7 +1,7 @@
-import { test, expect } from '../fixtures';
 import { ConnectionManager } from '../../src/utils/connection-manager';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
 import { UptimeLogger } from '../../src/utils/uptime-logger';
+import { expect, test } from '../fixtures';
 
 test.describe('Uptime Test - Memory Leak Detection', () => {
   test('should not leak memory through cyclic connect/disconnect operations', async ({
@@ -146,7 +146,7 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
 
     if (leakDetected) {
       console.warn(
-        `⚠️  Potential memory leak detected! Memory increased by ${memoryIncrease.toFixed(2)} MB`
+        `!  Potential memory leak detected! Memory increased by ${memoryIncrease.toFixed(2)} MB`
       );
     } else {
       console.log(
@@ -243,7 +243,7 @@ test.describe('Uptime Test - Memory Leak Detection', () => {
 
     if (leakDetected) {
       console.warn(
-        `⚠️  Memory leak detected in sustained load test! Growth: ${memoryGrowthMB.toFixed(2)} MB`
+        `!  Memory leak detected in sustained load test! Growth: ${memoryGrowthMB.toFixed(2)} MB`
       );
     } else {
       console.log(

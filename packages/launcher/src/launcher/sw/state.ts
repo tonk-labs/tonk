@@ -1,5 +1,5 @@
-import type { TonkCore, Manifest } from '@tonk/core/slim';
-import type { BundleState, ActiveBundleState } from './types';
+import type { Manifest, TonkCore } from '@tonk/core/slim';
+import type { ActiveBundleState, BundleState } from './types';
 import { logger } from './utils/logging';
 
 // Global state - single source of truth

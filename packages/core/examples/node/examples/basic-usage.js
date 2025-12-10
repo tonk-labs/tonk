@@ -154,7 +154,7 @@ async function bundleExample() {
     console.log(`✅ Restored bundle with ${newKeys.length} items`);
 
     // Delete a file to demonstrate deletion
-    console.log('\n🗑️ Deleting README.md...');
+    console.log('\n🗑 Deleting README.md...');
     const deleted = await bundle.delete('README.md');
     console.log(`✅ File deleted: ${deleted}`);
 

@@ -12,7 +12,7 @@ const {
   PerfTimer,
 } = require('../../shared/test-utils');
 
-describe('Bundle Integration Tests', function () {
+describe('Bundle Integration Tests', () => {
   let wasm;
 
   before(async function () {
@@ -20,8 +20,8 @@ describe('Bundle Integration Tests', function () {
     wasm = await initWasm();
   });
 
-  describe('Bundle Creation and Basic Operations', function () {
-    it('should create bundle from existing data', async function () {
+  describe('Bundle Creation and Basic Operations', () => {
+    it('should create bundle from existing data', async () => {
       // Create a test zip file (this would normally be created by the bundle)
       const bundle = await wasm.create_bundle();
 
@@ -49,7 +49,7 @@ describe('Bundle Integration Tests', function () {
       }
     });
 
-    it('should handle hierarchical paths', async function () {
+    it('should handle hierarchical paths', async () => {
       const bundle = await wasm.create_bundle();
 
       const hierarchicalFiles = [
@@ -78,7 +78,7 @@ describe('Bundle Integration Tests', function () {
       }
     });
 
-    it('should preserve data integrity', async function () {
+    it('should preserve data integrity', async () => {
       const bundle = await wasm.create_bundle();
 
       // Test with various data types
@@ -151,8 +151,8 @@ describe('Bundle Integration Tests', function () {
     });
   });
 
-  describe('Bundle Serialization', function () {
-    it('should serialize and deserialize bundle data', async function () {
+  describe('Bundle Serialization', () => {
+    it('should serialize and deserialize bundle data', async () => {
       // Create and populate a bundle
       const originalBundle = await wasm.create_bundle();
 
@@ -193,7 +193,7 @@ describe('Bundle Integration Tests', function () {
       }
     });
 
-    it('should handle empty bundle serialization', async function () {
+    it('should handle empty bundle serialization', async () => {
       const bundle = await wasm.create_bundle();
 
       const serialized = await bundle.toBytes();
@@ -205,7 +205,7 @@ describe('Bundle Integration Tests', function () {
     });
   });
 
-  describe('Bundle Performance', function () {
+  describe('Bundle Performance', () => {
     it('should handle large numbers of files efficiently', async function () {
       this.timeout(15000);
 
@@ -265,8 +265,8 @@ describe('Bundle Integration Tests', function () {
     });
   });
 
-  describe('Bundle Error Handling', function () {
-    it('should handle non-existent keys gracefully', async function () {
+  describe('Bundle Error Handling', () => {
+    it('should handle non-existent keys gracefully', async () => {
       const bundle = await wasm.create_bundle();
 
       try {
@@ -277,7 +277,7 @@ describe('Bundle Integration Tests', function () {
       }
     });
 
-    it('should handle deletion of non-existent keys', async function () {
+    it('should handle deletion of non-existent keys', async () => {
       const bundle = await wasm.create_bundle();
 
       // This might not throw an error, depending on implementation
@@ -290,7 +290,7 @@ describe('Bundle Integration Tests', function () {
       }
     });
 
-    it('should handle invalid serialized data', async function () {
+    it('should handle invalid serialized data', async () => {
       const invalidData = new Uint8Array([1, 2, 3, 4, 5]); // Invalid bundle data
 
       try {
@@ -302,8 +302,8 @@ describe('Bundle Integration Tests', function () {
     });
   });
 
-  describe('Bundle Integration with File System', function () {
-    it('should save bundle to file and load it back', async function () {
+  describe('Bundle Integration with File System', () => {
+    it('should save bundle to file and load it back', async () => {
       // Create and populate bundle
       const originalBundle = await wasm.create_bundle();
       await originalBundle.put(

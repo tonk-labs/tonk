@@ -1,13 +1,14 @@
-import { test, describe, beforeEach, afterEach, expect } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
-  TonkCore,
-  TonkError,
-  FileSystemError,
+  Bundle,
   BundleError,
   ConnectionError,
-  Bundle,
+  FileSystemError,
+  TonkCore,
+  TonkError,
 } from '../dist/index.js';
 import { pngBytes } from './data.js';
+
 describe('TonkCore', () => {
   let tonk;
   beforeEach(async () => {

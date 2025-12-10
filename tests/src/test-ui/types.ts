@@ -1,4 +1,4 @@
-import type { DocumentData, RefNode, JsonValue } from '@tonk/core';
+import type { DocumentData, JsonValue, RefNode } from '@tonk/core';
 import type { ChildProcess } from 'child_process';
 
 export type DocumentContent = {

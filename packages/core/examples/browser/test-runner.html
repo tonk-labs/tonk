@@ -239,7 +239,7 @@
 
           if (typeof SharedArrayBuffer === 'undefined') {
             this.log(
-              '⚠️  SharedArrayBuffer not available, skipping atomics tests',
+              '!  SharedArrayBuffer not available, skipping atomics tests',
               'warning'
             );
             return;
@@ -289,7 +289,7 @@
 
           if (typeof Worker === 'undefined') {
             this.log(
-              '⚠️  Web Workers not available, skipping threading tests',
+              '!  Web Workers not available, skipping threading tests',
               'warning'
             );
             return;
@@ -314,7 +314,7 @@
               const worker = new Worker(URL.createObjectURL(blob));
 
               let ready = false;
-              worker.onmessage = function (e) {
+              worker.onmessage = (e) => {
                 if (e.data === 'worker-ready') {
                   ready = true;
                   worker.postMessage('test');

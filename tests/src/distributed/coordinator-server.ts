@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { WorkerCoordinator } from './worker-coordinator';
 import type { TestScenario } from './types';
+import { WorkerCoordinator } from './worker-coordinator';
 
 async function main() {
   const args = process.argv.slice(2);

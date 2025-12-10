@@ -1,8 +1,11 @@
 @import "tailwindcss";
 
 :root {
-  --tiptap-card-bg-color: var(--color-background, #FFFFFF);
-  --tiptap-card-border-color: var(--color-border-subtle, var(--tt-gray-light-a-100));
+  --tiptap-card-bg-color: var(--color-background, #ffffff);
+  --tiptap-card-border-color: var(
+    --color-border-subtle,
+    var(--tt-gray-light-a-100)
+  );
   --tiptap-card-group-label-color: var(--tt-gray-light-a-800);
 }
 
@@ -52,11 +55,11 @@
   vertical-align: middle;
   min-width: max-content;
 }
-.tiptap-card-item-group[data-orientation=vertical] {
+.tiptap-card-item-group[data-orientation="vertical"] {
   flex-direction: column;
   justify-content: center;
 }
-.tiptap-card-item-group[data-orientation=horizontal] {
+.tiptap-card-item-group[data-orientation="horizontal"] {
   gap: 0.25rem;
   flex-direction: row;
   align-items: center;

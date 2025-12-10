@@ -1,10 +1,10 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { RootLayout } from './components/layout/RootLayout';
+import { FeatureFlagProvider } from './contexts/FeatureFlagContext';
 import { Desktop } from './features/desktop';
 import { DesktopErrorBoundary } from './features/desktop/components/DesktopErrorBoundary';
-import { TextEditorApp } from './features/text-editor';
-import { FeatureFlagProvider } from './contexts/FeatureFlagContext';
-import { RootLayout } from './components/layout/RootLayout';
 import { usePresenceTracking } from './features/presence';
+import { TextEditorApp } from './features/text-editor';
 import './global.css';
 
 // Initialize dark mode from localStorage before React renders
@@ -12,7 +12,8 @@ import './global.css';
 const initDarkMode = () => {
   const isDark =
     localStorage.theme === 'dark' ||
-    (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    (!('theme' in localStorage) &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.classList.toggle('dark', isDark);
 };
 initDarkMode();
@@ -22,12 +23,14 @@ function applyTheme(isDark: boolean) {
   document.documentElement.classList.toggle('dark', isDark);
   localStorage.setItem('theme', isDark ? 'dark' : 'light');
   // Dispatch custom event for components that need to react (e.g., tldraw)
-  window.dispatchEvent(new CustomEvent('theme-changed', { detail: { isDark } }));
+  window.dispatchEvent(
+    new CustomEvent('theme-changed', { detail: { isDark } })
+  );
 }
 
 // Listen for theme changes from parent window (launcher)
 if (typeof window !== 'undefined') {
-  window.addEventListener('message', (event) => {
+  window.addEventListener('message', event => {
     if (event.data?.type === 'theme-change') {
       applyTheme(event.data.isDark);
     }

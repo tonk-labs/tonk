@@ -7,22 +7,14 @@
   --tt-badge-border-color-subdued: var(--tt-gray-light-a-200);
   --tt-badge-border-color-emphasized: var(--tt-gray-light-a-600);
   --tt-badge-text-color: var(--tt-gray-light-a-500);
-  --tt-badge-text-color-subdued: var(
-    --tt-gray-light-a-400
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-gray-light-a-600
-  );
+  --tt-badge-text-color-subdued: var(--tt-gray-light-a-400);
+  --tt-badge-text-color-emphasized: var(--tt-gray-light-a-600);
   --tt-badge-bg-color: var(--white);
   --tt-badge-bg-color-subdued: var(--white);
   --tt-badge-bg-color-emphasized: var(--white);
   --tt-badge-icon-color: var(--tt-gray-light-a-500);
-  --tt-badge-icon-color-subdued: var(
-    --tt-gray-light-a-400
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-brand-color-600
-  );
+  --tt-badge-icon-color-subdued: var(--tt-gray-light-a-400);
+  --tt-badge-icon-color-emphasized: var(--tt-brand-color-600);
   /* Dark mode */
 }
 .dark .tiptap-badge {
@@ -30,123 +22,83 @@
   --tt-badge-border-color-subdued: var(--tt-gray-dark-a-200);
   --tt-badge-border-color-emphasized: var(--tt-gray-dark-a-500);
   --tt-badge-text-color: var(--tt-gray-dark-a-500);
-  --tt-badge-text-color-subdued: var(
-    --tt-gray-dark-a-400
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-gray-dark-a-600
-  );
+  --tt-badge-text-color-subdued: var(--tt-gray-dark-a-400);
+  --tt-badge-text-color-emphasized: var(--tt-gray-dark-a-600);
   --tt-badge-bg-color: var(--black);
   --tt-badge-bg-color-subdued: var(--black);
   --tt-badge-bg-color-emphasized: var(--black);
   --tt-badge-icon-color: var(--tt-gray-dark-a-500);
-  --tt-badge-icon-color-subdued: var(
-    --tt-gray-dark-a-400
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-brand-color-400
-  );
+  --tt-badge-icon-color-subdued: var(--tt-gray-dark-a-400);
+  --tt-badge-icon-color-emphasized: var(--tt-brand-color-400);
 }
 .tiptap-badge {
   /************************************************** 
     Ghost 
   **************************************************/
 }
-.tiptap-badge[data-style=ghost] {
+.tiptap-badge[data-style="ghost"] {
   /* Light mode */
   --tt-badge-border-color: var(--tt-gray-light-a-200);
   --tt-badge-border-color-subdued: var(--tt-gray-light-a-200);
   --tt-badge-border-color-emphasized: var(--tt-gray-light-a-600);
   --tt-badge-text-color: var(--tt-gray-light-a-500);
-  --tt-badge-text-color-subdued: var(
-    --tt-gray-light-a-400
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-gray-light-a-600
-  );
+  --tt-badge-text-color-subdued: var(--tt-gray-light-a-400);
+  --tt-badge-text-color-emphasized: var(--tt-gray-light-a-600);
   --tt-badge-bg-color: var(--transparent);
   --tt-badge-bg-color-subdued: var(--transparent);
   --tt-badge-bg-color-emphasized: var(--transparent);
   --tt-badge-icon-color: var(--tt-gray-light-a-500);
-  --tt-badge-icon-color-subdued: var(
-    --tt-gray-light-a-400
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-brand-color-600
-  );
+  --tt-badge-icon-color-subdued: var(--tt-gray-light-a-400);
+  --tt-badge-icon-color-emphasized: var(--tt-brand-color-600);
   /* Dark mode */
 }
-.dark .tiptap-badge[data-style=ghost] {
+.dark .tiptap-badge[data-style="ghost"] {
   --tt-badge-border-color: var(--tt-gray-dark-a-200);
   --tt-badge-border-color-subdued: var(--tt-gray-dark-a-200);
   --tt-badge-border-color-emphasized: var(--tt-gray-dark-a-500);
   --tt-badge-text-color: var(--tt-gray-dark-a-500);
-  --tt-badge-text-color-subdued: var(
-    --tt-gray-dark-a-400
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-gray-dark-a-600
-  );
+  --tt-badge-text-color-subdued: var(--tt-gray-dark-a-400);
+  --tt-badge-text-color-emphasized: var(--tt-gray-dark-a-600);
   --tt-badge-bg-color: var(--transparent);
   --tt-badge-bg-color-subdued: var(--transparent);
   --tt-badge-bg-color-emphasized: var(--transparent);
   --tt-badge-icon-color: var(--tt-gray-dark-a-500);
-  --tt-badge-icon-color-subdued: var(
-    --tt-gray-dark-a-400
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-brand-color-400
-  );
+  --tt-badge-icon-color-subdued: var(--tt-gray-dark-a-400);
+  --tt-badge-icon-color-emphasized: var(--tt-brand-color-400);
 }
 .tiptap-badge {
   /************************************************** 
     Gray 
   **************************************************/
 }
-.tiptap-badge[data-style=gray] {
+.tiptap-badge[data-style="gray"] {
   /* Light mode */
   --tt-badge-border-color: var(--tt-gray-light-a-200);
   --tt-badge-border-color-subdued: var(--tt-gray-light-a-200);
   --tt-badge-border-color-emphasized: var(--tt-gray-light-a-500);
   --tt-badge-text-color: var(--tt-gray-light-a-500);
-  --tt-badge-text-color-subdued: var(
-    --tt-gray-light-a-400
-  );
+  --tt-badge-text-color-subdued: var(--tt-gray-light-a-400);
   --tt-badge-text-color-emphasized: var(--white);
   --tt-badge-bg-color: var(--tt-gray-light-a-100);
-  --tt-badge-bg-color-subdued: var(
-    --tt-gray-light-a-50
-  );
-  --tt-badge-bg-color-emphasized: var(
-    --tt-gray-light-a-700
-  );
+  --tt-badge-bg-color-subdued: var(--tt-gray-light-a-50);
+  --tt-badge-bg-color-emphasized: var(--tt-gray-light-a-700);
   --tt-badge-icon-color: var(--tt-gray-light-a-500);
-  --tt-badge-icon-color-subdued: var(
-    --tt-gray-light-a-400
-  );
+  --tt-badge-icon-color-subdued: var(--tt-gray-light-a-400);
   --tt-badge-icon-color-emphasized: var(--white);
   /* Dark mode */
 }
-.dark .tiptap-badge[data-style=gray] {
+.dark .tiptap-badge[data-style="gray"] {
   --tt-badge-border-color: var(--tt-gray-dark-a-200);
   --tt-badge-border-color-subdued: var(--tt-gray-dark-a-200);
   --tt-badge-border-color-emphasized: var(--tt-gray-dark-a-500);
   --tt-badge-text-color: var(--tt-gray-dark-a-500);
-  --tt-badge-text-color-subdued: var(
-    --tt-gray-dark-a-400
-  );
+  --tt-badge-text-color-subdued: var(--tt-gray-dark-a-400);
   --tt-badge-text-color-emphasized: var(--black);
   --tt-badge-bg-color: var(--tt-gray-dark-a-100);
-  --tt-badge-bg-color-subdued: var(
-    --tt-gray-dark-a-50
-  );
-  --tt-badge-bg-color-emphasized: var(
-    --tt-gray-dark-a-800
-  );
+  --tt-badge-bg-color-subdued: var(--tt-gray-dark-a-50);
+  --tt-badge-bg-color-emphasized: var(--tt-gray-dark-a-800);
   --tt-badge-icon-color: var(--tt-gray-dark-a-500);
-  --tt-badge-icon-color-subdued: var(
-    --tt-gray-dark-a-400
-  );
+  --tt-badge-icon-color-subdued: var(--tt-gray-dark-a-400);
   --tt-badge-icon-color-emphasized: var(--black);
 }
 .tiptap-badge {
@@ -154,234 +106,138 @@
     Green 
   **************************************************/
 }
-.tiptap-badge[data-style=green] {
+.tiptap-badge[data-style="green"] {
   /* Light mode */
   --tt-badge-border-color: var(--tt-color-green-inc-2);
   --tt-badge-border-color-subdued: var(--tt-color-green-inc-3);
   --tt-badge-border-color-emphasized: var(--tt-color-green-dec-2);
   --tt-badge-text-color: var(--tt-color-green-dec-3);
-  --tt-badge-text-color-subdued: var(
-    --tt-color-green-dec-2
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-color-green-inc-5
-  );
+  --tt-badge-text-color-subdued: var(--tt-color-green-dec-2);
+  --tt-badge-text-color-emphasized: var(--tt-color-green-inc-5);
   --tt-badge-bg-color: var(--tt-color-green-inc-4);
-  --tt-badge-bg-color-subdued: var(
-    --tt-color-green-inc-5
-  );
-  --tt-badge-bg-color-emphasized: var(
-    --tt-color-green-dec-1
-  );
+  --tt-badge-bg-color-subdued: var(--tt-color-green-inc-5);
+  --tt-badge-bg-color-emphasized: var(--tt-color-green-dec-1);
   --tt-badge-icon-color: var(--tt-color-green-dec-3);
-  --tt-badge-icon-color-subdued: var(
-    --tt-color-green-dec-2
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-color-green-inc-5
-  );
+  --tt-badge-icon-color-subdued: var(--tt-color-green-dec-2);
+  --tt-badge-icon-color-emphasized: var(--tt-color-green-inc-5);
   /* Dark mode */
 }
-.dark .tiptap-badge[data-style=green] {
+.dark .tiptap-badge[data-style="green"] {
   --tt-badge-border-color: var(--tt-color-green-dec-2);
   --tt-badge-border-color-subdued: var(--tt-color-green-dec-3);
   --tt-badge-border-color-emphasized: var(--tt-color-green-base);
   --tt-badge-text-color: var(--tt-color-green-inc-3);
-  --tt-badge-text-color-subdued: var(
-    --tt-color-green-inc-2
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-color-green-dec-5
-  );
+  --tt-badge-text-color-subdued: var(--tt-color-green-inc-2);
+  --tt-badge-text-color-emphasized: var(--tt-color-green-dec-5);
   --tt-badge-bg-color: var(--tt-color-green-dec-4);
-  --tt-badge-bg-color-subdued: var(
-    --tt-color-green-dec-5
-  );
-  --tt-badge-bg-color-emphasized: var(
-    --tt-color-green-inc-1
-  );
+  --tt-badge-bg-color-subdued: var(--tt-color-green-dec-5);
+  --tt-badge-bg-color-emphasized: var(--tt-color-green-inc-1);
   --tt-badge-icon-color: var(--tt-color-green-inc-3);
-  --tt-badge-icon-color-subdued: var(
-    --tt-color-green-inc-2
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-color-green-dec-5
-  );
+  --tt-badge-icon-color-subdued: var(--tt-color-green-inc-2);
+  --tt-badge-icon-color-emphasized: var(--tt-color-green-dec-5);
 }
 .tiptap-badge {
   /************************************************** 
     Yellow 
   **************************************************/
 }
-.tiptap-badge[data-style=yellow] {
+.tiptap-badge[data-style="yellow"] {
   /* Light mode */
   --tt-badge-border-color: var(--tt-color-yellow-inc-2);
   --tt-badge-border-color-subdued: var(--tt-color-yellow-inc-3);
   --tt-badge-border-color-emphasized: var(--tt-color-yellow-dec-1);
   --tt-badge-text-color: var(--tt-color-yellow-dec-3);
-  --tt-badge-text-color-subdued: var(
-    --tt-color-yellow-dec-2
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-color-yellow-dec-3
-  );
+  --tt-badge-text-color-subdued: var(--tt-color-yellow-dec-2);
+  --tt-badge-text-color-emphasized: var(--tt-color-yellow-dec-3);
   --tt-badge-bg-color: var(--tt-color-yellow-inc-4);
-  --tt-badge-bg-color-subdued: var(
-    --tt-color-yellow-inc-5
-  );
-  --tt-badge-bg-color-emphasized: var(
-    --tt-color-yellow-base
-  );
+  --tt-badge-bg-color-subdued: var(--tt-color-yellow-inc-5);
+  --tt-badge-bg-color-emphasized: var(--tt-color-yellow-base);
   --tt-badge-icon-color: var(--tt-color-yellow-dec-3);
-  --tt-badge-icon-color-subdued: var(
-    --tt-color-yellow-dec-2
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-color-yellow-dec-3
-  );
+  --tt-badge-icon-color-subdued: var(--tt-color-yellow-dec-2);
+  --tt-badge-icon-color-emphasized: var(--tt-color-yellow-dec-3);
   /* Dark mode */
 }
-.dark .tiptap-badge[data-style=yellow] {
+.dark .tiptap-badge[data-style="yellow"] {
   --tt-badge-border-color: var(--tt-color-yellow-dec-2);
   --tt-badge-border-color-subdued: var(--tt-color-yellow-dec-3);
   --tt-badge-border-color-emphasized: var(--tt-color-yellow-inc-1);
   --tt-badge-text-color: var(--tt-color-yellow-inc-3);
-  --tt-badge-text-color-subdued: var(
-    --tt-color-yellow-inc-2
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-color-yellow-dec-3
-  );
+  --tt-badge-text-color-subdued: var(--tt-color-yellow-inc-2);
+  --tt-badge-text-color-emphasized: var(--tt-color-yellow-dec-3);
   --tt-badge-bg-color: var(--tt-color-yellow-dec-4);
-  --tt-badge-bg-color-subdued: var(
-    --tt-color-yellow-dec-5
-  );
-  --tt-badge-bg-color-emphasized: var(
-    --tt-color-yellow-base
-  );
+  --tt-badge-bg-color-subdued: var(--tt-color-yellow-dec-5);
+  --tt-badge-bg-color-emphasized: var(--tt-color-yellow-base);
   --tt-badge-icon-color: var(--tt-color-yellow-inc-3);
-  --tt-badge-icon-color-subdued: var(
-    --tt-color-yellow-inc-2
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-color-yellow-dec-3
-  );
+  --tt-badge-icon-color-subdued: var(--tt-color-yellow-inc-2);
+  --tt-badge-icon-color-emphasized: var(--tt-color-yellow-dec-3);
 }
 .tiptap-badge {
   /************************************************** 
     Red 
   **************************************************/
 }
-.tiptap-badge[data-style=red] {
+.tiptap-badge[data-style="red"] {
   /* Light mode */
   --tt-badge-border-color: var(--tt-color-red-inc-2);
   --tt-badge-border-color-subdued: var(--tt-color-red-inc-3);
   --tt-badge-border-color-emphasized: var(--tt-color-red-dec-2);
   --tt-badge-text-color: var(--tt-color-red-dec-3);
-  --tt-badge-text-color-subdued: var(
-    --tt-color-red-dec-2
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-color-red-inc-5
-  );
+  --tt-badge-text-color-subdued: var(--tt-color-red-dec-2);
+  --tt-badge-text-color-emphasized: var(--tt-color-red-inc-5);
   --tt-badge-bg-color: var(--tt-color-red-inc-4);
-  --tt-badge-bg-color-subdued: var(
-    --tt-color-red-inc-5
-  );
-  --tt-badge-bg-color-emphasized: var(
-    --tt-color-red-dec-1
-  );
+  --tt-badge-bg-color-subdued: var(--tt-color-red-inc-5);
+  --tt-badge-bg-color-emphasized: var(--tt-color-red-dec-1);
   --tt-badge-icon-color: var(--tt-color-red-dec-3);
-  --tt-badge-icon-color-subdued: var(
-    --tt-color-red-dec-2
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-color-red-inc-5
-  );
+  --tt-badge-icon-color-subdued: var(--tt-color-red-dec-2);
+  --tt-badge-icon-color-emphasized: var(--tt-color-red-inc-5);
   /* Dark mode */
 }
-.dark .tiptap-badge[data-style=red] {
+.dark .tiptap-badge[data-style="red"] {
   --tt-badge-border-color: var(--tt-color-red-dec-2);
   --tt-badge-border-color-subdued: var(--tt-color-red-dec-3);
   --tt-badge-border-color-emphasized: var(--tt-color-red-base);
   --tt-badge-text-color: var(--tt-color-red-inc-3);
-  --tt-badge-text-color-subdued: var(
-    --tt-color-red-inc-2
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-color-red-dec-5
-  );
+  --tt-badge-text-color-subdued: var(--tt-color-red-inc-2);
+  --tt-badge-text-color-emphasized: var(--tt-color-red-dec-5);
   --tt-badge-bg-color: var(--tt-color-red-dec-4);
-  --tt-badge-bg-color-subdued: var(
-    --tt-color-red-dec-5
-  );
-  --tt-badge-bg-color-emphasized: var(
-    --tt-color-red-inc-1
-  );
+  --tt-badge-bg-color-subdued: var(--tt-color-red-dec-5);
+  --tt-badge-bg-color-emphasized: var(--tt-color-red-inc-1);
   --tt-badge-icon-color: var(--tt-color-red-inc-3);
-  --tt-badge-icon-color-subdued: var(
-    --tt-color-red-inc-2
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-color-red-dec-5
-  );
+  --tt-badge-icon-color-subdued: var(--tt-color-red-inc-2);
+  --tt-badge-icon-color-emphasized: var(--tt-color-red-dec-5);
 }
 .tiptap-badge {
   /************************************************** 
     Brand 
   **************************************************/
 }
-.tiptap-badge[data-style=brand] {
+.tiptap-badge[data-style="brand"] {
   /* Light mode */
   --tt-badge-border-color: var(--tt-brand-color-300);
   --tt-badge-border-color-subdued: var(--tt-brand-color-200);
   --tt-badge-border-color-emphasized: var(--tt-brand-color-600);
   --tt-badge-text-color: var(--tt-brand-color-800);
-  --tt-badge-text-color-subdued: var(
-    --tt-brand-color-700
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-brand-color-50
-  );
+  --tt-badge-text-color-subdued: var(--tt-brand-color-700);
+  --tt-badge-text-color-emphasized: var(--tt-brand-color-50);
   --tt-badge-bg-color: var(--tt-brand-color-100);
-  --tt-badge-bg-color-subdued: var(
-    --tt-brand-color-50
-  );
-  --tt-badge-bg-color-emphasized: var(
-    --tt-brand-color-600
-  );
+  --tt-badge-bg-color-subdued: var(--tt-brand-color-50);
+  --tt-badge-bg-color-emphasized: var(--tt-brand-color-600);
   --tt-badge-icon-color: var(--tt-brand-color-800);
-  --tt-badge-icon-color-subdued: var(
-    --tt-brand-color-700
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-brand-color-100
-  );
+  --tt-badge-icon-color-subdued: var(--tt-brand-color-700);
+  --tt-badge-icon-color-emphasized: var(--tt-brand-color-100);
   /* Dark mode */
 }
-.dark .tiptap-badge[data-style=brand] {
+.dark .tiptap-badge[data-style="brand"] {
   --tt-badge-border-color: var(--tt-brand-color-700);
   --tt-badge-border-color-subdued: var(--tt-brand-color-800);
   --tt-badge-border-color-emphasized: var(--tt-brand-color-400);
   --tt-badge-text-color: var(--tt-brand-color-200);
-  --tt-badge-text-color-subdued: var(
-    --tt-brand-color-300
-  );
-  --tt-badge-text-color-emphasized: var(
-    --tt-brand-color-950
-  );
+  --tt-badge-text-color-subdued: var(--tt-brand-color-300);
+  --tt-badge-text-color-emphasized: var(--tt-brand-color-950);
   --tt-badge-bg-color: var(--tt-brand-color-900);
-  --tt-badge-bg-color-subdued: var(
-    --tt-brand-color-950
-  );
-  --tt-badge-bg-color-emphasized: var(
-    --tt-brand-color-400
-  );
+  --tt-badge-bg-color-subdued: var(--tt-brand-color-950);
+  --tt-badge-bg-color-emphasized: var(--tt-brand-color-400);
   --tt-badge-icon-color: var(--tt-brand-color-200);
-  --tt-badge-icon-color-subdued: var(
-    --tt-brand-color-300
-  );
-  --tt-badge-icon-color-emphasized: var(
-    --tt-brand-color-900
-  );
+  --tt-badge-icon-color-subdued: var(--tt-brand-color-300);
+  --tt-badge-icon-color-emphasized: var(--tt-brand-color-900);
 }

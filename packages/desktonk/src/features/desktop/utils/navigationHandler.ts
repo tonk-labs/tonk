@@ -1,5 +1,8 @@
 type NavigationHandler = (path: string) => void;
-type ToastHandler = (options: { title: string; severity: 'error' | 'warning' | 'success' }) => void;
+type ToastHandler = (options: {
+  title: string;
+  severity: 'error' | 'warning' | 'success';
+}) => void;
 
 let navigationHandler: NavigationHandler | null = null;
 let toastHandler: ToastHandler | null = null;

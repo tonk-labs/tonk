@@ -13,7 +13,7 @@ const {
 } = require('../../shared/test-utils');
 const { createTestServer } = require('../../shared/test-server');
 
-describe('WebSocket Integration Tests', function () {
+describe('WebSocket Integration Tests', () => {
   let wasm, testServer;
 
   before(async function () {
@@ -21,18 +21,18 @@ describe('WebSocket Integration Tests', function () {
     wasm = await initWasm();
   });
 
-  beforeEach(async function () {
+  beforeEach(async () => {
     testServer = await createTestServer();
   });
 
-  afterEach(async function () {
+  afterEach(async () => {
     if (testServer) {
       await testServer.stop();
     }
   });
 
-  describe('WebSocket Server Infrastructure', function () {
-    it('should start and stop test server', async function () {
+  describe('WebSocket Server Infrastructure', () => {
+    it('should start and stop test server', async () => {
       expect(testServer.port).to.be.a('number');
       expect(testServer.port).to.be.greaterThan(0);
       expect(testServer.getClientCount()).to.equal(0);
@@ -42,7 +42,7 @@ describe('WebSocket Integration Tests', function () {
       expect(url).to.include(testServer.port.toString());
     });
 
-    it('should handle client connections', async function () {
+    it('should handle client connections', async () => {
       const WebSocket = require('ws');
       const client = new WebSocket(testServer.getUrl());
 
@@ -56,7 +56,7 @@ describe('WebSocket Integration Tests', function () {
       await sleep(100); // Give time for cleanup
     });
 
-    it('should relay messages between clients', async function () {
+    it('should relay messages between clients', async () => {
       const WebSocket = require('ws');
 
       // Create two clients
@@ -90,8 +90,8 @@ describe('WebSocket Integration Tests', function () {
     });
   });
 
-  describe('Sync Engine WebSocket Integration', function () {
-    it('should handle WebSocket connection attempts gracefully', async function () {
+  describe('Sync Engine WebSocket Integration', () => {
+    it('should handle WebSocket connection attempts gracefully', async () => {
       const engine = await wasm.create_sync_engine();
 
       // NOTE: Since WebSocket connections are not yet implemented for WASM,
@@ -109,12 +109,12 @@ describe('WebSocket Integration Tests', function () {
           expect(error.message).to.include('WebSocket error');
         }
         console.log(
-          '    ℹ WebSocket connection not yet implemented (expected)'
+          '    i WebSocket connection not yet implemented (expected)'
         );
       }
     });
 
-    it('should handle multiple connection attempts', async function () {
+    it('should handle multiple connection attempts', async () => {
       const engines = [];
 
       // Create multiple engines
@@ -141,14 +141,14 @@ describe('WebSocket Integration Tests', function () {
       if (successes === 0) {
         // All failed - expected for current implementation
         expect(failures).to.equal(3);
-        console.log('    ℹ All WebSocket connections failed as expected');
+        console.log('    i All WebSocket connections failed as expected');
       } else {
         // Some or all succeeded - WebSocket is implemented
         console.log(`    ✓ ${successes} WebSocket connections succeeded`);
       }
     });
 
-    it('should maintain engine state regardless of WebSocket status', async function () {
+    it('should maintain engine state regardless of WebSocket status', async () => {
       const engine = await wasm.create_sync_engine();
       const vfs = await engine.getVfs();
 
@@ -177,12 +177,12 @@ describe('WebSocket Integration Tests', function () {
     });
   });
 
-  describe('Future WebSocket Functionality', function () {
+  describe('Future WebSocket Functionality', () => {
     // These tests document expected behavior once WebSocket support is implemented
 
-    it('should sync VFS changes between engines (future)', async function () {
+    it('should sync VFS changes between engines (future)', async () => {
       // This test documents what should happen once WebSocket sync is implemented
-      console.log('    ℹ Future test: VFS sync between connected engines');
+      console.log('    i Future test: VFS sync between connected engines');
 
       const engine1 = await wasm.create_sync_engine_with_peer_id('peer-1');
       const engine2 = await wasm.create_sync_engine_with_peer_id('peer-2');
@@ -202,14 +202,12 @@ describe('WebSocket Integration Tests', function () {
       expect(file2InEngine1).to.be.false;
 
       console.log(
-        '    ℹ Once WebSocket sync is implemented, files should sync between engines'
+        '    i Once WebSocket sync is implemented, files should sync between engines'
       );
     });
 
-    it('should handle peer discovery and connection (future)', async function () {
-      console.log(
-        '    ℹ Future test: Automatic peer discovery and connection'
-      );
+    it('should handle peer discovery and connection (future)', async () => {
+      console.log('    i Future test: Automatic peer discovery and connection');
 
       const engine = await wasm.create_sync_engine();
 
@@ -218,12 +216,12 @@ describe('WebSocket Integration Tests', function () {
       // await engine.connectToPeer(peers[0]);
 
       console.log(
-        '    ℹ Future functionality: peer discovery and automatic connection'
+        '    i Future functionality: peer discovery and automatic connection'
       );
     });
 
-    it('should handle conflict resolution in sync (future)', async function () {
-      console.log('    ℹ Future test: Conflict resolution during sync');
+    it('should handle conflict resolution in sync (future)', async () => {
+      console.log('    i Future test: Conflict resolution during sync');
 
       const engine1 =
         await wasm.create_sync_engine_with_peer_id('conflict-test-1');
@@ -233,14 +231,12 @@ describe('WebSocket Integration Tests', function () {
       // Future: Test conflicting changes to same file
       // and verify CRDT-based conflict resolution
 
-      console.log(
-        '    ℹ Future functionality: CRDT-based conflict resolution'
-      );
+      console.log('    i Future functionality: CRDT-based conflict resolution');
     });
   });
 
-  describe('WebSocket Error Handling', function () {
-    it('should handle connection to non-existent server', async function () {
+  describe('WebSocket Error Handling', () => {
+    it('should handle connection to non-existent server', async () => {
       const engine = await wasm.create_sync_engine();
       const invalidUrl = 'ws://localhost:99999'; // Non-existent server
 
@@ -253,7 +249,7 @@ describe('WebSocket Integration Tests', function () {
       }
     });
 
-    it('should handle malformed WebSocket URLs', async function () {
+    it('should handle malformed WebSocket URLs', async () => {
       const engine = await wasm.create_sync_engine();
       const malformedUrls = [
         'not-a-url',
@@ -273,8 +269,8 @@ describe('WebSocket Integration Tests', function () {
     });
   });
 
-  describe('Test Server Reliability', function () {
-    it('should handle rapid client connections and disconnections', async function () {
+  describe('Test Server Reliability', () => {
+    it('should handle rapid client connections and disconnections', async () => {
       const WebSocket = require('ws');
       const clients = [];
 
@@ -304,7 +300,7 @@ describe('WebSocket Integration Tests', function () {
       }
     });
 
-    it('should handle message flooding', async function () {
+    it('should handle message flooding', async () => {
       const WebSocket = require('ws');
       const client = new WebSocket(testServer.getUrl());
 

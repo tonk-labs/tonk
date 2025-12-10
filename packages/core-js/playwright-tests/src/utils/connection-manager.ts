@@ -1,9 +1,9 @@
-import { Browser, BrowserContext, Page } from '@playwright/test';
-import { ServerInstance } from '../test-ui/types';
+import type { Browser, BrowserContext, Page } from '@playwright/test';
 import {
   setupTestWithServer,
   waitForVFSConnection,
 } from '../../tests/fixtures';
+import type { ServerInstance } from '../test-ui/types';
 
 export interface ConnectionInfo {
   id: string;
@@ -423,4 +423,3 @@ OPERATIONS:
     return report;
   }
 }
-

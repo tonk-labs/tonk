@@ -1,5 +1,5 @@
-import React from 'react';
-import { RefNode } from '@tonk/core';
+import type { RefNode } from '@tonk/core';
+import type React from 'react';
 import { TonkService } from '../services/tonkService';
 
 interface FileItemProps {

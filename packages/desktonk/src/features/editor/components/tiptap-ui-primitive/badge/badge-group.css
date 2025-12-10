@@ -5,9 +5,9 @@
   gap: 0.25rem;
 }
 
-.tiptap-badge-group [data-orientation=vertical] {
+.tiptap-badge-group [data-orientation="vertical"] {
   flex-direction: column;
 }
-.tiptap-badge-group [data-orientation=horizontal] {
+.tiptap-badge-group [data-orientation="horizontal"] {
   flex-direction: row;
 }

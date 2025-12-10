@@ -74,7 +74,7 @@ async fn test_connect_from_manifest_empty() {
     // Currently connect_from_manifest is not implemented
     // When implemented, it should succeed with empty manifest (no URIs)
     // tonk.connect_from_manifest().await.unwrap();
-    
+
     // For now, just verify the tonk instance is created properly
     assert!(!tonk.peer_id().to_string().is_empty());
 }
@@ -83,13 +83,13 @@ async fn test_connect_from_manifest_empty() {
 async fn test_multiple_websocket_uris_in_manifest() {
     // Test loading a bundle that could have network URIs
     let tonk = TonkCore::new().await.unwrap();
-    
+
     // Save to bundle
     let bundle_bytes = tonk.to_bytes(None).await.unwrap();
-    
+
     // Load from bundle and verify it works
     let tonk2 = TonkCore::from_bytes(bundle_bytes).await.unwrap();
-    
+
     // Both should have valid peer IDs (different)
     assert_ne!(tonk.peer_id(), tonk2.peer_id());
 }
@@ -147,7 +147,7 @@ async fn test_offline_then_sync() {
     // Verify offline changes are preserved
     assert!(tonk2.vfs().exists("/offline.txt").await.unwrap());
     assert!(tonk2.vfs().exists("/offline-dir").await.unwrap());
-    
+
     // Verify new peer ID is generated
     assert_ne!(tonk.peer_id(), tonk2.peer_id());
 }
@@ -220,7 +220,7 @@ async fn test_bundle_with_network_uris() {
 
     // Content should still be there
     assert!(tonk2.vfs().exists("/networked.txt").await.unwrap());
-    
+
     // Verify new peer ID is generated
     assert_ne!(tonk.peer_id(), tonk2.peer_id());
 }

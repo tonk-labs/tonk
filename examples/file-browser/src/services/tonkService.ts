@@ -1,11 +1,11 @@
 import {
-  RefNode,
-  TonkCore,
-  JsonValue,
-  DirectoryNode,
-  DocumentWatcher,
   Bundle,
-  Manifest,
+  type DirectoryNode,
+  type DocumentWatcher,
+  type JsonValue,
+  type Manifest,
+  type RefNode,
+  TonkCore,
 } from '@tonk/core';
 
 let tonkInstance: TonkCore | null = null;

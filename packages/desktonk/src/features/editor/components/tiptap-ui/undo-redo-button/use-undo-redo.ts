@@ -1,14 +1,11 @@
-import * as React from 'react';
 import type { Editor } from '@tiptap/react';
-
+// --- Icons ---
+import { Redo2, Undo2 } from 'lucide-react';
+import * as React from 'react';
 // --- Hooks ---
 import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
-
 // --- Lib ---
 import { isNodeTypeSelected } from '@/lib/utils';
-
-// --- Icons ---
-import { Undo2, Redo2 } from 'lucide-react';
 
 export type UndoRedoAction = 'undo' | 'redo';
 
@@ -53,7 +50,10 @@ export const historyIcons = {
 /**
  * Checks if a history action can be executed
  */
-export function canExecuteUndoRedoAction(editor: Editor | null, action: UndoRedoAction): boolean {
+export function canExecuteUndoRedoAction(
+  editor: Editor | null,
+  action: UndoRedoAction
+): boolean {
   if (!editor || !editor.isEditable) return false;
   if (isNodeTypeSelected(editor, ['image'])) return false;
 
@@ -63,7 +63,10 @@ export function canExecuteUndoRedoAction(editor: Editor | null, action: UndoRedo
 /**
  * Executes a history action on the editor
  */
-export function executeUndoRedoAction(editor: Editor | null, action: UndoRedoAction): boolean {
+export function executeUndoRedoAction(
+  editor: Editor | null,
+  action: UndoRedoAction
+): boolean {
   if (!editor || !editor.isEditable) return false;
   if (!canExecuteUndoRedoAction(editor, action)) return false;
 
@@ -127,7 +130,12 @@ export function shouldShowButton(props: {
  * ```
  */
 export function useUndoRedo(config: UseUndoRedoConfig) {
-  const { editor: providedEditor, action, hideWhenUnavailable = false, onExecuted } = config;
+  const {
+    editor: providedEditor,
+    action,
+    hideWhenUnavailable = false,
+    onExecuted,
+  } = config;
 
   const { editor } = useTiptapEditor(providedEditor);
   const [isVisible, setIsVisible] = React.useState<boolean>(true);

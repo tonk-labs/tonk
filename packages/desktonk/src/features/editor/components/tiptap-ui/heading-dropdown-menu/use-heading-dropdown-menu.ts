@@ -1,22 +1,19 @@
 'use client';
 
-import * as React from 'react';
 import type { Editor } from '@tiptap/react';
-
-// --- Hooks ---
-import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
-
+import * as React from 'react';
 // --- Icons ---
 import { HeadingIcon } from '@/features/editor/components/tiptap-icons/heading-icon';
-
 // --- Tiptap UI ---
 import {
-  headingIcons,
-  type Level,
-  isHeadingActive,
   canToggle,
+  headingIcons,
+  isHeadingActive,
+  type Level,
   shouldShowButton,
 } from '@/features/editor/components/tiptap-ui/heading-button';
+// --- Hooks ---
+import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
 
 /**
  * Configuration for the heading dropdown menu functionality
@@ -46,7 +43,7 @@ export function getActiveHeadingLevel(
   levels: Level[] = [1, 2, 3, 4, 5, 6]
 ): Level | undefined {
   if (!editor || !editor.isEditable) return undefined;
-  return levels.find((level) => isHeadingActive(editor, level));
+  return levels.find(level => isHeadingActive(editor, level));
 }
 
 /**
@@ -106,7 +103,9 @@ export function useHeadingDropdownMenu(config?: UseHeadingDropdownMenuConfig) {
     if (!editor) return;
 
     const handleSelectionUpdate = () => {
-      setIsVisible(shouldShowButton({ editor, hideWhenUnavailable, level: levels }));
+      setIsVisible(
+        shouldShowButton({ editor, hideWhenUnavailable, level: levels })
+      );
     };
 
     handleSelectionUpdate();

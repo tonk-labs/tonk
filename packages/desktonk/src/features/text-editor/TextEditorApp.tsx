@@ -1,14 +1,14 @@
-import { useEffect, useState } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
-import Layout from '@/features/text-editor/components/layout/layout';
-import { Editor } from '@/features/editor';
-import { usePresenceTracking } from '@/features/presence';
-import { ChatWindow, useChat } from '@/features/chat';
-import { Button } from '@/components/ui/button/button';
-import { useVFS } from '@/hooks/useVFS';
-import { useEditorStore } from '@/features/editor/stores/editorStore';
-import { getMimeType } from '@/features/desktop/utils/mimeResolver';
 import type { JSONContent } from '@tiptap/react';
+import { useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Button } from '@/components/ui/button/button';
+import { ChatWindow, useChat } from '@/features/chat';
+import { getMimeType } from '@/features/desktop/utils/mimeResolver';
+import { Editor } from '@/features/editor';
+import { useEditorStore } from '@/features/editor/stores/editorStore';
+import { usePresenceTracking } from '@/features/presence';
+import Layout from '@/features/text-editor/components/layout/layout';
+import { useVFS } from '@/hooks/useVFS';
 import { useEditorVFSSave } from './hooks/useEditorVFSSave';
 import './index.css';
 import styles from './textEditor.module.css';
@@ -116,7 +116,7 @@ function TextEditorApp() {
           const lines = text.split('\n');
           const content: JSONContent = {
             type: 'doc',
-            content: lines.map((line) => ({
+            content: lines.map(line => ({
               type: 'paragraph',
               content: line.trim() ? [{ type: 'text', text: line }] : [],
             })),

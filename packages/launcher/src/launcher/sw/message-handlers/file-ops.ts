@@ -1,6 +1,6 @@
+import { getTonk } from '../state';
 import { logger } from '../utils/logging';
 import { postResponse } from '../utils/response';
-import { getTonk } from '../state';
 
 export async function handleReadFile(message: {
   id: string;

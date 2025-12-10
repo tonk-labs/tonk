@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import * as net from 'net';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { ServerInstance } from '../test-ui/types';
+import type { ServerInstance } from '../test-ui/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

@@ -3,16 +3,16 @@
   display: flex;
   vertical-align: middle;
 }
-.tiptap-button-group[data-orientation=vertical] {
+.tiptap-button-group[data-orientation="vertical"] {
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
   min-width: max-content;
 }
-.tiptap-button-group[data-orientation=vertical] > .tiptap-button {
+.tiptap-button-group[data-orientation="vertical"] > .tiptap-button {
   width: 100%;
 }
-.tiptap-button-group[data-orientation=horizontal] {
+.tiptap-button-group[data-orientation="horizontal"] {
   gap: 0.125rem;
   flex-direction: row;
   align-items: center;

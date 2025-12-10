@@ -50,14 +50,16 @@
 .tiptap.ProseMirror:not(.readonly):not(.ProseMirror-hideselection) ::selection {
   background-color: var(--tt-selection-color);
 }
-.tiptap.ProseMirror:not(.readonly):not(.ProseMirror-hideselection) .selection::selection {
+.tiptap.ProseMirror:not(.readonly):not(.ProseMirror-hideselection)
+  .selection::selection {
   background: transparent;
 }
 .tiptap.ProseMirror .selection {
   display: inline;
   background-color: var(--tt-selection-color);
 }
-.tiptap.ProseMirror .ProseMirror-selectednode:not(img):not(pre):not(.react-renderer) {
+.tiptap.ProseMirror
+  .ProseMirror-selectednode:not(img):not(pre):not(.react-renderer) {
   border-radius: var(--tt-radius-md);
   background-color: var(--tt-selection-color);
 }
@@ -115,7 +117,7 @@
 /* =====================
    EMOJI
    ===================== */
-.tiptap.ProseMirror [data-type=emoji] img {
+.tiptap.ProseMirror [data-type="emoji"] img {
   display: inline-block;
   width: 1.25em;
   height: 1.25em;
@@ -133,7 +135,7 @@
 /* =====================
    MENTION
    ===================== */
-.tiptap.ProseMirror [data-type=mention] {
+.tiptap.ProseMirror [data-type="mention"] {
   display: inline-block;
   color: var(--tt-brand-color-500);
 }
@@ -141,42 +143,62 @@
 /* =====================
    THREADS
    ===================== */
-.tiptap.ProseMirror .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--inline {
-  transition: color 0.2s ease-in-out, background-color 0.2s ease-in-out;
+.tiptap.ProseMirror
+.tiptap-thread.tiptap-thread--unresolved.tiptap-thread--inline {
+  transition:
+    color 0.2s ease-in-out,
+    background-color 0.2s ease-in-out;
   color: var(--thread-text);
   border-bottom: 2px dashed var(--tt-color-yellow-base);
   font-weight: 600;
 }
-.tiptap.ProseMirror .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--inline.tiptap-thread--selected,
-.tiptap.ProseMirror .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--inline.tiptap-thread--hovered {
+.tiptap.ProseMirror
+  .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--inline.tiptap-thread--selected,
+.tiptap.ProseMirror
+  .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--inline.tiptap-thread--hovered {
   background-color: var(--thread-bg-color);
   border-bottom-color: transparent;
 }
-.tiptap.ProseMirror .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:has(img) {
+.tiptap.ProseMirror
+  .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:has(img) {
   outline: 0.125rem solid var(--tt-color-yellow-base);
   border-radius: var(--tt-radius-xs, 0.25rem);
   overflow: hidden;
   width: fit-content;
 }
-.tiptap.ProseMirror .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:has(img).tiptap-thread--selected {
+.tiptap.ProseMirror
+  .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:has(
+    img
+  ).tiptap-thread--selected {
   outline-width: 0.25rem;
   outline-color: var(--tt-color-yellow-base);
 }
-.tiptap.ProseMirror .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:has(img).tiptap-thread--hovered {
+.tiptap.ProseMirror
+  .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:has(
+    img
+  ).tiptap-thread--hovered {
   outline-width: 0.25rem;
 }
-.tiptap.ProseMirror .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:not(:has(img)) {
+.tiptap.ProseMirror
+  .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:not(:has(img)) {
   border-radius: 0.25rem;
   border-bottom: 0.125rem dashed var(--tt-color-yellow-base);
   padding-bottom: 0.5rem;
   outline: 0.25rem solid transparent;
 }
-.tiptap.ProseMirror .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:not(:has(img)).tiptap-thread--hovered,
-.tiptap.ProseMirror .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:not(:has(img)).tiptap-thread--selected {
+.tiptap.ProseMirror
+  .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:not(
+    :has(img)
+  ).tiptap-thread--hovered,
+.tiptap.ProseMirror
+  .tiptap-thread.tiptap-thread--unresolved.tiptap-thread--block:not(
+    :has(img)
+  ).tiptap-thread--selected {
   background-color: var(--tt-color-yellow-base);
   outline-color: var(--tt-color-yellow-base);
 }
-.tiptap.ProseMirror .tiptap-thread.tiptap-thread--resolved.tiptap-thread--inline.tiptap-thread--selected {
+.tiptap.ProseMirror
+  .tiptap-thread.tiptap-thread--resolved.tiptap-thread--inline.tiptap-thread--selected {
   background-color: var(--tt-color-yellow-base);
   border-color: transparent;
   /* opacity: 0.5; */
@@ -189,16 +211,22 @@
 /* =====================
    PLACEHOLDER
    ===================== */
-.is-empty:not(.with-slash)[data-placeholder]:has(> .ProseMirror-trailingBreak:only-child)::before {
+.is-empty:not(.with-slash)[data-placeholder]:has(
+    > .ProseMirror-trailingBreak:only-child
+  )::before {
   content: attr(data-placeholder);
 }
 
-.is-empty.with-slash[data-placeholder]:has(> .ProseMirror-trailingBreak:only-child)::before {
+.is-empty.with-slash[data-placeholder]:has(
+    > .ProseMirror-trailingBreak:only-child
+  )::before {
   content: "Write, type '/' for commands…";
   font-style: italic;
 }
 
-.is-empty[data-placeholder]:has(> .ProseMirror-trailingBreak:only-child):before {
+.is-empty[data-placeholder]:has(
+    > .ProseMirror-trailingBreak:only-child
+  ):before {
   pointer-events: none;
   height: 0;
   position: absolute;

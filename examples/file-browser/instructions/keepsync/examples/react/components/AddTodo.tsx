@@ -1,16 +1,16 @@
-import React from "react";
-import { useState } from "react";
-import { useTodoStore } from "../stores/todoStore";
+import type React from 'react';
+import { useState } from 'react';
+import { useTodoStore } from '../stores/todoStore';
 
 const AddTodo = () => {
-  const [text, setText] = useState("");
+  const [text, setText] = useState('');
   const { addTodo } = useTodoStore();
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (text.trim()) {
       addTodo(text.trim());
-      setText("");
+      setText('');
     }
   };
 
@@ -19,7 +19,7 @@ const AddTodo = () => {
       <input
         type="text"
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={e => setText(e.target.value)}
         placeholder="What needs to be done?"
       />
       <button type="submit">Add Todo</button>

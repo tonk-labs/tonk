@@ -24,24 +24,36 @@
 .tiptap-popover {
   /* Animation states */
 }
-.tiptap-popover[data-state=open] {
-  animation: fadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1), zoomIn 150ms cubic-bezier(0.16, 1, 0.3, 1);
+.tiptap-popover[data-state="open"] {
+  animation:
+    fadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    zoomIn 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.tiptap-popover[data-state=closed] {
-  animation: fadeOut 150ms cubic-bezier(0.16, 1, 0.3, 1), zoomOut 150ms cubic-bezier(0.16, 1, 0.3, 1);
+.tiptap-popover[data-state="closed"] {
+  animation:
+    fadeOut 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    zoomOut 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .tiptap-popover {
   /* Position-based animations */
 }
-.tiptap-popover[data-side=top], .tiptap-popover[data-side=top-start], .tiptap-popover[data-side=top-end] {
+.tiptap-popover[data-side="top"],
+.tiptap-popover[data-side="top-start"],
+.tiptap-popover[data-side="top-end"] {
   animation: slideFromBottom 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.tiptap-popover[data-side=right], .tiptap-popover[data-side=right-start], .tiptap-popover[data-side=right-end] {
+.tiptap-popover[data-side="right"],
+.tiptap-popover[data-side="right-start"],
+.tiptap-popover[data-side="right-end"] {
   animation: slideFromLeft 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.tiptap-popover[data-side=bottom], .tiptap-popover[data-side=bottom-start], .tiptap-popover[data-side=bottom-end] {
+.tiptap-popover[data-side="bottom"],
+.tiptap-popover[data-side="bottom-start"],
+.tiptap-popover[data-side="bottom-end"] {
   animation: slideFromTop 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.tiptap-popover[data-side=left], .tiptap-popover[data-side=left-start], .tiptap-popover[data-side=left-end] {
+.tiptap-popover[data-side="left"],
+.tiptap-popover[data-side="left-start"],
+.tiptap-popover[data-side="left-end"] {
   animation: slideFromRight 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }

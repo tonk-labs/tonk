@@ -1,40 +1,39 @@
-import React from "react";
-import { useState } from "react";
-import TodoList from "./components/TodoList";
-import AddTodo from "./components/AddTodo";
+import React, { useState } from 'react';
+import AddTodo from './components/AddTodo';
+import TodoList from './components/TodoList';
 
 function App() {
   const [connectionStatus, setConnectionStatus] = useState<
-    "connected" | "disconnected"
-  >("connected");
+    'connected' | 'disconnected'
+  >('connected');
 
   // Handle disconnecting from the sync engine
   const handleDisconnect = () => {
-    setConnectionStatus("disconnected");
+    setConnectionStatus('disconnected');
   };
 
   // Handle reconnecting to the sync engine
   const handleReconnect = () => {
     // This will reinitialize the sync engine on the next store access
-    setConnectionStatus("connected");
+    setConnectionStatus('connected');
   };
 
   return (
     <div className="container">
       <h1>Collaborative Todo List</h1>
       <p>
-        Status:{" "}
+        Status:{' '}
         <span
-          style={{ color: connectionStatus === "connected" ? "green" : "red" }}
+          style={{ color: connectionStatus === 'connected' ? 'green' : 'red' }}
         >
           {connectionStatus}
         </span>
-        {connectionStatus === "connected" ? (
-          <button onClick={handleDisconnect} style={{ marginLeft: "1rem" }}>
+        {connectionStatus === 'connected' ? (
+          <button onClick={handleDisconnect} style={{ marginLeft: '1rem' }}>
             Disconnect
           </button>
         ) : (
-          <button onClick={handleReconnect} style={{ marginLeft: "1rem" }}>
+          <button onClick={handleReconnect} style={{ marginLeft: '1rem' }}>
             Reconnect
           </button>
         )}

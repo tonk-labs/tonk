@@ -1,4 +1,9 @@
-import type { JsonValue, DocumentData, RefNode, Manifest } from '@tonk/core/slim';
+import type {
+  DocumentData,
+  JsonValue,
+  Manifest,
+  RefNode,
+} from '@tonk/core/slim';
 
 /**
  * Represents the metadata of a Tonk bundle.

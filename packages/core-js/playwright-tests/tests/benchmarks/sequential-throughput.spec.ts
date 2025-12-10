@@ -1,7 +1,11 @@
-import { test, expect } from '../fixtures';
-import { setupTestWithServer, waitForVFSConnection } from '../fixtures';
 import { imageGenerator } from '../../src/utils/image-generator';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
+import {
+  expect,
+  setupTestWithServer,
+  test,
+  waitForVFSConnection,
+} from '../fixtures';
 
 test.describe('Sequential Operations Throughput Tests', () => {
   test('should achieve target sequential throughput (>100 ops/sec)', async ({
@@ -154,7 +158,9 @@ test.describe('Sequential Operations Throughput Tests', () => {
 
     // Pre-generate all images for all intervals upfront
     const imagesPerInterval = 100 * intervalSec; // Estimate ~100 ops/sec
-    console.log(`Pre-generating ${imagesPerInterval * totalIntervals} images...`);
+    console.log(
+      `Pre-generating ${imagesPerInterval * totalIntervals} images...`
+    );
     const allImages = await imageGenerator.generateBatchForTest(
       'consistency-interval-batch',
       imagesPerInterval * totalIntervals,
@@ -174,7 +180,11 @@ test.describe('Sequential Operations Throughput Tests', () => {
       while (Date.now() - startTime < intervalSec * 1000) {
         // Prepare batch of operations
         const batchOperations = [];
-        for (let i = 0; i < batchSize && globalImageIndex < allImages.length; i++) {
+        for (
+          let i = 0;
+          i < batchSize && globalImageIndex < allImages.length;
+          i++
+        ) {
           const image = allImages[globalImageIndex++];
           batchOperations.push({
             image,
@@ -272,10 +282,30 @@ test.describe('Sequential Operations Throughput Tests', () => {
     await waitForVFSConnection(page);
 
     const fileSizeConfigs = [
-      { name: 'tiny', range: [0.1, 0.3] as [number, number], target: 200, batchSize: 25 },
-      { name: 'small', range: [0.5, 1.0] as [number, number], target: 150, batchSize: 20 },
-      { name: 'medium', range: [1.0, 3.0] as [number, number], target: 100, batchSize: 15 },
-      { name: 'large', range: [3.0, 8.0] as [number, number], target: 50, batchSize: 10 },
+      {
+        name: 'tiny',
+        range: [0.1, 0.3] as [number, number],
+        target: 200,
+        batchSize: 25,
+      },
+      {
+        name: 'small',
+        range: [0.5, 1.0] as [number, number],
+        target: 150,
+        batchSize: 20,
+      },
+      {
+        name: 'medium',
+        range: [1.0, 3.0] as [number, number],
+        target: 100,
+        batchSize: 15,
+      },
+      {
+        name: 'large',
+        range: [3.0, 8.0] as [number, number],
+        target: 50,
+        batchSize: 10,
+      },
     ];
 
     const results: Array<{
@@ -309,7 +339,11 @@ test.describe('Sequential Operations Throughput Tests', () => {
       while (Date.now() - startTime < testDuration * 1000) {
         // Prepare batch
         const batchOperations = [];
-        for (let i = 0; i < config.batchSize && imageIndex < images.length; i++) {
+        for (
+          let i = 0;
+          i < config.batchSize && imageIndex < images.length;
+          i++
+        ) {
           const image = images[imageIndex++];
           batchOperations.push({
             image,
@@ -446,10 +480,12 @@ test.describe('Sequential Operations Throughput Tests', () => {
       // Batch the initial file writes
       const initBatchSize = 10;
       for (let i = 0; i < initialFiles.length; i += initBatchSize) {
-        const batch = initialFiles.slice(i, i + initBatchSize).map((image, idx) => ({
-          image,
-          imageName: `initial-${i + idx}.jpg`,
-        }));
+        const batch = initialFiles
+          .slice(i, i + initBatchSize)
+          .map((image, idx) => ({
+            image,
+            imageName: `initial-${i + idx}.jpg`,
+          }));
 
         await page.evaluate(
           async ({ operations }) => {
@@ -463,7 +499,9 @@ test.describe('Sequential Operations Throughput Tests', () => {
       }
 
       // Pre-generate all images for writing during test
-      const estimatedWrites = Math.ceil((100 * testDuration * pattern.writeRatio) * 1.2);
+      const estimatedWrites = Math.ceil(
+        100 * testDuration * pattern.writeRatio * 1.2
+      );
       console.log(`Pre-generating ${estimatedWrites} write images...`);
       const writeImages = await imageGenerator.generateBatchForTest(
         `pattern-${pattern.name}-writes`,
@@ -557,7 +595,9 @@ test.describe('Sequential Operations Throughput Tests', () => {
               }
               totalOperations++;
             } else {
-              metricsCollector.recordError(`pattern-${pattern.name}-${result.type}`);
+              metricsCollector.recordError(
+                `pattern-${pattern.name}-${result.type}`
+              );
             }
           });
         } catch (error) {

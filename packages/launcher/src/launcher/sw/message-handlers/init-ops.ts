@@ -1,10 +1,10 @@
-import { TonkCore, Bundle } from '@tonk/core/slim';
+import { Bundle, TonkCore } from '@tonk/core/slim';
+import { persistAppSlug, persistBundleBytes, persistWsUrl } from '../cache';
+import { startHealthMonitoring } from '../connection';
+import { getState, getTonk, setAppSlug, transitionTo } from '../state';
+import { waitForPathIndexSync } from '../tonk-lifecycle';
 import { logger } from '../utils/logging';
 import { postResponse } from '../utils/response';
-import { getState, getTonk, transitionTo, setAppSlug } from '../state';
-import { persistAppSlug, persistBundleBytes, persistWsUrl } from '../cache';
-import { waitForPathIndexSync } from '../tonk-lifecycle';
-import { startHealthMonitoring } from '../connection';
 import { ensureWasmInitialized } from '../wasm-init';
 
 declare const TONK_SERVER_URL: string;
@@ -100,7 +100,8 @@ export async function handleInitializeFromUrl(message: {
 
   try {
     // Extract URLs from message, with defaults
-    const manifestUrl = message.manifestUrl || `${TONK_SERVER_URL}/.manifest.tonk`;
+    const manifestUrl =
+      message.manifestUrl || `${TONK_SERVER_URL}/.manifest.tonk`;
     const wsUrlInit = message.wsUrl || TONK_SERVER_URL.replace(/^http/, 'ws');
 
     // Initialize WASM (singleton - safe to call multiple times)
@@ -201,7 +202,9 @@ export async function handleInitializeFromBytes(message: {
     await ensureWasmInitialized();
 
     const bundleBytes = new Uint8Array(message.bundleBytes);
-    logger.debug('Creating bundle from bytes', { byteLength: bundleBytes.length });
+    logger.debug('Creating bundle from bytes', {
+      byteLength: bundleBytes.length,
+    });
 
     const bundle = await Bundle.fromBytes(bundleBytes);
     const manifest = await bundle.getManifest();
@@ -267,7 +270,9 @@ export async function handleInitializeFromBytes(message: {
   }
 }
 
-export async function handleGetServerUrl(message: { id: string }): Promise<void> {
+export async function handleGetServerUrl(message: {
+  id: string;
+}): Promise<void> {
   logger.debug('Getting server URL');
   postResponse({
     type: 'getServerUrl',
@@ -277,7 +282,9 @@ export async function handleGetServerUrl(message: { id: string }): Promise<void>
   });
 }
 
-export async function handleGetManifest(message: { id: string }): Promise<void> {
+export async function handleGetManifest(message: {
+  id: string;
+}): Promise<void> {
   logger.debug('Getting manifest');
   try {
     const tonkInstance = getTonk();
@@ -314,7 +321,9 @@ export async function handlePing(): Promise<void> {
   });
 }
 
-export async function handleSetAppSlug(message: { slug: string }): Promise<void> {
+export async function handleSetAppSlug(message: {
+  slug: string;
+}): Promise<void> {
   const state = getState();
 
   if (state.status === 'active') {

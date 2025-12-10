@@ -23,10 +23,11 @@
 .tiptap-toolbar-group:empty {
   display: none;
 }
-.tiptap-toolbar-group:empty + .tiptap-separator, .tiptap-separator + .tiptap-toolbar-group:empty {
+.tiptap-toolbar-group:empty + .tiptap-separator,
+.tiptap-separator + .tiptap-toolbar-group:empty {
   display: none;
 }
-.tiptap-toolbar[data-variant=fixed] {
+.tiptap-toolbar[data-variant="fixed"] {
   position: sticky;
   top: 0;
   z-index: 10;
@@ -43,7 +44,7 @@
 }
 
 @media (max-width: 480px) {
-  .tiptap-toolbar[data-variant=fixed] {
+  .tiptap-toolbar[data-variant="fixed"] {
     position: absolute;
     top: auto;
     height: calc(var(--tt-toolbar-height) + var(--tt-safe-area-bottom));
@@ -53,22 +54,26 @@
     flex-wrap: nowrap;
     justify-content: flex-start;
   }
-  .tiptap-toolbar[data-variant=fixed] .tiptap-toolbar-group {
+  .tiptap-toolbar[data-variant="fixed"] .tiptap-toolbar-group {
     flex: 0 0 auto;
   }
 }
-.tiptap-toolbar[data-variant=floating] {
+.tiptap-toolbar[data-variant="floating"] {
   --tt-toolbar-padding: 0.125rem;
   --tt-toolbar-border-width: 1px;
   padding: 0.188rem;
-  border-radius: calc(var(--tt-toolbar-padding) + var(--tt-radius-lg) + var(--tt-toolbar-border-width));
+  border-radius: calc(
+    var(--tt-toolbar-padding) +
+    var(--tt-radius-lg) +
+    var(--tt-toolbar-border-width)
+  );
   border: var(--tt-toolbar-border-width) solid var(--tt-toolbar-border-color);
   background-color: var(--tt-toolbar-bg-color);
   box-shadow: var(--tt-shadow-elevated-md);
   outline: none;
   overflow: hidden;
 }
-.tiptap-toolbar[data-variant=floating][data-plain=true] {
+.tiptap-toolbar[data-variant="floating"][data-plain="true"] {
   padding: 0;
   border-radius: 0;
   border: none;
@@ -76,7 +81,7 @@
   background-color: transparent;
 }
 @media screen and (max-width: 480px) {
-  .tiptap-toolbar[data-variant=floating] {
+  .tiptap-toolbar[data-variant="floating"] {
     width: 100%;
     border-radius: 0;
     border: none;

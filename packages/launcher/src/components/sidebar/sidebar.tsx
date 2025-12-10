@@ -35,7 +35,7 @@ export function Sidebar({
         <Account />
 
         {/* Bundles */}
-        {bundles.map((bundle) => (
+        {bundles.map(bundle => (
           <SideBarButton
             alt={bundle.name}
             key={bundle.name}
@@ -47,7 +47,11 @@ export function Sidebar({
         ))}
 
         {/* Import Bundle */}
-        <SelectFileTrigger onSelect={handleFileUpload} accept=".tonk" disabled={importing}>
+        <SelectFileTrigger
+          onSelect={handleFileUpload}
+          accept=".tonk"
+          disabled={importing}
+        >
           <SideBarButton alt="Add Space">
             <IoAddCircleSharp className="text-xl" />
           </SideBarButton>
@@ -58,7 +62,11 @@ export function Sidebar({
 
         {/* Theme Toggle */}
         <SideBarButton onClick={toggleTheme} className="bg-transparent!">
-          {isDark ? <FaSun className="text-sm" /> : <FaMoon className="text-sm" />}
+          {isDark ? (
+            <FaSun className="text-sm" />
+          ) : (
+            <FaMoon className="text-sm" />
+          )}
         </SideBarButton>
       </div>
     </aside>

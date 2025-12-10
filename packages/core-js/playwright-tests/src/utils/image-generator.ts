@@ -1,6 +1,6 @@
-import { ImageSpec, TestImage } from '../test-ui/types';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import type { ImageSpec, TestImage } from '../test-ui/types';
 
 /**
  * Synthetic image generator for stress testing

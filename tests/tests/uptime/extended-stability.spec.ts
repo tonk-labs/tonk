@@ -1,7 +1,7 @@
-import { test, expect } from '../fixtures';
 import { ConnectionManager } from '../../src/utils/connection-manager';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
 import { UptimeLogger } from '../../src/utils/uptime-logger';
+import { expect, test } from '../fixtures';
 
 test.describe('Uptime Test - Extended Stability', () => {
   test('should maintain stable performance over 30 minutes', async ({
@@ -77,7 +77,7 @@ test.describe('Uptime Test - Extended Stability', () => {
 
         if (health.unhealthy > clientCount * 0.1) {
           console.warn(
-            `⚠️  More than 10% of connections are unhealthy! (${health.unhealthy}/${clientCount})`
+            `!  More than 10% of connections are unhealthy! (${health.unhealthy}/${clientCount})`
           );
         }
       }

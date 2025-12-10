@@ -1,6 +1,6 @@
-import { Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { serverManager } from '../../src/server/server-manager';
-import { ServerInstance } from '../../src/test-ui/types';
+import type { ServerInstance } from '../../src/test-ui/types';
 
 export async function clearIndexedDB(page: Page): Promise<void> {
   try {

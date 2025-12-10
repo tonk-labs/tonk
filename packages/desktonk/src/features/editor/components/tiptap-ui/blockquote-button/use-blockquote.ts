@@ -1,17 +1,20 @@
 'use client';
 
-import * as React from 'react';
-import type { Editor } from '@tiptap/react';
 import { NodeSelection, TextSelection } from '@tiptap/pm/state';
-
+import type { Editor } from '@tiptap/react';
+// --- Icons ---
+import { Quote } from 'lucide-react';
+import * as React from 'react';
 // --- Hooks ---
 import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
 
-// --- Icons ---
-import { Quote } from 'lucide-react';
-
 // --- UI Utils ---
-import { findNodePosition, isNodeInSchema, isNodeTypeSelected, isValidPosition } from '@/lib/utils';
+import {
+  findNodePosition,
+  isNodeInSchema,
+  isNodeTypeSelected,
+  isValidPosition,
+} from '@/lib/utils';
 
 export const BLOCKQUOTE_SHORTCUT_KEY = 'mod+shift+b';
 
@@ -37,9 +40,16 @@ export interface UseBlockquoteConfig {
 /**
  * Checks if blockquote can be toggled in the current editor state
  */
-export function canToggleBlockquote(editor: Editor | null, turnInto: boolean = true): boolean {
+export function canToggleBlockquote(
+  editor: Editor | null,
+  turnInto: boolean = true
+): boolean {
   if (!editor || !editor.isEditable) return false;
-  if (!isNodeInSchema('blockquote', editor) || isNodeTypeSelected(editor, ['image'])) return false;
+  if (
+    !isNodeInSchema('blockquote', editor) ||
+    isNodeTypeSelected(editor, ['image'])
+  )
+    return false;
 
   if (!turnInto) {
     return editor.can().toggleWrap('blockquote');
@@ -98,9 +108,13 @@ export function toggleBlockquote(editor: Editor | null): boolean {
       const firstChild = selection.node.firstChild?.firstChild;
       const lastChild = selection.node.lastChild?.lastChild;
 
-      const from = firstChild ? selection.from + firstChild.nodeSize : selection.from + 1;
+      const from = firstChild
+        ? selection.from + firstChild.nodeSize
+        : selection.from + 1;
 
-      const to = lastChild ? selection.to - lastChild.nodeSize : selection.to - 1;
+      const to = lastChild
+        ? selection.to - lastChild.nodeSize
+        : selection.to - 1;
 
       chain = chain.setTextSelection({ from, to }).clearNodes();
     }
@@ -175,7 +189,11 @@ export function shouldShowButton(props: {
  * ```
  */
 export function useBlockquote(config?: UseBlockquoteConfig) {
-  const { editor: providedEditor, hideWhenUnavailable = false, onToggled } = config || {};
+  const {
+    editor: providedEditor,
+    hideWhenUnavailable = false,
+    onToggled,
+  } = config || {};
 
   const { editor } = useTiptapEditor(providedEditor);
   const [isVisible, setIsVisible] = React.useState<boolean>(true);

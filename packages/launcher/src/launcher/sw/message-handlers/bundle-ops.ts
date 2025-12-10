@@ -1,9 +1,9 @@
 import type { Manifest } from '@tonk/core/slim';
 import { Bundle } from '@tonk/core/slim';
-import { logger } from '../utils/logging';
-import { postResponse } from '../utils/response';
 import { getTonk } from '../state';
 import { loadBundle } from '../tonk-lifecycle';
+import { logger } from '../utils/logging';
+import { postResponse } from '../utils/response';
 
 declare const TONK_SERVER_URL: string;
 
@@ -22,7 +22,12 @@ export async function handleLoadBundle(message: {
   const serverUrl = message.serverUrl || TONK_SERVER_URL;
   const bundleBytes = new Uint8Array(message.bundleBytes);
 
-  const result = await loadBundle(bundleBytes, serverUrl, message.id, message.manifest);
+  const result = await loadBundle(
+    bundleBytes,
+    serverUrl,
+    message.id,
+    message.manifest
+  );
 
   postResponse({
     type: 'loadBundle',
@@ -43,7 +48,10 @@ export async function handleToBytes(message: { id: string }): Promise<void> {
 
     const bytes = await tonkInstance.tonk.toBytes();
     const rootId = tonkInstance.manifest.rootId;
-    logger.debug('Tonk converted to bytes', { byteLength: bytes.length, rootId });
+    logger.debug('Tonk converted to bytes', {
+      byteLength: bytes.length,
+      rootId,
+    });
     postResponse({
       type: 'toBytes',
       id: message.id,
@@ -64,7 +72,9 @@ export async function handleToBytes(message: { id: string }): Promise<void> {
   }
 }
 
-export async function handleForkToBytes(message: { id: string }): Promise<void> {
+export async function handleForkToBytes(message: {
+  id: string;
+}): Promise<void> {
   logger.debug('Forking tonk to bytes');
   try {
     const tonkInstance = getTonk();

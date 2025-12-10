@@ -4,7 +4,9 @@ import { ScreenState, type TonkContextValue } from '../types';
 const TonkContext = createContext<TonkContextValue | undefined>(undefined);
 
 export function TonkProvider({ children }: { children: ReactNode }) {
-  const [screenState, setScreenState] = useState<ScreenState>(ScreenState.LOADING);
+  const [screenState, setScreenState] = useState<ScreenState>(
+    ScreenState.LOADING
+  );
   const [loadingMessage, setLoadingMessage] = useState('Initializing...');
   const [errorMessage, setErrorMessage] = useState('');
 

@@ -1,13 +1,13 @@
-import { test, describe, beforeEach, afterEach, expect } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import type { DocumentData } from '../dist/index.js';
 import {
-  TonkCore,
-  TonkError,
-  FileSystemError,
+  Bundle,
   BundleError,
   ConnectionError,
-  Bundle,
+  FileSystemError,
+  TonkCore,
+  TonkError,
 } from '../dist/index.js';
-import type { DocumentData } from '../dist/index.js';
 import { pngBytes } from './data.js';
 
 describe('TonkCore', () => {
@@ -220,8 +220,12 @@ describe('TonkCore', () => {
     // Verify timestamps are present for directory metadata
     if ('timestamps' in callbackResult) {
       expect(callbackResult.timestamps).toBeTruthy();
-      expect(typeof callbackResult.timestamps.created === 'number').toBeTruthy();
-      expect(typeof callbackResult.timestamps.modified === 'number').toBeTruthy();
+      expect(
+        typeof callbackResult.timestamps.created === 'number'
+      ).toBeTruthy();
+      expect(
+        typeof callbackResult.timestamps.modified === 'number'
+      ).toBeTruthy();
     }
 
     // Reset and test another change to a different file
@@ -563,7 +567,7 @@ describe('TonkCore', () => {
       expect(error instanceof FileSystemError).toBeTruthy();
       expect(
         error.message.includes('must start with') ||
-        error.message.includes('InvalidPath')
+          error.message.includes('InvalidPath')
       ).toBeTruthy();
     }
 

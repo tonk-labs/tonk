@@ -1,7 +1,7 @@
-import { test, expect } from '@playwright/test';
-import { setupTestWithServer, waitForVFSConnection } from '../fixtures';
+import { expect, test } from '@playwright/test';
 import { imageGenerator } from '../../src/utils/image-generator';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
+import { setupTestWithServer, waitForVFSConnection } from '../fixtures';
 
 test.describe('Concurrent Operations Tests', () => {
   test('should handle 10 concurrent clients performing operations', async ({
@@ -388,7 +388,8 @@ test.describe('Concurrent Operations Tests', () => {
         const operationType = clientIndex % 4;
 
         switch (operationType) {
-          case 0: // Heavy write operations
+          case 0: {
+            // Heavy write operations
             const images = await imageGenerator.generateBatchForTest(
               `mixed-ops-heavy-write-client${clientIndex}`,
               15,
@@ -412,6 +413,7 @@ test.describe('Concurrent Operations Tests', () => {
               }
             }
             break;
+          }
 
           case 1: // Rapid small writes
             for (let i = 0; i < 50; i++) {

@@ -24,24 +24,36 @@
 .tiptap-dropdown-menu {
   /* Animation states */
 }
-.tiptap-dropdown-menu[data-state=open] {
-  animation: fadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1), zoomIn 150ms cubic-bezier(0.16, 1, 0.3, 1);
+.tiptap-dropdown-menu[data-state="open"] {
+  animation:
+    fadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    zoomIn 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.tiptap-dropdown-menu[data-state=closed] {
-  animation: fadeOut 150ms cubic-bezier(0.16, 1, 0.3, 1), zoomOut 150ms cubic-bezier(0.16, 1, 0.3, 1);
+.tiptap-dropdown-menu[data-state="closed"] {
+  animation:
+    fadeOut 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    zoomOut 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .tiptap-dropdown-menu {
   /* Position-based animations */
 }
-.tiptap-dropdown-menu[data-side=top], .tiptap-dropdown-menu[data-side=top-start], .tiptap-dropdown-menu[data-side=top-end] {
+.tiptap-dropdown-menu[data-side="top"],
+.tiptap-dropdown-menu[data-side="top-start"],
+.tiptap-dropdown-menu[data-side="top-end"] {
   animation: slideFromBottom 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.tiptap-dropdown-menu[data-side=right], .tiptap-dropdown-menu[data-side=right-start], .tiptap-dropdown-menu[data-side=right-end] {
+.tiptap-dropdown-menu[data-side="right"],
+.tiptap-dropdown-menu[data-side="right-start"],
+.tiptap-dropdown-menu[data-side="right-end"] {
   animation: slideFromLeft 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.tiptap-dropdown-menu[data-side=bottom], .tiptap-dropdown-menu[data-side=bottom-start], .tiptap-dropdown-menu[data-side=bottom-end] {
+.tiptap-dropdown-menu[data-side="bottom"],
+.tiptap-dropdown-menu[data-side="bottom-start"],
+.tiptap-dropdown-menu[data-side="bottom-end"] {
   animation: slideFromTop 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.tiptap-dropdown-menu[data-side=left], .tiptap-dropdown-menu[data-side=left-start], .tiptap-dropdown-menu[data-side=left-end] {
+.tiptap-dropdown-menu[data-side="left"],
+.tiptap-dropdown-menu[data-side="left-start"],
+.tiptap-dropdown-menu[data-side="left-end"] {
   animation: slideFromRight 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }

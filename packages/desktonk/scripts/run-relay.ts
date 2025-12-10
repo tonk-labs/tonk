@@ -17,11 +17,15 @@ async function main() {
 
   // Check platform
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-    console.warn('WARNING: @tonk/relay currently only supports darwin-arm64 (Apple Silicon)');
+    console.warn(
+      'WARNING: @tonk/relay currently only supports darwin-arm64 (Apple Silicon)'
+    );
     console.warn(`Your platform: ${process.platform}-${process.arch}`);
     console.warn('');
     console.warn('Options:');
-    console.warn('  1. Use relay.tonk.xyz for development (set TONK_SERVER_URL)');
+    console.warn(
+      '  1. Use relay.tonk.xyz for development (set TONK_SERVER_URL)'
+    );
     console.warn('  2. Run on an Apple Silicon Mac');
     console.warn('  3. Wait for more platform binaries to be published');
     console.warn('');
@@ -35,7 +39,7 @@ async function main() {
     console.log('Waiting for bundle to appear...');
 
     // Poll for bundle existence
-    await new Promise<void>((resolve) => {
+    await new Promise<void>(resolve => {
       const interval = setInterval(() => {
         if (existsSync(BUNDLE_FILE)) {
           console.log('\nBundle detected! Starting relay...\n');
