@@ -1,4 +1,4 @@
-import type { DocumentData, JsonValue } from '@tonk/core';
+import type { DocumentData } from '@tonk/core';
 import type { StateCreator } from 'zustand';
 import { getVFSService } from '@/vfs-client';
 
@@ -18,7 +18,9 @@ export const sync =
   (set, get, api) => {
     // If no options provided, just return the config without sync
     if (!options || !options.path) {
-      console.warn('Sync middleware called without path option, skipping sync functionality');
+      console.warn(
+        'Sync middleware called without path option, skipping sync functionality'
+      );
       return config(set, get, api);
     }
 
@@ -30,15 +32,13 @@ export const sync =
     let saveTimeout: ReturnType<typeof setTimeout> | null = null;
     const SAVE_DEBOUNCE_MS = 2000; // Debounce saves by 2 seconds
 
-    // Track previous state for incremental patching
-    // biome-ignore lint/suspicious/noExplicitAny: State type is dynamic
-    let previousState: Record<string, any> = {};
-
     // Helper to serialize state for storage
     // biome-ignore lint/suspicious/noExplicitAny: State type is dynamic
     const serializeState = (state: T): any => {
       // Use partialize if provided, otherwise use full state
-      const stateToSerialize = options.partialize ? options.partialize(state) : state;
+      const stateToSerialize = options.partialize
+        ? options.partialize(state)
+        : state;
       // Remove functions and non-serializable values
       const serializable = JSON.parse(JSON.stringify(stateToSerialize));
       return serializable;
@@ -62,37 +62,11 @@ export const sync =
             if (create) {
               // First save: create full document
               await vfs.writeFile(options.path, { content }, true);
-              previousState = { ...content };
               console.log(`[sync] Created new file: ${options.path}`);
               return;
             }
 
-            // Incremental save: patch only changed keys
-            const patches: Promise<boolean>[] = [];
-
-            // Check for new/modified keys
-            for (const [key, value] of Object.entries(content)) {
-              const prev = previousState[key];
-              if (
-                prev === undefined ||
-                JSON.stringify(prev) !== JSON.stringify(value)
-              ) {
-                patches.push(vfs.patchFile(options.path, [key], value as JsonValue));
-              }
-            }
-
-            // Check for deleted keys
-            for (const key of Object.keys(previousState)) {
-              if (!(key in content)) {
-                patches.push(vfs.patchFile(options.path, [key], null));
-              }
-            }
-
-            if (patches.length > 0) {
-              await Promise.all(patches);
-            }
-
-            previousState = { ...content };
+            await vfs.updateFile(options.path, content);
           } catch (error) {
             console.warn(`Error saving state to ${options.path}:`, error);
           }
@@ -108,13 +82,13 @@ export const sync =
       try {
         const content = await vfs.readFile(options.path);
         if (content) {
-          // Initialize previousState for incremental patching
-          previousState = JSON.parse(JSON.stringify(content.content));
           return content.content as Partial<T>;
         }
       } catch {
         // File might not exist yet, that's okay
-        console.log(`No existing state file at ${options.path}, starting fresh`);
+        console.log(
+          `No existing state file at ${options.path}, starting fresh`
+        );
       }
       return null;
     };
@@ -128,7 +102,10 @@ export const sync =
           await vfs.unwatchFile(watchId);
           watchId = null;
         } catch (error) {
-          console.warn(`Error unwatching previous watcher for ${options.path}:`, error);
+          console.warn(
+            `Error unwatching previous watcher for ${options.path}:`,
+            error
+          );
         }
       }
 
@@ -136,19 +113,23 @@ export const sync =
         watchId = await vfs.watchFile(options.path, (content: DocumentData) => {
           try {
             const parsedState = content.content as Partial<T>;
-            // Update previousState to match external changes
-            previousState = JSON.parse(JSON.stringify(parsedState));
             // Merge external changes into current state
             const currentState = get();
             const mergedState = { ...currentState, ...parsedState };
             // biome-ignore lint/suspicious/noExplicitAny: State type is dynamic
             set(mergedState as T, true as any); // Replace entire state
           } catch (error) {
-            console.warn(`Error parsing external changes from ${options.path}:`, error);
+            console.warn(
+              `Error parsing external changes from ${options.path}:`,
+              error
+            );
           }
         });
       } catch (error) {
-        console.warn(`Error setting up file watcher for ${options.path}:`, error);
+        console.warn(
+          `Error setting up file watcher for ${options.path}:`,
+          error
+        );
       }
     };
 
@@ -166,7 +147,7 @@ export const sync =
           const mergedState = { ...initialState };
 
           // Only merge non-function properties from saved state
-          Object.keys(savedState).forEach((key) => {
+          Object.keys(savedState).forEach(key => {
             const savedValue = savedState[key as keyof typeof savedState];
             const initialValue = initialState[key as keyof typeof initialState];
 
@@ -217,13 +198,15 @@ export const sync =
     const state = config(wrappedSet, get, api);
 
     // Listen for connection state changes
-    connectionStateUnsubscribe = vfs.onConnectionStateChange(async (connectionState) => {
-      if (connectionState === 'connected' && !isInitialized) {
-        await initializeFromFile(state);
-      } else if (connectionState === 'connected' && isInitialized) {
-        await setupWatcher();
+    connectionStateUnsubscribe = vfs.onConnectionStateChange(
+      async connectionState => {
+        if (connectionState === 'connected' && !isInitialized) {
+          await initializeFromFile(state);
+        } else if (connectionState === 'connected' && isInitialized) {
+          await setupWatcher();
+        }
       }
-    });
+    );
 
     // Initialize from file when VFS is ready
     const waitForVFS = () => {
