@@ -1,15 +1,11 @@
+import type { ChainedCommands, Editor } from '@tiptap/react';
+// --- Icons ---
+import { AlignCenter, AlignJustify, AlignLeft, AlignRight } from 'lucide-react';
 import * as React from 'react';
-import type { ChainedCommands } from '@tiptap/react';
-import type { Editor } from '@tiptap/react';
-
 // --- Hooks ---
 import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
-
 // --- Lib ---
 import { isExtensionAvailable, isNodeTypeSelected } from '@/lib/utils';
-
-// --- Icons ---
-import { AlignLeft, AlignCenter, AlignRight, AlignJustify } from 'lucide-react';
 
 export type TextAlign = 'left' | 'center' | 'right' | 'justify';
 
@@ -60,7 +56,10 @@ export const textAlignLabels: Record<TextAlign, string> = {
 /**
  * Checks if text alignment can be performed in the current editor state
  */
-export function canSetTextAlign(editor: Editor | null, align: TextAlign): boolean {
+export function canSetTextAlign(
+  editor: Editor | null,
+  align: TextAlign
+): boolean {
   if (!editor || !editor.isEditable) return false;
   if (
     !isExtensionAvailable(editor, 'textAlign') ||
@@ -71,7 +70,9 @@ export function canSetTextAlign(editor: Editor | null, align: TextAlign): boolea
   return editor.can().setTextAlign(align);
 }
 
-export function hasSetTextAlign(commands: ChainedCommands): commands is ChainedCommands & {
+export function hasSetTextAlign(
+  commands: ChainedCommands
+): commands is ChainedCommands & {
   setTextAlign: (align: TextAlign) => ChainedCommands;
 } {
   return 'setTextAlign' in commands;
@@ -80,7 +81,10 @@ export function hasSetTextAlign(commands: ChainedCommands): commands is ChainedC
 /**
  * Checks if the text alignment is currently active
  */
-export function isTextAlignActive(editor: Editor | null, align: TextAlign): boolean {
+export function isTextAlignActive(
+  editor: Editor | null,
+  align: TextAlign
+): boolean {
   if (!editor || !editor.isEditable) return false;
   return editor.isActive({ textAlign: align });
 }
@@ -158,7 +162,12 @@ export function shouldShowButton(props: {
  * ```
  */
 export function useTextAlign(config: UseTextAlignConfig) {
-  const { editor: providedEditor, align, hideWhenUnavailable = false, onAligned } = config;
+  const {
+    editor: providedEditor,
+    align,
+    hideWhenUnavailable = false,
+    onAligned,
+  } = config;
 
   const { editor } = useTiptapEditor(providedEditor);
   const [isVisible, setIsVisible] = React.useState<boolean>(true);

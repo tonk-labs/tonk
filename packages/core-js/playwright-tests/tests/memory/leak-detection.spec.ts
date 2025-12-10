@@ -1,7 +1,11 @@
-import { test, expect } from '../fixtures';
-import { setupTestWithServer, waitForVFSConnection } from '../fixtures';
 import { imageGenerator } from '../../src/utils/image-generator';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
+import {
+  expect,
+  setupTestWithServer,
+  test,
+  waitForVFSConnection,
+} from '../fixtures';
 
 test.describe('Memory Leak Detection Tests', () => {
   test(
@@ -24,7 +28,7 @@ test.describe('Memory Leak Detection Tests', () => {
       const metricsCollector = new MetricsCollector('memory-leak-30min');
       const startTime = Date.now();
       let operationCount = 0;
-      let memorySnapshots: Array<{
+      const memorySnapshots: Array<{
         time: number;
         heapUsed: number;
         heapTotal: number;
@@ -349,12 +353,15 @@ test.describe('Memory Leak Detection Tests', () => {
               const image = images[0];
 
               await page.evaluate(
-                async ({ image, imageName }: { image: any; imageName: string }) => {
+                async ({
+                  image,
+                  imageName,
+                }: {
+                  image: any;
+                  imageName: string;
+                }) => {
                   const vfsService = (window as any).vfsService;
-                  await vfsService.writeFile(
-                    imageName,
-                    image.data
-                  );
+                  await vfsService.writeFile(imageName, image.data);
                 },
                 {
                   image,

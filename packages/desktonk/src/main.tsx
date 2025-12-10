@@ -1,6 +1,6 @@
-import { getVFSService } from '@/vfs-client';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { getVFSService } from '@/vfs-client';
 import Router from './Router';
 
 // Import sample files utility to make it available in browser console
@@ -15,7 +15,7 @@ function AppLauncher() {
     getVFSService()
       .connect()
       .then(() => setReady(true))
-      .catch((err) => {
+      .catch(err => {
         console.warn('VFS connection warning:', err);
         setError(err instanceof Error ? err : new Error(String(err)));
       });

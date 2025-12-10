@@ -3,8 +3,8 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{Sink, Stream, StreamExt};
 use samod::{ConnDirection, Repo};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use tokio_tungstenite::tungstenite;
 
@@ -68,7 +68,7 @@ impl Sink<tungstenite::Message> for WebSocketAdapter {
             tungstenite::Message::Frame(_) => {
                 return Err(tungstenite::Error::Io(std::io::Error::other(
                     "Raw frames not supported",
-                )))
+                )));
             }
         };
         Pin::new(&mut self.sink)

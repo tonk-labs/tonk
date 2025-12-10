@@ -542,8 +542,8 @@ impl<T: Read + Write + Seek + Send + std::fmt::Debug> Bundle<T> {
 mod tests {
     use super::*;
     use std::io::Write;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     /// Create a bundle with valid manifest for testing - returns the ZIP data as bytes
     fn create_test_bundle_with_manifest() -> Result<Vec<u8>> {
@@ -678,9 +678,11 @@ mod tests {
             "Expected error when loading bundle without manifest.json"
         );
         let error = result.unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("manifest.json not found in bundle"));
+        assert!(
+            error
+                .to_string()
+                .contains("manifest.json not found in bundle")
+        );
     }
 
     #[test]
@@ -726,9 +728,11 @@ mod tests {
         );
 
         let error = result.unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("Unsupported manifest version: 2"));
+        assert!(
+            error
+                .to_string()
+                .contains("Unsupported manifest version: 2")
+        );
     }
 
     #[test]

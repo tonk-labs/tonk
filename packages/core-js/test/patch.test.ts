@@ -1,5 +1,5 @@
-import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
+import { afterEach, beforeEach, describe, test } from 'node:test';
 import { TonkCore } from '../dist/index.js';
 
 describe('patchFile', () => {

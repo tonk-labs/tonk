@@ -7,7 +7,7 @@ export function getMimeType(fileName: string): string {
 
 export function getFileIcon(mimeType: string): string {
   if (mimeType.startsWith('text/')) return '📄';
-  if (mimeType.startsWith('image/')) return '🖼️';
+  if (mimeType.startsWith('image/')) return '🖼';
   if (mimeType === 'application/json') return '📋';
   if (mimeType === 'application/pdf') return '📕';
   if (mimeType.startsWith('video/')) return '🎬';

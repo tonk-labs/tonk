@@ -1,7 +1,7 @@
-import { platform, arch } from 'node:os';
-import { dirname, join } from 'node:path';
-import { createRequire } from 'node:module';
 import { chmodSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { arch, platform } from 'node:os';
+import { dirname, join } from 'node:path';
 
 const require = createRequire(import.meta.url);
 

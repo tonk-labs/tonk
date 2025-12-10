@@ -18,7 +18,7 @@ export function createFunction<T extends (...args: any[]) => any>(
   return {
     name,
     description,
-    fn
+    fn,
   };
 }
 
@@ -29,13 +29,10 @@ export function createModule<T extends Record<string, Function>>(
   functions: Array<ModuleFunction & { fn: Function }>
 ): T {
   const module = {} as Record<string, Function>;
-  
+
   for (const func of functions) {
     module[func.name] = func.fn;
   }
-  
+
   return module as T;
 }
-
-
-

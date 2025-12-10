@@ -4,7 +4,10 @@ import { getVFSService } from '@/vfs-client';
 import { DESKTOP_DIRECTORY, THUMBNAILS_DIRECTORY } from '../constants';
 import { getDesktopService } from '../services/DesktopService';
 import { getMimeType } from '../utils/mimeResolver';
-import { generateImageThumbnail, generateTextThumbnail } from '../utils/thumbnailGenerator';
+import {
+  generateImageThumbnail,
+  generateTextThumbnail,
+} from '../utils/thumbnailGenerator';
 
 /**
  * Maximum file size allowed for upload (10MB).
@@ -49,13 +52,16 @@ export function useFileDrop() {
   const readFileContent = useCallback(
     async (
       file: File
-    ): Promise<string | { type: 'binary'; encoding: 'base64'; data: string; mimeType: string }> => {
+    ): Promise<
+      | string
+      | { type: 'binary'; encoding: 'base64'; data: string; mimeType: string }
+    > => {
       const mimeType = file.type || getMimeType(file.name);
       const fileName = file.name.toUpperCase();
 
       // Check if it's a known extensionless text file
       const isExtensionlessText = EXTENSIONLESS_TEXT_FILES.some(
-        (name) => fileName === name || fileName === name.toLowerCase()
+        name => fileName === name || fileName === name.toLowerCase()
       );
 
       // For text files, read as text
@@ -100,7 +106,10 @@ export function useFileDrop() {
    * Handles file conflicts by checking if file exists.
    */
   const uploadFileToVFS = useCallback(
-    async (file: File, dropCoordinates: { x: number; y: number }): Promise<boolean> => {
+    async (
+      file: File,
+      dropCoordinates: { x: number; y: number }
+    ): Promise<boolean> => {
       try {
         // Validate file size
         if (file.size > MAX_FILE_SIZE_BYTES) {
@@ -128,7 +137,9 @@ export function useFileDrop() {
         try {
           await vfs.readFile(filePath);
           // File exists - ask user what to do
-          const overwrite = confirm(`"${file.name}" already exists. Overwrite?`);
+          const overwrite = confirm(
+            `"${file.name}" already exists. Overwrite?`
+          );
           if (!overwrite) {
             addToast({
               title: `Upload cancelled for "${file.name}"`,
@@ -149,7 +160,7 @@ export function useFileDrop() {
 
         // Check if it's a known extensionless text file
         const isExtensionlessText = EXTENSIONLESS_TEXT_FILES.some(
-          (name) => fileName === name || fileName === name.toLowerCase()
+          name => fileName === name || fileName === name.toLowerCase()
         );
 
         // Generate thumbnail
@@ -209,7 +220,12 @@ export function useFileDrop() {
         };
 
         // Write to VFS - different methods for text vs binary
-        console.log('[useFileDrop] Writing file to VFS:', filePath, 'with metadata:', desktopMeta);
+        console.log(
+          '[useFileDrop] Writing file to VFS:',
+          filePath,
+          'with metadata:',
+          desktopMeta
+        );
 
         if (typeof content === 'string') {
           // Text file: store as text with metadata
@@ -223,25 +239,39 @@ export function useFileDrop() {
           const docContent = {
             desktopMeta,
           };
-          await vfs.writeFileWithBytes(filePath, docContent, content.data, true); // create=true for new files
+          await vfs.writeFileWithBytes(
+            filePath,
+            docContent,
+            content.data,
+            true
+          ); // create=true for new files
         }
 
         console.log('[useFileDrop] File written successfully:', filePath);
 
         // Save position and notify service about new file
-        const fileId = file.name.startsWith('.') ? file.name : file.name.replace(/\.[^.]+$/, '');
+        const fileId = file.name.startsWith('.')
+          ? file.name
+          : file.name.replace(/\.[^.]+$/, '');
         const service = getDesktopService();
 
         // Set position first (so onFileAdded doesn't auto-position)
         service.setPosition(fileId, dropCoordinates.x, dropCoordinates.y);
-        console.log('[useFileDrop] Position saved for new file:', fileId, dropCoordinates);
+        console.log(
+          '[useFileDrop] Position saved for new file:',
+          fileId,
+          dropCoordinates
+        );
 
         // Load file and notify listeners (this will create the shape)
         await service.onFileAdded(filePath);
 
         return true;
       } catch (error) {
-        console.error(`[useFileDrop] Failed to upload file ${file.name}:`, error);
+        console.error(
+          `[useFileDrop] Failed to upload file ${file.name}:`,
+          error
+        );
         addToast({
           title: `Failed to upload "${file.name}". Check console for details.`,
           severity: 'error',
@@ -364,48 +394,63 @@ export function useFileDrop() {
   /**
    * Handles drag over event to enable drop and show visual feedback.
    */
-  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement> | DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleDragOver = useCallback(
+    (e: React.DragEvent<HTMLDivElement> | DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
 
-    // Check if dragging files (not text or other data)
-    const hasFiles = e.dataTransfer?.types.includes('Files');
-    if (hasFiles && e.dataTransfer) {
-      e.dataTransfer.dropEffect = 'copy';
-      setIsDraggingOver(true);
-    }
-  }, []);
+      // Check if dragging files (not text or other data)
+      const hasFiles = e.dataTransfer?.types.includes('Files');
+      if (hasFiles && e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'copy';
+        setIsDraggingOver(true);
+      }
+    },
+    []
+  );
 
   /**
    * Handles drag enter event.
    */
-  const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement> | DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const hasFiles = e.dataTransfer?.types.includes('Files');
-    if (hasFiles) {
-      setIsDraggingOver(true);
-    }
-  }, []);
+  const handleDragEnter = useCallback(
+    (e: React.DragEvent<HTMLDivElement> | DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const hasFiles = e.dataTransfer?.types.includes('Files');
+      if (hasFiles) {
+        setIsDraggingOver(true);
+      }
+    },
+    []
+  );
 
   /**
    * Handles drag leave event to remove visual feedback.
    */
-  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement> | DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleDragLeave = useCallback(
+    (e: React.DragEvent<HTMLDivElement> | DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
 
-    // Only remove highlight if we're leaving the drop zone completely
-    // (not just entering a child element)
-    const target = (e.currentTarget as HTMLElement) || (e.target as HTMLElement);
-    const rect = target.getBoundingClientRect();
-    const x = e.clientX;
-    const y = e.clientY;
+      // Only remove highlight if we're leaving the drop zone completely
+      // (not just entering a child element)
+      const target =
+        (e.currentTarget as HTMLElement) || (e.target as HTMLElement);
+      const rect = target.getBoundingClientRect();
+      const x = e.clientX;
+      const y = e.clientY;
 
-    if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
-      setIsDraggingOver(false);
-    }
-  }, []);
+      if (
+        x < rect.left ||
+        x >= rect.right ||
+        y < rect.top ||
+        y >= rect.bottom
+      ) {
+        setIsDraggingOver(false);
+      }
+    },
+    []
+  );
 
   return {
     isDraggingOver,

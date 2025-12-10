@@ -1,7 +1,7 @@
+import tailwindcss from '@tailwindcss/vite';
+import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   base: './',
@@ -25,8 +25,6 @@ export default defineConfig({
   define: {
     'process.env': {},
     global: 'globalThis',
-    TONK_SERVE_LOCAL: JSON.stringify(
-      process.env.TONK_SERVE_LOCAL === 'true'
-    ),
+    TONK_SERVE_LOCAL: JSON.stringify(process.env.TONK_SERVE_LOCAL === 'true'),
   },
 });

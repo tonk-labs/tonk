@@ -23,7 +23,9 @@
   font-size: 0.725rem;
   user-select: none;
   pointer-events: none;
-  font-family: "IBM Plex Mono", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+  font-family:
+    "IBM Plex Mono", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
+    "Courier New", monospace;
 }
 
 .dark .line-number {

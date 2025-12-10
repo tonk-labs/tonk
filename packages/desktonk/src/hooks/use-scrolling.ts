@@ -8,7 +8,10 @@ interface UseScrollingOptions {
   debounce?: number;
 }
 
-export function useScrolling(target?: ScrollTarget, options: UseScrollingOptions = {}): boolean {
+export function useScrolling(
+  target?: ScrollTarget,
+  options: UseScrollingOptions = {}
+): boolean {
   const { debounce = 150 } = options;
   const [isScrolling, setIsScrolling] = useState(false);
 
@@ -21,11 +24,17 @@ export function useScrolling(target?: ScrollTarget, options: UseScrollingOptions
 
     const eventTarget: EventTargetWithScroll = element;
 
-    const on = (el: EventTargetWithScroll, event: string, handler: EventListener) =>
-      el.addEventListener(event, handler, { passive: true });
+    const on = (
+      el: EventTargetWithScroll,
+      event: string,
+      handler: EventListener
+    ) => el.addEventListener(event, handler, { passive: true });
 
-    const off = (el: EventTargetWithScroll, event: string, handler: EventListener) =>
-      el.removeEventListener(event, handler);
+    const off = (
+      el: EventTargetWithScroll,
+      event: string,
+      handler: EventListener
+    ) => el.removeEventListener(event, handler);
 
     let timeout: ReturnType<typeof setTimeout>;
     const supportsScrollEnd = element === window && 'onscrollend' in window;

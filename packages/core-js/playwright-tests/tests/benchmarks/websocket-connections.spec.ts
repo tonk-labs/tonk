@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test';
-import { ConnectionManager } from '../../src/utils/connection-manager';
+import { expect, test } from '@playwright/test';
 import { serverManager } from '../../src/server/server-manager';
+import { ConnectionManager } from '../../src/utils/connection-manager';
 
 test.describe('WebSocket Connection Benchmarks', () => {
   test.describe.configure({ timeout: 600000 }); // 10 minutes for long-running tests
@@ -80,7 +80,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
           });
         });
 
-
         // Get stats only for current tier connections
         const stats =
           connectionManager.getStatsForConnections(tierConnectionIds);
@@ -108,12 +107,7 @@ test.describe('WebSocket Connection Benchmarks', () => {
       // Stop profiling and generate report
       if (profile) {
         console.log('\nMemory Analysis:');
-        console.log(
-          JSON.stringify(
-            null,
-            2
-          )
-        );
+        console.log(JSON.stringify(null, 2));
       }
 
       // Print summary
@@ -157,7 +151,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
     const connectionManager = new ConnectionManager(browser, server);
 
     try {
-
       // Create connections
       console.log('\nEstablishing connections...');
       await connectionManager.createConnections(connectionCount, 'active');
@@ -263,7 +256,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
     const connectionManager = new ConnectionManager(browser, server);
 
     try {
-
       const waveResults: Array<{
         wave: number;
         size: number;
@@ -306,7 +298,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
             });
           }
         );
-
 
         const currentLatency = result.avgLatency;
         const latencyIncrease =
@@ -379,7 +370,6 @@ test.describe('WebSocket Connection Benchmarks', () => {
     const connectionManager = new ConnectionManager(browser, server);
 
     try {
-
       // Establish connections
       console.log('\nEstablishing connections...');
       await connectionManager.createConnections(connectionCount, 'sustained');
@@ -486,7 +476,7 @@ test.describe('WebSocket Connection Benchmarks', () => {
 
       const latencyVariance =
         snapshots.reduce(
-          (sum, s) => sum + Math.pow(s.avgLatency - avgLatency, 2),
+          (sum, s) => sum + (s.avgLatency - avgLatency) ** 2,
           0
         ) / snapshots.length;
       const latencyStdDev = Math.sqrt(latencyVariance);

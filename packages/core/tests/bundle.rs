@@ -452,8 +452,8 @@ async fn test_load_empty_bundle_data() {
 #[tokio::test]
 async fn test_bundle_without_manifest() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP without manifest.json
     let mut zip_data = Vec::new();
@@ -476,8 +476,8 @@ async fn test_bundle_without_manifest() {
 #[tokio::test]
 async fn test_bundle_with_invalid_manifest() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with invalid manifest
     let mut zip_data = Vec::new();
@@ -506,8 +506,8 @@ async fn test_bundle_with_invalid_manifest() {
 #[tokio::test]
 async fn test_bundle_with_unsupported_manifest_version() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with unsupported manifest version
     let mut zip_data = Vec::new();
@@ -543,8 +543,8 @@ async fn test_bundle_with_unsupported_manifest_version() {
 #[tokio::test]
 async fn test_bundle_without_root_document() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with manifest but no root document
     let mut zip_data = Vec::new();
@@ -579,8 +579,8 @@ async fn test_bundle_without_root_document() {
 #[tokio::test]
 async fn test_bundle_with_corrupted_root_document() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with corrupted root document
     let mut zip_data = Vec::new();
@@ -829,17 +829,21 @@ async fn test_offline_bundle_online_workflow() {
     let online_tonk = TonkCore::from_bytes(bundle_bytes).await.unwrap();
 
     // Verify all offline work is preserved
-    assert!(online_tonk
-        .vfs()
-        .exists("/project/README.md")
-        .await
-        .unwrap());
+    assert!(
+        online_tonk
+            .vfs()
+            .exists("/project/README.md")
+            .await
+            .unwrap()
+    );
     assert!(online_tonk.vfs().exists("/project/main.js").await.unwrap());
-    assert!(online_tonk
-        .vfs()
-        .exists("/project/src/utils.js")
-        .await
-        .unwrap());
+    assert!(
+        online_tonk
+            .vfs()
+            .exists("/project/src/utils.js")
+            .await
+            .unwrap()
+    );
 
     // Phase 4: Continue working online
     online_tonk
@@ -1178,11 +1182,13 @@ async fn test_bundle_concurrent_modifications() {
 
     // Verify all files exist
     for i in 0..20 {
-        assert!(tonk2
-            .vfs()
-            .exists(&format!("/concurrent/task_{}.txt", i))
-            .await
-            .unwrap());
+        assert!(
+            tonk2
+                .vfs()
+                .exists(&format!("/concurrent/task_{}.txt", i))
+                .await
+                .unwrap()
+        );
     }
 }
 
@@ -1300,10 +1306,11 @@ async fn test_load_bundle_from_blank_bundle_tonk_file() {
     .expect("Should be able to create documents in loaded VFS");
 
     // Verify the document was created
-    assert!(vfs
-        .exists("/test_after_load.txt")
-        .await
-        .expect("Should be able to check existence"));
+    assert!(
+        vfs.exists("/test_after_load.txt")
+            .await
+            .expect("Should be able to check existence")
+    );
 
     // Test that we can save the modified state back to bytes
     let new_bundle_bytes = tonk_memory
@@ -1325,11 +1332,13 @@ async fn test_load_bundle_from_blank_bundle_tonk_file() {
         .expect("Should load modified bundle");
 
     // Verify our added document exists in the reloaded bundle
-    assert!(tonk_modified
-        .vfs()
-        .exists("/test_after_load.txt")
-        .await
-        .expect("Should be able to check existence"));
+    assert!(
+        tonk_modified
+            .vfs()
+            .exists("/test_after_load.txt")
+            .await
+            .expect("Should be able to check existence")
+    );
 }
 
 #[tokio::test]

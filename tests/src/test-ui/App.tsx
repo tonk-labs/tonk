@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
-import { getVFSService } from './vfs-service';
+import { useEffect, useRef, useState } from 'react';
 import { useCounterStore } from './counter-store';
+import { getVFSService } from './vfs-service';
 
 interface ServerConfig {
   port: number;

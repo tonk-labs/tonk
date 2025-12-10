@@ -1,5 +1,5 @@
-import * as React from 'react';
 import type { Editor } from '@tiptap/react';
+import * as React from 'react';
 
 type Orientation = 'horizontal' | 'vertical' | 'both';
 
@@ -59,20 +59,22 @@ export function useMenuNavigation<T>({
   orientation = 'vertical',
   autoSelectFirstItem = true,
 }: MenuNavigationOptions<T>) {
-  const [selectedIndex, setSelectedIndex] = React.useState<number>(autoSelectFirstItem ? 0 : -1);
+  const [selectedIndex, setSelectedIndex] = React.useState<number>(
+    autoSelectFirstItem ? 0 : -1
+  );
 
   React.useEffect(() => {
     const handleKeyboardNavigation = (event: KeyboardEvent) => {
       if (!items.length) return false;
 
       const moveNext = () =>
-        setSelectedIndex((currentIndex) => {
+        setSelectedIndex(currentIndex => {
           if (currentIndex === -1) return 0;
           return (currentIndex + 1) % items.length;
         });
 
       const movePrev = () =>
-        setSelectedIndex((currentIndex) => {
+        setSelectedIndex(currentIndex => {
           if (currentIndex === -1) return items.length - 1;
           return (currentIndex - 1 + items.length) % items.length;
         });
@@ -160,12 +162,24 @@ export function useMenuNavigation<T>({
       targetElement.addEventListener('keydown', handleKeyboardNavigation, true);
 
       return () => {
-        targetElement?.removeEventListener('keydown', handleKeyboardNavigation, true);
+        targetElement?.removeEventListener(
+          'keydown',
+          handleKeyboardNavigation,
+          true
+        );
       };
     }
 
     return undefined;
-  }, [editor, containerRef, items, selectedIndex, onSelect, onClose, orientation]);
+  }, [
+    editor,
+    containerRef,
+    items,
+    selectedIndex,
+    onSelect,
+    onClose,
+    orientation,
+  ]);
 
   React.useEffect(() => {
     if (query) {

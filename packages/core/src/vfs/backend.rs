@@ -1,6 +1,6 @@
 use crate::error::{Result, VfsError};
 use crate::vfs::types::*;
-use automerge::{transaction::Transactable, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use bytes::Bytes;
 use samod::{DocHandle, DocumentId};
 
@@ -459,13 +459,13 @@ impl AutomergeHelpers {
                     return Err(VfsError::Other(anyhow::anyhow!(
                         "Path element '{}' is not an object",
                         key
-                    )))
+                    )));
                 }
                 Ok(None) => {
                     return Err(VfsError::Other(anyhow::anyhow!(
                         "Path element '{}' not found",
                         key
-                    )))
+                    )));
                 }
                 Err(e) => return Err(VfsError::AutomergeError(e)),
             }
@@ -952,13 +952,16 @@ impl AutomergeHelpers {
                 if a.len() != b.len() {
                     return false;
                 }
-                a.iter().zip(b.iter()).all(|(x, y)| Self::json_values_equal(x, y))
+                a.iter()
+                    .zip(b.iter())
+                    .all(|(x, y)| Self::json_values_equal(x, y))
             }
             (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
                 if a.len() != b.len() {
                     return false;
                 }
-                a.iter().all(|(k, v)| b.get(k).map_or(false, |bv| Self::json_values_equal(v, bv)))
+                a.iter()
+                    .all(|(k, v)| b.get(k).map_or(false, |bv| Self::json_values_equal(v, bv)))
             }
             _ => false,
         }
@@ -1072,8 +1075,7 @@ impl AutomergeHelpers {
     {
         handle.with_document(|doc| {
             // Convert new content to JSON
-            let new_json =
-                serde_json::to_value(&content).map_err(VfsError::SerializationError)?;
+            let new_json = serde_json::to_value(&content).map_err(VfsError::SerializationError)?;
 
             // Read current content
             let content_result = doc.get(automerge::ROOT, "content");
@@ -1084,7 +1086,10 @@ impl AutomergeHelpers {
 
             // Read existing content as JSON before starting transaction
             let old_json = if has_content {
-                Some(Self::read_automerge_value(doc, content_obj_id.clone().unwrap())?)
+                Some(Self::read_automerge_value(
+                    doc,
+                    content_obj_id.clone().unwrap(),
+                )?)
             } else {
                 None
             };

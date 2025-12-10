@@ -1,7 +1,11 @@
-import { test, expect } from '../fixtures';
-import { setupTestWithServer, waitForVFSConnection } from '../fixtures';
 import { imageGenerator } from '../../src/utils/image-generator';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
+import {
+  expect,
+  setupTestWithServer,
+  test,
+  waitForVFSConnection,
+} from '../fixtures';
 
 test.describe('Image Stress Tests', () => {
   test.beforeEach(async ({ page, serverInstance }) => {
@@ -500,7 +504,7 @@ test.describe('Image Stress Tests', () => {
 
       // Check if memory is getting too high
       if (memAfter > 400) {
-        console.warn(`⚠️ High memory usage detected: ${memAfter.toFixed(2)}MB`);
+        console.warn(`! High memory usage detected: ${memAfter.toFixed(2)}MB`);
       }
     }
 
@@ -885,7 +889,7 @@ test.describe('Image Stress Tests', () => {
       });
 
       if (memAfter > 600) {
-        console.warn(`⚠️ High memory usage detected: ${memAfter.toFixed(2)}MB`);
+        console.warn(`! High memory usage detected: ${memAfter.toFixed(2)}MB`);
       }
     }
 

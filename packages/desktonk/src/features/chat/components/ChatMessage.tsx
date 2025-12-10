@@ -1,11 +1,11 @@
-import type { ChatMessage as ChatMessageType } from '../types';
-import { getInitials } from '../../presence/utils/userGeneration';
-import { usePresence, type User } from '../../presence/stores/presenceStore';
 import {
   Tooltip,
-  TooltipTrigger,
   TooltipContent,
+  TooltipTrigger,
 } from '../../editor/components/tiptap-ui-primitive/tooltip/tooltip';
+import { type User, usePresence } from '../../presence/stores/presenceStore';
+import { getInitials } from '../../presence/utils/userGeneration';
+import type { ChatMessage as ChatMessageType } from '../types';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -27,7 +27,9 @@ export function ChatMessage({ message, isCurrentUser }: ChatMessageProps) {
   });
 
   return (
-    <div className={`flex gap-2 mb-3 ${isCurrentUser ? 'flex-row-reverse' : 'flex-row'}`}>
+    <div
+      className={`flex gap-2 mb-3 ${isCurrentUser ? 'flex-row-reverse' : 'flex-row'}`}
+    >
       {/* Avatar */}
       <Tooltip placement="top" delay={300}>
         <TooltipTrigger asChild>
@@ -52,7 +54,9 @@ export function ChatMessage({ message, isCurrentUser }: ChatMessageProps) {
               : 'bg-night-100 dark:bg-night-800 border border-night-200 dark:border-night-700'
           }`}
         >
-          <p className="text-sm font-mono whitespace-pre-wrap break-words">{message.text}</p>
+          <p className="text-sm font-mono whitespace-pre-wrap break-words">
+            {message.text}
+          </p>
         </div>
 
         {/* Timestamp */}
@@ -62,13 +66,15 @@ export function ChatMessage({ message, isCurrentUser }: ChatMessageProps) {
               {formattedTime}
             </span>
           </TooltipTrigger>
-          <TooltipContent>{new Date(message.timestamp).toLocaleString()}</TooltipContent>
+          <TooltipContent>
+            {new Date(message.timestamp).toLocaleString()}
+          </TooltipContent>
         </Tooltip>
 
         {/* Reactions (placeholder) */}
         {message.reactions.length > 0 && (
           <div className="flex gap-1 flex-wrap">
-            {message.reactions.map((reaction) => (
+            {message.reactions.map(reaction => (
               <span
                 key={reaction.emoji}
                 className="text-xs bg-accent px-2 py-1 rounded-full font-mono"

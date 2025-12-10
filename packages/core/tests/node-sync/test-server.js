@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
+import { WebSocketServer } from 'ws';
 
 const PORT = 8082;
 
@@ -17,38 +17,47 @@ console.log(`[SERVER] Starting samod sync test server on port ${PORT}`);
 wss.on('connection', (ws, req) => {
   const clientId = `client-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   ws.clientId = clientId;
-  
-  console.log(`[SERVER] Client connected: ${clientId} (total: ${clients.size + 1})`);
+
+  console.log(
+    `[SERVER] Client connected: ${clientId} (total: ${clients.size + 1})`
+  );
   clients.add(ws);
 
   ws.on('message', (message, isBinary) => {
-    console.log(`[SERVER] Received from ${clientId}: ${isBinary ? `${message.length} bytes (binary)` : message.toString()}`);
-    
+    console.log(
+      `[SERVER] Received from ${clientId}: ${isBinary ? `${message.length} bytes (binary)` : message.toString()}`
+    );
+
     // Relay message to all OTHER connected clients (not the sender)
     let relayCount = 0;
     clients.forEach(client => {
-      if (client !== ws && client.readyState === 1) { // WebSocket.OPEN = 1
+      if (client !== ws && client.readyState === 1) {
+        // WebSocket.OPEN = 1
         client.send(message, { binary: isBinary });
         relayCount++;
       }
     });
-    
+
     console.log(`[SERVER] Relayed message to ${relayCount} other clients`);
   });
 
   ws.on('close', () => {
-    console.log(`[SERVER] Client disconnected: ${clientId} (remaining: ${clients.size - 1})`);
+    console.log(
+      `[SERVER] Client disconnected: ${clientId} (remaining: ${clients.size - 1})`
+    );
     clients.delete(ws);
   });
 
-  ws.on('error', (error) => {
+  ws.on('error', error => {
     console.error(`[SERVER] WebSocket error for ${clientId}:`, error);
     clients.delete(ws);
   });
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[SERVER] Samod sync test server listening on ws://127.0.0.1:${PORT}`);
+  console.log(
+    `[SERVER] Samod sync test server listening on ws://127.0.0.1:${PORT}`
+  );
   console.log(`[SERVER] Ready to relay messages between samod clients`);
 });
 

@@ -1,15 +1,15 @@
 import {
+  AuthorizeSecurityGroupIngressCommand,
+  CreateKeyPairCommand,
+  CreateSecurityGroupCommand,
+  DeleteKeyPairCommand,
+  DeleteSecurityGroupCommand,
+  DescribeInstancesCommand,
+  DescribeKeyPairsCommand,
+  DescribeSecurityGroupsCommand,
   EC2Client,
   RunInstancesCommand,
   TerminateInstancesCommand,
-  DescribeInstancesCommand,
-  CreateSecurityGroupCommand,
-  AuthorizeSecurityGroupIngressCommand,
-  DeleteSecurityGroupCommand,
-  CreateKeyPairCommand,
-  DeleteKeyPairCommand,
-  DescribeKeyPairsCommand,
-  DescribeSecurityGroupsCommand,
 } from '@aws-sdk/client-ec2';
 import { promises as fs } from 'fs';
 import { homedir } from 'os';

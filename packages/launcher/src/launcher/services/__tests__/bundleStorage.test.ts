@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import 'fake-indexeddb/auto';
 import { BundleStorage } from '../bundleStorage';
 
@@ -45,13 +45,21 @@ describe('BundleStorage', () => {
     const id1 = crypto.randomUUID();
     const id2 = crypto.randomUUID();
 
-    await storage.save(id1, { name: 'b1', size: 100, bytes: new Uint8Array([1]) });
-    await storage.save(id2, { name: 'b2', size: 200, bytes: new Uint8Array([2]) });
+    await storage.save(id1, {
+      name: 'b1',
+      size: 100,
+      bytes: new Uint8Array([1]),
+    });
+    await storage.save(id2, {
+      name: 'b2',
+      size: 200,
+      bytes: new Uint8Array([2]),
+    });
 
     const list = await storage.list();
     expect(list).toHaveLength(2);
 
-    const b1 = list.find((b) => b.id === id1);
+    const b1 = list.find(b => b.id === id1);
     expect(b1).toBeDefined();
     expect(b1?.name).toBe('b1');
     // @ts-expect-error - 'bytes' should not be present in list view (runtime check)
@@ -60,7 +68,11 @@ describe('BundleStorage', () => {
 
   it('should delete a bundle', async () => {
     const id = crypto.randomUUID();
-    await storage.save(id, { name: 'to-delete', size: 50, bytes: new Uint8Array([]) });
+    await storage.save(id, {
+      name: 'to-delete',
+      size: 50,
+      bytes: new Uint8Array([]),
+    });
 
     await storage.delete(id);
 

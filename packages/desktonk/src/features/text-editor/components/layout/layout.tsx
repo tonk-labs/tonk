@@ -1,5 +1,5 @@
-import Header from '../header/header';
 import { useId } from 'react';
+import Header from '../header/header';
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const headerId = useId();

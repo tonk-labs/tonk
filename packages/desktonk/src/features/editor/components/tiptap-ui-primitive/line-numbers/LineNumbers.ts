@@ -1,6 +1,6 @@
-import { Extension } from '@tiptap/react';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import { Extension } from '@tiptap/react';
 import './LineNumbers.css';
 
 export interface LineNumbersOptions {

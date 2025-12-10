@@ -1,4 +1,4 @@
-import type { WasmTonkCore, WasmBundle } from './tonk_core.js';
+import type { WasmBundle, WasmTonkCore } from './tonk_core.js';
 
 /**
  * Entry in a directory listing
@@ -229,7 +229,7 @@ export class Bundle {
    * @returns The root ID
    * @throws {BundleError} If the operation fails
    */
-  async getRootId(): Promise<String> {
+  async getRootId(): Promise<string> {
     try {
       const rootId = await this.#wasm.getRootId();
       return rootId;
@@ -659,7 +659,7 @@ export class TonkCore {
     bytes: Uint8Array | string
   ): Promise<void> {
     try {
-      let normalizedBytes: Uint8Array =
+      const normalizedBytes: Uint8Array =
         typeof bytes === 'string' ? extractBytes(bytes) : bytes;
 
       await this.#wasm.createFileWithBytes(path, content, normalizedBytes);
@@ -765,13 +765,9 @@ export class TonkCore {
     bytes: Uint8Array | string
   ): Promise<boolean> {
     try {
-      let normalizedBytes: Uint8Array =
+      const normalizedBytes: Uint8Array =
         typeof bytes === 'string' ? extractBytes(bytes) : bytes;
-      return await this.#wasm.setFileWithBytes(
-        path,
-        content,
-        normalizedBytes
-      );
+      return await this.#wasm.setFileWithBytes(path, content, normalizedBytes);
     } catch (error) {
       throw new FileSystemError(`Failed to set file at ${path}: ${error}`);
     }

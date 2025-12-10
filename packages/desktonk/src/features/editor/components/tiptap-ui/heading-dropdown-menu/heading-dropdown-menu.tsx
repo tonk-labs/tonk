@@ -2,25 +2,28 @@ import * as React from 'react';
 
 // --- Icons ---
 import { ChevronDownIcon } from '@/features/editor/components/tiptap-icons/chevron-down-icon';
-
-// --- Hooks ---
-import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
-
 // --- Tiptap UI ---
 import { HeadingButton } from '@/features/editor/components/tiptap-ui/heading-button';
 import type { UseHeadingDropdownMenuConfig } from '@/features/editor/components/tiptap-ui/heading-dropdown-menu';
 import { useHeadingDropdownMenu } from '@/features/editor/components/tiptap-ui/heading-dropdown-menu';
-
 // --- UI Primitives ---
 import type { ButtonProps } from '@/features/editor/components/tiptap-ui-primitive/button';
-import { Button, ButtonGroup } from '@/features/editor/components/tiptap-ui-primitive/button';
+import {
+  Button,
+  ButtonGroup,
+} from '@/features/editor/components/tiptap-ui-primitive/button';
+import {
+  Card,
+  CardBody,
+} from '@/features/editor/components/tiptap-ui-primitive/card';
 import {
   DropdownMenu,
-  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuTrigger,
 } from '@/features/editor/components/tiptap-ui-primitive/dropdown-menu';
-import { Card, CardBody } from '@/features/editor/components/tiptap-ui-primitive/card';
+// --- Hooks ---
+import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
 
 export interface HeadingDropdownMenuProps
   extends Omit<ButtonProps, 'type'>,
@@ -41,7 +44,10 @@ export interface HeadingDropdownMenuProps
  *
  * For custom dropdown implementations, use the `useHeadingDropdownMenu` hook instead.
  */
-export const HeadingDropdownMenu = React.forwardRef<HTMLButtonElement, HeadingDropdownMenuProps>(
+export const HeadingDropdownMenu = React.forwardRef<
+  HTMLButtonElement,
+  HeadingDropdownMenuProps
+>(
   (
     {
       editor: providedEditor,
@@ -100,7 +106,7 @@ export const HeadingDropdownMenu = React.forwardRef<HTMLButtonElement, HeadingDr
           <Card>
             <CardBody>
               <ButtonGroup>
-                {levels.map((level) => (
+                {levels.map(level => (
                   <DropdownMenuItem key={`heading-${level}`} asChild>
                     <HeadingButton
                       editor={editor}

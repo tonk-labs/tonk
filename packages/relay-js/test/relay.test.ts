@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { getBinaryPath, startRelay, runRelay } from '../dist/index.js';
+import { fileURLToPath } from 'node:url';
+import { getBinaryPath, runRelay, startRelay } from '../dist/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEST_BUNDLE = join(__dirname, '..', 'app.tonk');
@@ -33,12 +33,12 @@ describe('startRelay', () => {
 
     // Collect stderr
     let stderr = '';
-    relay.stderr?.on('data', (chunk) => {
+    relay.stderr?.on('data', chunk => {
       stderr += chunk.toString();
     });
 
-    const exitCode = await new Promise<number>((resolve) => {
-      relay.on('exit', (code) => resolve(code ?? 1));
+    const exitCode = await new Promise<number>(resolve => {
+      relay.on('exit', code => resolve(code ?? 1));
     });
 
     expect(exitCode).toBe(1);
@@ -56,7 +56,7 @@ describe('startRelay', () => {
     });
 
     // Give the server time to start
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 500));
 
     // Verify the process is running
     expect(relay.killed).toBeFalsy();
@@ -65,8 +65,8 @@ describe('startRelay', () => {
     const killed = relay.kill('SIGTERM');
     expect(killed).toBeTruthy();
 
-    const exitCode = await new Promise<number>((resolve) => {
-      relay.on('exit', (code) => resolve(code ?? 0));
+    const exitCode = await new Promise<number>(resolve => {
+      relay.on('exit', code => resolve(code ?? 0));
     });
 
     expect(exitCode).toBeDefined();
@@ -83,7 +83,7 @@ describe('startRelay', () => {
 
     try {
       // Wait for server to start
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 1000));
 
       // Make health check request
       const response = await fetch(`http://127.0.0.1:${port}/`);
@@ -93,7 +93,7 @@ describe('startRelay', () => {
       expect(text.includes('Tonk')).toBeTruthy();
     } finally {
       relay.kill('SIGTERM');
-      await new Promise<void>((resolve) => {
+      await new Promise<void>(resolve => {
         relay.on('exit', () => resolve());
       });
     }

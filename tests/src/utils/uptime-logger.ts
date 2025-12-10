@@ -1,8 +1,8 @@
-import { MetricsCollector } from './metrics-collector';
-import { ConnectionManager } from './connection-manager';
-import { ServerInstance } from '../test-ui/types';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { ServerInstance } from '../test-ui/types';
+import type { ConnectionManager } from './connection-manager';
+import type { MetricsCollector } from './metrics-collector';
 
 export interface UptimeSnapshot {
   timestamp: number;
@@ -398,10 +398,10 @@ CONNECTIONS:
 
 MEMORY:
   Memory Growth:        ${summary.memoryGrowthMB.toFixed(2)}MB
-  ${summary.memoryGrowthMB > 50 ? '⚠️  High memory growth detected' : '✓ Memory growth acceptable'}
+  ${summary.memoryGrowthMB > 50 ? '!  High memory growth detected' : '✓ Memory growth acceptable'}
 
 PERFORMANCE:
-  Degradation Detected: ${summary.degradationDetected ? '⚠️  YES' : '✓ NO'}
+  Degradation Detected: ${summary.degradationDetected ? '!  YES' : '✓ NO'}
   Health Score:         ${summary.healthScore.toFixed(0)}/100 ${this.getHealthEmoji(summary.healthScore)}
 
 SNAPSHOTS (First, Mid, Last):

@@ -1,4 +1,3 @@
-import { getVFSService } from '@/vfs-client';
 import {
   DefaultContextMenu,
   DefaultContextMenuContent,
@@ -6,6 +5,7 @@ import {
   TldrawUiMenuItem,
   useEditor,
 } from 'tldraw';
+import { getVFSService } from '@/vfs-client';
 import type { FileIconShape } from '../shapes/types';
 
 export function FileIconContextMenu(props: {
@@ -18,10 +18,11 @@ export function FileIconContextMenu(props: {
   // Check if only file-icon shapes are selected
   const selectedShapeIds = editor.getSelectedShapeIds();
   const selectedShapes = Array.from(selectedShapeIds)
-    .map((id) => editor.getShape(id))
+    .map(id => editor.getShape(id))
     .filter(Boolean); // Remove any null/undefined shapes
   const onlyFileIcons =
-    selectedShapes.length > 0 && selectedShapes.every((s) => s?.type === 'file-icon');
+    selectedShapes.length > 0 &&
+    selectedShapes.every(s => s?.type === 'file-icon');
   const singleFileIcon = onlyFileIcons && selectedShapes.length === 1;
 
   const handleRename = () => {
@@ -51,7 +52,7 @@ export function FileIconContextMenu(props: {
           props: { fileName: newName, filePath: newPath },
         });
       })
-      .catch((err) => {
+      .catch(err => {
         console.error('Rename failed', err);
         alert('Failed to rename file');
       });
@@ -80,19 +81,21 @@ export function FileIconContextMenu(props: {
     }
 
     // Delete shapes from canvas
-    editor.deleteShapes(fileShapes.map((s) => s.id));
+    editor.deleteShapes(fileShapes.map(s => s.id));
   };
 
   const handleCopy = () => {
     if (!onlyFileIcons) return;
 
     // For now, just copy the file paths to clipboard
-    const filePaths = (selectedShapes as FileIconShape[]).map((s) => s.props.filePath).join('\n');
+    const filePaths = (selectedShapes as FileIconShape[])
+      .map(s => s.props.filePath)
+      .join('\n');
 
     navigator.clipboard
       .writeText(filePaths)
       .then(() => console.log('Copied file paths'))
-      .catch((err) => console.error('Failed to copy', err));
+      .catch(err => console.error('Failed to copy', err));
   };
 
   const handleCut = async () => {
@@ -102,7 +105,9 @@ export function FileIconContextMenu(props: {
     handleCopy();
 
     // Store file paths for paste operation
-    const filePaths = (selectedShapes as FileIconShape[]).map((s) => s.props.filePath);
+    const filePaths = (selectedShapes as FileIconShape[]).map(
+      s => s.props.filePath
+    );
     sessionStorage.setItem('cutFiles', JSON.stringify(filePaths));
 
     // Visual feedback - could fade out the icons
@@ -114,11 +119,31 @@ export function FileIconContextMenu(props: {
       {onlyFileIcons && (
         <TldrawUiMenuGroup id="file-operations">
           {singleFileIcon && (
-            <TldrawUiMenuItem id="rename" label="Rename" icon="edit" onSelect={handleRename} />
+            <TldrawUiMenuItem
+              id="rename"
+              label="Rename"
+              icon="edit"
+              onSelect={handleRename}
+            />
           )}
-          <TldrawUiMenuItem id="cut-file" label="Cut" kbd="$X" onSelect={handleCut} />
-          <TldrawUiMenuItem id="copy-file" label="Copy" kbd="$C" onSelect={handleCopy} />
-          <TldrawUiMenuItem id="delete-file" label="Delete" kbd="⌫" onSelect={handleDelete} />
+          <TldrawUiMenuItem
+            id="cut-file"
+            label="Cut"
+            kbd="$X"
+            onSelect={handleCut}
+          />
+          <TldrawUiMenuItem
+            id="copy-file"
+            label="Copy"
+            kbd="$C"
+            onSelect={handleCopy}
+          />
+          <TldrawUiMenuItem
+            id="delete-file"
+            label="Delete"
+            kbd="⌫"
+            onSelect={handleDelete}
+          />
         </TldrawUiMenuGroup>
       )}
 

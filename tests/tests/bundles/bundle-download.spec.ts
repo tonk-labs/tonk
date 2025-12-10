@@ -1,7 +1,7 @@
 import {
-  test,
   expect,
   setupTestWithServer,
+  test,
   waitForVFSConnection,
 } from '../fixtures';
 

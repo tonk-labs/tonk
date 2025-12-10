@@ -6,19 +6,18 @@ import {
   BLOCKQUOTE_SHORTCUT_KEY,
   useBlockquote,
 } from '@/features/editor/components/tiptap-ui/blockquote-button';
-
-// --- Hooks ---
-import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
-
-// --- Lib ---
-import { parseShortcutKeys } from '@/lib/utils';
-
+import { Badge } from '@/features/editor/components/tiptap-ui-primitive/badge';
 // --- UI Primitives ---
 import type { ButtonProps } from '@/features/editor/components/tiptap-ui-primitive/button';
 import { Button } from '@/features/editor/components/tiptap-ui-primitive/button';
-import { Badge } from '@/features/editor/components/tiptap-ui-primitive/badge';
+// --- Hooks ---
+import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
+// --- Lib ---
+import { parseShortcutKeys } from '@/lib/utils';
 
-export interface BlockquoteButtonProps extends Omit<ButtonProps, 'type'>, UseBlockquoteConfig {
+export interface BlockquoteButtonProps
+  extends Omit<ButtonProps, 'type'>,
+    UseBlockquoteConfig {
   /**
    * Optional text to display alongside the icon.
    */
@@ -43,7 +42,10 @@ export function BlockquoteShortcutBadge({
  *
  * For custom button implementations, use the `useBlockquote` hook instead.
  */
-export const BlockquoteButton = React.forwardRef<HTMLButtonElement, BlockquoteButtonProps>(
+export const BlockquoteButton = React.forwardRef<
+  HTMLButtonElement,
+  BlockquoteButtonProps
+>(
   (
     {
       editor: providedEditor,
@@ -58,12 +60,19 @@ export const BlockquoteButton = React.forwardRef<HTMLButtonElement, BlockquoteBu
     ref
   ) => {
     const { editor } = useTiptapEditor(providedEditor);
-    const { isVisible, canToggle, isActive, handleToggle, label, shortcutKeys, Icon } =
-      useBlockquote({
-        editor,
-        hideWhenUnavailable,
-        onToggled,
-      });
+    const {
+      isVisible,
+      canToggle,
+      isActive,
+      handleToggle,
+      label,
+      shortcutKeys,
+      Icon,
+    } = useBlockquote({
+      editor,
+      hideWhenUnavailable,
+      onToggled,
+    });
 
     const handleClick = React.useCallback(
       (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -98,7 +107,9 @@ export const BlockquoteButton = React.forwardRef<HTMLButtonElement, BlockquoteBu
           <>
             <Icon className="tiptap-button-icon" />
             {text && <span className="tiptap-button-text">{text}</span>}
-            {showShortcut && <BlockquoteShortcutBadge shortcutKeys={shortcutKeys} />}
+            {showShortcut && (
+              <BlockquoteShortcutBadge shortcutKeys={shortcutKeys} />
+            )}
           </>
         )}
       </Button>

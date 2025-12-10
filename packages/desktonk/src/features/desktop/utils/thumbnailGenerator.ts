@@ -25,7 +25,10 @@ const EXTENSIONLESS_TEXT_FILES = [
  * @param fileName - The name of the file
  * @returns Path to the SVG icon template and optional extension label
  */
-function getIconTemplatePath(fileName: string): { path: string; extension: string | null } {
+function getIconTemplatePath(fileName: string): {
+  path: string;
+  extension: string | null;
+} {
   const extension = fileName.split('.').pop()?.toLowerCase() || '';
 
   // Always use BASE.svg as the template
@@ -64,7 +67,10 @@ function getIconTemplatePath(fileName: string): { path: string; extension: strin
   ];
 
   if (extension && showExtension.includes(extension)) {
-    return { path: '/icon_templates/BASE.svg', extension: extension.toUpperCase() };
+    return {
+      path: '/icon_templates/BASE.svg',
+      extension: extension.toUpperCase(),
+    };
   }
 
   // Everything else: BASE template with no label
@@ -96,10 +102,16 @@ function extractClipPathFromSVG(svgContent: string): string | null {
       // Find path that uses this gradient
       const pathMatch =
         svgContent.match(
-          new RegExp(`<path[^>]*fill="url\\(#${gradientId}\\)"[^>]*d="([^"]+)"`, 'i')
+          new RegExp(
+            `<path[^>]*fill="url\\(#${gradientId}\\)"[^>]*d="([^"]+)"`,
+            'i'
+          )
         ) ||
         svgContent.match(
-          new RegExp(`<path[^>]*d="([^"]+)"[^>]*fill="url\\(#${gradientId}\\)"`, 'i')
+          new RegExp(
+            `<path[^>]*d="([^"]+)"[^>]*fill="url\\(#${gradientId}\\)"`,
+            'i'
+          )
         );
       if (pathMatch?.[1]) {
         return pathMatch[1];
@@ -123,7 +135,7 @@ export async function generateImageThumbnail(
   file: File,
   size: number = 512 // Double resolution for better quality
 ): Promise<string | null> {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     // Only process image files
     if (!file.type.startsWith('image/')) {
       resolve(null);
@@ -132,7 +144,7 @@ export async function generateImageThumbnail(
 
     const reader = new FileReader();
 
-    reader.onload = (e) => {
+    reader.onload = e => {
       const img = new Image();
 
       img.onload = () => {
@@ -181,7 +193,10 @@ export async function generateImageThumbnail(
           const thumbnail = canvas.toDataURL('image/png');
           resolve(thumbnail);
         } catch (error) {
-          console.error('[thumbnailGenerator] Error generating thumbnail:', error);
+          console.error(
+            '[thumbnailGenerator] Error generating thumbnail:',
+            error
+          );
           resolve(null);
         }
       };
@@ -215,7 +230,7 @@ async function generateTextThumbnailCore(
   fileName: string,
   size: number = 512
 ): Promise<string | null> {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     try {
       // Calculate dimensions of the clip area in SVG coordinates
       const svgContentX = 18;
@@ -295,28 +310,44 @@ async function generateTextThumbnailCore(
             svgContent = svgContent.replace('</svg>', `${textElement}</svg>`);
           }
 
-          console.log('[thumbnailGenerator] SVG content length:', svgContent.length);
-          console.log('[thumbnailGenerator] Contains green?', svgContent.includes('#00FF22'));
+          console.log(
+            '[thumbnailGenerator] SVG content length:',
+            svgContent.length
+          );
+          console.log(
+            '[thumbnailGenerator] Contains green?',
+            svgContent.includes('#00FF22')
+          );
 
           // Extract clip path
           const clipPathData = extractClipPathFromSVG(svgContent);
-          console.log('[thumbnailGenerator] Clip path extracted:', clipPathData ? 'YES' : 'NO');
+          console.log(
+            '[thumbnailGenerator] Clip path extracted:',
+            clipPathData ? 'YES' : 'NO'
+          );
 
           if (!clipPathData) {
-            console.warn('[thumbnailGenerator] No clip path found, using plain thumbnail');
+            console.warn(
+              '[thumbnailGenerator] No clip path found, using plain thumbnail'
+            );
             const thumbnail = textCanvas.toDataURL('image/png');
             resolve(thumbnail);
             return;
           }
 
-          console.log('[thumbnailGenerator] Extracted clip path, length:', clipPathData.length);
+          console.log(
+            '[thumbnailGenerator] Extracted clip path, length:',
+            clipPathData.length
+          );
 
           // Step 3: Create final composite canvas
           const finalCanvas = document.createElement('canvas');
           const finalCtx = finalCanvas.getContext('2d');
 
           if (!finalCtx) {
-            console.error('[thumbnailGenerator] Failed to get final canvas context');
+            console.error(
+              '[thumbnailGenerator] Failed to get final canvas context'
+            );
             resolve(null);
             return;
           }
@@ -349,7 +380,13 @@ async function generateTextThumbnailCore(
           finalCtx.clip(scaledClipPath);
 
           // Draw rectangular text canvas - draw at exact clip area dimensions
-          finalCtx.drawImage(textCanvas, scaledX, scaledY, textCanvasWidth, textCanvasHeight);
+          finalCtx.drawImage(
+            textCanvas,
+            scaledX,
+            scaledY,
+            textCanvasWidth,
+            textCanvasHeight
+          );
 
           finalCtx.restore();
 
@@ -362,7 +399,9 @@ async function generateTextThumbnailCore(
           const greenGradientId = gradientMatch ? gradientMatch[1] : null;
 
           // Create SVG WITH green for alpha detection
-          const svgBlobWithGreen = new Blob([svgContent], { type: 'image/svg+xml' });
+          const svgBlobWithGreen = new Blob([svgContent], {
+            type: 'image/svg+xml',
+          });
           const svgUrlWithGreen = URL.createObjectURL(svgBlobWithGreen);
 
           const svgImgWithGreen = new Image();
@@ -373,7 +412,9 @@ async function generateTextThumbnailCore(
             const svgCtx = svgCanvas.getContext('2d');
 
             if (!svgCtx) {
-              console.error('[thumbnailGenerator] Failed to get SVG canvas context');
+              console.error(
+                '[thumbnailGenerator] Failed to get SVG canvas context'
+              );
               URL.revokeObjectURL(svgUrlWithGreen);
               resolve(textCanvas.toDataURL('image/png'));
               return;
@@ -421,7 +462,10 @@ async function generateTextThumbnailCore(
             URL.revokeObjectURL(svgUrlWithGreen);
 
             // Now render SVG WITHOUT green for final overlay
-            let svgWithoutGreen = svgContent.replace(/fill="#00FF22"/gi, 'fill="none"');
+            let svgWithoutGreen = svgContent.replace(
+              /fill="#00FF22"/gi,
+              'fill="none"'
+            );
             if (greenGradientId) {
               svgWithoutGreen = svgWithoutGreen.replace(
                 new RegExp(`fill="url\\(#${greenGradientId}\\)"`, 'gi'),
@@ -429,7 +473,9 @@ async function generateTextThumbnailCore(
               );
             }
 
-            const svgBlobWithoutGreen = new Blob([svgWithoutGreen], { type: 'image/svg+xml' });
+            const svgBlobWithoutGreen = new Blob([svgWithoutGreen], {
+              type: 'image/svg+xml',
+            });
             const svgUrlWithoutGreen = URL.createObjectURL(svgBlobWithoutGreen);
 
             const svgImgWithoutGreen = new Image();
@@ -447,7 +493,9 @@ async function generateTextThumbnailCore(
             };
 
             svgImgWithoutGreen.onerror = () => {
-              console.error('[thumbnailGenerator] Failed to load SVG without green');
+              console.error(
+                '[thumbnailGenerator] Failed to load SVG without green'
+              );
               URL.revokeObjectURL(svgUrlWithoutGreen);
               const thumbnail = finalCanvas.toDataURL('image/png');
               resolve(thumbnail);
@@ -466,14 +514,20 @@ async function generateTextThumbnailCore(
 
           svgImgWithGreen.src = svgUrlWithGreen;
         } catch (error) {
-          console.error('[thumbnailGenerator] Error loading icon template:', error);
+          console.error(
+            '[thumbnailGenerator] Error loading icon template:',
+            error
+          );
           // Fallback to plain text thumbnail without template
           const thumbnail = textCanvas.toDataURL('image/png');
           resolve(thumbnail);
         }
       })();
     } catch (error) {
-      console.error('[thumbnailGenerator] Error generating text thumbnail:', error);
+      console.error(
+        '[thumbnailGenerator] Error generating text thumbnail:',
+        error
+      );
       resolve(null);
     }
   });
@@ -504,10 +558,10 @@ export async function generateTextThumbnail(
   file: File,
   size: number = 512 // Double resolution for better quality
 ): Promise<string | null> {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const reader = new FileReader();
 
-    reader.onload = async (e) => {
+    reader.onload = async e => {
       const text = e.target?.result as string;
       const thumbnail = await generateTextThumbnailCore(text, file.name, size);
       resolve(thumbnail);

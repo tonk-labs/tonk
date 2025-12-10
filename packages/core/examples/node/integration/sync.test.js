@@ -11,7 +11,7 @@ const {
   PerfTimer,
 } = require('../../shared/test-utils');
 
-describe('Sync Engine Integration Tests', function () {
+describe('Sync Engine Integration Tests', () => {
   let wasm;
 
   before(async function () {
@@ -19,8 +19,8 @@ describe('Sync Engine Integration Tests', function () {
     wasm = await initWasm();
   });
 
-  describe('Engine Lifecycle', function () {
-    it('should create multiple engines with unique peer IDs', async function () {
+  describe('Engine Lifecycle', () => {
+    it('should create multiple engines with unique peer IDs', async () => {
       const engines = [];
       const peerIds = new Set();
 
@@ -38,7 +38,7 @@ describe('Sync Engine Integration Tests', function () {
       expect(engines).to.have.lengthOf(5);
     });
 
-    it('should create engines with custom peer IDs', async function () {
+    it('should create engines with custom peer IDs', async () => {
       const customIds = ['peer-alpha', 'peer-beta', 'peer-gamma'];
       const engines = [];
 
@@ -53,7 +53,7 @@ describe('Sync Engine Integration Tests', function () {
       expect(engines).to.have.lengthOf(customIds.length);
     });
 
-    it('should handle rapid engine creation', async function () {
+    it('should handle rapid engine creation', async () => {
       const timer = new PerfTimer('Rapid engine creation');
       const promises = [];
 
@@ -77,15 +77,15 @@ describe('Sync Engine Integration Tests', function () {
     });
   });
 
-  describe('VFS Integration', function () {
+  describe('VFS Integration', () => {
     let engine, vfs;
 
-    beforeEach(async function () {
+    beforeEach(async () => {
       engine = await wasm.create_sync_engine();
       vfs = await engine.getVfs();
     });
 
-    it('should maintain VFS state across operations', async function () {
+    it('should maintain VFS state across operations', async () => {
       // Create a complex directory structure
       const structure = [
         { type: 'dir', path: '/projects' },
@@ -161,7 +161,7 @@ describe('Sync Engine Integration Tests', function () {
       }
     });
 
-    it('should persist VFS changes across VFS instances', async function () {
+    it('should persist VFS changes across VFS instances', async () => {
       // Create files with first VFS instance
       await vfs.createDirectory('/persistent');
       await vfs.createFile('/persistent/test.txt', 'persistent data');
@@ -179,17 +179,17 @@ describe('Sync Engine Integration Tests', function () {
     });
   });
 
-  describe('Document Management', function () {
+  describe('Document Management', () => {
     let engine;
 
-    beforeEach(async function () {
+    beforeEach(async () => {
       engine = await wasm.create_sync_engine();
     });
 
     // Note: These tests assume WASM bindings for document operations exist
     // They may need to be adjusted based on actual implementation
 
-    it('should create and manage documents', async function () {
+    it('should create and manage documents', async () => {
       // This test would require WASM bindings for document creation
       // For now, we'll test what we can access
 
@@ -203,8 +203,8 @@ describe('Sync Engine Integration Tests', function () {
     });
   });
 
-  describe('Memory Management', function () {
-    it('should handle engine cleanup properly', async function () {
+  describe('Memory Management', () => {
+    it('should handle engine cleanup properly', async () => {
       const engines = [];
 
       // Create many engines
@@ -250,8 +250,8 @@ describe('Sync Engine Integration Tests', function () {
     });
   });
 
-  describe('Error Recovery', function () {
-    it('should recover from VFS errors gracefully', async function () {
+  describe('Error Recovery', () => {
+    it('should recover from VFS errors gracefully', async () => {
       const engine = await wasm.create_sync_engine();
       const vfs = await engine.getVfs();
 
@@ -270,7 +270,7 @@ describe('Sync Engine Integration Tests', function () {
       expect(exists).to.be.true;
     });
 
-    it('should handle engine state after errors', async function () {
+    it('should handle engine state after errors', async () => {
       const engine = await wasm.create_sync_engine();
 
       // Engine should still be functional after VFS errors
@@ -291,8 +291,8 @@ describe('Sync Engine Integration Tests', function () {
     });
   });
 
-  describe('Performance Benchmarks', function () {
-    it('should benchmark engine creation performance', async function () {
+  describe('Performance Benchmarks', () => {
+    it('should benchmark engine creation performance', async () => {
       const iterations = 50;
       const times = [];
 
@@ -314,7 +314,7 @@ describe('Sync Engine Integration Tests', function () {
       expect(avgTime).to.be.lessThan(100); // Should average under 100ms
     });
 
-    it('should benchmark VFS operation performance', async function () {
+    it('should benchmark VFS operation performance', async () => {
       const engine = await wasm.create_sync_engine();
       const vfs = await engine.getVfs();
 

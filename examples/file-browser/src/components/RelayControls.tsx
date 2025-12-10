@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { Manifest } from '@tonk/core';
+import type { Manifest } from '@tonk/core';
+import type React from 'react';
+import { useState } from 'react';
 
 export interface RelayControlsProps {
   manifest: Manifest;
@@ -110,9 +111,10 @@ const RelayControls: React.FC<RelayControlsProps> = ({
                       onClick={() => handleConnect(relay)}
                       disabled={isConnecting || connectedRelay === relay}
                       className={`w-full text-left px-4 py-3 rounded-lg border transition-all font-mono text-sm
-                        ${connectedRelay === relay
-                          ? 'border-green-500 bg-green-50 text-green-700'
-                          : 'border-[#d2d2d7] hover:border-[#0066cc] hover:bg-[#fafafa]'
+                        ${
+                          connectedRelay === relay
+                            ? 'border-green-500 bg-green-50 text-green-700'
+                            : 'border-[#d2d2d7] hover:border-[#0066cc] hover:bg-[#fafafa]'
                         }
                         ${isConnecting ? 'opacity-50' : ''}
                       `}

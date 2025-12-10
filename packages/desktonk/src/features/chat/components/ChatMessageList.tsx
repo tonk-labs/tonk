@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { useChat } from '../stores/chatStore';
 import { usePresence } from '../../presence/stores/presenceStore';
+import { useChat } from '../stores/chatStore';
 import { ChatMessage } from './ChatMessage';
 import { ChatTypingIndicator } from './ChatTypingIndicator';
 
@@ -18,13 +18,16 @@ export function ChatMessageList() {
   }, [messages.length]);
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 bg-white dark:bg-night-900">
+    <div
+      ref={scrollRef}
+      className="flex-1 overflow-y-auto p-3 bg-white dark:bg-night-900"
+    >
       {messages.length === 0 ? (
         <div className="flex items-center justify-center h-full text-night-500 dark:text-night-400 font-mono text-sm">
           No messages yet. Start the conversation!
         </div>
       ) : (
-        messages.map((message) => (
+        messages.map(message => (
           <ChatMessage
             key={message.id}
             message={message}

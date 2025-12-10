@@ -1,10 +1,10 @@
+use crate::Bundle;
 use crate::bundle::{BundleConfig, RandomAccess};
 use crate::error::{Result, VfsError};
 use crate::vfs::backend::AutomergeHelpers;
 use crate::vfs::path_index::PathIndex;
 use crate::vfs::types::*;
 use crate::vfs::watcher::DocumentWatcher;
-use crate::Bundle;
 use automerge::Automerge;
 use bytes::Bytes;
 use samod::storage::StorageKey;
@@ -259,8 +259,8 @@ impl VirtualFileSystem {
     pub async fn to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
         use crate::bundle::{Manifest, Version};
         use std::io::{Cursor, Write};
-        use zip::write::SimpleFileOptions;
         use zip::ZipWriter;
+        use zip::write::SimpleFileOptions;
 
         // Get the root document from VFS
         let root_id = self.root_id();
@@ -518,11 +518,7 @@ impl VirtualFileSystem {
             Some(doc_handle) => {
                 // Set content
                 if use_bytes {
-                    AutomergeHelpers::set_document_content_with_bytes(
-                        &doc_handle,
-                        content,
-                        bytes,
-                    )?;
+                    AutomergeHelpers::set_document_content_with_bytes(&doc_handle, content, bytes)?;
                 } else {
                     AutomergeHelpers::set_document_content(&doc_handle, content)?;
                 }
@@ -2095,7 +2091,10 @@ mod tests {
         let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
         let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
             AutomergeHelpers::read_document(&handle).unwrap();
-        assert_eq!(doc_node.content, serde_json::json!({ "x": { "a": 2, "b": 3 } }));
+        assert_eq!(
+            doc_node.content,
+            serde_json::json!({ "x": { "a": 2, "b": 3 } })
+        );
     }
 
     #[tokio::test]
@@ -2162,7 +2161,10 @@ mod tests {
 
         // Try to update non-existent document
         let content = serde_json::json!({ "a": 1 });
-        let changed = vfs.update_document("/non-existent.json", content).await.unwrap();
+        let changed = vfs
+            .update_document("/non-existent.json", content)
+            .await
+            .unwrap();
         assert!(!changed);
     }
 }

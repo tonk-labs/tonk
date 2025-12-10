@@ -1,5 +1,6 @@
-import React, { useState, useRef } from 'react';
-import { Bundle, Manifest } from '@tonk/core';
+import { Bundle, type Manifest } from '@tonk/core';
+import type React from 'react';
+import { useRef, useState } from 'react';
 
 export interface BundleLoaderProps {
   onBundleLoad: (bytes: Uint8Array, manifest: Manifest) => void;
@@ -38,9 +39,7 @@ const BundleLoader: React.FC<BundleLoaderProps> = ({
 
       onBundleLoad(bytes, manifest);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Failed to load bundle'
-      );
+      setError(err instanceof Error ? err.message : 'Failed to load bundle');
     }
   };
 
@@ -88,9 +87,10 @@ const BundleLoader: React.FC<BundleLoaderProps> = ({
             onClick={() => fileInputRef.current?.click()}
             className={`
               border-2 border-dashed rounded-xl p-8 cursor-pointer transition-all
-              ${isDragging
-                ? 'border-[#0066cc] bg-[#f0f7ff]'
-                : 'border-[#d2d2d7] hover:border-[#0066cc] hover:bg-[#fafafa]'
+              ${
+                isDragging
+                  ? 'border-[#0066cc] bg-[#f0f7ff]'
+                  : 'border-[#d2d2d7] hover:border-[#0066cc] hover:bg-[#fafafa]'
               }
               ${isLoading ? 'opacity-50 pointer-events-none' : ''}
             `}

@@ -1,9 +1,9 @@
+import { persistAppSlug, persistBundleBytes } from './cache';
+import { getActiveBundle, getInitializationPromise, getState } from './state';
 import type { FetchEvent } from './types';
 import { logger } from './utils/logging';
 import { determinePath } from './utils/path';
 import { targetToResponse } from './utils/response';
-import { getState, getActiveBundle, getInitializationPromise } from './state';
-import { persistAppSlug, persistBundleBytes } from './cache';
 
 declare const TONK_SERVE_LOCAL: boolean;
 
@@ -24,7 +24,9 @@ export function handleFetch(event: FetchEvent): void {
   // Check for WebSocket upgrade requests for Vite HMR
   const upgradeHeader = event.request.headers.get('upgrade');
   if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
-    logger.debug('WebSocket upgrade request - passing through', { url: url.href });
+    logger.debug('WebSocket upgrade request - passing through', {
+      url: url.href,
+    });
     return;
   }
 
@@ -33,7 +35,7 @@ export function handleFetch(event: FetchEvent): void {
   if (isRootRequest && appSlug) {
     // Reset state when navigating to root
     // Persist the reset so it survives service worker restarts
-    Promise.all([persistAppSlug(null), persistBundleBytes(null)]).catch((err) => {
+    Promise.all([persistAppSlug(null), persistBundleBytes(null)]).catch(err => {
       logger.error('Failed to persist state reset', { error: err });
     });
   }
@@ -49,24 +51,32 @@ export function handleFetch(event: FetchEvent): void {
     '/app/main.css',
     '/app/service-worker-bundled.js',
   ];
-  const isKnownRuntimeFile = runtimeStaticFiles.some((f) => url.pathname === f);
+  const isKnownRuntimeFile = runtimeStaticFiles.some(f => url.pathname === f);
 
   // Also check for runtime font files (all common font formats)
   const fontExtensions = ['.otf', '.ttf', '.woff', '.woff2', '.eot'];
   const isRuntimeFont =
-    url.pathname.startsWith('/app/') && fontExtensions.some((ext) => url.pathname.endsWith(ext));
+    url.pathname.startsWith('/app/') &&
+    fontExtensions.some(ext => url.pathname.endsWith(ext));
 
   // Runtime static assets (HTML, CSS, JS, fonts) always pass through to network
   // These should NEVER go through VFS - they're part of the launcher shell
-  if (isRuntimePath && (hasBundleIdParam || isKnownRuntimeFile || isRuntimeFont)) {
-    logger.debug('Runtime static asset - passing through', { pathname: url.pathname });
+  if (
+    isRuntimePath &&
+    (hasBundleIdParam || isKnownRuntimeFile || isRuntimeFont)
+  ) {
+    logger.debug('Runtime static asset - passing through', {
+      pathname: url.pathname,
+    });
     return;
   }
 
   // VFS app requests: only pass through if appSlug !== 'app' (avoids path collision)
   // This handles the case where an app named 'app' would conflict with /app/* runtime paths
   if (isRuntimePath && appSlug !== 'app') {
-    logger.debug('Runtime path with non-app slug - passing through', { pathname: url.pathname });
+    logger.debug('Runtime path with non-app slug - passing through', {
+      pathname: url.pathname,
+    });
     return;
   }
 
@@ -84,7 +94,9 @@ export function handleFetch(event: FetchEvent): void {
       url.pathname.includes('__vite__') ||
       url.searchParams.has('t') // cache-busting params
     ) {
-      logger.debug('Vite HMR asset - proxying to dev server', { pathname: url.pathname });
+      logger.debug('Vite HMR asset - proxying to dev server', {
+        pathname: url.pathname,
+      });
 
       event.respondWith(
         (async () => {
@@ -118,7 +130,9 @@ export function handleFetch(event: FetchEvent): void {
       return;
     }
 
-    logger.debug('TONK_SERVE_LOCAL - proxying to dev server', { pathname: url.pathname });
+    logger.debug('TONK_SERVE_LOCAL - proxying to dev server', {
+      pathname: url.pathname,
+    });
 
     event.respondWith(
       (async () => {
@@ -154,7 +168,10 @@ export function handleFetch(event: FetchEvent): void {
 
   // Handle VFS requests (same origin, not root)
   if (appSlug && url.origin === location.origin && !isRootRequest) {
-    logger.debug('Processing VFS request', { pathname: url.pathname, referrer });
+    logger.debug('Processing VFS request', {
+      pathname: url.pathname,
+      referrer,
+    });
 
     event.respondWith(
       (async () => {
@@ -165,17 +182,25 @@ export function handleFetch(event: FetchEvent): void {
           // Wait for auto-initialization to complete (with timeout)
           const initPromise = getInitializationPromise();
           if (initPromise && getState().status !== 'active') {
-            logger.debug('Waiting for initialization', { status: getState().status });
+            logger.debug('Waiting for initialization', {
+              status: getState().status,
+            });
             try {
               await Promise.race([
                 initPromise,
                 new Promise((_, reject) =>
-                  setTimeout(() => reject(new Error('Initialization timeout')), 15000)
+                  setTimeout(
+                    () => reject(new Error('Initialization timeout')),
+                    15000
+                  )
                 ),
               ]);
             } catch (waitError) {
               logger.warn('Initialization wait failed or timed out', {
-                error: waitError instanceof Error ? waitError.message : String(waitError),
+                error:
+                  waitError instanceof Error
+                    ? waitError.message
+                    : String(waitError),
               });
             }
           }
@@ -195,7 +220,9 @@ export function handleFetch(event: FetchEvent): void {
           const exists = await tonkInstance.tonk.exists(filePath);
 
           if (!exists) {
-            logger.debug('File not found, falling back to index.html', { path: filePath });
+            logger.debug('File not found, falling back to index.html', {
+              path: filePath,
+            });
             const indexPath = `/${appSlug}/index.html`;
             const target = await tonkInstance.tonk.readFile(indexPath);
             return targetToResponse(

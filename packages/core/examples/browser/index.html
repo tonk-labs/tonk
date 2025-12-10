@@ -76,16 +76,16 @@
 
     <script type="module">
       import init, {
-        create_sync_engine,
         create_bundle_from_bytes,
+        create_sync_engine,
+        WasmBundle,
         WasmSyncEngine,
         WasmVfs,
-        WasmBundle,
       } from '../../pkg-browser/tonk_core.js';
 
       let engine = null;
       let vfs = null;
-      let bundle = null;
+      const bundle = null;
 
       // Initialize WASM module
       async function initWasm() {
@@ -101,7 +101,7 @@
       }
 
       // Sync Engine functions
-      window.createEngine = async function () {
+      window.createEngine = async () => {
         try {
           console.log(
             `[CLIENT-${Math.random().toString(36).substr(2, 9)}] Creating sync engine...`
@@ -121,7 +121,7 @@
         }
       };
 
-      window.connectWebSocket = async function () {
+      window.connectWebSocket = async () => {
         if (!engine) {
           log('engineOutput', '[CLIENT] Please create engine first');
           return;
@@ -142,7 +142,7 @@
       };
 
       // VFS functions
-      window.createFile = async function () {
+      window.createFile = async () => {
         if (!vfs) {
           log('vfsOutput', '[CLIENT] Please create engine first');
           return;
@@ -163,7 +163,7 @@
         }
       };
 
-      window.readFile = async function () {
+      window.readFile = async () => {
         if (!vfs) {
           log('vfsOutput', 'Please create engine first');
           return;
@@ -182,7 +182,7 @@
         }
       };
 
-      window.deleteFile = async function () {
+      window.deleteFile = async () => {
         if (!vfs) {
           log('vfsOutput', 'Please create engine first');
           return;
@@ -198,7 +198,7 @@
         }
       };
 
-      window.listDirectory = async function () {
+      window.listDirectory = async () => {
         if (!vfs) {
           log('vfsOutput', '[CLIENT] Please create engine first');
           return;
@@ -224,7 +224,7 @@
       };
 
       // Bundle functions
-      window.createBundle = async function () {
+      window.createBundle = async () => {
         try {
           // Create an empty ZIP file structure for demo
           const encoder = new TextEncoder();
@@ -248,7 +248,7 @@
         }
       };
 
-      window.putValue = async function () {
+      window.putValue = async () => {
         if (!bundle) {
           log('bundleOutput', 'Please create or load a bundle first');
           return;
@@ -267,7 +267,7 @@
         }
       };
 
-      window.getValue = async function () {
+      window.getValue = async () => {
         if (!bundle) {
           log('bundleOutput', 'Please create or load a bundle first');
           return;
@@ -289,7 +289,7 @@
         }
       };
 
-      window.listKeys = async function () {
+      window.listKeys = async () => {
         if (!bundle) {
           log('bundleOutput', 'Please create or load a bundle first');
           return;

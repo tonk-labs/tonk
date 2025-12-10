@@ -1,5 +1,5 @@
-import { sync, DocumentId } from "@tonk/keepsync";
-import { create } from "zustand";
+import { type DocumentId, sync } from '@tonk/keepsync';
+import { create } from 'zustand';
 
 // Define the Todo type
 export interface Todo {
@@ -23,12 +23,12 @@ interface TodoState extends TodoData {
 // Create a synced store for todos
 export const useTodoStore = create<TodoState>(
   sync(
-    (set) => ({
+    set => ({
       todos: [],
 
       // Add a new todo
       addTodo: (text: string) => {
-        set((state) => ({
+        set(state => ({
           todos: [
             ...state.todos,
             {
@@ -42,8 +42,8 @@ export const useTodoStore = create<TodoState>(
 
       // Toggle a todo's completed status
       toggleTodo: (id: string) => {
-        set((state) => ({
-          todos: state.todos.map((todo) =>
+        set(state => ({
+          todos: state.todos.map(todo =>
             todo.id === id ? { ...todo, completed: !todo.completed } : todo
           ),
         }));
@@ -51,14 +51,14 @@ export const useTodoStore = create<TodoState>(
 
       // Delete a todo
       deleteTodo: (id: string) => {
-        set((state) => ({
-          todos: state.todos.filter((todo) => todo.id !== id),
+        set(state => ({
+          todos: state.todos.filter(todo => todo.id !== id),
         }));
       },
     }),
     {
       // Unique document ID for this store
-      docId: "todo-list" as DocumentId,
+      docId: 'todo-list' as DocumentId,
     }
   )
 );

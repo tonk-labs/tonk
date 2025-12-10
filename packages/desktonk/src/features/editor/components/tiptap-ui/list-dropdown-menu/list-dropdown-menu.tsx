@@ -1,27 +1,31 @@
-import * as React from 'react';
 import type { Editor } from '@tiptap/react';
-
-// --- Hooks ---
-import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
-
+import * as React from 'react';
 // --- Icons ---
 import { ChevronDownIcon } from '@/features/editor/components/tiptap-icons/chevron-down-icon';
-
 // --- Tiptap UI ---
-import { ListButton, type ListType } from '@/features/editor/components/tiptap-ui/list-button';
-
-import { useListDropdownMenu } from './use-list-dropdown-menu';
-
+import {
+  ListButton,
+  type ListType,
+} from '@/features/editor/components/tiptap-ui/list-button';
 // --- UI Primitives ---
 import type { ButtonProps } from '@/features/editor/components/tiptap-ui-primitive/button';
-import { Button, ButtonGroup } from '@/features/editor/components/tiptap-ui-primitive/button';
+import {
+  Button,
+  ButtonGroup,
+} from '@/features/editor/components/tiptap-ui-primitive/button';
+import {
+  Card,
+  CardBody,
+} from '@/features/editor/components/tiptap-ui-primitive/card';
 import {
   DropdownMenu,
-  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuTrigger,
 } from '@/features/editor/components/tiptap-ui-primitive/dropdown-menu';
-import { Card, CardBody } from '@/features/editor/components/tiptap-ui-primitive/card';
+// --- Hooks ---
+import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
+import { useListDropdownMenu } from './use-list-dropdown-menu';
 
 export interface ListDropdownMenuProps extends Omit<ButtonProps, 'type'> {
   /**
@@ -59,11 +63,12 @@ export function ListDropdownMenu({
   const { editor } = useTiptapEditor(providedEditor);
   const [isOpen, setIsOpen] = React.useState(false);
 
-  const { filteredLists, canToggle, isActive, isVisible, Icon } = useListDropdownMenu({
-    editor,
-    types,
-    hideWhenUnavailable,
-  });
+  const { filteredLists, canToggle, isActive, isVisible, Icon } =
+    useListDropdownMenu({
+      editor,
+      types,
+      hideWhenUnavailable,
+    });
 
   const handleOnOpenChange = React.useCallback(
     (open: boolean) => {
@@ -101,7 +106,7 @@ export function ListDropdownMenu({
         <Card>
           <CardBody>
             <ButtonGroup>
-              {filteredLists.map((option) => (
+              {filteredLists.map(option => (
                 <DropdownMenuItem key={option.type} asChild>
                   <ListButton
                     editor={editor}

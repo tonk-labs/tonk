@@ -46,7 +46,7 @@ pub enum VfsError {
 
     #[error("Transaction failed: {0}")]
     TransactionFailed(String),
-    
+
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 

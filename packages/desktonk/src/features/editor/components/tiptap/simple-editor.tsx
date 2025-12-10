@@ -1,8 +1,29 @@
 'use client';
 
+import { type Editor, EditorContent, EditorContext } from '@tiptap/react';
+// --- Icons ---
+import { ArrowLeft, Highlighter, Link } from 'lucide-react';
 import * as React from 'react';
-import { EditorContent, EditorContext, type Editor } from '@tiptap/react';
-
+import { useEffect } from 'react';
+import { BlockquoteButton } from '@/features/editor/components/tiptap-ui/blockquote-button';
+import { CodeBlockButton } from '@/features/editor/components/tiptap-ui/code-block-button';
+import {
+  ColorHighlightPopover,
+  ColorHighlightPopoverButton,
+  ColorHighlightPopoverContent,
+} from '@/features/editor/components/tiptap-ui/color-highlight-popover';
+// --- Tiptap UI ---
+import { HeadingDropdownMenu } from '@/features/editor/components/tiptap-ui/heading-dropdown-menu';
+import { ImageUploadButton } from '@/features/editor/components/tiptap-ui/image-upload-button';
+import {
+  LinkButton,
+  LinkContent,
+  LinkPopover,
+} from '@/features/editor/components/tiptap-ui/link-popover';
+import { ListDropdownMenu } from '@/features/editor/components/tiptap-ui/list-dropdown-menu';
+import { MarkButton } from '@/features/editor/components/tiptap-ui/mark-button';
+import { TextAlignButton } from '@/features/editor/components/tiptap-ui/text-align-button';
+import { UndoRedoButton } from '@/features/editor/components/tiptap-ui/undo-redo-button';
 // --- UI Primitives ---
 import { Button } from '@/features/editor/components/tiptap-ui-primitive/button';
 import { Spacer } from '@/features/editor/components/tiptap-ui-primitive/spacer';
@@ -11,35 +32,10 @@ import {
   ToolbarGroup,
   ToolbarSeparator,
 } from '@/features/editor/components/tiptap-ui-primitive/toolbar';
-
-// --- Tiptap UI ---
-import { HeadingDropdownMenu } from '@/features/editor/components/tiptap-ui/heading-dropdown-menu';
-import { ImageUploadButton } from '@/features/editor/components/tiptap-ui/image-upload-button';
-import { ListDropdownMenu } from '@/features/editor/components/tiptap-ui/list-dropdown-menu';
-import { BlockquoteButton } from '@/features/editor/components/tiptap-ui/blockquote-button';
-import { CodeBlockButton } from '@/features/editor/components/tiptap-ui/code-block-button';
-import {
-  ColorHighlightPopover,
-  ColorHighlightPopoverContent,
-  ColorHighlightPopoverButton,
-} from '@/features/editor/components/tiptap-ui/color-highlight-popover';
-import {
-  LinkPopover,
-  LinkContent,
-  LinkButton,
-} from '@/features/editor/components/tiptap-ui/link-popover';
-import { MarkButton } from '@/features/editor/components/tiptap-ui/mark-button';
-import { TextAlignButton } from '@/features/editor/components/tiptap-ui/text-align-button';
-import { UndoRedoButton } from '@/features/editor/components/tiptap-ui/undo-redo-button';
-
-// --- Icons ---
-import { ArrowLeft, Highlighter, Link } from 'lucide-react';
-
+import { useCursorVisibility } from '@/hooks/use-cursor-visibility';
 // --- Hooks ---
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useWindowSize } from '@/hooks/use-window-size';
-import { useCursorVisibility } from '@/hooks/use-cursor-visibility';
-import { useEffect } from 'react';
 
 const MainToolbarContent = ({
   onHighlighterClick,
@@ -63,7 +59,10 @@ const MainToolbarContent = ({
 
       <ToolbarGroup>
         <HeadingDropdownMenu levels={[1, 2, 3, 4]} portal={isMobile} />
-        <ListDropdownMenu types={['bulletList', 'orderedList', 'taskList']} portal={isMobile} />
+        <ListDropdownMenu
+          types={['bulletList', 'orderedList', 'taskList']}
+          portal={isMobile}
+        />
         <BlockquoteButton />
         <CodeBlockButton />
       </ToolbarGroup>
@@ -138,7 +137,11 @@ const MobileToolbarContent = ({
 
     <ToolbarSeparator />
 
-    {type === 'highlighter' ? <ColorHighlightPopoverContent /> : <LinkContent />}
+    {type === 'highlighter' ? (
+      <ColorHighlightPopoverContent />
+    ) : (
+      <LinkContent />
+    )}
   </>
 );
 
@@ -149,7 +152,9 @@ interface SimpleEditorProps {
 export function SimpleEditor({ editor }: SimpleEditorProps) {
   const isMobile = useIsMobile();
   const { height } = useWindowSize();
-  const [mobileView, setMobileView] = React.useState<'main' | 'highlighter' | 'link'>('main');
+  const [mobileView, setMobileView] = React.useState<
+    'main' | 'highlighter' | 'link'
+  >('main');
   const toolbarRef = React.useRef<HTMLDivElement>(null);
 
   const rect = useCursorVisibility({
@@ -199,7 +204,11 @@ export function SimpleEditor({ editor }: SimpleEditorProps) {
 
       <div className="editor-container">
         <article id="editor-area">
-          <EditorContent editor={editor} role="presentation" className="simple-editor-content" />
+          <EditorContent
+            editor={editor}
+            role="presentation"
+            className="simple-editor-content"
+          />
         </article>
       </div>
     </EditorContext.Provider>

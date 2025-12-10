@@ -19,9 +19,9 @@
 }
 
 .textEditorContainer :global(main.rootLayout) {
-   @apply mx-auto h-screen flex flex-col items-center relative;
+  @apply mx-auto h-screen flex flex-col items-center relative;
 }
 
 .textEditorContainer :global(nav) {
-   @apply flex w-full gap-2 px-5 pt-5 pb-6;
+  @apply flex w-full gap-2 px-5 pt-5 pb-6;
 }

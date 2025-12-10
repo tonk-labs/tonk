@@ -1,7 +1,11 @@
-import { test, expect } from '../fixtures';
-import { setupTestWithServer, waitForVFSConnection } from '../fixtures';
 import { imageGenerator } from '../../src/utils/image-generator';
 import { MetricsCollector } from '../../src/utils/metrics-collector';
+import {
+  expect,
+  setupTestWithServer,
+  test,
+  waitForVFSConnection,
+} from '../fixtures';
 
 test.describe('Parallel Operations Throughput Tests', () => {
   test('should achieve target parallel throughput (>30 ops/sec)', async ({

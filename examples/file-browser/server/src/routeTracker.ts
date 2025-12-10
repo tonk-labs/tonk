@@ -1,4 +1,4 @@
-import express, { Application, RequestHandler } from "express";
+import express, { type Application, type RequestHandler } from 'express';
 
 interface RouteInfo {
   method: string;
@@ -17,8 +17,8 @@ export class ExpressWithRouteTracking {
 
   // Extract parameters from a route path
   private extractParams(path: string): string[] {
-    const paramMatches = path.match(/:([^\/]+)/g);
-    return paramMatches ? paramMatches.map((param) => param.substring(1)) : [];
+    const paramMatches = path.match(/:([^/]+)/g);
+    return paramMatches ? paramMatches.map(param => param.substring(1)) : [];
   }
 
   // Track a route when it's registered
@@ -34,27 +34,27 @@ export class ExpressWithRouteTracking {
 
   // Wrapper methods for HTTP verbs
   get(path: string, ...handlers: RequestHandler[]) {
-    this.trackRoute("GET", path);
+    this.trackRoute('GET', path);
     return this.app.get(path, ...handlers);
   }
 
   post(path: string, ...handlers: RequestHandler[]) {
-    this.trackRoute("POST", path);
+    this.trackRoute('POST', path);
     return this.app.post(path, ...handlers);
   }
 
   put(path: string, ...handlers: RequestHandler[]) {
-    this.trackRoute("PUT", path);
+    this.trackRoute('PUT', path);
     return this.app.put(path, ...handlers);
   }
 
   delete(path: string, ...handlers: RequestHandler[]) {
-    this.trackRoute("DELETE", path);
+    this.trackRoute('DELETE', path);
     return this.app.delete(path, ...handlers);
   }
 
   patch(path: string, ...handlers: RequestHandler[]) {
-    this.trackRoute("PATCH", path);
+    this.trackRoute('PATCH', path);
     return this.app.patch(path, ...handlers);
   }
 
@@ -66,7 +66,7 @@ export class ExpressWithRouteTracking {
   // Get routes as JSON response
   getRoutesResponse() {
     return {
-      message: "Available routes on this server",
+      message: 'Available routes on this server',
       routes: this.getRoutes(),
       totalRoutes: this.routes.length,
     };
@@ -75,9 +75,9 @@ export class ExpressWithRouteTracking {
   // Proxy all other Express methods
   use(...args: any[]) {
     // If first argument is a string (route path), track it
-    if (typeof args[0] === "string") {
+    if (typeof args[0] === 'string') {
       const path = args[0];
-      this.trackRoute("ALL", path, "Middleware route");
+      this.trackRoute('ALL', path, 'Middleware route');
     }
     return this.app.use(...args);
   }

@@ -168,7 +168,9 @@ async fn test_shared_root_document_sync() {
     } else {
         println!("! Client could not find shared root document from server");
         println!("  Server root: {}", root_doc_id_str);
-        println!("  This suggests the server's root document protocol differs from TonkCore VFS expectations");
+        println!(
+            "  This suggests the server's root document protocol differs from TonkCore VFS expectations"
+        );
     }
 }
 
@@ -212,17 +214,21 @@ async fn test_bundle_content_sync_behavior() {
 
     // Verify both have the same initial content from bundle
     assert!(client1.vfs().exists("/foundation.txt").await.unwrap());
-    assert!(client1
-        .vfs()
-        .exists("/shared_folder/data.json")
-        .await
-        .unwrap());
+    assert!(
+        client1
+            .vfs()
+            .exists("/shared_folder/data.json")
+            .await
+            .unwrap()
+    );
     assert!(client2.vfs().exists("/foundation.txt").await.unwrap());
-    assert!(client2
-        .vfs()
-        .exists("/shared_folder/data.json")
-        .await
-        .unwrap());
+    assert!(
+        client2
+            .vfs()
+            .exists("/shared_folder/data.json")
+            .await
+            .unwrap()
+    );
 
     // Connect both to server
     client1.connect_websocket(&server_url).await.unwrap();
@@ -439,4 +445,3 @@ async fn test_peer_id_uniqueness_after_bundle_load() {
     assert!(client2.vfs().exists("/test.txt").await.unwrap());
     assert!(client3.vfs().exists("/test.txt").await.unwrap());
 }
-

@@ -25,7 +25,7 @@
   font-family: "JetBrains Mono NL", monospace;
   font-size: 0.875em;
   line-height: 1.4;
-  border-radius: 6px/0.375rem;
+  border-radius: 6px / 0.375rem;
   padding: 0.1em 0.2em;
 }
 .tiptap.ProseMirror pre {
@@ -36,7 +36,7 @@
   margin-bottom: 1.5em;
   padding: 1em;
   font-size: 1rem;
-  border-radius: 6px/0.375rem;
+  border-radius: 6px / 0.375rem;
 }
 .tiptap.ProseMirror pre code {
   background-color: transparent;

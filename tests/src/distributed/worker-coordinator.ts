@@ -1,15 +1,15 @@
 import express, { type Express, type Request, type Response } from 'express';
-import { Server } from 'http';
+import type { Server } from 'http';
 import type {
-  WorkerInfo,
-  WorkerRegistration,
-  WorkerHeartbeat,
-  WorkerMetrics,
+  CoordinatorState,
   TestPhase,
+  TestScenario,
   WorkerCommand,
   WorkerCommandResponse,
-  CoordinatorState,
-  TestScenario,
+  WorkerHeartbeat,
+  WorkerInfo,
+  WorkerMetrics,
+  WorkerRegistration,
 } from './types';
 
 export class WorkerCoordinator {

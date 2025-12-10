@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
+import { type Browser, chromium } from '@playwright/test';
 import express from 'express';
-import { chromium, Browser } from '@playwright/test';
+import os from 'os';
+import type { ServerInstance } from '../test-ui/types';
 import { ConnectionManager } from '../utils/connection-manager';
 import { MetricsCollector } from '../utils/metrics-collector';
-import type { WorkerConfig, WorkerMetrics, WorkerCommand } from './types';
-import type { ServerInstance } from '../test-ui/types';
-import os from 'os';
+import type { WorkerCommand, WorkerConfig, WorkerMetrics } from './types';
 
 class LoadGeneratorWorker {
   private config: WorkerConfig;
@@ -58,7 +58,7 @@ class LoadGeneratorWorker {
 
     try {
       switch (command.type) {
-        case 'start':
+        case 'start': {
           const payload = command.payload || {};
           await this.start(
             payload.targetConnections,
@@ -66,6 +66,7 @@ class LoadGeneratorWorker {
           );
           res.json({ success: true, workerId: this.config.workerId });
           break;
+        }
 
         case 'stop':
           await this.stop();
@@ -430,7 +431,7 @@ class LoadGeneratorWorker {
 
     const memUsage = process.memoryUsage();
 
-    let syncMetrics = undefined;
+    let syncMetrics;
     if (this.connectionManager && this.isRunning) {
       const timeSinceStart = Date.now() - this.phaseStartTime;
       if (timeSinceStart >= 30000) {
@@ -467,7 +468,7 @@ class LoadGeneratorWorker {
 
           if (!syncResult.inSync && syncResult.sampleOutliers.length > 0) {
             console.warn(
-              `⚠️  [${this.config.workerId}] Sync drift detected: ${syncResult.outOfSyncCount}/${syncResult.totalConnections} out of sync`
+              `!  [${this.config.workerId}] Sync drift detected: ${syncResult.outOfSyncCount}/${syncResult.totalConnections} out of sync`
             );
             console.warn(
               `   Source of truth (${syncResult.sourceOfTruthId}): ${syncResult.sourceOfTruthValue}`

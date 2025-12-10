@@ -1,5 +1,9 @@
-import { test, expect } from '../fixtures';
-import { setupTestWithServer, waitForVFSConnection } from '../fixtures';
+import {
+  expect,
+  setupTestWithServer,
+  test,
+  waitForVFSConnection,
+} from '../fixtures';
 
 test.describe('Throughput Benchmarks', () => {
   test.beforeEach(async ({ page, serverInstance }) => {

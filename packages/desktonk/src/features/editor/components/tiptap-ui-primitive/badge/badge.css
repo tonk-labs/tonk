@@ -1,7 +1,9 @@
 .tiptap-badge {
   font-size: 0.625rem;
   font-weight: 700;
-  font-feature-settings: "salt" on, "cv01" on;
+  font-feature-settings:
+    "salt" on,
+    "cv01" on;
   line-height: 1.15;
   height: 1.25rem;
   min-width: 1.25rem;
@@ -16,7 +18,7 @@
   transition-timing-function: var(--tt-transition-easing-default);
   /* button size large */
 }
-.tiptap-badge[data-size=large] {
+.tiptap-badge[data-size="large"] {
   font-size: 0.75rem;
   height: 1.5rem;
   min-width: 1.5rem;
@@ -26,7 +28,7 @@
 .tiptap-badge {
   /* button size small */
 }
-.tiptap-badge[data-size=small] {
+.tiptap-badge[data-size="small"] {
   height: 1rem;
   min-width: 1rem;
   padding: 0.125rem;
@@ -40,7 +42,7 @@
   flex-grow: 1;
   text-align: left;
 }
-.tiptap-badge[data-text-trim=on] .tiptap-badge-text {
+.tiptap-badge[data-text-trim="on"] .tiptap-badge-text {
   text-overflow: ellipsis;
   overflow: hidden;
 }
@@ -53,7 +55,7 @@
   width: 0.625rem;
   height: 0.625rem;
 }
-.tiptap-badge[data-size=large] .tiptap-badge-icon {
+.tiptap-badge[data-size="large"] .tiptap-badge-icon {
   width: 0.75rem;
   height: 0.75rem;
 }
@@ -72,22 +74,22 @@
 .tiptap-badge {
   /* Emphasized */
 }
-.tiptap-badge[data-appearance=emphasized] {
+.tiptap-badge[data-appearance="emphasized"] {
   background-color: var(--tt-badge-bg-color-emphasized);
   border-color: var(--tt-badge-border-color-emphasized);
   color: var(--tt-badge-text-color-emphasized);
 }
-.tiptap-badge[data-appearance=emphasized] .tiptap-badge-icon {
+.tiptap-badge[data-appearance="emphasized"] .tiptap-badge-icon {
   color: var(--tt-badge-icon-color-emphasized);
 }
 .tiptap-badge {
   /* Subdued */
 }
-.tiptap-badge[data-appearance=subdued] {
+.tiptap-badge[data-appearance="subdued"] {
   background-color: var(--tt-badge-bg-color-subdued);
   border-color: var(--tt-badge-border-color-subdued);
   color: var(--tt-badge-text-color-subdued);
 }
-.tiptap-badge[data-appearance=subdued] .tiptap-badge-icon {
+.tiptap-badge[data-appearance="subdued"] .tiptap-badge-icon {
   color: var(--tt-badge-icon-color-subdued);
 }

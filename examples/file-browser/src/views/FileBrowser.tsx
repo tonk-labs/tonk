@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { RefNode } from '@tonk/core';
-import { TonkService } from '../services/tonkService';
+import type { RefNode } from '@tonk/core';
+import type React from 'react';
+import { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import FileItem from '../components/FileItem';
+import { TonkService } from '../services/tonkService';
 
 const FileBrowser: React.FC = () => {
   const navigate = useNavigate();

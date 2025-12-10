@@ -2,25 +2,25 @@
 
 // Export types
 export type {
-  DocumentContent,
-  VFSWorkerMessage,
-  VFSWorkerResponse,
-  JsonValue,
-  DocumentData,
-  RefNode,
-  Manifest,
   ConnectionState,
   ConnectionStateListener,
+  DocumentContent,
+  DocumentData,
+  JsonValue,
+  Manifest,
+  RefNode,
+  VFSWorkerMessage,
+  VFSWorkerResponse,
   WatcherMetadata,
 } from './types';
 
 // Export VFS service
-export { VFSService, getVFSService, resetVFSService } from './vfs-service';
+export { getVFSService, resetVFSService, VFSService } from './vfs-service';
 
 // Export utilities
 export {
+  base64ToUint8Array,
   bytesToString,
   stringToBytes,
   uint8ArrayToBase64,
-  base64ToUint8Array,
 } from './vfs-utils';
