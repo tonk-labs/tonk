@@ -33,5 +33,3 @@ echo "✅ Build complete!"
 echo ""
 echo "Files in dist/:"
 ls -la dist/
-echo ""
-echo "💡 This build uses WASM compiled for Amazon Linux 2023 EC2 compatibility"
