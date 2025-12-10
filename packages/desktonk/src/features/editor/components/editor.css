@@ -38,7 +38,7 @@ body {
 }
 
 .dark body {
-  --tt-theme-text: var(--tt-gray-dark-900);
+  --tt-theme-text: var(--tt-gray-dark-900) !important;
 }
 
 ::-webkit-scrollbar {

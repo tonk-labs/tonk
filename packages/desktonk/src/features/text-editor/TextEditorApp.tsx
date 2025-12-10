@@ -162,7 +162,7 @@ function TextEditorApp() {
   },[connectionState, error, loading, navigate]);
 
   return (
-    <div className={"p-4 m-0 min-w-[320px] min-h-screen bg-[#f2f3f4] overflow-clip w-full h-screen relative dark:bg-[#0e1317] text-gray-300"}>
+    <div className={"p-4 m-0 min-w-[320px] min-h-screen bg-[#f2f3f4] overflow-clip w-full h-screen relative dark:bg-[#0e1317] text-black dark:text-gray-300"}>
       <Layout>
         {content}
       </Layout>

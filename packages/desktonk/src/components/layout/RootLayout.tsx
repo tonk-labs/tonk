@@ -1,4 +1,5 @@
 import { Outlet } from 'react-router-dom';
+import { Dock } from '@/features/dock';
 import { MembersBar } from '@/features/members-bar/components/MembersBar';
 import { useMembersBar } from '@/features/members-bar/stores/membersBarStore';
 import { useFeatureFlag } from '@/hooks/useFeatureFlag';
@@ -16,6 +17,9 @@ export function RootLayout() {
 
       {/* Members bar */}
       {showMembersBar && isOpen && <MembersBar />}
+
+      {/* Dock */}
+      <Dock />
     </div>
   );
 }
