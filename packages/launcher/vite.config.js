@@ -4,14 +4,11 @@ import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
 // WASM Architecture:
 // Dev: scripts/setup-wasm.ts copies from @tonk/core to public/
-// Prod: scripts/build-host-web.ts copies to public/app/
+// Prod: scripts/build-runtime.ts copies to public/app/
 // Both use require.resolve() to find the package regardless of hoisting
 export default defineConfig({
     appType: 'mpa',
-    plugins: [
-        react(),
-        tailwindcss(),
-    ],
+    plugins: [react(), tailwindcss()],
     resolve: {
         alias: {
             '@': path.resolve(__dirname, './src'),

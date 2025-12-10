@@ -2,6 +2,7 @@
   "type": "module",
   "devDependencies": {
     "@eslint/js": "^9.31.0",
+    "@socketsecurity/bun-security-scanner": "^1.1.1",
     "@typescript-eslint/eslint-plugin": "^8.38.0",
     "@typescript-eslint/parser": "^8.38.0",
     "eslint": "^9.31.0",
@@ -14,26 +15,18 @@
   },
   "scripts": {
     "prepare": "husky",
-    "build": "pnpm --filter @tonk/core-wasm run build && pnpm --filter @tonk/core run build && pnpm --filter './packages/*' --filter '!@tonk/core-wasm' --filter '!@tonk/core' --filter './examples/demo' --filter './examples/demo/app' run build",
-    "test": "pnpm --filter tests test",
-    "docs:distribute": "node utils/distribute-from-docs.js",
+    "build": "cd packages/core && bun run build && cd ../core-js && bun run build && cd ../relay-js && bun run build && cd ../launcher && bun run build && cd ../desktonk && bun run build",
+    "test": "cd tests && bun test",
+    "docs:distribute": "bun utils/distribute-from-docs.js",
     "docs:dev": "mdbook serve docs --open --port 4069",
-    "lint": "eslint packages/*/src/**/*.ts scripts/**/*.js",
-    "lint:fix": "eslint packages/*/src/**/*.ts scripts/**/*.js --fix",
-    "format": "prettier --write packages/*/src/**/*.ts scripts/**/*.js *.md packages/*/README.md",
-    "format:check": "prettier --check packages/*/src/**/*.ts scripts/**/*.js *.md packages/*/README.md",
-    "lint:all": "npm run lint && npm run format:check",
-    "fix:all": "npm run lint:fix && npm run format"
+    "lint": "eslint packages/*/src/**/*.ts",
+    "lint:fix": "eslint packages/*/src/**/*.ts --fix",
+    "format": "prettier --write *.md packages/*/README.md && bun --filter '*' format",
+    "format:check": "prettier --check *.md packages/*/README.md && bun --filter '*' format:check",
+    "lint:all": "bun run lint && bun run format:check",
+    "fix:all": "bun run lint:fix && bun run format"
   },
   "lint-staged": {
-    "packages/*/src/**/*.{ts,tsx}": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "scripts/**/*.js": [
-      "eslint --fix",
-      "prettier --write"
-    ],
     "*.{md,json}": [
       "prettier --write"
     ]
@@ -43,6 +36,8 @@
     "@tiptap/pm": "3.12.0"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "examples/file-browser",
+    "tests"
   ]
 }

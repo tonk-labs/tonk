@@ -1,0 +1,46 @@
+name: "CI: Desktonk"
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['*']
+    paths:
+      - 'packages/desktonk/**'
+      - '.github/workflows/desktonk.yml'
+  pull_request:
+    branches: ['*']
+    paths:
+      - 'packages/desktonk/**'
+      - '.github/workflows/desktonk.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    container: oven/bun:1
+    steps:
+      - uses: actions/checkout@v4
+      # Security scanner (@socketsecurity/bun-security-scanner) exits 127 in containers.
+      # No env var to disable - must strip from ALL bunfig.toml files.
+      - name: Disable security scanner for CI
+        run: find . -name bunfig.toml -exec sed -i '/\[install.security\]/,/^$/d' {} \;
+      - run: bun install
+      # Full lint: biome + oxlint
+      - run: bun run lint
+        working-directory: packages/desktonk
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    container: oven/bun:1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disable security scanner for CI
+        run: find . -name bunfig.toml -exec sed -i '/\[install.security\]/,/^$/d' {} \;
+      - run: bun install
+      - run: bun run build
+        working-directory: packages/desktonk

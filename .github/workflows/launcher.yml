@@ -1,0 +1,71 @@
+name: "CI: Launcher"
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['*']
+    paths:
+      - 'packages/launcher/**'
+      - '.github/workflows/launcher.yml'
+  pull_request:
+    branches: ['*']
+    paths:
+      - 'packages/launcher/**'
+      - '.github/workflows/launcher.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    container: oven/bun:1
+    steps:
+      - uses: actions/checkout@v4
+      # Security scanner (@socketsecurity/bun-security-scanner) exits 127 in containers.
+      # No env var to disable - must strip from ALL bunfig.toml files.
+      - name: Disable security scanner for CI
+        run: find . -name bunfig.toml -exec sed -i '/\[install.security\]/,/^$/d' {} \;
+      - run: bun install
+        working-directory: packages/launcher
+      - run: bun run test
+        working-directory: packages/launcher
+
+  lint-biome:
+    name: Lint (Biome)
+    runs-on: ubuntu-latest
+    container: oven/bun:1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disable security scanner for CI
+        run: find . -name bunfig.toml -exec sed -i '/\[install.security\]/,/^$/d' {} \;
+      - run: bun install
+        working-directory: packages/launcher
+      - run: bun run lint:biome
+        working-directory: packages/launcher
+
+  lint-arch:
+    name: Lint (Architecture)
+    runs-on: ubuntu-latest
+    # ast-grep npm binary is broken in containers - use official action instead
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ast-grep/action@v1
+        with:
+          config: packages/launcher/sgconfig.yml
+          paths: packages/launcher
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    container: oven/bun:1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disable security scanner for CI
+        run: find . -name bunfig.toml -exec sed -i '/\[install.security\]/,/^$/d' {} \;
+      - run: bun install
+        working-directory: packages/launcher
+      - run: bun run build
+        working-directory: packages/launcher

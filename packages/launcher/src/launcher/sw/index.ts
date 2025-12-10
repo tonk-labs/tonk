@@ -1,12 +1,12 @@
 /* eslint-env serviceworker */
 
 import './types'; // Import for global type declarations
-import type { FetchEvent } from './types';
-import { logger } from './utils/logging';
+import { handleFetch } from './fetch-handler';
+import { handleMessage } from './message-handlers';
 import { setInitializationPromise } from './state';
 import { autoInitializeFromCache } from './tonk-lifecycle';
-import { handleMessage } from './message-handlers';
-import { handleFetch } from './fetch-handler';
+import type { FetchEvent } from './types';
+import { logger } from './utils/logging';
 
 declare const __SW_BUILD_TIME__: string;
 declare const __SW_VERSION__: string;
@@ -25,14 +25,14 @@ logger.debug('Checking for cached state');
 setInitializationPromise(autoInitializeFromCache());
 
 // Install event
-self.addEventListener('install', (_event) => {
+self.addEventListener('install', _event => {
   logger.info('Service worker installing');
   swSelf.skipWaiting();
   logger.debug('skipWaiting called');
 });
 
 // Activate event with proper event.waitUntil for Safari compatibility
-self.addEventListener('activate', (event) => {
+self.addEventListener('activate', event => {
   logger.info('Service worker activating');
 
   (event as ExtendableEvent).waitUntil(
@@ -48,7 +48,9 @@ self.addEventListener('activate', (event) => {
         client.postMessage({ type: 'ready', needsBundle: true });
       });
 
-      logger.info('Service worker activated', { clientCount: allClients.length });
+      logger.info('Service worker activated', {
+        clientCount: allClients.length,
+      });
     })()
   );
 });

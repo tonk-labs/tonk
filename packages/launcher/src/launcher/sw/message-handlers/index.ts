@@ -10,6 +10,7 @@ import {
   handleDeleteFile,
   handleRename,
   handleExists,
+  handlePatchFile,
 } from './file-ops';
 
 // Directory operations
@@ -184,6 +185,15 @@ export async function handleMessage(message: Message): Promise<void> {
       await handleExists({
         id: msgId as string,
         path: message.path as string,
+      });
+      break;
+
+    case 'patchFile':
+      await handlePatchFile({
+        id: msgId as string,
+        path: message.path as string,
+        jsonPath: message.jsonPath as string[],
+        value: message.value,
       });
       break;
 

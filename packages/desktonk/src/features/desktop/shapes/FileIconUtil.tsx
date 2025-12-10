@@ -9,6 +9,7 @@ import {
 } from 'tldraw';
 import { cn } from '@/lib/utils';
 import { useFeatureFlagStore } from '../../../lib/featureFlags';
+import { useThumbnail } from '../hooks/useThumbnail';
 import { getAppHandler, getFileIcon } from '../utils/mimeResolver';
 import { navigate } from '../utils/navigationHandler';
 import type { FileIconShape } from './types';
@@ -22,6 +23,7 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
     mimeType: T.string,
     customIcon: T.optional(T.string),
     thumbnail: T.optional(T.string),
+    thumbnailPath: T.optional(T.string),
     appHandler: T.optional(T.string),
     w: T.number,
     h: T.number,
@@ -54,7 +56,11 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
   }
 
   component(shape: FileIconShape) {
-    const { thumbnail, customIcon, mimeType } = shape.props;
+    const { thumbnailPath, customIcon, mimeType } = shape.props;
+
+    // Load thumbnail from VFS path
+    const { thumbnail } = useThumbnail(thumbnailPath);
+
     const icon = customIcon || getFileIcon(mimeType);
     const hasThumbnail = !!thumbnail;
 
@@ -76,7 +82,11 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
           height: shape.props.h,
         }}
       >
-        <div className={'font-[40px] mb-2 [filter: drop-shadow(0 4px 3px rgba(0, 0, 0, 0.14))]'}>
+        <div
+          className={
+            'font-[40px] mb-2 [filter: drop-shadow(0 4px 3px rgba(0, 0, 0, 0.14))]'
+          }
+        >
           {hasThumbnail ? (
             <img
               src={thumbnail}

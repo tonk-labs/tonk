@@ -1,9 +1,9 @@
-import { resolve } from 'path';
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 
 // Note: WASM is loaded at runtime by service worker from /tonk_core_bg.wasm
 // Dev: served by vite-plugin-static-copy in vite.config.ts
-// Prod: copied by build-host-web.ts using require.resolve()
+// Prod: copied by build-runtime.ts using require.resolve()
 
 export default defineConfig({
   build: {
@@ -18,7 +18,7 @@ export default defineConfig({
         format: 'es',
         inlineDynamicImports: true,
         // Keep WASM filename stable without hash
-        assetFileNames: (assetInfo) => {
+        assetFileNames: assetInfo => {
           if (assetInfo.name?.endsWith('.wasm')) {
             return 'tonk_core_bg.wasm';
           }
@@ -37,9 +37,7 @@ export default defineConfig({
           ? 'https://relay.tonk.xyz'
           : 'http://localhost:8081')
     ),
-    TONK_SERVE_LOCAL: JSON.stringify(
-      process.env.TONK_SERVE_LOCAL === 'true'
-    ),
+    TONK_SERVE_LOCAL: JSON.stringify(process.env.TONK_SERVE_LOCAL === 'true'),
     __SW_BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     __SW_VERSION__: JSON.stringify(Date.now().toString(36)),
   },

@@ -221,7 +221,11 @@ async function getAllFilesFromVfs(
 /**
  * Creates a bundle from the dist/ folder
  */
-async function createBundle(outputPath?: string, copyToServer: boolean = false, bundleName?: string) {
+async function createBundle(
+  outputPath?: string,
+  copyToServer: boolean = false,
+  bundleName?: string
+) {
   try {
     console.log('Initializing TonkCore...');
 
@@ -498,10 +502,8 @@ async function main() {
       }
 
       // Output path is any non-flag argument that isn't the bundle name value
-      const outputPath = createArgs.find((arg, idx) =>
-        !arg.startsWith('--') &&
-        !arg.startsWith('-') &&
-        idx !== nameIndex + 1
+      const outputPath = createArgs.find(
+        (arg, idx) => !arg.startsWith('--') && !arg.startsWith('-') && idx !== nameIndex + 1
       );
 
       await createBundle(outputPath, copyToServer, bundleName);

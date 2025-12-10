@@ -3177,6 +3177,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "console_error_panic_hook",

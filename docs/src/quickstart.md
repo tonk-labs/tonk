@@ -18,7 +18,7 @@ cd tonk
 nix develop
 
 # Install dependencies
-pnpm install
+bun install
 ```
 
 ### Option 2: Manual Setup
@@ -27,7 +27,7 @@ If you prefer not to use Nix:
 
 1. **Install dependencies**:
    - Node.js 20+
-   - pnpm 9+
+   - bun
    - Rust toolchain (for building core)
 
 2. **Set up relay binary**:
@@ -42,8 +42,8 @@ If you prefer not to use Nix:
 
    ```bash
    cd packages/core-js
-   pnpm install
-   pnpm build
+   bun install
+   bun run build
    ```
 
 ## Try the Example
@@ -57,8 +57,8 @@ The most complete example is `latergram`. Here's how to run it:
 
 ```bash
 cd examples/latergram
-pnpm install
-pnpm bundle create # Creates a .tonk file
+bun install
+bun run bundle create # Creates a .tonk file
 touch .env # Create .env file, see .env.example for required API_KEY (latergram uses Anthropic Claude)
 ```
 
@@ -66,7 +66,7 @@ touch .env # Create .env file, see .env.example for required API_KEY (latergram 
 
 ```bash
 cd packages/host-web
-pnpm dev
+bun run dev
 # Then upload the .tonk file created in step 1
 ```
 

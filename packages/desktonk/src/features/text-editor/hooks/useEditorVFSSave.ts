@@ -1,9 +1,13 @@
 import type { JSONContent } from '@tiptap/react';
-import type { VFSService } from '@tonk/host-web/client';
 import { useCallback, useEffect, useRef } from 'react';
-import { getDesktopService } from '@/features/desktop';
+import {
+  getDesktopService,
+  invalidateThumbnailCache,
+} from '@/features/desktop';
+import { THUMBNAILS_DIRECTORY } from '@/features/desktop/constants';
 import { generateTextThumbnailFromContent } from '@/features/desktop/utils/thumbnailGenerator';
 import { useEditorStore } from '@/features/editor/stores/editorStore';
+import type { VFSService } from '@/vfs-client';
 
 interface UseEditorVFSSaveOptions {
   filePath: string | null;
@@ -25,6 +29,22 @@ export function useEditorVFSSave({
     null
   );
   const lastSavedContentRef = useRef<string | null>(null);
+  const lastFilePathRef = useRef<string | null>(null);
+
+  // Initialize lastSavedContentRef with current content when file opens
+  // This prevents unnecessary saves when closing without changes
+  useEffect(() => {
+    // Reset when file changes
+    if (filePath !== lastFilePathRef.current) {
+      lastFilePathRef.current = filePath;
+      const currentDocument = useEditorStore.getState().document;
+      if (currentDocument) {
+        lastSavedContentRef.current = jsonContentToText(currentDocument);
+      } else {
+        lastSavedContentRef.current = null;
+      }
+    }
+  }, [filePath]);
 
   const saveToVFS = useCallback(
     async (content: JSONContent) => {
@@ -50,44 +70,55 @@ export function useEditorVFSSave({
 
         thumbnailTimeoutRef.current = setTimeout(async () => {
           try {
-            // Extract file name from path
+            // Extract file name and fileId from path
             const fileName = filePath.split('/').pop() || 'file.txt';
+            const fileId = fileName.startsWith('.')
+              ? fileName
+              : fileName.replace(/\.[^.]+$/, '');
             console.log(
               '[EditorVFSSave] Starting thumbnail regeneration for:',
               fileName
             );
 
             // Generate new thumbnail
-            const thumbnail = await generateTextThumbnailFromContent(
+            const thumbnailDataUrl = await generateTextThumbnailFromContent(
               text,
               fileName
             );
             console.log(
               '[EditorVFSSave] Thumbnail generated:',
-              thumbnail ? 'YES' : 'NO'
+              thumbnailDataUrl ? 'YES' : 'NO'
             );
 
-            if (thumbnail) {
-              // Read existing file to preserve other desktopMeta fields
-              const existingFile = await vfs.readFile(filePath);
-              const content = existingFile?.content as
-                | Record<string, unknown>
-                | undefined;
-              const existingMeta =
-                (content?.desktopMeta as Record<string, unknown>) || {};
-              console.log('[EditorVFSSave] Existing meta:', existingMeta);
+            if (thumbnailDataUrl) {
+              // Write thumbnail to separate file
+              const thumbnailPath = `${THUMBNAILS_DIRECTORY}/${fileId}.png`;
+              const base64Data = thumbnailDataUrl.split(',')[1];
 
-              // Write back with updated thumbnail, preserving other fields
-              await vfs.writeFile(filePath, {
-                content: {
-                  text,
-                  desktopMeta: {
-                    ...existingMeta,
-                    thumbnail,
+              await vfs.writeFile(
+                thumbnailPath,
+                {
+                  content: {
+                    data: base64Data,
+                    mimeType: 'image/png',
                   },
                 },
-              });
-              console.log('[EditorVFSSave] Wrote file with thumbnail');
+                true // create if not exists
+              );
+              console.log(
+                '[EditorVFSSave] ✅ Wrote thumbnail to:',
+                thumbnailPath
+              );
+
+              // Patch file to update thumbnailPath reference
+              await vfs.patchFile(
+                filePath,
+                ['desktopMeta', 'thumbnailPath'],
+                thumbnailPath
+              );
+
+              // Invalidate thumbnail cache so component reloads
+              invalidateThumbnailCache(thumbnailPath);
 
               // Notify desktop service to refresh the file icon
               const desktopService = getDesktopService();

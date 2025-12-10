@@ -80,6 +80,8 @@ pnpm install
 - `packages/core-js` - TypeScript bindings
 - `packages/host-web` - Web host environment
 - `packages/relay` - Sync relay (Rust)
+- `packages/launcher` - Tonk Launcher
+- `packages/desktonk` - Bundle development environment
 - `tests/` - Integration tests
 - `examples/` - Example applications
 

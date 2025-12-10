@@ -1,4 +1,4 @@
-import { getVFSService } from '@tonk/host-web/client';
+import { getVFSService } from '@/vfs-client';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import Router from './Router';
@@ -15,7 +15,7 @@ function AppLauncher() {
     getVFSService()
       .connect()
       .then(() => setReady(true))
-      .catch(err => {
+      .catch((err) => {
         console.warn('VFS connection warning:', err);
         setError(err instanceof Error ? err : new Error(String(err)));
       });

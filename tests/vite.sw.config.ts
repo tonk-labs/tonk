@@ -7,12 +7,16 @@ export default defineConfig({
     outDir: 'src/test-ui/public',
     emptyOutDir: false,
     rollupOptions: {
-      input: resolve(__dirname, '../packages/host-web/src/service-worker.ts'),
+      input: resolve(__dirname, '../packages/launcher/src/launcher/sw/index.ts'),
       output: {
         entryFileNames: 'service-worker.js',
         format: 'es',
       },
     },
+  },
+  optimizeDeps: {
+    esbuildOptions: { target: 'esnext' },
+    include: ['@tonk/core/slim'],
   },
   define: {
     'process.env': {},
@@ -31,6 +35,9 @@ export default defineConfig({
       buffer: 'buffer',
       process: 'process/browser',
       util: 'util',
+      // Resolve workspace packages (order matters - more specific first)
+      '@tonk/core/slim': resolve(__dirname, '../packages/core-js/dist/index-slim.js'),
+      '@tonk/core': resolve(__dirname, '../packages/core-js'),
     },
   },
 });

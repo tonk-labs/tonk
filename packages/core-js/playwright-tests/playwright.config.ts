@@ -66,7 +66,7 @@ export default defineConfig({
   reporter: [['html'], ['json', { outputFile: 'test-results.json' }], ['list']],
 
   webServer: {
-    command: 'npm run dev',
+    command: 'bun run dev',
     port: 5173,
     reuseExistingServer: !process.env.CI,
     timeout: 120000,

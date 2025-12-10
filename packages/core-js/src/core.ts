@@ -701,7 +701,10 @@ export class TonkCore {
 
       return {
         ...intermediary,
-        content: JSON.parse(intermediary.content),
+        content:
+          typeof intermediary.content === 'string'
+            ? JSON.parse(intermediary.content)
+            : intermediary.content,
         bytes: normalizedBytes,
       };
     } catch (error) {
@@ -773,6 +776,82 @@ export class TonkCore {
       );
     } catch (error) {
       throw new FileSystemError(`Failed to update file at ${path}: ${error}`);
+    }
+  }
+
+  /**
+   * Patch a file at a specific JSON path.
+   *
+   * @param path - Absolute path of the file to patch
+   * @param jsonPath - Array of keys to the field to update, e.g. ['position', 'x']
+   * @param value - New value for the field (any JSON-serializable value)
+   * @returns true if the file was patched, false if it didn't exist
+   * @throws {FileSystemError} If the path is invalid or patch fails
+   *
+   * @example
+   * ```typescript
+   * // Update just the x coordinate - minimal storage overhead
+   * await patchFile('/layout/file1.json', ['x'], 150);
+   *
+   * // Update nested field
+   * await patchFile('/config.json', ['settings', 'theme'], 'dark');
+   *
+   * // Update array element (using numeric string key)
+   * await patchFile('/data.json', ['items', '0', 'name'], 'New Name');
+   * ```
+   */
+  async patchFile(
+    path: string,
+    jsonPath: string[],
+    value: JsonValue | string | number | boolean | null
+  ): Promise<boolean> {
+    try {
+      return await (this.#wasm as any).patchFile(path, jsonPath, value);
+    } catch (error) {
+      throw new FileSystemError(`Failed to patch file at ${path}: ${error}`);
+    }
+  }
+
+  /**
+   * Splice text at a specific JSON path within a document.
+   *
+   * @param path - Absolute path of the file to modify
+   * @param jsonPath - Array of keys to the text field, e.g. ['content']
+   * @param index - Position in the text to start modification
+   * @param deleteCount - Number of characters to delete (0 to insert only)
+   * @param insert - String to insert at the position (empty string to delete only)
+   * @returns true if the file was modified, false if it didn't exist
+   * @throws {FileSystemError} If the path is invalid or splice fails
+   *
+   * @example
+   * ```typescript
+   * // Insert " world" at position 5 in the "content" field
+   * await spliceText('/notes.json', ['content'], 5, 0, ' world');
+   *
+   * // Delete 3 characters starting at position 10
+   * await spliceText('/notes.json', ['content'], 10, 3, '');
+   *
+   * // Replace "old" with "new" at position 5 (delete 3, insert 3)
+   * await spliceText('/notes.json', ['content'], 5, 3, 'new');
+   * ```
+   */
+  async spliceText(
+    path: string,
+    jsonPath: string[],
+    index: number,
+    deleteCount: number,
+    insert: string
+  ): Promise<boolean> {
+    try {
+      return await (this.#wasm as any).spliceText(
+        path,
+        jsonPath,
+        index,
+        deleteCount,
+        insert
+      );
+    } catch (error) {
+      throw new FileSystemError(`Failed to splice text at ${path}: ${error}`);
     }
   }
 
@@ -947,7 +1026,10 @@ export class TonkCore {
         }
         callback({
           ...doc,
-          content: JSON.parse(doc.content),
+          content:
+            typeof doc.content === 'string'
+              ? JSON.parse(doc.content)
+              : doc.content,
           bytes: normalizedBytes,
         });
       });
