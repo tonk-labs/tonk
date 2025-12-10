@@ -1,6 +1,7 @@
 # React Keepsync Examples
 
-This section shows complete examples of how to use keepsync in React applications. These examples demonstrate a collaborative todo application with real-time synchronization.
+This section shows complete examples of how to use keepsync in React applications. These examples
+demonstrate a collaborative todo application with real-time synchronization.
 
 ## Todo Store
 
@@ -48,7 +49,7 @@ To run this example:
 
 1. Create a new Tonk React app: `tonk create` (choose React)
 2. Replace the generated files with the code above
-3. Start the development server: `pnpm dev`
+3. Start the development server: `bun run dev`
 4. Open multiple browser windows to see real-time collaboration
 
-The todos will be synchronized in real-time across all connected clients! 
+The todos will be synchronized in real-time across all connected clients!

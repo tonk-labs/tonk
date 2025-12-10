@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert';
+import { describe, it, expect } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -11,17 +10,16 @@ const TEST_BUNDLE = join(__dirname, '..', 'app.tonk');
 describe('getBinaryPath', () => {
   it('should return a valid path to the binary', () => {
     const binaryPath = getBinaryPath();
-    assert.ok(binaryPath, 'Binary path should not be empty');
-    assert.ok(existsSync(binaryPath), `Binary should exist at ${binaryPath}`);
+    expect(binaryPath).toBeTruthy();
+    expect(existsSync(binaryPath)).toBeTruthy();
   });
 
   it('should return an executable file', () => {
     const binaryPath = getBinaryPath();
     // Check that it's the expected binary name
-    assert.ok(
-      binaryPath.endsWith('tonk-relay') || binaryPath.endsWith('tonk-relay.exe'),
-      'Binary should be named tonk-relay'
-    );
+    expect(
+      binaryPath.endsWith('tonk-relay') || binaryPath.endsWith('tonk-relay.exe')
+    ).toBeTruthy();
   });
 });
 
@@ -43,11 +41,10 @@ describe('startRelay', () => {
       relay.on('exit', (code) => resolve(code ?? 1));
     });
 
-    assert.strictEqual(exitCode, 1, 'Should exit with error code 1');
-    assert.ok(
-      stderr.includes('NotFound') || stderr.includes('not found'),
-      `Should report bundle not found error, got: ${stderr}`
-    );
+    expect(exitCode).toBe(1);
+    expect(
+      stderr.includes('NotFound') || stderr.includes('not found')
+    ).toBeTruthy();
   });
 
   it('should start with valid bundle and be killable', async () => {
@@ -62,17 +59,17 @@ describe('startRelay', () => {
     await new Promise((r) => setTimeout(r, 500));
 
     // Verify the process is running
-    assert.ok(!relay.killed, 'Relay should be running');
+    expect(relay.killed).toBeFalsy();
 
     // Kill the process
     const killed = relay.kill('SIGTERM');
-    assert.ok(killed, 'Should be able to kill the process');
+    expect(killed).toBeTruthy();
 
     const exitCode = await new Promise<number>((resolve) => {
       relay.on('exit', (code) => resolve(code ?? 0));
     });
 
-    assert.ok(exitCode !== undefined, 'Process should have exited');
+    expect(exitCode).toBeDefined();
   });
 
   it('should respond to health check', async () => {
@@ -90,10 +87,10 @@ describe('startRelay', () => {
 
       // Make health check request
       const response = await fetch(`http://127.0.0.1:${port}/`);
-      assert.strictEqual(response.status, 200, 'Health check should return 200');
+      expect(response.status).toBe(200);
 
       const text = await response.text();
-      assert.ok(text.includes('Tonk'), 'Health check should mention Tonk');
+      expect(text.includes('Tonk')).toBeTruthy();
     } finally {
       relay.kill('SIGTERM');
       await new Promise<void>((resolve) => {
@@ -111,6 +108,6 @@ describe('runRelay', () => {
       stdio: 'pipe',
     });
 
-    assert.strictEqual(exitCode, 1, 'Should exit with error code 1 for missing bundle');
+    expect(exitCode).toBe(1);
   });
 });

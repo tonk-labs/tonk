@@ -1,0 +1,4 @@
+[test]
+# Exclude playwright-tests from bun test discovery
+# These tests must be run with: npx playwright test
+root = "./test"

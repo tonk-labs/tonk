@@ -30,7 +30,12 @@ export type VFSWorkerMessage =
   | { type: 'unwatchDirectory'; id: string; path: string }
   | { type: 'toBytes'; id: string }
   | { type: 'forkToBytes'; id: string }
-  | { type: 'loadBundle'; id: string; bundleBytes: ArrayBuffer; serverUrl?: string }
+  | {
+      type: 'loadBundle';
+      id: string;
+      bundleBytes: ArrayBuffer;
+      serverUrl?: string;
+    }
   | {
       type: 'initializeFromUrl';
       id: string;
@@ -107,7 +112,12 @@ export type VFSWorkerResponse =
     }
   | { type: 'loadBundle'; id: string; success: boolean; error?: string }
   | { type: 'initializeFromUrl'; id: string; success: boolean; error?: string }
-  | { type: 'initializeFromBytes'; id: string; success: boolean; error?: string }
+  | {
+      type: 'initializeFromBytes';
+      id: string;
+      success: boolean;
+      error?: string;
+    }
   | {
       type: 'getServerUrl';
       id: string;
@@ -124,7 +134,12 @@ export type VFSWorkerResponse =
     }
   // Watch event notifications (no id, matched by watchId)
   | { type: 'fileChanged'; watchId: string; documentData: DocumentData }
-  | { type: 'directoryChanged'; watchId: string; path: string; changeData: unknown }
+  | {
+      type: 'directoryChanged';
+      watchId: string;
+      path: string;
+      changeData: unknown;
+    }
   // Connection status events (broadcast, no id)
   | { type: 'ready'; needsBundle?: boolean }
   | { type: 'disconnected' }
@@ -138,12 +153,7 @@ export type VFSWorkerResponse =
   | { type: 'needsReinit'; appSlug: string | null; reason: string };
 
 // Client-specific types
-export type ConnectionState =
-  | 'disconnected'
-  | 'connecting'
-  | 'open'
-  | 'connected'
-  | 'reconnecting';
+export type ConnectionState = 'disconnected' | 'connecting' | 'open' | 'connected' | 'reconnecting';
 
 export type ConnectionStateListener = (state: ConnectionState) => void;
 

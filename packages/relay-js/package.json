@@ -21,8 +21,8 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "node --experimental-strip-types --test test/*.test.ts",
-    "prepublishOnly": "npm run build"
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
   },
   "optionalDependencies": {
     "@tonk/relay-darwin-arm64": "workspace:*"

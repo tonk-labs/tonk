@@ -47,3 +47,8 @@ report.*.json
 target
 !Cargo.lock
 references/
+
+# temp dirs
+tmp/**
+temp/**
+.plans/**

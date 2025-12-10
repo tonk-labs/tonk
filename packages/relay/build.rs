@@ -14,7 +14,7 @@ fn main() {
         .arg("scripts/extract-wasm.js")
         .current_dir(&manifest_dir)
         .output()
-        .expect("Failed to run node scripts/extract-wasm.js - make sure Node.js is installed and pnpm install has been run");
+        .expect("Failed to run node scripts/extract-wasm.js - make sure Node.js is installed and bun install has been run");
 
     if !output.status.success() {
         panic!(

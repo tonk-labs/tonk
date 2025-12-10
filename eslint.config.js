@@ -42,9 +42,9 @@ export default [
     },
   },
 
-  // Browser/Universal TypeScript files
+  // Browser/Universal TypeScript files (desktonk excluded - uses biome/oxlint)
   {
-    files: ['packages/launcher/src/**/*.ts', 'packages/desktonk/src/**/*.ts'],
+    files: ['packages/launcher/src/**/*.ts', 'packages/launcher/src/**/*.tsx'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {

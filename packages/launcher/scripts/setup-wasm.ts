@@ -5,9 +5,9 @@
  * Works with both npm packages and workspace-linked local packages.
  */
 
-import { cpSync, existsSync } from 'fs';
-import { dirname, join, resolve } from 'path';
-import { createRequire } from 'module';
+import { cpSync, existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const destPath = join(__dirname, '../public/tonk_core_bg.wasm');
@@ -44,8 +44,8 @@ if (existsSync(destPath) && !wasmPath) {
 
 if (!wasmPath) {
   console.error(`Error: WASM not found. Either:`);
-  console.error(`  1. Run: pnpm --filter @tonk/core run build`);
-  console.error(`  2. Or: pnpm install (if using published @tonk/core)`);
+  console.error(`  1. Run: bun --filter @tonk/core run build`);
+  console.error(`  2. Or: bun install (if using published @tonk/core)`);
   process.exit(1);
 }
 
