@@ -922,6 +922,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_storage() {
+        use crate::vfs::backend::AutomergeHelpers;
+
         let tonk = TonkCore::builder()
             .with_storage(StorageConfig::InMemory)
             .build()
@@ -937,26 +939,16 @@ mod tests {
         // Verify the document exists
         assert!(vfs.exists("/test.txt").await.unwrap());
         let handle = vfs.find_document("/test.txt").await.unwrap().unwrap();
-        let content: String = handle.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    // Handle both string and serialized string
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content, "\"test content\"");
+        let doc_node: crate::vfs::types::DocNode<String> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, "test content");
     }
 
     #[tokio::test]
     #[cfg(not(target_arch = "wasm32"))]
     async fn test_filesystem_storage() {
+        use crate::vfs::backend::AutomergeHelpers;
+
         let temp_dir = TempDir::new().unwrap();
         let storage_path = temp_dir.path().join("tonk_storage");
 
@@ -975,20 +967,9 @@ mod tests {
         // Verify the document exists
         assert!(vfs.exists("/test.txt").await.unwrap());
         let handle = vfs.find_document("/test.txt").await.unwrap().unwrap();
-        let content: String = handle.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content, "\"persistent content\"");
+        let doc_node: crate::vfs::types::DocNode<String> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, "persistent content");
 
         // Verify storage directory was created
         assert!(storage_path.exists());
@@ -1012,6 +993,8 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_arch = "wasm32"))]
     async fn test_bundle_with_in_memory_storage() {
+        use crate::vfs::backend::AutomergeHelpers;
+
         // Create an engine with filesystem storage and some data
         let temp_dir = TempDir::new().unwrap();
         let storage_path = temp_dir.path().join("source");
@@ -1040,25 +1023,16 @@ mod tests {
         // Verify data was preserved
         assert!(vfs2.exists("/test.txt").await.unwrap());
         let handle = vfs2.find_document("/test.txt").await.unwrap().unwrap();
-        let content: String = handle.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content, "\"bundle test\"");
+        let doc_node: crate::vfs::types::DocNode<String> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, "bundle test");
     }
 
     #[tokio::test]
     #[cfg(not(target_arch = "wasm32"))]
     async fn test_fork_to_bytes() {
+        use crate::vfs::backend::AutomergeHelpers;
+
         // Create a TonkCore instance with some data
         let tonk = TonkCore::new().await.unwrap();
         let vfs = tonk.vfs();
@@ -1158,40 +1132,18 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let content1: String = handle1.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content1, "\"content 1\"");
+        let doc_node1: crate::vfs::types::DocNode<String> =
+            AutomergeHelpers::read_document(&handle1).unwrap();
+        assert_eq!(doc_node1.content, "content 1");
 
         let handle4 = vfs_forked
             .find_document("/app/subdir/nested/file4.txt")
             .await
             .unwrap()
             .unwrap();
-        let content4: String = handle4.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content4, "\"content 4\"");
+        let doc_node4: crate::vfs::types::DocNode<String> =
+            AutomergeHelpers::read_document(&handle4).unwrap();
+        assert_eq!(doc_node4.content, "content 4");
 
         // Verify the binary document has bytes
         let handle_binary = vfs_forked

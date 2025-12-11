@@ -714,6 +714,30 @@ impl AutomergeHelpers {
         Ok(())
     }
 
+    /// Deserialize content from JSON, handling wrapped primitives
+    ///
+    /// When primitive values (strings, numbers, etc.) are stored, they're wrapped
+    /// in {"value": X}. This helper unwraps them if needed.
+    fn deserialize_content<T>(json_value: serde_json::Value) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        // Check if this is a wrapped primitive ({"value": X})
+        if let serde_json::Value::Object(ref map) = json_value {
+            if map.len() == 1 {
+                if let Some(inner_value) = map.get("value") {
+                    // Try deserializing the unwrapped value first
+                    if let Ok(content) = serde_json::from_value(inner_value.clone()) {
+                        return Ok(content);
+                    }
+                }
+            }
+        }
+
+        // Fallback to deserializing the whole JSON value
+        serde_json::from_value(json_value).map_err(VfsError::SerializationError)
+    }
+
     /// Read a document node from an Automerge document
     pub fn read_document<T>(handle: &DocHandle) -> Result<DocNode<T>>
     where
@@ -753,7 +777,7 @@ impl AutomergeHelpers {
                 Some((Value::Object(_), content_obj_id)) => {
                     // Native storage: read as Automerge object and convert to JSON
                     let json_value = Self::read_automerge_value(doc, content_obj_id)?;
-                    serde_json::from_value(json_value).map_err(VfsError::SerializationError)?
+                    Self::deserialize_content(json_value)?
                 }
                 Some((value, _)) => {
                     // Legacy storage: content is a JSON string
@@ -815,7 +839,7 @@ impl AutomergeHelpers {
                 Some((Value::Object(_), content_obj_id)) => {
                     // Native storage: read as Automerge object and convert to JSON
                     let json_value = Self::read_automerge_value(doc, content_obj_id)?;
-                    serde_json::from_value(json_value).map_err(VfsError::SerializationError)?
+                    Self::deserialize_content(json_value)?
                 }
                 Some((value, _)) => {
                     // Legacy storage: content is a JSON string
