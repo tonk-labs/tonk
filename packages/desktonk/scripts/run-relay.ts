@@ -7,7 +7,7 @@
  * Other platforms: Use relay.tonk.xyz production server
  */
 
-import { existsSync } from 'fs';
+import { existsSync } from 'node:fs';
 
 const PORT = Number(process.env.PORT) || 8081;
 const BUNDLE_FILE = 'app.tonk';

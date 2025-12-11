@@ -100,7 +100,7 @@
         "@tiptap/pm": "^3.8.0",
         "@tiptap/react": "^3.8.0",
         "@tiptap/starter-kit": "^3.8.0",
-        "@tonk/core": "0.1.2",
+        "@tonk/core": "0.1.3",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "immer": "^10.1.3",
@@ -144,7 +144,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@base-ui-components/react": "^1.0.0-beta.6",
-        "@tonk/core": "0.1.2",
+        "@tonk/core": "0.1.3",
         "clsx": "^2.1.1",
         "react": "^19.1.1",
         "react-dom": "^19.1.1",
@@ -2902,13 +2902,13 @@
 
     "@tldraw/editor/eventemitter3": ["eventemitter3@4.0.7", "", {}, "sha512-8guHBZCwKnFhYdHr2ysuRWErTwhoN2X8XELRlrRwpmfeY2jjuUN4taQMsULKUVo1K4DvZl+0pgfyoysHxvmvEw=="],
 
-    "@tonk/desktonk/@tonk/core": ["@tonk/core@0.1.2", "", {}, "sha512-4nRtVDBZjavbz1MvAmCDvVWJfNGSwTVD82lrhhU68YHrwMlFBwIv0ALyC3zgSHspkU6n19tT9ct/qhHD2/s7og=="],
+    "@tonk/desktonk/@tonk/core": ["@tonk/core@0.1.3", "", {}, "sha512-pi5Q5f57EvvC4ZTnEVvT2IX/HU60NHBCulru6fmEP5KItFCcOuUkyE2euCGcsRQtS6mdHM8QmwSZvRP3wiKb7Q=="],
 
     "@tonk/desktonk/@tonk/relay": ["@tonk/relay@0.1.1", "", { "optionalDependencies": { "@tonk/relay-darwin-arm64": "0.1.0" }, "bin": { "tonk-relay": "bin/relay.js" } }, "sha512-xehj7YxHm42jmxwXt4OtgJeiHR9l3UiA/B7/UOkYfkqFD4aploR+T/bd7EYm4JBhi3ucfT0KYx7uA6R3mu7fGQ=="],
 
     "@tonk/desktonk/@tonk/relay-darwin-arm64": ["@tonk/relay-darwin-arm64@0.1.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-YCSRbmjM4EFeJQTtUjpZLfvsbk/+AkWaQPyiK4HOuKGE9oA/t8rVpEg1J07M9Kr6os91OH3TMg+d/hCLuHDLJA=="],
 
-    "@tonk/launcher/@tonk/core": ["@tonk/core@0.1.2", "", {}, "sha512-4nRtVDBZjavbz1MvAmCDvVWJfNGSwTVD82lrhhU68YHrwMlFBwIv0ALyC3zgSHspkU6n19tT9ct/qhHD2/s7og=="],
+    "@tonk/launcher/@tonk/core": ["@tonk/core@0.1.3", "", {}, "sha512-pi5Q5f57EvvC4ZTnEVvT2IX/HU60NHBCulru6fmEP5KItFCcOuUkyE2euCGcsRQtS6mdHM8QmwSZvRP3wiKb7Q=="],
 
     "@tonk/relay/@types/node": ["@types/node@22.19.1", "", { "dependencies": { "undici-types": "6.21.0" } }, "sha512-LCCV0HdSZZZb34qifBsyWlUmok6W7ouER+oQIGBScS8EsZsQbrtFTUrDX4hOl+CS6p7cnNC4td+qrSVGSCTUfQ=="],
 

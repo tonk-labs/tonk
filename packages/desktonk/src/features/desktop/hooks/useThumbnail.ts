@@ -37,7 +37,7 @@ export function useThumbnail(thumbnailPath: string | undefined): {
 } {
   const [thumbnail, setThumbnail] = useState<string | null>(() => {
     if (thumbnailPath && thumbnailCache.has(thumbnailPath)) {
-      return thumbnailCache.get(thumbnailPath)!;
+      return thumbnailCache.get(thumbnailPath) ?? null;
     }
     return null;
   });
@@ -66,7 +66,7 @@ export function useThumbnail(thumbnailPath: string | undefined): {
     if (!invalidationListeners.has(thumbnailPath)) {
       invalidationListeners.set(thumbnailPath, new Set());
     }
-    invalidationListeners.get(thumbnailPath)!.add(handleInvalidation);
+    invalidationListeners.get(thumbnailPath)?.add(handleInvalidation);
 
     return () => {
       invalidationListeners.get(thumbnailPath)?.delete(handleInvalidation);
@@ -76,6 +76,7 @@ export function useThumbnail(thumbnailPath: string | undefined): {
     };
   }, [thumbnailPath]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTrigger is intentionally used to force reload when thumbnail is invalidated
   useEffect(() => {
     // If no thumbnail path, nothing to load
     if (!thumbnailPath) {
@@ -86,7 +87,7 @@ export function useThumbnail(thumbnailPath: string | undefined): {
 
     // Check cache first (skip if reloadTrigger changed, meaning cache was invalidated)
     if (thumbnailCache.has(thumbnailPath)) {
-      setThumbnail(thumbnailCache.get(thumbnailPath)!);
+      setThumbnail(thumbnailCache.get(thumbnailPath) ?? null);
       setIsLoading(false);
       return;
     }
@@ -99,7 +100,8 @@ export function useThumbnail(thumbnailPath: string | undefined): {
       if (!loadListeners.has(thumbnailPath)) {
         loadListeners.set(thumbnailPath, new Set());
       }
-      const listeners = loadListeners.get(thumbnailPath)!;
+      const listeners = loadListeners.get(thumbnailPath);
+      if (!listeners) return;
 
       const listener = (loadedThumbnail: string | null) => {
         setThumbnail(loadedThumbnail);

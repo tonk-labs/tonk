@@ -14,7 +14,7 @@ interface DockItem {
 const MEMBERS_BAR_WIDTH = 280;
 
 export function Dock() {
-  const dockRef = useRef<HTMLDivElement>(null);
+  const dockRef = useRef<HTMLElement>(null);
   const [mouseX, setMouseX] = useState<number | null>(null);
   const { createNewNote } = useDockActions();
 
@@ -76,7 +76,7 @@ export function Dock() {
   };
 
   return (
-    <div
+    <nav
       ref={dockRef}
       className="fixed bottom-4 mx-auto flex w-fit items-end justify-center gap-1 rounded-xl border bg-white/20 border-gray-200/20 dark:border-[#313138]/20 dark:bg-[#1A1A1E]/20 backdrop-blur-xl px-3 py-2 z-[9999]"
       style={{
@@ -84,28 +84,31 @@ export function Dock() {
         right: isMembersBarVisible ? MEMBERS_BAR_WIDTH : 0,
       }}
       onMouseLeave={handleMouseLeave}
+      aria-label="Application dock"
     >
       {dockItems.map((item, index) => {
         const scale = getScale(index);
         return (
-          <div
+          <button
+            type="button"
             key={item.id}
             data-dock-item
-            className="flex cursor-pointer flex-col items-center gap-1 p-2 origin-bottom transition-transform duration-150 ease-out group"
+            className="flex cursor-pointer flex-col items-center gap-1 p-2 origin-bottom transition-transform duration-150 ease-out group bg-transparent border-none"
             onClick={item.onClick}
             style={{ transform: `scale(${scale})` }}
+            aria-label={item.label}
           >
             <img
               src={item.icon}
               alt={item.label}
               className="h-12 w-12 object-contain transition-transform duration-150 ease-out"
             />
-            <span className="whitespace-nowrap text-[11px] opacity-0 group-hover:opacity-100 group-hover:text-black transition-opacity duration-150 ease-out bg-">
+            <span className="whitespace-nowrap text-[11px] opacity-0 group-hover:opacity-100 group-hover:text-black transition-opacity duration-150 ease-out">
               {item.label}
             </span>
-          </div>
+          </button>
         );
       })}
-    </div>
+    </nav>
   );
 }
