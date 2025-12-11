@@ -36,6 +36,7 @@ import { useCursorVisibility } from '@/hooks/use-cursor-visibility';
 // --- Hooks ---
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useWindowSize } from '@/hooks/use-window-size';
+import type { EditorMode } from '@/features/editor/stores/editorStore';
 
 const MainToolbarContent = ({
   onHighlighterClick,
@@ -138,11 +139,28 @@ const MobileToolbarContent = ({
   </>
 );
 
+// Plain text toolbar - minimal controls
+const PlainTextToolbarContent = () => (
+  <>
+    <ToolbarGroup>
+      <UndoRedoButton action="undo" />
+      <UndoRedoButton action="redo" />
+    </ToolbarGroup>
+
+    <Spacer />
+
+    <ToolbarGroup>
+      <span className="text-xs text-gray-500 dark:text-gray-400 px-2 py-1">Plain Text</span>
+    </ToolbarGroup>
+  </>
+);
+
 interface SimpleEditorProps {
   editor: Editor | null;
+  editorMode?: EditorMode;
 }
 
-export function SimpleEditor({ editor }: SimpleEditorProps) {
+export function SimpleEditor({ editor, editorMode = 'richtext' }: SimpleEditorProps) {
   const isMobile = useIsMobile();
   const { height } = useWindowSize();
   const [mobileView, setMobileView] = React.useState<'main' | 'highlighter' | 'link'>('main');
@@ -163,6 +181,33 @@ export function SimpleEditor({ editor }: SimpleEditorProps) {
     return null;
   }
 
+  // Determine which toolbar to render
+  const renderToolbarContent = () => {
+    // Plain text mode: minimal toolbar
+    if (editorMode === 'plaintext') {
+      return <PlainTextToolbarContent />;
+    }
+
+    // Rich text mode with mobile sub-views
+    if (mobileView !== 'main') {
+      return (
+        <MobileToolbarContent
+          type={mobileView === 'highlighter' ? 'highlighter' : 'link'}
+          onBack={() => setMobileView('main')}
+        />
+      );
+    }
+
+    // Rich text mode main toolbar
+    return (
+      <MainToolbarContent
+        onHighlighterClick={() => setMobileView('highlighter')}
+        onLinkClick={() => setMobileView('link')}
+        isMobile={isMobile}
+      />
+    );
+  };
+
   return (
     <EditorContext.Provider value={{ editor }}>
       <div className="editor-container">
@@ -177,25 +222,18 @@ export function SimpleEditor({ editor }: SimpleEditorProps) {
                 : {}),
             }}
           >
-            {mobileView === 'main' ? (
-              <MainToolbarContent
-                onHighlighterClick={() => setMobileView('highlighter')}
-                onLinkClick={() => setMobileView('link')}
-                isMobile={isMobile}
-              />
-            ) : (
-              <MobileToolbarContent
-                type={mobileView === 'highlighter' ? 'highlighter' : 'link'}
-                onBack={() => setMobileView('main')}
-              />
-            )}
+            {renderToolbarContent()}
           </Toolbar>
         </div>
       </div>
 
       <div className="editor-container">
         <article id="editor-area">
-          <EditorContent editor={editor} role="presentation" className="simple-editor-content" />
+          <EditorContent
+            editor={editor}
+            role="presentation"
+            className={`simple-editor-content ${editorMode === 'plaintext' ? 'plaintext-mode' : ''}`}
+          />
         </article>
       </div>
     </EditorContext.Provider>

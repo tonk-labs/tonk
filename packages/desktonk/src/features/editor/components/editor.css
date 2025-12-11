@@ -66,3 +66,14 @@ main .tiptap-toolbar[data-variant="fixed"] {
 .dark main .tiptap-toolbar[data-variant=fixed] {
   @apply bg-[#192129];
 }
+
+/* Plain text mode styles */
+.plaintext-mode .tiptap.simple-editor {
+  @apply font-mono text-sm;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+  line-height: 1.6;
+}
+
+.plaintext-mode .ProseMirror p {
+  @apply m-0;
+}

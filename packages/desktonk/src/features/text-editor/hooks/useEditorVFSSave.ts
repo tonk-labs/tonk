@@ -85,9 +85,13 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
     // Reset when file changes
     if (filePath !== lastFilePathRef.current) {
       lastFilePathRef.current = filePath;
-      const currentDocument = useEditorStore.getState().document;
-      if (currentDocument) {
-        lastSavedContentRef.current = jsonContentToText(currentDocument);
+      const state = useEditorStore.getState();
+
+      // Use appropriate content source based on file type
+      if (state.isMarkdownFile && state.rawMarkdownContent) {
+        lastSavedContentRef.current = state.rawMarkdownContent;
+      } else if (state.document) {
+        lastSavedContentRef.current = jsonContentToText(state.document);
       } else {
         lastSavedContentRef.current = null;
       }
@@ -99,8 +103,17 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
       if (!filePath || !vfs) return;
 
       try {
-        // Convert JSONContent back to plain text for storage
-        const text = jsonContentToText(content);
+        const state = useEditorStore.getState();
+
+        // Get text based on file type
+        let text: string;
+        if (state.isMarkdownFile && state.rawMarkdownContent) {
+          // For markdown files: use the markdown representation from the editor
+          text = state.rawMarkdownContent;
+        } else {
+          // For other files: convert JSON to plain text
+          text = jsonContentToText(content);
+        }
 
         // Skip if content hasn't changed
         if (text === lastSavedContentRef.current) return;
@@ -161,12 +174,16 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
       }
 
       // Final save with current content and generate thumbnail
-      const currentDocument = useEditorStore.getState().document;
-      if (currentDocument && filePath) {
-        const text = jsonContentToText(currentDocument);
+      const currentState = useEditorStore.getState();
+      if (currentState.document && filePath) {
+        // Get correct text for thumbnail based on file type
+        const text =
+          currentState.isMarkdownFile && currentState.rawMarkdownContent
+            ? currentState.rawMarkdownContent
+            : jsonContentToText(currentState.document);
 
         // Save content first (sync-ish via fire-and-forget)
-        saveToVFS(currentDocument);
+        saveToVFS(currentState.document);
 
         // Generate thumbnail (fire-and-forget, will complete after navigation)
         generateThumbnail(text, filePath, vfs).catch((error) => {
