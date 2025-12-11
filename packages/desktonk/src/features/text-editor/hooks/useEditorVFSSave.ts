@@ -78,10 +78,17 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedContentRef = useRef<string | null>(null);
   const lastFilePathRef = useRef<string | null>(null);
+  // Track if file was renamed to skip cleanup on old path
+  const wasRenamedRef = useRef(false);
 
   // Initialize lastSavedContentRef with current content when file opens
   // This prevents unnecessary saves when closing without changes
   useEffect(() => {
+    // Detect rename: filePath changed while we had a previous path
+    if (filePath !== lastFilePathRef.current && lastFilePathRef.current !== null) {
+      wasRenamedRef.current = true;
+    }
+
     // Reset when file changes
     if (filePath !== lastFilePathRef.current) {
       lastFilePathRef.current = filePath;
@@ -171,6 +178,13 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
       // Clear pending save timeout
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
+      }
+
+      // Skip cleanup if file was renamed - the new path will handle its own cleanup
+      // This prevents trying to read/write the old (deleted) file path
+      if (wasRenamedRef.current) {
+        wasRenamedRef.current = false; // Reset for potential future use
+        return;
       }
 
       // Final save with current content and generate thumbnail

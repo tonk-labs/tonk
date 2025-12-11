@@ -72,7 +72,14 @@ function Router() {
                   </DesktopErrorBoundary>
                 }
               />
-              <Route path="/text-editor" element={<TextEditorApp />} />
+              <Route
+                path="/text-editor"
+                element={
+                  <DesktopErrorBoundary>
+                    <TextEditorApp />
+                  </DesktopErrorBoundary>
+                }
+              />
             </Route>
           </Routes>
         </BrowserRouter>
