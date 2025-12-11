@@ -12,11 +12,13 @@ export function Sidebar({
   handleLaunch,
   handleFileUpload,
   importing,
+  activeBundleId,
 }: {
   bundles: Bundle[];
   handleLaunch: (bundleId: string) => void;
   handleFileUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
   importing: boolean;
+  activeBundleId: string | null;
 }) {
   const { isDark, toggleTheme } = useTheme();
 
@@ -38,9 +40,10 @@ export function Sidebar({
         {bundles.map((bundle) => (
           <SideBarButton
             alt={bundle.name}
-            key={bundle.name}
+            key={bundle.id}
             image={bundle.icon || undefined}
             onClick={() => handleLaunch(bundle.id)}
+            isSelected={bundle.id === activeBundleId}
           >
             {bundle.name.toUpperCase().slice(0, 2)}
           </SideBarButton>

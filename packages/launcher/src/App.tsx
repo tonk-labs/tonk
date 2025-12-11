@@ -6,12 +6,21 @@ import { bundleManager } from './launcher/services/bundleManager';
 import { bundleStorage } from './launcher/services/bundleStorage';
 import type { Bundle } from './launcher/types';
 
+interface PooledIframe {
+  bundleId: string;
+  url: string;
+  lastAccessed: number;
+}
+
+const MAX_IFRAME_POOL_SIZE = 5;
+
 function App() {
   const [bundles, setBundles] = useState<Bundle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
-  const [runtimeUrl, setRuntimeUrl] = useState<string | null>(null);
+  const [activeBundleId, setActiveBundleId] = useState<string | null>(null);
+  const [iframePool, setIframePool] = useState<Map<string, PooledIframe>>(() => new Map());
 
   const loadBundles = useCallback(async () => {
     try {
@@ -39,8 +48,39 @@ function App() {
         throw new Error('Bundle not found');
       }
 
-      // Pass bundleId - RuntimeApp will fetch from shared IndexedDB
-      setRuntimeUrl(`/app/index.html?bundleId=${encodeURIComponent(id)}`);
+      const url = `/app/index.html?bundleId=${encodeURIComponent(id)}`;
+      const now = Date.now();
+
+      setIframePool((prevPool) => {
+        const newPool = new Map(prevPool);
+
+        // Update or add the iframe to the pool
+        newPool.set(id, {
+          bundleId: id,
+          url,
+          lastAccessed: now,
+        });
+
+        // Evict oldest iframes if pool exceeds max size
+        if (newPool.size > MAX_IFRAME_POOL_SIZE) {
+          const entries = Array.from(newPool.entries());
+          // Sort by lastAccessed ascending (oldest first)
+          entries.sort((a, b) => a[1].lastAccessed - b[1].lastAccessed);
+
+          // Remove oldest entries until we're at max size
+          const toRemove = entries.slice(0, entries.length - MAX_IFRAME_POOL_SIZE);
+          for (const [bundleId] of toRemove) {
+            // Don't evict the one we're about to activate
+            if (bundleId !== id) {
+              newPool.delete(bundleId);
+            }
+          }
+        }
+
+        return newPool;
+      });
+
+      setActiveBundleId(id);
     } catch (err) {
       console.error('Failed to launch bundle:', err);
       alert('Failed to launch bundle');
@@ -76,6 +116,7 @@ function App() {
         handleLaunch={handleLaunch}
         handleFileUpload={handleFileUpload}
         importing={importing}
+        activeBundleId={activeBundleId}
       />
 
       {/* Main Content */}
@@ -101,15 +142,22 @@ function App() {
           </div>
         )}
         {loading && 'loading'}
-        {runtimeUrl ? (
+        {/* Render all pooled iframes, showing only the active one */}
+        {Array.from(iframePool.values()).map((pooledIframe) => (
           <iframe
-            key={runtimeUrl} // Force remount on URL change
-            src={runtimeUrl}
+            key={pooledIframe.bundleId}
+            src={pooledIframe.url}
             className="absolute inset-0 w-full h-full border-none"
-            title="Runtime"
+            style={{
+              visibility: pooledIframe.bundleId === activeBundleId ? 'visible' : 'hidden',
+              pointerEvents: pooledIframe.bundleId === activeBundleId ? 'auto' : 'none',
+            }}
+            title={`Runtime ${pooledIframe.bundleId}`}
             allow="clipboard-read; clipboard-write"
           />
-        ) : (
+        ))}
+        {/* Show placeholder when no bundle is active */}
+        {!activeBundleId && (
           <div className="flex items-center justify-center h-full text-stone-400">
             <div className="flex items-center justify-center flex-col text-center">
               <GradientLogo />
