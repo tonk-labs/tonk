@@ -42,14 +42,11 @@ const DesktopInner = track(() => {
         severity: 'error',
       });
     });
+  }, [canvasPersistenceReady, addToast]);
 
-    // Set initial theme
-    const isDark = window.localStorage.theme === 'dark';
-    editor.user.updateUserPreferences({
-      colorScheme: isDark ? 'dark' : 'light',
-    });
-
-    // Listen for theme changes from parent window (via Router.tsx)
+  // Listen for theme changes from parent window (via Router.tsx)
+  // This is separate from service init so it works immediately without waiting for VFS
+  useEffect(() => {
     const handleThemeChange = (e: CustomEvent<{ isDark: boolean }>) => {
       editor.user.updateUserPreferences({
         colorScheme: e.detail.isDark ? 'dark' : 'light',
@@ -60,7 +57,7 @@ const DesktopInner = track(() => {
     return () => {
       window.removeEventListener('theme-changed', handleThemeChange as EventListener);
     };
-  }, [canvasPersistenceReady, addToast, editor.user.updateUserPreferences]);
+  }, [editor.user]);
 
   // Sync files to TLDraw shapes
   useEffect(() => {
@@ -317,6 +314,16 @@ function Desktop() {
   const handleMount = (editor: any) => {
     const zoomLevel = 1.35;
     editor.setCamera({ x: 0, y: 0, z: zoomLevel }, { animation: { duration: 0 } });
+
+    // Set initial theme immediately on mount (before any useEffect runs)
+    // This fixes the race condition where tldraw renders with default light theme
+    // before canvasPersistenceReady becomes true
+    const isDark =
+      localStorage.theme === 'dark' ||
+      (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    editor.user.updateUserPreferences({
+      colorScheme: isDark ? 'dark' : 'light',
+    });
   };
 
   return (
