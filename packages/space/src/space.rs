@@ -9,10 +9,16 @@ use dialog_query::{DeductiveRule, Session};
 use dialog_storage::FileSystemStorageBackend;
 use futures_core::Stream;
 use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 /// Type alias for the filesystem-backed storage
 pub type FsBackend = FileSystemStorageBackend<Vec<u8>, Vec<u8>>;
+
+// Re-export types for CLI use
+pub use dialog_artifacts::replica::{RemoteState, Revision, UpstreamState};
+pub use dialog_storage::{AuthMethod, RestStorageConfig, S3Authority};
 
 /// Errors that can occur when working with spaces
 #[derive(Debug, Error)]
@@ -44,6 +50,10 @@ pub enum SpaceError {
 pub struct Space {
     /// The DID of this space
     pub did: String,
+    /// The replica for managing remotes (wrapped in Arc<Mutex> for Clone)
+    replica: Arc<Mutex<Replica<FsBackend>>>,
+    /// The branch for this space (wrapped in Arc<Mutex> for Clone)
+    branch: Arc<Mutex<Branch<FsBackend>>>,
     /// The session for querying and committing facts
     session: Session<Branch<FsBackend>>,
 }
@@ -75,8 +85,8 @@ impl Space {
         let branch_id = BranchId::new("main".to_string());
         let branch = replica.branches.open(&branch_id).await?;
 
-        // Create session for the branch
-        let mut session = Session::open(branch);
+        // Create session for the branch (clone branch since Session takes ownership)
+        let mut session = Session::open(branch.clone());
 
         // Build transaction with all ownership claims (which include delegations)
         let mut transaction = session.edit();
@@ -92,6 +102,8 @@ impl Space {
 
         Ok(Space {
             did: space_did,
+            replica: Arc::new(Mutex::new(replica)),
+            branch: Arc::new(Mutex::new(branch)),
             session,
         })
     }
@@ -120,11 +132,13 @@ impl Space {
         let branch_id = BranchId::new("main".to_string());
         let branch = replica.branches.load(&branch_id).await?;
 
-        // Create session for the branch
-        let session = Session::open(branch);
+        // Create session for the branch (clone branch since Session takes ownership)
+        let session = Session::open(branch.clone());
 
         Ok(Space {
             did: space_did,
+            replica: Arc::new(Mutex::new(replica)),
+            branch: Arc::new(Mutex::new(branch)),
             session,
         })
     }
@@ -143,6 +157,86 @@ impl Space {
     pub async fn commit(&mut self, transaction: Transaction) -> Result<(), SpaceError> {
         self.session.commit(transaction).await?;
         Ok(())
+    }
+
+    /// Add a remote to this space and set it as upstream for the main branch.
+    ///
+    /// # Arguments
+    /// * `remote_state` - Configuration for the remote (site name, S3 credentials, etc.)
+    ///
+    /// # Returns
+    /// Ok(()) if the remote was added and set as upstream successfully.
+    pub async fn add_remote(&mut self, remote_state: RemoteState) -> Result<(), SpaceError> {
+        // Add the remote to the replica
+        let remote = {
+            let mut replica = self.replica.lock().await;
+            replica.remotes.add(remote_state).await?
+        };
+
+        // Open the remote branch (same branch ID as local)
+        let branch_id = BranchId::new("main".to_string());
+        let upstream = remote.open(&branch_id).await?;
+
+        // Set the remote branch as upstream for our local branch
+        {
+            let mut branch = self.branch.lock().await;
+            branch.set_upstream(upstream).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Get the current revision of this space.
+    pub async fn revision(&self) -> Revision {
+        let branch = self.branch.lock().await;
+        branch.revision()
+    }
+
+    /// Push local changes to the upstream remote.
+    ///
+    /// # Returns
+    /// - `Ok(Some(old_revision))` if push succeeded and remote was updated
+    /// - `Ok(None)` if there was nothing to push (already in sync)
+    /// - `Err` if push failed or no upstream is configured
+    pub async fn push(&mut self) -> Result<Option<Revision>, SpaceError> {
+        let mut branch = self.branch.lock().await;
+        let result = branch.push().await?;
+        Ok(result)
+    }
+
+    /// Pull changes from the upstream remote.
+    ///
+    /// # Returns
+    /// - `Ok(Some(old_revision))` if pull succeeded and local was updated
+    /// - `Ok(None)` if there was nothing to pull (already in sync)
+    /// - `Err` if pull failed or no upstream is configured
+    pub async fn pull(&mut self) -> Result<Option<Revision>, SpaceError> {
+        let mut branch = self.branch.lock().await;
+        let result = branch.pull().await?;
+        Ok(result)
+    }
+
+    /// Get upstream info if configured.
+    ///
+    /// # Returns
+    /// - `Some((site_name, branch_id, revision))` for remote upstream
+    /// - `None` if no upstream is configured
+    pub async fn upstream_info(&self) -> Option<(String, String, Option<Revision>)> {
+        let branch = self.branch.lock().await;
+        if let Some(upstream) = branch.upstream() {
+            let site = upstream.site().map(|s| s.to_string()).unwrap_or_else(|| "local".to_string());
+            let branch_id = upstream.id().to_string();
+            let revision = upstream.revision();
+            Some((site, branch_id, revision))
+        } else {
+            None
+        }
+    }
+
+    /// Check if this space has an upstream configured.
+    pub async fn has_upstream(&self) -> bool {
+        let branch = self.branch.lock().await;
+        branch.upstream().is_some()
     }
 }
 

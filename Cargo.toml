@@ -1,5 +1,5 @@
 [workspace]
-members = ["packages/cli", "packages/core", "packages/relay", "packages/space"]
+members = ["packages/cli", "packages/core", "packages/relay", "packages/space", "packages/ucan-access"]
 resolver = "2"
 
 [workspace.package]

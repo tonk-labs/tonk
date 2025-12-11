@@ -21,6 +21,7 @@ dirs = "5"
 # Async
 futures-util = "0.3"
 futures-core = "0.3"
+tokio = { version = "1", features = ["sync"] }
 
 # Dialog DB
 dialog-storage = { workspace = true }

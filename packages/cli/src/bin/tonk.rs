@@ -51,6 +51,21 @@ enum Commands {
         #[command(subcommand)]
         command: FactCommands,
     },
+
+    /// Manage remotes for syncing spaces
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommands,
+    },
+
+    /// Pull changes from the upstream remote
+    Pull,
+
+    /// Push local changes to the upstream remote
+    Push,
+
+    /// Sync with upstream (pull then push)
+    Sync,
 }
 
 #[derive(Subcommand)]
@@ -142,6 +157,12 @@ enum InspectCommands {
         /// Path to .invite file
         path: String,
     },
+
+    /// Inspect CBOR data and display as JSON
+    Cbor {
+        /// Path to .cbor file or base64-encoded CBOR string
+        input: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -199,6 +220,44 @@ enum FactCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum RemoteCommands {
+    /// Add a remote for syncing the active space
+    Add {
+        /// Name for the remote (e.g., "origin")
+        name: String,
+
+        /// S3 endpoint URL (e.g., https://s3.amazonaws.com)
+        #[arg(long, visible_alias = "host")]
+        endpoint: Option<String>,
+
+        /// S3 bucket name
+        #[arg(long)]
+        bucket: Option<String>,
+
+        /// AWS region (default: us-east-1)
+        #[arg(long)]
+        region: Option<String>,
+
+        /// AWS Access Key ID
+        #[arg(long)]
+        access_key_id: Option<String>,
+
+        /// AWS Secret Access Key
+        #[arg(long)]
+        secret_access_key: Option<String>,
+    },
+
+    /// Show the current upstream remote configuration
+    Show,
+
+    /// Remove the upstream remote
+    Delete,
+
+    /// Edit the upstream remote configuration
+    Edit,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -253,6 +312,9 @@ async fn main() -> anyhow::Result<()> {
             InspectCommands::Invite { path } => {
                 tonk_cli::space::inspect_invite(path)?;
             }
+            InspectCommands::Cbor { input } => {
+                tonk_cli::inspect::cbor(input)?;
+            }
         },
         Commands::Fact { command } => match command {
             FactCommands::Assert { the, of, is } => {
@@ -267,6 +329,36 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::fact::find(the, of, is, format).await?;
             }
         },
+        Commands::Remote { command } => match command {
+            RemoteCommands::Add {
+                name,
+                endpoint,
+                bucket,
+                region,
+                access_key_id,
+                secret_access_key,
+            } => {
+                tonk_cli::remote::add(name, endpoint, bucket, region, access_key_id, secret_access_key).await?;
+            }
+            RemoteCommands::Show => {
+                tonk_cli::remote::show().await?;
+            }
+            RemoteCommands::Delete => {
+                tonk_cli::remote::delete().await?;
+            }
+            RemoteCommands::Edit => {
+                tonk_cli::remote::edit().await?;
+            }
+        },
+        Commands::Pull => {
+            tonk_cli::remote::pull().await?;
+        }
+        Commands::Push => {
+            tonk_cli::remote::push().await?;
+        }
+        Commands::Sync => {
+            tonk_cli::remote::sync().await?;
+        }
     }
 
     Ok(())
