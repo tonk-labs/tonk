@@ -25,10 +25,7 @@ export async function loadChatHistory(): Promise<ChatHistoryFile | null> {
 /**
  * Save chat history to VFS
  */
-export async function saveChatHistory(
-  messages: ChatMessage[],
-  config: ChatConfig
-): Promise<void> {
+export async function saveChatHistory(messages: ChatMessage[], config: ChatConfig): Promise<void> {
   const data: ChatHistoryFile = {
     version: 1,
     messages,

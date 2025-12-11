@@ -1,17 +1,11 @@
-import {
-  adjectives,
-  animals,
-  uniqueNamesGenerator,
-} from 'unique-names-generator';
+import { adjectives, animals, uniqueNamesGenerator } from 'unique-names-generator';
 import { PRESENCE_COLORS } from '../../../lib/constants/presenceColors';
 
 /**
  * Generate deterministic color from userId using hash
  */
 export const getUserColor = (userId: string): string => {
-  const hash = userId
-    .split('')
-    .reduce((acc, char) => char.charCodeAt(0) + ((acc << 5) - acc), 0);
+  const hash = userId.split('').reduce((acc, char) => char.charCodeAt(0) + ((acc << 5) - acc), 0);
   return PRESENCE_COLORS[Math.abs(hash) % PRESENCE_COLORS.length];
 };
 
@@ -33,7 +27,7 @@ export const getUserName = (userId: string): string => {
 export const getInitials = (name: string): string => {
   return name
     .split(' ')
-    .map(word => word[0])
+    .map((word) => word[0])
     .join('')
     .toUpperCase();
 };

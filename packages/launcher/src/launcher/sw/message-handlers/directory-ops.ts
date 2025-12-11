@@ -2,10 +2,7 @@ import { getTonk } from '../state';
 import { logger } from '../utils/logging';
 import { postResponse } from '../utils/response';
 
-export async function handleListDirectory(message: {
-  id: string;
-  path: string;
-}): Promise<void> {
+export async function handleListDirectory(message: { id: string; path: string }): Promise<void> {
   logger.debug('Listing directory', { path: message.path });
   try {
     const tonkInstance = getTonk();

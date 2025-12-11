@@ -100,8 +100,7 @@ export async function handleInitializeFromUrl(message: {
 
   try {
     // Extract URLs from message, with defaults
-    const manifestUrl =
-      message.manifestUrl || `${TONK_SERVER_URL}/.manifest.tonk`;
+    const manifestUrl = message.manifestUrl || `${TONK_SERVER_URL}/.manifest.tonk`;
     const wsUrlInit = message.wsUrl || TONK_SERVER_URL.replace(/^http/, 'ws');
 
     // Initialize WASM (singleton - safe to call multiple times)
@@ -270,9 +269,7 @@ export async function handleInitializeFromBytes(message: {
   }
 }
 
-export async function handleGetServerUrl(message: {
-  id: string;
-}): Promise<void> {
+export async function handleGetServerUrl(message: { id: string }): Promise<void> {
   logger.debug('Getting server URL');
   postResponse({
     type: 'getServerUrl',
@@ -282,9 +279,7 @@ export async function handleGetServerUrl(message: {
   });
 }
 
-export async function handleGetManifest(message: {
-  id: string;
-}): Promise<void> {
+export async function handleGetManifest(message: { id: string }): Promise<void> {
   logger.debug('Getting manifest');
   try {
     const tonkInstance = getTonk();
@@ -321,9 +316,7 @@ export async function handlePing(): Promise<void> {
   });
 }
 
-export async function handleSetAppSlug(message: {
-  slug: string;
-}): Promise<void> {
+export async function handleSetAppSlug(message: { slug: string }): Promise<void> {
   const state = getState();
 
   if (state.status === 'active') {

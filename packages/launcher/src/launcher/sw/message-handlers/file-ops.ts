@@ -2,10 +2,7 @@ import { getTonk } from '../state';
 import { logger } from '../utils/logging';
 import { postResponse } from '../utils/response';
 
-export async function handleReadFile(message: {
-  id: string;
-  path: string;
-}): Promise<void> {
+export async function handleReadFile(message: { id: string; path: string }): Promise<void> {
   logger.debug('Reading file', { path: message.path });
   try {
     const tonkInstance = getTonk();
@@ -57,19 +54,13 @@ export async function handleWriteFile(message: {
     }
 
     // Cast content to any to satisfy TonkCore's JsonValue type
-    const content = message.content.content as Parameters<
-      typeof tonkInstance.tonk.createFile
-    >[1];
+    const content = message.content.content as Parameters<typeof tonkInstance.tonk.createFile>[1];
 
     if (message.create) {
       logger.debug('Creating new file', { path: message.path });
       if (message.content.bytes) {
         // Create file with bytes
-        await tonkInstance.tonk.createFileWithBytes(
-          message.path,
-          content,
-          message.content.bytes
-        );
+        await tonkInstance.tonk.createFileWithBytes(message.path, content, message.content.bytes);
       } else {
         // Create file with content only
         await tonkInstance.tonk.createFile(message.path, content);
@@ -78,11 +69,7 @@ export async function handleWriteFile(message: {
       logger.debug('Setting existing file', { path: message.path });
       if (message.content.bytes) {
         // Set file with bytes
-        await tonkInstance.tonk.setFileWithBytes(
-          message.path,
-          content,
-          message.content.bytes
-        );
+        await tonkInstance.tonk.setFileWithBytes(message.path, content, message.content.bytes);
       } else {
         // Set file with content only
         await tonkInstance.tonk.setFile(message.path, content);
@@ -109,10 +96,7 @@ export async function handleWriteFile(message: {
   }
 }
 
-export async function handleDeleteFile(message: {
-  id: string;
-  path: string;
-}): Promise<void> {
+export async function handleDeleteFile(message: { id: string; path: string }): Promise<void> {
   logger.debug('Deleting file', { path: message.path });
   try {
     const tonkInstance = getTonk();
@@ -181,10 +165,7 @@ export async function handleRename(message: {
   }
 }
 
-export async function handleExists(message: {
-  id: string;
-  path: string;
-}): Promise<void> {
+export async function handleExists(message: { id: string; path: string }): Promise<void> {
   logger.debug('Checking file existence', { path: message.path });
   try {
     const tonkInstance = getTonk();
@@ -230,9 +211,7 @@ export async function handleUpdateFile(message: {
     }
 
     // Cast content to any to satisfy TonkCore's JsonValue type
-    const content = message.content as Parameters<
-      typeof tonkInstance.tonk.updateFile
-    >[1];
+    const content = message.content as Parameters<typeof tonkInstance.tonk.updateFile>[1];
 
     const result = await tonkInstance.tonk.updateFile(message.path, content);
     logger.debug('File update completed', {
@@ -276,15 +255,9 @@ export async function handlePatchFile(message: {
     }
 
     // Cast value to the expected type for patchFile
-    const value = message.value as Parameters<
-      typeof tonkInstance.tonk.patchFile
-    >[2];
+    const value = message.value as Parameters<typeof tonkInstance.tonk.patchFile>[2];
 
-    const result = await tonkInstance.tonk.patchFile(
-      message.path,
-      message.jsonPath,
-      value
-    );
+    const result = await tonkInstance.tonk.patchFile(message.path, message.jsonPath, value);
 
     logger.debug('File patch completed', { path: message.path, result });
     postResponse({

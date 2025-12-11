@@ -9,19 +9,13 @@ import type { UseLinkPopoverConfig } from '@/features/editor/components/tiptap-u
 import { useLinkPopover } from '@/features/editor/components/tiptap-ui/link-popover';
 // --- UI Primitives ---
 import type { ButtonProps } from '@/features/editor/components/tiptap-ui-primitive/button';
-import {
-  Button,
-  ButtonGroup,
-} from '@/features/editor/components/tiptap-ui-primitive/button';
+import { Button, ButtonGroup } from '@/features/editor/components/tiptap-ui-primitive/button';
 import {
   Card,
   CardBody,
   CardItemGroup,
 } from '@/features/editor/components/tiptap-ui-primitive/card';
-import {
-  Input,
-  InputGroup,
-} from '@/features/editor/components/tiptap-ui-primitive/input';
+import { Input, InputGroup } from '@/features/editor/components/tiptap-ui-primitive/input';
 import {
   Popover,
   PopoverContent,
@@ -63,9 +57,7 @@ export interface LinkMainProps {
   onClose?: () => void;
 }
 
-export interface LinkPopoverProps
-  extends Omit<ButtonProps, 'type'>,
-    UseLinkPopoverConfig {
+export interface LinkPopoverProps extends Omit<ButtonProps, 'type'>, UseLinkPopoverConfig {
   /**
    * Callback for when the popover opens or closes.
    */
@@ -150,7 +142,7 @@ const LinkMain: React.FC<LinkMainProps> = ({
               type="url"
               placeholder="Paste a link..."
               value={url}
-              onChange={e => setUrl(e.target.value)}
+              onChange={(e) => setUrl(e.target.value)}
               onKeyDown={handleKeyDown}
               autoFocus
               autoComplete="off"
@@ -218,10 +210,7 @@ export const LinkContent: React.FC<{
  *
  * For custom popover implementations, use the `useLinkPopover` hook instead.
  */
-export const LinkPopover = React.forwardRef<
-  HTMLButtonElement,
-  LinkPopoverProps
->(
+export const LinkPopover = React.forwardRef<HTMLButtonElement, LinkPopoverProps>(
   (
     {
       editor: providedEditor,
@@ -238,22 +227,12 @@ export const LinkPopover = React.forwardRef<
     const { editor } = useTiptapEditor(providedEditor);
     const [isOpen, setIsOpen] = React.useState(false);
 
-    const {
-      isVisible,
-      canSet,
-      isActive,
-      url,
-      setUrl,
-      setLink,
-      removeLink,
-      openLink,
-      label,
-      Icon,
-    } = useLinkPopover({
-      editor,
-      hideWhenUnavailable,
-      onSetLink,
-    });
+    const { isVisible, canSet, isActive, url, setUrl, setLink, removeLink, openLink, label, Icon } =
+      useLinkPopover({
+        editor,
+        hideWhenUnavailable,
+        onSetLink,
+      });
 
     const handleOnOpenChange = React.useCallback(
       (nextIsOpen: boolean) => {

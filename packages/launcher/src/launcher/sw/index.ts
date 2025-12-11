@@ -25,14 +25,14 @@ logger.debug('Checking for cached state');
 setInitializationPromise(autoInitializeFromCache());
 
 // Install event
-self.addEventListener('install', _event => {
+self.addEventListener('install', (_event) => {
   logger.info('Service worker installing');
   swSelf.skipWaiting();
   logger.debug('skipWaiting called');
 });
 
 // Activate event with proper event.waitUntil for Safari compatibility
-self.addEventListener('activate', event => {
+self.addEventListener('activate', (event) => {
   logger.info('Service worker activating');
 
   (event as ExtendableEvent).waitUntil(

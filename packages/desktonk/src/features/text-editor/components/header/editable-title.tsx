@@ -7,8 +7,8 @@ import './editable-title.css';
 const MAX_TITLE_LENGTH = 100;
 
 export function EditableTitle() {
-  const title = useEditorStore(state => state.metadata.title);
-  const setTitle = useEditorStore(state => state.setTitle);
+  const title = useEditorStore((state) => state.metadata.title);
+  const setTitle = useEditorStore((state) => state.setTitle);
   const [isEditing, setIsEditing] = useState(false);
   const [localTitle, setLocalTitle] = useState(title);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -45,11 +45,7 @@ export function EditableTitle() {
 
     // If we're in the text editor with a file path, rename the file
     const filePath = searchParams.get('file');
-    if (
-      filePath &&
-      validated !== title &&
-      location.pathname === '/text-editor'
-    ) {
+    if (filePath && validated !== title && location.pathname === '/text-editor') {
       try {
         // Validate filename
         if (/[\\/]/.test(validated)) {
@@ -110,7 +106,7 @@ export function EditableTitle() {
         ref={inputRef}
         type="text"
         value={localTitle}
-        onChange={e => setLocalTitle(e.target.value)}
+        onChange={(e) => setLocalTitle(e.target.value)}
         onKeyDown={handleKeyDown}
         onBlur={handleBlur}
         className="editable-title-input"
@@ -126,7 +122,7 @@ export function EditableTitle() {
       onClick={handleClick}
       className="editable-title-display"
       tabIndex={0}
-      onKeyDown={e => {
+      onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           handleClick();

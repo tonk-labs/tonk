@@ -20,9 +20,7 @@ export const MAC_SYMBOLS: Record<string, string> = {
   capslock: '⇪',
 } as const;
 
-export function cn(
-  ...classes: (string | boolean | undefined | null)[]
-): string {
+export function cn(...classes: (string | boolean | undefined | null)[]): string {
   return classes.filter(Boolean).join(' ');
 }
 
@@ -31,10 +29,7 @@ export function cn(
  * @returns boolean indicating if the current platform is Mac
  */
 export function isMac(): boolean {
-  return (
-    typeof navigator !== 'undefined' &&
-    navigator.platform.toLowerCase().includes('mac')
-  );
+  return typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
 }
 
 /**
@@ -44,11 +39,7 @@ export function isMac(): boolean {
  * @param capitalize - Whether to capitalize the key (default: true)
  * @returns Formatted shortcut key symbol
  */
-export const formatShortcutKey = (
-  key: string,
-  isMac: boolean,
-  capitalize: boolean = true
-) => {
+export const formatShortcutKey = (key: string, isMac: boolean, capitalize: boolean = true) => {
   if (isMac) {
     const lowerKey = key.toLowerCase();
     return MAC_SYMBOLS[lowerKey] || (capitalize ? key.toUpperCase() : key);
@@ -75,8 +66,8 @@ export const parseShortcutKeys = (props: {
 
   return shortcutKeys
     .split(delimiter)
-    .map(key => key.trim())
-    .map(key => formatShortcutKey(key, isMac(), capitalize));
+    .map((key) => key.trim())
+    .map((key) => formatShortcutKey(key, isMac(), capitalize));
 };
 
 /**
@@ -85,10 +76,7 @@ export const parseShortcutKeys = (props: {
  * @param editor - The editor instance
  * @returns boolean indicating if the mark exists in the schema
  */
-export const isMarkInSchema = (
-  markName: string,
-  editor: Editor | null
-): boolean => {
+export const isMarkInSchema = (markName: string, editor: Editor | null): boolean => {
   if (!editor?.schema) return false;
   return editor.schema.spec.marks.get(markName) !== undefined;
 };
@@ -99,10 +87,7 @@ export const isMarkInSchema = (
  * @param editor - The editor instance
  * @returns boolean indicating if the node exists in the schema
  */
-export const isNodeInSchema = (
-  nodeName: string,
-  editor: Editor | null
-): boolean => {
+export const isNodeInSchema = (nodeName: string, editor: Editor | null): boolean => {
   if (!editor?.schema) return false;
   return editor.schema.spec.nodes.get(nodeName) !== undefined;
 };
@@ -160,12 +145,10 @@ export function isExtensionAvailable(
 ): boolean {
   if (!editor) return false;
 
-  const names = Array.isArray(extensionNames)
-    ? extensionNames
-    : [extensionNames];
+  const names = Array.isArray(extensionNames) ? extensionNames : [extensionNames];
 
-  const found = names.some(name =>
-    editor.extensionManager.extensions.some(ext => ext.name === name)
+  const found = names.some((name) =>
+    editor.extensionManager.extensions.some((ext) => ext.name === name)
   );
 
   if (!found) {
@@ -261,10 +244,7 @@ export function findNodePosition(props: {
  * @param types An array of node type names to check against
  * @returns boolean indicating if the selected node matches any of the specified types
  */
-export function isNodeTypeSelected(
-  editor: Editor | null,
-  types: string[] = []
-): boolean {
+export function isNodeTypeSelected(editor: Editor | null, types: string[] = []): boolean {
   if (!editor || !editor.state.selection) return false;
 
   const { state } = editor;
@@ -298,9 +278,7 @@ export const handleImageUpload = async (
   }
 
   if (file.size > MAX_FILE_SIZE) {
-    throw new Error(
-      `File size exceeds maximum allowed (${MAX_FILE_SIZE / (1024 * 1024)}MB)`
-    );
+    throw new Error(`File size exceeds maximum allowed (${MAX_FILE_SIZE / (1024 * 1024)}MB)`);
   }
 
   // Convert file to data URL
@@ -319,7 +297,7 @@ export const handleImageUpload = async (
       reject(new Error('Failed to read file'));
     };
 
-    reader.onprogress = event => {
+    reader.onprogress = (event) => {
       if (event.lengthComputable) {
         const progress = Math.round((event.loaded / event.total) * 100);
         onProgress?.({ progress });
@@ -360,10 +338,7 @@ const ATTR_WHITESPACE =
   // biome-ignore lint/suspicious/noControlCharactersInRegex: Intentional control characters for whitespace matching
   /[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g;
 
-export function isAllowedUri(
-  uri: string | undefined,
-  protocols?: ProtocolConfig
-) {
+export function isAllowedUri(uri: string | undefined, protocols?: ProtocolConfig) {
   const allowedProtocols: string[] = [
     'http',
     'https',
@@ -378,9 +353,8 @@ export function isAllowedUri(
   ];
 
   if (protocols) {
-    protocols.forEach(protocol => {
-      const nextProtocol =
-        typeof protocol === 'string' ? protocol : protocol.scheme;
+    protocols.forEach((protocol) => {
+      const nextProtocol = typeof protocol === 'string' ? protocol : protocol.scheme;
 
       if (nextProtocol) {
         allowedProtocols.push(nextProtocol);
@@ -401,11 +375,7 @@ export function isAllowedUri(
   );
 }
 
-export function sanitizeUrl(
-  inputUrl: string,
-  baseUrl: string,
-  protocols?: ProtocolConfig
-): string {
+export function sanitizeUrl(inputUrl: string, baseUrl: string, protocols?: ProtocolConfig): string {
   try {
     const url = new URL(inputUrl, baseUrl);
 

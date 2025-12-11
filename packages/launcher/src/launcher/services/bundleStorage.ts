@@ -28,7 +28,7 @@ export class BundleStorage {
         resolve(request.result);
       };
 
-      request.onupgradeneeded = event => {
+      request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME, { keyPath: 'id' });
@@ -50,10 +50,7 @@ export class BundleStorage {
    * @param data - The bundle data (excluding id and createdAt, which are handled automatically if not provided, though the interface expects full data mostly).
    *               Actually, the interface in docs says save(id, data: Omit<BundleData, 'id' | 'createdAt'>).
    */
-  async save(
-    id: string,
-    data: Omit<BundleData, 'id' | 'createdAt'>
-  ): Promise<void> {
+  async save(id: string, data: Omit<BundleData, 'id' | 'createdAt'>): Promise<void> {
     const db = await this.getDB();
     return new Promise((resolve, reject) => {
       const transaction = db.transaction([STORE_NAME], 'readwrite');
@@ -115,9 +112,8 @@ export class BundleStorage {
         reject(new Error(`Failed to list bundles: ${request.error?.message}`));
       };
 
-      request.onsuccess = event => {
-        const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>)
-          .result;
+      request.onsuccess = (event) => {
+        const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
         if (!cursor) {
           resolve(results);
           return;

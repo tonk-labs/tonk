@@ -35,7 +35,7 @@ export function handleFetch(event: FetchEvent): void {
   if (isRootRequest && appSlug) {
     // Reset state when navigating to root
     // Persist the reset so it survives service worker restarts
-    Promise.all([persistAppSlug(null), persistBundleBytes(null)]).catch(err => {
+    Promise.all([persistAppSlug(null), persistBundleBytes(null)]).catch((err) => {
       logger.error('Failed to persist state reset', { error: err });
     });
   }
@@ -51,20 +51,16 @@ export function handleFetch(event: FetchEvent): void {
     '/app/main.css',
     '/app/service-worker-bundled.js',
   ];
-  const isKnownRuntimeFile = runtimeStaticFiles.some(f => url.pathname === f);
+  const isKnownRuntimeFile = runtimeStaticFiles.some((f) => url.pathname === f);
 
   // Also check for runtime font files (all common font formats)
   const fontExtensions = ['.otf', '.ttf', '.woff', '.woff2', '.eot'];
   const isRuntimeFont =
-    url.pathname.startsWith('/app/') &&
-    fontExtensions.some(ext => url.pathname.endsWith(ext));
+    url.pathname.startsWith('/app/') && fontExtensions.some((ext) => url.pathname.endsWith(ext));
 
   // Runtime static assets (HTML, CSS, JS, fonts) always pass through to network
   // These should NEVER go through VFS - they're part of the launcher shell
-  if (
-    isRuntimePath &&
-    (hasBundleIdParam || isKnownRuntimeFile || isRuntimeFont)
-  ) {
+  if (isRuntimePath && (hasBundleIdParam || isKnownRuntimeFile || isRuntimeFont)) {
     logger.debug('Runtime static asset - passing through', {
       pathname: url.pathname,
     });
@@ -189,18 +185,12 @@ export function handleFetch(event: FetchEvent): void {
               await Promise.race([
                 initPromise,
                 new Promise((_, reject) =>
-                  setTimeout(
-                    () => reject(new Error('Initialization timeout')),
-                    15000
-                  )
+                  setTimeout(() => reject(new Error('Initialization timeout')), 15000)
                 ),
               ]);
             } catch (waitError) {
               logger.warn('Initialization wait failed or timed out', {
-                error:
-                  waitError instanceof Error
-                    ? waitError.message
-                    : String(waitError),
+                error: waitError instanceof Error ? waitError.message : String(waitError),
               });
             }
           }

@@ -28,7 +28,7 @@ export const StoreBuilder = <T extends object>(
   const useStore = syncConfig
     ? create<StoreState>()(
         sync(
-          immer(_set => ({
+          immer((_set) => ({
             ...initialState,
             // biome-ignore lint/suspicious/noExplicitAny: Middleware type compatibility requires cast
           })) as any,
@@ -41,22 +41,20 @@ export const StoreBuilder = <T extends object>(
     : persistConfig
       ? create<StoreState>()(
           persist(
-            immer(_set => ({
+            immer((_set) => ({
               ...initialState,
               // biome-ignore lint/suspicious/noExplicitAny: Middleware type compatibility requires cast
             })) as any,
             {
               name: persistConfig.name,
               storage: persistConfig.storage,
-              partialize: persistConfig.partialize as (
-                state: StoreState
-              ) => object,
+              partialize: persistConfig.partialize as (state: StoreState) => object,
               version: persistConfig.version,
             }
           )
         )
       : create<StoreState>()(
-          immer(_set => ({
+          immer((_set) => ({
             ...initialState,
             // biome-ignore lint/suspicious/noExplicitAny: Middleware type compatibility requires cast
           })) as any

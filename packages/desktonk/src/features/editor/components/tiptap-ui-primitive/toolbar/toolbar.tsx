@@ -11,9 +11,7 @@ interface ToolbarProps extends BaseProps {
   variant?: 'floating' | 'fixed';
 }
 
-const useToolbarNavigation = (
-  toolbarRef: React.RefObject<HTMLDivElement | null>
-) => {
+const useToolbarNavigation = (toolbarRef: React.RefObject<HTMLDivElement | null>) => {
   const [items, setItems] = React.useState<HTMLElement[]>([]);
 
   const collectItems = React.useCallback(() => {
@@ -42,7 +40,7 @@ const useToolbarNavigation = (
     containerRef: toolbarRef,
     items,
     orientation: 'horizontal',
-    onSelect: el => el.click(),
+    onSelect: (el) => el.click(),
     autoSelectFirstItem: false,
   });
 
@@ -52,14 +50,12 @@ const useToolbarNavigation = (
 
     const handleFocus = (e: FocusEvent) => {
       const target = e.target as HTMLElement;
-      if (toolbar.contains(target))
-        target.setAttribute('data-focus-visible', 'true');
+      if (toolbar.contains(target)) target.setAttribute('data-focus-visible', 'true');
     };
 
     const handleBlur = (e: FocusEvent) => {
       const target = e.target as HTMLElement;
-      if (toolbar.contains(target))
-        target.removeAttribute('data-focus-visible');
+      if (toolbar.contains(target)) target.removeAttribute('data-focus-visible');
     };
 
     toolbar.addEventListener('focus', handleFocus, true);
@@ -102,21 +98,14 @@ Toolbar.displayName = 'Toolbar';
 
 export const ToolbarGroup = React.forwardRef<HTMLDivElement, BaseProps>(
   ({ children, className, ...props }, ref) => (
-    <div
-      ref={ref}
-      role="group"
-      className={cn('tiptap-toolbar-group', className)}
-      {...props}
-    >
+    <div ref={ref} role="group" className={cn('tiptap-toolbar-group', className)} {...props}>
       {children}
     </div>
   )
 );
 ToolbarGroup.displayName = 'ToolbarGroup';
 
-export const ToolbarSeparator = React.forwardRef<HTMLDivElement, BaseProps>(
-  ({ ...props }, ref) => (
-    <Separator ref={ref} orientation="vertical" decorative {...props} />
-  )
-);
+export const ToolbarSeparator = React.forwardRef<HTMLDivElement, BaseProps>(({ ...props }, ref) => (
+  <Separator ref={ref} orientation="vertical" decorative {...props} />
+));
 ToolbarSeparator.displayName = 'ToolbarSeparator';

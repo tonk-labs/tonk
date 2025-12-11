@@ -14,17 +14,14 @@ import '@/features/editor/components/tiptap-ui-primitive/button/button-colors.cs
 import '@/features/editor/components/tiptap-ui-primitive/button/button-group.css';
 import '@/features/editor/components/tiptap-ui-primitive/button/button.css';
 
-export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   className?: string;
   showTooltip?: boolean;
   tooltip?: React.ReactNode;
   shortcutKeys?: string;
 }
 
-export const ShortcutDisplay: React.FC<{ shortcuts: string[] }> = ({
-  shortcuts,
-}) => {
+export const ShortcutDisplay: React.FC<{ shortcuts: string[] }> = ({ shortcuts }) => {
   if (shortcuts.length === 0) return null;
 
   return (
@@ -53,10 +50,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     },
     ref
   ) => {
-    const shortcuts = React.useMemo(
-      () => parseShortcutKeys({ shortcutKeys }),
-      [shortcutKeys]
-    );
+    const shortcuts = React.useMemo(() => parseShortcutKeys({ shortcutKeys }), [shortcutKeys]);
 
     if (!tooltip || !showTooltip) {
       return (

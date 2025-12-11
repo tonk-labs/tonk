@@ -13,11 +13,7 @@ export const GRID_START_OFFSET = 50; // pixels from top-left corner to first ico
  * Validates and safely extracts a number from metadata.
  */
 function safeNumber(value: unknown): number | undefined {
-  if (
-    typeof value === 'number' &&
-    !Number.isNaN(value) &&
-    Number.isFinite(value)
-  ) {
+  if (typeof value === 'number' && !Number.isNaN(value) && Number.isFinite(value)) {
     return value;
   }
   return undefined;
@@ -48,10 +44,7 @@ function safeString(value: unknown): string | undefined {
  * // file.desktopMeta?.x and file.desktopMeta?.y contain icon position
  * ```
  */
-export function extractDesktopFile(
-  path: string,
-  doc: DocumentData
-): DesktopFile {
+export function extractDesktopFile(path: string, doc: DocumentData): DesktopFile {
   const content = doc.content;
 
   // Validate content is an object

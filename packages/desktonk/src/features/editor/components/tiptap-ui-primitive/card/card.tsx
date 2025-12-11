@@ -6,28 +6,21 @@ import '@/features/editor/components/tiptap-ui-primitive/card/card.css';
 
 const Card = React.forwardRef<HTMLDivElement, React.ComponentProps<'div'>>(
   ({ className, ...props }, ref) => {
-    return (
-      <div ref={ref} className={cn('tiptap-card', className)} {...props} />
-    );
+    return <div ref={ref} className={cn('tiptap-card', className)} {...props} />;
   }
 );
 Card.displayName = 'Card';
 
-const CardHeader = React.forwardRef<
-  HTMLDivElement,
-  React.ComponentProps<'div'>
->(({ className, ...props }, ref) => {
-  return (
-    <div ref={ref} className={cn('tiptap-card-header', className)} {...props} />
-  );
-});
+const CardHeader = React.forwardRef<HTMLDivElement, React.ComponentProps<'div'>>(
+  ({ className, ...props }, ref) => {
+    return <div ref={ref} className={cn('tiptap-card-header', className)} {...props} />;
+  }
+);
 CardHeader.displayName = 'CardHeader';
 
 const CardBody = React.forwardRef<HTMLDivElement, React.ComponentProps<'div'>>(
   ({ className, ...props }, ref) => {
-    return (
-      <div ref={ref} className={cn('tiptap-card-body', className)} {...props} />
-    );
+    return <div ref={ref} className={cn('tiptap-card-body', className)} {...props} />;
   }
 );
 CardBody.displayName = 'CardBody';
@@ -49,35 +42,18 @@ const CardItemGroup = React.forwardRef<
 });
 CardItemGroup.displayName = 'CardItemGroup';
 
-const CardGroupLabel = React.forwardRef<
-  HTMLDivElement,
-  React.ComponentProps<'div'>
->(({ className, ...props }, ref) => {
-  return (
-    <div
-      ref={ref}
-      className={cn('tiptap-card-group-label', className)}
-      {...props}
-    />
-  );
-});
+const CardGroupLabel = React.forwardRef<HTMLDivElement, React.ComponentProps<'div'>>(
+  ({ className, ...props }, ref) => {
+    return <div ref={ref} className={cn('tiptap-card-group-label', className)} {...props} />;
+  }
+);
 CardGroupLabel.displayName = 'CardGroupLabel';
 
-const CardFooter = React.forwardRef<
-  HTMLDivElement,
-  React.ComponentProps<'div'>
->(({ className, ...props }, ref) => {
-  return (
-    <div ref={ref} className={cn('tiptap-card-footer', className)} {...props} />
-  );
-});
+const CardFooter = React.forwardRef<HTMLDivElement, React.ComponentProps<'div'>>(
+  ({ className, ...props }, ref) => {
+    return <div ref={ref} className={cn('tiptap-card-footer', className)} {...props} />;
+  }
+);
 CardFooter.displayName = 'CardFooter';
 
-export {
-  Card,
-  CardHeader,
-  CardFooter,
-  CardBody,
-  CardItemGroup,
-  CardGroupLabel,
-};
+export { Card, CardHeader, CardFooter, CardBody, CardItemGroup, CardGroupLabel };

@@ -12,8 +12,7 @@ import './global.css';
 const initDarkMode = () => {
   const isDark =
     localStorage.theme === 'dark' ||
-    (!('theme' in localStorage) &&
-      window.matchMedia('(prefers-color-scheme: dark)').matches);
+    (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.classList.toggle('dark', isDark);
 };
 initDarkMode();
@@ -23,14 +22,12 @@ function applyTheme(isDark: boolean) {
   document.documentElement.classList.toggle('dark', isDark);
   localStorage.setItem('theme', isDark ? 'dark' : 'light');
   // Dispatch custom event for components that need to react (e.g., tldraw)
-  window.dispatchEvent(
-    new CustomEvent('theme-changed', { detail: { isDark } })
-  );
+  window.dispatchEvent(new CustomEvent('theme-changed', { detail: { isDark } }));
 }
 
 // Listen for theme changes from parent window (launcher)
 if (typeof window !== 'undefined') {
-  window.addEventListener('message', event => {
+  window.addEventListener('message', (event) => {
     if (event.data?.type === 'theme-change') {
       applyTheme(event.data.isDark);
     }
