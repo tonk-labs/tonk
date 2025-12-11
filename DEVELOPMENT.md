@@ -36,7 +36,7 @@ This guide explains how to set up your development environment for working with 
 
 ### Without Nix
 
-1. **Node.js 20+** and **pnpm 9+**
+1. **Bun** (latest version)
 2. **Rust toolchain**
 3. **Docker**
 
@@ -47,7 +47,7 @@ This guide explains how to set up your development environment for working with 
 ```bash
 cd tonk
 direnv allow  # Automatically loads the environment
-pnpm install
+bun install
 ```
 
 ### With Nix (manual)
@@ -55,7 +55,7 @@ pnpm install
 ```bash
 cd tonk
 nix develop  # Enters development shell
-pnpm install
+bun install
 ```
 
 ### Without Nix
@@ -63,15 +63,14 @@ pnpm install
 If you prefer not to use Nix, you can set everything up manually:
 
 ```bash
-# Node.js, pnpm
-brew install node pnpm  # macOS
-# or use nvm, fnm, etc.
+# Install Bun
+curl -fsSL https://bun.sh/install | bash
 
 # Rust (for building relay)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Install dependencies
-pnpm install
+bun install
 ```
 
 ## Repository Structure
@@ -101,7 +100,7 @@ All tools, tests, and examples will use the specified binary.
 
 ```bash
 cd examples/demo
-pnpm run dev
+bun run dev
 ```
 
 Open http://localhost:4000
@@ -112,15 +111,15 @@ Each example follows the same pattern:
 
 ```bash
 cd examples/<example-name>
-pnpm install
-pnpm run dev
+bun install
+bun run dev
 ```
 
 ## Code Quality
 
 ### Linting and Formatting
 
-The project uses ESLint for linting and Prettier for code formatting.
+The project uses Biome for linting and code formatting.
 
 #### Available Scripts
 
@@ -128,46 +127,46 @@ The project uses ESLint for linting and Prettier for code formatting.
 
 ```bash
 # Check linting issues
-pnpm run lint
+bun run lint
 
 # Auto-fix linting issues
-pnpm run lint:fix
+bun run lint:fix
 
 # Format code
-pnpm run format
+bun run format
 
 # Check formatting
-pnpm run format:check
+bun run format:check
 
 # Run both linting and formatting checks
-pnpm run lint:all
+bun run lint:all
 
 # Auto-fix both linting and formatting
-pnpm run fix:all
+bun run fix:all
 ```
 
 ### Pre-commit Hooks
 
 The repository uses Husky for pre-commit hooks that automatically:
 
-- Run ESLint with auto-fix
-- Format code with Prettier
+- Run Biome linting with auto-fix
+- Format code with Biome
 - Stage the fixed files
 
 ## Building Packages
 
 ```bash
 # Build all packages
-pnpm run build
+bun run build
 
 # Build specific package
-cd packages/host-web && pnpm run build
+cd packages/host-web && bun run build
 ```
 
 ## Testing
 
 ```bash
-pnpm test
+bun test
 ```
 
 ## Troubleshooting
@@ -228,13 +227,13 @@ $TONK_RELAY_BINARY 8082 app.tonk
 
 If you encounter linting errors:
 
-1. Run `pnpm run lint:fix` to auto-fix issues
+1. Run `bun run lint:fix` to auto-fix issues
 2. For remaining issues, fix them manually
-3. Use ESLint disable comments sparingly
+3. Use Biome ignore comments sparingly
 
 ### Build Issues
 
 If builds fail:
 
-1. Ensure all dependencies are installed: `pnpm install`
-2. Clean and rebuild: `pnpm run clean && pnpm run build`
+1. Ensure all dependencies are installed: `bun install`
+2. Clean and rebuild: `bun run clean && bun run build`

@@ -63,18 +63,18 @@ retain control of their tools and data).
 
 ```bash
 # Install dependencies
-pnpm install
+bun install
 
 # Build packages
-pnpm build
+bun run build
 
 # Try the latergram example
 cd examples/latergram
-pnpm install && pnpm bundle create
+bun install && bun run bundle create
 
 # Run host-web to load the .tonk file
 cd packages/host-web
-pnpm dev
+bun run dev
 ```
 
 ## Resources
