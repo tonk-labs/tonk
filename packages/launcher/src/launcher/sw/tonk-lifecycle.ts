@@ -1,6 +1,6 @@
-import './types'; // Import for global type declarations
-import type { Manifest } from '@tonk/core/slim';
-import { Bundle, TonkCore } from '@tonk/core/slim';
+import "./types"; // Import for global type declarations
+import type { Manifest } from "@tonk/core/slim";
+import { Bundle, TonkCore } from "@tonk/core/slim";
 import {
   clearAllCache,
   persistBundleBytes,
@@ -8,17 +8,18 @@ import {
   restoreAppSlug,
   restoreBundleBytes,
   restoreWsUrl,
-} from './cache';
-import { startHealthMonitoring } from './connection';
-import { getState, transitionTo } from './state';
-import { logger } from './utils/logging';
-import { ensureWasmInitialized } from './wasm-init';
+} from "./cache";
+import { startHealthMonitoring } from "./connection";
+import { getState, transitionTo } from "./state";
+import { logger } from "./utils/logging";
+import { getWsUrlFromManifest } from "./utils/network";
+import { ensureWasmInitialized } from "./wasm-init";
 
 declare const TONK_SERVER_URL: string;
 
 // Helper to wait for PathIndex to sync from remote
 export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
-  logger.debug('Waiting for PathIndex to sync from remote...');
+  logger.debug("Waiting for PathIndex to sync from remote...");
 
   return new Promise((resolve) => {
     let syncDetected = false;
@@ -30,23 +31,23 @@ export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
         try {
           watcherHandle.stop();
         } catch (error) {
-          logger.warn('Error stopping PathIndex watcher on timeout', {
+          logger.warn("Error stopping PathIndex watcher on timeout", {
             error: error instanceof Error ? error.message : String(error),
           });
         }
       }
       if (!syncDetected) {
-        logger.debug('No PathIndex changes detected after 1s - proceeding');
+        logger.debug("No PathIndex changes detected after 1s - proceeding");
         resolve();
       }
     }, 1000);
 
     // Watch root directory (which watches the PathIndex document)
     tonk
-      .watchDirectory('/', (documentData: unknown) => {
+      .watchDirectory("/", (documentData: unknown) => {
         if (!syncDetected) {
           syncDetected = true;
-          logger.debug('PathIndex synced from remote', {
+          logger.debug("PathIndex synced from remote", {
             documentType: (documentData as { type?: string }).type,
           });
           clearTimeout(timeout);
@@ -56,7 +57,7 @@ export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
             try {
               watcherHandle.stop();
             } catch (error) {
-              logger.warn('Error stopping PathIndex watcher after sync', {
+              logger.warn("Error stopping PathIndex watcher after sync", {
                 error: error instanceof Error ? error.message : String(error),
               });
             }
@@ -67,12 +68,12 @@ export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
       })
       .then((watcher: { stop: () => void; document_id?: string }) => {
         watcherHandle = watcher;
-        logger.debug('PathIndex watcher established', {
-          watcherId: watcher?.document_id || 'unknown',
+        logger.debug("PathIndex watcher established", {
+          watcherId: watcher?.document_id || "unknown",
         });
       })
       .catch((error: Error) => {
-        logger.error('Failed to establish PathIndex watcher', {
+        logger.error("Failed to establish PathIndex watcher", {
           error: error.message,
         });
         // Still resolve to allow initialization to proceed
@@ -91,15 +92,18 @@ export async function autoInitializeFromCache(): Promise<void> {
     const restoredWsUrl = await restoreWsUrl();
 
     if (!restoredSlug || !bundleBytes) {
-      logger.debug('No cached state found, waiting for initialization message', {
-        hasSlug: !!restoredSlug,
-        hasBundle: !!bundleBytes,
-      });
+      logger.debug(
+        "No cached state found, waiting for initialization message",
+        {
+          hasSlug: !!restoredSlug,
+          hasBundle: !!bundleBytes,
+        },
+      );
       return;
     }
 
     // Found cached state - auto-initialize
-    logger.info('Auto-initializing from cache', {
+    logger.info("Auto-initializing from cache", {
       slug: restoredSlug,
       bundleSize: bundleBytes.length,
     });
@@ -110,39 +114,39 @@ export async function autoInitializeFromCache(): Promise<void> {
     // Create bundle and manifest
     const bundle = await Bundle.fromBytes(bundleBytes);
     const manifest = await bundle.getManifest();
-    logger.debug('Bundle and manifest restored from cache', {
+    logger.debug("Bundle and manifest restored from cache", {
       rootId: manifest.rootId,
     });
 
     // Create TonkCore instance
     const tonk = await TonkCore.fromBytes(bundleBytes, {
-      storage: { type: 'indexeddb' },
+      storage: { type: "indexeddb" },
     });
-    logger.debug('TonkCore created from cached bundle');
+    logger.debug("TonkCore created from cached bundle");
 
     // Connect to websocket
-    // Use restored WS URL if available, otherwise fallback to build-time config
-    const wsUrl = restoredWsUrl || `${TONK_SERVER_URL.replace(/^http/, 'ws')}`;
+    // Use restored WS URL if available, otherwise check manifest, then fallback to build-time config
+    const wsUrl = restoredWsUrl || getWsUrlFromManifest(manifest);
 
     // Ensure we persist the URL if we fell back to default
     if (!restoredWsUrl && wsUrl) {
       await persistWsUrl(wsUrl);
     }
 
-    logger.debug('Connecting to websocket...', {
+    logger.debug("Connecting to websocket...", {
       wsUrl,
       localRootId: manifest.rootId,
     });
     await tonk.connectWebsocket(wsUrl);
-    logger.debug('Websocket connected');
+    logger.debug("Websocket connected");
 
     // Wait for PathIndex to sync from remote
     await waitForPathIndexSync(tonk);
-    logger.info('Auto-initialization complete');
+    logger.info("Auto-initialization complete");
 
     // Transition to active state
     transitionTo({
-      status: 'active',
+      status: "active",
       bundleId: manifest.rootId,
       tonk,
       manifest,
@@ -156,12 +160,12 @@ export async function autoInitializeFromCache(): Promise<void> {
 
     startHealthMonitoring();
   } catch (error) {
-    logger.error('Auto-initialization failed', {
+    logger.error("Auto-initialization failed", {
       error: error instanceof Error ? error.message : String(error),
     });
 
     // Reset to idle state
-    transitionTo({ status: 'idle' });
+    transitionTo({ status: "idle" });
 
     // Clear cache
     await clearAllCache();
@@ -172,9 +176,9 @@ export async function autoInitializeFromCache(): Promise<void> {
 
     allClients.forEach((client: Client) => {
       client.postMessage({
-        type: 'needsReinit',
+        type: "needsReinit",
         appSlug: null,
-        reason: 'Auto-initialization failed',
+        reason: "Auto-initialization failed",
       });
     });
   }
@@ -185,9 +189,9 @@ export async function loadBundle(
   bundleBytes: Uint8Array,
   serverUrl: string,
   _messageId?: string,
-  cachedManifest?: Manifest
+  cachedManifest?: Manifest,
 ): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
-  logger.debug('Loading new bundle', {
+  logger.debug("Loading new bundle", {
     byteLength: bundleBytes.length,
     serverUrl,
     hasCachedManifest: !!cachedManifest,
@@ -203,41 +207,46 @@ export async function loadBundle(
     let manifest: Manifest;
 
     if (cachedManifest) {
-      logger.info('Using cached manifest, skipping Bundle.fromBytes', {
+      logger.info("Using cached manifest, skipping Bundle.fromBytes", {
         rootId: cachedManifest.rootId,
       });
       manifest = cachedManifest;
     } else {
-      logger.debug('No cached manifest, parsing bundle', {
+      logger.debug("No cached manifest, parsing bundle", {
         byteLength: bundleBytes.length,
       });
       const bundle = await Bundle.fromBytes(bundleBytes);
       manifest = await bundle.getManifest();
       bundle.free();
-      logger.debug('Bundle manifest extracted', { rootId: manifest.rootId });
+      logger.debug("Bundle manifest extracted", { rootId: manifest.rootId });
     }
 
     // Check if we already have this bundle loaded by comparing rootId
-    if (state.status === 'active' && state.manifest.rootId === manifest.rootId) {
-      logger.debug('Bundle already loaded with same rootId, skipping reload', {
+    if (
+      state.status === "active" &&
+      state.manifest.rootId === manifest.rootId
+    ) {
+      logger.debug("Bundle already loaded with same rootId, skipping reload", {
         rootId: manifest.rootId,
       });
       return { success: true, skipped: true };
     }
 
     // Create new TonkCore instance
-    logger.debug('Creating new TonkCore from bundle bytes');
+    logger.debug("Creating new TonkCore from bundle bytes");
     const newTonk = await TonkCore.fromBytes(bundleBytes, {
-      storage: { type: 'indexeddb' },
+      storage: { type: "indexeddb" },
     });
-    logger.debug('New TonkCore created successfully', {
+    logger.debug("New TonkCore created successfully", {
       rootId: manifest.rootId,
     });
 
-    // Get the websocket URL
+    // Get the websocket URL - check manifest first, then URL params, then server URL
+    let wsUrl = getWsUrlFromManifest(manifest, serverUrl);
+
+    // URL params can still override if present
     const urlParams = new URLSearchParams(self.location.search);
-    const bundleParam = urlParams.get('bundle');
-    let wsUrl = `${serverUrl.replace(/^http/, 'ws')}`;
+    const bundleParam = urlParams.get("bundle");
 
     if (bundleParam) {
       try {
@@ -247,13 +256,13 @@ export async function loadBundle(
           wsUrl = bundleConfig.wsUrl;
         }
       } catch (error) {
-        logger.warn('Could not parse bundle config for wsUrl', {
+        logger.warn("Could not parse bundle config for wsUrl", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
     }
 
-    logger.debug('Determined websocket URL', {
+    logger.debug("Determined websocket URL", {
       wsUrl,
       serverUrl,
     });
@@ -261,28 +270,30 @@ export async function loadBundle(
     // Connect to websocket
     await persistWsUrl(wsUrl);
 
-    logger.debug('Connecting new tonk to websocket', {
+    logger.debug("Connecting new tonk to websocket", {
       wsUrl,
       localRootId: manifest.rootId,
     });
 
     if (wsUrl) {
       await newTonk.connectWebsocket(wsUrl);
-      logger.debug('Websocket connection established');
+      logger.debug("Websocket connection established");
 
       // Wait for PathIndex to sync from remote
       await waitForPathIndexSync(newTonk);
-      logger.debug('PathIndex sync complete after loadBundle');
+      logger.debug("PathIndex sync complete after loadBundle");
     }
 
     // Get current app slug if we have one, or use a default
     const currentState = getState();
     const appSlug =
-      currentState.status === 'active' ? currentState.appSlug : manifest.entrypoints?.[0] || 'app';
+      currentState.status === "active"
+        ? currentState.appSlug
+        : manifest.entrypoints?.[0] || "app";
 
     // Transition to active state (this will cleanup old state)
     transitionTo({
-      status: 'active',
+      status: "active",
       bundleId: manifest.rootId,
       tonk: newTonk,
       manifest,
@@ -298,17 +309,17 @@ export async function loadBundle(
 
     // Persist bundle bytes to survive service worker restarts
     await persistBundleBytes(bundleBytes);
-    logger.debug('Bundle bytes persisted to cache');
+    logger.debug("Bundle bytes persisted to cache");
 
-    logger.info('Bundle loaded successfully', { rootId: manifest.rootId });
+    logger.info("Bundle loaded successfully", { rootId: manifest.rootId });
     return { success: true };
   } catch (error) {
-    logger.error('Failed to load bundle', {
+    logger.error("Failed to load bundle", {
       error: error instanceof Error ? error.message : String(error),
     });
 
     transitionTo({
-      status: 'error',
+      status: "error",
       error: error instanceof Error ? error : new Error(String(error)),
     });
 
