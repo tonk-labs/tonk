@@ -1,0 +1,3 @@
+[build]
+dockerfilePath = "packages/launcher/Dockerfile.launcher"
+watchPatterns = ["packages/launcher/**"]
