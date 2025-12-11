@@ -1,6 +1,6 @@
 use crate::error::{Result, VfsError};
 use crate::vfs::types::*;
-use automerge::{ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable};
+use automerge::{transaction::Transactable, ObjType, ReadDoc, ScalarValue, Value};
 use bytes::Bytes;
 use samod::{DocHandle, DocumentId};
 
@@ -303,7 +303,8 @@ impl AutomergeHelpers {
     ) -> Result<()> {
         match value {
             serde_json::Value::Null => {
-                tx.put(obj_id, key, ())?;
+                // Treat null as "delete key"
+                tx.delete(obj_id, key)?;
             }
             serde_json::Value::Bool(b) => {
                 tx.put(obj_id, key, *b)?;
