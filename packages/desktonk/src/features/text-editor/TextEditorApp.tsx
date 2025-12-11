@@ -52,6 +52,7 @@ function TextEditorApp() {
   });
 
   // Reset editor state when file changes or component unmounts
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filePath triggers cleanup on file change
   useEffect(() => {
     return () => {
       resetEditorState();
