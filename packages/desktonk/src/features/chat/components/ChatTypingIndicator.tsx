@@ -10,7 +10,7 @@ export function ChatTypingIndicator() {
   if (typingUsers.size === 0) return null;
 
   const typingUserNames = Array.from(typingUsers)
-    .map(userId => {
+    .map((userId) => {
       const user = users.find((u: User) => u.id === userId);
       return user?.name || 'Unknown';
     })

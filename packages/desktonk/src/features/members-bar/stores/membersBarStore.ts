@@ -20,13 +20,11 @@ export const useMembersBarStore = membersBarStore.useStore;
 const createMembersBarActions = () => {
   return {
     toggle: () => {
-      membersBarStore.set(state => {
+      membersBarStore.set((state) => {
         state.isOpen = !state.isOpen;
       });
     },
   };
 };
 
-export const useMembersBar = membersBarStore.createFactory(
-  createMembersBarActions()
-);
+export const useMembersBar = membersBarStore.createFactory(createMembersBarActions());

@@ -9,6 +9,8 @@ export type FileIconShape = TLBaseShape<
     customIcon?: string;
     /** VFS path to the thumbnail image file (e.g., /var/lib/desktonk/thumbnails/myfile.png) */
     thumbnailPath?: string;
+    /** Version counter to force TLDraw re-render when thumbnail content changes */
+    thumbnailVersion?: number;
     appHandler?: string;
     w: number;
     h: number;

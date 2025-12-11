@@ -3,11 +3,7 @@ import { getState } from '../state';
 import { logger } from '../utils/logging';
 import { postResponse } from '../utils/response';
 // Bundle operations
-import {
-  handleForkToBytes,
-  handleLoadBundle,
-  handleToBytes,
-} from './bundle-ops';
+import { handleForkToBytes, handleLoadBundle, handleToBytes } from './bundle-ops';
 
 // Directory operations
 import { handleListDirectory } from './directory-ops';
@@ -77,10 +73,7 @@ export async function handleMessage(message: Message): Promise<void> {
   }
 
   // Check if operation is allowed when not active
-  if (
-    state.status !== 'active' &&
-    !allowedWhenUninitialized.includes(msgType)
-  ) {
+  if (state.status !== 'active' && !allowedWhenUninitialized.includes(msgType)) {
     logger.warn('Operation attempted before VFS initialization', {
       type: msgType,
       status: state.status,

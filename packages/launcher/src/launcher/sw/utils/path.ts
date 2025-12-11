@@ -36,19 +36,13 @@ export function determinePath(url: URL, appSlug: string | null): string {
   if (segments[0] === appSlug) {
     // AppSlug is already present, remove it from segments
     pathSegments = segments.slice(1);
-    console.log(
-      'determinePath - appSlug already present, using remaining segments',
-      {
-        pathSegments: [...pathSegments],
-      }
-    );
+    console.log('determinePath - appSlug already present, using remaining segments', {
+      pathSegments: [...pathSegments],
+    });
   } else {
-    console.log(
-      'determinePath - appSlug not present, using all segments as path',
-      {
-        pathSegments: [...pathSegments],
-      }
-    );
+    console.log('determinePath - appSlug not present, using all segments as path', {
+      pathSegments: [...pathSegments],
+    });
   }
 
   // If no segments left or path ends with slash, default to index.html

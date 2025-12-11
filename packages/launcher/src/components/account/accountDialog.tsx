@@ -29,11 +29,7 @@ function AccountRoot({ title, children }: AccountDialogProps) {
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 min-h-dvh bg-black opacity-20 transition-all duration-150 data-ending-style:opacity-0 data-starting-style:opacity-0 dark:opacity-70 supports-[-webkit-touch-callout:none]:absolute" />
         <Dialog.Popup className="fixed top-1/2 left-1/2 -mt-8 w-96 max-w-[calc(100vw-3rem)] -translate-x-1/2 -translate-y-1/2 rounded-lg bg-night-50 dark:bg-night-900 p-6 text-night-900 outline outline-night-200 transition-all duration-150 data-ending-style:scale-90 data-ending-style:opacity-0 data-starting-style:scale-90 data-starting-style:opacity-0 dark:outline-night-900 dark:text-night-100 font-gestalt text-base">
-          {title && (
-            <Dialog.Title className="-mt-1.5 mb-1 text-lg font-bold">
-              {title}
-            </Dialog.Title>
-          )}
+          {title && <Dialog.Title className="-mt-1.5 mb-1 text-lg font-bold">{title}</Dialog.Title>}
           {children}
         </Dialog.Popup>
       </Dialog.Portal>

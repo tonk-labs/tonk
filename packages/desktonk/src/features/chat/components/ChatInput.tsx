@@ -75,7 +75,7 @@ export function ChatInput() {
       <div className="flex gap-2">
         <Input
           value={text}
-          onChange={e => {
+          onChange={(e) => {
             setText(e.target.value);
             handleTyping();
           }}

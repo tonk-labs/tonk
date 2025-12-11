@@ -3,10 +3,7 @@ import { addWatcher, getTonk, getWatcher, removeWatcher } from '../state';
 import { logger } from '../utils/logging';
 import { postResponse } from '../utils/response';
 
-export async function handleWatchFile(message: {
-  id: string;
-  path: string;
-}): Promise<void> {
+export async function handleWatchFile(message: { id: string; path: string }): Promise<void> {
   logger.debug('Starting file watch', {
     path: message.path,
     watchId: message.id,
@@ -59,9 +56,7 @@ export async function handleWatchFile(message: {
   }
 }
 
-export async function handleUnwatchFile(message: {
-  id: string;
-}): Promise<void> {
+export async function handleUnwatchFile(message: { id: string }): Promise<void> {
   logger.debug('Stopping file watch', { watchId: message.id });
   try {
     const watcher = getWatcher(message.id);
@@ -91,10 +86,7 @@ export async function handleUnwatchFile(message: {
   }
 }
 
-export async function handleWatchDirectory(message: {
-  id: string;
-  path: string;
-}): Promise<void> {
+export async function handleWatchDirectory(message: { id: string; path: string }): Promise<void> {
   logger.debug('Starting directory watch', {
     path: message.path,
     watchId: message.id,
@@ -105,22 +97,19 @@ export async function handleWatchDirectory(message: {
       throw new Error('Tonk not initialized');
     }
 
-    const watcher = await tonkInstance.tonk.watchDirectory(
-      message.path,
-      (changeData: unknown) => {
-        logger.debug('Directory change detected', {
-          watchId: message.id,
-          path: message.path,
-        });
+    const watcher = await tonkInstance.tonk.watchDirectory(message.path, (changeData: unknown) => {
+      logger.debug('Directory change detected', {
+        watchId: message.id,
+        path: message.path,
+      });
 
-        postResponse({
-          type: 'directoryChanged',
-          watchId: message.id,
-          path: message.path,
-          changeData,
-        });
-      }
-    );
+      postResponse({
+        type: 'directoryChanged',
+        watchId: message.id,
+        path: message.path,
+        changeData,
+      });
+    });
 
     if (watcher) {
       addWatcher(message.id, watcher);
@@ -148,9 +137,7 @@ export async function handleWatchDirectory(message: {
   }
 }
 
-export async function handleUnwatchDirectory(message: {
-  id: string;
-}): Promise<void> {
+export async function handleUnwatchDirectory(message: { id: string }): Promise<void> {
   logger.debug('Stopping directory watch', { watchId: message.id });
   try {
     const watcher = getWatcher(message.id);

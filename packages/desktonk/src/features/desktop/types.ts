@@ -14,6 +14,8 @@ export interface DesktopFile {
     thumbnail?: string;
     /** VFS path to the thumbnail image file */
     thumbnailPath?: string;
+    /** Version counter to force TLDraw re-render when thumbnail content changes */
+    thumbnailVersion?: number;
   };
 }
 

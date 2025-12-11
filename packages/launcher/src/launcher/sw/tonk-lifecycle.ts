@@ -20,7 +20,7 @@ declare const TONK_SERVER_URL: string;
 export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
   logger.debug('Waiting for PathIndex to sync from remote...');
 
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     let syncDetected = false;
     let watcherHandle: { stop: () => void } | null = null;
 
@@ -91,13 +91,10 @@ export async function autoInitializeFromCache(): Promise<void> {
     const restoredWsUrl = await restoreWsUrl();
 
     if (!restoredSlug || !bundleBytes) {
-      logger.debug(
-        'No cached state found, waiting for initialization message',
-        {
-          hasSlug: !!restoredSlug,
-          hasBundle: !!bundleBytes,
-        }
-      );
+      logger.debug('No cached state found, waiting for initialization message', {
+        hasSlug: !!restoredSlug,
+        hasBundle: !!bundleBytes,
+      });
       return;
     }
 
@@ -221,10 +218,7 @@ export async function loadBundle(
     }
 
     // Check if we already have this bundle loaded by comparing rootId
-    if (
-      state.status === 'active' &&
-      state.manifest.rootId === manifest.rootId
-    ) {
+    if (state.status === 'active' && state.manifest.rootId === manifest.rootId) {
       logger.debug('Bundle already loaded with same rootId, skipping reload', {
         rootId: manifest.rootId,
       });
@@ -284,9 +278,7 @@ export async function loadBundle(
     // Get current app slug if we have one, or use a default
     const currentState = getState();
     const appSlug =
-      currentState.status === 'active'
-        ? currentState.appSlug
-        : manifest.entrypoints?.[0] || 'app';
+      currentState.status === 'active' ? currentState.appSlug : manifest.entrypoints?.[0] || 'app';
 
     // Transition to active state (this will cleanup old state)
     transitionTo({

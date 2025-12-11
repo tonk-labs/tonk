@@ -99,10 +99,7 @@ export function useCanvasPersistence() {
 
           await vfs.updateFile(CANVAS_STATE_PATH, content);
         } catch (err) {
-          console.error(
-            '[useCanvasPersistence] ❌ Canvas state save failed',
-            err
-          );
+          console.error('[useCanvasPersistence] ❌ Canvas state save failed', err);
         }
       },
       { source: 'user', scope: 'document' }
@@ -131,7 +128,7 @@ export function useCanvasPersistence() {
 
     const setupWatcher = async () => {
       try {
-        watchId = await vfs.watchFile(CANVAS_STATE_PATH, async docData => {
+        watchId = await vfs.watchFile(CANVAS_STATE_PATH, async (docData) => {
           // Prevent loading during external update to avoid loops
           if (isLoadingExternal) return;
 
@@ -156,19 +153,13 @@ export function useCanvasPersistence() {
             // Load the updated snapshot from other tab
             editor.loadSnapshot(snapshot);
           } catch (err) {
-            console.error(
-              '[useCanvasPersistence] Error loading external canvas state:',
-              err
-            );
+            console.error('[useCanvasPersistence] Error loading external canvas state:', err);
           } finally {
             isLoadingExternal = false;
           }
         });
       } catch (err) {
-        console.error(
-          '[useCanvasPersistence] Error setting up file watcher:',
-          err
-        );
+        console.error('[useCanvasPersistence] Error setting up file watcher:', err);
       }
     };
 
@@ -176,7 +167,7 @@ export function useCanvasPersistence() {
 
     return () => {
       if (watchId) {
-        vfs.unwatchFile(watchId).catch(err => {
+        vfs.unwatchFile(watchId).catch((err) => {
           console.warn('[useCanvasPersistence] Error unwatching file:', err);
         });
       }

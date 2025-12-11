@@ -1,13 +1,7 @@
 import * as React from 'react';
 // --- Tiptap UI ---
-import type {
-  ListType,
-  UseListConfig,
-} from '@/features/editor/components/tiptap-ui/list-button';
-import {
-  LIST_SHORTCUT_KEYS,
-  useList,
-} from '@/features/editor/components/tiptap-ui/list-button';
+import type { ListType, UseListConfig } from '@/features/editor/components/tiptap-ui/list-button';
+import { LIST_SHORTCUT_KEYS, useList } from '@/features/editor/components/tiptap-ui/list-button';
 import { Badge } from '@/features/editor/components/tiptap-ui-primitive/badge';
 // --- UI Primitives ---
 import type { ButtonProps } from '@/features/editor/components/tiptap-ui-primitive/button';
@@ -17,9 +11,7 @@ import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
 // --- Lib ---
 import { parseShortcutKeys } from '@/lib/utils';
 
-export interface ListButtonProps
-  extends Omit<ButtonProps, 'type'>,
-    UseListConfig {
+export interface ListButtonProps extends Omit<ButtonProps, 'type'>, UseListConfig {
   /**
    * Optional text to display alongside the icon.
    */
@@ -62,15 +54,7 @@ export const ListButton = React.forwardRef<HTMLButtonElement, ListButtonProps>(
     ref
   ) => {
     const { editor } = useTiptapEditor(providedEditor);
-    const {
-      isVisible,
-      canToggle,
-      isActive,
-      handleToggle,
-      label,
-      shortcutKeys,
-      Icon,
-    } = useList({
+    const { isVisible, canToggle, isActive, handleToggle, label, shortcutKeys, Icon } = useList({
       editor,
       type,
       hideWhenUnavailable,
@@ -110,9 +94,7 @@ export const ListButton = React.forwardRef<HTMLButtonElement, ListButtonProps>(
           <>
             <Icon className="tiptap-button-icon" />
             {text && <span className="tiptap-button-text">{text}</span>}
-            {showShortcut && (
-              <ListShortcutBadge type={type} shortcutKeys={shortcutKeys} />
-            )}
+            {showShortcut && <ListShortcutBadge type={type} shortcutKeys={shortcutKeys} />}
           </>
         )}
       </Button>

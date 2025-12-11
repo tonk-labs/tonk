@@ -14,9 +14,7 @@ import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
 // --- Lib ---
 import { parseShortcutKeys } from '@/lib/utils';
 
-export interface ImageUploadButtonProps
-  extends Omit<ButtonProps, 'type'>,
-    UseImageUploadConfig {
+export interface ImageUploadButtonProps extends Omit<ButtonProps, 'type'>, UseImageUploadConfig {
   /**
    * Optional text to display alongside the icon.
    */
@@ -41,10 +39,7 @@ export function ImageShortcutBadge({
  *
  * For custom button implementations, use the `useImage` hook instead.
  */
-export const ImageUploadButton = React.forwardRef<
-  HTMLButtonElement,
-  ImageUploadButtonProps
->(
+export const ImageUploadButton = React.forwardRef<HTMLButtonElement, ImageUploadButtonProps>(
   (
     {
       editor: providedEditor,
@@ -59,19 +54,12 @@ export const ImageUploadButton = React.forwardRef<
     ref
   ) => {
     const { editor } = useTiptapEditor(providedEditor);
-    const {
-      isVisible,
-      canInsert,
-      handleImage,
-      label,
-      isActive,
-      shortcutKeys,
-      Icon,
-    } = useImageUpload({
-      editor,
-      hideWhenUnavailable,
-      onInserted,
-    });
+    const { isVisible, canInsert, handleImage, label, isActive, shortcutKeys, Icon } =
+      useImageUpload({
+        editor,
+        hideWhenUnavailable,
+        onInserted,
+      });
 
     const handleClick = React.useCallback(
       (event: React.MouseEvent<HTMLButtonElement>) => {

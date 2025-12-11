@@ -24,6 +24,7 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
     customIcon: T.optional(T.string),
     thumbnail: T.optional(T.string),
     thumbnailPath: T.optional(T.string),
+    thumbnailVersion: T.optional(T.number),
     appHandler: T.optional(T.string),
     w: T.number,
     h: T.number,
@@ -82,11 +83,7 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
           height: shape.props.h,
         }}
       >
-        <div
-          className={
-            'font-[40px] mb-2 [filter: drop-shadow(0 4px 3px rgba(0, 0, 0, 0.14))]'
-          }
-        >
+        <div className={'font-[40px] mb-2 [filter: drop-shadow(0 4px 3px rgba(0, 0, 0, 0.14))]'}>
           {hasThumbnail ? (
             <img
               src={thumbnail}

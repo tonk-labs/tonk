@@ -11,21 +11,14 @@ interface PresenceIndicatorsProps {
   maxVisible?: number;
 }
 
-export const PresenceIndicators = ({
-  className = '',
-  maxVisible,
-}: PresenceIndicatorsProps) => {
+export const PresenceIndicators = ({ className = '', maxVisible }: PresenceIndicatorsProps) => {
   const { getOnlineUsers } = usePresence();
   const activeUsers = getOnlineUsers();
 
   // Apply maxVisible limit
-  const visibleUsers = maxVisible
-    ? activeUsers.slice(0, maxVisible)
-    : activeUsers;
+  const visibleUsers = maxVisible ? activeUsers.slice(0, maxVisible) : activeUsers;
   const hiddenCount =
-    maxVisible && activeUsers.length > maxVisible
-      ? activeUsers.length - maxVisible
-      : 0;
+    maxVisible && activeUsers.length > maxVisible ? activeUsers.length - maxVisible : 0;
 
   if (activeUsers.length === 0) {
     return null;

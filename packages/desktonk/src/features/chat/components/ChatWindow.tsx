@@ -14,7 +14,7 @@ export function ChatWindow() {
   // Custom draggable hook (React 19 compatible)
   const { position, handleMouseDown, setPosition } = useDraggable({
     initialPosition: windowState.position,
-    onDragEnd: newPosition => {
+    onDragEnd: (newPosition) => {
       updateWindowPosition(newPosition.x, newPosition.y);
     },
   });
@@ -28,9 +28,7 @@ export function ChatWindow() {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const dragHandle = containerRef.current.querySelector(
-      '[data-drag-handle="true"]'
-    );
+    const dragHandle = containerRef.current.querySelector('[data-drag-handle="true"]');
     if (!dragHandle) return;
 
     const handleMouseDownEvent = (e: MouseEvent) => {
@@ -43,16 +41,10 @@ export function ChatWindow() {
       } as React.MouseEvent);
     };
 
-    dragHandle.addEventListener(
-      'mousedown',
-      handleMouseDownEvent as EventListener
-    );
+    dragHandle.addEventListener('mousedown', handleMouseDownEvent as EventListener);
 
     return () => {
-      dragHandle.removeEventListener(
-        'mousedown',
-        handleMouseDownEvent as EventListener
-      );
+      dragHandle.removeEventListener('mousedown', handleMouseDownEvent as EventListener);
     };
   }, [handleMouseDown]);
 

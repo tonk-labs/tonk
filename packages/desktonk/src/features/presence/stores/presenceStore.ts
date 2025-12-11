@@ -1,10 +1,6 @@
 import { FHS } from '../../../lib/paths';
 import { StoreBuilder } from '../../../lib/storeBuilder';
-import {
-  getUserColor,
-  getUserName,
-  initializeUserId,
-} from '../utils/userGeneration';
+import { getUserColor, getUserName, initializeUserId } from '../utils/userGeneration';
 
 export interface User {
   id: string;
@@ -26,7 +22,7 @@ const initialState: PresenceState = {
 // Create store with VFS sync middleware - only sync users, not currentUserId
 export const presenceStore = StoreBuilder(initialState, undefined, {
   path: FHS.getServicePath('presence', 'users.json'),
-  partialize: state => ({ users: state.users }), // Only sync users!
+  partialize: (state) => ({ users: state.users }), // Only sync users!
 });
 
 // Initialize current user locally after store creation
@@ -48,7 +44,7 @@ const initializeCurrentUser = () => {
     userCount: Object.keys(stateBefore.users).length,
   });
 
-  presenceStore.set(state => {
+  presenceStore.set((state) => {
     state.currentUserId = userId;
     if (!state.users[userId]) {
       state.users[userId] = initialUser;
@@ -67,21 +63,18 @@ initializeCurrentUser();
 
 // Subscribe to store changes and ALWAYS ensure currentUserId matches localStorage
 // This protects against VFS sync overwriting the local-only currentUserId
-presenceStore.subscribe(state => {
+presenceStore.subscribe((state) => {
   const currentUserId = state.currentUserId;
   const localUserId = localStorage.getItem('tonk-user-id');
 
   // ALWAYS ensure currentUserId matches localStorage, no matter how many times VFS syncs
   if (localUserId && currentUserId !== localUserId) {
-    console.log(
-      '[PresenceStore] currentUserId mismatch! Re-setting from localStorage:',
-      {
-        current: currentUserId,
-        expected: localUserId,
-      }
-    );
+    console.log('[PresenceStore] currentUserId mismatch! Re-setting from localStorage:', {
+      current: currentUserId,
+      expected: localUserId,
+    });
 
-    presenceStore.set(state => {
+    presenceStore.set((state) => {
       state.currentUserId = localUserId;
       // Also ensure this user exists in the users map
       if (!state.users[localUserId]) {
@@ -113,7 +106,7 @@ const createPresenceActions = () => {
       const { currentUserId } = store.get();
       if (!currentUserId) return;
 
-      store.set(state => {
+      store.set((state) => {
         if (state.users[currentUserId]) {
           state.users[currentUserId].lastSeen = Date.now();
         }
@@ -136,7 +129,7 @@ const createPresenceActions = () => {
       const cutoffTime = Date.now() - FIVE_MINUTES_MS;
 
       return Object.values(users)
-        .filter(user => user.lastSeen >= cutoffTime)
+        .filter((user) => user.lastSeen >= cutoffTime)
         .sort((a, b) => b.lastSeen - a.lastSeen);
     },
 
@@ -148,7 +141,7 @@ const createPresenceActions = () => {
       const cutoffTime = Date.now() - FIVE_MINUTES_MS;
 
       return Object.values(users)
-        .filter(user => user.lastSeen < cutoffTime)
+        .filter((user) => user.lastSeen < cutoffTime)
         .sort((a, b) => b.lastSeen - a.lastSeen);
     },
 

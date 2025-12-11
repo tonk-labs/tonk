@@ -24,12 +24,7 @@ export default function SideBarButton({
         className
       )}
       render={
-        <Button
-          aria-label={alt}
-          title={alt}
-          onClick={onClick}
-          className="group flex gap-8"
-        />
+        <Button aria-label={alt} title={alt} onClick={onClick} className="group flex gap-8" />
       }
     >
       <Avatar.Image

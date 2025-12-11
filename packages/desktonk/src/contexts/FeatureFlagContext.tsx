@@ -7,9 +7,7 @@ interface FeatureFlagContextValue {
   resetFlags: () => void;
 }
 
-const FeatureFlagContext = createContext<FeatureFlagContextValue | undefined>(
-  undefined
-);
+const FeatureFlagContext = createContext<FeatureFlagContextValue | undefined>(undefined);
 
 export function FeatureFlagProvider({ children }: { children: ReactNode }) {
   const { flags, setFlag, resetFlags } = useFeatureFlagStore();
@@ -24,9 +22,7 @@ export function FeatureFlagProvider({ children }: { children: ReactNode }) {
 export function useFeatureFlagContext() {
   const context = useContext(FeatureFlagContext);
   if (!context) {
-    throw new Error(
-      'useFeatureFlagContext must be used within FeatureFlagProvider'
-    );
+    throw new Error('useFeatureFlagContext must be used within FeatureFlagProvider');
   }
   return context;
 }

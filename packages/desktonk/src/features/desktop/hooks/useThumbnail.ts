@@ -17,10 +17,13 @@ const loadingPaths = new Set<string>();
  * Listeners waiting for a specific path to load.
  * Used to notify multiple components waiting for the same thumbnail.
  */
-const loadListeners = new Map<
-  string,
-  Set<(thumbnail: string | null) => void>
->();
+const loadListeners = new Map<string, Set<(thumbnail: string | null) => void>>();
+
+/**
+ * Listeners for cache invalidation.
+ * Components subscribe to be notified when their thumbnail is invalidated.
+ */
+const invalidationListeners = new Map<string, Set<() => void>>();
 
 /**
  * Hook for lazy-loading thumbnails from VFS.
@@ -34,7 +37,7 @@ export function useThumbnail(thumbnailPath: string | undefined): {
 } {
   const [thumbnail, setThumbnail] = useState<string | null>(() => {
     if (thumbnailPath && thumbnailCache.has(thumbnailPath)) {
-      return thumbnailCache.get(thumbnailPath)!;
+      return thumbnailCache.get(thumbnailPath) ?? null;
     }
     return null;
   });
@@ -46,6 +49,34 @@ export function useThumbnail(thumbnailPath: string | undefined): {
     return !!thumbnailPath;
   });
 
+  // Counter to force reload when thumbnail is invalidated
+  const [reloadTrigger, setReloadTrigger] = useState(0);
+
+  // Subscribe to invalidation events for this thumbnail path
+  useEffect(() => {
+    if (!thumbnailPath) return;
+
+    const handleInvalidation = () => {
+      // Clear local state and trigger reload
+      setThumbnail(null);
+      setIsLoading(true);
+      setReloadTrigger((prev) => prev + 1);
+    };
+
+    if (!invalidationListeners.has(thumbnailPath)) {
+      invalidationListeners.set(thumbnailPath, new Set());
+    }
+    invalidationListeners.get(thumbnailPath)?.add(handleInvalidation);
+
+    return () => {
+      invalidationListeners.get(thumbnailPath)?.delete(handleInvalidation);
+      if (invalidationListeners.get(thumbnailPath)?.size === 0) {
+        invalidationListeners.delete(thumbnailPath);
+      }
+    };
+  }, [thumbnailPath]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTrigger is intentionally used to force reload when thumbnail is invalidated
   useEffect(() => {
     // If no thumbnail path, nothing to load
     if (!thumbnailPath) {
@@ -54,9 +85,9 @@ export function useThumbnail(thumbnailPath: string | undefined): {
       return;
     }
 
-    // Check cache first
+    // Check cache first (skip if reloadTrigger changed, meaning cache was invalidated)
     if (thumbnailCache.has(thumbnailPath)) {
-      setThumbnail(thumbnailCache.get(thumbnailPath)!);
+      setThumbnail(thumbnailCache.get(thumbnailPath) ?? null);
       setIsLoading(false);
       return;
     }
@@ -69,7 +100,8 @@ export function useThumbnail(thumbnailPath: string | undefined): {
       if (!loadListeners.has(thumbnailPath)) {
         loadListeners.set(thumbnailPath, new Set());
       }
-      const listeners = loadListeners.get(thumbnailPath)!;
+      const listeners = loadListeners.get(thumbnailPath);
+      if (!listeners) return;
 
       const listener = (loadedThumbnail: string | null) => {
         setThumbnail(loadedThumbnail);
@@ -127,10 +159,7 @@ export function useThumbnail(thumbnailPath: string | undefined): {
           }
         }
       } catch (error) {
-        console.warn(
-          `[useThumbnail] Failed to load thumbnail from ${thumbnailPath}:`,
-          error
-        );
+        console.warn(`[useThumbnail] Failed to load thumbnail from ${thumbnailPath}:`, error);
         setThumbnail(null);
 
         // Notify other listeners of failure
@@ -148,7 +177,7 @@ export function useThumbnail(thumbnailPath: string | undefined): {
     };
 
     loadThumbnail();
-  }, [thumbnailPath]);
+  }, [thumbnailPath, reloadTrigger]);
 
   return { thumbnail, isLoading };
 }
@@ -156,9 +185,18 @@ export function useThumbnail(thumbnailPath: string | undefined): {
 /**
  * Clears a specific thumbnail from the cache.
  * Call this when a thumbnail is regenerated to force reload.
+ * Notifies any components currently displaying this thumbnail to reload.
  */
 export function invalidateThumbnailCache(thumbnailPath: string): void {
   thumbnailCache.delete(thumbnailPath);
+
+  // Notify any components currently displaying this thumbnail
+  const listeners = invalidationListeners.get(thumbnailPath);
+  if (listeners) {
+    for (const listener of listeners) {
+      listener();
+    }
+  }
 }
 
 /**

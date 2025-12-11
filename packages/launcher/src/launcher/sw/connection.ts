@@ -66,7 +66,7 @@ export async function attemptReconnect(): Promise<void> {
   try {
     await activeBundle.tonk.connectWebsocket(wsUrl);
 
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
     const isConnected = await activeBundle.tonk.isConnected();
 

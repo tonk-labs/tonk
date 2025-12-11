@@ -22,12 +22,7 @@ export async function handleLoadBundle(message: {
   const serverUrl = message.serverUrl || TONK_SERVER_URL;
   const bundleBytes = new Uint8Array(message.bundleBytes);
 
-  const result = await loadBundle(
-    bundleBytes,
-    serverUrl,
-    message.id,
-    message.manifest
-  );
+  const result = await loadBundle(bundleBytes, serverUrl, message.id, message.manifest);
 
   postResponse({
     type: 'loadBundle',
@@ -72,9 +67,7 @@ export async function handleToBytes(message: { id: string }): Promise<void> {
   }
 }
 
-export async function handleForkToBytes(message: {
-  id: string;
-}): Promise<void> {
+export async function handleForkToBytes(message: { id: string }): Promise<void> {
   logger.debug('Forking tonk to bytes');
   try {
     const tonkInstance = getTonk();

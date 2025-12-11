@@ -2,14 +2,8 @@
 
 import * as React from 'react';
 // --- Tiptap UI ---
-import type {
-  Mark,
-  UseMarkConfig,
-} from '@/features/editor/components/tiptap-ui/mark-button';
-import {
-  MARK_SHORTCUT_KEYS,
-  useMark,
-} from '@/features/editor/components/tiptap-ui/mark-button';
+import type { Mark, UseMarkConfig } from '@/features/editor/components/tiptap-ui/mark-button';
+import { MARK_SHORTCUT_KEYS, useMark } from '@/features/editor/components/tiptap-ui/mark-button';
 import { Badge } from '@/features/editor/components/tiptap-ui-primitive/badge';
 // --- UI Primitives ---
 import type { ButtonProps } from '@/features/editor/components/tiptap-ui-primitive/button';
@@ -19,9 +13,7 @@ import { useTiptapEditor } from '@/hooks/use-tiptap-editor';
 // --- Lib ---
 import { parseShortcutKeys } from '@/lib/utils';
 
-export interface MarkButtonProps
-  extends Omit<ButtonProps, 'type'>,
-    UseMarkConfig {
+export interface MarkButtonProps extends Omit<ButtonProps, 'type'>, UseMarkConfig {
   /**
    * Optional text to display alongside the icon.
    */
@@ -64,15 +56,7 @@ export const MarkButton = React.forwardRef<HTMLButtonElement, MarkButtonProps>(
     ref
   ) => {
     const { editor } = useTiptapEditor(providedEditor);
-    const {
-      isVisible,
-      handleMark,
-      label,
-      canToggle,
-      isActive,
-      Icon,
-      shortcutKeys,
-    } = useMark({
+    const { isVisible, handleMark, label, canToggle, isActive, Icon, shortcutKeys } = useMark({
       editor,
       type,
       hideWhenUnavailable,
@@ -112,9 +96,7 @@ export const MarkButton = React.forwardRef<HTMLButtonElement, MarkButtonProps>(
           <>
             <Icon className="tiptap-button-icon" />
             {text && <span className="tiptap-button-text">{text}</span>}
-            {showShortcut && (
-              <MarkShortcutBadge type={type} shortcutKeys={shortcutKeys} />
-            )}
+            {showShortcut && <MarkShortcutBadge type={type} shortcutKeys={shortcutKeys} />}
           </>
         )}
       </Button>

@@ -59,10 +59,7 @@ const MainToolbarContent = ({
 
       <ToolbarGroup>
         <HeadingDropdownMenu levels={[1, 2, 3, 4]} portal={isMobile} />
-        <ListDropdownMenu
-          types={['bulletList', 'orderedList', 'taskList']}
-          portal={isMobile}
-        />
+        <ListDropdownMenu types={['bulletList', 'orderedList', 'taskList']} portal={isMobile} />
         <BlockquoteButton />
         <CodeBlockButton />
       </ToolbarGroup>
@@ -137,11 +134,7 @@ const MobileToolbarContent = ({
 
     <ToolbarSeparator />
 
-    {type === 'highlighter' ? (
-      <ColorHighlightPopoverContent />
-    ) : (
-      <LinkContent />
-    )}
+    {type === 'highlighter' ? <ColorHighlightPopoverContent /> : <LinkContent />}
   </>
 );
 
@@ -152,9 +145,7 @@ interface SimpleEditorProps {
 export function SimpleEditor({ editor }: SimpleEditorProps) {
   const isMobile = useIsMobile();
   const { height } = useWindowSize();
-  const [mobileView, setMobileView] = React.useState<
-    'main' | 'highlighter' | 'link'
-  >('main');
+  const [mobileView, setMobileView] = React.useState<'main' | 'highlighter' | 'link'>('main');
   const toolbarRef = React.useRef<HTMLDivElement>(null);
 
   const rect = useCursorVisibility({
@@ -204,11 +195,7 @@ export function SimpleEditor({ editor }: SimpleEditorProps) {
 
       <div className="editor-container">
         <article id="editor-area">
-          <EditorContent
-            editor={editor}
-            role="presentation"
-            className="simple-editor-content"
-          />
+          <EditorContent editor={editor} role="presentation" className="simple-editor-content" />
         </article>
       </div>
     </EditorContext.Provider>

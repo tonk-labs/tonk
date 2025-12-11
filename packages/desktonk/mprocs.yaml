@@ -1,9 +1,9 @@
 procs:
   launcher:
-    shell: cd ../launcher && bun run dev
+    shell: cd ../launcher && NODE_ENV=develoment bun run dev
 
   desktonk:
-    shell: bunx vite
+    shell: mkdir -p automerge-repo-data && rm -rf automerge-repo-data && NODE_ENV=develoment bunx vite
 
   relay:
     shell: bun scripts/run-relay.ts

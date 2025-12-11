@@ -60,28 +60,18 @@ export const listOptions: ListOption[] = [
   },
 ];
 
-export function canToggleAnyList(
-  editor: Editor | null,
-  listTypes: ListType[]
-): boolean {
+export function canToggleAnyList(editor: Editor | null, listTypes: ListType[]): boolean {
   if (!editor || !editor.isEditable) return false;
-  return listTypes.some(type => canToggleList(editor, type));
+  return listTypes.some((type) => canToggleList(editor, type));
 }
 
-export function isAnyListActive(
-  editor: Editor | null,
-  listTypes: ListType[]
-): boolean {
+export function isAnyListActive(editor: Editor | null, listTypes: ListType[]): boolean {
   if (!editor || !editor.isEditable) return false;
-  return listTypes.some(type => isListActive(editor, type));
+  return listTypes.some((type) => isListActive(editor, type));
 }
 
-export function getFilteredListOptions(
-  availableTypes: ListType[]
-): typeof listOptions {
-  return listOptions.filter(
-    option => !option.type || availableTypes.includes(option.type)
-  );
+export function getFilteredListOptions(availableTypes: ListType[]): typeof listOptions {
+  return listOptions.filter((option) => !option.type || availableTypes.includes(option.type));
 }
 
 export function shouldShowListDropdown(params: {
@@ -112,7 +102,7 @@ export function getActiveListType(
   availableTypes: ListType[]
 ): ListType | undefined {
   if (!editor || !editor.isEditable) return undefined;
-  return availableTypes.find(type => isListActive(editor, type));
+  return availableTypes.find((type) => isListActive(editor, type));
 }
 
 /**
@@ -164,17 +154,14 @@ export function useListDropdownMenu(config?: UseListDropdownMenuConfig) {
   const { editor } = useTiptapEditor(providedEditor);
   const [isVisible, setIsVisible] = React.useState(false);
 
-  const listInSchema = types.some(type => isNodeInSchema(type, editor));
+  const listInSchema = types.some((type) => isNodeInSchema(type, editor));
 
-  const filteredLists = React.useMemo(
-    () => getFilteredListOptions(types),
-    [types]
-  );
+  const filteredLists = React.useMemo(() => getFilteredListOptions(types), [types]);
 
   const canToggleAny = canToggleAnyList(editor, types);
   const isAnyActive = isAnyListActive(editor, types);
   const activeType = getActiveListType(editor, types);
-  const activeList = filteredLists.find(option => option.type === activeType);
+  const activeList = filteredLists.find((option) => option.type === activeType);
 
   React.useEffect(() => {
     if (!editor) return;

@@ -15,7 +15,7 @@ console.log(`[watch-sw-copy] Output: ${OUTPUT_DIR}/${SW_FILE}`);
 await mkdir(OUTPUT_DIR, { recursive: true });
 
 // Initial delay to let vite build complete first
-await new Promise(resolve => setTimeout(resolve, 2000));
+await new Promise((resolve) => setTimeout(resolve, 2000));
 
 // Copy function with retry
 async function copyWithRetry(retries = 3) {
@@ -28,12 +28,9 @@ async function copyWithRetry(retries = 3) {
       return;
     } catch (err) {
       if (i < retries - 1) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 500));
       } else {
-        console.error(
-          `[watch-sw-copy] Failed to copy after ${retries} attempts:`,
-          err
-        );
+        console.error(`[watch-sw-copy] Failed to copy after ${retries} attempts:`, err);
       }
     }
   }
@@ -44,7 +41,7 @@ watch(DIST_SW, { recursive: false }, async (_eventType, filename) => {
   if (filename === SW_FILE) {
     console.log(`[watch-sw-copy] Detected change in ${filename}, copying...`);
     // Small delay to ensure file is fully written
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await copyWithRetry();
   }
 });
