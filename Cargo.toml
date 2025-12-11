@@ -1,0 +1,28 @@
+[workspace]
+members = ["rust/tonk-core"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Tonk Labs"]
+license = "MIT"
+edition = "2024"
+
+[workspace.dependencies]
+tonk-core = { path = "./rust/tonk-core" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.wasm-release]
+opt-level = "s"
+debug = 0
+inherits = "release"
+strip = "debuginfo"

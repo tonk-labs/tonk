@@ -1,0 +1,6 @@
+[package]
+name = "tonk-core"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
