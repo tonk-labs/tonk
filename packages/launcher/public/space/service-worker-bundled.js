@@ -3392,8 +3392,8 @@ async function nn(e) {
 }
 var rn = self;
 (u.info(`Service worker starting`, {
-  version: `mj2x91rn`,
-  buildTime: `2025-12-12T13:47:36.370Z`,
+  version: `mj2zw6l0`,
+  buildTime: `2025-12-12T15:01:34.931Z`,
   location: self.location.href,
 }),
   u.debug(`Checking for cached state`),

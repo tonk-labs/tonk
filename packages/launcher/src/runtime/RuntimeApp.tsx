@@ -75,6 +75,60 @@ function AppContent() {
     }
   }, [showLoadingScreen, queryAvailableApps, confirmBoot, showError]);
 
+  // Handle activation message from parent (when iframe becomes visible again)
+  useEffect(() => {
+    const handleActivate = async (event: MessageEvent) => {
+      if (event.data?.type !== "tonk:activate") return;
+
+      console.log("[Runtime] Received tonk:activate, reloading bundle...");
+
+      const urlParams = new URLSearchParams(window.location.search);
+      const bundleId = urlParams.get("bundleId");
+
+      if (!bundleId) {
+        console.warn("[Runtime] No bundleId in URL, cannot reload");
+        return;
+      }
+
+      try {
+        const bundleData = await bundleStorage.get(bundleId);
+        if (!bundleData) {
+          console.error("[Runtime] Bundle not found:", bundleId);
+          return;
+        }
+
+        // Re-send loadBundle to ensure correct TonkCore is active in SW
+        const response = await sendMessage({
+          type: "loadBundle",
+          bundleBytes: bundleData.bytes,
+          manifest: bundleData.manifest,
+        });
+
+        // @ts-expect-error - Response type is generic
+        if (response.success) {
+          // @ts-expect-error - Response type is generic
+          if (response.skipped) {
+            console.log("[Runtime] Bundle already active, no reload needed");
+          } else {
+            console.log(
+              "[Runtime] Bundle reloaded, notifying app to reset state",
+            );
+            // Notify the app (desktonk) to reset its state and reload from VFS
+            window.postMessage({ type: "tonk:bundleReloaded" }, "*");
+          }
+        } else {
+          // @ts-expect-error - Response type is generic
+          console.error("[Runtime] Failed to reload bundle:", response.error);
+        }
+      } catch (error) {
+        console.error("[Runtime] Error reloading bundle:", error);
+      }
+    };
+
+    window.addEventListener("message", handleActivate);
+    return () => window.removeEventListener("message", handleActivate);
+  }, [sendMessage]);
+
   // Initialize and boot
   useEffect(() => {
     const notifyServiceWorkerSupport = (supported: boolean, error?: string) => {
