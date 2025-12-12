@@ -11,11 +11,11 @@
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      flake-utils,
-      fenix,
+    { self
+    , nixpkgs
+    , flake-utils
+    , fenix
+    ,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -50,6 +50,10 @@
           # Rust + WASM
           wasm-pack
           llvmPackages.bintools
+        ] ++ lib.optionals stdenv.isLinux [
+          # Linux-specific library dependencies
+          pkg-config
+          dbus
         ];
 
         # Common shell hook header
@@ -128,6 +132,9 @@
             fi
           fi
 
+          # NOTE: Needed for the `tonk-cli` crate
+          export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.dbus ]}:$LD_LIBRARY_PATH"
+
           echo ""
           echo "✅ Development environment ready!"
           echo ""
@@ -181,6 +188,7 @@
           shellHook =
             shellHeader
             + ''
+
               if [ -n "$TONK_RELAY_BINARY" ] && [ -f "$TONK_RELAY_BINARY" ]; then
                 echo "Relay: Proprietary"
                 echo ""
