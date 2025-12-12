@@ -143,6 +143,9 @@ export async function handleMessage(message: Message): Promise<void> {
         ...(message.manifest !== undefined && {
           manifest: message.manifest as Manifest,
         }),
+        ...(message.launcherBundleId !== undefined && {
+          launcherBundleId: message.launcherBundleId as string,
+        }),
       });
       break;
 

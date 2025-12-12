@@ -99,6 +99,8 @@ export interface Manifest {
 export interface StorageConfig {
   /** Storage type: 'memory' for in-memory storage, 'indexeddb' for IndexedDB storage */
   type: 'memory' | 'indexeddb';
+  /** Optional namespace for IndexedDB isolation (creates separate database per namespace) */
+  namespace?: string;
 }
 
 /**
@@ -406,7 +408,8 @@ export class TonkCore {
       const { create_tonk_with_config } = module;
       const wasm = await create_tonk_with_config(
         config.peerId,
-        config.storage.type === 'indexeddb'
+        config.storage.type === 'indexeddb',
+        config.storage.namespace
       );
       return new TonkCore(wasm);
     } else if (config?.peerId) {
@@ -416,7 +419,8 @@ export class TonkCore {
     } else if (config?.storage) {
       const { create_tonk_with_storage } = module;
       const wasm = await create_tonk_with_storage(
-        config.storage.type === 'indexeddb'
+        config.storage.type === 'indexeddb',
+        config.storage.namespace
       );
       return new TonkCore(wasm);
     } else {
@@ -475,7 +479,8 @@ export class TonkCore {
       const { create_tonk_from_bundle_with_storage } = module;
       const wasm = await create_tonk_from_bundle_with_storage(
         bundle,
-        config.storage.type === 'indexeddb'
+        config.storage.type === 'indexeddb',
+        config.storage.namespace
       );
       return new TonkCore(wasm);
     } else {
@@ -516,7 +521,8 @@ export class TonkCore {
       const { create_tonk_from_bytes_with_storage } = module;
       const wasm = await create_tonk_from_bytes_with_storage(
         data,
-        config.storage.type === 'indexeddb'
+        config.storage.type === 'indexeddb',
+        config.storage.namespace
       );
       return new TonkCore(wasm);
     } else {
