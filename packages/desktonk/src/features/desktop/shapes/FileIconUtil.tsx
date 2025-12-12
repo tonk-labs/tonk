@@ -21,11 +21,12 @@ export class FileIconUtil extends ShapeUtil<FileIconShape> {
     filePath: T.string,
     fileName: T.string,
     mimeType: T.string,
-    customIcon: T.optional(T.string),
-    thumbnail: T.optional(T.string),
-    thumbnailPath: T.optional(T.string),
-    thumbnailVersion: T.optional(T.number),
-    appHandler: T.optional(T.string),
+    // Use .nullable().optional() to handle JSON round-trip (undefined -> null)
+    customIcon: T.string.nullable().optional(),
+    thumbnail: T.string.nullable().optional(),
+    thumbnailPath: T.string.nullable().optional(),
+    thumbnailVersion: T.number.nullable().optional(),
+    appHandler: T.string.nullable().optional(),
     w: T.number,
     h: T.number,
   };

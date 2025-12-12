@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button/button';
 import { ChatWindow, useChat } from '@/features/chat';
-import { getMimeType } from '@/features/desktop/utils/mimeResolver';
 import { Editor } from '@/features/editor';
 import { useEditorStore } from '@/features/editor/stores/editorStore';
 import { usePresenceTracking } from '@/features/presence';
@@ -12,13 +11,29 @@ import { useVFS } from '@/hooks/useVFS';
 import { useEditorVFSSave } from './hooks/useEditorVFSSave';
 import './index.css';
 
+// Helper to detect markdown files by extension
+function isMarkdownFile(filePath: string): boolean {
+  const ext = filePath.split('.').pop()?.toLowerCase();
+  return ext === 'md' || ext === 'markdown';
+}
+
 function TextEditorApp() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { vfs, connectionState } = useVFS();
-  const { setDocument, setTitle } = useEditorStore();
+  const {
+    setDocument,
+    setTitle,
+    setEditorMode,
+    setIsMarkdownFile: setIsMarkdownFileInStore,
+    setRawMarkdownContent,
+    resetEditorState,
+    editorMode,
+    isMarkdownFile: isMarkdownFileState,
+  } = useEditorStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [initialMarkdownContent, setInitialMarkdownContent] = useState<string | null>(null);
 
   // Enable presence tracking
   usePresenceTracking();
@@ -35,6 +50,14 @@ function TextEditorApp() {
     vfs,
     debounceMs: 1000,
   });
+
+  // Reset editor state when file changes or component unmounts
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filePath triggers cleanup on file change
+  useEffect(() => {
+    return () => {
+      resetEditorState();
+    };
+  }, [filePath, resetEditorState]);
 
   useEffect(() => {
     const loadFile = async () => {
@@ -95,32 +118,32 @@ function TextEditorApp() {
         const fileName = filePath.split('/').pop() || 'Untitled';
         setTitle(fileName);
 
-        // Convert text to TipTap JSONContent format
-        const mimeType = getMimeType(filePath);
+        // Determine if this is a markdown file
+        const isMd = isMarkdownFile(filePath);
+        setIsMarkdownFileInStore(isMd);
 
-        if (mimeType === 'text/html') {
-          // For HTML, create a single paragraph with the content
-          const htmlContent: JSONContent = {
-            type: 'doc',
-            content: [
-              {
-                type: 'paragraph',
-                content: [{ type: 'text', text: text }],
-              },
-            ],
-          };
-          setDocument(htmlContent);
+        // Set editor mode based on file type
+        // Markdown files get rich text, other files get plain text
+        setEditorMode(isMd ? 'richtext' : 'plaintext');
+
+        // Handle content based on file type
+        if (isMd) {
+          // For markdown files: store raw markdown and let Editor parse it
+          setRawMarkdownContent(text);
+          setInitialMarkdownContent(text);
+          // Don't set document - let the Editor handle parsing with markdown extension
         } else {
-          // Convert plain text to paragraph nodes to preserve newlines
+          // For non-markdown files: convert to simple paragraph structure
           const lines = text.split('\n');
           const content: JSONContent = {
             type: 'doc',
             content: lines.map((line) => ({
               type: 'paragraph',
-              content: line.trim() ? [{ type: 'text', text: line }] : [],
+              content: line ? [{ type: 'text', text: line }] : [],
             })),
           };
           setDocument(content);
+          setInitialMarkdownContent(null);
         }
 
         setLoading(false);
@@ -132,7 +155,16 @@ function TextEditorApp() {
     };
 
     loadFile();
-  }, [filePath, vfs, connectionState, setDocument, setTitle]);
+  }, [
+    filePath,
+    vfs,
+    connectionState,
+    setDocument,
+    setTitle,
+    setEditorMode,
+    setIsMarkdownFileInStore,
+    setRawMarkdownContent,
+  ]);
 
   const content = useMemo(() => {
     if (error) {
@@ -162,8 +194,23 @@ function TextEditorApp() {
       );
     }
 
-    return <Editor />;
-  }, [connectionState, error, loading, navigate]);
+    // Pass mode and initial content to Editor
+    return (
+      <Editor
+        initialContent={initialMarkdownContent ?? undefined}
+        editorMode={editorMode}
+        isMarkdownFile={isMarkdownFileState}
+      />
+    );
+  }, [
+    connectionState,
+    error,
+    loading,
+    navigate,
+    initialMarkdownContent,
+    editorMode,
+    isMarkdownFileState,
+  ]);
 
   return (
     <div

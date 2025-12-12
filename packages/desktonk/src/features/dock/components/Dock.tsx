@@ -103,7 +103,7 @@ export function Dock() {
               alt={item.label}
               className="h-12 w-12 object-contain transition-transform duration-150 ease-out"
             />
-            <span className="whitespace-nowrap text-[11px] opacity-0 group-hover:opacity-100 group-hover:text-black transition-opacity duration-150 ease-out">
+            <span className="whitespace-nowrap text-[11px] opacity-0 group-hover:opacity-100 text-black transition-opacity duration-150 ease-out dark:text-white">
               {item.label}
             </span>
           </button>

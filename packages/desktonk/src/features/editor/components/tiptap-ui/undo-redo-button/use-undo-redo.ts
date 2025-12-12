@@ -54,7 +54,12 @@ export function canExecuteUndoRedoAction(editor: Editor | null, action: UndoRedo
   if (!editor || !editor.isEditable) return false;
   if (isNodeTypeSelected(editor, ['image'])) return false;
 
-  return action === 'undo' ? editor.can().undo() : editor.can().redo();
+  // Defensive check for editor destruction state - editor.can() may return
+  // an incomplete object without undo/redo methods during teardown
+  const can = editor.can();
+  if (!can || typeof can[action] !== 'function') return false;
+
+  return action === 'undo' ? can.undo() : can.redo();
 }
 
 /**

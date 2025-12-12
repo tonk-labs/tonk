@@ -55,6 +55,10 @@ export class DesktopService {
   private pendingSaves = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly POSITION_SAVE_DEBOUNCE_MS = 500;
 
+  // Debounce state for file change handling (coalesce rapid rename events)
+  private filesChangeTimeout: ReturnType<typeof setTimeout> | null = null;
+  private readonly FILES_CHANGE_DEBOUNCE_MS = 100;
+
   /**
    * Initialize the service and start watching.
    */
@@ -291,6 +295,12 @@ export class DesktopService {
     }
     this.pendingSaves.clear();
 
+    // Clear pending files change debounce
+    if (this.filesChangeTimeout) {
+      clearTimeout(this.filesChangeTimeout);
+      this.filesChangeTimeout = null;
+    }
+
     if (this.filesWatcherId) {
       await vfs.unwatchDirectory(this.filesWatcherId);
       this.filesWatcherId = null;
@@ -453,9 +463,10 @@ export class DesktopService {
     const vfs = getVFSService();
 
     // Watch user files directory (note: only fires for local changes, not remote)
+    // Debounced to coalesce rapid events from non-atomic rename operations
     this.filesWatcherId = await vfs.watchDirectory(DESKTOP_DIRECTORY, (changeData) => {
       console.log('[DesktopService] ⚡ Files directory changed (local):', changeData);
-      this.handleFilesChange();
+      this.handleFilesChangeDebounced();
     });
     console.log(
       '[DesktopService] ✅ Watching files directory:',
@@ -536,6 +547,20 @@ export class DesktopService {
         console.error(`[DesktopService] Error setting up watcher for ${fileId}:`, err);
       }
     }
+  }
+
+  /**
+   * Debounced wrapper for handleFilesChange to coalesce rapid events.
+   * This is critical for rename operations which trigger multiple watcher events.
+   */
+  private handleFilesChangeDebounced(): void {
+    if (this.filesChangeTimeout) {
+      clearTimeout(this.filesChangeTimeout);
+    }
+    this.filesChangeTimeout = setTimeout(() => {
+      this.filesChangeTimeout = null;
+      this.handleFilesChange();
+    }, this.FILES_CHANGE_DEBOUNCE_MS);
   }
 
   private async handleFilesChange(): Promise<void> {
