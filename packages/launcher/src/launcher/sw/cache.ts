@@ -6,6 +6,7 @@ export const CACHE_NAME = "tonk-sw-state-v2";
 export const APP_SLUG_URL = "/tonk-state/appSlug";
 export const BUNDLE_BYTES_URL = "/tonk-state/bundleBytes";
 export const WS_URL_KEY = "/tonk-state/wsUrl";
+export const NAMESPACE_KEY = "/tonk-state/namespace";
 
 export async function persistAppSlug(slug: string | null): Promise<void> {
   try {
@@ -135,11 +136,54 @@ export async function restoreWsUrl(): Promise<string | null> {
   }
 }
 
+export async function persistNamespace(
+  namespace: string | null,
+): Promise<void> {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+
+    if (namespace === null) {
+      await cache.delete(NAMESPACE_KEY);
+    } else {
+      const response = new Response(JSON.stringify({ namespace }), {
+        headers: { "Content-Type": "application/json" },
+      });
+      await cache.put(NAMESPACE_KEY, response);
+    }
+
+    logger.debug("Namespace persisted to cache", { namespace });
+  } catch (error) {
+    logger.error("Failed to persist namespace", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+export async function restoreNamespace(): Promise<string | null> {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const response = await cache.match(NAMESPACE_KEY);
+
+    if (!response) {
+      return null;
+    }
+
+    const data = await response.json();
+    return data.namespace || null;
+  } catch (error) {
+    logger.error("Failed to restore namespace", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 // Clear all cached state
 export async function clearAllCache(): Promise<void> {
   await Promise.all([
     persistAppSlug(null),
     persistBundleBytes(null),
     persistWsUrl(null),
+    persistNamespace(null),
   ]);
 }

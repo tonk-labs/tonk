@@ -1,12 +1,16 @@
-import type { Manifest } from '@tonk/core/slim';
-import { getState } from '../state';
-import { logger } from '../utils/logging';
-import { postResponse } from '../utils/response';
+import type { Manifest } from "@tonk/core/slim";
+import { getState } from "../state";
+import { logger } from "../utils/logging";
+import { postResponse } from "../utils/response";
 // Bundle operations
-import { handleForkToBytes, handleLoadBundle, handleToBytes } from './bundle-ops';
+import {
+  handleForkToBytes,
+  handleLoadBundle,
+  handleToBytes,
+} from "./bundle-ops";
 
 // Directory operations
-import { handleListDirectory } from './directory-ops';
+import { handleListDirectory } from "./directory-ops";
 // File operations
 import {
   handleDeleteFile,
@@ -16,7 +20,7 @@ import {
   handleRename,
   handleUpdateFile,
   handleWriteFile,
-} from './file-ops';
+} from "./file-ops";
 // Init operations
 import {
   handleGetManifest,
@@ -26,55 +30,58 @@ import {
   handleInitializeFromUrl,
   handlePing,
   handleSetAppSlug,
-} from './init-ops';
+} from "./init-ops";
 // Watch operations
 import {
   handleUnwatchDirectory,
   handleUnwatchFile,
   handleWatchDirectory,
   handleWatchFile,
-} from './watch-ops';
+} from "./watch-ops";
 
 // Message type - we use unknown and cast in handlers
 type Message = Record<string, unknown>;
 
 // Operations allowed when tonk is not initialized
 const allowedWhenUninitialized = [
-  'init',
-  'loadBundle',
-  'initializeFromUrl',
-  'initializeFromBytes',
-  'getServerUrl',
-  'ping',
-  'setAppSlug',
+  "init",
+  "loadBundle",
+  "initializeFromUrl",
+  "initializeFromBytes",
+  "getServerUrl",
+  "ping",
+  "setAppSlug",
 ];
 
 export async function handleMessage(message: Message): Promise<void> {
   const msgType = message.type as string;
   const msgId = message.id as string | undefined;
 
-  logger.debug('Received message', {
+  logger.debug("Received message", {
     type: msgType,
-    id: msgId || 'N/A',
+    id: msgId || "N/A",
   });
 
   const state = getState();
 
   // Handle setAppSlug separately (doesn't require active state)
-  if (msgType === 'setAppSlug') {
+  if (msgType === "setAppSlug") {
     await handleSetAppSlug({ slug: message.slug as string });
     return;
   }
 
   // Handle ping separately
-  if (msgType === 'ping') {
+  if (msgType === "ping") {
     await handlePing();
     return;
   }
 
   // Check if operation is allowed when not active
-  if (state.status !== 'active' && !allowedWhenUninitialized.includes(msgType)) {
-    logger.warn('Operation attempted before VFS initialization', {
+  if (
+    state.status !== "active" &&
+    !allowedWhenUninitialized.includes(msgType)
+  ) {
+    logger.warn("Operation attempted before VFS initialization", {
       type: msgType,
       status: state.status,
     });
@@ -83,7 +90,7 @@ export async function handleMessage(message: Message): Promise<void> {
         type: msgType,
         id: msgId,
         success: false,
-        error: 'VFS not initialized. Please load a bundle first.',
+        error: "VFS not initialized. Please load a bundle first.",
       });
     }
     return;
@@ -92,7 +99,7 @@ export async function handleMessage(message: Message): Promise<void> {
   // Route to appropriate handler
   switch (msgType) {
     // Init operations
-    case 'init':
+    case "init":
       await handleInit({
         ...(msgId !== undefined && { id: msgId }),
         manifest: message.manifest as ArrayBuffer,
@@ -100,7 +107,7 @@ export async function handleMessage(message: Message): Promise<void> {
       });
       break;
 
-    case 'initializeFromUrl':
+    case "initializeFromUrl":
       await handleInitializeFromUrl({
         ...(msgId !== undefined && { id: msgId }),
         ...(message.manifestUrl !== undefined && {
@@ -113,7 +120,7 @@ export async function handleMessage(message: Message): Promise<void> {
       });
       break;
 
-    case 'initializeFromBytes':
+    case "initializeFromBytes":
       await handleInitializeFromBytes({
         ...(msgId !== undefined && { id: msgId }),
         bundleBytes: message.bundleBytes as ArrayBuffer,
@@ -124,16 +131,16 @@ export async function handleMessage(message: Message): Promise<void> {
       });
       break;
 
-    case 'getServerUrl':
+    case "getServerUrl":
       await handleGetServerUrl({ id: msgId as string });
       break;
 
-    case 'getManifest':
+    case "getManifest":
       await handleGetManifest({ id: msgId as string });
       break;
 
     // Bundle operations
-    case 'loadBundle':
+    case "loadBundle":
       await handleLoadBundle({
         ...(msgId !== undefined && { id: msgId }),
         bundleBytes: message.bundleBytes as ArrayBuffer,
@@ -143,26 +150,29 @@ export async function handleMessage(message: Message): Promise<void> {
         ...(message.manifest !== undefined && {
           manifest: message.manifest as Manifest,
         }),
+        ...(message.launcherBundleId !== undefined && {
+          launcherBundleId: message.launcherBundleId as string,
+        }),
       });
       break;
 
-    case 'toBytes':
+    case "toBytes":
       await handleToBytes({ id: msgId as string });
       break;
 
-    case 'forkToBytes':
+    case "forkToBytes":
       await handleForkToBytes({ id: msgId as string });
       break;
 
     // File operations
-    case 'readFile':
+    case "readFile":
       await handleReadFile({
         id: msgId as string,
         path: message.path as string,
       });
       break;
 
-    case 'writeFile':
+    case "writeFile":
       await handleWriteFile({
         id: msgId as string,
         path: message.path as string,
@@ -173,14 +183,14 @@ export async function handleMessage(message: Message): Promise<void> {
       });
       break;
 
-    case 'deleteFile':
+    case "deleteFile":
       await handleDeleteFile({
         id: msgId as string,
         path: message.path as string,
       });
       break;
 
-    case 'rename':
+    case "rename":
       await handleRename({
         id: msgId as string,
         oldPath: message.oldPath as string,
@@ -188,14 +198,14 @@ export async function handleMessage(message: Message): Promise<void> {
       });
       break;
 
-    case 'exists':
+    case "exists":
       await handleExists({
         id: msgId as string,
         path: message.path as string,
       });
       break;
 
-    case 'patchFile':
+    case "patchFile":
       await handlePatchFile({
         id: msgId as string,
         path: message.path as string,
@@ -204,7 +214,7 @@ export async function handleMessage(message: Message): Promise<void> {
       });
       break;
 
-    case 'updateFile':
+    case "updateFile":
       await handleUpdateFile({
         id: msgId as string,
         path: message.path as string,
@@ -213,7 +223,7 @@ export async function handleMessage(message: Message): Promise<void> {
       break;
 
     // Directory operations
-    case 'listDirectory':
+    case "listDirectory":
       await handleListDirectory({
         id: msgId as string,
         path: message.path as string,
@@ -221,30 +231,30 @@ export async function handleMessage(message: Message): Promise<void> {
       break;
 
     // Watch operations
-    case 'watchFile':
+    case "watchFile":
       await handleWatchFile({
         id: msgId as string,
         path: message.path as string,
       });
       break;
 
-    case 'unwatchFile':
+    case "unwatchFile":
       await handleUnwatchFile({ id: msgId as string });
       break;
 
-    case 'watchDirectory':
+    case "watchDirectory":
       await handleWatchDirectory({
         id: msgId as string,
         path: message.path as string,
       });
       break;
 
-    case 'unwatchDirectory':
+    case "unwatchDirectory":
       await handleUnwatchDirectory({ id: msgId as string });
       break;
 
     default:
-      logger.warn('Unknown message type', { type: msgType });
+      logger.warn("Unknown message type", { type: msgType });
       if (msgId) {
         postResponse({
           type: msgType,

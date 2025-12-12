@@ -39,8 +39,9 @@ const u = {
   d = `tonk-sw-state-v2`,
   f = `/tonk-state/appSlug`,
   ee = `/tonk-state/bundleBytes`,
-  te = `/tonk-state/wsUrl`;
-async function ne(e) {
+  te = `/tonk-state/wsUrl`,
+  ne = `/tonk-state/namespace`;
+async function re(e) {
   try {
     let t = await caches.open(d);
     if (e === null) await t.delete(f);
@@ -57,7 +58,7 @@ async function ne(e) {
     });
   }
 }
-async function re() {
+async function ie() {
   try {
     let e = await (await caches.open(d)).match(f);
     return (e && (await e.json()).slug) || null;
@@ -88,7 +89,7 @@ async function p(e) {
     });
   }
 }
-async function ie() {
+async function ae() {
   try {
     let e = await (await caches.open(d)).match(ee);
     if (!e) return null;
@@ -120,7 +121,7 @@ async function m(e) {
     });
   }
 }
-async function ae() {
+async function oe() {
   try {
     let e = await (await caches.open(d)).match(te);
     return (e && (await e.json()).url) || null;
@@ -133,19 +134,49 @@ async function ae() {
     );
   }
 }
-async function oe() {
-  await Promise.all([ne(null), p(null), m(null)]);
+async function se(e) {
+  try {
+    let t = await caches.open(d);
+    if (e === null) await t.delete(ne);
+    else {
+      let n = new Response(JSON.stringify({ namespace: e }), {
+        headers: { "Content-Type": `application/json` },
+      });
+      await t.put(ne, n);
+    }
+    u.debug(`Namespace persisted to cache`, { namespace: e });
+  } catch (e) {
+    u.error(`Failed to persist namespace`, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+async function ce() {
+  try {
+    let e = await (await caches.open(d)).match(ne);
+    return (e && (await e.json()).namespace) || null;
+  } catch (e) {
+    return (
+      u.error(`Failed to restore namespace`, {
+        error: e instanceof Error ? e.message : String(e),
+      }),
+      null
+    );
+  }
+}
+async function le() {
+  await Promise.all([re(null), p(null), m(null), se(null)]);
 }
 var h = { status: `idle` },
-  se = null;
+  ue = null;
 function g() {
   return h;
 }
-function ce() {
-  return se;
+function de() {
+  return ue;
 }
-function le(e) {
-  se = e;
+function fe(e) {
+  ue = e;
 }
 function _() {
   return h.status === `active` ? h : null;
@@ -153,7 +184,7 @@ function _() {
 function v() {
   return h.status === `active` ? { tonk: h.tonk, manifest: h.manifest } : null;
 }
-function ue(e) {
+function pe(e) {
   (u.debug(`Cleaning up active bundle state`, {
     bundleId: e.bundleId,
     watcherCount: e.watchers.size,
@@ -186,31 +217,31 @@ function y(e) {
     to: e.status,
     bundleId: `bundleId` in e ? e.bundleId : void 0,
   }),
-    t.status === `active` && ue(t),
+    t.status === `active` && pe(t),
     (h = e));
 }
-function de(e) {
+function me(e) {
   return h.status === `active` ? ((h = { ...h, appSlug: e }), !0) : !1;
 }
-function fe(e) {
+function he(e) {
   h.status === `active` && (h = { ...h, connectionHealthy: e });
 }
-function pe() {
+function ge() {
   return h.status === `active`
     ? ((h = { ...h, reconnectAttempts: h.reconnectAttempts + 1 }),
       h.reconnectAttempts)
     : 0;
 }
-function me() {
+function _e() {
   h.status === `active` && (h = { ...h, reconnectAttempts: 0 });
 }
-function he(e) {
+function ve(e) {
   h.status === `active` && (h = { ...h, healthCheckInterval: e });
 }
-function ge(e, t) {
+function ye(e, t) {
   h.status === `active` && h.watchers.set(e, t);
 }
-function _e(e) {
+function be(e) {
   if (h.status === `active`) {
     let t = h.watchers.get(e);
     if (t) {
@@ -227,13 +258,13 @@ function _e(e) {
   }
   return !1;
 }
-function ve(e) {
+function xe(e) {
   if (h.status === `active`) return h.watchers.get(e);
 }
-function ye() {
+function Se() {
   return h.status === `active` ? Array.from(h.watchers.entries()) : [];
 }
-function be(e, t) {
+function Ce(e, t) {
   if (
     (console.log(`determinePath START`, {
       url: e.href,
@@ -287,7 +318,7 @@ async function b(e) {
       t.postMessage(e);
     }));
 }
-async function xe(e) {
+async function we(e) {
   if (e.bytes) {
     let t = atob(e.bytes),
       n = new Uint8Array(t.length);
@@ -300,7 +331,7 @@ async function xe(e) {
       headers: { "Content-Type": `application/json` },
     });
 }
-function Se(e) {
+function Te(e) {
   let t = new URL(e.request.url),
     n = e.request.referrer,
     r = g(),
@@ -323,7 +354,7 @@ function Se(e) {
     t.pathname === `/space`;
   o &&
     i &&
-    Promise.all([ne(null), p(null)]).catch((e) => {
+    Promise.all([re(null), p(null)]).catch((e) => {
       u.error(`Failed to persist state reset`, { error: e });
     });
   let s = t.pathname.startsWith(`/space/_runtime/`),
@@ -441,13 +472,13 @@ function Se(e) {
       e.respondWith(
         (async () => {
           try {
-            let e = be(t, f);
+            let e = Ce(t, f);
             u.debug(`Resolved VFS path`, {
               path: e,
               url: t.pathname,
               spaceName: f,
             });
-            let n = ce();
+            let n = de();
             if (n && g().status !== `active`) {
               u.debug(`Waiting for initialization`, { status: g().status });
               try {
@@ -479,11 +510,11 @@ function Se(e) {
               });
               let e = `/${f}/index.html`,
                 t = await r.tonk.readFile(e);
-              return xe(t);
+              return we(t);
             }
             u.debug(`Serving file from VFS`, { path: i });
             let a = await r.tonk.readFile(i);
-            return await xe(a);
+            return await we(a);
           } catch (n) {
             return (
               u.error(`Failed to fetch from VFS`, {
@@ -504,11 +535,11 @@ function Se(e) {
         isRoot: o,
       });
 }
-var Ce = `modulepreload`,
-  we = function (e) {
+var Ee = `modulepreload`,
+  De = function (e) {
     return `/` + e;
   },
-  Te = {};
+  Oe = {};
 const x = function (e, t, n) {
   let r = Promise.resolve();
   if (t && t.length > 0) {
@@ -527,8 +558,8 @@ const x = function (e, t, n) {
     }
     r = o(
       t.map((t) => {
-        if (((t = we(t, n)), t in Te)) return;
-        Te[t] = !0;
+        if (((t = De(t, n)), t in Oe)) return;
+        Oe[t] = !0;
         let r = t.endsWith(`.css`),
           i = r ? `[rel="stylesheet"]` : ``;
         if (n)
@@ -539,7 +570,7 @@ const x = function (e, t, n) {
         else if (document.querySelector(`link[href="${t}"]${i}`)) return;
         let o = document.createElement(`link`);
         if (
-          ((o.rel = r ? `stylesheet` : Ce),
+          ((o.rel = r ? `stylesheet` : Ee),
           r || (o.as = `script`),
           (o.crossOrigin = ``),
           (o.href = t),
@@ -566,26 +597,26 @@ const x = function (e, t, n) {
   });
 };
 var S = n({
-  WasmBundle: () => z,
-  WasmDocHandle: () => st,
-  WasmDocumentWatcher: () => lt,
-  WasmError: () => dt,
-  WasmRepo: () => pt,
-  WasmTonkCore: () => ht,
-  WasmWebSocketHandle: () => _t,
-  create_bundle_from_bytes: () => Pe,
-  create_tonk: () => Be,
-  create_tonk_from_bundle: () => Le,
-  create_tonk_from_bundle_with_storage: () => je,
-  create_tonk_from_bytes: () => Fe,
-  create_tonk_from_bytes_with_storage: () => ze,
-  create_tonk_with_config: () => Me,
-  create_tonk_with_peer_id: () => Re,
-  create_tonk_with_storage: () => Ne,
-  default: () => B,
-  init: () => Ie,
-  initSync: () => Ze,
-  set_time_provider: () => Ve,
+  WasmBundle: () => R,
+  WasmDocHandle: () => dt,
+  WasmDocumentWatcher: () => pt,
+  WasmError: () => ht,
+  WasmRepo: () => _t,
+  WasmTonkCore: () => yt,
+  WasmWebSocketHandle: () => xt,
+  create_bundle_from_bytes: () => Le,
+  create_tonk: () => Ue,
+  create_tonk_from_bundle: () => Be,
+  create_tonk_from_bundle_with_storage: () => Pe,
+  create_tonk_from_bytes: () => Re,
+  create_tonk_from_bytes_with_storage: () => He,
+  create_tonk_with_config: () => Fe,
+  create_tonk_with_peer_id: () => Ve,
+  create_tonk_with_storage: () => Ie,
+  default: () => z,
+  init: () => ze,
+  initSync: () => et,
+  set_time_provider: () => We,
 });
 function C() {
   return (
@@ -593,10 +624,10 @@ function C() {
     N
   );
 }
-function Ee(e, t) {
+function ke(e, t) {
   return (
-    (F += t),
-    F >= $e &&
+    (rt += t),
+    rt >= nt &&
       ((P =
         typeof TextDecoder < `u`
           ? new TextDecoder(`utf-8`, { ignoreBOM: !0, fatal: !0 })
@@ -606,22 +637,22 @@ function Ee(e, t) {
               },
             }),
       P.decode(),
-      (F = t)),
+      (rt = t)),
     P.decode(C().subarray(e, e + t))
   );
 }
 function w(e, t) {
-  return ((e >>>= 0), Ee(e, t));
+  return ((e >>>= 0), ke(e, t));
 }
 function T(e, t, n) {
   if (n === void 0) {
-    let n = L.encode(e),
+    let n = I.encode(e),
       r = t(n.length, 1) >>> 0;
     return (
       C()
         .subarray(r, r + n.length)
         .set(n),
-      (I = n.length),
+      (F = n.length),
       r
     );
   }
@@ -638,18 +669,18 @@ function T(e, t, n) {
     (o !== 0 && (e = e.slice(o)),
       (i = n(i, r, (r = o + e.length * 3), 1) >>> 0));
     let t = C().subarray(i + o, i + r),
-      a = et(e, t);
+      a = it(e, t);
     ((o += a.written), (i = n(i, r, o, 1) >>> 0));
   }
-  return ((I = o), i);
+  return ((F = o), i);
 }
 function E() {
   return (
-    (R === null ||
-      R.buffer.detached === !0 ||
-      (R.buffer.detached === void 0 && R.buffer !== M.memory.buffer)) &&
-      (R = new DataView(M.memory.buffer)),
-    R
+    (L === null ||
+      L.buffer.detached === !0 ||
+      (L.buffer.detached === void 0 && L.buffer !== M.memory.buffer)) &&
+      (L = new DataView(M.memory.buffer)),
+    L
   );
 }
 function D(e) {
@@ -667,7 +698,7 @@ function O(e, t) {
 function k(e) {
   return e == null;
 }
-function De(e, t) {
+function Ae(e, t) {
   return ((e >>>= 0), C().subarray(e / 1, e / 1 + t));
 }
 function A(e, t, n, r) {
@@ -680,13 +711,13 @@ function A(e, t, n, r) {
         return r(t, i.b, ...e);
       } finally {
         --i.cnt === 0
-          ? (M.__wbindgen_export_6.get(i.dtor)(t, i.b), tt.unregister(i))
+          ? (M.__wbindgen_export_6.get(i.dtor)(t, i.b), at.unregister(i))
           : (i.a = t);
       }
     };
-  return ((a.original = i), tt.register(a, i, i), a);
+  return ((a.original = i), at.register(a, i, i), a);
 }
-function Oe(e) {
+function je(e) {
   let t = typeof e;
   if (t == `number` || t == `boolean` || e == null) return `${e}`;
   if (t == `string`) return `"${e}"`;
@@ -701,8 +732,8 @@ function Oe(e) {
   if (Array.isArray(e)) {
     let t = e.length,
       n = `[`;
-    t > 0 && (n += Oe(e[0]));
-    for (let r = 1; r < t; r++) n += `, ` + Oe(e[r]);
+    t > 0 && (n += je(e[0]));
+    for (let r = 1; r < t; r++) n += `, ` + je(e[r]);
     return ((n += `]`), n);
   }
   let n = /\[object ([^\]]+)\]/.exec(toString.call(e)),
@@ -721,72 +752,81 @@ function j(e) {
   let t = M.__wbindgen_export_4.get(e);
   return (M.__externref_table_dealloc(e), t);
 }
-function ke(e, t) {
+function Me(e, t) {
   if (!(e instanceof t)) throw Error(`expected instance of ${t.name}`);
 }
-function Ae(e, t) {
+function Ne(e, t) {
   let n = t(e.length * 1, 1) >>> 0;
-  return (C().set(e, n / 1), (I = e.length), n);
+  return (C().set(e, n / 1), (F = e.length), n);
 }
-function je(e, t) {
-  return (ke(e, z), M.create_tonk_from_bundle_with_storage(e.__wbg_ptr, t));
+function Pe(e, t, n) {
+  Me(e, R);
+  var r = k(n) ? 0 : T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
+    i = F;
+  return M.create_tonk_from_bundle_with_storage(e.__wbg_ptr, t, r, i);
 }
-function Me(e, t) {
-  let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-    r = I;
-  return M.create_tonk_with_config(n, r, t);
+function Fe(e, t, n) {
+  let r = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
+    i = F;
+  var a = k(n) ? 0 : T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
+    o = F;
+  return M.create_tonk_with_config(r, i, t, a, o);
 }
-function Ne(e) {
-  return M.create_tonk_with_storage(e);
-}
-function Pe(e) {
-  let t = M.create_bundle_from_bytes(e);
-  if (t[2]) throw j(t[1]);
-  return z.__wrap(t[0]);
-}
-function Fe(e) {
-  return M.create_tonk_from_bytes(e);
-}
-function Ie() {
-  M.init();
+function Ie(e, t) {
+  var n = k(t) ? 0 : T(t, M.__wbindgen_malloc, M.__wbindgen_realloc),
+    r = F;
+  return M.create_tonk_with_storage(e, n, r);
 }
 function Le(e) {
-  return (ke(e, z), M.create_tonk_from_bundle(e.__wbg_ptr));
+  let t = M.create_bundle_from_bytes(e);
+  if (t[2]) throw j(t[1]);
+  return R.__wrap(t[0]);
 }
 function Re(e) {
-  let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-    n = I;
-  return M.create_tonk_with_peer_id(t, n);
+  return M.create_tonk_from_bytes(e);
 }
-function ze(e, t) {
-  return M.create_tonk_from_bytes_with_storage(e, t);
+function ze() {
+  M.init();
 }
-function Be() {
-  return M.create_tonk();
+function Be(e) {
+  return (Me(e, R), M.create_tonk_from_bundle(e.__wbg_ptr));
 }
 function Ve(e) {
-  M.set_time_provider(e);
+  let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
+    n = F;
+  return M.create_tonk_with_peer_id(t, n);
 }
 function He(e, t, n) {
-  M.closure729_externref_shim(e, t, n);
+  var r = k(n) ? 0 : T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
+    i = F;
+  return M.create_tonk_from_bytes_with_storage(e, t, r, i);
 }
-function Ue(e, t, n) {
-  let r = M.closure732_externref_shim_multivalue_shim(e, t, n);
-  if (r[1]) throw j(r[0]);
+function Ue() {
+  return M.create_tonk();
 }
-function We(e, t) {
-  M.wasm_bindgen__convert__closures_____invoke__h546e6a644418f5b7(e, t);
+function We(e) {
+  M.set_time_provider(e);
 }
 function Ge(e, t, n) {
-  M.closure1010_externref_shim(e, t, n);
+  M.closure730_externref_shim(e, t, n);
 }
 function Ke(e, t, n) {
-  M.closure1026_externref_shim(e, t, n);
+  let r = M.closure733_externref_shim_multivalue_shim(e, t, n);
+  if (r[1]) throw j(r[0]);
 }
-function qe(e, t, n, r) {
-  M.closure1284_externref_shim(e, t, n, r);
+function qe(e, t) {
+  M.wasm_bindgen__convert__closures_____invoke__h546e6a644418f5b7(e, t);
 }
-async function Je(e, t) {
+function Je(e, t, n) {
+  M.closure1011_externref_shim(e, t, n);
+}
+function Ye(e, t, n) {
+  M.closure1027_externref_shim(e, t, n);
+}
+function Xe(e, t, n, r) {
+  M.closure1285_externref_shim(e, t, n, r);
+}
+async function Ze(e, t) {
   if (typeof Response == `function` && e instanceof Response) {
     if (typeof WebAssembly.instantiateStreaming == `function`)
       try {
@@ -794,7 +834,7 @@ async function Je(e, t) {
       } catch (t) {
         if (
           e.ok &&
-          vt.has(e.type) &&
+          St.has(e.type) &&
           e.headers.get(`Content-Type`) !== `application/wasm`
         )
           console.warn(
@@ -810,7 +850,7 @@ async function Je(e, t) {
     return n instanceof WebAssembly.Instance ? { instance: n, module: e } : n;
   }
 }
-function Ye() {
+function Qe() {
   let e = {};
   return (
     (e.wbg = {}),
@@ -819,7 +859,7 @@ function Ye() {
     }),
     (e.wbg.__wbg_String_8f0eb39a4a4c2f66 = function (e, t) {
       let n = T(String(t), M.__wbindgen_malloc, M.__wbindgen_realloc),
-        r = I;
+        r = F;
       (E().setInt32(e + 4, r, !0), E().setInt32(e + 0, n, !0));
     }),
     (e.wbg.__wbg_Window_41559019033ede94 = function (e) {
@@ -913,7 +953,7 @@ function Ye() {
     }),
     (e.wbg.__wbg_getRandomValues_1c61fac11405ffdc = function () {
       return O(function (e, t) {
-        globalThis.crypto.getRandomValues(De(e, t));
+        globalThis.crypto.getRandomValues(Ae(e, t));
       }, arguments);
     }),
     (e.wbg.__wbg_getTime_2afe67905d873e92 = function (e) {
@@ -1046,7 +1086,7 @@ function Ye() {
     (e.wbg.__wbg_item_15285ca2d766f142 = function (e, t, n) {
       let r = t.item(n >>> 0);
       var i = k(r) ? 0 : T(r, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        a = I;
+        a = F;
       (E().setInt32(e + 4, a, !0), E().setInt32(e + 0, i, !0));
     }),
     (e.wbg.__wbg_iterator_4068add5b2aef7a6 = function () {
@@ -1110,7 +1150,7 @@ function Ye() {
     (e.wbg.__wbg_message_2d95ea5aff0d63b9 = function (e, t) {
       let n = t.message,
         r = T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        i = I;
+        i = F;
       (E().setInt32(e + 4, i, !0), E().setInt32(e + 0, r, !0));
     }),
     (e.wbg.__wbg_message_4159c15dac08c5e9 = function (e) {
@@ -1119,13 +1159,13 @@ function Ye() {
     (e.wbg.__wbg_message_44ef9b801b7d8bc3 = function (e, t) {
       let n = t.message,
         r = T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        i = I;
+        i = F;
       (E().setInt32(e + 4, i, !0), E().setInt32(e + 0, r, !0));
     }),
     (e.wbg.__wbg_name_2acff1e83d9735f9 = function (e, t) {
       let n = t.name,
         r = T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        i = I;
+        i = F;
       (E().setInt32(e + 4, i, !0), E().setInt32(e + 0, r, !0));
     }),
     (e.wbg.__wbg_new0_97314565408dea38 = function () {
@@ -1153,7 +1193,7 @@ function Ye() {
           let r = n.a;
           n.a = 0;
           try {
-            return qe(r, n.b, e, t);
+            return Xe(r, n.b, e, t);
           } finally {
             n.a = r;
           }
@@ -1171,7 +1211,7 @@ function Ye() {
       }, arguments);
     }),
     (e.wbg.__wbg_newfromslice_7c05ab1297cb2d88 = function (e, t) {
-      return new Uint8Array(De(e, t));
+      return new Uint8Array(Ae(e, t));
     }),
     (e.wbg.__wbg_newnoargs_ff528e72d35de39a = function (e, t) {
       return Function(w(e, t));
@@ -1231,7 +1271,7 @@ function Ye() {
     }),
     (e.wbg.__wbg_readyState_249e5707a38b7a7a = function (e) {
       let t = e.readyState;
-      return (rt.indexOf(t) + 1 || 3) - 1;
+      return (st.indexOf(t) + 1 || 3) - 1;
     }),
     (e.wbg.__wbg_request_5079471e06223120 = function (e) {
       return e.request;
@@ -1270,7 +1310,7 @@ function Ye() {
       e.set(t, n >>> 0);
     }),
     (e.wbg.__wbg_setbinaryType_52787d6025601cc5 = function (e, t) {
-      e.binaryType = nt[t];
+      e.binaryType = ot[t];
     }),
     (e.wbg.__wbg_setonabort_479ebb5884fcb171 = function (e, t) {
       e.onabort = t;
@@ -1305,7 +1345,7 @@ function Ye() {
     (e.wbg.__wbg_stack_0ed75d68575b0f3c = function (e, t) {
       let n = t.stack,
         r = T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        i = I;
+        i = F;
       (E().setInt32(e + 4, i, !0), E().setInt32(e + 0, r, !0));
     }),
     (e.wbg.__wbg_static_accessor_GLOBAL_487c52c58d65314d = function () {
@@ -1339,7 +1379,7 @@ function Ye() {
     }),
     (e.wbg.__wbg_transaction_36c8b28ed4349a9a = function () {
       return O(function (e, t, n, r) {
-        return e.transaction(w(t, n), it[r]);
+        return e.transaction(w(t, n), ct[r]);
       }, arguments);
     }),
     (e.wbg.__wbg_transaction_d1f21f4378880521 = function (e) {
@@ -1359,19 +1399,19 @@ function Ye() {
       }, arguments);
     }),
     (e.wbg.__wbg_wasmdochandle_new = function (e) {
-      return st.__wrap(e);
-    }),
-    (e.wbg.__wbg_wasmdocumentwatcher_new = function (e) {
-      return lt.__wrap(e);
-    }),
-    (e.wbg.__wbg_wasmerror_new = function (e) {
       return dt.__wrap(e);
     }),
-    (e.wbg.__wbg_wasmrepo_new = function (e) {
+    (e.wbg.__wbg_wasmdocumentwatcher_new = function (e) {
       return pt.__wrap(e);
     }),
-    (e.wbg.__wbg_wasmtonkcore_new = function (e) {
+    (e.wbg.__wbg_wasmerror_new = function (e) {
       return ht.__wrap(e);
+    }),
+    (e.wbg.__wbg_wasmrepo_new = function (e) {
+      return _t.__wrap(e);
+    }),
+    (e.wbg.__wbg_wasmtonkcore_new = function (e) {
+      return yt.__wrap(e);
     }),
     (e.wbg.__wbindgen_bigint_from_i64 = function (e) {
       return e;
@@ -1393,31 +1433,31 @@ function Ye() {
       let t = e.original;
       return t.cnt-- == 1 ? ((t.a = 0), !0) : !1;
     }),
-    (e.wbg.__wbindgen_closure_wrapper1905 = function (e, t, n) {
-      return A(e, t, 728, He);
+    (e.wbg.__wbindgen_closure_wrapper1930 = function (e, t, n) {
+      return A(e, t, 729, Ge);
     }),
-    (e.wbg.__wbindgen_closure_wrapper1907 = function (e, t, n) {
-      return A(e, t, 728, He);
+    (e.wbg.__wbindgen_closure_wrapper1932 = function (e, t, n) {
+      return A(e, t, 729, Ge);
     }),
-    (e.wbg.__wbindgen_closure_wrapper1909 = function (e, t, n) {
-      return A(e, t, 728, Ue);
+    (e.wbg.__wbindgen_closure_wrapper1934 = function (e, t, n) {
+      return A(e, t, 729, Ke);
     }),
-    (e.wbg.__wbindgen_closure_wrapper1911 = function (e, t, n) {
-      return A(e, t, 728, He);
+    (e.wbg.__wbindgen_closure_wrapper1936 = function (e, t, n) {
+      return A(e, t, 729, Ge);
     }),
-    (e.wbg.__wbindgen_closure_wrapper2607 = function (e, t, n) {
-      return A(e, t, 1007, We);
+    (e.wbg.__wbindgen_closure_wrapper2633 = function (e, t, n) {
+      return A(e, t, 1008, qe);
     }),
-    (e.wbg.__wbindgen_closure_wrapper2609 = function (e, t, n) {
-      return A(e, t, 1007, Ge);
+    (e.wbg.__wbindgen_closure_wrapper2635 = function (e, t, n) {
+      return A(e, t, 1008, Je);
     }),
-    (e.wbg.__wbindgen_closure_wrapper2637 = function (e, t, n) {
-      return A(e, t, 1025, Ke);
+    (e.wbg.__wbindgen_closure_wrapper2663 = function (e, t, n) {
+      return A(e, t, 1026, Ye);
     }),
     (e.wbg.__wbindgen_debug_string = function (e, t) {
-      let n = Oe(t),
+      let n = je(t),
         r = T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        i = I;
+        i = F;
       (E().setInt32(e + 4, i, !0), E().setInt32(e + 0, r, !0));
     }),
     (e.wbg.__wbindgen_in = function (e, t) {
@@ -1472,7 +1512,7 @@ function Ye() {
       let n = t,
         r = typeof n == `string` ? n : void 0;
       var i = k(r) ? 0 : T(r, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        a = I;
+        a = F;
       (E().setInt32(e + 4, a, !0), E().setInt32(e + 0, i, !0));
     }),
     (e.wbg.__wbindgen_string_new = function (e, t) {
@@ -1484,17 +1524,17 @@ function Ye() {
     e
   );
 }
-function Xe(e, t) {
+function $e(e, t) {
   return (
     (M = e.exports),
-    (Qe.__wbindgen_wasm_module = t),
-    (R = null),
+    (tt.__wbindgen_wasm_module = t),
+    (L = null),
     (N = null),
     M.__wbindgen_start(),
     M
   );
 }
-function Ze(e) {
+function et(e) {
   if (M !== void 0) return M;
   e !== void 0 &&
     (Object.getPrototypeOf(e) === Object.prototype
@@ -1502,12 +1542,12 @@ function Ze(e) {
       : console.warn(
           "using deprecated parameters for `initSync()`; pass a single object instead",
         ));
-  let t = Ye();
+  let t = Qe();
   e instanceof WebAssembly.Module || (e = new WebAssembly.Module(e));
   let n = new WebAssembly.Instance(e, t);
-  return Xe(n, e);
+  return $e(n, e);
 }
-async function Qe(e) {
+async function tt(e) {
   if (M !== void 0) return M;
   (e !== void 0 &&
     (Object.getPrototypeOf(e) === Object.prototype
@@ -1516,33 +1556,29 @@ async function Qe(e) {
           `using deprecated parameters for the initialization function; pass a single object instead`,
         )),
     e === void 0 && (e = new URL(`/tonk_core_bg.wasm`, `` + import.meta.url)));
-  let t = Ye();
+  let t = Qe();
   (typeof e == `string` ||
     (typeof Request == `function` && e instanceof Request) ||
     (typeof URL == `function` && e instanceof URL)) &&
     (e = fetch(e));
-  let { instance: n, module: r } = await Je(await e, t);
-  return Xe(n, r);
+  let { instance: n, module: r } = await Ze(await e, t);
+  return $e(n, r);
 }
 var M,
   N,
   P,
-  $e,
-  F,
-  I,
-  L,
-  et,
-  R,
-  tt,
   nt,
   rt,
+  F,
+  I,
   it,
+  L,
   at,
-  z,
   ot,
   st,
   ct,
   lt,
+  R,
   ut,
   dt,
   ft,
@@ -1552,8 +1588,12 @@ var M,
   gt,
   _t,
   vt,
-  B,
-  V = t(() => {
+  yt,
+  bt,
+  xt,
+  St,
+  z,
+  B = t(() => {
     ((N = null),
       (P =
         typeof TextDecoder < `u`
@@ -1564,10 +1604,10 @@ var M,
               },
             }),
       typeof TextDecoder < `u` && P.decode(),
-      ($e = 2146435072),
+      (nt = 2146435072),
+      (rt = 0),
       (F = 0),
-      (I = 0),
-      (L =
+      (I =
         typeof TextEncoder < `u`
           ? new TextEncoder(`utf-8`)
           : {
@@ -1575,46 +1615,46 @@ var M,
                 throw Error(`TextEncoder not available`);
               },
             }),
-      (et =
-        typeof L.encodeInto == `function`
+      (it =
+        typeof I.encodeInto == `function`
           ? function (e, t) {
-              return L.encodeInto(e, t);
+              return I.encodeInto(e, t);
             }
           : function (e, t) {
-              let n = L.encode(e);
+              let n = I.encode(e);
               return (t.set(n), { read: e.length, written: n.length });
             }),
-      (R = null),
-      (tt =
+      (L = null),
+      (at =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) => {
               M.__wbindgen_export_6.get(e.dtor)(e.a, e.b);
             })),
-      (nt = [`blob`, `arraybuffer`]),
-      (rt = [`pending`, `done`]),
-      (it = [
+      (ot = [`blob`, `arraybuffer`]),
+      (st = [`pending`, `done`]),
+      (ct = [
         `readonly`,
         `readwrite`,
         `versionchange`,
         `readwriteflush`,
         `cleanup`,
       ]),
-      (at =
+      (lt =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) =>
               M.__wbg_wasmbundle_free(e >>> 0, 1),
             )),
-      (z = class e {
+      (R = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), at.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), lt.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), at.unregister(this), e);
+          return ((this.__wbg_ptr = 0), lt.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
@@ -1627,7 +1667,7 @@ var M,
         }
         getPrefix(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmbundle_getPrefix(this.__wbg_ptr, t, n);
         }
         getRootId() {
@@ -1641,7 +1681,7 @@ var M,
         }
         get(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmbundle_get(this.__wbg_ptr, t, n);
         }
         toBytes() {
@@ -1651,21 +1691,21 @@ var M,
           return M.wasmbundle_listKeys(this.__wbg_ptr);
         }
       }),
-      (ot =
+      (ut =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) =>
               M.__wbg_wasmdochandle_free(e >>> 0, 1),
             )),
-      (st = class e {
+      (dt = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), ot.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), ut.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), ot.unregister(this), e);
+          return ((this.__wbg_ptr = 0), ut.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
@@ -1695,21 +1735,21 @@ var M,
           }
         }
       }),
-      (ct =
+      (ft =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) =>
               M.__wbg_wasmdocumentwatcher_free(e >>> 0, 1),
             )),
-      (lt = class e {
+      (pt = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), ct.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), ft.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), ct.unregister(this), e);
+          return ((this.__wbg_ptr = 0), ft.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
@@ -1728,21 +1768,21 @@ var M,
           return M.wasmdocumentwatcher_stop(this.__wbg_ptr);
         }
       }),
-      (ut =
+      (mt =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) =>
               M.__wbg_wasmerror_free(e >>> 0, 1),
             )),
-      (dt = class e {
+      (ht = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), ut.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), mt.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), ut.unregister(this), e);
+          return ((this.__wbg_ptr = 0), mt.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
@@ -1758,19 +1798,19 @@ var M,
           }
         }
       }),
-      (ft =
+      (gt =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) => M.__wbg_wasmrepo_free(e >>> 0, 1))),
-      (pt = class e {
+      (_t = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), ft.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), gt.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), ft.unregister(this), e);
+          return ((this.__wbg_ptr = 0), gt.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
@@ -1778,7 +1818,7 @@ var M,
         }
         findDocument(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmrepo_findDocument(this.__wbg_ptr, t, n);
         }
         listDocuments() {
@@ -1791,14 +1831,14 @@ var M,
         }
         connectWebSocket(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I,
+            n = F,
             r = M.wasmrepo_connectWebSocket(this.__wbg_ptr, t, n);
           if (r[2]) throw j(r[1]);
-          return _t.__wrap(r[0]);
+          return xt.__wrap(r[0]);
         }
         connectWebSocketAsync(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmrepo_connectWebSocketAsync(this.__wbg_ptr, t, n);
         }
         constructor() {
@@ -1817,21 +1857,21 @@ var M,
           }
         }
       }),
-      (mt =
+      (vt =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) =>
               M.__wbg_wasmtonkcore_free(e >>> 0, 1),
             )),
-      (ht = class e {
+      (yt = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), mt.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), vt.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), mt.unregister(this), e);
+          return ((this.__wbg_ptr = 0), vt.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
@@ -1842,40 +1882,40 @@ var M,
         }
         patchFile(e, t, n) {
           let r = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            i = I;
+            i = F;
           return M.wasmtonkcore_patchFile(this.__wbg_ptr, r, i, t, n);
         }
         createFile(e, t) {
           let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = I;
+            r = F;
           return M.wasmtonkcore_createFile(this.__wbg_ptr, n, r, t);
         }
         deleteFile(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmtonkcore_deleteFile(this.__wbg_ptr, t, n);
         }
         static fromBundle(e) {
-          return (ke(e, z), M.wasmtonkcore_fromBundle(e.__wbg_ptr));
+          return (Me(e, R), M.wasmtonkcore_fromBundle(e.__wbg_ptr));
         }
         getPeerId() {
           return M.wasmtonkcore_getPeerId(this.__wbg_ptr);
         }
         spliceText(e, t, n, r, i) {
           let a = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            o = I,
+            o = F,
             s = T(i, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            c = I;
+            c = F;
           return M.wasmtonkcore_spliceText(this.__wbg_ptr, a, o, t, n, r, s, c);
         }
         updateFile(e, t) {
           let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = I;
+            r = F;
           return M.wasmtonkcore_updateFile(this.__wbg_ptr, n, r, t);
         }
         getMetadata(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmtonkcore_getMetadata(this.__wbg_ptr, t, n);
         }
         isConnected() {
@@ -1883,7 +1923,7 @@ var M,
         }
         static withPeerId(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmtonkcore_withPeerId(t, n);
         }
         forkToBytes(e) {
@@ -1891,34 +1931,34 @@ var M,
         }
         listDirectory(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmtonkcore_listDirectory(this.__wbg_ptr, t, n);
         }
         watchDocument(e, t) {
           let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = I;
+            r = F;
           return M.wasmtonkcore_watchDocument(this.__wbg_ptr, n, r, t);
         }
         watchDirectory(e, t) {
           let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = I;
+            r = F;
           return M.wasmtonkcore_watchDirectory(this.__wbg_ptr, n, r, t);
         }
         createDirectory(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmtonkcore_createDirectory(this.__wbg_ptr, t, n);
         }
         connectWebsocket(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmtonkcore_connectWebsocket(this.__wbg_ptr, t, n);
         }
         setFileWithBytes(e, t, n) {
           let r = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            i = I,
-            a = Ae(n, M.__wbindgen_malloc),
-            o = I;
+            i = F,
+            a = Ne(n, M.__wbindgen_malloc),
+            o = F;
           return M.wasmtonkcore_setFileWithBytes(this.__wbg_ptr, r, i, t, a, o);
         }
         getConnectionState() {
@@ -1926,9 +1966,9 @@ var M,
         }
         createFileWithBytes(e, t, n) {
           let r = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            i = I,
-            a = Ae(n, M.__wbindgen_malloc),
-            o = I;
+            i = F,
+            a = Ne(n, M.__wbindgen_malloc),
+            o = F;
           return M.wasmtonkcore_createFileWithBytes(
             this.__wbg_ptr,
             r,
@@ -1943,19 +1983,19 @@ var M,
         }
         exists(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmtonkcore_exists(this.__wbg_ptr, t, n);
         }
         rename(e, t) {
           let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = I,
+            r = F,
             i = T(t, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            a = I;
+            a = F;
           return M.wasmtonkcore_rename(this.__wbg_ptr, n, r, i, a);
         }
         setFile(e, t) {
           let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = I;
+            r = F;
           return M.wasmtonkcore_setFile(this.__wbg_ptr, n, r, t);
         }
         toBytes(e) {
@@ -1963,25 +2003,25 @@ var M,
         }
         readFile(e) {
           let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = I;
+            n = F;
           return M.wasmtonkcore_readFile(this.__wbg_ptr, t, n);
         }
       }),
-      (gt =
+      (bt =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) =>
               M.__wbg_wasmwebsockethandle_free(e >>> 0, 1),
             )),
-      (_t = class e {
+      (xt = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), gt.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), bt.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), gt.unregister(this), e);
+          return ((this.__wbg_ptr = 0), bt.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
@@ -1994,10 +2034,10 @@ var M,
           M.wasmwebsockethandle_close(this.__wbg_ptr);
         }
       }),
-      (vt = new Set([`basic`, `cors`, `default`])),
-      (B = Qe));
+      (St = new Set([`basic`, `cors`, `default`])),
+      (z = tt));
   }),
-  yt = function (e, t, n, r, i) {
+  Ct = function (e, t, n, r, i) {
     if (r === `m`) throw TypeError(`Private method is not writable`);
     if (r === `a` && !i)
       throw TypeError(`Private accessor was defined without a setter`);
@@ -2007,7 +2047,7 @@ var M,
       );
     return (r === `a` ? i.call(e, n) : i ? (i.value = n) : t.set(e, n), n);
   },
-  H = function (e, t, n, r) {
+  V = function (e, t, n, r) {
     if (n === `a` && !r)
       throw TypeError(`Private accessor was defined without a getter`);
     if (typeof t == `function` ? e !== t || !r : !t.has(e))
@@ -2016,109 +2056,113 @@ var M,
       );
     return n === `m` ? r : n === `a` ? r.call(e) : r ? r.value : t.get(e);
   },
+  H,
   U,
-  W,
-  G = class extends Error {
+  W = class extends Error {
     constructor(e, t) {
       (super(e), (this.code = t), (this.name = `TonkError`));
     }
   },
-  bt = class extends G {
+  wt = class extends W {
     constructor(e) {
       (super(e, `CONNECTION_ERROR`), (this.name = `ConnectionError`));
     }
   },
-  K = class extends G {
+  G = class extends W {
     constructor(e) {
       (super(e, `FILESYSTEM_ERROR`), (this.name = `FileSystemError`));
     }
   },
-  q = class extends G {
+  K = class extends W {
     constructor(e) {
       (super(e, `BUNDLE_ERROR`), (this.name = `BundleError`));
     }
   },
-  J = class e {
+  q = class e {
     constructor(e) {
-      (U.set(this, void 0), yt(this, U, e, `f`));
+      (H.set(this, void 0), Ct(this, H, e, `f`));
     }
     static async fromBytes(t, n) {
       try {
         let { create_bundle_from_bytes: r } =
-          n || (await x(() => Promise.resolve().then(() => (V(), S)), void 0));
+          n || (await x(() => Promise.resolve().then(() => (B(), S)), void 0));
         return new e(r(t));
       } catch (e) {
-        throw new q(`Failed to create bundle from bytes: ${e}`);
+        throw new K(`Failed to create bundle from bytes: ${e}`);
       }
     }
     async getRootId() {
       try {
-        return await H(this, U, `f`).getRootId();
+        return await V(this, H, `f`).getRootId();
       } catch (e) {
-        throw new q(`Failed to get root ID: ${e}`);
+        throw new K(`Failed to get root ID: ${e}`);
       }
     }
     async get(e) {
       try {
-        let t = await H(this, U, `f`).get(e);
+        let t = await V(this, H, `f`).get(e);
         return t === null ? null : t;
       } catch (t) {
-        throw new q(`Failed to get key ${e}: ${t}`);
+        throw new K(`Failed to get key ${e}: ${t}`);
       }
     }
     async getPrefix(e) {
       try {
-        return (await H(this, U, `f`).getPrefix(e)).map((e) => ({
+        return (await V(this, H, `f`).getPrefix(e)).map((e) => ({
           key: e.key,
           value: e.value,
         }));
       } catch (t) {
-        throw new q(`Failed to get prefix ${e}: ${t}`);
+        throw new K(`Failed to get prefix ${e}: ${t}`);
       }
     }
     async listKeys() {
       try {
-        return await H(this, U, `f`).listKeys();
+        return await V(this, H, `f`).listKeys();
       } catch (e) {
-        throw new q(`Failed to list keys: ${e}`);
+        throw new K(`Failed to list keys: ${e}`);
       }
     }
     async getManifest() {
       try {
-        return await H(this, U, `f`).getManifest();
+        return await V(this, H, `f`).getManifest();
       } catch (e) {
-        throw new q(`Failed to retrieve manifest: ${e}`);
+        throw new K(`Failed to retrieve manifest: ${e}`);
       }
     }
     async setManifest(e) {
       try {
-        await H(this, U, `f`).setManifest(e);
+        await V(this, H, `f`).setManifest(e);
       } catch (e) {
-        throw new q(`Failed to set manifest: ${e}`);
+        throw new K(`Failed to set manifest: ${e}`);
       }
     }
     async toBytes() {
       try {
-        return await H(this, U, `f`).toBytes();
+        return await V(this, H, `f`).toBytes();
       } catch (e) {
-        throw new q(`Failed to serialize bundle: ${e}`);
+        throw new K(`Failed to serialize bundle: ${e}`);
       }
     }
     free() {
-      H(this, U, `f`).free();
+      V(this, H, `f`).free();
     }
   };
-U = new WeakMap();
-var Y = class e {
+H = new WeakMap();
+var J = class e {
   constructor(e) {
-    (W.set(this, void 0), yt(this, W, e, `f`));
+    (U.set(this, void 0), Ct(this, U, e, `f`));
   }
   static async create(t, n) {
     let r =
-      n || (await x(() => Promise.resolve().then(() => (V(), S)), void 0));
+      n || (await x(() => Promise.resolve().then(() => (B(), S)), void 0));
     if (t?.peerId && t?.storage) {
       let { create_tonk_with_config: n } = r,
-        i = await n(t.peerId, t.storage.type === `indexeddb`);
+        i = await n(
+          t.peerId,
+          t.storage.type === `indexeddb`,
+          t.storage.namespace,
+        );
       return new e(i);
     } else if (t?.peerId) {
       let { create_tonk_with_peer_id: n } = r,
@@ -2126,7 +2170,7 @@ var Y = class e {
       return new e(i);
     } else if (t?.storage) {
       let { create_tonk_with_storage: n } = r,
-        i = await n(t.storage.type === `indexeddb`);
+        i = await n(t.storage.type === `indexeddb`, t.storage.namespace);
       return new e(i);
     } else {
       let { create_tonk: t } = r,
@@ -2136,16 +2180,16 @@ var Y = class e {
   }
   static async createWithPeerId(t, n) {
     let { create_tonk_with_peer_id: r } =
-        n || (await x(() => Promise.resolve().then(() => (V(), S)), void 0)),
+        n || (await x(() => Promise.resolve().then(() => (B(), S)), void 0)),
       i = await r(t);
     return new e(i);
   }
   static async fromBundle(t, n, r) {
     let i =
-      r || (await x(() => Promise.resolve().then(() => (V(), S)), void 0));
+      r || (await x(() => Promise.resolve().then(() => (B(), S)), void 0));
     if (n?.storage) {
       let { create_tonk_from_bundle_with_storage: r } = i,
-        a = await r(t, n.storage.type === `indexeddb`);
+        a = await r(t, n.storage.type === `indexeddb`, n.storage.namespace);
       return new e(a);
     } else {
       let { create_tonk_from_bundle: n } = i,
@@ -2155,10 +2199,10 @@ var Y = class e {
   }
   static async fromBytes(t, n, r) {
     let i =
-      r || (await x(() => Promise.resolve().then(() => (V(), S)), void 0));
+      r || (await x(() => Promise.resolve().then(() => (B(), S)), void 0));
     if (n?.storage) {
       let { create_tonk_from_bytes_with_storage: r } = i,
-        a = await r(t, n.storage.type === `indexeddb`);
+        a = await r(t, n.storage.type === `indexeddb`, n.storage.namespace);
       return new e(a);
     } else {
       let { create_tonk_from_bytes: n } = i,
@@ -2167,25 +2211,25 @@ var Y = class e {
     }
   }
   getPeerId() {
-    return H(this, W, `f`).getPeerId();
+    return V(this, U, `f`).getPeerId();
   }
   async connectWebsocket(e) {
     try {
-      await H(this, W, `f`).connectWebsocket(e);
+      await V(this, U, `f`).connectWebsocket(e);
     } catch (t) {
-      throw new bt(`Failed to connect to ${e}: ${t}`);
+      throw new wt(`Failed to connect to ${e}: ${t}`);
     }
   }
   async isConnected() {
     try {
-      return await H(this, W, `f`).isConnected();
+      return await V(this, U, `f`).isConnected();
     } catch (e) {
       return (console.error(`🔌 [CORE-JS] isConnected() error:`, e), !1);
     }
   }
   async getConnectionState() {
     try {
-      return await H(this, W, `f`).getConnectionState();
+      return await V(this, U, `f`).getConnectionState();
     } catch (e) {
       return (
         console.error(`📡 [CORE-JS] getConnectionState() error:`, e),
@@ -2195,40 +2239,40 @@ var Y = class e {
   }
   async forkToBytes(e) {
     try {
-      return await H(this, W, `f`).forkToBytes(e);
+      return await V(this, U, `f`).forkToBytes(e);
     } catch (e) {
-      throw new G(`Failed to serialize to bundle data: ${e}`);
+      throw new W(`Failed to serialize to bundle data: ${e}`);
     }
   }
   async toBytes(e) {
     try {
-      return await H(this, W, `f`).toBytes(e);
+      return await V(this, U, `f`).toBytes(e);
     } catch (e) {
-      throw new G(`Failed to serialize to bundle data: ${e}`);
+      throw new W(`Failed to serialize to bundle data: ${e}`);
     }
   }
   async createFile(e, t) {
     try {
-      await H(this, W, `f`).createFile(e, t);
+      await V(this, U, `f`).createFile(e, t);
     } catch (t) {
-      throw new K(`Failed to create file at ${e}: ${t}`);
+      throw new G(`Failed to create file at ${e}: ${t}`);
     }
   }
   async createFileWithBytes(e, t, n) {
     try {
-      let r = typeof n == `string` ? xt(n) : n;
-      await H(this, W, `f`).createFileWithBytes(e, t, r);
+      let r = typeof n == `string` ? Tt(n) : n;
+      await V(this, U, `f`).createFileWithBytes(e, t, r);
     } catch (t) {
-      throw new K(`Failed to create file at ${e}: ${t}`);
+      throw new G(`Failed to create file at ${e}: ${t}`);
     }
   }
   async readFile(e) {
     try {
-      let t = await H(this, W, `f`).readFile(e);
-      if (t === null) throw new K(`File not found: ${e}`);
+      let t = await V(this, U, `f`).readFile(e);
+      if (t === null) throw new G(`File not found: ${e}`);
       let n;
       return (
-        t.bytes && (n = St(t.bytes)),
+        t.bytes && (n = Et(t.bytes)),
         {
           ...t,
           content:
@@ -2237,99 +2281,99 @@ var Y = class e {
         }
       );
     } catch (t) {
-      throw t instanceof K ? t : new K(`Failed to read file at ${e}: ${t}`);
+      throw t instanceof G ? t : new G(`Failed to read file at ${e}: ${t}`);
     }
   }
   async setFile(e, t) {
     try {
-      return await H(this, W, `f`).setFile(e, t);
+      return await V(this, U, `f`).setFile(e, t);
     } catch (t) {
-      throw new K(`Failed to set file at ${e}: ${t}`);
+      throw new G(`Failed to set file at ${e}: ${t}`);
     }
   }
   async setFileWithBytes(e, t, n) {
     try {
-      let r = typeof n == `string` ? xt(n) : n;
-      return await H(this, W, `f`).setFileWithBytes(e, t, r);
+      let r = typeof n == `string` ? Tt(n) : n;
+      return await V(this, U, `f`).setFileWithBytes(e, t, r);
     } catch (t) {
-      throw new K(`Failed to set file at ${e}: ${t}`);
+      throw new G(`Failed to set file at ${e}: ${t}`);
     }
   }
   async updateFile(e, t) {
     try {
-      return await H(this, W, `f`).updateFile(e, t);
+      return await V(this, U, `f`).updateFile(e, t);
     } catch (t) {
-      throw new K(`Failed to update file at ${e}: ${t}`);
+      throw new G(`Failed to update file at ${e}: ${t}`);
     }
   }
   async patchFile(e, t, n) {
     try {
-      return await H(this, W, `f`).patchFile(e, t, n);
+      return await V(this, U, `f`).patchFile(e, t, n);
     } catch (t) {
-      throw new K(`Failed to patch file at ${e}: ${t}`);
+      throw new G(`Failed to patch file at ${e}: ${t}`);
     }
   }
   async spliceText(e, t, n, r, i) {
     try {
-      return await H(this, W, `f`).spliceText(e, t, n, r, i);
+      return await V(this, U, `f`).spliceText(e, t, n, r, i);
     } catch (t) {
-      throw new K(`Failed to splice text at ${e}: ${t}`);
+      throw new G(`Failed to splice text at ${e}: ${t}`);
     }
   }
   async deleteFile(e) {
     try {
-      return await H(this, W, `f`).deleteFile(e);
+      return await V(this, U, `f`).deleteFile(e);
     } catch (t) {
-      throw new K(`Failed to delete file at ${e}: ${t}`);
+      throw new G(`Failed to delete file at ${e}: ${t}`);
     }
   }
   async createDirectory(e) {
     try {
-      await H(this, W, `f`).createDirectory(e);
+      await V(this, U, `f`).createDirectory(e);
     } catch (t) {
-      throw new K(`Failed to create directory at ${e}: ${t}`);
+      throw new G(`Failed to create directory at ${e}: ${t}`);
     }
   }
   async listDirectory(e) {
     try {
-      return (await H(this, W, `f`).listDirectory(e)).map((e) => ({
+      return (await V(this, U, `f`).listDirectory(e)).map((e) => ({
         name: e.name,
         type: e.type,
         timestamps: e.timestamps,
         pointer: e.pointer,
       }));
     } catch (t) {
-      throw new K(`Failed to list directory at ${e}: ${t}`);
+      throw new G(`Failed to list directory at ${e}: ${t}`);
     }
   }
   async exists(e) {
     try {
-      return await H(this, W, `f`).exists(e);
+      return await V(this, U, `f`).exists(e);
     } catch (t) {
-      throw new K(`Failed to check existence of ${e}: ${t}`);
+      throw new G(`Failed to check existence of ${e}: ${t}`);
     }
   }
   async rename(e, t) {
     try {
-      return await H(this, W, `f`).rename(e, t);
+      return await V(this, U, `f`).rename(e, t);
     } catch (n) {
-      throw new K(`Failed to rename ${e} to ${t}: ${n}`);
+      throw new G(`Failed to rename ${e} to ${t}: ${n}`);
     }
   }
   async getMetadata(e) {
     try {
-      let t = await H(this, W, `f`).getMetadata(e);
-      if (t === null) throw new K(`File or directory not found: ${e}`);
+      let t = await V(this, U, `f`).getMetadata(e);
+      if (t === null) throw new G(`File or directory not found: ${e}`);
       return t;
     } catch (t) {
-      throw t instanceof K ? t : new K(`Failed to get metadata for ${e}: ${t}`);
+      throw t instanceof G ? t : new G(`Failed to get metadata for ${e}: ${t}`);
     }
   }
   async watchFile(e, t) {
     try {
-      let n = await H(this, W, `f`).watchDocument(e, (e) => {
+      let n = await V(this, U, `f`).watchDocument(e, (e) => {
         let n;
-        (e.bytes && (n = St(e.bytes)),
+        (e.bytes && (n = Et(e.bytes)),
           t({
             ...e,
             content:
@@ -2337,37 +2381,37 @@ var Y = class e {
             bytes: n,
           }));
       });
-      if (n === null) throw new K(`File not found: ${e}`);
+      if (n === null) throw new G(`File not found: ${e}`);
       return n;
     } catch (t) {
-      throw t instanceof K
+      throw t instanceof G
         ? t
-        : new K(`Failed to watch file at path ${e}: ${t}`);
+        : new G(`Failed to watch file at path ${e}: ${t}`);
     }
   }
   async watchDirectory(e, t) {
     try {
-      let n = await H(this, W, `f`).watchDirectory(e, t);
-      if (n === null) throw new K(`Directory not found: ${e}`);
+      let n = await V(this, U, `f`).watchDirectory(e, t);
+      if (n === null) throw new G(`Directory not found: ${e}`);
       return n;
     } catch (t) {
-      throw t instanceof K
+      throw t instanceof G
         ? t
-        : new K(`Failed to watch directory at path ${e}: ${t}`);
+        : new G(`Failed to watch directory at path ${e}: ${t}`);
     }
   }
   free() {
-    H(this, W, `f`).free();
+    V(this, U, `f`).free();
   }
 };
-W = new WeakMap();
-var xt = (e) => {
+U = new WeakMap();
+var Tt = (e) => {
     let t = atob(e),
       n = new Uint8Array(t.length);
     for (let e = 0; e < t.length; e++) n[e] = t.charCodeAt(e);
     return n;
   },
-  St = (e) => {
+  Et = (e) => {
     if (typeof e == `string`) return e;
     if (Array.isArray(e)) {
       let t = 8192,
@@ -2377,27 +2421,27 @@ var xt = (e) => {
         n += String.fromCharCode(...i);
       }
       return btoa(n);
-    } else throw new K(`Unrecognized bytes type in readFile ${typeof e}`);
+    } else throw new G(`Unrecognized bytes type in readFile ${typeof e}`);
   };
-V();
-var Ct = !1,
-  X = null;
-async function wt(e) {
-  if (!Ct)
+B();
+var Dt = !1,
+  Y = null;
+async function Ot(e) {
+  if (!Dt)
     return (
-      X ||
-      ((X = (async () => {
+      Y ||
+      ((Y = (async () => {
         try {
-          (e?.wasmPath ? await B({ module_or_path: e.wasmPath }) : await B(),
-            (Ct = !0));
+          (e?.wasmPath ? await z({ module_or_path: e.wasmPath }) : await z(),
+            (Dt = !0));
         } catch (e) {
-          throw ((X = null), e);
+          throw ((Y = null), e);
         }
       })()),
-      X)
+      Y)
     );
 }
-async function Tt() {
+async function kt() {
   let e = _();
   if (!e) return !1;
   try {
@@ -2411,7 +2455,7 @@ async function Tt() {
     );
   }
 }
-async function Et() {
+async function At() {
   let e = _();
   if (!e) {
     u.error(`Cannot reconnect: no active bundle`);
@@ -2422,8 +2466,8 @@ async function Et() {
     u.error(`Cannot reconnect: wsUrl not stored`);
     return;
   }
-  let n = pe();
-  (n >= 10 && me(),
+  let n = ge();
+  (n >= 10 && _e(),
     u.debug(`Attempting to reconnect`, {
       attempt: n,
       maxAttempts: 10,
@@ -2436,11 +2480,11 @@ async function Et() {
       await new Promise((e) => setTimeout(e, 1e3)),
       await e.tonk.isConnected())
     )
-      (fe(!0),
-        me(),
+      (he(!0),
+        _e(),
         u.info(`Reconnection successful`),
         await b({ type: `reconnected` }),
-        await Dt());
+        await jt());
     else throw Error(`Connection check failed after reconnect attempt`);
   } catch (e) {
     u.warn(`Reconnection failed`, {
@@ -2452,18 +2496,18 @@ async function Et() {
       delayMs: t,
       nextAttempt: n + 1,
     }),
-      setTimeout(Et, t));
+      setTimeout(At, t));
   }
 }
-async function Dt() {
-  let e = ye();
+async function jt() {
+  let e = Se();
   (u.debug(`Re-establishing watchers after reconnection`, {
     watcherCount: e.length,
   }),
     u.debug(`Watcher re-establishment complete`, { watcherCount: e.length }),
     await b({ type: `watchersReestablished`, count: e.length }));
 }
-function Z() {
+function X() {
   let e = _();
   if (!e) {
     u.warn(`Cannot start health monitoring: no active bundle`);
@@ -2472,48 +2516,48 @@ function Z() {
   (e.healthCheckInterval && clearInterval(e.healthCheckInterval),
     u.debug(`Starting health monitoring`, { intervalMs: r }));
   let t = setInterval(async () => {
-    let e = await Tt(),
+    let e = await kt(),
       n = _();
     if (!n) {
       clearInterval(t);
       return;
     }
     !e && n.connectionHealthy
-      ? (fe(!1),
+      ? (he(!1),
         u.warn(`Connection lost, starting reconnection attempts`),
         await b({ type: `disconnected` }),
-        Et())
+        At())
       : e &&
         !n.connectionHealthy &&
-        (fe(!0), me(), u.debug(`Connection health restored`));
+        (he(!0), _e(), u.debug(`Connection health restored`));
   }, r);
-  he(t);
+  ve(t);
 }
-function Q(e, t = `http://localhost:8081`) {
+function Z(e, t = `http://localhost:8081`) {
   return e.networkUris && e.networkUris.length > 0
     ? e.networkUris[0].replace(/^http/, `ws`)
     : t.replace(/^http/, `ws`);
 }
-var $ = null,
-  Ot = !1;
-async function kt() {
-  if (Ot) {
+var Q = null,
+  Mt = !1;
+async function Nt() {
+  if (Mt) {
     u.debug(`WASM already initialized`);
     return;
   }
-  return $
-    ? (u.debug(`WASM initialization in progress, waiting...`), $)
+  return Q
+    ? (u.debug(`WASM initialization in progress, waiting...`), Q)
     : (u.debug(`Starting WASM initialization`),
-      ($ = (async () => {
+      (Q = (async () => {
         try {
           let e = `/tonk_core_bg.wasm?t=${Date.now()}`;
-          (await wt({ wasmPath: e }),
-            (Ot = !0),
+          (await Ot({ wasmPath: e }),
+            (Mt = !0),
             u.info(`WASM initialization completed`));
         } catch (e) {
           throw (
-            ($ = null),
-            (Ot = !1),
+            (Q = null),
+            (Mt = !1),
             u.error(`WASM initialization failed`, {
               error: e instanceof Error ? e.message : String(e),
             }),
@@ -2521,9 +2565,9 @@ async function kt() {
           );
         }
       })()),
-      $);
+      Q);
 }
-async function At(e) {
+async function $(e) {
   return (
     u.debug(`Waiting for PathIndex to sync from remote...`),
     new Promise((t) => {
@@ -2576,11 +2620,12 @@ async function At(e) {
     })
   );
 }
-async function jt() {
+async function Pt() {
   try {
-    let e = await re(),
-      t = await ie(),
-      n = await ae();
+    let e = await ie(),
+      t = await ae(),
+      n = await oe(),
+      r = await ce();
     if (!e || !t) {
       u.debug(`No cached state found, waiting for initialization message`, {
         hasSlug: !!e,
@@ -2588,41 +2633,47 @@ async function jt() {
       });
       return;
     }
-    (u.info(`Auto-initializing from cache`, { slug: e, bundleSize: t.length }),
-      await kt());
-    let r = await (await J.fromBytes(t)).getManifest();
-    u.debug(`Bundle and manifest restored from cache`, { rootId: r.rootId });
-    let i = await Y.fromBytes(t, { storage: { type: `indexeddb` } });
-    u.debug(`TonkCore created from cached bundle`);
-    let a = n || Q(r);
-    (!n && a && (await m(a)),
+    (u.info(`Auto-initializing from cache`, {
+      slug: e,
+      bundleSize: t.length,
+      namespace: r,
+    }),
+      await Nt());
+    let i = await (await q.fromBytes(t)).getManifest();
+    u.debug(`Bundle and manifest restored from cache`, { rootId: i.rootId });
+    let a = r ? { type: `indexeddb`, namespace: r } : { type: `indexeddb` },
+      o = await J.fromBytes(t, { storage: a });
+    u.debug(`TonkCore created from cached bundle`, { namespace: r });
+    let s = n || Z(i);
+    (!n && s && (await m(s)),
       u.debug(`Connecting to websocket...`, {
-        wsUrl: a,
-        localRootId: r.rootId,
+        wsUrl: s,
+        localRootId: i.rootId,
       }),
-      await i.connectWebsocket(a),
+      await o.connectWebsocket(s),
       u.debug(`Websocket connected`),
-      await At(i),
+      await $(o),
       u.info(`Auto-initialization complete`),
       y({
         status: `active`,
-        bundleId: r.rootId,
-        tonk: i,
-        manifest: r,
+        bundleId: i.rootId,
+        ...(r && { launcherBundleId: r }),
+        tonk: o,
+        manifest: i,
         appSlug: e,
-        wsUrl: a,
+        wsUrl: s,
         healthCheckInterval: null,
         watchers: new Map(),
         connectionHealthy: !0,
         reconnectAttempts: 0,
       }),
-      Z());
+      X());
   } catch (e) {
     (u.error(`Auto-initialization failed`, {
       error: e instanceof Error ? e.message : String(e),
     }),
       y({ status: `idle` }),
-      await oe(),
+      await le(),
       (await self.clients.matchAll()).forEach((e) => {
         e.postMessage({
           type: `needsReinit`,
@@ -2632,7 +2683,7 @@ async function jt() {
       }));
   }
 }
-async function Mt(e, t, n, r, i) {
+async function Ft(e, t, n, r, i) {
   u.debug(`Loading new bundle`, {
     byteLength: e.length,
     serverUrl: t,
@@ -2641,7 +2692,7 @@ async function Mt(e, t, n, r, i) {
   });
   try {
     let n = g();
-    await kt();
+    await Nt();
     let a;
     if (r)
       (u.info(`Using cached manifest, skipping Bundle.fromBytes`, {
@@ -2650,7 +2701,7 @@ async function Mt(e, t, n, r, i) {
         (a = r));
     else {
       u.debug(`No cached manifest, parsing bundle`, { byteLength: e.length });
-      let t = await J.fromBytes(e);
+      let t = await q.fromBytes(e);
       ((a = await t.getManifest()),
         t.free(),
         u.debug(`Bundle manifest extracted`, { rootId: a.rootId }));
@@ -2663,51 +2714,58 @@ async function Mt(e, t, n, r, i) {
         ),
         { success: !0, skipped: !0 }
       );
-    u.debug(`Creating new TonkCore from bundle bytes`);
-    let o = await Y.fromBytes(e, { storage: { type: `indexeddb` } });
-    u.debug(`New TonkCore created successfully`, { rootId: a.rootId });
-    let s = Q(a, t),
-      c = new URLSearchParams(self.location.search).get(`bundle`);
-    if (c)
+    u.debug(`Creating new TonkCore from bundle bytes`, { launcherBundleId: i });
+    let o = i ? { type: `indexeddb`, namespace: i } : { type: `indexeddb` },
+      s = await J.fromBytes(e, { storage: o });
+    u.info(`New TonkCore created successfully`, {
+      rootId: a.rootId,
+      namespace: i,
+    });
+    let c = Z(a, t),
+      l = new URLSearchParams(self.location.search).get(`bundle`);
+    if (l)
       try {
-        let e = atob(c),
+        let e = atob(l),
           t = JSON.parse(e);
-        t.wsUrl && (s = t.wsUrl);
+        t.wsUrl && (c = t.wsUrl);
       } catch (e) {
         u.warn(`Could not parse bundle config for wsUrl`, {
           error: e instanceof Error ? e.message : String(e),
         });
       }
-    (u.debug(`Determined websocket URL`, { wsUrl: s, serverUrl: t }),
-      await m(s),
+    (u.debug(`Determined websocket URL`, { wsUrl: c, serverUrl: t }),
+      await m(c),
       u.debug(`Connecting new tonk to websocket`, {
-        wsUrl: s,
+        wsUrl: c,
         localRootId: a.rootId,
       }),
-      s &&
-        (await o.connectWebsocket(s),
+      c &&
+        (await s.connectWebsocket(c),
         u.debug(`Websocket connection established`),
-        await At(o),
+        await $(s),
         u.debug(`PathIndex sync complete after loadBundle`)));
-    let l = g(),
-      d = l.status === `active` ? l.appSlug : a.entrypoints?.[0] || `app`;
+    let d = g(),
+      f = d.status === `active` ? d.appSlug : a.entrypoints?.[0] || `app`;
     return (
       y({
         status: `active`,
         bundleId: a.rootId,
         ...(i && { launcherBundleId: i }),
-        tonk: o,
+        tonk: s,
         manifest: a,
-        appSlug: d,
-        wsUrl: s,
+        appSlug: f,
+        wsUrl: c,
         healthCheckInterval: null,
         watchers: new Map(),
         connectionHealthy: !0,
         reconnectAttempts: 0,
       }),
-      Z(),
+      X(),
       await p(e),
-      u.debug(`Bundle bytes persisted to cache`),
+      i && (await se(i)),
+      u.debug(`Bundle bytes and namespace persisted to cache`, {
+        namespace: i,
+      }),
       u.info(`Bundle loaded successfully`, { rootId: a.rootId }),
       { success: !0 }
     );
@@ -2721,7 +2779,7 @@ async function Mt(e, t, n, r, i) {
     );
   }
 }
-async function Nt(e) {
+async function It(e) {
   u.debug(`Loading new bundle`, {
     byteLength: e.bundleBytes.byteLength,
     serverUrl: e.serverUrl,
@@ -2730,7 +2788,7 @@ async function Nt(e) {
   });
   let t = e.serverUrl || `http://localhost:8081`,
     n = new Uint8Array(e.bundleBytes),
-    r = await Mt(n, t, e.id, e.manifest, e.launcherBundleId);
+    r = await Ft(n, t, e.id, e.manifest, e.launcherBundleId);
   b({
     type: `loadBundle`,
     id: e.id,
@@ -2739,7 +2797,7 @@ async function Nt(e) {
     error: r.error,
   });
 }
-async function Pt(e) {
+async function Lt(e) {
   u.debug(`Converting tonk to bytes`);
   try {
     let t = v();
@@ -2760,13 +2818,13 @@ async function Pt(e) {
       }));
   }
 }
-async function Ft(e) {
+async function Rt(e) {
   u.debug(`Forking tonk to bytes`);
   try {
     let t = v();
     if (!t) throw Error(`Tonk not initialized`);
     let n = await t.tonk.forkToBytes(),
-      r = (await (await J.fromBytes(n)).getManifest()).rootId;
+      r = (await (await q.fromBytes(n)).getManifest()).rootId;
     (u.debug(`Tonk forked to bytes`, { byteLength: n.length, rootId: r }),
       b({ type: `forkToBytes`, id: e.id, success: !0, data: n, rootId: r }));
   } catch (t) {
@@ -2781,7 +2839,7 @@ async function Ft(e) {
       }));
   }
 }
-async function It(e) {
+async function zt(e) {
   u.debug(`Listing directory`, { path: e.path });
   try {
     let t = v();
@@ -2805,7 +2863,7 @@ async function It(e) {
       }));
   }
 }
-async function Lt(e) {
+async function Bt(e) {
   u.debug(`Reading file`, { path: e.path });
   try {
     let t = v();
@@ -2826,7 +2884,7 @@ async function Lt(e) {
       }));
   }
 }
-async function Rt(e) {
+async function Vt(e) {
   u.debug(`Writing file`, {
     path: e.path,
     create: e.create,
@@ -2861,7 +2919,7 @@ async function Rt(e) {
       }));
   }
 }
-async function zt(e) {
+async function Ht(e) {
   u.debug(`Deleting file`, { path: e.path });
   try {
     let t = v();
@@ -2882,7 +2940,7 @@ async function zt(e) {
       }));
   }
 }
-async function Bt(e) {
+async function Ut(e) {
   u.debug(`Renaming file or directory`, {
     oldPath: e.oldPath,
     newPath: e.newPath,
@@ -2907,7 +2965,7 @@ async function Bt(e) {
       }));
   }
 }
-async function Vt(e) {
+async function Wt(e) {
   u.debug(`Checking file existence`, { path: e.path });
   try {
     let t = v();
@@ -2928,7 +2986,7 @@ async function Vt(e) {
       }));
   }
 }
-async function Ht(e) {
+async function Gt(e) {
   u.debug(`Updating file with smart diff`, { path: e.path });
   try {
     let t = v();
@@ -2950,7 +3008,7 @@ async function Ht(e) {
       }));
   }
 }
-async function Ut(e) {
+async function Kt(e) {
   u.debug(`Patching file`, { path: e.path, jsonPath: e.jsonPath });
   try {
     let t = v();
@@ -2972,7 +3030,7 @@ async function Ut(e) {
       }));
   }
 }
-async function Wt(e) {
+async function qt(e) {
   u.debug(`Handling VFS init message`, {
     manifestSize: e.manifest.byteLength,
     wsUrl: e.wsUrl,
@@ -3021,28 +3079,28 @@ async function Wt(e) {
       }));
   }
 }
-async function Gt(e) {
+async function Jt(e) {
   u.debug(`Initializing from URL`, {
     manifestUrl: e.manifestUrl,
     wasmUrl: e.wasmUrl,
   });
   try {
     let t = e.manifestUrl || `http://localhost:8081/.manifest.tonk`;
-    (await kt(), u.debug(`Fetching manifest from URL`, { manifestUrl: t }));
+    (await Nt(), u.debug(`Fetching manifest from URL`, { manifestUrl: t }));
     let n = await fetch(t),
       r = new Uint8Array(await n.arrayBuffer());
     u.debug(`Manifest bytes loaded`, { byteLength: r.length });
-    let i = await (await J.fromBytes(r)).getManifest();
+    let i = await (await q.fromBytes(r)).getManifest();
     u.debug(`Bundle and manifest created`);
-    let a = e.wsUrl || Q(i);
+    let a = e.wsUrl || Z(i);
     u.debug(`Creating TonkCore from manifest bytes`);
-    let o = await Y.fromBytes(r, { storage: { type: `indexeddb` } });
+    let o = await J.fromBytes(r, { storage: { type: `indexeddb` } });
     (u.debug(`TonkCore created`),
       await m(a),
       u.debug(`Connecting to websocket`, { wsUrl: a }),
       await o.connectWebsocket(a),
       u.debug(`Websocket connection established`),
-      await At(o),
+      await $(o),
       u.debug(`PathIndex sync complete`),
       y({
         status: `active`,
@@ -3056,7 +3114,7 @@ async function Gt(e) {
         connectionHealthy: !0,
         reconnectAttempts: 0,
       }),
-      Z(),
+      X(),
       await p(r),
       u.debug(`Bundle bytes persisted`),
       u.info(`Initialized from URL successfully`),
@@ -3074,27 +3132,27 @@ async function Gt(e) {
       }));
   }
 }
-async function Kt(e) {
+async function Yt(e) {
   u.debug(`Initializing from bytes`, {
     byteLength: e.bundleBytes.byteLength,
     serverUrl: e.serverUrl,
   });
   try {
     let t = e.serverUrl || `http://localhost:8081`;
-    (u.debug(`Using server URL`, { serverUrl: t }), await kt());
+    (u.debug(`Using server URL`, { serverUrl: t }), await Nt());
     let n = new Uint8Array(e.bundleBytes);
     u.debug(`Creating bundle from bytes`, { byteLength: n.length });
-    let r = await (await J.fromBytes(n)).getManifest();
+    let r = await (await q.fromBytes(n)).getManifest();
     u.debug(`Bundle and manifest created`, { rootId: r.rootId });
-    let i = e.wsUrl || Q(r, t);
+    let i = e.wsUrl || Z(r, t);
     u.debug(`Creating TonkCore from bundle bytes`);
-    let a = await Y.fromBytes(n, { storage: { type: `indexeddb` } });
+    let a = await J.fromBytes(n, { storage: { type: `indexeddb` } });
     (u.debug(`TonkCore created`),
       u.debug(`Connecting to websocket`, { wsUrl: i }),
       i &&
         (await a.connectWebsocket(i),
         u.debug(`Websocket connection established`),
-        await At(a),
+        await $(a),
         u.debug(`PathIndex sync complete`)),
       y({
         status: `active`,
@@ -3108,7 +3166,7 @@ async function Kt(e) {
         connectionHealthy: !0,
         reconnectAttempts: 0,
       }),
-      Z(),
+      X(),
       await p(n),
       u.debug(`Bundle bytes persisted`),
       u.info(`Initialized from bytes successfully`),
@@ -3126,7 +3184,7 @@ async function Kt(e) {
       }));
   }
 }
-async function qt(e) {
+async function Xt(e) {
   (u.debug(`Getting server URL`),
     b({
       type: `getServerUrl`,
@@ -3135,7 +3193,7 @@ async function qt(e) {
       data: `http://localhost:8081`,
     }));
 }
-async function Jt(e) {
+async function Zt(e) {
   u.debug(`Getting manifest`);
   try {
     let t = v();
@@ -3153,17 +3211,17 @@ async function Jt(e) {
       }));
   }
 }
-async function Yt() {
+async function Qt() {
   let e = g();
   (u.debug(`Ping received`),
     b({ type: `ready`, status: e.status, needsBundle: e.status !== `active` }));
 }
-async function Xt(e) {
-  (g().status === `active` && de(e.slug),
-    await ne(e.slug),
+async function $t(e) {
+  (g().status === `active` && me(e.slug),
+    await re(e.slug),
     u.debug(`App slug set and persisted`, { slug: e.slug }));
 }
-async function Zt(e) {
+async function en(e) {
   u.debug(`Starting file watch`, { path: e.path, watchId: e.id });
   try {
     let t = v();
@@ -3172,7 +3230,7 @@ async function Zt(e) {
       (u.debug(`File change detected`, { watchId: e.id, path: e.path }),
         b({ type: `fileChanged`, watchId: e.id, documentData: t }));
     });
-    (n && ge(e.id, n),
+    (n && ye(e.id, n),
       u.debug(`File watch started`, { path: e.path, watchId: e.id }),
       b({ type: `watchFile`, id: e.id, success: !0 }));
   } catch (t) {
@@ -3188,12 +3246,12 @@ async function Zt(e) {
       }));
   }
 }
-async function Qt(e) {
+async function tn(e) {
   u.debug(`Stopping file watch`, { watchId: e.id });
   try {
-    (ve(e.id)
+    (xe(e.id)
       ? (u.debug(`Found watcher, stopping it`, { watchId: e.id }),
-        _e(e.id),
+        be(e.id),
         u.debug(`File watch stopped`, { watchId: e.id }))
       : u.debug(`No watcher found for ID`, { watchId: e.id }),
       b({ type: `unwatchFile`, id: e.id, success: !0 }));
@@ -3210,7 +3268,7 @@ async function Qt(e) {
       }));
   }
 }
-async function $t(e) {
+async function nn(e) {
   u.debug(`Starting directory watch`, { path: e.path, watchId: e.id });
   try {
     let t = v();
@@ -3224,7 +3282,7 @@ async function $t(e) {
           changeData: t,
         }));
     });
-    (n && ge(e.id, n),
+    (n && ye(e.id, n),
       u.debug(`Directory watch started`, { path: e.path, watchId: e.id }),
       b({ type: `watchDirectory`, id: e.id, success: !0 }));
   } catch (t) {
@@ -3240,12 +3298,12 @@ async function $t(e) {
       }));
   }
 }
-async function en(e) {
+async function rn(e) {
   u.debug(`Stopping directory watch`, { watchId: e.id });
   try {
-    (ve(e.id)
+    (xe(e.id)
       ? (u.debug(`Found directory watcher, stopping it`, { watchId: e.id }),
-        _e(e.id),
+        be(e.id),
         u.debug(`Directory watch stopped`, { watchId: e.id }))
       : u.debug(`No directory watcher found for ID`, { watchId: e.id }),
       b({ type: `unwatchDirectory`, id: e.id, success: !0 }));
@@ -3262,7 +3320,7 @@ async function en(e) {
       }));
   }
 }
-var tn = [
+var an = [
   `init`,
   `loadBundle`,
   `initializeFromUrl`,
@@ -3271,20 +3329,20 @@ var tn = [
   `ping`,
   `setAppSlug`,
 ];
-async function nn(e) {
+async function on(e) {
   let t = e.type,
     n = e.id;
   u.debug(`Received message`, { type: t, id: n || `N/A` });
   let r = g();
   if (t === `setAppSlug`) {
-    await Xt({ slug: e.slug });
+    await $t({ slug: e.slug });
     return;
   }
   if (t === `ping`) {
-    await Yt();
+    await Qt();
     return;
   }
-  if (r.status !== `active` && !tn.includes(t)) {
+  if (r.status !== `active` && !an.includes(t)) {
     (u.warn(`Operation attempted before VFS initialization`, {
       type: t,
       status: r.status,
@@ -3300,14 +3358,14 @@ async function nn(e) {
   }
   switch (t) {
     case `init`:
-      await Wt({
+      await qt({
         ...(n !== void 0 && { id: n }),
         manifest: e.manifest,
         ...(e.wsUrl !== void 0 && { wsUrl: e.wsUrl }),
       });
       break;
     case `initializeFromUrl`:
-      await Gt({
+      await Jt({
         ...(n !== void 0 && { id: n }),
         ...(e.manifestUrl !== void 0 && { manifestUrl: e.manifestUrl }),
         ...(e.wasmUrl !== void 0 && { wasmUrl: e.wasmUrl }),
@@ -3315,7 +3373,7 @@ async function nn(e) {
       });
       break;
     case `initializeFromBytes`:
-      await Kt({
+      await Yt({
         ...(n !== void 0 && { id: n }),
         bundleBytes: e.bundleBytes,
         ...(e.serverUrl !== void 0 && { serverUrl: e.serverUrl }),
@@ -3323,30 +3381,33 @@ async function nn(e) {
       });
       break;
     case `getServerUrl`:
-      await qt({ id: n });
+      await Xt({ id: n });
       break;
     case `getManifest`:
-      await Jt({ id: n });
+      await Zt({ id: n });
       break;
     case `loadBundle`:
-      await Nt({
+      await It({
         ...(n !== void 0 && { id: n }),
         bundleBytes: e.bundleBytes,
         ...(e.serverUrl !== void 0 && { serverUrl: e.serverUrl }),
         ...(e.manifest !== void 0 && { manifest: e.manifest }),
+        ...(e.launcherBundleId !== void 0 && {
+          launcherBundleId: e.launcherBundleId,
+        }),
       });
       break;
     case `toBytes`:
-      await Pt({ id: n });
+      await Lt({ id: n });
       break;
     case `forkToBytes`:
-      await Ft({ id: n });
+      await Rt({ id: n });
       break;
     case `readFile`:
-      await Lt({ id: n, path: e.path });
+      await Bt({ id: n, path: e.path });
       break;
     case `writeFile`:
-      await Rt({
+      await Vt({
         id: n,
         path: e.path,
         ...(e.create !== void 0 && { create: e.create }),
@@ -3354,34 +3415,34 @@ async function nn(e) {
       });
       break;
     case `deleteFile`:
-      await zt({ id: n, path: e.path });
+      await Ht({ id: n, path: e.path });
       break;
     case `rename`:
-      await Bt({ id: n, oldPath: e.oldPath, newPath: e.newPath });
+      await Ut({ id: n, oldPath: e.oldPath, newPath: e.newPath });
       break;
     case `exists`:
-      await Vt({ id: n, path: e.path });
+      await Wt({ id: n, path: e.path });
       break;
     case `patchFile`:
-      await Ut({ id: n, path: e.path, jsonPath: e.jsonPath, value: e.value });
+      await Kt({ id: n, path: e.path, jsonPath: e.jsonPath, value: e.value });
       break;
     case `updateFile`:
-      await Ht({ id: n, path: e.path, content: e.content });
+      await Gt({ id: n, path: e.path, content: e.content });
       break;
     case `listDirectory`:
-      await It({ id: n, path: e.path });
+      await zt({ id: n, path: e.path });
       break;
     case `watchFile`:
-      await Zt({ id: n, path: e.path });
+      await en({ id: n, path: e.path });
       break;
     case `unwatchFile`:
-      await Qt({ id: n });
+      await tn({ id: n });
       break;
     case `watchDirectory`:
-      await $t({ id: n, path: e.path });
+      await nn({ id: n, path: e.path });
       break;
     case `unwatchDirectory`:
-      await en({ id: n });
+      await rn({ id: n });
       break;
     default:
       (u.warn(`Unknown message type`, { type: t }),
@@ -3394,25 +3455,25 @@ async function nn(e) {
           }));
   }
 }
-var rn = self;
+var sn = self;
 (u.info(`Service worker starting`, {
-  version: `mj31xa4z`,
-  buildTime: `2025-12-12T15:58:25.427Z`,
+  version: `mj33m98q`,
+  buildTime: `2025-12-12T16:45:50.282Z`,
   location: self.location.href,
 }),
   u.debug(`Checking for cached state`),
-  le(jt()),
+  fe(Pt()),
   self.addEventListener(`install`, (e) => {
     (u.info(`Service worker installing`),
-      rn.skipWaiting(),
+      sn.skipWaiting(),
       u.debug(`skipWaiting called`));
   }),
   self.addEventListener(`activate`, (e) => {
     (u.info(`Service worker activating`),
       e.waitUntil(
         (async () => {
-          (await rn.clients.claim(), u.debug(`Clients claimed`));
-          let e = await rn.clients.matchAll();
+          (await sn.clients.claim(), u.debug(`Clients claimed`));
+          let e = await sn.clients.matchAll();
           (e.forEach((e) => {
             e.postMessage({ type: `ready`, needsBundle: !0 });
           }),
@@ -3423,7 +3484,7 @@ var rn = self;
   self.addEventListener(`message`, async (e) => {
     u.debug(`Message received`, { type: e.data?.type });
     try {
-      await nn(e.data);
+      await on(e.data);
     } catch (e) {
       u.error(`Error handling message`, {
         error: e instanceof Error ? e.message : String(e),
@@ -3431,6 +3492,6 @@ var rn = self;
     }
   }),
   self.addEventListener(`fetch`, (e) => {
-    Se(e);
+    Te(e);
   }),
   u.debug(`VFS Service Worker initialized`));

@@ -4,9 +4,11 @@ import { Bundle, TonkCore } from "@tonk/core/slim";
 import {
   clearAllCache,
   persistBundleBytes,
+  persistNamespace,
   persistWsUrl,
   restoreAppSlug,
   restoreBundleBytes,
+  restoreNamespace,
   restoreWsUrl,
 } from "./cache";
 import { startHealthMonitoring } from "./connection";
@@ -86,10 +88,11 @@ export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
 // Auto-initialize Tonk from cache if available
 export async function autoInitializeFromCache(): Promise<void> {
   try {
-    // Try to restore appSlug, bundle, and wsUrl from cache
+    // Try to restore appSlug, bundle, wsUrl, and namespace from cache
     const restoredSlug = await restoreAppSlug();
     const bundleBytes = await restoreBundleBytes();
     const restoredWsUrl = await restoreWsUrl();
+    const restoredNamespace = await restoreNamespace();
 
     if (!restoredSlug || !bundleBytes) {
       logger.debug(
@@ -106,6 +109,7 @@ export async function autoInitializeFromCache(): Promise<void> {
     logger.info("Auto-initializing from cache", {
       slug: restoredSlug,
       bundleSize: bundleBytes.length,
+      namespace: restoredNamespace,
     });
 
     // Initialize WASM (singleton - safe to call multiple times)
@@ -118,11 +122,16 @@ export async function autoInitializeFromCache(): Promise<void> {
       rootId: manifest.rootId,
     });
 
-    // Create TonkCore instance
+    // Create TonkCore instance with restored namespace for IndexedDB isolation
+    const storageConfig = restoredNamespace
+      ? { type: "indexeddb" as const, namespace: restoredNamespace }
+      : { type: "indexeddb" as const };
     const tonk = await TonkCore.fromBytes(bundleBytes, {
-      storage: { type: "indexeddb" },
+      storage: storageConfig,
     });
-    logger.debug("TonkCore created from cached bundle");
+    logger.debug("TonkCore created from cached bundle", {
+      namespace: restoredNamespace,
+    });
 
     // Connect to websocket
     // Use restored WS URL if available, otherwise check manifest, then fallback to build-time config
@@ -148,6 +157,7 @@ export async function autoInitializeFromCache(): Promise<void> {
     transitionTo({
       status: "active",
       bundleId: manifest.rootId,
+      ...(restoredNamespace && { launcherBundleId: restoredNamespace }),
       tonk,
       manifest,
       appSlug: restoredSlug,
@@ -241,13 +251,20 @@ export async function loadBundle(
       return { success: true, skipped: true };
     }
 
-    // Create new TonkCore instance
-    logger.debug("Creating new TonkCore from bundle bytes");
+    // Create new TonkCore instance with namespace for IndexedDB isolation
+    // Using launcherBundleId ensures each tonk gets its own separate database
+    logger.debug("Creating new TonkCore from bundle bytes", {
+      launcherBundleId,
+    });
+    const loadStorageConfig = launcherBundleId
+      ? { type: "indexeddb" as const, namespace: launcherBundleId }
+      : { type: "indexeddb" as const };
     const newTonk = await TonkCore.fromBytes(bundleBytes, {
-      storage: { type: "indexeddb" },
+      storage: loadStorageConfig,
     });
     logger.debug("New TonkCore created successfully", {
       rootId: manifest.rootId,
+      namespace: launcherBundleId,
     });
 
     // Get the websocket URL - check manifest first, then URL params, then server URL
@@ -317,9 +334,14 @@ export async function loadBundle(
 
     startHealthMonitoring();
 
-    // Persist bundle bytes to survive service worker restarts
+    // Persist bundle bytes and namespace to survive service worker restarts
     await persistBundleBytes(bundleBytes);
-    logger.debug("Bundle bytes persisted to cache");
+    if (launcherBundleId) {
+      await persistNamespace(launcherBundleId);
+    }
+    logger.debug("Bundle bytes and namespace persisted to cache", {
+      namespace: launcherBundleId,
+    });
 
     logger.info("Bundle loaded successfully", { rootId: manifest.rootId });
     return { success: true };

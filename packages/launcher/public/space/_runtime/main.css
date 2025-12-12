@@ -315,6 +315,9 @@
 }
 @layer components;
 @layer utilities {
+  .visible {
+    visibility: visible;
+  }
   .flex {
     display: flex;
   }

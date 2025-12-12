@@ -806,10 +806,10 @@ pub fn create_tonk_with_peer_id(peer_id: String) -> Promise {
 }
 
 #[wasm_bindgen]
-pub fn create_tonk_with_storage(use_indexed_db: bool) -> Promise {
+pub fn create_tonk_with_storage(use_indexed_db: bool, namespace: Option<String>) -> Promise {
     future_to_promise(async move {
         let storage_config = if use_indexed_db {
-            StorageConfig::IndexedDB
+            StorageConfig::IndexedDB { namespace }
         } else {
             StorageConfig::InMemory
         };
@@ -831,11 +831,15 @@ pub fn create_tonk_with_storage(use_indexed_db: bool) -> Promise {
 }
 
 #[wasm_bindgen]
-pub fn create_tonk_with_config(peer_id: String, use_indexed_db: bool) -> Promise {
+pub fn create_tonk_with_config(
+    peer_id: String,
+    use_indexed_db: bool,
+    namespace: Option<String>,
+) -> Promise {
     future_to_promise(async move {
         let peer_id = samod::PeerId::from_string(peer_id);
         let storage_config = if use_indexed_db {
-            StorageConfig::IndexedDB
+            StorageConfig::IndexedDB { namespace }
         } else {
             StorageConfig::InMemory
         };
@@ -868,7 +872,11 @@ pub fn create_tonk_from_bundle(bundle: &WasmBundle) -> Promise {
 }
 
 #[wasm_bindgen]
-pub fn create_tonk_from_bundle_with_storage(bundle: &WasmBundle, use_indexed_db: bool) -> Promise {
+pub fn create_tonk_from_bundle_with_storage(
+    bundle: &WasmBundle,
+    use_indexed_db: bool,
+    namespace: Option<String>,
+) -> Promise {
     let bundle_to_bytes_promise = bundle.to_bytes();
     future_to_promise(async move {
         let bytes_result = JsFuture::from(bundle_to_bytes_promise).await;
@@ -878,7 +886,7 @@ pub fn create_tonk_from_bundle_with_storage(bundle: &WasmBundle, use_indexed_db:
                 let bytes = bytes_array.to_vec();
 
                 let storage_config = if use_indexed_db {
-                    StorageConfig::IndexedDB
+                    StorageConfig::IndexedDB { namespace }
                 } else {
                     StorageConfig::InMemory
                 };
@@ -911,12 +919,16 @@ pub fn create_tonk_from_bytes(data: Uint8Array) -> Promise {
 }
 
 #[wasm_bindgen]
-pub fn create_tonk_from_bytes_with_storage(data: Uint8Array, use_indexed_db: bool) -> Promise {
+pub fn create_tonk_from_bytes_with_storage(
+    data: Uint8Array,
+    use_indexed_db: bool,
+    namespace: Option<String>,
+) -> Promise {
     future_to_promise(async move {
         let bytes = data.to_vec();
 
         let storage_config = if use_indexed_db {
-            StorageConfig::IndexedDB
+            StorageConfig::IndexedDB { namespace }
         } else {
             StorageConfig::InMemory
         };

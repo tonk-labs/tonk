@@ -12933,6 +12933,44 @@ function se() {
     }, [t, r, a, n]);
   return (
     (0, _.useEffect)(() => {
+      let e = async (e) => {
+        if (e.data?.type !== `tonk:activate`) return;
+        console.log(`[Runtime] Received tonk:activate, reloading bundle...`);
+        let t = new URLSearchParams(window.location.search).get(`bundleId`);
+        if (!t) {
+          console.warn(`[Runtime] No bundleId in URL, cannot reload`);
+          return;
+        }
+        try {
+          let e = await x.get(t);
+          if (!e) {
+            console.error(`[Runtime] Bundle not found:`, t);
+            return;
+          }
+          let n = await i({
+            type: `loadBundle`,
+            bundleBytes: e.bytes,
+            manifest: e.manifest,
+            launcherBundleId: t,
+          });
+          n.success
+            ? n.skipped
+              ? console.log(`[Runtime] Bundle already active, no reload needed`)
+              : (console.log(
+                  `[Runtime] Bundle reloaded, notifying app to reset state`,
+                ),
+                window.postMessage({ type: `tonk:bundleReloaded` }, `*`))
+            : console.error(`[Runtime] Failed to reload bundle:`, n.error);
+        } catch (e) {
+          console.error(`[Runtime] Error reloading bundle:`, e);
+        }
+      };
+      return (
+        window.addEventListener(`message`, e),
+        () => window.removeEventListener(`message`, e)
+      );
+    }, [i]),
+    (0, _.useEffect)(() => {
       let e = (e, t) => {
           window.parent !== window &&
             window.parent.postMessage(
@@ -12968,6 +13006,7 @@ function se() {
                 type: `loadBundle`,
                 bundleBytes: t.bytes,
                 manifest: t.manifest,
+                launcherBundleId: e,
               });
               r.success
                 ? (console.log(`Bundle loaded successfully from IndexedDB`),
