@@ -1,11 +1,18 @@
-import { getTonk } from '../state';
+import { getTonkForBundle } from '../state';
 import { logger } from '../utils/logging';
 import { postResponse } from '../utils/response';
 
-export async function handleListDirectory(message: { id: string; path: string }): Promise<void> {
-  logger.debug('Listing directory', { path: message.path });
+export async function handleListDirectory(message: {
+  id: string;
+  path: string;
+  launcherBundleId: string;
+}): Promise<void> {
+  logger.debug('Listing directory', {
+    path: message.path,
+    launcherBundleId: message.launcherBundleId,
+  });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error('Tonk not initialized');
     }

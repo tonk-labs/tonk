@@ -55,15 +55,8 @@ function App() {
       // Check if iframe already exists in pool (switching back to it)
       const iframeAlreadyExists = iframePool.has(id);
 
-      // DEACTIVATE the currently active iframe before switching
-      // This pauses its VFS watchers to prevent cross-contamination
-      if (activeBundleId && activeBundleId !== id) {
-        const previousIframe = iframeRefs.current.get(activeBundleId);
-        if (previousIframe?.contentWindow) {
-          console.log('[Launcher] Deactivating iframe:', activeBundleId);
-          previousIframe.contentWindow.postMessage({ type: 'tonk:deactivate' }, '*');
-        }
-      }
+      // With multi-bundle isolation, we no longer need to deactivate the previous iframe
+      // Each bundle maintains its own TonkCore instance in the SW
 
       setIframePool((prevPool) => {
         const newPool = new Map(prevPool);
@@ -86,6 +79,14 @@ function App() {
           for (const [bundleId] of toRemove) {
             // Don't evict the one we're about to activate
             if (bundleId !== id) {
+              // Send unloadBundle message to SW to free resources
+              if (navigator.serviceWorker.controller) {
+                navigator.serviceWorker.controller.postMessage({
+                  type: 'unloadBundle',
+                  launcherBundleId: bundleId,
+                });
+                console.log('[Launcher] Sent unloadBundle for evicted iframe:', bundleId);
+              }
               newPool.delete(bundleId);
               // Clean up ref for evicted iframe
               iframeRefs.current.delete(bundleId);
@@ -98,12 +99,18 @@ function App() {
 
       setActiveBundleId(id);
 
-      // If iframe already existed, notify it to reload its bundle
-      // (the SW may have switched to a different TonkCore since it was created)
+      // If iframe already existed, notify it that it's being reactivated
+      // With multi-bundle isolation, the bundle is already loaded in SW
       if (iframeAlreadyExists) {
         const iframe = iframeRefs.current.get(id);
         if (iframe?.contentWindow) {
-          iframe.contentWindow.postMessage({ type: 'tonk:activate' }, '*');
+          iframe.contentWindow.postMessage(
+            {
+              type: 'tonk:activate',
+              launcherBundleId: id,
+            },
+            '*'
+          );
         }
       }
     } catch (err) {
@@ -182,7 +189,9 @@ function App() {
               visibility: pooledIframe.bundleId === activeBundleId ? 'visible' : 'hidden',
               pointerEvents: pooledIframe.bundleId === activeBundleId ? 'auto' : 'none',
             }}
-            title={`Runtime ${pooledIframe.bundleId}`}
+            title={
+              pooledIframe.bundleId ? `Runtime for bundle ${pooledIframe.bundleId}` : 'Runtime'
+            }
             allow="clipboard-read; clipboard-write"
           />
         ))}

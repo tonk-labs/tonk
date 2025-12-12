@@ -1,11 +1,15 @@
-import { getTonk } from '../state';
+import { getTonkForBundle } from '../state';
 import { logger } from '../utils/logging';
 import { postResponse } from '../utils/response';
 
-export async function handleReadFile(message: { id: string; path: string }): Promise<void> {
-  logger.debug('Reading file', { path: message.path });
+export async function handleReadFile(message: {
+  id: string;
+  path: string;
+  launcherBundleId: string;
+}): Promise<void> {
+  logger.debug('Reading file', { path: message.path, launcherBundleId: message.launcherBundleId });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error('Tonk not initialized');
     }
@@ -41,14 +45,16 @@ export async function handleWriteFile(message: {
     bytes?: Uint8Array;
     content: unknown;
   };
+  launcherBundleId: string;
 }): Promise<void> {
   logger.debug('Writing file', {
     path: message.path,
     create: message.create,
     hasBytes: !!message.content.bytes,
+    launcherBundleId: message.launcherBundleId,
   });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error('Tonk not initialized');
     }
@@ -96,10 +102,14 @@ export async function handleWriteFile(message: {
   }
 }
 
-export async function handleDeleteFile(message: { id: string; path: string }): Promise<void> {
-  logger.debug('Deleting file', { path: message.path });
+export async function handleDeleteFile(message: {
+  id: string;
+  path: string;
+  launcherBundleId: string;
+}): Promise<void> {
+  logger.debug('Deleting file', { path: message.path, launcherBundleId: message.launcherBundleId });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error('Tonk not initialized');
     }
@@ -129,13 +139,15 @@ export async function handleRename(message: {
   id: string;
   oldPath: string;
   newPath: string;
+  launcherBundleId: string;
 }): Promise<void> {
   logger.debug('Renaming file or directory', {
     oldPath: message.oldPath,
     newPath: message.newPath,
+    launcherBundleId: message.launcherBundleId,
   });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error('Tonk not initialized');
     }
@@ -165,10 +177,17 @@ export async function handleRename(message: {
   }
 }
 
-export async function handleExists(message: { id: string; path: string }): Promise<void> {
-  logger.debug('Checking file existence', { path: message.path });
+export async function handleExists(message: {
+  id: string;
+  path: string;
+  launcherBundleId: string;
+}): Promise<void> {
+  logger.debug('Checking file existence', {
+    path: message.path,
+    launcherBundleId: message.launcherBundleId,
+  });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error('Tonk not initialized');
     }
@@ -202,10 +221,14 @@ export async function handleUpdateFile(message: {
   id: string;
   path: string;
   content: unknown;
+  launcherBundleId: string;
 }): Promise<void> {
-  logger.debug('Updating file with smart diff', { path: message.path });
+  logger.debug('Updating file with smart diff', {
+    path: message.path,
+    launcherBundleId: message.launcherBundleId,
+  });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error('Tonk not initialized');
     }
@@ -243,13 +266,15 @@ export async function handlePatchFile(message: {
   path: string;
   jsonPath: string[];
   value: unknown;
+  launcherBundleId: string;
 }): Promise<void> {
   logger.debug('Patching file', {
     path: message.path,
     jsonPath: message.jsonPath,
+    launcherBundleId: message.launcherBundleId,
   });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error('Tonk not initialized');
     }

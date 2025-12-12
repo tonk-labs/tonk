@@ -1,15 +1,20 @@
 import type { DocumentData } from '@tonk/core/slim';
-import { addWatcher, getTonk, getWatcher, removeWatcher } from '../state';
+import { addWatcher, getTonkForBundle, getWatcher, removeWatcher } from '../state';
 import { logger } from '../utils/logging';
 import { postResponse } from '../utils/response';
 
-export async function handleWatchFile(message: { id: string; path: string }): Promise<void> {
+export async function handleWatchFile(message: {
+  id: string;
+  path: string;
+  launcherBundleId: string;
+}): Promise<void> {
   logger.debug('Starting file watch', {
     path: message.path,
     watchId: message.id,
+    launcherBundleId: message.launcherBundleId,
   });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error('Tonk not initialized');
     }
@@ -31,7 +36,7 @@ export async function handleWatchFile(message: { id: string; path: string }): Pr
     );
 
     if (watcher) {
-      addWatcher(message.id, watcher);
+      addWatcher(message.launcherBundleId, message.id, watcher);
     }
     logger.debug('File watch started', {
       path: message.path,
@@ -56,13 +61,19 @@ export async function handleWatchFile(message: { id: string; path: string }): Pr
   }
 }
 
-export async function handleUnwatchFile(message: { id: string }): Promise<void> {
-  logger.debug('Stopping file watch', { watchId: message.id });
+export async function handleUnwatchFile(message: {
+  id: string;
+  launcherBundleId: string;
+}): Promise<void> {
+  logger.debug('Stopping file watch', {
+    watchId: message.id,
+    launcherBundleId: message.launcherBundleId,
+  });
   try {
-    const watcher = getWatcher(message.id);
+    const watcher = getWatcher(message.launcherBundleId, message.id);
     if (watcher) {
       logger.debug('Found watcher, stopping it', { watchId: message.id });
-      removeWatcher(message.id);
+      removeWatcher(message.launcherBundleId, message.id);
       logger.debug('File watch stopped', { watchId: message.id });
     } else {
       logger.debug('No watcher found for ID', { watchId: message.id });
@@ -86,13 +97,18 @@ export async function handleUnwatchFile(message: { id: string }): Promise<void> 
   }
 }
 
-export async function handleWatchDirectory(message: { id: string; path: string }): Promise<void> {
+export async function handleWatchDirectory(message: {
+  id: string;
+  path: string;
+  launcherBundleId: string;
+}): Promise<void> {
   logger.debug('Starting directory watch', {
     path: message.path,
     watchId: message.id,
+    launcherBundleId: message.launcherBundleId,
   });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error('Tonk not initialized');
     }
@@ -112,7 +128,7 @@ export async function handleWatchDirectory(message: { id: string; path: string }
     });
 
     if (watcher) {
-      addWatcher(message.id, watcher);
+      addWatcher(message.launcherBundleId, message.id, watcher);
     }
     logger.debug('Directory watch started', {
       path: message.path,
@@ -137,15 +153,21 @@ export async function handleWatchDirectory(message: { id: string; path: string }
   }
 }
 
-export async function handleUnwatchDirectory(message: { id: string }): Promise<void> {
-  logger.debug('Stopping directory watch', { watchId: message.id });
+export async function handleUnwatchDirectory(message: {
+  id: string;
+  launcherBundleId: string;
+}): Promise<void> {
+  logger.debug('Stopping directory watch', {
+    watchId: message.id,
+    launcherBundleId: message.launcherBundleId,
+  });
   try {
-    const watcher = getWatcher(message.id);
+    const watcher = getWatcher(message.launcherBundleId, message.id);
     if (watcher) {
       logger.debug('Found directory watcher, stopping it', {
         watchId: message.id,
       });
-      removeWatcher(message.id);
+      removeWatcher(message.launcherBundleId, message.id);
       logger.debug('Directory watch stopped', { watchId: message.id });
     } else {
       logger.debug('No directory watcher found for ID', {
