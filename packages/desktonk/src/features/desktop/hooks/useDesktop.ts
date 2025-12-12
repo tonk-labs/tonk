@@ -16,6 +16,24 @@ import { type DesktopState, getDesktopService } from '../services/DesktopService
  */
 export function useDesktop(): DesktopState {
   const [state, setState] = useState<DesktopState>(() => getDesktopService().getState());
+  // Counter to trigger re-subscription when bundle reloads
+  const [subscriptionKey, setSubscriptionKey] = useState(0);
+
+  // Listen for bundle reload to re-subscribe to new service instance
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === 'tonk:bundleReloaded') {
+        console.log('[useDesktop] Bundle reloaded, will re-subscribe to new service');
+        // Reset state to loading while new service initializes
+        setState({ files: [], positions: new Map(), isLoading: true });
+        // Trigger re-subscription
+        setSubscriptionKey((k) => k + 1);
+      }
+    };
+
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
 
   useEffect(() => {
     const service = getDesktopService();
@@ -26,7 +44,7 @@ export function useDesktop(): DesktopState {
     });
 
     return unsubscribe;
-  }, []);
+  }, [subscriptionKey]);
 
   return state;
 }

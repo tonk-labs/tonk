@@ -1,15 +1,42 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { type TLStoreSnapshot, useEditor } from 'tldraw';
 import { getVFSService, type JsonValue } from '@/vfs-client';
 import { useVFS } from '../../../hooks/useVFS';
+import { resetDesktopService } from '../services/DesktopService';
 
 const CANVAS_STATE_PATH = '/.state/desktop';
 
 export function useCanvasPersistence() {
   const editor = useEditor();
-  const { connectionState } = useVFS();
+  const { connectionState, resetConnection } = useVFS();
   const hasLoadedRef = useRef(false);
   const [isReady, setIsReady] = useState(false);
+
+  // Handle bundle reload - reset state so canvas reloads from new VFS
+  const handleBundleReload = useCallback(() => {
+    console.log('[useCanvasPersistence] Bundle reloaded, resetting all app state');
+    hasLoadedRef.current = false;
+    setIsReady(false);
+
+    // Reset DesktopService to clear its state and watchers
+    resetDesktopService();
+
+    // Reset VFS connection to re-establish watchers with new TonkCore
+    // This will trigger 'reconnecting' → 'connected', causing sync middleware to reload
+    resetConnection();
+  }, [resetConnection]);
+
+  // Listen for tonk:bundleReloaded message from runtime
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === 'tonk:bundleReloaded') {
+        handleBundleReload();
+      }
+    };
+
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [handleBundleReload]);
 
   // Load canvas state once on mount
   useEffect(() => {

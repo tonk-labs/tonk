@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { getVFSService } from '@/vfs-client';
 
 type ConnectionState = 'disconnected' | 'connecting' | 'open' | 'connected' | 'reconnecting';
@@ -14,8 +14,14 @@ export function useVFS() {
     });
   }, [vfs]);
 
+  // Reset connection when TonkCore changes (e.g., switching between tonks)
+  const resetConnection = useCallback(async () => {
+    await vfs.reset();
+  }, [vfs]);
+
   return {
     vfs,
     connectionState,
+    resetConnection,
   };
 }

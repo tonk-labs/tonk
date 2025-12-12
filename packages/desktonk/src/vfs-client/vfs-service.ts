@@ -494,6 +494,28 @@ export class VFSService {
       navigator.serviceWorker.removeEventListener('message', this.messageHandler);
     }
   }
+
+  /**
+   * Reset the connection state and re-establish watchers.
+   * Called when the underlying TonkCore changes (e.g., switching between tonks).
+   */
+  async reset(): Promise<void> {
+    console.log('[VFSService] Resetting connection for new TonkCore...');
+
+    // Clear pending requests (they won't be valid for new TonkCore)
+    for (const [id, pending] of this.pendingRequests) {
+      pending.reject(new Error('Connection reset'));
+    }
+    this.pendingRequests.clear();
+
+    // Notify listeners that we're reconnecting
+    this.notifyConnectionStateChange('reconnecting');
+
+    // Reconnect and re-establish watchers
+    await this.connect();
+
+    console.log('[VFSService] Reset complete');
+  }
 }
 
 // Singleton instance management

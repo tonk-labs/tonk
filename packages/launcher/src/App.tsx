@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Sidebar } from "./components/sidebar/sidebar";
 import GradientLogo from "./components/ui/gradientLogo";
 import { GradientText } from "./components/ui/gradientText";
@@ -23,6 +23,7 @@ function App() {
   const [iframePool, setIframePool] = useState<Map<string, PooledIframe>>(
     () => new Map(),
   );
+  const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map());
 
   const loadBundles = useCallback(async () => {
     try {
@@ -53,6 +54,9 @@ function App() {
       const url = `/space/_runtime/index.html?bundleId=${encodeURIComponent(id)}`;
       const now = Date.now();
 
+      // Check if iframe already exists in pool (switching back to it)
+      const iframeAlreadyExists = iframePool.has(id);
+
       setIframePool((prevPool) => {
         const newPool = new Map(prevPool);
 
@@ -78,6 +82,8 @@ function App() {
             // Don't evict the one we're about to activate
             if (bundleId !== id) {
               newPool.delete(bundleId);
+              // Clean up ref for evicted iframe
+              iframeRefs.current.delete(bundleId);
             }
           }
         }
@@ -86,6 +92,15 @@ function App() {
       });
 
       setActiveBundleId(id);
+
+      // If iframe already existed, notify it to reload its bundle
+      // (the SW may have switched to a different TonkCore since it was created)
+      if (iframeAlreadyExists) {
+        const iframe = iframeRefs.current.get(id);
+        if (iframe?.contentWindow) {
+          iframe.contentWindow.postMessage({ type: "tonk:activate" }, "*");
+        }
+      }
     } catch (err) {
       console.error("Failed to launch bundle:", err);
       alert("Failed to launch bundle");
@@ -153,6 +168,11 @@ function App() {
         {Array.from(iframePool.values()).map((pooledIframe) => (
           <iframe
             key={pooledIframe.bundleId}
+            ref={(el) => {
+              if (el) {
+                iframeRefs.current.set(pooledIframe.bundleId, el);
+              }
+            }}
             src={pooledIframe.url}
             className="absolute inset-0 w-full h-full border-none"
             style={{

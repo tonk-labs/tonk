@@ -184,7 +184,19 @@ export const sync =
 
     // Listen for connection state changes
     connectionStateUnsubscribe = vfs.onConnectionStateChange(async (connectionState) => {
-      if (connectionState === 'connected' && !isInitialized) {
+      if (connectionState === 'reconnecting') {
+        // TonkCore is being switched - reset so we reload from new VFS
+        console.log(`[sync] Connection reconnecting, resetting state for ${options.path}`);
+        isInitialized = false;
+        if (watchId) {
+          // Old watcher is dead anyway, just clear the reference
+          watchId = null;
+        }
+        if (saveTimeout) {
+          clearTimeout(saveTimeout);
+          saveTimeout = null;
+        }
+      } else if (connectionState === 'connected' && !isInitialized) {
         await initializeFromFile(state);
       } else if (connectionState === 'connected' && isInitialized) {
         await setupWatcher();
@@ -212,6 +224,21 @@ export const sync =
       if (connectionStateUnsubscribe) {
         connectionStateUnsubscribe();
         connectionStateUnsubscribe = null;
+      }
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        saveTimeout = null;
+      }
+    };
+
+    // Add reset function for when TonkCore changes (e.g., switching between tonks)
+    // This resets initialization state so the store reloads from the new VFS
+    (state as T & { __reset?: () => void }).__reset = () => {
+      console.log(`[sync] Resetting middleware for ${options.path}`);
+      isInitialized = false;
+      if (watchId) {
+        vfs.unwatchFile(watchId).catch(console.warn);
+        watchId = null;
       }
       if (saveTimeout) {
         clearTimeout(saveTimeout);
