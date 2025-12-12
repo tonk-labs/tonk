@@ -42,18 +42,22 @@ function AppInit({ children }: { children: React.ReactNode }) {
 }
 
 // Calculate basename from current URL
-// Dev: /app, Production: /runtime/{uuid}/app
+// Handles: /space/<space-name> (launcher), standalone dev mode
 function getBasename(): string {
-  if (import.meta.env.DEV) {
-    return '/app';
+  const path = window.location.pathname;
+
+  // Running in launcher: /space/<space-name>/...
+  const spaceMatch = path.match(/^\/space\/([^/]+)/);
+  if (spaceMatch) {
+    return `/space/${spaceMatch[1]}`;
   }
 
-  // Find path up to and including /app
-  const path = window.location.pathname;
-  const appIndex = path.indexOf('/app');
-  if (appIndex !== -1) {
-    return path.substring(0, appIndex + 4);
+  // Standalone dev mode: use first path segment as basename
+  const segments = path.split('/').filter(Boolean);
+  if (segments.length > 0) {
+    return `/${segments[0]}`;
   }
+
   return '/';
 }
 
