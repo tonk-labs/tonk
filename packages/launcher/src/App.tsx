@@ -57,6 +57,19 @@ function App() {
       // Check if iframe already exists in pool (switching back to it)
       const iframeAlreadyExists = iframePool.has(id);
 
+      // DEACTIVATE the currently active iframe before switching
+      // This pauses its VFS watchers to prevent cross-contamination
+      if (activeBundleId && activeBundleId !== id) {
+        const previousIframe = iframeRefs.current.get(activeBundleId);
+        if (previousIframe?.contentWindow) {
+          console.log("[Launcher] Deactivating iframe:", activeBundleId);
+          previousIframe.contentWindow.postMessage(
+            { type: "tonk:deactivate" },
+            "*",
+          );
+        }
+      }
+
       setIframePool((prevPool) => {
         const newPool = new Map(prevPool);
 

@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { type TLStoreSnapshot, useEditor } from "tldraw";
 import { getVFSService, type JsonValue } from "@/vfs-client";
 import { useVFS } from "../../../hooks/useVFS";
-import { resetDesktopService } from "../services/DesktopService";
+import {
+  pauseDesktopService,
+  resetDesktopService,
+} from "../services/DesktopService";
 
 const CANVAS_STATE_PATH = "/.state/desktop";
 
@@ -28,17 +31,37 @@ export function useCanvasPersistence() {
     resetConnection();
   }, [resetConnection]);
 
-  // Listen for tonk:bundleReloaded message from runtime
+  // Handle bundle deactivation - pause all VFS activity to prevent cross-contamination
+  const handleDeactivate = useCallback(async () => {
+    console.log("[useCanvasPersistence] Bundle deactivated, pausing services");
+
+    // Pause VFS first (stops watchers from firing)
+    const vfs = getVFSService();
+    await vfs.pause();
+
+    // Then pause desktop service (clears state)
+    await pauseDesktopService();
+  }, []);
+
+  // Listen for tonk:bundleReloaded, tonk:activate, and tonk:deactivate messages from runtime/launcher
+  // tonk:activate is sent when switching back to an already-loaded tonk in the iframe pool
+  // tonk:bundleReloaded is sent after the SW loads a new TonkCore
+  // Both need to trigger the reload flow to resume paused services
   useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      if (event.data?.type === "tonk:bundleReloaded") {
+    const handler = async (event: MessageEvent) => {
+      if (
+        event.data?.type === "tonk:bundleReloaded" ||
+        event.data?.type === "tonk:activate"
+      ) {
         handleBundleReload();
+      } else if (event.data?.type === "tonk:deactivate") {
+        await handleDeactivate();
       }
     };
 
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [handleBundleReload]);
+  }, [handleBundleReload, handleDeactivate]);
 
   // Load canvas state once on mount
   useEffect(() => {

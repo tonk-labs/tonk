@@ -15,6 +15,7 @@ const verbose = () => false;
 
 export class VFSService {
   private initialized = false;
+  private paused = false;
   private messageId = 0;
   private pendingRequests = new Map<
     string,
@@ -76,6 +77,9 @@ export class VFSService {
   }
 
   private handleMessage(event: MessageEvent): void {
+    // Ignore messages while paused (prevents cross-contamination between bundles)
+    if (this.paused) return;
+
     const response = event.data as VFSWorkerResponse;
 
     // Handle ready message
@@ -551,6 +555,9 @@ export class VFSService {
   async reset(): Promise<void> {
     console.log("[VFSService] Resetting connection for new TonkCore...");
 
+    // Clear paused state (we're being reactivated)
+    this.paused = false;
+
     // Clear pending requests (they won't be valid for new TonkCore)
     for (const [id, pending] of this.pendingRequests) {
       pending.reject(new Error("Connection reset"));
@@ -564,6 +571,71 @@ export class VFSService {
     await this.connect();
 
     console.log("[VFSService] Reset complete");
+  }
+
+  /**
+   * Pause the VFS service - stops all watchers but keeps metadata for resuming.
+   * Called when the iframe becomes hidden/inactive to prevent cross-contamination
+   * between bundles sharing the same service worker.
+   */
+  async pause(): Promise<void> {
+    if (this.paused) return;
+
+    console.log("[VFSService] Pausing - stopping all watchers");
+    this.paused = true;
+
+    // Reject pending requests (they'll be invalid after TonkCore changes)
+    for (const [id, pending] of this.pendingRequests) {
+      pending.reject(new Error("VFS paused"));
+    }
+    this.pendingRequests.clear();
+
+    // Unwatch all files/directories (but keep metadata for resume via reset())
+    const unwatchPromises: Promise<void>[] = [];
+
+    for (const [watchId, metadata] of this.watcherMetadata.entries()) {
+      try {
+        if (metadata.type === "file") {
+          unwatchPromises.push(
+            this.sendMessage<void>({
+              type: "unwatchFile",
+              id: watchId,
+              path: "",
+            }).catch(() => {
+              // Ignore errors - SW may have already cleaned up
+            }),
+          );
+        } else {
+          unwatchPromises.push(
+            this.sendMessage<void>({
+              type: "unwatchDirectory",
+              id: watchId,
+              path: "",
+            }).catch(() => {
+              // Ignore errors - SW may have already cleaned up
+            }),
+          );
+        }
+      } catch (err) {
+        // Ignore errors during cleanup
+      }
+    }
+
+    // Wait for all unwatch operations to complete (with timeout)
+    await Promise.race([
+      Promise.all(unwatchPromises),
+      new Promise((resolve) => setTimeout(resolve, 1000)), // 1s timeout
+    ]);
+
+    // Notify listeners that we're disconnected
+    this.notifyConnectionStateChange("disconnected");
+  }
+
+  /**
+   * Check if the service is currently paused.
+   */
+  isPaused(): boolean {
+    return this.paused;
   }
 }
 
