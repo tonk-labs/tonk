@@ -2632,71 +2632,74 @@ async function jt() {
       }));
   }
 }
-async function Mt(e, t, n, r) {
+async function Mt(e, t, n, r, i) {
   u.debug(`Loading new bundle`, {
     byteLength: e.length,
     serverUrl: t,
     hasCachedManifest: !!r,
+    launcherBundleId: i,
   });
   try {
     let n = g();
     await kt();
-    let i;
+    let a;
     if (r)
       (u.info(`Using cached manifest, skipping Bundle.fromBytes`, {
         rootId: r.rootId,
       }),
-        (i = r));
+        (a = r));
     else {
       u.debug(`No cached manifest, parsing bundle`, { byteLength: e.length });
       let t = await J.fromBytes(e);
-      ((i = await t.getManifest()),
+      ((a = await t.getManifest()),
         t.free(),
-        u.debug(`Bundle manifest extracted`, { rootId: i.rootId }));
+        u.debug(`Bundle manifest extracted`, { rootId: a.rootId }));
     }
-    if (n.status === `active` && n.manifest.rootId === i.rootId)
+    if (n.status === `active` && i && n.launcherBundleId === i)
       return (
-        u.debug(`Bundle already loaded with same rootId, skipping reload`, {
-          rootId: i.rootId,
-        }),
+        u.debug(
+          `Bundle already loaded with same launcherBundleId, skipping reload`,
+          { launcherBundleId: i, rootId: a.rootId },
+        ),
         { success: !0, skipped: !0 }
       );
     u.debug(`Creating new TonkCore from bundle bytes`);
-    let a = await Y.fromBytes(e, { storage: { type: `indexeddb` } });
-    u.debug(`New TonkCore created successfully`, { rootId: i.rootId });
-    let o = Q(i, t),
-      s = new URLSearchParams(self.location.search).get(`bundle`);
-    if (s)
+    let o = await Y.fromBytes(e, { storage: { type: `indexeddb` } });
+    u.debug(`New TonkCore created successfully`, { rootId: a.rootId });
+    let s = Q(a, t),
+      c = new URLSearchParams(self.location.search).get(`bundle`);
+    if (c)
       try {
-        let e = atob(s),
+        let e = atob(c),
           t = JSON.parse(e);
-        t.wsUrl && (o = t.wsUrl);
+        t.wsUrl && (s = t.wsUrl);
       } catch (e) {
         u.warn(`Could not parse bundle config for wsUrl`, {
           error: e instanceof Error ? e.message : String(e),
         });
       }
-    (u.debug(`Determined websocket URL`, { wsUrl: o, serverUrl: t }),
-      await m(o),
+    (u.debug(`Determined websocket URL`, { wsUrl: s, serverUrl: t }),
+      await m(s),
       u.debug(`Connecting new tonk to websocket`, {
-        wsUrl: o,
-        localRootId: i.rootId,
+        wsUrl: s,
+        localRootId: a.rootId,
       }),
-      o &&
-        (await a.connectWebsocket(o),
+      s &&
+        (await o.connectWebsocket(s),
         u.debug(`Websocket connection established`),
-        await At(a),
+        await At(o),
         u.debug(`PathIndex sync complete after loadBundle`)));
-    let c = g(),
-      l = c.status === `active` ? c.appSlug : i.entrypoints?.[0] || `app`;
+    let l = g(),
+      d = l.status === `active` ? l.appSlug : a.entrypoints?.[0] || `app`;
     return (
       y({
         status: `active`,
-        bundleId: i.rootId,
-        tonk: a,
-        manifest: i,
-        appSlug: l,
-        wsUrl: o,
+        bundleId: a.rootId,
+        ...(i && { launcherBundleId: i }),
+        tonk: o,
+        manifest: a,
+        appSlug: d,
+        wsUrl: s,
         healthCheckInterval: null,
         watchers: new Map(),
         connectionHealthy: !0,
@@ -2705,7 +2708,7 @@ async function Mt(e, t, n, r) {
       Z(),
       await p(e),
       u.debug(`Bundle bytes persisted to cache`),
-      u.info(`Bundle loaded successfully`, { rootId: i.rootId }),
+      u.info(`Bundle loaded successfully`, { rootId: a.rootId }),
       { success: !0 }
     );
   } catch (e) {
@@ -2723,10 +2726,11 @@ async function Nt(e) {
     byteLength: e.bundleBytes.byteLength,
     serverUrl: e.serverUrl,
     hasCachedManifest: !!e.manifest,
+    launcherBundleId: e.launcherBundleId,
   });
   let t = e.serverUrl || `http://localhost:8081`,
     n = new Uint8Array(e.bundleBytes),
-    r = await Mt(n, t, e.id, e.manifest);
+    r = await Mt(n, t, e.id, e.manifest, e.launcherBundleId);
   b({
     type: `loadBundle`,
     id: e.id,
@@ -3392,8 +3396,8 @@ async function nn(e) {
 }
 var rn = self;
 (u.info(`Service worker starting`, {
-  version: `mj2zw6l0`,
-  buildTime: `2025-12-12T15:01:34.931Z`,
+  version: `mj30olog`,
+  buildTime: `2025-12-12T15:23:40.863Z`,
   location: self.location.href,
 }),
   u.debug(`Checking for cached state`),

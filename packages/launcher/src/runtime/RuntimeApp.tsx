@@ -98,10 +98,12 @@ function AppContent() {
         }
 
         // Re-send loadBundle to ensure correct TonkCore is active in SW
+        // Include launcherBundleId so SW can differentiate bundles with same rootId
         const response = await sendMessage({
           type: "loadBundle",
           bundleBytes: bundleData.bytes,
           manifest: bundleData.manifest,
+          launcherBundleId: bundleId,
         });
 
         // @ts-expect-error - Response type is generic
@@ -176,10 +178,12 @@ function AppContent() {
 
           // Send bundle bytes to service worker via loadBundle message
           // Include cached manifest to skip redundant Bundle.fromBytes in SW
+          // Include launcherBundleId so SW can differentiate bundles with same rootId
           const response = await sendMessage({
             type: "loadBundle",
             bundleBytes: bundleData.bytes,
             manifest: bundleData.manifest,
+            launcherBundleId: bundleId,
           });
 
           // @ts-expect-error - Response type is generic

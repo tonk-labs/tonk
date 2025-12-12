@@ -383,3 +383,81 @@ Check that:
 | `vite.runtime.config.ts`                 | Runtime app vite config    |
 | `scripts/build-runtime.ts`               | Full build script          |
 | `scripts/watch-sw-copy.ts`               | SW watch/copy script       |
+
+## Known Limitations
+
+### Single TonkCore Instance
+
+The service worker maintains a **single TonkCore instance** that serves all bundle iframes. When switching
+between bundles, the SW replaces the active TonkCore.
+
+**Current behavior:**
+
+- Each iframe sends `loadBundle` with its `launcherBundleId` when activated
+- SW compares `launcherBundleId` to decide if reload is needed
+- If different, SW tears down old TonkCore and creates new one
+- If same, SW skips reload (optimization for re-selecting same bundle)
+
+**Implication:** All file operations go through the currently active TonkCore. When you switch bundles:
+
+1. Old TonkCore is disconnected (watchers stop, WebSocket closes)
+2. New TonkCore loads and connects to its relay
+3. App receives `tonk:bundleReloaded` message to reset state
+
+### Why launcherBundleId vs rootId?
+
+- `rootId` (from manifest) = Genesis document ID needed by TonkCore to rebuild Automerge files
+- `launcherBundleId` (from IndexedDB) = Unique identifier for the imported bundle in the launcher
+
+Two bundles can share the same `rootId` if they have the same code but different data (e.g., two desktonk
+instances connected to different relays). Using `launcherBundleId` for skip logic ensures proper switching.
+
+---
+
+## Future: Multi-Bundle Isolation (Option 3)
+
+For true isolation where each bundle maintains its own TonkCore simultaneously, the architecture would
+need significant changes.
+
+### Proposed Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Service Worker                                             │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │  Bundle State Map                                       ││
+│  │  Map<launcherBundleId, {                                ││
+│  │    tonk: TonkCore,                                      ││
+│  │    manifest: Manifest,                                  ││
+│  │    watchers: Map<...>,                                  ││
+│  │    wsUrl: string,                                       ││
+│  │  }>                                                     ││
+│  └─────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Required Changes
+
+1. **`sw/state.ts`**: Change from single `BundleState` to `Map<string, BundleState>`
+2. **`sw/tonk-lifecycle.ts`**:
+   - `loadBundle()` creates/returns existing TonkCore instead of replacing
+   - Add `unloadBundle(launcherBundleId)` for cleanup when iframe evicted
+3. **`sw/fetch-handler.ts`**: Route requests to correct TonkCore based on referrer/client ID
+4. **`sw/message-handlers/*`**: All handlers need to identify which TonkCore to use
+5. **Message protocol**: All messages need `launcherBundleId` to route correctly
+6. **`RuntimeApp.tsx`**: Include `launcherBundleId` in ALL SW messages, not just `loadBundle`
+7. **`App.tsx`**: Notify SW when iframe is evicted from pool so it can cleanup
+
+### Challenges
+
+- **Memory**: Multiple TonkCore instances consume more memory
+- **WebSocket connections**: Each bundle maintains its own connection
+- **Cache management**: Need per-bundle cache keys
+- **Message routing**: SW must route messages to correct TonkCore based on client
+
+### Migration Path
+
+1. ✅ Implement Option 1 - uses `launcherBundleId` for skip logic (current state)
+2. Change `state.ts` to use Map with `launcherBundleId` as key
+3. Update all message handlers to accept `launcherBundleId` and route to correct instance
+4. Add cleanup on iframe eviction from pool

@@ -1,9 +1,9 @@
-import type { Manifest } from '@tonk/core/slim';
-import { Bundle } from '@tonk/core/slim';
-import { getTonk } from '../state';
-import { loadBundle } from '../tonk-lifecycle';
-import { logger } from '../utils/logging';
-import { postResponse } from '../utils/response';
+import type { Manifest } from "@tonk/core/slim";
+import { Bundle } from "@tonk/core/slim";
+import { getTonk } from "../state";
+import { loadBundle } from "../tonk-lifecycle";
+import { logger } from "../utils/logging";
+import { postResponse } from "../utils/response";
 
 declare const TONK_SERVER_URL: string;
 
@@ -12,20 +12,28 @@ export async function handleLoadBundle(message: {
   bundleBytes: ArrayBuffer;
   serverUrl?: string;
   manifest?: Manifest;
+  launcherBundleId?: string;
 }): Promise<void> {
-  logger.debug('Loading new bundle', {
+  logger.debug("Loading new bundle", {
     byteLength: message.bundleBytes.byteLength,
     serverUrl: message.serverUrl,
     hasCachedManifest: !!message.manifest,
+    launcherBundleId: message.launcherBundleId,
   });
 
   const serverUrl = message.serverUrl || TONK_SERVER_URL;
   const bundleBytes = new Uint8Array(message.bundleBytes);
 
-  const result = await loadBundle(bundleBytes, serverUrl, message.id, message.manifest);
+  const result = await loadBundle(
+    bundleBytes,
+    serverUrl,
+    message.id,
+    message.manifest,
+    message.launcherBundleId,
+  );
 
   postResponse({
-    type: 'loadBundle',
+    type: "loadBundle",
     id: message.id,
     success: result.success,
     skipped: result.skipped,
@@ -34,32 +42,32 @@ export async function handleLoadBundle(message: {
 }
 
 export async function handleToBytes(message: { id: string }): Promise<void> {
-  logger.debug('Converting tonk to bytes');
+  logger.debug("Converting tonk to bytes");
   try {
     const tonkInstance = getTonk();
     if (!tonkInstance) {
-      throw new Error('Tonk not initialized');
+      throw new Error("Tonk not initialized");
     }
 
     const bytes = await tonkInstance.tonk.toBytes();
     const rootId = tonkInstance.manifest.rootId;
-    logger.debug('Tonk converted to bytes', {
+    logger.debug("Tonk converted to bytes", {
       byteLength: bytes.length,
       rootId,
     });
     postResponse({
-      type: 'toBytes',
+      type: "toBytes",
       id: message.id,
       success: true,
       data: bytes,
       rootId,
     });
   } catch (error) {
-    logger.error('Failed to convert tonk to bytes', {
+    logger.error("Failed to convert tonk to bytes", {
       error: error instanceof Error ? error.message : String(error),
     });
     postResponse({
-      type: 'toBytes',
+      type: "toBytes",
       id: message.id,
       success: false,
       error: error instanceof Error ? error.message : String(error),
@@ -67,12 +75,14 @@ export async function handleToBytes(message: { id: string }): Promise<void> {
   }
 }
 
-export async function handleForkToBytes(message: { id: string }): Promise<void> {
-  logger.debug('Forking tonk to bytes');
+export async function handleForkToBytes(message: {
+  id: string;
+}): Promise<void> {
+  logger.debug("Forking tonk to bytes");
   try {
     const tonkInstance = getTonk();
     if (!tonkInstance) {
-      throw new Error('Tonk not initialized');
+      throw new Error("Tonk not initialized");
     }
 
     const bytes = await tonkInstance.tonk.forkToBytes();
@@ -82,20 +92,20 @@ export async function handleForkToBytes(message: { id: string }): Promise<void> 
     const forkedManifest = await forkedBundle.getManifest();
     const rootId = forkedManifest.rootId;
 
-    logger.debug('Tonk forked to bytes', { byteLength: bytes.length, rootId });
+    logger.debug("Tonk forked to bytes", { byteLength: bytes.length, rootId });
     postResponse({
-      type: 'forkToBytes',
+      type: "forkToBytes",
       id: message.id,
       success: true,
       data: bytes,
       rootId,
     });
   } catch (error) {
-    logger.error('Failed to fork tonk to bytes', {
+    logger.error("Failed to fork tonk to bytes", {
       error: error instanceof Error ? error.message : String(error),
     });
     postResponse({
-      type: 'forkToBytes',
+      type: "forkToBytes",
       id: message.id,
       success: false,
       error: error instanceof Error ? error.message : String(error),

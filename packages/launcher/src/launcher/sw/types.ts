@@ -1,4 +1,4 @@
-import type { Manifest, TonkCore } from '@tonk/core/slim';
+import type { Manifest, TonkCore } from "@tonk/core/slim";
 
 // Service Worker global scope types
 declare global {
@@ -18,7 +18,7 @@ declare global {
 
   interface ClientQueryOptions {
     includeUncontrolled?: boolean;
-    type?: 'window' | 'worker' | 'sharedworker' | 'all';
+    type?: "window" | "worker" | "sharedworker" | "all";
   }
 
   interface ExtendableEvent extends Event {
@@ -34,11 +34,13 @@ export interface FetchEvent extends Event {
 
 // Bundle state machine types
 export type BundleState =
-  | { status: 'idle' }
-  | { status: 'loading'; bundleId: string; promise: Promise<void> }
+  | { status: "idle" }
+  | { status: "loading"; bundleId: string; promise: Promise<void> }
   | {
-      status: 'active';
+      status: "active";
       bundleId: string;
+      /** Unique IndexedDB bundle ID from launcher - used to differentiate bundles with same rootId */
+      launcherBundleId?: string;
       tonk: TonkCore;
       manifest: Manifest;
       appSlug: string;
@@ -48,10 +50,10 @@ export type BundleState =
       connectionHealthy: boolean;
       reconnectAttempts: number;
     }
-  | { status: 'error'; error: Error; previousBundleId?: string };
+  | { status: "error"; error: Error; previousBundleId?: string };
 
 // Helper type to extract active state
-export type ActiveBundleState = Extract<BundleState, { status: 'active' }>;
+export type ActiveBundleState = Extract<BundleState, { status: "active" }>;
 
 // Constants
 export const MAX_RECONNECT_ATTEMPTS = 10;

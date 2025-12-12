@@ -190,11 +190,13 @@ export async function loadBundle(
   serverUrl: string,
   _messageId?: string,
   cachedManifest?: Manifest,
+  launcherBundleId?: string,
 ): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
   logger.debug("Loading new bundle", {
     byteLength: bundleBytes.length,
     serverUrl,
     hasCachedManifest: !!cachedManifest,
+    launcherBundleId,
   });
 
   try {
@@ -221,14 +223,21 @@ export async function loadBundle(
       logger.debug("Bundle manifest extracted", { rootId: manifest.rootId });
     }
 
-    // Check if we already have this bundle loaded by comparing rootId
+    // Check if we already have this bundle loaded by comparing launcherBundleId
+    // We use launcherBundleId (IndexedDB key) instead of rootId (manifest hash) because
+    // multiple bundles can share the same rootId if they have the same code but different data
     if (
       state.status === "active" &&
-      state.manifest.rootId === manifest.rootId
+      launcherBundleId &&
+      state.launcherBundleId === launcherBundleId
     ) {
-      logger.debug("Bundle already loaded with same rootId, skipping reload", {
-        rootId: manifest.rootId,
-      });
+      logger.debug(
+        "Bundle already loaded with same launcherBundleId, skipping reload",
+        {
+          launcherBundleId,
+          rootId: manifest.rootId,
+        },
+      );
       return { success: true, skipped: true };
     }
 
@@ -295,6 +304,7 @@ export async function loadBundle(
     transitionTo({
       status: "active",
       bundleId: manifest.rootId,
+      ...(launcherBundleId && { launcherBundleId }),
       tonk: newTonk,
       manifest,
       appSlug,
