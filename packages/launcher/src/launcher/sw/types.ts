@@ -39,6 +39,8 @@ export type BundleState =
   | {
       status: 'active';
       bundleId: string;
+      /** Unique IndexedDB bundle ID from launcher - used to differentiate bundles with same rootId */
+      launcherBundleId?: string;
       tonk: TonkCore;
       manifest: Manifest;
       appSlug: string;

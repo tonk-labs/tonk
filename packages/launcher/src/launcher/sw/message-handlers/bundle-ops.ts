@@ -12,17 +12,25 @@ export async function handleLoadBundle(message: {
   bundleBytes: ArrayBuffer;
   serverUrl?: string;
   manifest?: Manifest;
+  launcherBundleId?: string;
 }): Promise<void> {
   logger.debug('Loading new bundle', {
     byteLength: message.bundleBytes.byteLength,
     serverUrl: message.serverUrl,
     hasCachedManifest: !!message.manifest,
+    launcherBundleId: message.launcherBundleId,
   });
 
   const serverUrl = message.serverUrl || TONK_SERVER_URL;
   const bundleBytes = new Uint8Array(message.bundleBytes);
 
-  const result = await loadBundle(bundleBytes, serverUrl, message.id, message.manifest);
+  const result = await loadBundle(
+    bundleBytes,
+    serverUrl,
+    message.id,
+    message.manifest,
+    message.launcherBundleId
+  );
 
   postResponse({
     type: 'loadBundle',

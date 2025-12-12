@@ -82,6 +82,8 @@ export type VFSWorkerMessage =
       serverUrl?: string;
       /** Cached full manifest to skip redundant Bundle.fromBytes in service worker */
       manifest?: Manifest;
+      /** Unique IndexedDB bundle ID from launcher - used to differentiate bundles with same rootId */
+      launcherBundleId?: string;
     }
   | {
       type: 'initializeFromUrl';
