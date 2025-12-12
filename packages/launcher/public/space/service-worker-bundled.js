@@ -36,11 +36,12 @@ const u = {
     },
     getLevel: () => o(),
   },
-  d = `tonk-sw-state-v2`,
+  d = `tonk-sw-state-v3`,
   f = `/tonk-state/appSlug`,
-  ee = `/tonk-state/bundleBytes`,
-  te = `/tonk-state/wsUrl`,
-  ne = `/tonk-state/namespace`;
+  p = `/tonk-state/bundleBytes`,
+  ee = `/tonk-state/wsUrl`,
+  te = `/tonk-state/namespace`,
+  ne = `/tonk-state/lastActiveBundleId`;
 async function re(e) {
   try {
     let t = await caches.open(d);
@@ -71,16 +72,16 @@ async function ie() {
     );
   }
 }
-async function p(e) {
+async function m(e) {
   try {
     let t = await caches.open(d);
-    if (e === null) await t.delete(ee);
+    if (e === null) await t.delete(p);
     else {
       let n = new Blob([e], { type: `application/octet-stream` }),
         r = new Response(n, {
           headers: { "Content-Type": `application/octet-stream` },
         });
-      await t.put(ee, r);
+      await t.put(p, r);
     }
     u.debug(`Bundle bytes persisted to cache`, { size: e ? e.length : 0 });
   } catch (e) {
@@ -91,7 +92,7 @@ async function p(e) {
 }
 async function ae() {
   try {
-    let e = await (await caches.open(d)).match(ee);
+    let e = await (await caches.open(d)).match(p);
     if (!e) return null;
     let t = await e.arrayBuffer();
     return new Uint8Array(t);
@@ -104,15 +105,15 @@ async function ae() {
     );
   }
 }
-async function m(e) {
+async function h(e) {
   try {
     let t = await caches.open(d);
-    if (e === null) await t.delete(te);
+    if (e === null) await t.delete(ee);
     else {
       let n = new Response(JSON.stringify({ url: e }), {
         headers: { "Content-Type": `application/json` },
       });
-      await t.put(te, n);
+      await t.put(ee, n);
     }
     u.debug(`WS URL persisted to cache`, { url: e });
   } catch (e) {
@@ -123,7 +124,7 @@ async function m(e) {
 }
 async function oe() {
   try {
-    let e = await (await caches.open(d)).match(te);
+    let e = await (await caches.open(d)).match(ee);
     return (e && (await e.json()).url) || null;
   } catch (e) {
     return (
@@ -134,15 +135,15 @@ async function oe() {
     );
   }
 }
-async function se(e) {
+async function g(e) {
   try {
     let t = await caches.open(d);
-    if (e === null) await t.delete(ne);
+    if (e === null) await t.delete(te);
     else {
       let n = new Response(JSON.stringify({ namespace: e }), {
         headers: { "Content-Type": `application/json` },
       });
-      await t.put(ne, n);
+      await t.put(te, n);
     }
     u.debug(`Namespace persisted to cache`, { namespace: e });
   } catch (e) {
@@ -151,9 +152,9 @@ async function se(e) {
     });
   }
 }
-async function ce() {
+async function se() {
   try {
-    let e = await (await caches.open(d)).match(ne);
+    let e = await (await caches.open(d)).match(te);
     return (e && (await e.json()).namespace) || null;
   } catch (e) {
     return (
@@ -164,29 +165,92 @@ async function ce() {
     );
   }
 }
+async function _(e) {
+  try {
+    let t = await caches.open(d);
+    if (e === null) await t.delete(ne);
+    else {
+      let n = new Response(JSON.stringify({ id: e }), {
+        headers: { "Content-Type": `application/json` },
+      });
+      await t.put(ne, n);
+    }
+    u.debug(`Last active bundle ID persisted to cache`, { id: e });
+  } catch (e) {
+    u.error(`Failed to persist last active bundle ID`, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+async function ce() {
+  try {
+    let e = await (await caches.open(d)).match(ne);
+    return (e && (await e.json()).id) || null;
+  } catch (e) {
+    return (
+      u.error(`Failed to restore last active bundle ID`, {
+        error: e instanceof Error ? e.message : String(e),
+      }),
+      null
+    );
+  }
+}
 async function le() {
-  await Promise.all([re(null), p(null), m(null), se(null)]);
+  await Promise.all([re(null), m(null), h(null), g(null), _(null)]);
 }
-var h = { status: `idle` },
-  ue = null;
-function g() {
-  return h;
-}
-function de() {
-  return ue;
-}
-function fe(e) {
-  ue = e;
-}
-function _() {
-  return h.status === `active` ? h : null;
-}
-function v() {
-  return h.status === `active` ? { tonk: h.tonk, manifest: h.manifest } : null;
+var v = new Map(),
+  ue = null,
+  de = null;
+function fe() {
+  return de;
 }
 function pe(e) {
+  de = e;
+}
+function me() {
+  return ue;
+}
+function y(e) {
+  ((ue = e), u.debug(`Last active bundle ID updated`, { id: e }));
+}
+function b(e) {
+  return v.get(e);
+}
+function x(e, t) {
+  let n = v.get(e);
+  (u.debug(`Setting bundle state`, {
+    launcherBundleId: e,
+    oldStatus: n?.status ?? `none`,
+    newStatus: t.status,
+  }),
+    n?.status === `active` && ge(n),
+    v.set(e, t));
+}
+function he(e) {
+  let t = v.get(e);
+  return t
+    ? (u.debug(`Removing bundle state`, {
+        launcherBundleId: e,
+        status: t.status,
+      }),
+      t.status === `active` && ge(t),
+      v.delete(e),
+      ue === e && (ue = null),
+      !0)
+    : (u.debug(`Bundle state not found for removal`, { launcherBundleId: e }),
+      !1);
+}
+function S(e) {
+  let t = v.get(e);
+  return t?.status === `active` ? { tonk: t.tonk, manifest: t.manifest } : null;
+}
+function C(e) {
+  let t = v.get(e);
+  return t?.status === `active` ? t : null;
+}
+function ge(e) {
   (u.debug(`Cleaning up active bundle state`, {
-    bundleId: e.bundleId,
+    launcherBundleId: e.launcherBundleId,
     watcherCount: e.watchers.size,
     hasHealthCheck: !!e.healthCheckInterval,
   }),
@@ -210,72 +274,78 @@ function pe(e) {
     });
   }
 }
-function y(e) {
-  let t = h;
-  (u.debug(`State transition`, {
-    from: t.status,
-    to: e.status,
-    bundleId: `bundleId` in e ? e.bundleId : void 0,
-  }),
-    t.status === `active` && pe(t),
-    (h = e));
+function _e(e, t) {
+  let n = v.get(e);
+  return n?.status === `active` ? (v.set(e, { ...n, appSlug: t }), !0) : !1;
 }
-function me(e) {
-  return h.status === `active` ? ((h = { ...h, appSlug: e }), !0) : !1;
+function ve(e, t) {
+  let n = v.get(e);
+  n?.status === `active` && v.set(e, { ...n, connectionHealthy: t });
 }
-function he(e) {
-  h.status === `active` && (h = { ...h, connectionHealthy: e });
-}
-function ge() {
-  return h.status === `active`
-    ? ((h = { ...h, reconnectAttempts: h.reconnectAttempts + 1 }),
-      h.reconnectAttempts)
-    : 0;
-}
-function _e() {
-  h.status === `active` && (h = { ...h, reconnectAttempts: 0 });
-}
-function ve(e) {
-  h.status === `active` && (h = { ...h, healthCheckInterval: e });
-}
-function ye(e, t) {
-  h.status === `active` && h.watchers.set(e, t);
+function ye(e) {
+  let t = v.get(e);
+  if (t?.status === `active`) {
+    let n = t.reconnectAttempts + 1;
+    return (v.set(e, { ...t, reconnectAttempts: n }), n);
+  }
+  return 0;
 }
 function be(e) {
-  if (h.status === `active`) {
-    let t = h.watchers.get(e);
-    if (t) {
+  let t = v.get(e);
+  t?.status === `active` && v.set(e, { ...t, reconnectAttempts: 0 });
+}
+function xe(e, t) {
+  let n = v.get(e);
+  n?.status === `active` && v.set(e, { ...n, healthCheckInterval: t });
+}
+function Se(e, t, n) {
+  let r = v.get(e);
+  r?.status === `active` && r.watchers.set(t, n);
+}
+function Ce(e, t) {
+  let n = v.get(e);
+  if (n?.status === `active`) {
+    let e = n.watchers.get(t);
+    if (e) {
       try {
-        t.stop();
-      } catch (t) {
+        e.stop();
+      } catch (e) {
         u.warn(`Error stopping watcher on remove`, {
-          id: e,
-          error: t instanceof Error ? t.message : String(t),
+          watcherId: t,
+          error: e instanceof Error ? e.message : String(e),
         });
       }
-      return (h.watchers.delete(e), !0);
+      return (n.watchers.delete(t), !0);
     }
   }
   return !1;
 }
-function xe(e) {
-  if (h.status === `active`) return h.watchers.get(e);
+function we(e, t) {
+  let n = v.get(e);
+  if (n?.status === `active`) return n.watchers.get(t);
 }
-function Se() {
-  return h.status === `active` ? Array.from(h.watchers.entries()) : [];
+function Te(e) {
+  let t = v.get(e);
+  return t?.status === `active` ? Array.from(t.watchers.entries()) : [];
 }
-function Ce(e, t) {
+function Ee(e) {
+  let t = e.match(/^\/space\/([^/]+)\/([^/]+)(\/.*)?$/);
+  return t
+    ? { launcherBundleId: t[1], appSlug: t[2], remainingPath: t[3] || `/` }
+    : null;
+}
+function De(e, t) {
   if (
     (console.log(`determinePath START`, {
       url: e.href,
       pathname: e.pathname,
-      spaceName: t || `none`,
+      appSlug: t || `none`,
     }),
     !t)
   )
     throw (
-      console.error(`determinePath - NO SPACE NAME SET`),
-      Error(`No space name available for ${e.pathname}`)
+      console.error(`determinePath - NO APP SLUG SET`),
+      Error(`No app slug available for ${e.pathname}`)
     );
   let n = new URL(self.registration?.scope ?? self.location.href).pathname,
     r = e.pathname.startsWith(n) ? e.pathname.slice(n.length) : e.pathname,
@@ -286,18 +356,25 @@ function Ce(e, t) {
     segments: [...i],
     firstSegment: i[0] || `none`,
   });
-  let a = i;
+  let a;
   if (
-    (i[0] === t
-      ? ((a = i.slice(1)),
+    (i.length >= 2 && i[1] === t
+      ? ((a = i.slice(2)),
         console.log(
-          `determinePath - spaceName already present, using remaining segments`,
-          { pathSegments: [...a] },
+          `determinePath - new URL structure detected, using path after appSlug`,
+          { launcherBundleId: i[0], appSlug: i[1], pathSegments: [...a] },
         ))
-      : console.log(
-          `determinePath - spaceName not present, using all segments as path`,
-          { pathSegments: [...a] },
-        ),
+      : i[0] === t
+        ? ((a = i.slice(1)),
+          console.log(
+            `determinePath - old URL structure, using path after appSlug`,
+            { appSlug: i[0], pathSegments: [...a] },
+          ))
+        : ((a = i),
+          console.log(
+            `determinePath - unknown structure, using all segments as path`,
+            { pathSegments: [...a] },
+          )),
     a.length === 0 || e.pathname.endsWith(`/`))
   ) {
     let e = `${t}/index.html`;
@@ -309,7 +386,7 @@ function Ce(e, t) {
   let o = `${t}/${a.join(`/`)}`;
   return (console.log(`determinePath - returning file path`, { result: o }), o);
 }
-async function b(e) {
+async function w(e) {
   (l(`info`, `Posting response to main thread`, {
     type: e.type,
     success: `success` in e ? e.success : `N/A`,
@@ -318,7 +395,7 @@ async function b(e) {
       t.postMessage(e);
     }));
 }
-async function we(e) {
+async function Oe(e) {
   if (e.bytes) {
     let t = atob(e.bytes),
       n = new Uint8Array(t.length);
@@ -331,64 +408,59 @@ async function we(e) {
       headers: { "Content-Type": `application/json` },
     });
 }
-function Te(e) {
+function ke(e) {
   let t = new URL(e.request.url),
-    n = e.request.referrer,
-    r = g(),
-    i = _()?.appSlug || null;
-  u.debug(`Fetch event`, {
-    url: t.href,
-    pathname: t.pathname,
-    state: r.status,
-    appSlug: i,
-  });
-  let a = e.request.headers.get(`upgrade`);
-  if (a && a.toLowerCase() === `websocket`) {
+    n = e.request.referrer;
+  u.debug(`Fetch event`, { url: t.href, pathname: t.pathname });
+  let r = e.request.headers.get(`upgrade`);
+  if (r && r.toLowerCase() === `websocket`) {
     u.debug(`WebSocket upgrade request - passing through`, { url: t.href });
     return;
   }
-  let o =
+  let i =
     t.pathname === `/` ||
     t.pathname === `` ||
     t.pathname === `/space/` ||
     t.pathname === `/space`;
-  o &&
-    i &&
-    Promise.all([re(null), p(null)]).catch((e) => {
+  if (i) {
+    Promise.all([re(null), m(null)]).catch((e) => {
       u.error(`Failed to persist state reset`, { error: e });
     });
-  let s = t.pathname.startsWith(`/space/_runtime/`),
-    c = t.searchParams.has(`bundleId`),
-    l = [
+    return;
+  }
+  let a = t.pathname.startsWith(`/space/_runtime/`),
+    o = t.searchParams.has(`bundleId`),
+    s = [
       `/space/_runtime/index.html`,
       `/space/_runtime/main.js`,
       `/space/_runtime/main.css`,
       `/space/service-worker-bundled.js`,
     ].some((e) => t.pathname === e),
-    d =
+    c =
       t.pathname.startsWith(`/space/_runtime/`) &&
       [`.otf`, `.ttf`, `.woff`, `.woff2`, `.eot`].some((e) =>
         t.pathname.endsWith(e),
       );
-  if (l || (s && (c || d))) {
+  if (s || (a && (o || c))) {
     u.debug(`Runtime static asset - passing through`, { pathname: t.pathname });
     return;
   }
-  let f = t.pathname.match(/^\/space\/([^\/]+)/)?.[1];
-  if (f === `_runtime`) {
+  let l = Ee(t.pathname);
+  if (l?.launcherBundleId === `_runtime`) {
     u.debug(`Reserved _runtime path - passing through`, {
       pathname: t.pathname,
     });
     return;
   }
-  if (i && !o) {
+  if (l?.appSlug && !i) {
+    let n = l.appSlug;
     if (
       t.pathname.startsWith(`/@vite`) ||
       t.pathname.startsWith(`/@react-refresh`) ||
       t.pathname.startsWith(`/src/`) ||
-      t.pathname.startsWith(`/${i}/@vite`) ||
-      t.pathname.startsWith(`/${i}/node_modules`) ||
-      t.pathname.startsWith(`/${i}/src/`) ||
+      t.pathname.startsWith(`/${n}/@vite`) ||
+      t.pathname.startsWith(`/${n}/node_modules`) ||
+      t.pathname.startsWith(`/${n}/src/`) ||
       t.pathname.startsWith(`/node_modules`) ||
       t.pathname.includes(`__vite__`) ||
       t.searchParams.has(`t`)
@@ -463,24 +535,31 @@ function Te(e) {
       ));
     return;
   }
-  f && t.origin === location.origin && !o
-    ? (u.debug(`Processing VFS request`, {
-        pathname: t.pathname,
-        spaceName: f,
-        referrer: n,
-      }),
+  if (l && t.origin === location.origin && !i) {
+    let { launcherBundleId: r, appSlug: i } = l;
+    (u.debug(`Processing VFS request`, {
+      pathname: t.pathname,
+      launcherBundleId: r,
+      appSlug: i,
+      referrer: n,
+    }),
       e.respondWith(
         (async () => {
           try {
-            let e = Ce(t, f);
+            let e = De(t, i);
             u.debug(`Resolved VFS path`, {
               path: e,
               url: t.pathname,
-              spaceName: f,
+              launcherBundleId: r,
+              appSlug: i,
             });
-            let n = de();
-            if (n && g().status !== `active`) {
-              u.debug(`Waiting for initialization`, { status: g().status });
+            let n = fe(),
+              a = b(r);
+            if (n && (!a || a.status !== `active`)) {
+              u.debug(`Waiting for initialization`, {
+                launcherBundleId: r,
+                status: a?.status ?? `none`,
+              });
               try {
                 await Promise.race([
                   n,
@@ -494,53 +573,60 @@ function Te(e) {
                 });
               }
             }
-            let r = _();
-            if (!r)
+            let o = C(r);
+            if (!o)
               throw (
-                u.error(`Tonk not initialized - cannot handle request`, {
-                  status: g().status,
-                  path: e,
-                }),
-                Error(`Tonk not initialized`)
+                u.error(
+                  `Tonk not initialized for bundle - cannot handle request`,
+                  {
+                    launcherBundleId: r,
+                    status: b(r)?.status ?? `none`,
+                    path: e,
+                  },
+                ),
+                Error(`Bundle not initialized: ${r}`)
               );
-            let i = `/${e}`;
-            if (!(await r.tonk.exists(i))) {
+            let s = `/${e}`;
+            if (!(await o.tonk.exists(s))) {
               u.debug(`File not found, falling back to index.html`, {
-                path: i,
+                path: s,
               });
-              let e = `/${f}/index.html`,
-                t = await r.tonk.readFile(e);
-              return we(t);
+              let e = `/${i}/index.html`,
+                t = await o.tonk.readFile(e);
+              return Oe(t);
             }
-            u.debug(`Serving file from VFS`, { path: i });
-            let a = await r.tonk.readFile(i);
-            return await we(a);
+            u.debug(`Serving file from VFS`, { path: s });
+            let c = await o.tonk.readFile(s);
+            return await Oe(c);
           } catch (n) {
             return (
               u.error(`Failed to fetch from VFS`, {
                 error: n instanceof Error ? n.message : String(n),
                 url: t.href,
-                status: g().status,
               }),
               u.debug(`Falling back to network request`, { url: t.href }),
               fetch(e.request)
             );
           }
         })(),
-      ))
-    : u.debug(`Ignoring fetch - not a /space/<space-name>/ request`, {
+      ));
+  } else
+    u.debug(
+      `Ignoring fetch - not a valid /space/<bundleId>/<appSlug>/ request`,
+      {
         requestOrigin: t.origin,
         swOrigin: location.origin,
-        spaceName: f || `none`,
-        isRoot: o,
-      });
+        parsed: l ? `yes` : `no`,
+        isRoot: i,
+      },
+    );
 }
-var Ee = `modulepreload`,
-  De = function (e) {
+var Ae = `modulepreload`,
+  je = function (e) {
     return `/` + e;
   },
-  Oe = {};
-const x = function (e, t, n) {
+  Me = {};
+const T = function (e, t, n) {
   let r = Promise.resolve();
   if (t && t.length > 0) {
     let e = document.getElementsByTagName(`link`),
@@ -558,8 +644,8 @@ const x = function (e, t, n) {
     }
     r = o(
       t.map((t) => {
-        if (((t = De(t, n)), t in Oe)) return;
-        Oe[t] = !0;
+        if (((t = je(t, n)), t in Me)) return;
+        Me[t] = !0;
         let r = t.endsWith(`.css`),
           i = r ? `[rel="stylesheet"]` : ``;
         if (n)
@@ -570,7 +656,7 @@ const x = function (e, t, n) {
         else if (document.querySelector(`link[href="${t}"]${i}`)) return;
         let o = document.createElement(`link`);
         if (
-          ((o.rel = r ? `stylesheet` : Ee),
+          ((o.rel = r ? `stylesheet` : Ae),
           r || (o.as = `script`),
           (o.crossOrigin = ``),
           (o.href = t),
@@ -596,39 +682,39 @@ const x = function (e, t, n) {
     return e().catch(i);
   });
 };
-var S = n({
-  WasmBundle: () => R,
-  WasmDocHandle: () => dt,
-  WasmDocumentWatcher: () => pt,
-  WasmError: () => ht,
-  WasmRepo: () => _t,
-  WasmTonkCore: () => yt,
-  WasmWebSocketHandle: () => xt,
-  create_bundle_from_bytes: () => Le,
-  create_tonk: () => Ue,
-  create_tonk_from_bundle: () => Be,
-  create_tonk_from_bundle_with_storage: () => Pe,
-  create_tonk_from_bytes: () => Re,
-  create_tonk_from_bytes_with_storage: () => He,
-  create_tonk_with_config: () => Fe,
-  create_tonk_with_peer_id: () => Ve,
-  create_tonk_with_storage: () => Ie,
-  default: () => z,
-  init: () => ze,
-  initSync: () => et,
-  set_time_provider: () => We,
+var E = n({
+  WasmBundle: () => U,
+  WasmDocHandle: () => mt,
+  WasmDocumentWatcher: () => gt,
+  WasmError: () => vt,
+  WasmRepo: () => bt,
+  WasmTonkCore: () => St,
+  WasmWebSocketHandle: () => wt,
+  create_bundle_from_bytes: () => Ve,
+  create_tonk: () => qe,
+  create_tonk_from_bundle: () => We,
+  create_tonk_from_bundle_with_storage: () => Re,
+  create_tonk_from_bytes: () => He,
+  create_tonk_from_bytes_with_storage: () => Ke,
+  create_tonk_with_config: () => ze,
+  create_tonk_with_peer_id: () => Ge,
+  create_tonk_with_storage: () => Be,
+  default: () => Et,
+  init: () => Ue,
+  initSync: () => it,
+  set_time_provider: () => Je,
 });
-function C() {
+function D() {
   return (
-    (N === null || N.byteLength === 0) && (N = new Uint8Array(M.memory.buffer)),
-    N
+    (L === null || L.byteLength === 0) && (L = new Uint8Array(I.memory.buffer)),
+    L
   );
 }
-function ke(e, t) {
+function Ne(e, t) {
   return (
-    (rt += t),
-    rt >= nt &&
-      ((P =
+    (z += t),
+    z >= ot &&
+      ((R =
         typeof TextDecoder < `u`
           ? new TextDecoder(`utf-8`, { ignoreBOM: !0, fatal: !0 })
           : {
@@ -636,29 +722,29 @@ function ke(e, t) {
                 throw Error(`TextDecoder not available`);
               },
             }),
-      P.decode(),
-      (rt = t)),
-    P.decode(C().subarray(e, e + t))
+      R.decode(),
+      (z = t)),
+    R.decode(D().subarray(e, e + t))
   );
 }
-function w(e, t) {
-  return ((e >>>= 0), ke(e, t));
+function O(e, t) {
+  return ((e >>>= 0), Ne(e, t));
 }
-function T(e, t, n) {
+function k(e, t, n) {
   if (n === void 0) {
-    let n = I.encode(e),
+    let n = V.encode(e),
       r = t(n.length, 1) >>> 0;
     return (
-      C()
+      D()
         .subarray(r, r + n.length)
         .set(n),
-      (F = n.length),
+      (B = n.length),
       r
     );
   }
   let r = e.length,
     i = t(r, 1) >>> 0,
-    a = C(),
+    a = D(),
     o = 0;
   for (; o < r; o++) {
     let t = e.charCodeAt(o);
@@ -668,40 +754,40 @@ function T(e, t, n) {
   if (o !== r) {
     (o !== 0 && (e = e.slice(o)),
       (i = n(i, r, (r = o + e.length * 3), 1) >>> 0));
-    let t = C().subarray(i + o, i + r),
-      a = it(e, t);
+    let t = D().subarray(i + o, i + r),
+      a = st(e, t);
     ((o += a.written), (i = n(i, r, o, 1) >>> 0));
   }
-  return ((F = o), i);
+  return ((B = o), i);
 }
-function E() {
+function A() {
   return (
-    (L === null ||
-      L.buffer.detached === !0 ||
-      (L.buffer.detached === void 0 && L.buffer !== M.memory.buffer)) &&
-      (L = new DataView(M.memory.buffer)),
-    L
+    (H === null ||
+      H.buffer.detached === !0 ||
+      (H.buffer.detached === void 0 && H.buffer !== I.memory.buffer)) &&
+      (H = new DataView(I.memory.buffer)),
+    H
   );
 }
-function D(e) {
-  let t = M.__externref_table_alloc();
-  return (M.__wbindgen_export_4.set(t, e), t);
+function j(e) {
+  let t = I.__externref_table_alloc();
+  return (I.__wbindgen_export_4.set(t, e), t);
 }
-function O(e, t) {
+function M(e, t) {
   try {
     return e.apply(this, t);
   } catch (e) {
-    let t = D(e);
-    M.__wbindgen_exn_store(t);
+    let t = j(e);
+    I.__wbindgen_exn_store(t);
   }
 }
-function k(e) {
+function N(e) {
   return e == null;
 }
-function Ae(e, t) {
-  return ((e >>>= 0), C().subarray(e / 1, e / 1 + t));
+function Pe(e, t) {
+  return ((e >>>= 0), D().subarray(e / 1, e / 1 + t));
 }
-function A(e, t, n, r) {
+function P(e, t, n, r) {
   let i = { a: e, b: t, cnt: 1, dtor: n },
     a = (...e) => {
       i.cnt++;
@@ -711,13 +797,13 @@ function A(e, t, n, r) {
         return r(t, i.b, ...e);
       } finally {
         --i.cnt === 0
-          ? (M.__wbindgen_export_6.get(i.dtor)(t, i.b), at.unregister(i))
+          ? (I.__wbindgen_export_6.get(i.dtor)(t, i.b), ct.unregister(i))
           : (i.a = t);
       }
     };
-  return ((a.original = i), at.register(a, i, i), a);
+  return ((a.original = i), ct.register(a, i, i), a);
 }
-function je(e) {
+function Fe(e) {
   let t = typeof e;
   if (t == `number` || t == `boolean` || e == null) return `${e}`;
   if (t == `string`) return `"${e}"`;
@@ -732,8 +818,8 @@ function je(e) {
   if (Array.isArray(e)) {
     let t = e.length,
       n = `[`;
-    t > 0 && (n += je(e[0]));
-    for (let r = 1; r < t; r++) n += `, ` + je(e[r]);
+    t > 0 && (n += Fe(e[0]));
+    for (let r = 1; r < t; r++) n += `, ` + Fe(e[r]);
     return ((n += `]`), n);
   }
   let n = /\[object ([^\]]+)\]/.exec(toString.call(e)),
@@ -748,85 +834,85 @@ function je(e) {
     }
   return e instanceof Error ? `${e.name}: ${e.message}\n${e.stack}` : r;
 }
-function j(e) {
-  let t = M.__wbindgen_export_4.get(e);
-  return (M.__externref_table_dealloc(e), t);
-}
-function Me(e, t) {
-  if (!(e instanceof t)) throw Error(`expected instance of ${t.name}`);
-}
-function Ne(e, t) {
-  let n = t(e.length * 1, 1) >>> 0;
-  return (C().set(e, n / 1), (F = e.length), n);
-}
-function Pe(e, t, n) {
-  Me(e, R);
-  var r = k(n) ? 0 : T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-    i = F;
-  return M.create_tonk_from_bundle_with_storage(e.__wbg_ptr, t, r, i);
-}
-function Fe(e, t, n) {
-  let r = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-    i = F;
-  var a = k(n) ? 0 : T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-    o = F;
-  return M.create_tonk_with_config(r, i, t, a, o);
+function F(e) {
+  let t = I.__wbindgen_export_4.get(e);
+  return (I.__externref_table_dealloc(e), t);
 }
 function Ie(e, t) {
-  var n = k(t) ? 0 : T(t, M.__wbindgen_malloc, M.__wbindgen_realloc),
-    r = F;
-  return M.create_tonk_with_storage(e, n, r);
+  if (!(e instanceof t)) throw Error(`expected instance of ${t.name}`);
 }
-function Le(e) {
-  let t = M.create_bundle_from_bytes(e);
-  if (t[2]) throw j(t[1]);
-  return R.__wrap(t[0]);
+function Le(e, t) {
+  let n = t(e.length * 1, 1) >>> 0;
+  return (D().set(e, n / 1), (B = e.length), n);
 }
-function Re(e) {
-  return M.create_tonk_from_bytes(e);
+function Re(e, t, n) {
+  Ie(e, U);
+  var r = N(n) ? 0 : k(n, I.__wbindgen_malloc, I.__wbindgen_realloc),
+    i = B;
+  return I.create_tonk_from_bundle_with_storage(e.__wbg_ptr, t, r, i);
 }
-function ze() {
-  M.init();
+function ze(e, t, n) {
+  let r = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+    i = B;
+  var a = N(n) ? 0 : k(n, I.__wbindgen_malloc, I.__wbindgen_realloc),
+    o = B;
+  return I.create_tonk_with_config(r, i, t, a, o);
 }
-function Be(e) {
-  return (Me(e, R), M.create_tonk_from_bundle(e.__wbg_ptr));
+function Be(e, t) {
+  var n = N(t) ? 0 : k(t, I.__wbindgen_malloc, I.__wbindgen_realloc),
+    r = B;
+  return I.create_tonk_with_storage(e, n, r);
 }
 function Ve(e) {
-  let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-    n = F;
-  return M.create_tonk_with_peer_id(t, n);
+  let t = I.create_bundle_from_bytes(e);
+  if (t[2]) throw F(t[1]);
+  return U.__wrap(t[0]);
 }
-function He(e, t, n) {
-  var r = k(n) ? 0 : T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-    i = F;
-  return M.create_tonk_from_bytes_with_storage(e, t, r, i);
+function He(e) {
+  return I.create_tonk_from_bytes(e);
 }
 function Ue() {
-  return M.create_tonk();
+  I.init();
 }
 function We(e) {
-  M.set_time_provider(e);
+  return (Ie(e, U), I.create_tonk_from_bundle(e.__wbg_ptr));
 }
-function Ge(e, t, n) {
-  M.closure730_externref_shim(e, t, n);
+function Ge(e) {
+  let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+    n = B;
+  return I.create_tonk_with_peer_id(t, n);
 }
 function Ke(e, t, n) {
-  let r = M.closure733_externref_shim_multivalue_shim(e, t, n);
-  if (r[1]) throw j(r[0]);
+  var r = N(n) ? 0 : k(n, I.__wbindgen_malloc, I.__wbindgen_realloc),
+    i = B;
+  return I.create_tonk_from_bytes_with_storage(e, t, r, i);
 }
-function qe(e, t) {
-  M.wasm_bindgen__convert__closures_____invoke__h546e6a644418f5b7(e, t);
+function qe() {
+  return I.create_tonk();
 }
-function Je(e, t, n) {
-  M.closure1011_externref_shim(e, t, n);
+function Je(e) {
+  I.set_time_provider(e);
 }
 function Ye(e, t, n) {
-  M.closure1027_externref_shim(e, t, n);
+  I.closure730_externref_shim(e, t, n);
 }
-function Xe(e, t, n, r) {
-  M.closure1285_externref_shim(e, t, n, r);
+function Xe(e, t, n) {
+  let r = I.closure733_externref_shim_multivalue_shim(e, t, n);
+  if (r[1]) throw F(r[0]);
 }
-async function Ze(e, t) {
+function Ze(e, t) {
+  I.wasm_bindgen__convert__closures_____invoke__h546e6a644418f5b7(e, t);
+}
+function Qe(e, t, n) {
+  I.closure1011_externref_shim(e, t, n);
+}
+function $e(e, t, n) {
+  I.closure1027_externref_shim(e, t, n);
+}
+function et(e, t, n, r) {
+  I.closure1285_externref_shim(e, t, n, r);
+}
+async function tt(e, t) {
   if (typeof Response == `function` && e instanceof Response) {
     if (typeof WebAssembly.instantiateStreaming == `function`)
       try {
@@ -834,7 +920,7 @@ async function Ze(e, t) {
       } catch (t) {
         if (
           e.ok &&
-          St.has(e.type) &&
+          Tt.has(e.type) &&
           e.headers.get(`Content-Type`) !== `application/wasm`
         )
           console.warn(
@@ -850,17 +936,17 @@ async function Ze(e, t) {
     return n instanceof WebAssembly.Instance ? { instance: n, module: e } : n;
   }
 }
-function Qe() {
+function nt() {
   let e = {};
   return (
     (e.wbg = {}),
     (e.wbg.__wbg_Error_0497d5bdba9362e5 = function (e, t) {
-      return Error(w(e, t));
+      return Error(O(e, t));
     }),
     (e.wbg.__wbg_String_8f0eb39a4a4c2f66 = function (e, t) {
-      let n = T(String(t), M.__wbindgen_malloc, M.__wbindgen_realloc),
-        r = F;
-      (E().setInt32(e + 4, r, !0), E().setInt32(e + 0, n, !0));
+      let n = k(String(t), I.__wbindgen_malloc, I.__wbindgen_realloc),
+        r = B;
+      (A().setInt32(e + 4, r, !0), A().setInt32(e + 0, n, !0));
     }),
     (e.wbg.__wbg_Window_41559019033ede94 = function (e) {
       return e.Window;
@@ -869,12 +955,12 @@ function Qe() {
       return e.WorkerGlobalScope;
     }),
     (e.wbg.__wbg_abort_601b12a63a2f3a3a = function () {
-      return O(function (e) {
+      return M(function (e) {
         e.abort();
       }, arguments);
     }),
     (e.wbg.__wbg_bound_eb572b424befade3 = function () {
-      return O(function (e, t, n, r) {
+      return M(function (e, t, n, r) {
         return IDBKeyRange.bound(e, t, n !== 0, r !== 0);
       }, arguments);
     }),
@@ -885,40 +971,40 @@ function Qe() {
       return e.buffer;
     }),
     (e.wbg.__wbg_call_f2db6205e5c51dc8 = function () {
-      return O(function (e, t, n) {
+      return M(function (e, t, n) {
         return e.call(t, n);
       }, arguments);
     }),
     (e.wbg.__wbg_call_fbe8be8bf6436ce5 = function () {
-      return O(function (e, t) {
+      return M(function (e, t) {
         return e.call(t);
       }, arguments);
     }),
     (e.wbg.__wbg_close_b08c03c920ee0bba = function () {
-      return O(function (e) {
+      return M(function (e) {
         e.close();
       }, arguments);
     }),
     (e.wbg.__wbg_commit_a54edce65f3858f2 = function () {
-      return O(function (e) {
+      return M(function (e) {
         e.commit();
       }, arguments);
     }),
     (e.wbg.__wbg_continue_7d9cdafc888cb902 = function () {
-      return O(function (e) {
+      return M(function (e) {
         e.continue();
       }, arguments);
     }),
     (e.wbg.__wbg_createObjectStore_b1f08961900155dd = function () {
-      return O(function (e, t, n) {
-        return e.createObjectStore(w(t, n));
+      return M(function (e, t, n) {
+        return e.createObjectStore(O(t, n));
       }, arguments);
     }),
     (e.wbg.__wbg_data_fffd43bf0ca75fff = function (e) {
       return e.data;
     }),
     (e.wbg.__wbg_delete_71b7921c73aa9378 = function () {
-      return O(function (e, t) {
+      return M(function (e, t) {
         return e.delete(t);
       }, arguments);
     }),
@@ -929,12 +1015,12 @@ function Qe() {
       return Object.entries(e);
     }),
     (e.wbg.__wbg_error_31d7961b8e0d3f6c = function (e, t) {
-      console.error(w(e, t));
+      console.error(O(e, t));
     }),
     (e.wbg.__wbg_error_4e978abc9692c0c5 = function () {
-      return O(function (e) {
+      return M(function (e) {
         let t = e.error;
-        return k(t) ? 0 : D(t);
+        return N(t) ? 0 : j(t);
       }, arguments);
     }),
     (e.wbg.__wbg_error_51ecdd39ec054205 = function (e) {
@@ -943,24 +1029,24 @@ function Qe() {
     (e.wbg.__wbg_error_7534b8e9a36f1ab4 = function (e, t) {
       let n, r;
       try {
-        ((n = e), (r = t), console.error(w(e, t)));
+        ((n = e), (r = t), console.error(O(e, t)));
       } finally {
-        M.__wbindgen_free(n, r, 1);
+        I.__wbindgen_free(n, r, 1);
       }
     }),
     (e.wbg.__wbg_from_12ff8e47307bd4c7 = function (e) {
       return Array.from(e);
     }),
     (e.wbg.__wbg_getRandomValues_1c61fac11405ffdc = function () {
-      return O(function (e, t) {
-        globalThis.crypto.getRandomValues(Ae(e, t));
+      return M(function (e, t) {
+        globalThis.crypto.getRandomValues(Pe(e, t));
       }, arguments);
     }),
     (e.wbg.__wbg_getTime_2afe67905d873e92 = function (e) {
       return e.getTime();
     }),
     (e.wbg.__wbg_get_92470be87867c2e5 = function () {
-      return O(function (e, t) {
+      return M(function (e, t) {
         return Reflect.get(e, t);
       }, arguments);
     }),
@@ -968,7 +1054,7 @@ function Qe() {
       return e[t >>> 0];
     }),
     (e.wbg.__wbg_get_d37904b955701f99 = function () {
-      return O(function (e, t) {
+      return M(function (e, t) {
         return e.get(t);
       }, arguments);
     }),
@@ -979,21 +1065,21 @@ function Qe() {
       return e.global;
     }),
     (e.wbg.__wbg_indexedDB_317016dcb8a872d6 = function () {
-      return O(function (e) {
+      return M(function (e) {
         let t = e.indexedDB;
-        return k(t) ? 0 : D(t);
+        return N(t) ? 0 : j(t);
       }, arguments);
     }),
     (e.wbg.__wbg_indexedDB_54f01430b1e194e8 = function () {
-      return O(function (e) {
+      return M(function (e) {
         let t = e.indexedDB;
-        return k(t) ? 0 : D(t);
+        return N(t) ? 0 : j(t);
       }, arguments);
     }),
     (e.wbg.__wbg_indexedDB_63b82e158eb67cbd = function () {
-      return O(function (e) {
+      return M(function (e) {
         let t = e.indexedDB;
-        return k(t) ? 0 : D(t);
+        return N(t) ? 0 : j(t);
       }, arguments);
     }),
     (e.wbg.__wbg_instanceof_ArrayBuffer_a8b6f580b363f2bc = function (e) {
@@ -1085,15 +1171,15 @@ function Qe() {
     }),
     (e.wbg.__wbg_item_15285ca2d766f142 = function (e, t, n) {
       let r = t.item(n >>> 0);
-      var i = k(r) ? 0 : T(r, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        a = F;
-      (E().setInt32(e + 4, a, !0), E().setInt32(e + 0, i, !0));
+      var i = N(r) ? 0 : k(r, I.__wbindgen_malloc, I.__wbindgen_realloc),
+        a = B;
+      (A().setInt32(e + 4, a, !0), A().setInt32(e + 0, i, !0));
     }),
     (e.wbg.__wbg_iterator_4068add5b2aef7a6 = function () {
       return Symbol.iterator;
     }),
     (e.wbg.__wbg_key_a17a68df9ec1b180 = function () {
-      return O(function (e) {
+      return M(function (e) {
         return e.key;
       }, arguments);
     }),
@@ -1109,64 +1195,64 @@ function Qe() {
     (e.wbg.__wbg_log_0cc1b7768397bcfe = function (e, t, n, r, i, a, o, s) {
       let c, l;
       try {
-        ((c = e), (l = t), console.log(w(e, t), w(n, r), w(i, a), w(o, s)));
+        ((c = e), (l = t), console.log(O(e, t), O(n, r), O(i, a), O(o, s)));
       } finally {
-        M.__wbindgen_free(c, l, 1);
+        I.__wbindgen_free(c, l, 1);
       }
     }),
     (e.wbg.__wbg_log_cb9e190acc5753fb = function (e, t) {
       let n, r;
       try {
-        ((n = e), (r = t), console.log(w(e, t)));
+        ((n = e), (r = t), console.log(O(e, t)));
       } finally {
-        M.__wbindgen_free(n, r, 1);
+        I.__wbindgen_free(n, r, 1);
       }
     }),
     (e.wbg.__wbg_log_ea240990d83e374e = function (e) {
       console.log(e);
     }),
     (e.wbg.__wbg_lowerBound_13c8e875a3fb9f7d = function () {
-      return O(function (e, t) {
+      return M(function (e, t) {
         return IDBKeyRange.lowerBound(e, t !== 0);
       }, arguments);
     }),
     (e.wbg.__wbg_mark_7438147ce31e9d4b = function (e, t) {
-      performance.mark(w(e, t));
+      performance.mark(O(e, t));
     }),
     (e.wbg.__wbg_measure_fb7825c11612c823 = function () {
-      return O(function (e, t, n, r) {
+      return M(function (e, t, n, r) {
         let i, a, o, s;
         try {
           ((i = e),
             (a = t),
             (o = n),
             (s = r),
-            performance.measure(w(e, t), w(n, r)));
+            performance.measure(O(e, t), O(n, r)));
         } finally {
-          (M.__wbindgen_free(i, a, 1), M.__wbindgen_free(o, s, 1));
+          (I.__wbindgen_free(i, a, 1), I.__wbindgen_free(o, s, 1));
         }
       }, arguments);
     }),
     (e.wbg.__wbg_message_2d95ea5aff0d63b9 = function (e, t) {
       let n = t.message,
-        r = T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        i = F;
-      (E().setInt32(e + 4, i, !0), E().setInt32(e + 0, r, !0));
+        r = k(n, I.__wbindgen_malloc, I.__wbindgen_realloc),
+        i = B;
+      (A().setInt32(e + 4, i, !0), A().setInt32(e + 0, r, !0));
     }),
     (e.wbg.__wbg_message_4159c15dac08c5e9 = function (e) {
       return e.message;
     }),
     (e.wbg.__wbg_message_44ef9b801b7d8bc3 = function (e, t) {
       let n = t.message,
-        r = T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        i = F;
-      (E().setInt32(e + 4, i, !0), E().setInt32(e + 0, r, !0));
+        r = k(n, I.__wbindgen_malloc, I.__wbindgen_realloc),
+        i = B;
+      (A().setInt32(e + 4, i, !0), A().setInt32(e + 0, r, !0));
     }),
     (e.wbg.__wbg_name_2acff1e83d9735f9 = function (e, t) {
       let n = t.name,
-        r = T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        i = F;
-      (E().setInt32(e + 4, i, !0), E().setInt32(e + 0, r, !0));
+        r = k(n, I.__wbindgen_malloc, I.__wbindgen_realloc),
+        i = B;
+      (A().setInt32(e + 4, i, !0), A().setInt32(e + 0, r, !0));
     }),
     (e.wbg.__wbg_new0_97314565408dea38 = function () {
       return new Date();
@@ -1175,7 +1261,7 @@ function Qe() {
       return {};
     }),
     (e.wbg.__wbg_new_476169e6d59f23ae = function (e, t) {
-      return Error(w(e, t));
+      return Error(O(e, t));
     }),
     (e.wbg.__wbg_new_58353953ad2097cc = function () {
       return [];
@@ -1193,7 +1279,7 @@ function Qe() {
           let r = n.a;
           n.a = 0;
           try {
-            return Xe(r, n.b, e, t);
+            return et(r, n.b, e, t);
           } finally {
             n.a = r;
           }
@@ -1206,15 +1292,15 @@ function Qe() {
       return new Uint8Array(e);
     }),
     (e.wbg.__wbg_new_f42a001532528172 = function () {
-      return O(function (e, t) {
-        return new WebSocket(w(e, t));
+      return M(function (e, t) {
+        return new WebSocket(O(e, t));
       }, arguments);
     }),
     (e.wbg.__wbg_newfromslice_7c05ab1297cb2d88 = function (e, t) {
-      return new Uint8Array(Ae(e, t));
+      return new Uint8Array(Pe(e, t));
     }),
     (e.wbg.__wbg_newnoargs_ff528e72d35de39a = function (e, t) {
-      return Function(w(e, t));
+      return Function(O(e, t));
     }),
     (e.wbg.__wbg_newwithbyteoffsetandlength_3b01ecda099177e8 = function (
       e,
@@ -1230,7 +1316,7 @@ function Qe() {
       return e.next;
     }),
     (e.wbg.__wbg_next_e2da48d8fff7439a = function () {
-      return O(function (e) {
+      return M(function (e) {
         return e.next();
       }, arguments);
     }),
@@ -1241,25 +1327,25 @@ function Qe() {
       return e.objectStoreNames;
     }),
     (e.wbg.__wbg_objectStore_b463d32c86d6b543 = function () {
-      return O(function (e, t, n) {
-        return e.objectStore(w(t, n));
+      return M(function (e, t, n) {
+        return e.objectStore(O(t, n));
       }, arguments);
     }),
     (e.wbg.__wbg_openCursor_7c13a2cd32c6258b = function () {
-      return O(function (e) {
+      return M(function (e) {
         return e.openCursor();
       }, arguments);
     }),
     (e.wbg.__wbg_open_0f04f50fa4d98f67 = function () {
-      return O(function (e, t, n, r) {
-        return e.open(w(t, n), r >>> 0);
+      return M(function (e, t, n, r) {
+        return e.open(O(t, n), r >>> 0);
       }, arguments);
     }),
     (e.wbg.__wbg_push_73fd7b5550ebf707 = function (e, t) {
       return e.push(t);
     }),
     (e.wbg.__wbg_put_7f0b4dcc666f09e3 = function () {
-      return O(function (e, t, n) {
+      return M(function (e, t, n) {
         return e.put(t, n);
       }, arguments);
     }),
@@ -1271,7 +1357,7 @@ function Qe() {
     }),
     (e.wbg.__wbg_readyState_249e5707a38b7a7a = function (e) {
       let t = e.readyState;
-      return (st.indexOf(t) + 1 || 3) - 1;
+      return (ut.indexOf(t) + 1 || 3) - 1;
     }),
     (e.wbg.__wbg_request_5079471e06223120 = function (e) {
       return e.request;
@@ -1283,12 +1369,12 @@ function Qe() {
       return Promise.resolve(e);
     }),
     (e.wbg.__wbg_result_a0f1bf2fe64a516c = function () {
-      return O(function (e) {
+      return M(function (e) {
         return e.result;
       }, arguments);
     }),
     (e.wbg.__wbg_send_05456d2bf190b017 = function () {
-      return O(function (e, t) {
+      return M(function (e, t) {
         e.send(t);
       }, arguments);
     }),
@@ -1299,7 +1385,7 @@ function Qe() {
       e[t >>> 0] = n;
     }),
     (e.wbg.__wbg_set_c43293f93a35998a = function () {
-      return O(function (e, t, n) {
+      return M(function (e, t, n) {
         return Reflect.set(e, t, n);
       }, arguments);
     }),
@@ -1310,7 +1396,7 @@ function Qe() {
       e.set(t, n >>> 0);
     }),
     (e.wbg.__wbg_setbinaryType_52787d6025601cc5 = function (e, t) {
-      e.binaryType = ot[t];
+      e.binaryType = lt[t];
     }),
     (e.wbg.__wbg_setonabort_479ebb5884fcb171 = function (e, t) {
       e.onabort = t;
@@ -1344,29 +1430,29 @@ function Qe() {
     }),
     (e.wbg.__wbg_stack_0ed75d68575b0f3c = function (e, t) {
       let n = t.stack,
-        r = T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        i = F;
-      (E().setInt32(e + 4, i, !0), E().setInt32(e + 0, r, !0));
+        r = k(n, I.__wbindgen_malloc, I.__wbindgen_realloc),
+        i = B;
+      (A().setInt32(e + 4, i, !0), A().setInt32(e + 0, r, !0));
     }),
     (e.wbg.__wbg_static_accessor_GLOBAL_487c52c58d65314d = function () {
       let e = typeof globalThis > `u` ? null : globalThis;
-      return k(e) ? 0 : D(e);
+      return N(e) ? 0 : j(e);
     }),
     (e.wbg.__wbg_static_accessor_GLOBAL_THIS_ee9704f328b6b291 = function () {
       let e = typeof globalThis > `u` ? null : globalThis;
-      return k(e) ? 0 : D(e);
+      return N(e) ? 0 : j(e);
     }),
     (e.wbg.__wbg_static_accessor_SELF_78c9e3071b912620 = function () {
       let e = typeof self > `u` ? null : self;
-      return k(e) ? 0 : D(e);
+      return N(e) ? 0 : j(e);
     }),
     (e.wbg.__wbg_static_accessor_WINDOW_a093d21393777366 = function () {
       let e = typeof self > `u` ? null : self;
-      return k(e) ? 0 : D(e);
+      return N(e) ? 0 : j(e);
     }),
     (e.wbg.__wbg_target_15f1da583855ac4e = function (e) {
       let t = e.target;
-      return k(t) ? 0 : D(t);
+      return N(t) ? 0 : j(t);
     }),
     (e.wbg.__wbg_then_82ab9fb4080f1707 = function (e, t, n) {
       return e.then(t, n);
@@ -1378,15 +1464,15 @@ function Qe() {
       return e.toString();
     }),
     (e.wbg.__wbg_transaction_36c8b28ed4349a9a = function () {
-      return O(function (e, t, n, r) {
-        return e.transaction(w(t, n), ct[r]);
+      return M(function (e, t, n, r) {
+        return e.transaction(O(t, n), dt[r]);
       }, arguments);
     }),
     (e.wbg.__wbg_transaction_d1f21f4378880521 = function (e) {
       return e.transaction;
     }),
     (e.wbg.__wbg_upperBound_a0bd8ece19d98580 = function () {
-      return O(function (e, t) {
+      return M(function (e, t) {
         return IDBKeyRange.upperBound(e, t !== 0);
       }, arguments);
     }),
@@ -1394,24 +1480,24 @@ function Qe() {
       return e.value;
     }),
     (e.wbg.__wbg_value_648dc44894c8dc95 = function () {
-      return O(function (e) {
+      return M(function (e) {
         return e.value;
       }, arguments);
     }),
     (e.wbg.__wbg_wasmdochandle_new = function (e) {
-      return dt.__wrap(e);
+      return mt.__wrap(e);
     }),
     (e.wbg.__wbg_wasmdocumentwatcher_new = function (e) {
-      return pt.__wrap(e);
+      return gt.__wrap(e);
     }),
     (e.wbg.__wbg_wasmerror_new = function (e) {
-      return ht.__wrap(e);
+      return vt.__wrap(e);
     }),
     (e.wbg.__wbg_wasmrepo_new = function (e) {
-      return _t.__wrap(e);
+      return bt.__wrap(e);
     }),
     (e.wbg.__wbg_wasmtonkcore_new = function (e) {
-      return yt.__wrap(e);
+      return St.__wrap(e);
     }),
     (e.wbg.__wbindgen_bigint_from_i64 = function (e) {
       return e;
@@ -1422,8 +1508,8 @@ function Qe() {
     (e.wbg.__wbindgen_bigint_get_as_i64 = function (e, t) {
       let n = t,
         r = typeof n == `bigint` ? n : void 0;
-      (E().setBigInt64(e + 8, k(r) ? BigInt(0) : r, !0),
-        E().setInt32(e + 0, !k(r), !0));
+      (A().setBigInt64(e + 8, N(r) ? BigInt(0) : r, !0),
+        A().setInt32(e + 0, !N(r), !0));
     }),
     (e.wbg.__wbindgen_boolean_get = function (e) {
       let t = e;
@@ -1434,37 +1520,37 @@ function Qe() {
       return t.cnt-- == 1 ? ((t.a = 0), !0) : !1;
     }),
     (e.wbg.__wbindgen_closure_wrapper1930 = function (e, t, n) {
-      return A(e, t, 729, Ge);
+      return P(e, t, 729, Ye);
     }),
     (e.wbg.__wbindgen_closure_wrapper1932 = function (e, t, n) {
-      return A(e, t, 729, Ge);
+      return P(e, t, 729, Ye);
     }),
     (e.wbg.__wbindgen_closure_wrapper1934 = function (e, t, n) {
-      return A(e, t, 729, Ke);
+      return P(e, t, 729, Xe);
     }),
     (e.wbg.__wbindgen_closure_wrapper1936 = function (e, t, n) {
-      return A(e, t, 729, Ge);
+      return P(e, t, 729, Ye);
     }),
     (e.wbg.__wbindgen_closure_wrapper2633 = function (e, t, n) {
-      return A(e, t, 1008, qe);
+      return P(e, t, 1008, Ze);
     }),
     (e.wbg.__wbindgen_closure_wrapper2635 = function (e, t, n) {
-      return A(e, t, 1008, Je);
+      return P(e, t, 1008, Qe);
     }),
     (e.wbg.__wbindgen_closure_wrapper2663 = function (e, t, n) {
-      return A(e, t, 1026, Ye);
+      return P(e, t, 1026, $e);
     }),
     (e.wbg.__wbindgen_debug_string = function (e, t) {
-      let n = je(t),
-        r = T(n, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        i = F;
-      (E().setInt32(e + 4, i, !0), E().setInt32(e + 0, r, !0));
+      let n = Fe(t),
+        r = k(n, I.__wbindgen_malloc, I.__wbindgen_realloc),
+        i = B;
+      (A().setInt32(e + 4, i, !0), A().setInt32(e + 0, r, !0));
     }),
     (e.wbg.__wbindgen_in = function (e, t) {
       return e in t;
     }),
     (e.wbg.__wbindgen_init_externref_table = function () {
-      let e = M.__wbindgen_export_4,
+      let e = I.__wbindgen_export_4,
         t = e.grow(4);
       (e.set(0, void 0),
         e.set(t + 0, void 0),
@@ -1498,12 +1584,12 @@ function Qe() {
       return e == t;
     }),
     (e.wbg.__wbindgen_memory = function () {
-      return M.memory;
+      return I.memory;
     }),
     (e.wbg.__wbindgen_number_get = function (e, t) {
       let n = t,
         r = typeof n == `number` ? n : void 0;
-      (E().setFloat64(e + 8, k(r) ? 0 : r, !0), E().setInt32(e + 0, !k(r), !0));
+      (A().setFloat64(e + 8, N(r) ? 0 : r, !0), A().setInt32(e + 0, !N(r), !0));
     }),
     (e.wbg.__wbindgen_number_new = function (e) {
       return e;
@@ -1511,44 +1597,44 @@ function Qe() {
     (e.wbg.__wbindgen_string_get = function (e, t) {
       let n = t,
         r = typeof n == `string` ? n : void 0;
-      var i = k(r) ? 0 : T(r, M.__wbindgen_malloc, M.__wbindgen_realloc),
-        a = F;
-      (E().setInt32(e + 4, a, !0), E().setInt32(e + 0, i, !0));
+      var i = N(r) ? 0 : k(r, I.__wbindgen_malloc, I.__wbindgen_realloc),
+        a = B;
+      (A().setInt32(e + 4, a, !0), A().setInt32(e + 0, i, !0));
     }),
     (e.wbg.__wbindgen_string_new = function (e, t) {
-      return w(e, t);
+      return O(e, t);
     }),
     (e.wbg.__wbindgen_throw = function (e, t) {
-      throw Error(w(e, t));
+      throw Error(O(e, t));
     }),
     e
   );
 }
-function $e(e, t) {
+function rt(e, t) {
   return (
-    (M = e.exports),
-    (tt.__wbindgen_wasm_module = t),
+    (I = e.exports),
+    (at.__wbindgen_wasm_module = t),
+    (H = null),
     (L = null),
-    (N = null),
-    M.__wbindgen_start(),
-    M
+    I.__wbindgen_start(),
+    I
   );
 }
-function et(e) {
-  if (M !== void 0) return M;
+function it(e) {
+  if (I !== void 0) return I;
   e !== void 0 &&
     (Object.getPrototypeOf(e) === Object.prototype
       ? ({ module: e } = e)
       : console.warn(
           "using deprecated parameters for `initSync()`; pass a single object instead",
         ));
-  let t = Qe();
+  let t = nt();
   e instanceof WebAssembly.Module || (e = new WebAssembly.Module(e));
   let n = new WebAssembly.Instance(e, t);
-  return $e(n, e);
+  return rt(n, e);
 }
-async function tt(e) {
-  if (M !== void 0) return M;
+async function at(e) {
+  if (I !== void 0) return I;
   (e !== void 0 &&
     (Object.getPrototypeOf(e) === Object.prototype
       ? ({ module_or_path: e } = e)
@@ -1556,32 +1642,29 @@ async function tt(e) {
           `using deprecated parameters for the initialization function; pass a single object instead`,
         )),
     e === void 0 && (e = new URL(`/tonk_core_bg.wasm`, `` + import.meta.url)));
-  let t = Qe();
+  let t = nt();
   (typeof e == `string` ||
     (typeof Request == `function` && e instanceof Request) ||
     (typeof URL == `function` && e instanceof URL)) &&
     (e = fetch(e));
-  let { instance: n, module: r } = await Ze(await e, t);
-  return $e(n, r);
+  let { instance: n, module: r } = await tt(await e, t);
+  return rt(n, r);
 }
-var M,
-  N,
-  P,
-  nt,
-  rt,
-  F,
-  I,
-  it,
+var I,
   L,
-  at,
+  R,
   ot,
+  z,
+  B,
+  V,
   st,
+  H,
   ct,
   lt,
-  R,
   ut,
   dt,
   ft,
+  U,
   pt,
   mt,
   ht,
@@ -1592,10 +1675,13 @@ var M,
   bt,
   xt,
   St,
-  z,
-  B = t(() => {
-    ((N = null),
-      (P =
+  Ct,
+  wt,
+  Tt,
+  Et,
+  W = t(() => {
+    ((L = null),
+      (R =
         typeof TextDecoder < `u`
           ? new TextDecoder(`utf-8`, { ignoreBOM: !0, fatal: !0 })
           : {
@@ -1603,11 +1689,11 @@ var M,
                 throw Error(`TextDecoder not available`);
               },
             }),
-      typeof TextDecoder < `u` && P.decode(),
-      (nt = 2146435072),
-      (rt = 0),
-      (F = 0),
-      (I =
+      typeof TextDecoder < `u` && R.decode(),
+      (ot = 2146435072),
+      (z = 0),
+      (B = 0),
+      (V =
         typeof TextEncoder < `u`
           ? new TextEncoder(`utf-8`)
           : {
@@ -1615,133 +1701,38 @@ var M,
                 throw Error(`TextEncoder not available`);
               },
             }),
-      (it =
-        typeof I.encodeInto == `function`
+      (st =
+        typeof V.encodeInto == `function`
           ? function (e, t) {
-              return I.encodeInto(e, t);
+              return V.encodeInto(e, t);
             }
           : function (e, t) {
-              let n = I.encode(e);
+              let n = V.encode(e);
               return (t.set(n), { read: e.length, written: n.length });
             }),
-      (L = null),
-      (at =
+      (H = null),
+      (ct =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) => {
-              M.__wbindgen_export_6.get(e.dtor)(e.a, e.b);
+              I.__wbindgen_export_6.get(e.dtor)(e.a, e.b);
             })),
-      (ot = [`blob`, `arraybuffer`]),
-      (st = [`pending`, `done`]),
-      (ct = [
+      (lt = [`blob`, `arraybuffer`]),
+      (ut = [`pending`, `done`]),
+      (dt = [
         `readonly`,
         `readwrite`,
         `versionchange`,
         `readwriteflush`,
         `cleanup`,
       ]),
-      (lt =
-        typeof FinalizationRegistry > `u`
-          ? { register: () => {}, unregister: () => {} }
-          : new FinalizationRegistry((e) =>
-              M.__wbg_wasmbundle_free(e >>> 0, 1),
-            )),
-      (R = class e {
-        static __wrap(t) {
-          t >>>= 0;
-          let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), lt.register(n, n.__wbg_ptr, n), n);
-        }
-        __destroy_into_raw() {
-          let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), lt.unregister(this), e);
-        }
-        free() {
-          let e = this.__destroy_into_raw();
-          M.__wbg_wasmbundle_free(e, 0);
-        }
-        static fromBytes(t) {
-          let n = M.wasmbundle_fromBytes(t);
-          if (n[2]) throw j(n[1]);
-          return e.__wrap(n[0]);
-        }
-        getPrefix(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmbundle_getPrefix(this.__wbg_ptr, t, n);
-        }
-        getRootId() {
-          return M.wasmbundle_getRootId(this.__wbg_ptr);
-        }
-        getManifest() {
-          return M.wasmbundle_getManifest(this.__wbg_ptr);
-        }
-        setManifest(e) {
-          return M.wasmbundle_setManifest(this.__wbg_ptr, e);
-        }
-        get(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmbundle_get(this.__wbg_ptr, t, n);
-        }
-        toBytes() {
-          return M.wasmbundle_toBytes(this.__wbg_ptr);
-        }
-        listKeys() {
-          return M.wasmbundle_listKeys(this.__wbg_ptr);
-        }
-      }),
-      (ut =
-        typeof FinalizationRegistry > `u`
-          ? { register: () => {}, unregister: () => {} }
-          : new FinalizationRegistry((e) =>
-              M.__wbg_wasmdochandle_free(e >>> 0, 1),
-            )),
-      (dt = class e {
-        static __wrap(t) {
-          t >>>= 0;
-          let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), ut.register(n, n.__wbg_ptr, n), n);
-        }
-        __destroy_into_raw() {
-          let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), ut.unregister(this), e);
-        }
-        free() {
-          let e = this.__destroy_into_raw();
-          M.__wbg_wasmdochandle_free(e, 0);
-        }
-        documentId() {
-          let e, t;
-          try {
-            let n = M.wasmdochandle_documentId(this.__wbg_ptr);
-            return ((e = n[0]), (t = n[1]), w(n[0], n[1]));
-          } finally {
-            M.__wbindgen_free(e, t, 1);
-          }
-        }
-        getDocument() {
-          let e = M.wasmdochandle_getDocument(this.__wbg_ptr);
-          if (e[2]) throw j(e[1]);
-          return j(e[0]);
-        }
-        url() {
-          let e, t;
-          try {
-            let n = M.wasmdochandle_url(this.__wbg_ptr);
-            return ((e = n[0]), (t = n[1]), w(n[0], n[1]));
-          } finally {
-            M.__wbindgen_free(e, t, 1);
-          }
-        }
-      }),
       (ft =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) =>
-              M.__wbg_wasmdocumentwatcher_free(e >>> 0, 1),
+              I.__wbg_wasmbundle_free(e >>> 0, 1),
             )),
-      (pt = class e {
+      (U = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
@@ -1753,223 +1744,318 @@ var M,
         }
         free() {
           let e = this.__destroy_into_raw();
-          M.__wbg_wasmdocumentwatcher_free(e, 0);
+          I.__wbg_wasmbundle_free(e, 0);
+        }
+        static fromBytes(t) {
+          let n = I.wasmbundle_fromBytes(t);
+          if (n[2]) throw F(n[1]);
+          return e.__wrap(n[0]);
+        }
+        getPrefix(e) {
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmbundle_getPrefix(this.__wbg_ptr, t, n);
+        }
+        getRootId() {
+          return I.wasmbundle_getRootId(this.__wbg_ptr);
+        }
+        getManifest() {
+          return I.wasmbundle_getManifest(this.__wbg_ptr);
+        }
+        setManifest(e) {
+          return I.wasmbundle_setManifest(this.__wbg_ptr, e);
+        }
+        get(e) {
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmbundle_get(this.__wbg_ptr, t, n);
+        }
+        toBytes() {
+          return I.wasmbundle_toBytes(this.__wbg_ptr);
+        }
+        listKeys() {
+          return I.wasmbundle_listKeys(this.__wbg_ptr);
+        }
+      }),
+      (pt =
+        typeof FinalizationRegistry > `u`
+          ? { register: () => {}, unregister: () => {} }
+          : new FinalizationRegistry((e) =>
+              I.__wbg_wasmdochandle_free(e >>> 0, 1),
+            )),
+      (mt = class e {
+        static __wrap(t) {
+          t >>>= 0;
+          let n = Object.create(e.prototype);
+          return ((n.__wbg_ptr = t), pt.register(n, n.__wbg_ptr, n), n);
+        }
+        __destroy_into_raw() {
+          let e = this.__wbg_ptr;
+          return ((this.__wbg_ptr = 0), pt.unregister(this), e);
+        }
+        free() {
+          let e = this.__destroy_into_raw();
+          I.__wbg_wasmdochandle_free(e, 0);
         }
         documentId() {
           let e, t;
           try {
-            let n = M.wasmdocumentwatcher_documentId(this.__wbg_ptr);
-            return ((e = n[0]), (t = n[1]), w(n[0], n[1]));
+            let n = I.wasmdochandle_documentId(this.__wbg_ptr);
+            return ((e = n[0]), (t = n[1]), O(n[0], n[1]));
           } finally {
-            M.__wbindgen_free(e, t, 1);
+            I.__wbindgen_free(e, t, 1);
           }
         }
-        stop() {
-          return M.wasmdocumentwatcher_stop(this.__wbg_ptr);
+        getDocument() {
+          let e = I.wasmdochandle_getDocument(this.__wbg_ptr);
+          if (e[2]) throw F(e[1]);
+          return F(e[0]);
+        }
+        url() {
+          let e, t;
+          try {
+            let n = I.wasmdochandle_url(this.__wbg_ptr);
+            return ((e = n[0]), (t = n[1]), O(n[0], n[1]));
+          } finally {
+            I.__wbindgen_free(e, t, 1);
+          }
         }
       }),
-      (mt =
+      (ht =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) =>
-              M.__wbg_wasmerror_free(e >>> 0, 1),
+              I.__wbg_wasmdocumentwatcher_free(e >>> 0, 1),
             )),
-      (ht = class e {
+      (gt = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), mt.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), ht.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), mt.unregister(this), e);
+          return ((this.__wbg_ptr = 0), ht.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
-          M.__wbg_wasmerror_free(e, 0);
+          I.__wbg_wasmdocumentwatcher_free(e, 0);
+        }
+        documentId() {
+          let e, t;
+          try {
+            let n = I.wasmdocumentwatcher_documentId(this.__wbg_ptr);
+            return ((e = n[0]), (t = n[1]), O(n[0], n[1]));
+          } finally {
+            I.__wbindgen_free(e, t, 1);
+          }
+        }
+        stop() {
+          return I.wasmdocumentwatcher_stop(this.__wbg_ptr);
+        }
+      }),
+      (_t =
+        typeof FinalizationRegistry > `u`
+          ? { register: () => {}, unregister: () => {} }
+          : new FinalizationRegistry((e) =>
+              I.__wbg_wasmerror_free(e >>> 0, 1),
+            )),
+      (vt = class e {
+        static __wrap(t) {
+          t >>>= 0;
+          let n = Object.create(e.prototype);
+          return ((n.__wbg_ptr = t), _t.register(n, n.__wbg_ptr, n), n);
+        }
+        __destroy_into_raw() {
+          let e = this.__wbg_ptr;
+          return ((this.__wbg_ptr = 0), _t.unregister(this), e);
+        }
+        free() {
+          let e = this.__destroy_into_raw();
+          I.__wbg_wasmerror_free(e, 0);
         }
         get message() {
           let e, t;
           try {
-            let n = M.wasmerror_message(this.__wbg_ptr);
-            return ((e = n[0]), (t = n[1]), w(n[0], n[1]));
+            let n = I.wasmerror_message(this.__wbg_ptr);
+            return ((e = n[0]), (t = n[1]), O(n[0], n[1]));
           } finally {
-            M.__wbindgen_free(e, t, 1);
+            I.__wbindgen_free(e, t, 1);
           }
         }
       }),
-      (gt =
+      (yt =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
-          : new FinalizationRegistry((e) => M.__wbg_wasmrepo_free(e >>> 0, 1))),
-      (_t = class e {
+          : new FinalizationRegistry((e) => I.__wbg_wasmrepo_free(e >>> 0, 1))),
+      (bt = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), gt.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), yt.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), gt.unregister(this), e);
+          return ((this.__wbg_ptr = 0), yt.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
-          M.__wbg_wasmrepo_free(e, 0);
+          I.__wbg_wasmrepo_free(e, 0);
         }
         findDocument(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmrepo_findDocument(this.__wbg_ptr, t, n);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmrepo_findDocument(this.__wbg_ptr, t, n);
         }
         listDocuments() {
-          let e = M.wasmrepo_listDocuments(this.__wbg_ptr);
-          if (e[2]) throw j(e[1]);
-          return j(e[0]);
+          let e = I.wasmrepo_listDocuments(this.__wbg_ptr);
+          if (e[2]) throw F(e[1]);
+          return F(e[0]);
         }
         createDocument(e) {
-          return M.wasmrepo_createDocument(this.__wbg_ptr, e);
+          return I.wasmrepo_createDocument(this.__wbg_ptr, e);
         }
         connectWebSocket(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F,
-            r = M.wasmrepo_connectWebSocket(this.__wbg_ptr, t, n);
-          if (r[2]) throw j(r[1]);
-          return xt.__wrap(r[0]);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B,
+            r = I.wasmrepo_connectWebSocket(this.__wbg_ptr, t, n);
+          if (r[2]) throw F(r[1]);
+          return wt.__wrap(r[0]);
         }
         connectWebSocketAsync(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmrepo_connectWebSocketAsync(this.__wbg_ptr, t, n);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmrepo_connectWebSocketAsync(this.__wbg_ptr, t, n);
         }
         constructor() {
-          return M.wasmrepo_new();
+          return I.wasmrepo_new();
         }
         stop() {
-          return M.wasmrepo_stop(this.__wbg_ptr);
+          return I.wasmrepo_stop(this.__wbg_ptr);
         }
         peerId() {
           let e, t;
           try {
-            let n = M.wasmrepo_peerId(this.__wbg_ptr);
-            return ((e = n[0]), (t = n[1]), w(n[0], n[1]));
+            let n = I.wasmrepo_peerId(this.__wbg_ptr);
+            return ((e = n[0]), (t = n[1]), O(n[0], n[1]));
           } finally {
-            M.__wbindgen_free(e, t, 1);
+            I.__wbindgen_free(e, t, 1);
           }
         }
       }),
-      (vt =
+      (xt =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) =>
-              M.__wbg_wasmtonkcore_free(e >>> 0, 1),
+              I.__wbg_wasmtonkcore_free(e >>> 0, 1),
             )),
-      (yt = class e {
+      (St = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), vt.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), xt.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), vt.unregister(this), e);
+          return ((this.__wbg_ptr = 0), xt.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
-          M.__wbg_wasmtonkcore_free(e, 0);
+          I.__wbg_wasmtonkcore_free(e, 0);
         }
         static fromBytes(e) {
-          return M.wasmtonkcore_fromBytes(e);
+          return I.wasmtonkcore_fromBytes(e);
         }
         patchFile(e, t, n) {
-          let r = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            i = F;
-          return M.wasmtonkcore_patchFile(this.__wbg_ptr, r, i, t, n);
+          let r = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            i = B;
+          return I.wasmtonkcore_patchFile(this.__wbg_ptr, r, i, t, n);
         }
         createFile(e, t) {
-          let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = F;
-          return M.wasmtonkcore_createFile(this.__wbg_ptr, n, r, t);
+          let n = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            r = B;
+          return I.wasmtonkcore_createFile(this.__wbg_ptr, n, r, t);
         }
         deleteFile(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmtonkcore_deleteFile(this.__wbg_ptr, t, n);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmtonkcore_deleteFile(this.__wbg_ptr, t, n);
         }
         static fromBundle(e) {
-          return (Me(e, R), M.wasmtonkcore_fromBundle(e.__wbg_ptr));
+          return (Ie(e, U), I.wasmtonkcore_fromBundle(e.__wbg_ptr));
         }
         getPeerId() {
-          return M.wasmtonkcore_getPeerId(this.__wbg_ptr);
+          return I.wasmtonkcore_getPeerId(this.__wbg_ptr);
         }
         spliceText(e, t, n, r, i) {
-          let a = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            o = F,
-            s = T(i, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            c = F;
-          return M.wasmtonkcore_spliceText(this.__wbg_ptr, a, o, t, n, r, s, c);
+          let a = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            o = B,
+            s = k(i, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            c = B;
+          return I.wasmtonkcore_spliceText(this.__wbg_ptr, a, o, t, n, r, s, c);
         }
         updateFile(e, t) {
-          let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = F;
-          return M.wasmtonkcore_updateFile(this.__wbg_ptr, n, r, t);
+          let n = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            r = B;
+          return I.wasmtonkcore_updateFile(this.__wbg_ptr, n, r, t);
         }
         getMetadata(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmtonkcore_getMetadata(this.__wbg_ptr, t, n);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmtonkcore_getMetadata(this.__wbg_ptr, t, n);
         }
         isConnected() {
-          return M.wasmtonkcore_isConnected(this.__wbg_ptr);
+          return I.wasmtonkcore_isConnected(this.__wbg_ptr);
         }
         static withPeerId(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmtonkcore_withPeerId(t, n);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmtonkcore_withPeerId(t, n);
         }
         forkToBytes(e) {
-          return M.wasmtonkcore_forkToBytes(this.__wbg_ptr, e);
+          return I.wasmtonkcore_forkToBytes(this.__wbg_ptr, e);
         }
         listDirectory(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmtonkcore_listDirectory(this.__wbg_ptr, t, n);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmtonkcore_listDirectory(this.__wbg_ptr, t, n);
         }
         watchDocument(e, t) {
-          let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = F;
-          return M.wasmtonkcore_watchDocument(this.__wbg_ptr, n, r, t);
+          let n = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            r = B;
+          return I.wasmtonkcore_watchDocument(this.__wbg_ptr, n, r, t);
         }
         watchDirectory(e, t) {
-          let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = F;
-          return M.wasmtonkcore_watchDirectory(this.__wbg_ptr, n, r, t);
+          let n = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            r = B;
+          return I.wasmtonkcore_watchDirectory(this.__wbg_ptr, n, r, t);
         }
         createDirectory(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmtonkcore_createDirectory(this.__wbg_ptr, t, n);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmtonkcore_createDirectory(this.__wbg_ptr, t, n);
         }
         connectWebsocket(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmtonkcore_connectWebsocket(this.__wbg_ptr, t, n);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmtonkcore_connectWebsocket(this.__wbg_ptr, t, n);
         }
         setFileWithBytes(e, t, n) {
-          let r = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            i = F,
-            a = Ne(n, M.__wbindgen_malloc),
-            o = F;
-          return M.wasmtonkcore_setFileWithBytes(this.__wbg_ptr, r, i, t, a, o);
+          let r = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            i = B,
+            a = Le(n, I.__wbindgen_malloc),
+            o = B;
+          return I.wasmtonkcore_setFileWithBytes(this.__wbg_ptr, r, i, t, a, o);
         }
         getConnectionState() {
-          return M.wasmtonkcore_getConnectionState(this.__wbg_ptr);
+          return I.wasmtonkcore_getConnectionState(this.__wbg_ptr);
         }
         createFileWithBytes(e, t, n) {
-          let r = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            i = F,
-            a = Ne(n, M.__wbindgen_malloc),
-            o = F;
-          return M.wasmtonkcore_createFileWithBytes(
+          let r = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            i = B,
+            a = Le(n, I.__wbindgen_malloc),
+            o = B;
+          return I.wasmtonkcore_createFileWithBytes(
             this.__wbg_ptr,
             r,
             i,
@@ -1979,65 +2065,65 @@ var M,
           );
         }
         constructor() {
-          return M.wasmtonkcore_new();
+          return I.wasmtonkcore_new();
         }
         exists(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmtonkcore_exists(this.__wbg_ptr, t, n);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmtonkcore_exists(this.__wbg_ptr, t, n);
         }
         rename(e, t) {
-          let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = F,
-            i = T(t, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            a = F;
-          return M.wasmtonkcore_rename(this.__wbg_ptr, n, r, i, a);
+          let n = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            r = B,
+            i = k(t, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            a = B;
+          return I.wasmtonkcore_rename(this.__wbg_ptr, n, r, i, a);
         }
         setFile(e, t) {
-          let n = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            r = F;
-          return M.wasmtonkcore_setFile(this.__wbg_ptr, n, r, t);
+          let n = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            r = B;
+          return I.wasmtonkcore_setFile(this.__wbg_ptr, n, r, t);
         }
         toBytes(e) {
-          return M.wasmtonkcore_toBytes(this.__wbg_ptr, e);
+          return I.wasmtonkcore_toBytes(this.__wbg_ptr, e);
         }
         readFile(e) {
-          let t = T(e, M.__wbindgen_malloc, M.__wbindgen_realloc),
-            n = F;
-          return M.wasmtonkcore_readFile(this.__wbg_ptr, t, n);
+          let t = k(e, I.__wbindgen_malloc, I.__wbindgen_realloc),
+            n = B;
+          return I.wasmtonkcore_readFile(this.__wbg_ptr, t, n);
         }
       }),
-      (bt =
+      (Ct =
         typeof FinalizationRegistry > `u`
           ? { register: () => {}, unregister: () => {} }
           : new FinalizationRegistry((e) =>
-              M.__wbg_wasmwebsockethandle_free(e >>> 0, 1),
+              I.__wbg_wasmwebsockethandle_free(e >>> 0, 1),
             )),
-      (xt = class e {
+      (wt = class e {
         static __wrap(t) {
           t >>>= 0;
           let n = Object.create(e.prototype);
-          return ((n.__wbg_ptr = t), bt.register(n, n.__wbg_ptr, n), n);
+          return ((n.__wbg_ptr = t), Ct.register(n, n.__wbg_ptr, n), n);
         }
         __destroy_into_raw() {
           let e = this.__wbg_ptr;
-          return ((this.__wbg_ptr = 0), bt.unregister(this), e);
+          return ((this.__wbg_ptr = 0), Ct.unregister(this), e);
         }
         free() {
           let e = this.__destroy_into_raw();
-          M.__wbg_wasmwebsockethandle_free(e, 0);
+          I.__wbg_wasmwebsockethandle_free(e, 0);
         }
         waitForDisconnect() {
-          return M.wasmwebsockethandle_waitForDisconnect(this.__wbg_ptr);
+          return I.wasmwebsockethandle_waitForDisconnect(this.__wbg_ptr);
         }
         close() {
-          M.wasmwebsockethandle_close(this.__wbg_ptr);
+          I.wasmwebsockethandle_close(this.__wbg_ptr);
         }
       }),
-      (St = new Set([`basic`, `cors`, `default`])),
-      (z = tt));
+      (Tt = new Set([`basic`, `cors`, `default`])),
+      (Et = at));
   }),
-  Ct = function (e, t, n, r, i) {
+  Dt = function (e, t, n, r, i) {
     if (r === `m`) throw TypeError(`Private method is not writable`);
     if (r === `a` && !i)
       throw TypeError(`Private accessor was defined without a setter`);
@@ -2047,7 +2133,7 @@ var M,
       );
     return (r === `a` ? i.call(e, n) : i ? (i.value = n) : t.set(e, n), n);
   },
-  V = function (e, t, n, r) {
+  G = function (e, t, n, r) {
     if (n === `a` && !r)
       throw TypeError(`Private accessor was defined without a getter`);
     if (typeof t == `function` ? e !== t || !r : !t.has(e))
@@ -2056,106 +2142,106 @@ var M,
       );
     return n === `m` ? r : n === `a` ? r.call(e) : r ? r.value : t.get(e);
   },
-  H,
-  U,
-  W = class extends Error {
+  K,
+  q,
+  J = class extends Error {
     constructor(e, t) {
       (super(e), (this.code = t), (this.name = `TonkError`));
     }
   },
-  wt = class extends W {
+  Ot = class extends J {
     constructor(e) {
       (super(e, `CONNECTION_ERROR`), (this.name = `ConnectionError`));
     }
   },
-  G = class extends W {
+  Y = class extends J {
     constructor(e) {
       (super(e, `FILESYSTEM_ERROR`), (this.name = `FileSystemError`));
     }
   },
-  K = class extends W {
+  X = class extends J {
     constructor(e) {
       (super(e, `BUNDLE_ERROR`), (this.name = `BundleError`));
     }
   },
-  q = class e {
+  Z = class e {
     constructor(e) {
-      (H.set(this, void 0), Ct(this, H, e, `f`));
+      (K.set(this, void 0), Dt(this, K, e, `f`));
     }
     static async fromBytes(t, n) {
       try {
         let { create_bundle_from_bytes: r } =
-          n || (await x(() => Promise.resolve().then(() => (B(), S)), void 0));
+          n || (await T(() => Promise.resolve().then(() => (W(), E)), void 0));
         return new e(r(t));
       } catch (e) {
-        throw new K(`Failed to create bundle from bytes: ${e}`);
+        throw new X(`Failed to create bundle from bytes: ${e}`);
       }
     }
     async getRootId() {
       try {
-        return await V(this, H, `f`).getRootId();
+        return await G(this, K, `f`).getRootId();
       } catch (e) {
-        throw new K(`Failed to get root ID: ${e}`);
+        throw new X(`Failed to get root ID: ${e}`);
       }
     }
     async get(e) {
       try {
-        let t = await V(this, H, `f`).get(e);
+        let t = await G(this, K, `f`).get(e);
         return t === null ? null : t;
       } catch (t) {
-        throw new K(`Failed to get key ${e}: ${t}`);
+        throw new X(`Failed to get key ${e}: ${t}`);
       }
     }
     async getPrefix(e) {
       try {
-        return (await V(this, H, `f`).getPrefix(e)).map((e) => ({
+        return (await G(this, K, `f`).getPrefix(e)).map((e) => ({
           key: e.key,
           value: e.value,
         }));
       } catch (t) {
-        throw new K(`Failed to get prefix ${e}: ${t}`);
+        throw new X(`Failed to get prefix ${e}: ${t}`);
       }
     }
     async listKeys() {
       try {
-        return await V(this, H, `f`).listKeys();
+        return await G(this, K, `f`).listKeys();
       } catch (e) {
-        throw new K(`Failed to list keys: ${e}`);
+        throw new X(`Failed to list keys: ${e}`);
       }
     }
     async getManifest() {
       try {
-        return await V(this, H, `f`).getManifest();
+        return await G(this, K, `f`).getManifest();
       } catch (e) {
-        throw new K(`Failed to retrieve manifest: ${e}`);
+        throw new X(`Failed to retrieve manifest: ${e}`);
       }
     }
     async setManifest(e) {
       try {
-        await V(this, H, `f`).setManifest(e);
+        await G(this, K, `f`).setManifest(e);
       } catch (e) {
-        throw new K(`Failed to set manifest: ${e}`);
+        throw new X(`Failed to set manifest: ${e}`);
       }
     }
     async toBytes() {
       try {
-        return await V(this, H, `f`).toBytes();
+        return await G(this, K, `f`).toBytes();
       } catch (e) {
-        throw new K(`Failed to serialize bundle: ${e}`);
+        throw new X(`Failed to serialize bundle: ${e}`);
       }
     }
     free() {
-      V(this, H, `f`).free();
+      G(this, K, `f`).free();
     }
   };
-H = new WeakMap();
-var J = class e {
+K = new WeakMap();
+var kt = class e {
   constructor(e) {
-    (U.set(this, void 0), Ct(this, U, e, `f`));
+    (q.set(this, void 0), Dt(this, q, e, `f`));
   }
   static async create(t, n) {
     let r =
-      n || (await x(() => Promise.resolve().then(() => (B(), S)), void 0));
+      n || (await T(() => Promise.resolve().then(() => (W(), E)), void 0));
     if (t?.peerId && t?.storage) {
       let { create_tonk_with_config: n } = r,
         i = await n(
@@ -2180,13 +2266,13 @@ var J = class e {
   }
   static async createWithPeerId(t, n) {
     let { create_tonk_with_peer_id: r } =
-        n || (await x(() => Promise.resolve().then(() => (B(), S)), void 0)),
+        n || (await T(() => Promise.resolve().then(() => (W(), E)), void 0)),
       i = await r(t);
     return new e(i);
   }
   static async fromBundle(t, n, r) {
     let i =
-      r || (await x(() => Promise.resolve().then(() => (B(), S)), void 0));
+      r || (await T(() => Promise.resolve().then(() => (W(), E)), void 0));
     if (n?.storage) {
       let { create_tonk_from_bundle_with_storage: r } = i,
         a = await r(t, n.storage.type === `indexeddb`, n.storage.namespace);
@@ -2199,7 +2285,7 @@ var J = class e {
   }
   static async fromBytes(t, n, r) {
     let i =
-      r || (await x(() => Promise.resolve().then(() => (B(), S)), void 0));
+      r || (await T(() => Promise.resolve().then(() => (W(), E)), void 0));
     if (n?.storage) {
       let { create_tonk_from_bytes_with_storage: r } = i,
         a = await r(t, n.storage.type === `indexeddb`, n.storage.namespace);
@@ -2211,25 +2297,25 @@ var J = class e {
     }
   }
   getPeerId() {
-    return V(this, U, `f`).getPeerId();
+    return G(this, q, `f`).getPeerId();
   }
   async connectWebsocket(e) {
     try {
-      await V(this, U, `f`).connectWebsocket(e);
+      await G(this, q, `f`).connectWebsocket(e);
     } catch (t) {
-      throw new wt(`Failed to connect to ${e}: ${t}`);
+      throw new Ot(`Failed to connect to ${e}: ${t}`);
     }
   }
   async isConnected() {
     try {
-      return await V(this, U, `f`).isConnected();
+      return await G(this, q, `f`).isConnected();
     } catch (e) {
       return (console.error(`🔌 [CORE-JS] isConnected() error:`, e), !1);
     }
   }
   async getConnectionState() {
     try {
-      return await V(this, U, `f`).getConnectionState();
+      return await G(this, q, `f`).getConnectionState();
     } catch (e) {
       return (
         console.error(`📡 [CORE-JS] getConnectionState() error:`, e),
@@ -2239,40 +2325,40 @@ var J = class e {
   }
   async forkToBytes(e) {
     try {
-      return await V(this, U, `f`).forkToBytes(e);
+      return await G(this, q, `f`).forkToBytes(e);
     } catch (e) {
-      throw new W(`Failed to serialize to bundle data: ${e}`);
+      throw new J(`Failed to serialize to bundle data: ${e}`);
     }
   }
   async toBytes(e) {
     try {
-      return await V(this, U, `f`).toBytes(e);
+      return await G(this, q, `f`).toBytes(e);
     } catch (e) {
-      throw new W(`Failed to serialize to bundle data: ${e}`);
+      throw new J(`Failed to serialize to bundle data: ${e}`);
     }
   }
   async createFile(e, t) {
     try {
-      await V(this, U, `f`).createFile(e, t);
+      await G(this, q, `f`).createFile(e, t);
     } catch (t) {
-      throw new G(`Failed to create file at ${e}: ${t}`);
+      throw new Y(`Failed to create file at ${e}: ${t}`);
     }
   }
   async createFileWithBytes(e, t, n) {
     try {
-      let r = typeof n == `string` ? Tt(n) : n;
-      await V(this, U, `f`).createFileWithBytes(e, t, r);
+      let r = typeof n == `string` ? At(n) : n;
+      await G(this, q, `f`).createFileWithBytes(e, t, r);
     } catch (t) {
-      throw new G(`Failed to create file at ${e}: ${t}`);
+      throw new Y(`Failed to create file at ${e}: ${t}`);
     }
   }
   async readFile(e) {
     try {
-      let t = await V(this, U, `f`).readFile(e);
-      if (t === null) throw new G(`File not found: ${e}`);
+      let t = await G(this, q, `f`).readFile(e);
+      if (t === null) throw new Y(`File not found: ${e}`);
       let n;
       return (
-        t.bytes && (n = Et(t.bytes)),
+        t.bytes && (n = jt(t.bytes)),
         {
           ...t,
           content:
@@ -2281,99 +2367,99 @@ var J = class e {
         }
       );
     } catch (t) {
-      throw t instanceof G ? t : new G(`Failed to read file at ${e}: ${t}`);
+      throw t instanceof Y ? t : new Y(`Failed to read file at ${e}: ${t}`);
     }
   }
   async setFile(e, t) {
     try {
-      return await V(this, U, `f`).setFile(e, t);
+      return await G(this, q, `f`).setFile(e, t);
     } catch (t) {
-      throw new G(`Failed to set file at ${e}: ${t}`);
+      throw new Y(`Failed to set file at ${e}: ${t}`);
     }
   }
   async setFileWithBytes(e, t, n) {
     try {
-      let r = typeof n == `string` ? Tt(n) : n;
-      return await V(this, U, `f`).setFileWithBytes(e, t, r);
+      let r = typeof n == `string` ? At(n) : n;
+      return await G(this, q, `f`).setFileWithBytes(e, t, r);
     } catch (t) {
-      throw new G(`Failed to set file at ${e}: ${t}`);
+      throw new Y(`Failed to set file at ${e}: ${t}`);
     }
   }
   async updateFile(e, t) {
     try {
-      return await V(this, U, `f`).updateFile(e, t);
+      return await G(this, q, `f`).updateFile(e, t);
     } catch (t) {
-      throw new G(`Failed to update file at ${e}: ${t}`);
+      throw new Y(`Failed to update file at ${e}: ${t}`);
     }
   }
   async patchFile(e, t, n) {
     try {
-      return await V(this, U, `f`).patchFile(e, t, n);
+      return await G(this, q, `f`).patchFile(e, t, n);
     } catch (t) {
-      throw new G(`Failed to patch file at ${e}: ${t}`);
+      throw new Y(`Failed to patch file at ${e}: ${t}`);
     }
   }
   async spliceText(e, t, n, r, i) {
     try {
-      return await V(this, U, `f`).spliceText(e, t, n, r, i);
+      return await G(this, q, `f`).spliceText(e, t, n, r, i);
     } catch (t) {
-      throw new G(`Failed to splice text at ${e}: ${t}`);
+      throw new Y(`Failed to splice text at ${e}: ${t}`);
     }
   }
   async deleteFile(e) {
     try {
-      return await V(this, U, `f`).deleteFile(e);
+      return await G(this, q, `f`).deleteFile(e);
     } catch (t) {
-      throw new G(`Failed to delete file at ${e}: ${t}`);
+      throw new Y(`Failed to delete file at ${e}: ${t}`);
     }
   }
   async createDirectory(e) {
     try {
-      await V(this, U, `f`).createDirectory(e);
+      await G(this, q, `f`).createDirectory(e);
     } catch (t) {
-      throw new G(`Failed to create directory at ${e}: ${t}`);
+      throw new Y(`Failed to create directory at ${e}: ${t}`);
     }
   }
   async listDirectory(e) {
     try {
-      return (await V(this, U, `f`).listDirectory(e)).map((e) => ({
+      return (await G(this, q, `f`).listDirectory(e)).map((e) => ({
         name: e.name,
         type: e.type,
         timestamps: e.timestamps,
         pointer: e.pointer,
       }));
     } catch (t) {
-      throw new G(`Failed to list directory at ${e}: ${t}`);
+      throw new Y(`Failed to list directory at ${e}: ${t}`);
     }
   }
   async exists(e) {
     try {
-      return await V(this, U, `f`).exists(e);
+      return await G(this, q, `f`).exists(e);
     } catch (t) {
-      throw new G(`Failed to check existence of ${e}: ${t}`);
+      throw new Y(`Failed to check existence of ${e}: ${t}`);
     }
   }
   async rename(e, t) {
     try {
-      return await V(this, U, `f`).rename(e, t);
+      return await G(this, q, `f`).rename(e, t);
     } catch (n) {
-      throw new G(`Failed to rename ${e} to ${t}: ${n}`);
+      throw new Y(`Failed to rename ${e} to ${t}: ${n}`);
     }
   }
   async getMetadata(e) {
     try {
-      let t = await V(this, U, `f`).getMetadata(e);
-      if (t === null) throw new G(`File or directory not found: ${e}`);
+      let t = await G(this, q, `f`).getMetadata(e);
+      if (t === null) throw new Y(`File or directory not found: ${e}`);
       return t;
     } catch (t) {
-      throw t instanceof G ? t : new G(`Failed to get metadata for ${e}: ${t}`);
+      throw t instanceof Y ? t : new Y(`Failed to get metadata for ${e}: ${t}`);
     }
   }
   async watchFile(e, t) {
     try {
-      let n = await V(this, U, `f`).watchDocument(e, (e) => {
+      let n = await G(this, q, `f`).watchDocument(e, (e) => {
         let n;
-        (e.bytes && (n = Et(e.bytes)),
+        (e.bytes && (n = jt(e.bytes)),
           t({
             ...e,
             content:
@@ -2381,37 +2467,37 @@ var J = class e {
             bytes: n,
           }));
       });
-      if (n === null) throw new G(`File not found: ${e}`);
+      if (n === null) throw new Y(`File not found: ${e}`);
       return n;
     } catch (t) {
-      throw t instanceof G
+      throw t instanceof Y
         ? t
-        : new G(`Failed to watch file at path ${e}: ${t}`);
+        : new Y(`Failed to watch file at path ${e}: ${t}`);
     }
   }
   async watchDirectory(e, t) {
     try {
-      let n = await V(this, U, `f`).watchDirectory(e, t);
-      if (n === null) throw new G(`Directory not found: ${e}`);
+      let n = await G(this, q, `f`).watchDirectory(e, t);
+      if (n === null) throw new Y(`Directory not found: ${e}`);
       return n;
     } catch (t) {
-      throw t instanceof G
+      throw t instanceof Y
         ? t
-        : new G(`Failed to watch directory at path ${e}: ${t}`);
+        : new Y(`Failed to watch directory at path ${e}: ${t}`);
     }
   }
   free() {
-    V(this, U, `f`).free();
+    G(this, q, `f`).free();
   }
 };
-U = new WeakMap();
-var Tt = (e) => {
+q = new WeakMap();
+var At = (e) => {
     let t = atob(e),
       n = new Uint8Array(t.length);
     for (let e = 0; e < t.length; e++) n[e] = t.charCodeAt(e);
     return n;
   },
-  Et = (e) => {
+  jt = (e) => {
     if (typeof e == `string`) return e;
     if (Array.isArray(e)) {
       let t = 8192,
@@ -2421,127 +2507,148 @@ var Tt = (e) => {
         n += String.fromCharCode(...i);
       }
       return btoa(n);
-    } else throw new G(`Unrecognized bytes type in readFile ${typeof e}`);
+    } else throw new Y(`Unrecognized bytes type in readFile ${typeof e}`);
   };
-B();
-var Dt = !1,
-  Y = null;
-async function Ot(e) {
-  if (!Dt)
+W();
+var Mt = !1,
+  Nt = null;
+async function Pt(e) {
+  if (!Mt)
     return (
-      Y ||
-      ((Y = (async () => {
+      Nt ||
+      ((Nt = (async () => {
         try {
-          (e?.wasmPath ? await z({ module_or_path: e.wasmPath }) : await z(),
-            (Dt = !0));
+          (e?.wasmPath ? await Et({ module_or_path: e.wasmPath }) : await Et(),
+            (Mt = !0));
         } catch (e) {
-          throw ((Y = null), e);
+          throw ((Nt = null), e);
         }
       })()),
-      Y)
+      Nt)
     );
 }
-async function kt() {
-  let e = _();
-  if (!e) return !1;
+async function Ft(e) {
+  let t = C(e);
+  if (!t) return !1;
   try {
-    return await e.tonk.isConnected();
-  } catch (e) {
+    return await t.tonk.isConnected();
+  } catch (t) {
     return (
       u.error(`performHealthCheck() failed`, {
-        error: e instanceof Error ? e.message : String(e),
+        launcherBundleId: e,
+        error: t instanceof Error ? t.message : String(t),
       }),
       !1
     );
   }
 }
-async function At() {
-  let e = _();
-  if (!e) {
-    u.error(`Cannot reconnect: no active bundle`);
-    return;
-  }
-  let t = e.wsUrl;
+async function It(e) {
+  let t = C(e);
   if (!t) {
-    u.error(`Cannot reconnect: wsUrl not stored`);
+    u.error(`Cannot reconnect: no active bundle`, { launcherBundleId: e });
     return;
   }
-  let n = ge();
-  (n >= 10 && _e(),
+  let n = t.wsUrl;
+  if (!n) {
+    u.error(`Cannot reconnect: wsUrl not stored`, { launcherBundleId: e });
+    return;
+  }
+  let r = ye(e);
+  (r >= 10 && be(e),
     u.debug(`Attempting to reconnect`, {
-      attempt: n,
+      launcherBundleId: e,
+      attempt: r,
       maxAttempts: 10,
-      wsUrl: t,
+      wsUrl: n,
     }),
-    await b({ type: `reconnecting`, attempt: n }));
+    await w({ type: `reconnecting`, launcherBundleId: e, attempt: r }));
   try {
     if (
-      (await e.tonk.connectWebsocket(t),
+      (await t.tonk.connectWebsocket(n),
       await new Promise((e) => setTimeout(e, 1e3)),
-      await e.tonk.isConnected())
+      await t.tonk.isConnected())
     )
-      (he(!0),
-        _e(),
-        u.info(`Reconnection successful`),
-        await b({ type: `reconnected` }),
-        await jt());
+      (ve(e, !0),
+        be(e),
+        u.info(`Reconnection successful`, { launcherBundleId: e }),
+        await w({ type: `reconnected`, launcherBundleId: e }),
+        await Lt(e));
     else throw Error(`Connection check failed after reconnect attempt`);
-  } catch (e) {
+  } catch (t) {
     u.warn(`Reconnection failed`, {
-      error: e instanceof Error ? e.message : String(e),
-      attempt: n,
+      launcherBundleId: e,
+      error: t instanceof Error ? t.message : String(t),
+      attempt: r,
     });
-    let t = Math.min(1e3 * 2 ** (n - 1), 3e4);
+    let n = Math.min(1e3 * 2 ** (r - 1), 3e4);
     (u.debug(`Scheduling next reconnect attempt`, {
-      delayMs: t,
-      nextAttempt: n + 1,
+      launcherBundleId: e,
+      delayMs: n,
+      nextAttempt: r + 1,
     }),
-      setTimeout(At, t));
+      setTimeout(() => It(e), n));
   }
 }
-async function jt() {
-  let e = Se();
+async function Lt(e) {
+  let t = Te(e);
   (u.debug(`Re-establishing watchers after reconnection`, {
-    watcherCount: e.length,
+    launcherBundleId: e,
+    watcherCount: t.length,
   }),
-    u.debug(`Watcher re-establishment complete`, { watcherCount: e.length }),
-    await b({ type: `watchersReestablished`, count: e.length }));
+    u.debug(`Watcher re-establishment complete`, {
+      launcherBundleId: e,
+      watcherCount: t.length,
+    }),
+    await w({
+      type: `watchersReestablished`,
+      launcherBundleId: e,
+      count: t.length,
+    }));
 }
-function X() {
-  let e = _();
-  if (!e) {
-    u.warn(`Cannot start health monitoring: no active bundle`);
+function Rt(e) {
+  let t = C(e);
+  if (!t) {
+    u.warn(`Cannot start health monitoring: no active bundle`, {
+      launcherBundleId: e,
+    });
     return;
   }
-  (e.healthCheckInterval && clearInterval(e.healthCheckInterval),
-    u.debug(`Starting health monitoring`, { intervalMs: r }));
-  let t = setInterval(async () => {
-    let e = await kt(),
-      n = _();
-    if (!n) {
-      clearInterval(t);
+  (t.healthCheckInterval && clearInterval(t.healthCheckInterval),
+    u.debug(`Starting health monitoring`, {
+      launcherBundleId: e,
+      intervalMs: r,
+    }));
+  let n = setInterval(async () => {
+    let t = await Ft(e),
+      r = C(e);
+    if (!r) {
+      clearInterval(n);
       return;
     }
-    !e && n.connectionHealthy
-      ? (he(!1),
-        u.warn(`Connection lost, starting reconnection attempts`),
-        await b({ type: `disconnected` }),
-        At())
-      : e &&
-        !n.connectionHealthy &&
-        (he(!0), _e(), u.debug(`Connection health restored`));
+    !t && r.connectionHealthy
+      ? (ve(e, !1),
+        u.warn(`Connection lost, starting reconnection attempts`, {
+          launcherBundleId: e,
+        }),
+        await w({ type: `disconnected`, launcherBundleId: e }),
+        It(e))
+      : t &&
+        !r.connectionHealthy &&
+        (ve(e, !0),
+        be(e),
+        u.debug(`Connection health restored`, { launcherBundleId: e }));
   }, r);
-  ve(t);
+  xe(e, n);
 }
-function Z(e, t = `http://localhost:8081`) {
+function zt(e, t = `http://localhost:8081`) {
   return e.networkUris && e.networkUris.length > 0
     ? e.networkUris[0].replace(/^http/, `ws`)
     : t.replace(/^http/, `ws`);
 }
 var Q = null,
-  Mt = !1;
-async function Nt() {
-  if (Mt) {
+  Bt = !1;
+async function Vt() {
+  if (Bt) {
     u.debug(`WASM already initialized`);
     return;
   }
@@ -2551,13 +2658,13 @@ async function Nt() {
       (Q = (async () => {
         try {
           let e = `/tonk_core_bg.wasm?t=${Date.now()}`;
-          (await Ot({ wasmPath: e }),
-            (Mt = !0),
+          (await Pt({ wasmPath: e }),
+            (Bt = !0),
             u.info(`WASM initialization completed`));
         } catch (e) {
           throw (
             (Q = null),
-            (Mt = !1),
+            (Bt = !1),
             u.error(`WASM initialization failed`, {
               error: e instanceof Error ? e.message : String(e),
             }),
@@ -2620,59 +2727,67 @@ async function $(e) {
     })
   );
 }
-async function Pt() {
+async function Ht() {
   try {
-    let e = await ie(),
-      t = await ae(),
-      n = await oe(),
-      r = await ce();
-    if (!e || !t) {
+    let e = await ce(),
+      t = await ie(),
+      n = await ae(),
+      r = await oe(),
+      i = await se();
+    if (!t || !n) {
       u.debug(`No cached state found, waiting for initialization message`, {
-        hasSlug: !!e,
-        hasBundle: !!t,
+        hasSlug: !!t,
+        hasBundle: !!n,
       });
       return;
     }
+    let a = e || i;
+    if (!a) {
+      u.debug(
+        `No launcher bundle ID found in cache, waiting for initialization message`,
+      );
+      return;
+    }
     (u.info(`Auto-initializing from cache`, {
-      slug: e,
-      bundleSize: t.length,
-      namespace: r,
+      slug: t,
+      bundleSize: n.length,
+      launcherBundleId: a,
     }),
-      await Nt());
-    let i = await (await q.fromBytes(t)).getManifest();
-    u.debug(`Bundle and manifest restored from cache`, { rootId: i.rootId });
-    let a = r ? { type: `indexeddb`, namespace: r } : { type: `indexeddb` },
-      o = await J.fromBytes(t, { storage: a });
-    u.debug(`TonkCore created from cached bundle`, { namespace: r });
-    let s = n || Z(i);
-    (!n && s && (await m(s)),
+      await Vt());
+    let o = await (await Z.fromBytes(n)).getManifest();
+    u.debug(`Bundle and manifest restored from cache`, { rootId: o.rootId });
+    let s = { type: `indexeddb`, namespace: a },
+      c = await kt.fromBytes(n, { storage: s });
+    u.debug(`TonkCore created from cached bundle`, { namespace: a });
+    let l = r || zt(o);
+    (!r && l && (await h(l)),
       u.debug(`Connecting to websocket...`, {
-        wsUrl: s,
-        localRootId: i.rootId,
+        wsUrl: l,
+        localRootId: o.rootId,
       }),
-      await o.connectWebsocket(s),
+      await c.connectWebsocket(l),
       u.debug(`Websocket connected`),
-      await $(o),
+      await $(c),
       u.info(`Auto-initialization complete`),
-      y({
+      x(a, {
         status: `active`,
-        bundleId: i.rootId,
-        ...(r && { launcherBundleId: r }),
-        tonk: o,
-        manifest: i,
-        appSlug: e,
-        wsUrl: s,
+        bundleId: o.rootId,
+        launcherBundleId: a,
+        tonk: c,
+        manifest: o,
+        appSlug: t,
+        wsUrl: l,
         healthCheckInterval: null,
         watchers: new Map(),
         connectionHealthy: !0,
         reconnectAttempts: 0,
       }),
-      X());
+      y(a),
+      Rt(a));
   } catch (e) {
     (u.error(`Auto-initialization failed`, {
       error: e instanceof Error ? e.message : String(e),
     }),
-      y({ status: `idle` }),
       await le(),
       (await self.clients.matchAll()).forEach((e) => {
         e.postMessage({
@@ -2683,113 +2798,169 @@ async function Pt() {
       }));
   }
 }
-async function Ft(e, t, n, r, i) {
-  u.debug(`Loading new bundle`, {
+async function Ut(e, t, n, r, i) {
+  u.debug(`Loading bundle`, {
     byteLength: e.length,
     serverUrl: t,
-    hasCachedManifest: !!r,
-    launcherBundleId: i,
+    hasCachedManifest: !!i,
+    launcherBundleId: n,
   });
   try {
-    let n = g();
-    await Nt();
+    let r = b(n);
+    if (r?.status === `active`)
+      return (
+        u.debug(`Bundle already loaded, skipping reload`, {
+          launcherBundleId: n,
+          bundleId: r.bundleId,
+        }),
+        y(n),
+        await _(n),
+        { success: !0, skipped: !0 }
+      );
+    if (r?.status === `loading`)
+      return (
+        u.debug(`Bundle is currently loading, waiting...`, {
+          launcherBundleId: n,
+        }),
+        await r.promise,
+        y(n),
+        await _(n),
+        { success: !0, skipped: !0 }
+      );
+    await Vt();
     let a;
-    if (r)
+    if (i)
       (u.info(`Using cached manifest, skipping Bundle.fromBytes`, {
-        rootId: r.rootId,
+        rootId: i.rootId,
       }),
-        (a = r));
+        (a = i));
     else {
       u.debug(`No cached manifest, parsing bundle`, { byteLength: e.length });
-      let t = await q.fromBytes(e);
+      let t = await Z.fromBytes(e);
       ((a = await t.getManifest()),
         t.free(),
         u.debug(`Bundle manifest extracted`, { rootId: a.rootId }));
     }
-    if (n.status === `active` && i && n.launcherBundleId === i)
-      return (
-        u.debug(
-          `Bundle already loaded with same launcherBundleId, skipping reload`,
-          { launcherBundleId: i, rootId: a.rootId },
-        ),
-        { success: !0, skipped: !0 }
-      );
-    u.debug(`Creating new TonkCore from bundle bytes`, { launcherBundleId: i });
-    let o = i ? { type: `indexeddb`, namespace: i } : { type: `indexeddb` },
-      s = await J.fromBytes(e, { storage: o });
-    u.info(`New TonkCore created successfully`, {
+    let o,
+      s = new Promise((e) => {
+        o = e;
+      });
+    (x(n, {
+      status: `loading`,
+      launcherBundleId: n,
+      bundleId: a.rootId,
+      promise: s,
+    }),
+      u.debug(`Creating new TonkCore from bundle bytes`, {
+        launcherBundleId: n,
+      }));
+    let c = { type: `indexeddb`, namespace: n },
+      l = await kt.fromBytes(e, { storage: c });
+    u.debug(`New TonkCore created successfully`, {
       rootId: a.rootId,
-      namespace: i,
+      namespace: n,
     });
-    let c = Z(a, t),
-      l = new URLSearchParams(self.location.search).get(`bundle`);
-    if (l)
+    let d = zt(a, t),
+      f = new URLSearchParams(self.location.search).get(`bundle`);
+    if (f)
       try {
-        let e = atob(l),
+        let e = atob(f),
           t = JSON.parse(e);
-        t.wsUrl && (c = t.wsUrl);
+        t.wsUrl && (d = t.wsUrl);
       } catch (e) {
         u.warn(`Could not parse bundle config for wsUrl`, {
           error: e instanceof Error ? e.message : String(e),
         });
       }
-    (u.debug(`Determined websocket URL`, { wsUrl: c, serverUrl: t }),
-      await m(c),
+    (u.debug(`Determined websocket URL`, { wsUrl: d, serverUrl: t }),
+      await h(d),
       u.debug(`Connecting new tonk to websocket`, {
-        wsUrl: c,
+        wsUrl: d,
         localRootId: a.rootId,
       }),
-      c &&
-        (await s.connectWebsocket(c),
+      d &&
+        (await l.connectWebsocket(d),
         u.debug(`Websocket connection established`),
-        await $(s),
+        await $(l),
         u.debug(`PathIndex sync complete after loadBundle`)));
-    let d = g(),
-      f = d.status === `active` ? d.appSlug : a.entrypoints?.[0] || `app`;
+    let p = a.entrypoints?.[0] || `app`;
     return (
-      y({
+      x(n, {
         status: `active`,
         bundleId: a.rootId,
-        ...(i && { launcherBundleId: i }),
-        tonk: s,
+        launcherBundleId: n,
+        tonk: l,
         manifest: a,
-        appSlug: f,
-        wsUrl: c,
+        appSlug: p,
+        wsUrl: d,
         healthCheckInterval: null,
         watchers: new Map(),
         connectionHealthy: !0,
         reconnectAttempts: 0,
       }),
-      X(),
-      await p(e),
-      i && (await se(i)),
+      y(n),
+      await _(n),
+      Rt(n),
+      await m(e),
+      await g(n),
       u.debug(`Bundle bytes and namespace persisted to cache`, {
-        namespace: i,
+        namespace: n,
       }),
-      u.info(`Bundle loaded successfully`, { rootId: a.rootId }),
+      o(),
+      u.info(`Bundle loaded successfully`, {
+        rootId: a.rootId,
+        launcherBundleId: n,
+      }),
       { success: !0 }
     );
   } catch (e) {
     return (
       u.error(`Failed to load bundle`, {
         error: e instanceof Error ? e.message : String(e),
+        launcherBundleId: n,
       }),
-      y({ status: `error`, error: e instanceof Error ? e : Error(String(e)) }),
+      x(n, {
+        status: `error`,
+        launcherBundleId: n,
+        error: e instanceof Error ? e : Error(String(e)),
+      }),
       { success: !1, error: e instanceof Error ? e.message : String(e) }
     );
   }
 }
-async function It(e) {
-  u.debug(`Loading new bundle`, {
-    byteLength: e.bundleBytes.byteLength,
-    serverUrl: e.serverUrl,
-    hasCachedManifest: !!e.manifest,
-    launcherBundleId: e.launcherBundleId,
-  });
+async function Wt(e) {
+  u.debug(`Unloading bundle`, { launcherBundleId: e });
+  let t = he(e);
+  return (
+    t
+      ? (u.info(`Bundle unloaded successfully`, { launcherBundleId: e }),
+        me() === null && (await le()))
+      : u.warn(`Bundle not found for unload`, { launcherBundleId: e }),
+    t
+  );
+}
+async function Gt(e) {
+  if (
+    (u.debug(`Loading new bundle`, {
+      byteLength: e.bundleBytes.byteLength,
+      serverUrl: e.serverUrl,
+      hasCachedManifest: !!e.manifest,
+      launcherBundleId: e.launcherBundleId,
+    }),
+    !e.launcherBundleId)
+  ) {
+    w({
+      type: `loadBundle`,
+      id: e.id,
+      success: !1,
+      error: `launcherBundleId is required`,
+    });
+    return;
+  }
   let t = e.serverUrl || `http://localhost:8081`,
     n = new Uint8Array(e.bundleBytes),
-    r = await Ft(n, t, e.id, e.manifest, e.launcherBundleId);
-  b({
+    r = await Ut(n, t, e.launcherBundleId, e.id, e.manifest);
+  w({
     type: `loadBundle`,
     id: e.id,
     success: r.success,
@@ -2797,20 +2968,36 @@ async function It(e) {
     error: r.error,
   });
 }
-async function Lt(e) {
-  u.debug(`Converting tonk to bytes`);
+async function Kt(e) {
+  if (
+    (u.debug(`Unloading bundle`, { launcherBundleId: e.launcherBundleId }),
+    !e.launcherBundleId)
+  ) {
+    w({
+      type: `unloadBundle`,
+      id: e.id,
+      success: !1,
+      error: `launcherBundleId is required`,
+    });
+    return;
+  }
+  let t = await Wt(e.launcherBundleId);
+  w({ type: `unloadBundle`, id: e.id, success: t });
+}
+async function qt(e) {
+  u.debug(`Converting tonk to bytes`, { launcherBundleId: e.launcherBundleId });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     let n = await t.tonk.toBytes(),
       r = t.manifest.rootId;
     (u.debug(`Tonk converted to bytes`, { byteLength: n.length, rootId: r }),
-      b({ type: `toBytes`, id: e.id, success: !0, data: n, rootId: r }));
+      w({ type: `toBytes`, id: e.id, success: !0, data: n, rootId: r }));
   } catch (t) {
     (u.error(`Failed to convert tonk to bytes`, {
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `toBytes`,
         id: e.id,
         success: !1,
@@ -2818,20 +3005,20 @@ async function Lt(e) {
       }));
   }
 }
-async function Rt(e) {
-  u.debug(`Forking tonk to bytes`);
+async function Jt(e) {
+  u.debug(`Forking tonk to bytes`, { launcherBundleId: e.launcherBundleId });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     let n = await t.tonk.forkToBytes(),
-      r = (await (await q.fromBytes(n)).getManifest()).rootId;
+      r = (await (await Z.fromBytes(n)).getManifest()).rootId;
     (u.debug(`Tonk forked to bytes`, { byteLength: n.length, rootId: r }),
-      b({ type: `forkToBytes`, id: e.id, success: !0, data: n, rootId: r }));
+      w({ type: `forkToBytes`, id: e.id, success: !0, data: n, rootId: r }));
   } catch (t) {
     (u.error(`Failed to fork tonk to bytes`, {
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `forkToBytes`,
         id: e.id,
         success: !1,
@@ -2839,23 +3026,26 @@ async function Rt(e) {
       }));
   }
 }
-async function zt(e) {
-  u.debug(`Listing directory`, { path: e.path });
+async function Yt(e) {
+  u.debug(`Listing directory`, {
+    path: e.path,
+    launcherBundleId: e.launcherBundleId,
+  });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     let n = await t.tonk.listDirectory(e.path);
     (u.debug(`Directory listed`, {
       path: e.path,
       fileCount: Array.isArray(n) ? n.length : `unknown`,
     }),
-      b({ type: `listDirectory`, id: e.id, success: !0, data: n }));
+      w({ type: `listDirectory`, id: e.id, success: !0, data: n }));
   } catch (t) {
     (u.error(`Failed to list directory`, {
       path: e.path,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `listDirectory`,
         id: e.id,
         success: !1,
@@ -2863,20 +3053,23 @@ async function zt(e) {
       }));
   }
 }
-async function Bt(e) {
-  u.debug(`Reading file`, { path: e.path });
+async function Xt(e) {
+  u.debug(`Reading file`, {
+    path: e.path,
+    launcherBundleId: e.launcherBundleId,
+  });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     let n = await t.tonk.readFile(e.path);
     (u.debug(`File read successfully`, { path: e.path }),
-      b({ type: `readFile`, id: e.id, success: !0, data: n }));
+      w({ type: `readFile`, id: e.id, success: !0, data: n }));
   } catch (t) {
     (u.error(`Failed to read file`, {
       path: e.path,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `readFile`,
         id: e.id,
         success: !1,
@@ -2884,14 +3077,15 @@ async function Bt(e) {
       }));
   }
 }
-async function Vt(e) {
+async function Zt(e) {
   u.debug(`Writing file`, {
     path: e.path,
     create: e.create,
     hasBytes: !!e.content.bytes,
+    launcherBundleId: e.launcherBundleId,
   });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     let n = e.content.content;
     (e.create
@@ -2904,14 +3098,14 @@ async function Vt(e) {
           ? await t.tonk.setFileWithBytes(e.path, n, e.content.bytes)
           : await t.tonk.setFile(e.path, n)),
       u.debug(`File write completed`, { path: e.path }),
-      b({ type: `writeFile`, id: e.id, success: !0 }));
+      w({ type: `writeFile`, id: e.id, success: !0 }));
   } catch (t) {
     (u.error(`Failed to write file`, {
       path: e.path,
       create: e.create,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `writeFile`,
         id: e.id,
         success: !1,
@@ -2919,20 +3113,23 @@ async function Vt(e) {
       }));
   }
 }
-async function Ht(e) {
-  u.debug(`Deleting file`, { path: e.path });
+async function Qt(e) {
+  u.debug(`Deleting file`, {
+    path: e.path,
+    launcherBundleId: e.launcherBundleId,
+  });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     (await t.tonk.deleteFile(e.path),
       u.debug(`File deleted successfully`, { path: e.path }),
-      b({ type: `deleteFile`, id: e.id, success: !0 }));
+      w({ type: `deleteFile`, id: e.id, success: !0 }));
   } catch (t) {
     (u.error(`Failed to delete file`, {
       path: e.path,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `deleteFile`,
         id: e.id,
         success: !1,
@@ -2940,24 +3137,25 @@ async function Ht(e) {
       }));
   }
 }
-async function Ut(e) {
+async function $t(e) {
   u.debug(`Renaming file or directory`, {
     oldPath: e.oldPath,
     newPath: e.newPath,
+    launcherBundleId: e.launcherBundleId,
   });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     (await t.tonk.rename(e.oldPath, e.newPath),
       u.debug(`Rename completed`, { oldPath: e.oldPath, newPath: e.newPath }),
-      b({ type: `rename`, id: e.id, success: !0 }));
+      w({ type: `rename`, id: e.id, success: !0 }));
   } catch (t) {
     (u.error(`Failed to rename`, {
       oldPath: e.oldPath,
       newPath: e.newPath,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `rename`,
         id: e.id,
         success: !1,
@@ -2965,20 +3163,23 @@ async function Ut(e) {
       }));
   }
 }
-async function Wt(e) {
-  u.debug(`Checking file existence`, { path: e.path });
+async function en(e) {
+  u.debug(`Checking file existence`, {
+    path: e.path,
+    launcherBundleId: e.launcherBundleId,
+  });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     let n = await t.tonk.exists(e.path);
     (u.debug(`File existence check completed`, { path: e.path, exists: n }),
-      b({ type: `exists`, id: e.id, success: !0, data: n }));
+      w({ type: `exists`, id: e.id, success: !0, data: n }));
   } catch (t) {
     (u.error(`Failed to check file existence`, {
       path: e.path,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `exists`,
         id: e.id,
         success: !1,
@@ -2986,21 +3187,24 @@ async function Wt(e) {
       }));
   }
 }
-async function Gt(e) {
-  u.debug(`Updating file with smart diff`, { path: e.path });
+async function tn(e) {
+  u.debug(`Updating file with smart diff`, {
+    path: e.path,
+    launcherBundleId: e.launcherBundleId,
+  });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     let n = e.content,
       r = await t.tonk.updateFile(e.path, n);
     (u.debug(`File update completed`, { path: e.path, changed: r }),
-      b({ type: `updateFile`, id: e.id, success: !0, data: r }));
+      w({ type: `updateFile`, id: e.id, success: !0, data: r }));
   } catch (t) {
     (u.error(`Failed to update file`, {
       path: e.path,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `updateFile`,
         id: e.id,
         success: !1,
@@ -3008,21 +3212,25 @@ async function Gt(e) {
       }));
   }
 }
-async function Kt(e) {
-  u.debug(`Patching file`, { path: e.path, jsonPath: e.jsonPath });
+async function nn(e) {
+  u.debug(`Patching file`, {
+    path: e.path,
+    jsonPath: e.jsonPath,
+    launcherBundleId: e.launcherBundleId,
+  });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     let n = e.value,
       r = await t.tonk.patchFile(e.path, e.jsonPath, n);
     (u.debug(`File patch completed`, { path: e.path, result: r }),
-      b({ type: `patchFile`, id: e.id, success: !0, data: r }));
+      w({ type: `patchFile`, id: e.id, success: !0, data: r }));
   } catch (t) {
     (u.error(`Failed to patch file`, {
       path: e.path,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `patchFile`,
         id: e.id,
         success: !1,
@@ -3030,28 +3238,34 @@ async function Kt(e) {
       }));
   }
 }
-async function qt(e) {
+async function rn(e) {
   u.debug(`Handling VFS init message`, {
     manifestSize: e.manifest.byteLength,
     wsUrl: e.wsUrl,
+    launcherBundleId: e.launcherBundleId,
   });
   try {
-    let e = g();
-    if (e.status === `active`) {
-      (u.debug(`Tonk already initialized`), b({ type: `init`, success: !0 }));
+    let t = b(e.launcherBundleId);
+    if (t?.status === `active`) {
+      (u.debug(`Tonk already initialized for bundle`, {
+        launcherBundleId: e.launcherBundleId,
+      }),
+        w({ type: `init`, success: !0 }));
       return;
     }
-    if (e.status === `loading`) {
-      u.debug(`Tonk is loading, waiting for completion`);
+    if (t?.status === `loading`) {
+      u.debug(`Tonk is loading, waiting for completion`, {
+        launcherBundleId: e.launcherBundleId,
+      });
       try {
-        (await e.promise,
+        (await t.promise,
           u.debug(`Tonk loading completed`),
-          b({ type: `init`, success: !0 }));
+          w({ type: `init`, success: !0 }));
       } catch (e) {
         (u.error(`Tonk loading failed`, {
           error: e instanceof Error ? e.message : String(e),
         }),
-          b({
+          w({
             type: `init`,
             success: !1,
             error: e instanceof Error ? e.message : String(e),
@@ -3059,52 +3273,58 @@ async function qt(e) {
       }
       return;
     }
-    if (e.status === `error`) {
+    if (t?.status === `error`) {
       (u.error(`Tonk initialization failed previously`, {
-        error: e.error.message,
+        error: t.error.message,
       }),
-        b({ type: `init`, success: !1, error: e.error.message }));
+        w({ type: `init`, success: !1, error: t.error.message }));
       return;
     }
-    (u.warn(`Tonk is uninitialized, this is unexpected`),
-      b({ type: `init`, success: !1, error: `Tonk not initialized` }));
+    (u.warn(`Tonk is uninitialized, this is unexpected`, {
+      launcherBundleId: e.launcherBundleId,
+    }),
+      w({ type: `init`, success: !1, error: `Tonk not initialized` }));
   } catch (e) {
     (u.error(`Failed to handle init message`, {
       error: e instanceof Error ? e.message : String(e),
     }),
-      b({
+      w({
         type: `init`,
         success: !1,
         error: e instanceof Error ? e.message : String(e),
       }));
   }
 }
-async function Jt(e) {
+async function an(e) {
   u.debug(`Initializing from URL`, {
     manifestUrl: e.manifestUrl,
     wasmUrl: e.wasmUrl,
+    launcherBundleId: e.launcherBundleId,
   });
   try {
     let t = e.manifestUrl || `http://localhost:8081/.manifest.tonk`;
-    (await Nt(), u.debug(`Fetching manifest from URL`, { manifestUrl: t }));
+    (await Vt(), u.debug(`Fetching manifest from URL`, { manifestUrl: t }));
     let n = await fetch(t),
       r = new Uint8Array(await n.arrayBuffer());
     u.debug(`Manifest bytes loaded`, { byteLength: r.length });
-    let i = await (await q.fromBytes(r)).getManifest();
+    let i = await (await Z.fromBytes(r)).getManifest();
     u.debug(`Bundle and manifest created`);
-    let a = e.wsUrl || Z(i);
+    let a = e.wsUrl || zt(i);
     u.debug(`Creating TonkCore from manifest bytes`);
-    let o = await J.fromBytes(r, { storage: { type: `indexeddb` } });
+    let o = await kt.fromBytes(r, {
+      storage: { type: `indexeddb`, namespace: e.launcherBundleId },
+    });
     (u.debug(`TonkCore created`),
-      await m(a),
+      await h(a),
       u.debug(`Connecting to websocket`, { wsUrl: a }),
       await o.connectWebsocket(a),
       u.debug(`Websocket connection established`),
       await $(o),
       u.debug(`PathIndex sync complete`),
-      y({
+      x(e.launcherBundleId, {
         status: `active`,
         bundleId: i.rootId,
+        launcherBundleId: e.launcherBundleId,
         tonk: o,
         manifest: i,
         appSlug: i.entrypoints?.[0] || `app`,
@@ -3114,17 +3334,24 @@ async function Jt(e) {
         connectionHealthy: !0,
         reconnectAttempts: 0,
       }),
-      X(),
-      await p(r),
+      y(e.launcherBundleId),
+      Rt(e.launcherBundleId),
+      await m(r),
+      await g(e.launcherBundleId),
+      await _(e.launcherBundleId),
       u.debug(`Bundle bytes persisted`),
       u.info(`Initialized from URL successfully`),
-      b({ type: `initializeFromUrl`, id: e.id, success: !0 }));
+      w({ type: `initializeFromUrl`, id: e.id, success: !0 }));
   } catch (t) {
     (u.error(`Failed to initialize from URL`, {
       error: t instanceof Error ? t.message : String(t),
     }),
-      y({ status: `error`, error: t instanceof Error ? t : Error(String(t)) }),
-      b({
+      x(e.launcherBundleId, {
+        status: `error`,
+        launcherBundleId: e.launcherBundleId,
+        error: t instanceof Error ? t : Error(String(t)),
+      }),
+      w({
         type: `initializeFromUrl`,
         id: e.id,
         success: !1,
@@ -3132,21 +3359,24 @@ async function Jt(e) {
       }));
   }
 }
-async function Yt(e) {
+async function on(e) {
   u.debug(`Initializing from bytes`, {
     byteLength: e.bundleBytes.byteLength,
     serverUrl: e.serverUrl,
+    launcherBundleId: e.launcherBundleId,
   });
   try {
     let t = e.serverUrl || `http://localhost:8081`;
-    (u.debug(`Using server URL`, { serverUrl: t }), await Nt());
+    (u.debug(`Using server URL`, { serverUrl: t }), await Vt());
     let n = new Uint8Array(e.bundleBytes);
     u.debug(`Creating bundle from bytes`, { byteLength: n.length });
-    let r = await (await q.fromBytes(n)).getManifest();
+    let r = await (await Z.fromBytes(n)).getManifest();
     u.debug(`Bundle and manifest created`, { rootId: r.rootId });
-    let i = e.wsUrl || Z(r, t);
+    let i = e.wsUrl || zt(r, t);
     u.debug(`Creating TonkCore from bundle bytes`);
-    let a = await J.fromBytes(n, { storage: { type: `indexeddb` } });
+    let a = await kt.fromBytes(n, {
+      storage: { type: `indexeddb`, namespace: e.launcherBundleId },
+    });
     (u.debug(`TonkCore created`),
       u.debug(`Connecting to websocket`, { wsUrl: i }),
       i &&
@@ -3154,9 +3384,10 @@ async function Yt(e) {
         u.debug(`Websocket connection established`),
         await $(a),
         u.debug(`PathIndex sync complete`)),
-      y({
+      x(e.launcherBundleId, {
         status: `active`,
         bundleId: r.rootId,
+        launcherBundleId: e.launcherBundleId,
         tonk: a,
         manifest: r,
         appSlug: r.entrypoints?.[0] || `app`,
@@ -3166,17 +3397,24 @@ async function Yt(e) {
         connectionHealthy: !0,
         reconnectAttempts: 0,
       }),
-      X(),
-      await p(n),
+      y(e.launcherBundleId),
+      Rt(e.launcherBundleId),
+      await m(n),
+      await g(e.launcherBundleId),
+      await _(e.launcherBundleId),
       u.debug(`Bundle bytes persisted`),
       u.info(`Initialized from bytes successfully`),
-      b({ type: `initializeFromBytes`, id: e.id, success: !0 }));
+      w({ type: `initializeFromBytes`, id: e.id, success: !0 }));
   } catch (t) {
     (u.error(`Failed to initialize from bytes`, {
       error: t instanceof Error ? t.message : String(t),
     }),
-      y({ status: `error`, error: t instanceof Error ? t : Error(String(t)) }),
-      b({
+      x(e.launcherBundleId, {
+        status: `error`,
+        launcherBundleId: e.launcherBundleId,
+        error: t instanceof Error ? t : Error(String(t)),
+      }),
+      w({
         type: `initializeFromBytes`,
         id: e.id,
         success: !1,
@@ -3184,26 +3422,26 @@ async function Yt(e) {
       }));
   }
 }
-async function Xt(e) {
+async function sn(e) {
   (u.debug(`Getting server URL`),
-    b({
+    w({
       type: `getServerUrl`,
       id: e.id,
       success: !0,
       data: `http://localhost:8081`,
     }));
 }
-async function Zt(e) {
-  u.debug(`Getting manifest`);
+async function cn(e) {
+  u.debug(`Getting manifest`, { launcherBundleId: e.launcherBundleId });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
-    b({ type: `getManifest`, id: e.id, success: !0, data: t.manifest });
+    w({ type: `getManifest`, id: e.id, success: !0, data: t.manifest });
   } catch (t) {
     (u.error(`Failed to get manifest`, {
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `getManifest`,
         id: e.id,
         success: !1,
@@ -3211,34 +3449,39 @@ async function Zt(e) {
       }));
   }
 }
-async function Qt() {
-  let e = g();
-  (u.debug(`Ping received`),
-    b({ type: `ready`, status: e.status, needsBundle: e.status !== `active` }));
+async function ln() {
+  (u.debug(`Ping received`), w({ type: `ready`, needsBundle: !0 }));
 }
-async function $t(e) {
-  (g().status === `active` && me(e.slug),
+async function un(e) {
+  (_e(e.launcherBundleId, e.slug),
     await re(e.slug),
-    u.debug(`App slug set and persisted`, { slug: e.slug }));
+    u.debug(`App slug set and persisted`, {
+      slug: e.slug,
+      launcherBundleId: e.launcherBundleId,
+    }));
 }
-async function en(e) {
-  u.debug(`Starting file watch`, { path: e.path, watchId: e.id });
+async function dn(e) {
+  u.debug(`Starting file watch`, {
+    path: e.path,
+    watchId: e.id,
+    launcherBundleId: e.launcherBundleId,
+  });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     let n = await t.tonk.watchFile(e.path, (t) => {
       (u.debug(`File change detected`, { watchId: e.id, path: e.path }),
-        b({ type: `fileChanged`, watchId: e.id, documentData: t }));
+        w({ type: `fileChanged`, watchId: e.id, documentData: t }));
     });
-    (n && ye(e.id, n),
+    (n && Se(e.launcherBundleId, e.id, n),
       u.debug(`File watch started`, { path: e.path, watchId: e.id }),
-      b({ type: `watchFile`, id: e.id, success: !0 }));
+      w({ type: `watchFile`, id: e.id, success: !0 }));
   } catch (t) {
     (u.error(`Failed to start file watch`, {
       path: e.path,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `watchFile`,
         id: e.id,
         success: !1,
@@ -3246,21 +3489,24 @@ async function en(e) {
       }));
   }
 }
-async function tn(e) {
-  u.debug(`Stopping file watch`, { watchId: e.id });
+async function fn(e) {
+  u.debug(`Stopping file watch`, {
+    watchId: e.id,
+    launcherBundleId: e.launcherBundleId,
+  });
   try {
-    (xe(e.id)
+    (we(e.launcherBundleId, e.id)
       ? (u.debug(`Found watcher, stopping it`, { watchId: e.id }),
-        be(e.id),
+        Ce(e.launcherBundleId, e.id),
         u.debug(`File watch stopped`, { watchId: e.id }))
       : u.debug(`No watcher found for ID`, { watchId: e.id }),
-      b({ type: `unwatchFile`, id: e.id, success: !0 }));
+      w({ type: `unwatchFile`, id: e.id, success: !0 }));
   } catch (t) {
     (u.error(`Failed to stop file watch`, {
       watchId: e.id,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `unwatchFile`,
         id: e.id,
         success: !1,
@@ -3268,29 +3514,33 @@ async function tn(e) {
       }));
   }
 }
-async function nn(e) {
-  u.debug(`Starting directory watch`, { path: e.path, watchId: e.id });
+async function pn(e) {
+  u.debug(`Starting directory watch`, {
+    path: e.path,
+    watchId: e.id,
+    launcherBundleId: e.launcherBundleId,
+  });
   try {
-    let t = v();
+    let t = S(e.launcherBundleId);
     if (!t) throw Error(`Tonk not initialized`);
     let n = await t.tonk.watchDirectory(e.path, (t) => {
       (u.debug(`Directory change detected`, { watchId: e.id, path: e.path }),
-        b({
+        w({
           type: `directoryChanged`,
           watchId: e.id,
           path: e.path,
           changeData: t,
         }));
     });
-    (n && ye(e.id, n),
+    (n && Se(e.launcherBundleId, e.id, n),
       u.debug(`Directory watch started`, { path: e.path, watchId: e.id }),
-      b({ type: `watchDirectory`, id: e.id, success: !0 }));
+      w({ type: `watchDirectory`, id: e.id, success: !0 }));
   } catch (t) {
     (u.error(`Failed to start directory watch`, {
       path: e.path,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `watchDirectory`,
         id: e.id,
         success: !1,
@@ -3298,21 +3548,24 @@ async function nn(e) {
       }));
   }
 }
-async function rn(e) {
-  u.debug(`Stopping directory watch`, { watchId: e.id });
+async function mn(e) {
+  u.debug(`Stopping directory watch`, {
+    watchId: e.id,
+    launcherBundleId: e.launcherBundleId,
+  });
   try {
-    (xe(e.id)
+    (we(e.launcherBundleId, e.id)
       ? (u.debug(`Found directory watcher, stopping it`, { watchId: e.id }),
-        be(e.id),
+        Ce(e.launcherBundleId, e.id),
         u.debug(`Directory watch stopped`, { watchId: e.id }))
       : u.debug(`No directory watcher found for ID`, { watchId: e.id }),
-      b({ type: `unwatchDirectory`, id: e.id, success: !0 }));
+      w({ type: `unwatchDirectory`, id: e.id, success: !0 }));
   } catch (t) {
     (u.error(`Failed to stop directory watch`, {
       watchId: e.id,
       error: t instanceof Error ? t.message : String(t),
     }),
-      b({
+      w({
         type: `unwatchDirectory`,
         id: e.id,
         success: !1,
@@ -3320,134 +3573,186 @@ async function rn(e) {
       }));
   }
 }
-var an = [
+var hn = [
   `init`,
   `loadBundle`,
+  `unloadBundle`,
   `initializeFromUrl`,
   `initializeFromBytes`,
   `getServerUrl`,
   `ping`,
   `setAppSlug`,
 ];
-async function on(e) {
+async function gn(e) {
   let t = e.type,
-    n = e.id;
-  u.debug(`Received message`, { type: t, id: n || `N/A` });
-  let r = g();
-  if (t === `setAppSlug`) {
-    await $t({ slug: e.slug });
-    return;
-  }
-  if (t === `ping`) {
-    await Qt();
-    return;
-  }
-  if (r.status !== `active` && !an.includes(t)) {
-    (u.warn(`Operation attempted before VFS initialization`, {
+    n = e.id,
+    r = e.launcherBundleId;
+  if (
+    (u.debug(`Received message`, {
       type: t,
-      status: r.status,
+      id: n || `N/A`,
+      launcherBundleId: r || `N/A`,
     }),
-      n &&
-        b({
-          type: t,
-          id: n,
-          success: !1,
-          error: `VFS not initialized. Please load a bundle first.`,
-        }));
+    t === `ping`)
+  ) {
+    await ln();
     return;
   }
+  if (t === `setAppSlug`) {
+    if (!r) {
+      u.warn(`setAppSlug missing launcherBundleId`);
+      return;
+    }
+    await un({ launcherBundleId: r, slug: e.slug });
+    return;
+  }
+  if (!hn.includes(t)) {
+    let e = r || me();
+    if (!e) {
+      (u.warn(`Operation attempted without bundle context`, { type: t }),
+        n &&
+          w({
+            type: t,
+            id: n,
+            success: !1,
+            error: `No bundle context. Please load a bundle first.`,
+          }));
+      return;
+    }
+    let i = b(e);
+    if (!i || i.status !== `active`) {
+      (u.warn(`Operation attempted before bundle initialization`, {
+        type: t,
+        launcherBundleId: e,
+        status: i?.status || `none`,
+      }),
+        n &&
+          w({
+            type: t,
+            id: n,
+            success: !1,
+            error: `Bundle not initialized. Please load a bundle first.`,
+          }));
+      return;
+    }
+  }
+  let i = r || me() || ``;
   switch (t) {
     case `init`:
-      await qt({
+      await rn({
         ...(n !== void 0 && { id: n }),
         manifest: e.manifest,
         ...(e.wsUrl !== void 0 && { wsUrl: e.wsUrl }),
+        launcherBundleId: i,
       });
       break;
     case `initializeFromUrl`:
-      await Jt({
+      await an({
         ...(n !== void 0 && { id: n }),
         ...(e.manifestUrl !== void 0 && { manifestUrl: e.manifestUrl }),
         ...(e.wasmUrl !== void 0 && { wasmUrl: e.wasmUrl }),
         ...(e.wsUrl !== void 0 && { wsUrl: e.wsUrl }),
+        launcherBundleId: i,
       });
       break;
     case `initializeFromBytes`:
-      await Yt({
+      await on({
         ...(n !== void 0 && { id: n }),
         bundleBytes: e.bundleBytes,
         ...(e.serverUrl !== void 0 && { serverUrl: e.serverUrl }),
         ...(e.wsUrl !== void 0 && { wsUrl: e.wsUrl }),
+        launcherBundleId: i,
       });
       break;
     case `getServerUrl`:
-      await Xt({ id: n });
+      await sn({ id: n, launcherBundleId: i });
       break;
     case `getManifest`:
-      await Zt({ id: n });
+      await cn({ id: n, launcherBundleId: i });
       break;
     case `loadBundle`:
-      await It({
+      await Gt({
         ...(n !== void 0 && { id: n }),
         bundleBytes: e.bundleBytes,
         ...(e.serverUrl !== void 0 && { serverUrl: e.serverUrl }),
         ...(e.manifest !== void 0 && { manifest: e.manifest }),
-        ...(e.launcherBundleId !== void 0 && {
-          launcherBundleId: e.launcherBundleId,
-        }),
+        launcherBundleId: e.launcherBundleId,
+      });
+      break;
+    case `unloadBundle`:
+      await Kt({
+        ...(n !== void 0 && { id: n }),
+        launcherBundleId: e.launcherBundleId,
       });
       break;
     case `toBytes`:
-      await Lt({ id: n });
+      await qt({ id: n, launcherBundleId: i });
       break;
     case `forkToBytes`:
-      await Rt({ id: n });
+      await Jt({ id: n, launcherBundleId: i });
       break;
     case `readFile`:
-      await Bt({ id: n, path: e.path });
+      await Xt({ id: n, path: e.path, launcherBundleId: i });
       break;
     case `writeFile`:
-      await Vt({
+      await Zt({
         id: n,
         path: e.path,
         ...(e.create !== void 0 && { create: e.create }),
         content: e.content,
+        launcherBundleId: i,
       });
       break;
     case `deleteFile`:
-      await Ht({ id: n, path: e.path });
+      await Qt({ id: n, path: e.path, launcherBundleId: i });
       break;
     case `rename`:
-      await Ut({ id: n, oldPath: e.oldPath, newPath: e.newPath });
+      await $t({
+        id: n,
+        oldPath: e.oldPath,
+        newPath: e.newPath,
+        launcherBundleId: i,
+      });
       break;
     case `exists`:
-      await Wt({ id: n, path: e.path });
+      await en({ id: n, path: e.path, launcherBundleId: i });
       break;
     case `patchFile`:
-      await Kt({ id: n, path: e.path, jsonPath: e.jsonPath, value: e.value });
+      await nn({
+        id: n,
+        path: e.path,
+        jsonPath: e.jsonPath,
+        value: e.value,
+        launcherBundleId: i,
+      });
       break;
     case `updateFile`:
-      await Gt({ id: n, path: e.path, content: e.content });
+      await tn({
+        id: n,
+        path: e.path,
+        content: e.content,
+        launcherBundleId: i,
+      });
       break;
     case `listDirectory`:
-      await zt({ id: n, path: e.path });
+      await Yt({ id: n, path: e.path, launcherBundleId: i });
       break;
     case `watchFile`:
-      await en({ id: n, path: e.path });
+      await dn({ id: n, path: e.path, launcherBundleId: i });
       break;
     case `unwatchFile`:
-      await tn({ id: n });
+      await fn({ id: n, launcherBundleId: i });
       break;
     case `watchDirectory`:
-      await nn({ id: n, path: e.path });
+      await pn({ id: n, path: e.path, launcherBundleId: i });
       break;
     case `unwatchDirectory`:
-      await rn({ id: n });
+      await mn({ id: n, launcherBundleId: i });
       break;
     default:
       (u.warn(`Unknown message type`, { type: t }),
         n &&
-          b({
+          w({
             type: t,
             id: n,
             success: !1,
@@ -3455,25 +3760,25 @@ async function on(e) {
           }));
   }
 }
-var sn = self;
+var _n = self;
 (u.info(`Service worker starting`, {
-  version: `mj33m98q`,
-  buildTime: `2025-12-12T16:45:50.282Z`,
+  version: `mj35lh2c`,
+  buildTime: `2025-12-12T17:41:12.996Z`,
   location: self.location.href,
 }),
   u.debug(`Checking for cached state`),
-  fe(Pt()),
+  pe(Ht()),
   self.addEventListener(`install`, (e) => {
     (u.info(`Service worker installing`),
-      sn.skipWaiting(),
+      _n.skipWaiting(),
       u.debug(`skipWaiting called`));
   }),
   self.addEventListener(`activate`, (e) => {
     (u.info(`Service worker activating`),
       e.waitUntil(
         (async () => {
-          (await sn.clients.claim(), u.debug(`Clients claimed`));
-          let e = await sn.clients.matchAll();
+          (await _n.clients.claim(), u.debug(`Clients claimed`));
+          let e = await _n.clients.matchAll();
           (e.forEach((e) => {
             e.postMessage({ type: `ready`, needsBundle: !0 });
           }),
@@ -3484,7 +3789,7 @@ var sn = self;
   self.addEventListener(`message`, async (e) => {
     u.debug(`Message received`, { type: e.data?.type });
     try {
-      await on(e.data);
+      await gn(e.data);
     } catch (e) {
       u.error(`Error handling message`, {
         error: e instanceof Error ? e.message : String(e),
@@ -3492,6 +3797,6 @@ var sn = self;
     }
   }),
   self.addEventListener(`fetch`, (e) => {
-    Te(e);
+    ke(e);
   }),
   u.debug(`VFS Service Worker initialized`));

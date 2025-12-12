@@ -1,8 +1,12 @@
 import { persistAppSlug, persistBundleBytes } from "./cache";
-import { getActiveBundle, getInitializationPromise, getState } from "./state";
+import {
+  getActiveBundleState,
+  getBundleState,
+  getInitializationPromise,
+} from "./state";
 import type { FetchEvent } from "./types";
 import { logger } from "./utils/logging";
-import { determinePath } from "./utils/path";
+import { determinePath, parseSpaceUrl } from "./utils/path";
 import { targetToResponse } from "./utils/response";
 
 declare const TONK_SERVE_LOCAL: boolean;
@@ -10,15 +14,10 @@ declare const TONK_SERVE_LOCAL: boolean;
 export function handleFetch(event: FetchEvent): void {
   const url = new URL(event.request.url);
   const referrer = event.request.referrer;
-  const state = getState();
-  const activeBundle = getActiveBundle();
-  const appSlug = activeBundle?.appSlug || null;
 
   logger.debug("Fetch event", {
     url: url.href,
     pathname: url.pathname,
-    state: state.status,
-    appSlug,
   });
 
   // Check for WebSocket upgrade requests for Vite HMR
@@ -36,7 +35,7 @@ export function handleFetch(event: FetchEvent): void {
     url.pathname === "" ||
     url.pathname === "/space/" ||
     url.pathname === "/space";
-  if (isRootRequest && appSlug) {
+  if (isRootRequest) {
     // Reset state when navigating to root or /space/
     // Persist the reset so it survives service worker restarts
     Promise.all([persistAppSlug(null), persistBundleBytes(null)]).catch(
@@ -44,6 +43,7 @@ export function handleFetch(event: FetchEvent): void {
         logger.error("Failed to persist state reset", { error: err });
       },
     );
+    return;
   }
 
   // Don't intercept requests for the runtime app's static files
@@ -79,12 +79,11 @@ export function handleFetch(event: FetchEvent): void {
     return;
   }
 
-  // Extract space-name from /space/<space-name>/... URL structure
-  const spaceMatch = url.pathname.match(/^\/space\/([^/]+)/);
-  const spaceName = spaceMatch?.[1];
+  // Parse the new URL structure: /space/<launcherBundleId>/<appSlug>/...
+  const parsed = parseSpaceUrl(url.pathname);
 
   // _runtime is reserved for the launcher shell - pass through to network
-  if (spaceName === "_runtime") {
+  if (parsed?.launcherBundleId === "_runtime") {
     logger.debug("Reserved _runtime path - passing through", {
       pathname: url.pathname,
     });
@@ -92,7 +91,9 @@ export function handleFetch(event: FetchEvent): void {
   }
 
   // Handle TONK_SERVE_LOCAL mode (development with Vite HMR)
-  if (TONK_SERVE_LOCAL && appSlug && !isRootRequest) {
+  if (TONK_SERVE_LOCAL && parsed?.appSlug && !isRootRequest) {
+    const appSlug = parsed.appSlug;
+
     // Intercept and proxy Vite HMR assets
     if (
       url.pathname.startsWith("/@vite") ||
@@ -177,31 +178,40 @@ export function handleFetch(event: FetchEvent): void {
     return;
   }
 
-  // Handle VFS requests for /space/<space-name>/... URLs
-  // spaceName is extracted above from the URL pattern /space/<space-name>/...
-  if (spaceName && url.origin === location.origin && !isRootRequest) {
+  // Handle VFS requests for /space/<launcherBundleId>/<appSlug>/... URLs
+  if (parsed && url.origin === location.origin && !isRootRequest) {
+    const { launcherBundleId, appSlug } = parsed;
+
     logger.debug("Processing VFS request", {
       pathname: url.pathname,
-      spaceName,
+      launcherBundleId,
+      appSlug,
       referrer,
     });
 
     event.respondWith(
       (async () => {
         try {
-          // Use space-name from URL as the appSlug for VFS path resolution
-          const path = determinePath(url, spaceName);
+          // Determine the VFS path from the URL
+          const path = determinePath(url, appSlug);
           logger.debug("Resolved VFS path", {
             path,
             url: url.pathname,
-            spaceName,
+            launcherBundleId,
+            appSlug,
           });
 
           // Wait for auto-initialization to complete (with timeout)
           const initPromise = getInitializationPromise();
-          if (initPromise && getState().status !== "active") {
+          const bundleState = getBundleState(launcherBundleId);
+
+          if (
+            initPromise &&
+            (!bundleState || bundleState.status !== "active")
+          ) {
             logger.debug("Waiting for initialization", {
-              status: getState().status,
+              launcherBundleId,
+              status: bundleState?.status ?? "none",
             });
             try {
               await Promise.race([
@@ -223,14 +233,18 @@ export function handleFetch(event: FetchEvent): void {
             }
           }
 
-          const tonkInstance = getActiveBundle();
+          const tonkInstance = getActiveBundleState(launcherBundleId);
 
           if (!tonkInstance) {
-            logger.error("Tonk not initialized - cannot handle request", {
-              status: getState().status,
-              path,
-            });
-            throw new Error("Tonk not initialized");
+            logger.error(
+              "Tonk not initialized for bundle - cannot handle request",
+              {
+                launcherBundleId,
+                status: getBundleState(launcherBundleId)?.status ?? "none",
+                path,
+              },
+            );
+            throw new Error(`Bundle not initialized: ${launcherBundleId}`);
           }
 
           // Check if the file exists first
@@ -241,7 +255,7 @@ export function handleFetch(event: FetchEvent): void {
             logger.debug("File not found, falling back to index.html", {
               path: filePath,
             });
-            const indexPath = `/${spaceName}/index.html`;
+            const indexPath = `/${appSlug}/index.html`;
             const target = await tonkInstance.tonk.readFile(indexPath);
             return targetToResponse(
               target as { bytes?: string; content: { mime?: string } | string },
@@ -259,7 +273,6 @@ export function handleFetch(event: FetchEvent): void {
           logger.error("Failed to fetch from VFS", {
             error: e instanceof Error ? e.message : String(e),
             url: url.href,
-            status: getState().status,
           });
 
           // Fall back to the original request
@@ -269,11 +282,14 @@ export function handleFetch(event: FetchEvent): void {
       })(),
     );
   } else {
-    logger.debug("Ignoring fetch - not a /space/<space-name>/ request", {
-      requestOrigin: url.origin,
-      swOrigin: location.origin,
-      spaceName: spaceName || "none",
-      isRoot: isRootRequest,
-    });
+    logger.debug(
+      "Ignoring fetch - not a valid /space/<bundleId>/<appSlug>/ request",
+      {
+        requestOrigin: url.origin,
+        swOrigin: location.origin,
+        parsed: parsed ? "yes" : "no",
+        isRoot: isRootRequest,
+      },
+    );
   }
 }

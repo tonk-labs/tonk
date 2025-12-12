@@ -14,6 +14,7 @@ declare global {
 
   interface Client {
     postMessage(message: unknown): void;
+    id: string;
   }
 
   interface ClientQueryOptions {
@@ -32,15 +33,20 @@ export interface FetchEvent extends Event {
   respondWith(response: Promise<Response> | Response): void;
 }
 
-// Bundle state machine types
+// Bundle state for a single bundle instance
 export type BundleState =
-  | { status: "idle" }
-  | { status: "loading"; bundleId: string; promise: Promise<void> }
+  | {
+      status: "loading";
+      launcherBundleId: string;
+      bundleId: string;
+      promise: Promise<void>;
+    }
   | {
       status: "active";
+      /** Root document ID from manifest */
       bundleId: string;
       /** Unique IndexedDB bundle ID from launcher - used to differentiate bundles with same rootId */
-      launcherBundleId?: string;
+      launcherBundleId: string;
       tonk: TonkCore;
       manifest: Manifest;
       appSlug: string;
@@ -50,10 +56,13 @@ export type BundleState =
       connectionHealthy: boolean;
       reconnectAttempts: number;
     }
-  | { status: "error"; error: Error; previousBundleId?: string };
+  | { status: "error"; launcherBundleId: string; error: Error };
 
 // Helper type to extract active state
 export type ActiveBundleState = Extract<BundleState, { status: "active" }>;
+
+// Map of all loaded bundles, keyed by launcherBundleId
+export type BundleStateMap = Map<string, BundleState>;
 
 // Constants
 export const MAX_RECONNECT_ATTEMPTS = 10;

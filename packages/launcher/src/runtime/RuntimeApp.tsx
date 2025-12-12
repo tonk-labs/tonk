@@ -57,79 +57,52 @@ function AppContent() {
   }, []);
 
   // Boot the first available app
-  const bootFirstApp = useCallback(async () => {
-    showLoadingScreen("Loading application...");
+  const bootFirstApp = useCallback(
+    async (bundleId: string) => {
+      showLoadingScreen("Loading application...");
 
-    try {
-      const apps = await queryAvailableApps();
+      try {
+        const apps = await queryAvailableApps(bundleId);
 
-      if (apps.length > 0) {
-        await confirmBoot(apps[0]);
-      } else {
-        showError("No applications found in bundle");
+        if (apps.length > 0) {
+          await confirmBoot(apps[0], bundleId);
+        } else {
+          showError("No applications found in bundle");
+        }
+      } catch (error: unknown) {
+        console.error("Failed to boot application:", error);
+        const message = error instanceof Error ? error.message : String(error);
+        showError(`Failed to load application: ${message}`);
       }
-    } catch (error: unknown) {
-      console.error("Failed to boot application:", error);
-      const message = error instanceof Error ? error.message : String(error);
-      showError(`Failed to load application: ${message}`);
-    }
-  }, [showLoadingScreen, queryAvailableApps, confirmBoot, showError]);
+    },
+    [showLoadingScreen, queryAvailableApps, confirmBoot, showError],
+  );
 
   // Handle activation message from parent (when iframe becomes visible again)
+  // With multi-bundle isolation, bundle is already loaded - just update last active
   useEffect(() => {
     const handleActivate = async (event: MessageEvent) => {
       if (event.data?.type !== "tonk:activate") return;
 
-      console.log("[Runtime] Received tonk:activate, reloading bundle...");
-
-      const urlParams = new URLSearchParams(window.location.search);
-      const bundleId = urlParams.get("bundleId");
+      const bundleId = event.data.launcherBundleId;
+      console.log("[Runtime] Received tonk:activate", { bundleId });
 
       if (!bundleId) {
-        console.warn("[Runtime] No bundleId in URL, cannot reload");
+        console.warn("[Runtime] No launcherBundleId in activate message");
         return;
       }
 
-      try {
-        const bundleData = await bundleStorage.get(bundleId);
-        if (!bundleData) {
-          console.error("[Runtime] Bundle not found:", bundleId);
-          return;
-        }
-
-        // Re-send loadBundle to ensure correct TonkCore is active in SW
-        // Include launcherBundleId so SW can differentiate bundles with same rootId
-        const response = await sendMessage({
-          type: "loadBundle",
-          bundleBytes: bundleData.bytes,
-          manifest: bundleData.manifest,
-          launcherBundleId: bundleId,
-        });
-
-        // @ts-expect-error - Response type is generic
-        if (response.success) {
-          // @ts-expect-error - Response type is generic
-          if (response.skipped) {
-            console.log("[Runtime] Bundle already active, no reload needed");
-          } else {
-            console.log(
-              "[Runtime] Bundle reloaded, notifying app to reset state",
-            );
-            // Notify the app (desktonk) to reset its state and reload from VFS
-            window.postMessage({ type: "tonk:bundleReloaded" }, "*");
-          }
-        } else {
-          // @ts-expect-error - Response type is generic
-          console.error("[Runtime] Failed to reload bundle:", response.error);
-        }
-      } catch (error) {
-        console.error("[Runtime] Error reloading bundle:", error);
-      }
+      // With multi-bundle isolation, the bundle should already be loaded
+      // Just notify the app it's been reactivated (for state refresh if needed)
+      window.postMessage(
+        { type: "tonk:bundleReactivated", launcherBundleId: bundleId },
+        "*",
+      );
     };
 
     window.addEventListener("message", handleActivate);
     return () => window.removeEventListener("message", handleActivate);
-  }, [sendMessage]);
+  }, []);
 
   // Initialize and boot
   useEffect(() => {
@@ -178,7 +151,7 @@ function AppContent() {
 
           // Send bundle bytes to service worker via loadBundle message
           // Include cached manifest to skip redundant Bundle.fromBytes in SW
-          // Include launcherBundleId so SW can differentiate bundles with same rootId
+          // Include launcherBundleId so SW can differentiate bundles
           const response = await sendMessage({
             type: "loadBundle",
             bundleBytes: bundleData.bytes,
@@ -188,8 +161,13 @@ function AppContent() {
 
           // @ts-expect-error - Response type is generic
           if (response.success) {
-            console.log("Bundle loaded successfully from IndexedDB");
-            await bootFirstApp();
+            // @ts-expect-error - Response type is generic
+            if (response.skipped) {
+              console.log("Bundle already active in SW, proceeding to boot");
+            } else {
+              console.log("Bundle loaded successfully from IndexedDB");
+            }
+            await bootFirstApp(bundleId);
           } else {
             // @ts-expect-error - Response type is generic
             showError(`Failed to load bundle: ${response.error}`);
@@ -201,8 +179,10 @@ function AppContent() {
           showError(`Error loading bundle: ${message}`);
         }
       } else {
-        // No bundleId - try to boot from already loaded bundle (cached state)
-        await bootFirstApp();
+        // No bundleId - cannot boot without knowing which bundle
+        showError(
+          "No bundle specified. Please select a bundle from the launcher.",
+        );
       }
     };
 

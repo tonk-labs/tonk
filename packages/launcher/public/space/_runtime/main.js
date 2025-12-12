@@ -12817,62 +12817,77 @@ function oe() {
         }),
       [],
     ),
-    r = (0, _.useCallback)(async () => {
-      try {
-        if (!navigator.serviceWorker.controller)
-          return (
-            console.log(
-              `No service worker controller, returning empty app list`,
-            ),
-            []
-          );
+    r = (0, _.useCallback)(
+      async (e) => {
         try {
-          let e = await n({ type: `getManifest` });
-          if (e.success && e.data?.entrypoints) {
-            let t = e.data.entrypoints;
-            if (t.length > 0)
-              return (
-                console.log(`Extracted apps from manifest entrypoints:`, t),
-                t
-              );
+          if (!navigator.serviceWorker.controller)
+            return (
+              console.log(
+                `No service worker controller, returning empty app list`,
+              ),
+              []
+            );
+          try {
+            let t = await n({ type: `getManifest`, launcherBundleId: e });
+            if (t.success && t.data?.entrypoints) {
+              let e = t.data.entrypoints;
+              if (e.length > 0)
+                return (
+                  console.log(`Extracted apps from manifest entrypoints:`, e),
+                  e
+                );
+            }
+          } catch {
+            console.log(
+              `Could not get manifest, falling back to directory listing`,
+            );
           }
-        } catch {
-          console.log(
-            `Could not get manifest, falling back to directory listing`,
-          );
-        }
-        let e = await n({ type: `listDirectory`, path: `/` });
-        if (e.success && e.data) {
-          let t = e.data
-            .filter((e) => e.type === `directory`)
-            .map((e) => e.name);
-          return (console.log(`Extracted apps from directory listing:`, t), t);
-        }
-        return [];
-      } catch (e) {
-        if (
-          (e instanceof Error ? e.message : String(e))?.includes(
-            `not initialized`,
+          let t = await n({
+            type: `listDirectory`,
+            path: `/`,
+            launcherBundleId: e,
+          });
+          if (t.success && t.data) {
+            let e = t.data
+              .filter((e) => e.type === `directory`)
+              .map((e) => e.name);
+            return (
+              console.log(`Extracted apps from directory listing:`, e),
+              e
+            );
+          }
+          return [];
+        } catch (e) {
+          if (
+            (e instanceof Error ? e.message : String(e))?.includes(
+              `not initialized`,
+            )
           )
-        )
-          return (
-            console.log(`VFS not initialized yet, returning empty app list`),
-            []
-          );
-        throw (console.error(`Failed to query apps:`, e), e);
-      }
-    }, [n]),
+            return (
+              console.log(`VFS not initialized yet, returning empty app list`),
+              []
+            );
+          throw (console.error(`Failed to query apps:`, e), e);
+        }
+      },
+      [n],
+    ),
     i = (0, _.useCallback)(
-      async (n) => {
-        (console.log(`Booting application:`, n),
+      async (n, r) => {
+        (console.log(`Booting application:`, {
+          appSlug: n,
+          launcherBundleId: r,
+        }),
           e(`Loading ${n}...`),
           navigator.serviceWorker.controller
             ? (navigator.serviceWorker.controller.postMessage({
                 type: `setAppSlug`,
                 slug: n,
+                launcherBundleId: r,
               }),
               localStorage.setItem(`appSlug`, n),
-              (window.location.href = `/space/${n}/`))
+              localStorage.setItem(`launcherBundleId`, r),
+              (window.location.href = `/space/${r}/${n}/`))
             : t(`Service worker not ready. Please refresh the page.`));
       },
       [e, t],
@@ -12920,56 +12935,43 @@ function se() {
         }),
       [],
     ),
-    c = (0, _.useCallback)(async () => {
-      t(`Loading application...`);
-      try {
-        let e = await r();
-        e.length > 0 ? await a(e[0]) : n(`No applications found in bundle`);
-      } catch (e) {
-        console.error(`Failed to boot application:`, e);
-        let t = e instanceof Error ? e.message : String(e);
-        n(`Failed to load application: ${t}`);
-      }
-    }, [t, r, a, n]);
+    c = (0, _.useCallback)(
+      async (e) => {
+        t(`Loading application...`);
+        try {
+          let t = await r(e);
+          t.length > 0
+            ? await a(t[0], e)
+            : n(`No applications found in bundle`);
+        } catch (e) {
+          console.error(`Failed to boot application:`, e);
+          let t = e instanceof Error ? e.message : String(e);
+          n(`Failed to load application: ${t}`);
+        }
+      },
+      [t, r, a, n],
+    );
   return (
     (0, _.useEffect)(() => {
       let e = async (e) => {
         if (e.data?.type !== `tonk:activate`) return;
-        console.log(`[Runtime] Received tonk:activate, reloading bundle...`);
-        let t = new URLSearchParams(window.location.search).get(`bundleId`);
-        if (!t) {
-          console.warn(`[Runtime] No bundleId in URL, cannot reload`);
+        let t = e.data.launcherBundleId;
+        if (
+          (console.log(`[Runtime] Received tonk:activate`, { bundleId: t }), !t)
+        ) {
+          console.warn(`[Runtime] No launcherBundleId in activate message`);
           return;
         }
-        try {
-          let e = await x.get(t);
-          if (!e) {
-            console.error(`[Runtime] Bundle not found:`, t);
-            return;
-          }
-          let n = await i({
-            type: `loadBundle`,
-            bundleBytes: e.bytes,
-            manifest: e.manifest,
-            launcherBundleId: t,
-          });
-          n.success
-            ? n.skipped
-              ? console.log(`[Runtime] Bundle already active, no reload needed`)
-              : (console.log(
-                  `[Runtime] Bundle reloaded, notifying app to reset state`,
-                ),
-                window.postMessage({ type: `tonk:bundleReloaded` }, `*`))
-            : console.error(`[Runtime] Failed to reload bundle:`, n.error);
-        } catch (e) {
-          console.error(`[Runtime] Error reloading bundle:`, e);
-        }
+        window.postMessage(
+          { type: `tonk:bundleReactivated`, launcherBundleId: t },
+          `*`,
+        );
       };
       return (
         window.addEventListener(`message`, e),
         () => window.removeEventListener(`message`, e)
       );
-    }, [i]),
+    }, []),
     (0, _.useEffect)(() => {
       let e = (e, t) => {
           window.parent !== window &&
@@ -13009,15 +13011,20 @@ function se() {
                 launcherBundleId: e,
               });
               r.success
-                ? (console.log(`Bundle loaded successfully from IndexedDB`),
-                  await c())
+                ? (r.skipped
+                    ? console.log(
+                        `Bundle already active in SW, proceeding to boot`,
+                      )
+                    : console.log(`Bundle loaded successfully from IndexedDB`),
+                  await c(e))
                 : n(`Failed to load bundle: ${r.error}`);
             } catch (e) {
               console.error(`Error loading bundle from IndexedDB:`, e);
               let t = e instanceof Error ? e.message : String(e);
               n(`Error loading bundle: ${t}`);
             }
-          } else await c();
+          } else
+            n(`No bundle specified. Please select a bundle from the launcher.`);
         };
       if (`serviceWorker` in navigator)
         (e(!0),

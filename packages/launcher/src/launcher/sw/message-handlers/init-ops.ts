@@ -1,7 +1,19 @@
 import { Bundle, TonkCore } from "@tonk/core/slim";
-import { persistAppSlug, persistBundleBytes, persistWsUrl } from "../cache";
+import {
+  persistAppSlug,
+  persistBundleBytes,
+  persistLastActiveBundleId,
+  persistNamespace,
+  persistWsUrl,
+} from "../cache";
 import { startHealthMonitoring } from "../connection";
-import { getState, getTonk, setAppSlug, transitionTo } from "../state";
+import {
+  getBundleState,
+  getTonkForBundle,
+  setAppSlug,
+  setBundleState,
+  setLastActiveBundleId,
+} from "../state";
 import { waitForPathIndexSync } from "../tonk-lifecycle";
 import { logger } from "../utils/logging";
 import { getWsUrlFromManifest } from "../utils/network";
@@ -14,18 +26,22 @@ export async function handleInit(message: {
   id?: string;
   manifest: ArrayBuffer;
   wsUrl?: string;
+  launcherBundleId: string;
 }): Promise<void> {
   logger.debug("Handling VFS init message", {
     manifestSize: message.manifest.byteLength,
     wsUrl: message.wsUrl,
+    launcherBundleId: message.launcherBundleId,
   });
 
   try {
-    const state = getState();
+    const state = getBundleState(message.launcherBundleId);
 
-    // Check if we already have a Tonk instance
-    if (state.status === "active") {
-      logger.debug("Tonk already initialized");
+    // Check if we already have a Tonk instance for this bundle
+    if (state?.status === "active") {
+      logger.debug("Tonk already initialized for bundle", {
+        launcherBundleId: message.launcherBundleId,
+      });
       postResponse({
         type: "init",
         success: true,
@@ -34,8 +50,10 @@ export async function handleInit(message: {
     }
 
     // If Tonk is still loading, wait for it
-    if (state.status === "loading") {
-      logger.debug("Tonk is loading, waiting for completion");
+    if (state?.status === "loading") {
+      logger.debug("Tonk is loading, waiting for completion", {
+        launcherBundleId: message.launcherBundleId,
+      });
       try {
         await state.promise;
         logger.debug("Tonk loading completed");
@@ -57,7 +75,7 @@ export async function handleInit(message: {
     }
 
     // If Tonk failed to initialize, respond with error
-    if (state.status === "error") {
+    if (state?.status === "error") {
       logger.error("Tonk initialization failed previously", {
         error: state.error.message,
       });
@@ -70,7 +88,9 @@ export async function handleInit(message: {
     }
 
     // If uninitialized, this shouldn't happen in normal flow
-    logger.warn("Tonk is uninitialized, this is unexpected");
+    logger.warn("Tonk is uninitialized, this is unexpected", {
+      launcherBundleId: message.launcherBundleId,
+    });
     postResponse({
       type: "init",
       success: false,
@@ -93,10 +113,12 @@ export async function handleInitializeFromUrl(message: {
   manifestUrl?: string;
   wasmUrl?: string;
   wsUrl?: string;
+  launcherBundleId: string;
 }): Promise<void> {
   logger.debug("Initializing from URL", {
     manifestUrl: message.manifestUrl,
     wasmUrl: message.wasmUrl,
+    launcherBundleId: message.launcherBundleId,
   });
 
   try {
@@ -121,10 +143,10 @@ export async function handleInitializeFromUrl(message: {
     // Derive wsUrl: explicit param > manifest networkUris > build-time default
     const wsUrlInit = message.wsUrl || getWsUrlFromManifest(manifest);
 
-    // Create TonkCore instance
+    // Create TonkCore instance with namespace for IndexedDB isolation
     logger.debug("Creating TonkCore from manifest bytes");
     const tonk = await TonkCore.fromBytes(manifestBytes, {
-      storage: { type: "indexeddb" },
+      storage: { type: "indexeddb", namespace: message.launcherBundleId },
     });
     logger.debug("TonkCore created");
 
@@ -139,10 +161,11 @@ export async function handleInitializeFromUrl(message: {
     await waitForPathIndexSync(tonk);
     logger.debug("PathIndex sync complete");
 
-    // Transition to active state
-    transitionTo({
+    // Set bundle state
+    setBundleState(message.launcherBundleId, {
       status: "active",
       bundleId: manifest.rootId,
+      launcherBundleId: message.launcherBundleId,
       tonk,
       manifest,
       appSlug: manifest.entrypoints?.[0] || "app",
@@ -153,10 +176,13 @@ export async function handleInitializeFromUrl(message: {
       reconnectAttempts: 0,
     });
 
-    startHealthMonitoring();
+    setLastActiveBundleId(message.launcherBundleId);
+    startHealthMonitoring(message.launcherBundleId);
 
     // Persist bundle bytes to survive service worker restarts
     await persistBundleBytes(manifestBytes);
+    await persistNamespace(message.launcherBundleId);
+    await persistLastActiveBundleId(message.launcherBundleId);
     logger.debug("Bundle bytes persisted");
 
     logger.info("Initialized from URL successfully");
@@ -170,8 +196,9 @@ export async function handleInitializeFromUrl(message: {
       error: error instanceof Error ? error.message : String(error),
     });
 
-    transitionTo({
+    setBundleState(message.launcherBundleId, {
       status: "error",
+      launcherBundleId: message.launcherBundleId,
       error: error instanceof Error ? error : new Error(String(error)),
     });
 
@@ -189,10 +216,12 @@ export async function handleInitializeFromBytes(message: {
   bundleBytes: ArrayBuffer;
   serverUrl?: string;
   wsUrl?: string;
+  launcherBundleId: string;
 }): Promise<void> {
   logger.debug("Initializing from bytes", {
     byteLength: message.bundleBytes.byteLength,
     serverUrl: message.serverUrl,
+    launcherBundleId: message.launcherBundleId,
   });
 
   try {
@@ -218,7 +247,7 @@ export async function handleInitializeFromBytes(message: {
 
     logger.debug("Creating TonkCore from bundle bytes");
     const tonk = await TonkCore.fromBytes(bundleBytes, {
-      storage: { type: "indexeddb" },
+      storage: { type: "indexeddb", namespace: message.launcherBundleId },
     });
     logger.debug("TonkCore created");
 
@@ -232,10 +261,11 @@ export async function handleInitializeFromBytes(message: {
       logger.debug("PathIndex sync complete");
     }
 
-    // Transition to active state
-    transitionTo({
+    // Set bundle state
+    setBundleState(message.launcherBundleId, {
       status: "active",
       bundleId: manifest.rootId,
+      launcherBundleId: message.launcherBundleId,
       tonk,
       manifest,
       appSlug: manifest.entrypoints?.[0] || "app",
@@ -246,9 +276,12 @@ export async function handleInitializeFromBytes(message: {
       reconnectAttempts: 0,
     });
 
-    startHealthMonitoring();
+    setLastActiveBundleId(message.launcherBundleId);
+    startHealthMonitoring(message.launcherBundleId);
 
     await persistBundleBytes(bundleBytes);
+    await persistNamespace(message.launcherBundleId);
+    await persistLastActiveBundleId(message.launcherBundleId);
     logger.debug("Bundle bytes persisted");
 
     logger.info("Initialized from bytes successfully");
@@ -262,8 +295,9 @@ export async function handleInitializeFromBytes(message: {
       error: error instanceof Error ? error.message : String(error),
     });
 
-    transitionTo({
+    setBundleState(message.launcherBundleId, {
       status: "error",
+      launcherBundleId: message.launcherBundleId,
       error: error instanceof Error ? error : new Error(String(error)),
     });
 
@@ -278,6 +312,7 @@ export async function handleInitializeFromBytes(message: {
 
 export async function handleGetServerUrl(message: {
   id: string;
+  launcherBundleId: string;
 }): Promise<void> {
   logger.debug("Getting server URL");
   postResponse({
@@ -290,10 +325,13 @@ export async function handleGetServerUrl(message: {
 
 export async function handleGetManifest(message: {
   id: string;
+  launcherBundleId: string;
 }): Promise<void> {
-  logger.debug("Getting manifest");
+  logger.debug("Getting manifest", {
+    launcherBundleId: message.launcherBundleId,
+  });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error("Tonk not initialized");
     }
@@ -318,26 +356,24 @@ export async function handleGetManifest(message: {
 }
 
 export async function handlePing(): Promise<void> {
-  const state = getState();
   logger.debug("Ping received");
   postResponse({
     type: "ready",
-    status: state.status,
-    needsBundle: state.status !== "active",
+    needsBundle: true,
   });
 }
 
 export async function handleSetAppSlug(message: {
+  launcherBundleId: string;
   slug: string;
 }): Promise<void> {
-  const state = getState();
-
-  if (state.status === "active") {
-    setAppSlug(message.slug);
-  }
+  setAppSlug(message.launcherBundleId, message.slug);
 
   // Persist to cache so it survives service worker restarts
   await persistAppSlug(message.slug);
 
-  logger.debug("App slug set and persisted", { slug: message.slug });
+  logger.debug("App slug set and persisted", {
+    slug: message.slug,
+    launcherBundleId: message.launcherBundleId,
+  });
 }

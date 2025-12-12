@@ -4,20 +4,26 @@ import { Bundle, TonkCore } from "@tonk/core/slim";
 import {
   clearAllCache,
   persistBundleBytes,
+  persistLastActiveBundleId,
   persistNamespace,
   persistWsUrl,
   restoreAppSlug,
   restoreBundleBytes,
+  restoreLastActiveBundleId,
   restoreNamespace,
   restoreWsUrl,
 } from "./cache";
 import { startHealthMonitoring } from "./connection";
-import { getState, transitionTo } from "./state";
+import {
+  getBundleState,
+  getLastActiveBundleId,
+  removeBundleState,
+  setBundleState,
+  setLastActiveBundleId,
+} from "./state";
 import { logger } from "./utils/logging";
 import { getWsUrlFromManifest } from "./utils/network";
 import { ensureWasmInitialized } from "./wasm-init";
-
-declare const TONK_SERVER_URL: string;
 
 // Helper to wait for PathIndex to sync from remote
 export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
@@ -85,10 +91,11 @@ export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
   });
 }
 
-// Auto-initialize Tonk from cache if available
+// Auto-initialize Tonk from cache if available (only restores last active bundle)
 export async function autoInitializeFromCache(): Promise<void> {
   try {
-    // Try to restore appSlug, bundle, wsUrl, and namespace from cache
+    // Try to restore last active bundle ID first
+    const restoredBundleId = await restoreLastActiveBundleId();
     const restoredSlug = await restoreAppSlug();
     const bundleBytes = await restoreBundleBytes();
     const restoredWsUrl = await restoreWsUrl();
@@ -105,11 +112,20 @@ export async function autoInitializeFromCache(): Promise<void> {
       return;
     }
 
+    // Use restored bundle ID or namespace as the launcher bundle ID
+    const launcherBundleId = restoredBundleId || restoredNamespace;
+    if (!launcherBundleId) {
+      logger.debug(
+        "No launcher bundle ID found in cache, waiting for initialization message",
+      );
+      return;
+    }
+
     // Found cached state - auto-initialize
     logger.info("Auto-initializing from cache", {
       slug: restoredSlug,
       bundleSize: bundleBytes.length,
-      namespace: restoredNamespace,
+      launcherBundleId,
     });
 
     // Initialize WASM (singleton - safe to call multiple times)
@@ -122,19 +138,19 @@ export async function autoInitializeFromCache(): Promise<void> {
       rootId: manifest.rootId,
     });
 
-    // Create TonkCore instance with restored namespace for IndexedDB isolation
-    const storageConfig = restoredNamespace
-      ? { type: "indexeddb" as const, namespace: restoredNamespace }
-      : { type: "indexeddb" as const };
+    // Create TonkCore instance with namespace for IndexedDB isolation
+    const storageConfig = {
+      type: "indexeddb" as const,
+      namespace: launcherBundleId,
+    };
     const tonk = await TonkCore.fromBytes(bundleBytes, {
       storage: storageConfig,
     });
     logger.debug("TonkCore created from cached bundle", {
-      namespace: restoredNamespace,
+      namespace: launcherBundleId,
     });
 
     // Connect to websocket
-    // Use restored WS URL if available, otherwise check manifest, then fallback to build-time config
     const wsUrl = restoredWsUrl || getWsUrlFromManifest(manifest);
 
     // Ensure we persist the URL if we fell back to default
@@ -153,11 +169,11 @@ export async function autoInitializeFromCache(): Promise<void> {
     await waitForPathIndexSync(tonk);
     logger.info("Auto-initialization complete");
 
-    // Transition to active state
-    transitionTo({
+    // Set bundle state in map
+    setBundleState(launcherBundleId, {
       status: "active",
       bundleId: manifest.rootId,
-      ...(restoredNamespace && { launcherBundleId: restoredNamespace }),
+      launcherBundleId,
       tonk,
       manifest,
       appSlug: restoredSlug,
@@ -168,14 +184,14 @@ export async function autoInitializeFromCache(): Promise<void> {
       reconnectAttempts: 0,
     });
 
-    startHealthMonitoring();
+    // Set as last active
+    setLastActiveBundleId(launcherBundleId);
+
+    startHealthMonitoring(launcherBundleId);
   } catch (error) {
     logger.error("Auto-initialization failed", {
       error: error instanceof Error ? error.message : String(error),
     });
-
-    // Reset to idle state
-    transitionTo({ status: "idle" });
 
     // Clear cache
     await clearAllCache();
@@ -194,15 +210,15 @@ export async function autoInitializeFromCache(): Promise<void> {
   }
 }
 
-// Load a new bundle
+// Load a new bundle (or return existing if already loaded)
 export async function loadBundle(
   bundleBytes: Uint8Array,
   serverUrl: string,
+  launcherBundleId: string,
   _messageId?: string,
   cachedManifest?: Manifest,
-  launcherBundleId?: string,
 ): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
-  logger.debug("Loading new bundle", {
+  logger.debug("Loading bundle", {
     byteLength: bundleBytes.length,
     serverUrl,
     hasCachedManifest: !!cachedManifest,
@@ -210,7 +226,29 @@ export async function loadBundle(
   });
 
   try {
-    const state = getState();
+    // Check if this bundle is already loaded
+    const existingState = getBundleState(launcherBundleId);
+    if (existingState?.status === "active") {
+      logger.debug("Bundle already loaded, skipping reload", {
+        launcherBundleId,
+        bundleId: existingState.bundleId,
+      });
+      // Update last active
+      setLastActiveBundleId(launcherBundleId);
+      await persistLastActiveBundleId(launcherBundleId);
+      return { success: true, skipped: true };
+    }
+
+    // If bundle is currently loading, wait for it
+    if (existingState?.status === "loading") {
+      logger.debug("Bundle is currently loading, waiting...", {
+        launcherBundleId,
+      });
+      await existingState.promise;
+      setLastActiveBundleId(launcherBundleId);
+      await persistLastActiveBundleId(launcherBundleId);
+      return { success: true, skipped: true };
+    }
 
     // Initialize WASM (singleton - safe to call multiple times)
     await ensureWasmInitialized();
@@ -233,32 +271,27 @@ export async function loadBundle(
       logger.debug("Bundle manifest extracted", { rootId: manifest.rootId });
     }
 
-    // Check if we already have this bundle loaded by comparing launcherBundleId
-    // We use launcherBundleId (IndexedDB key) instead of rootId (manifest hash) because
-    // multiple bundles can share the same rootId if they have the same code but different data
-    if (
-      state.status === "active" &&
-      launcherBundleId &&
-      state.launcherBundleId === launcherBundleId
-    ) {
-      logger.debug(
-        "Bundle already loaded with same launcherBundleId, skipping reload",
-        {
-          launcherBundleId,
-          rootId: manifest.rootId,
-        },
-      );
-      return { success: true, skipped: true };
-    }
+    // Create loading state with promise
+    let resolveLoading: () => void;
+    const loadingPromise = new Promise<void>((resolve) => {
+      resolveLoading = resolve;
+    });
+
+    setBundleState(launcherBundleId, {
+      status: "loading",
+      launcherBundleId,
+      bundleId: manifest.rootId,
+      promise: loadingPromise,
+    });
 
     // Create new TonkCore instance with namespace for IndexedDB isolation
-    // Using launcherBundleId ensures each tonk gets its own separate database
     logger.debug("Creating new TonkCore from bundle bytes", {
       launcherBundleId,
     });
-    const loadStorageConfig = launcherBundleId
-      ? { type: "indexeddb" as const, namespace: launcherBundleId }
-      : { type: "indexeddb" as const };
+    const loadStorageConfig = {
+      type: "indexeddb" as const,
+      namespace: launcherBundleId,
+    };
     const newTonk = await TonkCore.fromBytes(bundleBytes, {
       storage: loadStorageConfig,
     });
@@ -310,18 +343,14 @@ export async function loadBundle(
       logger.debug("PathIndex sync complete after loadBundle");
     }
 
-    // Get current app slug if we have one, or use a default
-    const currentState = getState();
-    const appSlug =
-      currentState.status === "active"
-        ? currentState.appSlug
-        : manifest.entrypoints?.[0] || "app";
+    // Get app slug from manifest or use default
+    const appSlug = manifest.entrypoints?.[0] || "app";
 
-    // Transition to active state (this will cleanup old state)
-    transitionTo({
+    // Set active state in map
+    setBundleState(launcherBundleId, {
       status: "active",
       bundleId: manifest.rootId,
-      ...(launcherBundleId && { launcherBundleId }),
+      launcherBundleId,
       tonk: newTonk,
       manifest,
       appSlug,
@@ -332,26 +361,36 @@ export async function loadBundle(
       reconnectAttempts: 0,
     });
 
-    startHealthMonitoring();
+    // Set as last active and persist
+    setLastActiveBundleId(launcherBundleId);
+    await persistLastActiveBundleId(launcherBundleId);
+
+    startHealthMonitoring(launcherBundleId);
 
     // Persist bundle bytes and namespace to survive service worker restarts
     await persistBundleBytes(bundleBytes);
-    if (launcherBundleId) {
-      await persistNamespace(launcherBundleId);
-    }
+    await persistNamespace(launcherBundleId);
     logger.debug("Bundle bytes and namespace persisted to cache", {
       namespace: launcherBundleId,
     });
 
-    logger.info("Bundle loaded successfully", { rootId: manifest.rootId });
+    // Resolve the loading promise
+    resolveLoading!();
+
+    logger.info("Bundle loaded successfully", {
+      rootId: manifest.rootId,
+      launcherBundleId,
+    });
     return { success: true };
   } catch (error) {
     logger.error("Failed to load bundle", {
       error: error instanceof Error ? error.message : String(error),
+      launcherBundleId,
     });
 
-    transitionTo({
+    setBundleState(launcherBundleId, {
       status: "error",
+      launcherBundleId,
       error: error instanceof Error ? error : new Error(String(error)),
     });
 
@@ -360,4 +399,24 @@ export async function loadBundle(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+// Unload a bundle (cleanup resources and remove from map)
+export async function unloadBundle(launcherBundleId: string): Promise<boolean> {
+  logger.debug("Unloading bundle", { launcherBundleId });
+
+  const removed = removeBundleState(launcherBundleId);
+
+  if (removed) {
+    logger.info("Bundle unloaded successfully", { launcherBundleId });
+
+    // If this was the last active bundle, clear cache
+    if (getLastActiveBundleId() === null) {
+      await clearAllCache();
+    }
+  } else {
+    logger.warn("Bundle not found for unload", { launcherBundleId });
+  }
+
+  return removed;
 }

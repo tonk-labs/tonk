@@ -45,14 +45,21 @@ function AppInit({ children }: { children: React.ReactNode }) {
 }
 
 // Calculate basename from current URL
-// Handles: /space/<space-name> (launcher), standalone dev mode
+// Handles: /space/<launcherBundleId>/<appSlug> (launcher with multi-bundle isolation), standalone dev mode
 function getBasename(): string {
   const path = window.location.pathname;
 
-  // Running in launcher: /space/<space-name>/...
-  const spaceMatch = path.match(/^\/space\/([^/]+)/);
+  // Running in launcher with multi-bundle isolation: /space/<launcherBundleId>/<appSlug>/...
+  // We need to include both the bundleId and appSlug in the basename
+  const spaceMatch = path.match(/^\/space\/([^/]+)\/([^/]+)/);
   if (spaceMatch) {
-    return `/space/${spaceMatch[1]}`;
+    return `/space/${spaceMatch[1]}/${spaceMatch[2]}`;
+  }
+
+  // Fallback for old URL structure: /space/<appSlug>/...
+  const oldSpaceMatch = path.match(/^\/space\/([^/]+)/);
+  if (oldSpaceMatch) {
+    return `/space/${oldSpaceMatch[1]}`;
   }
 
   // Standalone dev mode: use first path segment as basename

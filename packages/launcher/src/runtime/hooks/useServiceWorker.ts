@@ -48,75 +48,84 @@ export function useServiceWorker() {
   }, []);
 
   // Query available apps from service worker
-  const queryAvailableApps = useCallback(async (): Promise<string[]> => {
-    try {
-      if (!navigator.serviceWorker.controller) {
-        console.log("No service worker controller, returning empty app list");
-        return [];
-      }
-
-      // Try to get apps from manifest entrypoints
+  const queryAvailableApps = useCallback(
+    async (launcherBundleId: string): Promise<string[]> => {
       try {
-        const manifestResponse = await sendMessage<ServiceWorkerMessage>({
-          type: "getManifest",
+        if (!navigator.serviceWorker.controller) {
+          console.log("No service worker controller, returning empty app list");
+          return [];
+        }
+
+        // Try to get apps from manifest entrypoints
+        try {
+          const manifestResponse = await sendMessage<ServiceWorkerMessage>({
+            type: "getManifest",
+            launcherBundleId,
+          });
+
+          if (manifestResponse.success && manifestResponse.data?.entrypoints) {
+            const apps = manifestResponse.data.entrypoints;
+            if (apps.length > 0) {
+              console.log("Extracted apps from manifest entrypoints:", apps);
+              return apps;
+            }
+          }
+        } catch (_manifestError) {
+          console.log(
+            "Could not get manifest, falling back to directory listing",
+          );
+        }
+
+        // Fallback: use first listed root directory
+        const response = await sendMessage<ServiceWorkerMessage>({
+          type: "listDirectory",
+          path: "/",
+          launcherBundleId,
         });
 
-        if (manifestResponse.success && manifestResponse.data?.entrypoints) {
-          const apps = manifestResponse.data.entrypoints;
-          if (apps.length > 0) {
-            console.log("Extracted apps from manifest entrypoints:", apps);
-            return apps;
-          }
+        if (response.success && response.data) {
+          const apps = response.data
+            .filter((file: { type: string }) => file.type === "directory")
+            .map((file: { name: string }) => file.name);
+          console.log("Extracted apps from directory listing:", apps);
+          return apps;
         }
-      } catch (_manifestError) {
-        console.log(
-          "Could not get manifest, falling back to directory listing",
-        );
-      }
 
-      // Fallback: use first listed root directory
-      const response = await sendMessage<ServiceWorkerMessage>({
-        type: "listDirectory",
-        path: "/",
-      });
-
-      if (response.success && response.data) {
-        const apps = response.data
-          .filter((file: { type: string }) => file.type === "directory")
-          .map((file: { name: string }) => file.name);
-        console.log("Extracted apps from directory listing:", apps);
-        return apps;
-      }
-
-      return [];
-    } catch (error: unknown) {
-      // If VFS not initialized, return empty array instead of failing
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      if (errorMessage?.includes("not initialized")) {
-        console.log("VFS not initialized yet, returning empty app list");
         return [];
+      } catch (error: unknown) {
+        // If VFS not initialized, return empty array instead of failing
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        if (errorMessage?.includes("not initialized")) {
+          console.log("VFS not initialized yet, returning empty app list");
+          return [];
+        }
+        console.error("Failed to query apps:", error);
+        throw error;
       }
-      console.error("Failed to query apps:", error);
-      throw error;
-    }
-  }, [sendMessage]);
+    },
+    [sendMessage],
+  );
 
   // Confirm boot and redirect to app
+  // New URL structure: /space/<launcherBundleId>/<appSlug>/
   const confirmBoot = useCallback(
-    async (appSlug: string) => {
-      console.log("Booting application:", appSlug);
+    async (appSlug: string, launcherBundleId: string) => {
+      console.log("Booting application:", { appSlug, launcherBundleId });
       showLoadingScreen(`Loading ${appSlug}...`);
 
       if (navigator.serviceWorker.controller) {
         navigator.serviceWorker.controller.postMessage({
           type: "setAppSlug",
           slug: appSlug,
+          launcherBundleId,
         });
 
         localStorage.setItem("appSlug", appSlug);
-        // Navigate to /space/<space-name>/ - SW will serve from VFS
-        window.location.href = `/space/${appSlug}/`;
+        localStorage.setItem("launcherBundleId", launcherBundleId);
+
+        // Navigate to new URL structure: /space/<launcherBundleId>/<appSlug>/
+        window.location.href = `/space/${launcherBundleId}/${appSlug}/`;
       } else {
         showError("Service worker not ready. Please refresh the page.");
       }

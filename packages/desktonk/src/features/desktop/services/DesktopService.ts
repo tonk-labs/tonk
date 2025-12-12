@@ -298,70 +298,6 @@ export class DesktopService {
   }
 
   /**
-   * Pause the service - clears state and stops watching but keeps listeners.
-   * Called when iframe becomes inactive to prevent cross-contamination.
-   * Use initialize() to resume after reactivation.
-   */
-  async pause(): Promise<void> {
-    console.log("[DesktopService] Pausing - clearing state");
-
-    const vfs = getVFSService();
-
-    // Clear pending saves
-    for (const timeout of this.pendingSaves.values()) {
-      clearTimeout(timeout);
-    }
-    this.pendingSaves.clear();
-
-    // Clear pending files change debounce
-    if (this.filesChangeTimeout) {
-      clearTimeout(this.filesChangeTimeout);
-      this.filesChangeTimeout = null;
-    }
-
-    // Stop directory watchers
-    if (this.filesWatcherId) {
-      try {
-        await vfs.unwatchDirectory(this.filesWatcherId);
-      } catch (e) {
-        /* ignore - VFS may be paused */
-      }
-      this.filesWatcherId = null;
-    }
-
-    if (this.layoutWatcherId) {
-      try {
-        await vfs.unwatchDirectory(this.layoutWatcherId);
-      } catch (e) {
-        /* ignore - VFS may be paused */
-      }
-      this.layoutWatcherId = null;
-    }
-
-    // Stop position file watchers
-    for (const [fileId, watchId] of this.positionFileWatchers.entries()) {
-      try {
-        await vfs.unwatchFile(watchId);
-      } catch (e) {
-        /* ignore - VFS may be paused */
-      }
-    }
-    this.positionFileWatchers.clear();
-
-    // Clear in-memory state
-    this.files.clear();
-    this.positions.clear();
-
-    // Mark as uninitialized (will need initialize() to restart)
-    this.initialized = false;
-    this.isLoading = true;
-
-    // DON'T clear listeners - they'll get the new state on resume
-    // Notify listeners of the cleared state
-    this.notifyListeners();
-  }
-
-  /**
    * Cleanup and stop watching.
    */
   async destroy(): Promise<void> {
@@ -755,11 +691,5 @@ export function resetDesktopService(): void {
   if (desktopServiceInstance) {
     desktopServiceInstance.destroy();
     desktopServiceInstance = null;
-  }
-}
-
-export async function pauseDesktopService(): Promise<void> {
-  if (desktopServiceInstance) {
-    await desktopServiceInstance.pause();
   }
 }

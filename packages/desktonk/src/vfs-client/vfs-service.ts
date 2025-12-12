@@ -15,8 +15,8 @@ const verbose = () => false;
 
 export class VFSService {
   private initialized = false;
-  private paused = false;
   private messageId = 0;
+  private launcherBundleId: string | null = null;
   private pendingRequests = new Map<
     string,
     {
@@ -48,6 +48,41 @@ export class VFSService {
     } else {
       console.error("[VFSService] Service Worker not supported");
     }
+
+    // Try to extract launcherBundleId from URL on construction
+    this.extractBundleIdFromUrl();
+  }
+
+  /**
+   * Extract launcherBundleId from the current URL
+   * URL structure: /space/<launcherBundleId>/<appSlug>/...
+   */
+  private extractBundleIdFromUrl(): void {
+    if (typeof window === "undefined") return;
+
+    const match = window.location.pathname.match(/^\/space\/([^/]+)\/[^/]+/);
+    if (match) {
+      this.launcherBundleId = match[1];
+      console.log(
+        "[VFSService] Extracted launcherBundleId from URL:",
+        this.launcherBundleId,
+      );
+    }
+  }
+
+  /**
+   * Set the launcher bundle ID for routing messages to the correct TonkCore
+   */
+  setLauncherBundleId(id: string): void {
+    this.launcherBundleId = id;
+    console.log("[VFSService] Set launcherBundleId:", id);
+  }
+
+  /**
+   * Get the current launcher bundle ID
+   */
+  getLauncherBundleId(): string | null {
+    return this.launcherBundleId;
   }
 
   onConnectionStateChange(listener: ConnectionStateListener): () => void {
@@ -77,9 +112,6 @@ export class VFSService {
   }
 
   private handleMessage(event: MessageEvent): void {
-    // Ignore messages while paused (prevents cross-contamination between bundles)
-    if (this.paused) return;
-
     const response = event.data as VFSWorkerResponse;
 
     // Handle ready message
@@ -192,6 +224,11 @@ export class VFSService {
     this.notifyConnectionStateChange("connecting");
     await this.ensureServiceWorker();
 
+    // Try to extract bundleId from URL if not already set
+    if (!this.launcherBundleId) {
+      this.extractBundleIdFromUrl();
+    }
+
     try {
       // Check if already initialized/running by asking for server URL
       const id = this.generateId();
@@ -253,13 +290,19 @@ export class VFSService {
   ): Promise<T> {
     const controller = await this.ensureServiceWorker();
 
+    // Include launcherBundleId in all messages
+    const messageWithBundleId = {
+      ...message,
+      launcherBundleId: this.launcherBundleId,
+    };
+
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(message.id, {
         resolve: resolve as (value: unknown) => void,
         reject,
       });
 
-      controller.postMessage(message);
+      controller.postMessage(messageWithBundleId);
 
       // Timeout after 30 seconds
       setTimeout(() => {
@@ -540,6 +583,7 @@ export class VFSService {
     this.watcherMetadata.clear();
     this.connectionListeners.clear();
     this.initialized = false;
+    this.launcherBundleId = null;
     if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
       navigator.serviceWorker.removeEventListener(
         "message",
@@ -550,16 +594,13 @@ export class VFSService {
 
   /**
    * Reset the connection state and re-establish watchers.
-   * Called when the underlying TonkCore changes (e.g., switching between tonks).
+   * Called when the app is reactivated after being in the background.
    */
   async reset(): Promise<void> {
-    console.log("[VFSService] Resetting connection for new TonkCore...");
+    console.log("[VFSService] Resetting connection...");
 
-    // Clear paused state (we're being reactivated)
-    this.paused = false;
-
-    // Clear pending requests (they won't be valid for new TonkCore)
-    for (const [id, pending] of this.pendingRequests) {
+    // Clear pending requests (they won't be valid)
+    for (const [, pending] of this.pendingRequests) {
       pending.reject(new Error("Connection reset"));
     }
     this.pendingRequests.clear();
@@ -571,71 +612,6 @@ export class VFSService {
     await this.connect();
 
     console.log("[VFSService] Reset complete");
-  }
-
-  /**
-   * Pause the VFS service - stops all watchers but keeps metadata for resuming.
-   * Called when the iframe becomes hidden/inactive to prevent cross-contamination
-   * between bundles sharing the same service worker.
-   */
-  async pause(): Promise<void> {
-    if (this.paused) return;
-
-    console.log("[VFSService] Pausing - stopping all watchers");
-    this.paused = true;
-
-    // Reject pending requests (they'll be invalid after TonkCore changes)
-    for (const [id, pending] of this.pendingRequests) {
-      pending.reject(new Error("VFS paused"));
-    }
-    this.pendingRequests.clear();
-
-    // Unwatch all files/directories (but keep metadata for resume via reset())
-    const unwatchPromises: Promise<void>[] = [];
-
-    for (const [watchId, metadata] of this.watcherMetadata.entries()) {
-      try {
-        if (metadata.type === "file") {
-          unwatchPromises.push(
-            this.sendMessage<void>({
-              type: "unwatchFile",
-              id: watchId,
-              path: "",
-            }).catch(() => {
-              // Ignore errors - SW may have already cleaned up
-            }),
-          );
-        } else {
-          unwatchPromises.push(
-            this.sendMessage<void>({
-              type: "unwatchDirectory",
-              id: watchId,
-              path: "",
-            }).catch(() => {
-              // Ignore errors - SW may have already cleaned up
-            }),
-          );
-        }
-      } catch (err) {
-        // Ignore errors during cleanup
-      }
-    }
-
-    // Wait for all unwatch operations to complete (with timeout)
-    await Promise.race([
-      Promise.all(unwatchPromises),
-      new Promise((resolve) => setTimeout(resolve, 1000)), // 1s timeout
-    ]);
-
-    // Notify listeners that we're disconnected
-    this.notifyConnectionStateChange("disconnected");
-  }
-
-  /**
-   * Check if the service is currently paused.
-   */
-  isPaused(): boolean {
-    return this.paused;
   }
 }
 

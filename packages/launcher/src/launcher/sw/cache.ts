@@ -1,12 +1,13 @@
 import { logger } from "./utils/logging";
 
 // Cache API constants for persisting state across service worker restarts
-// v2: Updated for /space/<space-name>/ URL structure
-export const CACHE_NAME = "tonk-sw-state-v2";
+// v3: Updated for multi-bundle isolation with /space/<launcherBundleId>/<appSlug>/ URL structure
+export const CACHE_NAME = "tonk-sw-state-v3";
 export const APP_SLUG_URL = "/tonk-state/appSlug";
 export const BUNDLE_BYTES_URL = "/tonk-state/bundleBytes";
 export const WS_URL_KEY = "/tonk-state/wsUrl";
 export const NAMESPACE_KEY = "/tonk-state/namespace";
+export const LAST_ACTIVE_BUNDLE_ID_KEY = "/tonk-state/lastActiveBundleId";
 
 export async function persistAppSlug(slug: string | null): Promise<void> {
   try {
@@ -178,6 +179,50 @@ export async function restoreNamespace(): Promise<string | null> {
   }
 }
 
+// Persist last active bundle ID
+export async function persistLastActiveBundleId(
+  id: string | null,
+): Promise<void> {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+
+    if (id === null) {
+      await cache.delete(LAST_ACTIVE_BUNDLE_ID_KEY);
+    } else {
+      const response = new Response(JSON.stringify({ id }), {
+        headers: { "Content-Type": "application/json" },
+      });
+      await cache.put(LAST_ACTIVE_BUNDLE_ID_KEY, response);
+    }
+
+    logger.debug("Last active bundle ID persisted to cache", { id });
+  } catch (error) {
+    logger.error("Failed to persist last active bundle ID", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+// Restore last active bundle ID
+export async function restoreLastActiveBundleId(): Promise<string | null> {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const response = await cache.match(LAST_ACTIVE_BUNDLE_ID_KEY);
+
+    if (!response) {
+      return null;
+    }
+
+    const data = await response.json();
+    return data.id || null;
+  } catch (error) {
+    logger.error("Failed to restore last active bundle ID", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 // Clear all cached state
 export async function clearAllCache(): Promise<void> {
   await Promise.all([
@@ -185,5 +230,6 @@ export async function clearAllCache(): Promise<void> {
     persistBundleBytes(null),
     persistWsUrl(null),
     persistNamespace(null),
+    persistLastActiveBundleId(null),
   ]);
 }

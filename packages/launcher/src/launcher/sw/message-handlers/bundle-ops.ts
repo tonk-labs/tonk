@@ -1,7 +1,7 @@
 import type { Manifest } from "@tonk/core/slim";
 import { Bundle } from "@tonk/core/slim";
-import { getTonk } from "../state";
-import { loadBundle } from "../tonk-lifecycle";
+import { getTonkForBundle } from "../state";
+import { loadBundle, unloadBundle } from "../tonk-lifecycle";
 import { logger } from "../utils/logging";
 import { postResponse } from "../utils/response";
 
@@ -12,7 +12,7 @@ export async function handleLoadBundle(message: {
   bundleBytes: ArrayBuffer;
   serverUrl?: string;
   manifest?: Manifest;
-  launcherBundleId?: string;
+  launcherBundleId: string;
 }): Promise<void> {
   logger.debug("Loading new bundle", {
     byteLength: message.bundleBytes.byteLength,
@@ -21,15 +21,25 @@ export async function handleLoadBundle(message: {
     launcherBundleId: message.launcherBundleId,
   });
 
+  if (!message.launcherBundleId) {
+    postResponse({
+      type: "loadBundle",
+      id: message.id,
+      success: false,
+      error: "launcherBundleId is required",
+    });
+    return;
+  }
+
   const serverUrl = message.serverUrl || TONK_SERVER_URL;
   const bundleBytes = new Uint8Array(message.bundleBytes);
 
   const result = await loadBundle(
     bundleBytes,
     serverUrl,
+    message.launcherBundleId,
     message.id,
     message.manifest,
-    message.launcherBundleId,
   );
 
   postResponse({
@@ -41,10 +51,42 @@ export async function handleLoadBundle(message: {
   });
 }
 
-export async function handleToBytes(message: { id: string }): Promise<void> {
-  logger.debug("Converting tonk to bytes");
+export async function handleUnloadBundle(message: {
+  id?: string;
+  launcherBundleId: string;
+}): Promise<void> {
+  logger.debug("Unloading bundle", {
+    launcherBundleId: message.launcherBundleId,
+  });
+
+  if (!message.launcherBundleId) {
+    postResponse({
+      type: "unloadBundle",
+      id: message.id,
+      success: false,
+      error: "launcherBundleId is required",
+    });
+    return;
+  }
+
+  const result = await unloadBundle(message.launcherBundleId);
+
+  postResponse({
+    type: "unloadBundle",
+    id: message.id,
+    success: result,
+  });
+}
+
+export async function handleToBytes(message: {
+  id: string;
+  launcherBundleId: string;
+}): Promise<void> {
+  logger.debug("Converting tonk to bytes", {
+    launcherBundleId: message.launcherBundleId,
+  });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error("Tonk not initialized");
     }
@@ -77,10 +119,13 @@ export async function handleToBytes(message: { id: string }): Promise<void> {
 
 export async function handleForkToBytes(message: {
   id: string;
+  launcherBundleId: string;
 }): Promise<void> {
-  logger.debug("Forking tonk to bytes");
+  logger.debug("Forking tonk to bytes", {
+    launcherBundleId: message.launcherBundleId,
+  });
   try {
-    const tonkInstance = getTonk();
+    const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
       throw new Error("Tonk not initialized");
     }
