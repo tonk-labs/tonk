@@ -8,7 +8,7 @@ import {
 } from "./state";
 import { HEALTH_CHECK_INTERVAL, MAX_RECONNECT_ATTEMPTS } from "./types";
 import { logger } from "./utils/logging";
-import { postResponse } from "./utils/response";
+import { broadcastToAllClients } from "./utils/response";
 
 // Continuous retry flag
 const continuousRetryEnabled = true;
@@ -58,7 +58,11 @@ export async function attemptReconnect(
         launcherBundleId,
         attempts,
       });
-      await postResponse({ type: "reconnectionFailed", launcherBundleId });
+      // Connection status updates are broadcast to all clients
+      await broadcastToAllClients({
+        type: "reconnectionFailed",
+        launcherBundleId,
+      });
       return;
     }
   }
@@ -70,7 +74,8 @@ export async function attemptReconnect(
     wsUrl,
   });
 
-  await postResponse({
+  // Connection status updates are broadcast to all clients
+  await broadcastToAllClients({
     type: "reconnecting",
     launcherBundleId,
     attempt: attempts,
@@ -87,7 +92,8 @@ export async function attemptReconnect(
       setConnectionHealth(launcherBundleId, true);
       resetReconnectAttempts(launcherBundleId);
       logger.info("Reconnection successful", { launcherBundleId });
-      await postResponse({ type: "reconnected", launcherBundleId });
+      // Connection status updates are broadcast to all clients
+      await broadcastToAllClients({ type: "reconnected", launcherBundleId });
 
       await reestablishWatchers(launcherBundleId);
     } else {
@@ -127,7 +133,8 @@ export async function reestablishWatchers(
     watcherCount: watcherEntries.length,
   });
 
-  await postResponse({
+  // Connection status updates are broadcast to all clients
+  await broadcastToAllClients({
     type: "watchersReestablished",
     launcherBundleId,
     count: watcherEntries.length,
@@ -167,7 +174,8 @@ export function startHealthMonitoring(launcherBundleId: string): void {
       logger.warn("Connection lost, starting reconnection attempts", {
         launcherBundleId,
       });
-      await postResponse({ type: "disconnected", launcherBundleId });
+      // Connection status updates are broadcast to all clients
+      await broadcastToAllClients({ type: "disconnected", launcherBundleId });
       attemptReconnect(launcherBundleId);
     } else if (isHealthy && !currentBundle.connectionHealthy) {
       setConnectionHealth(launcherBundleId, true);

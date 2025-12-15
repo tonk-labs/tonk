@@ -1,5 +1,10 @@
 import type { Manifest, TonkCore } from "@tonk/core/slim";
-import type { ActiveBundleState, BundleState, BundleStateMap } from "./types";
+import type {
+  ActiveBundleState,
+  BundleState,
+  BundleStateMap,
+  WatcherEntry,
+} from "./types";
 import { logger } from "./utils/logging";
 
 // Global state - Map of bundle states keyed by launcherBundleId
@@ -167,9 +172,9 @@ function cleanupActiveState(activeState: ActiveBundleState): void {
   }
 
   // Stop all watchers
-  activeState.watchers.forEach((watcher, id) => {
+  activeState.watchers.forEach((entry, id) => {
     try {
-      watcher.stop();
+      entry.watcher.stop();
       logger.debug("Stopped watcher", { id });
     } catch (error) {
       logger.warn("Error stopping watcher", {
@@ -255,14 +260,16 @@ export function setHealthCheckInterval(
 }
 
 // Add a watcher to a bundle
+// Add a watcher to a bundle with client ID for routing callbacks
 export function addWatcher(
   launcherBundleId: string,
   watcherId: string,
   watcher: { stop: () => void },
+  clientId: string,
 ): void {
   const state = bundleStates.get(launcherBundleId);
   if (state?.status === "active") {
-    state.watchers.set(watcherId, watcher);
+    state.watchers.set(watcherId, { watcher, clientId });
   }
 }
 
@@ -273,10 +280,10 @@ export function removeWatcher(
 ): boolean {
   const state = bundleStates.get(launcherBundleId);
   if (state?.status === "active") {
-    const watcher = state.watchers.get(watcherId);
-    if (watcher) {
+    const entry = state.watchers.get(watcherId);
+    if (entry) {
       try {
-        watcher.stop();
+        entry.watcher.stop();
       } catch (error) {
         logger.warn("Error stopping watcher on remove", {
           watcherId,
@@ -290,11 +297,11 @@ export function removeWatcher(
   return false;
 }
 
-// Get watcher by ID from a bundle
-export function getWatcher(
+// Get watcher entry by ID from a bundle (includes clientId for routing)
+export function getWatcherEntry(
   launcherBundleId: string,
   watcherId: string,
-): { stop: () => void } | undefined {
+): WatcherEntry | undefined {
   const state = bundleStates.get(launcherBundleId);
   if (state?.status === "active") {
     return state.watchers.get(watcherId);
@@ -302,10 +309,19 @@ export function getWatcher(
   return undefined;
 }
 
+// Get client ID for a watcher (for routing async callbacks)
+export function getWatcherClientId(
+  launcherBundleId: string,
+  watcherId: string,
+): string | undefined {
+  const entry = getWatcherEntry(launcherBundleId, watcherId);
+  return entry?.clientId;
+}
+
 // Get all watcher entries for a bundle (for reestablishing after reconnect)
 export function getWatcherEntries(
   launcherBundleId: string,
-): [string, { stop: () => void }][] {
+): [string, WatcherEntry][] {
   const state = bundleStates.get(launcherBundleId);
   if (state?.status === "active") {
     return Array.from(state.watchers.entries());

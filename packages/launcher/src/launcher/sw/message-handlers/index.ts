@@ -55,7 +55,10 @@ const allowedWhenUninitialized = [
   "setAppSlug",
 ];
 
-export async function handleMessage(message: Message): Promise<void> {
+export async function handleMessage(
+  message: Message,
+  sourceClient: Client,
+): Promise<void> {
   const msgType = message.type as string;
   const msgId = message.id as string | undefined;
   const launcherBundleId = message.launcherBundleId as string | undefined;
@@ -95,12 +98,15 @@ export async function handleMessage(message: Message): Promise<void> {
         type: msgType,
       });
       if (msgId) {
-        postResponse({
-          type: msgType,
-          id: msgId,
-          success: false,
-          error: "No bundle context. Please load a bundle first.",
-        });
+        postResponse(
+          {
+            type: msgType,
+            id: msgId,
+            success: false,
+            error: "No bundle context. Please load a bundle first.",
+          },
+          sourceClient,
+        );
       }
       return;
     }
@@ -113,12 +119,15 @@ export async function handleMessage(message: Message): Promise<void> {
         status: state?.status || "none",
       });
       if (msgId) {
-        postResponse({
-          type: msgType,
-          id: msgId,
-          success: false,
-          error: "Bundle not initialized. Please load a bundle first.",
-        });
+        postResponse(
+          {
+            type: msgType,
+            id: msgId,
+            success: false,
+            error: "Bundle not initialized. Please load a bundle first.",
+          },
+          sourceClient,
+        );
       }
       return;
     }
@@ -131,204 +140,276 @@ export async function handleMessage(message: Message): Promise<void> {
   switch (msgType) {
     // Init operations
     case "init":
-      await handleInit({
-        ...(msgId !== undefined && { id: msgId }),
-        manifest: message.manifest as ArrayBuffer,
-        ...(message.wsUrl !== undefined && { wsUrl: message.wsUrl as string }),
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleInit(
+        {
+          ...(msgId !== undefined && { id: msgId }),
+          manifest: message.manifest as ArrayBuffer,
+          ...(message.wsUrl !== undefined && {
+            wsUrl: message.wsUrl as string,
+          }),
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "initializeFromUrl":
-      await handleInitializeFromUrl({
-        ...(msgId !== undefined && { id: msgId }),
-        ...(message.manifestUrl !== undefined && {
-          manifestUrl: message.manifestUrl as string,
-        }),
-        ...(message.wasmUrl !== undefined && {
-          wasmUrl: message.wasmUrl as string,
-        }),
-        ...(message.wsUrl !== undefined && { wsUrl: message.wsUrl as string }),
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleInitializeFromUrl(
+        {
+          ...(msgId !== undefined && { id: msgId }),
+          ...(message.manifestUrl !== undefined && {
+            manifestUrl: message.manifestUrl as string,
+          }),
+          ...(message.wasmUrl !== undefined && {
+            wasmUrl: message.wasmUrl as string,
+          }),
+          ...(message.wsUrl !== undefined && {
+            wsUrl: message.wsUrl as string,
+          }),
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "initializeFromBytes":
-      await handleInitializeFromBytes({
-        ...(msgId !== undefined && { id: msgId }),
-        bundleBytes: message.bundleBytes as ArrayBuffer,
-        ...(message.serverUrl !== undefined && {
-          serverUrl: message.serverUrl as string,
-        }),
-        ...(message.wsUrl !== undefined && { wsUrl: message.wsUrl as string }),
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleInitializeFromBytes(
+        {
+          ...(msgId !== undefined && { id: msgId }),
+          bundleBytes: message.bundleBytes as ArrayBuffer,
+          ...(message.serverUrl !== undefined && {
+            serverUrl: message.serverUrl as string,
+          }),
+          ...(message.wsUrl !== undefined && {
+            wsUrl: message.wsUrl as string,
+          }),
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "getServerUrl":
-      await handleGetServerUrl({
-        id: msgId as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleGetServerUrl(
+        {
+          id: msgId as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "getManifest":
-      await handleGetManifest({
-        id: msgId as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleGetManifest(
+        {
+          id: msgId as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     // Bundle operations
     case "loadBundle":
-      await handleLoadBundle({
-        ...(msgId !== undefined && { id: msgId }),
-        bundleBytes: message.bundleBytes as ArrayBuffer,
-        ...(message.serverUrl !== undefined && {
-          serverUrl: message.serverUrl as string,
-        }),
-        ...(message.manifest !== undefined && {
-          manifest: message.manifest as Manifest,
-        }),
-        launcherBundleId: message.launcherBundleId as string,
-      });
+      await handleLoadBundle(
+        {
+          ...(msgId !== undefined && { id: msgId }),
+          bundleBytes: message.bundleBytes as ArrayBuffer,
+          ...(message.serverUrl !== undefined && {
+            serverUrl: message.serverUrl as string,
+          }),
+          ...(message.manifest !== undefined && {
+            manifest: message.manifest as Manifest,
+          }),
+          launcherBundleId: message.launcherBundleId as string,
+        },
+        sourceClient,
+      );
       break;
 
     case "unloadBundle":
-      await handleUnloadBundle({
-        ...(msgId !== undefined && { id: msgId }),
-        launcherBundleId: message.launcherBundleId as string,
-      });
+      await handleUnloadBundle(
+        {
+          ...(msgId !== undefined && { id: msgId }),
+          launcherBundleId: message.launcherBundleId as string,
+        },
+        sourceClient,
+      );
       break;
 
     case "toBytes":
-      await handleToBytes({
-        id: msgId as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleToBytes(
+        {
+          id: msgId as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "forkToBytes":
-      await handleForkToBytes({
-        id: msgId as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleForkToBytes(
+        {
+          id: msgId as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     // File operations
     case "readFile":
-      await handleReadFile({
-        id: msgId as string,
-        path: message.path as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleReadFile(
+        {
+          id: msgId as string,
+          path: message.path as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "writeFile":
-      await handleWriteFile({
-        id: msgId as string,
-        path: message.path as string,
-        ...(message.create !== undefined && {
-          create: message.create as boolean,
-        }),
-        content: message.content as { bytes?: Uint8Array; content: unknown },
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleWriteFile(
+        {
+          id: msgId as string,
+          path: message.path as string,
+          ...(message.create !== undefined && {
+            create: message.create as boolean,
+          }),
+          content: message.content as { bytes?: Uint8Array; content: unknown },
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "deleteFile":
-      await handleDeleteFile({
-        id: msgId as string,
-        path: message.path as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleDeleteFile(
+        {
+          id: msgId as string,
+          path: message.path as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "rename":
-      await handleRename({
-        id: msgId as string,
-        oldPath: message.oldPath as string,
-        newPath: message.newPath as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleRename(
+        {
+          id: msgId as string,
+          oldPath: message.oldPath as string,
+          newPath: message.newPath as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "exists":
-      await handleExists({
-        id: msgId as string,
-        path: message.path as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleExists(
+        {
+          id: msgId as string,
+          path: message.path as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "patchFile":
-      await handlePatchFile({
-        id: msgId as string,
-        path: message.path as string,
-        jsonPath: message.jsonPath as string[],
-        value: message.value,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handlePatchFile(
+        {
+          id: msgId as string,
+          path: message.path as string,
+          jsonPath: message.jsonPath as string[],
+          value: message.value,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "updateFile":
-      await handleUpdateFile({
-        id: msgId as string,
-        path: message.path as string,
-        content: message.content,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleUpdateFile(
+        {
+          id: msgId as string,
+          path: message.path as string,
+          content: message.content,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     // Directory operations
     case "listDirectory":
-      await handleListDirectory({
-        id: msgId as string,
-        path: message.path as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleListDirectory(
+        {
+          id: msgId as string,
+          path: message.path as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     // Watch operations
     case "watchFile":
-      await handleWatchFile({
-        id: msgId as string,
-        path: message.path as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleWatchFile(
+        {
+          id: msgId as string,
+          path: message.path as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "unwatchFile":
-      await handleUnwatchFile({
-        id: msgId as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleUnwatchFile(
+        {
+          id: msgId as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "watchDirectory":
-      await handleWatchDirectory({
-        id: msgId as string,
-        path: message.path as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleWatchDirectory(
+        {
+          id: msgId as string,
+          path: message.path as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     case "unwatchDirectory":
-      await handleUnwatchDirectory({
-        id: msgId as string,
-        launcherBundleId: effectiveBundleId,
-      });
+      await handleUnwatchDirectory(
+        {
+          id: msgId as string,
+          launcherBundleId: effectiveBundleId,
+        },
+        sourceClient,
+      );
       break;
 
     default:
       logger.warn("Unknown message type", { type: msgType });
       if (msgId) {
-        postResponse({
-          type: msgType,
-          id: msgId,
-          success: false,
-          error: `Unknown message type: ${msgType}`,
-        });
+        postResponse(
+          {
+            type: msgType,
+            id: msgId,
+            success: false,
+            error: `Unknown message type: ${msgType}`,
+          },
+          sourceClient,
+        );
       }
   }
 }

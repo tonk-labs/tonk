@@ -7,13 +7,16 @@ import { postResponse } from "../utils/response";
 
 declare const TONK_SERVER_URL: string;
 
-export async function handleLoadBundle(message: {
-  id?: string;
-  bundleBytes: ArrayBuffer;
-  serverUrl?: string;
-  manifest?: Manifest;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleLoadBundle(
+  message: {
+    id?: string;
+    bundleBytes: ArrayBuffer;
+    serverUrl?: string;
+    manifest?: Manifest;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Loading new bundle", {
     byteLength: message.bundleBytes.byteLength,
     serverUrl: message.serverUrl,
@@ -22,12 +25,15 @@ export async function handleLoadBundle(message: {
   });
 
   if (!message.launcherBundleId) {
-    postResponse({
-      type: "loadBundle",
-      id: message.id,
-      success: false,
-      error: "launcherBundleId is required",
-    });
+    postResponse(
+      {
+        type: "loadBundle",
+        id: message.id,
+        success: false,
+        error: "launcherBundleId is required",
+      },
+      sourceClient,
+    );
     return;
   }
 
@@ -42,46 +48,61 @@ export async function handleLoadBundle(message: {
     message.manifest,
   );
 
-  postResponse({
-    type: "loadBundle",
-    id: message.id,
-    success: result.success,
-    skipped: result.skipped,
-    error: result.error,
-  });
+  postResponse(
+    {
+      type: "loadBundle",
+      id: message.id,
+      success: result.success,
+      skipped: result.skipped,
+      error: result.error,
+    },
+    sourceClient,
+  );
 }
 
-export async function handleUnloadBundle(message: {
-  id?: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleUnloadBundle(
+  message: {
+    id?: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Unloading bundle", {
     launcherBundleId: message.launcherBundleId,
   });
 
   if (!message.launcherBundleId) {
-    postResponse({
-      type: "unloadBundle",
-      id: message.id,
-      success: false,
-      error: "launcherBundleId is required",
-    });
+    postResponse(
+      {
+        type: "unloadBundle",
+        id: message.id,
+        success: false,
+        error: "launcherBundleId is required",
+      },
+      sourceClient,
+    );
     return;
   }
 
   const result = await unloadBundle(message.launcherBundleId);
 
-  postResponse({
-    type: "unloadBundle",
-    id: message.id,
-    success: result,
-  });
+  postResponse(
+    {
+      type: "unloadBundle",
+      id: message.id,
+      success: result,
+    },
+    sourceClient,
+  );
 }
 
-export async function handleToBytes(message: {
-  id: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleToBytes(
+  message: {
+    id: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Converting tonk to bytes", {
     launcherBundleId: message.launcherBundleId,
   });
@@ -97,30 +118,39 @@ export async function handleToBytes(message: {
       byteLength: bytes.length,
       rootId,
     });
-    postResponse({
-      type: "toBytes",
-      id: message.id,
-      success: true,
-      data: bytes,
-      rootId,
-    });
+    postResponse(
+      {
+        type: "toBytes",
+        id: message.id,
+        success: true,
+        data: bytes,
+        rootId,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to convert tonk to bytes", {
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "toBytes",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "toBytes",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
-export async function handleForkToBytes(message: {
-  id: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleForkToBytes(
+  message: {
+    id: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Forking tonk to bytes", {
     launcherBundleId: message.launcherBundleId,
   });
@@ -138,22 +168,28 @@ export async function handleForkToBytes(message: {
     const rootId = forkedManifest.rootId;
 
     logger.debug("Tonk forked to bytes", { byteLength: bytes.length, rootId });
-    postResponse({
-      type: "forkToBytes",
-      id: message.id,
-      success: true,
-      data: bytes,
-      rootId,
-    });
+    postResponse(
+      {
+        type: "forkToBytes",
+        id: message.id,
+        success: true,
+        data: bytes,
+        rootId,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to fork tonk to bytes", {
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "forkToBytes",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "forkToBytes",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }

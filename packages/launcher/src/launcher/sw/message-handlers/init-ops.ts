@@ -17,17 +17,20 @@ import {
 import { waitForPathIndexSync } from "../tonk-lifecycle";
 import { logger } from "../utils/logging";
 import { getWsUrlFromManifest } from "../utils/network";
-import { postResponse } from "../utils/response";
+import { broadcastToAllClients, postResponse } from "../utils/response";
 import { ensureWasmInitialized } from "../wasm-init";
 
 declare const TONK_SERVER_URL: string;
 
-export async function handleInit(message: {
-  id?: string;
-  manifest: ArrayBuffer;
-  wsUrl?: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleInit(
+  message: {
+    id?: string;
+    manifest: ArrayBuffer;
+    wsUrl?: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Handling VFS init message", {
     manifestSize: message.manifest.byteLength,
     wsUrl: message.wsUrl,
@@ -42,10 +45,13 @@ export async function handleInit(message: {
       logger.debug("Tonk already initialized for bundle", {
         launcherBundleId: message.launcherBundleId,
       });
-      postResponse({
-        type: "init",
-        success: true,
-      });
+      postResponse(
+        {
+          type: "init",
+          success: true,
+        },
+        sourceClient,
+      );
       return;
     }
 
@@ -57,19 +63,25 @@ export async function handleInit(message: {
       try {
         await state.promise;
         logger.debug("Tonk loading completed");
-        postResponse({
-          type: "init",
-          success: true,
-        });
+        postResponse(
+          {
+            type: "init",
+            success: true,
+          },
+          sourceClient,
+        );
       } catch (error) {
         logger.error("Tonk loading failed", {
           error: error instanceof Error ? error.message : String(error),
         });
-        postResponse({
-          type: "init",
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        postResponse(
+          {
+            type: "init",
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          sourceClient,
+        );
       }
       return;
     }
@@ -79,11 +91,14 @@ export async function handleInit(message: {
       logger.error("Tonk initialization failed previously", {
         error: state.error.message,
       });
-      postResponse({
-        type: "init",
-        success: false,
-        error: state.error.message,
-      });
+      postResponse(
+        {
+          type: "init",
+          success: false,
+          error: state.error.message,
+        },
+        sourceClient,
+      );
       return;
     }
 
@@ -91,30 +106,39 @@ export async function handleInit(message: {
     logger.warn("Tonk is uninitialized, this is unexpected", {
       launcherBundleId: message.launcherBundleId,
     });
-    postResponse({
-      type: "init",
-      success: false,
-      error: "Tonk not initialized",
-    });
+    postResponse(
+      {
+        type: "init",
+        success: false,
+        error: "Tonk not initialized",
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to handle init message", {
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "init",
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "init",
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
-export async function handleInitializeFromUrl(message: {
-  id?: string;
-  manifestUrl?: string;
-  wasmUrl?: string;
-  wsUrl?: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleInitializeFromUrl(
+  message: {
+    id?: string;
+    manifestUrl?: string;
+    wasmUrl?: string;
+    wsUrl?: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Initializing from URL", {
     manifestUrl: message.manifestUrl,
     wasmUrl: message.wasmUrl,
@@ -186,11 +210,14 @@ export async function handleInitializeFromUrl(message: {
     logger.debug("Bundle bytes persisted");
 
     logger.info("Initialized from URL successfully");
-    postResponse({
-      type: "initializeFromUrl",
-      id: message.id,
-      success: true,
-    });
+    postResponse(
+      {
+        type: "initializeFromUrl",
+        id: message.id,
+        success: true,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to initialize from URL", {
       error: error instanceof Error ? error.message : String(error),
@@ -202,22 +229,28 @@ export async function handleInitializeFromUrl(message: {
       error: error instanceof Error ? error : new Error(String(error)),
     });
 
-    postResponse({
-      type: "initializeFromUrl",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "initializeFromUrl",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
-export async function handleInitializeFromBytes(message: {
-  id?: string;
-  bundleBytes: ArrayBuffer;
-  serverUrl?: string;
-  wsUrl?: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleInitializeFromBytes(
+  message: {
+    id?: string;
+    bundleBytes: ArrayBuffer;
+    serverUrl?: string;
+    wsUrl?: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Initializing from bytes", {
     byteLength: message.bundleBytes.byteLength,
     serverUrl: message.serverUrl,
@@ -285,11 +318,14 @@ export async function handleInitializeFromBytes(message: {
     logger.debug("Bundle bytes persisted");
 
     logger.info("Initialized from bytes successfully");
-    postResponse({
-      type: "initializeFromBytes",
-      id: message.id,
-      success: true,
-    });
+    postResponse(
+      {
+        type: "initializeFromBytes",
+        id: message.id,
+        success: true,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to initialize from bytes", {
       error: error instanceof Error ? error.message : String(error),
@@ -301,32 +337,44 @@ export async function handleInitializeFromBytes(message: {
       error: error instanceof Error ? error : new Error(String(error)),
     });
 
-    postResponse({
-      type: "initializeFromBytes",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "initializeFromBytes",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
-export async function handleGetServerUrl(message: {
-  id: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleGetServerUrl(
+  message: {
+    id: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Getting server URL");
-  postResponse({
-    type: "getServerUrl",
-    id: message.id,
-    success: true,
-    data: TONK_SERVER_URL,
-  });
+  postResponse(
+    {
+      type: "getServerUrl",
+      id: message.id,
+      success: true,
+      data: TONK_SERVER_URL,
+    },
+    sourceClient,
+  );
 }
 
-export async function handleGetManifest(message: {
-  id: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleGetManifest(
+  message: {
+    id: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Getting manifest", {
     launcherBundleId: message.launcherBundleId,
   });
@@ -336,28 +384,36 @@ export async function handleGetManifest(message: {
       throw new Error("Tonk not initialized");
     }
 
-    postResponse({
-      type: "getManifest",
-      id: message.id,
-      success: true,
-      data: tonkInstance.manifest,
-    });
+    postResponse(
+      {
+        type: "getManifest",
+        id: message.id,
+        success: true,
+        data: tonkInstance.manifest,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to get manifest", {
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "getManifest",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "getManifest",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
+// Ping is a special case - it broadcasts to let all clients know the SW is ready
+// This is used during service worker lifecycle, not for tonk-specific operations
 export async function handlePing(): Promise<void> {
-  logger.debug("Ping received");
-  postResponse({
+  logger.debug("Ping received, broadcasting ready to all clients");
+  await broadcastToAllClients({
     type: "ready",
     needsBundle: true,
   });

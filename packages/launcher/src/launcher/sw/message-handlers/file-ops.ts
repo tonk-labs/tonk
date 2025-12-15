@@ -2,11 +2,14 @@ import { getTonkForBundle } from "../state";
 import { logger } from "../utils/logging";
 import { postResponse } from "../utils/response";
 
-export async function handleReadFile(message: {
-  id: string;
-  path: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleReadFile(
+  message: {
+    id: string;
+    path: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Reading file", {
     path: message.path,
     launcherBundleId: message.launcherBundleId,
@@ -20,36 +23,45 @@ export async function handleReadFile(message: {
     const documentData = await tonkInstance.tonk.readFile(message.path);
     logger.debug("File read successfully", { path: message.path });
 
-    postResponse({
-      type: "readFile",
-      id: message.id,
-      success: true,
-      data: documentData,
-    });
+    postResponse(
+      {
+        type: "readFile",
+        id: message.id,
+        success: true,
+        data: documentData,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to read file", {
       path: message.path,
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "readFile",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "readFile",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
-export async function handleWriteFile(message: {
-  id: string;
-  path: string;
-  create?: boolean;
-  content: {
-    bytes?: Uint8Array;
-    content: unknown;
-  };
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleWriteFile(
+  message: {
+    id: string;
+    path: string;
+    create?: boolean;
+    content: {
+      bytes?: Uint8Array;
+      content: unknown;
+    };
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Writing file", {
     path: message.path,
     create: message.create,
@@ -95,31 +107,40 @@ export async function handleWriteFile(message: {
       }
     }
     logger.debug("File write completed", { path: message.path });
-    postResponse({
-      type: "writeFile",
-      id: message.id,
-      success: true,
-    });
+    postResponse(
+      {
+        type: "writeFile",
+        id: message.id,
+        success: true,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to write file", {
       path: message.path,
       create: message.create,
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "writeFile",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "writeFile",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
-export async function handleDeleteFile(message: {
-  id: string;
-  path: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleDeleteFile(
+  message: {
+    id: string;
+    path: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Deleting file", {
     path: message.path,
     launcherBundleId: message.launcherBundleId,
@@ -132,31 +153,40 @@ export async function handleDeleteFile(message: {
 
     await tonkInstance.tonk.deleteFile(message.path);
     logger.debug("File deleted successfully", { path: message.path });
-    postResponse({
-      type: "deleteFile",
-      id: message.id,
-      success: true,
-    });
+    postResponse(
+      {
+        type: "deleteFile",
+        id: message.id,
+        success: true,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to delete file", {
       path: message.path,
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "deleteFile",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "deleteFile",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
-export async function handleRename(message: {
-  id: string;
-  oldPath: string;
-  newPath: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleRename(
+  message: {
+    id: string;
+    oldPath: string;
+    newPath: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Renaming file or directory", {
     oldPath: message.oldPath,
     newPath: message.newPath,
@@ -173,31 +203,40 @@ export async function handleRename(message: {
       oldPath: message.oldPath,
       newPath: message.newPath,
     });
-    postResponse({
-      type: "rename",
-      id: message.id,
-      success: true,
-    });
+    postResponse(
+      {
+        type: "rename",
+        id: message.id,
+        success: true,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to rename", {
       oldPath: message.oldPath,
       newPath: message.newPath,
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "rename",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "rename",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
-export async function handleExists(message: {
-  id: string;
-  path: string;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleExists(
+  message: {
+    id: string;
+    path: string;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Checking file existence", {
     path: message.path,
     launcherBundleId: message.launcherBundleId,
@@ -213,32 +252,41 @@ export async function handleExists(message: {
       path: message.path,
       exists,
     });
-    postResponse({
-      type: "exists",
-      id: message.id,
-      success: true,
-      data: exists,
-    });
+    postResponse(
+      {
+        type: "exists",
+        id: message.id,
+        success: true,
+        data: exists,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to check file existence", {
       path: message.path,
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "exists",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "exists",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
-export async function handleUpdateFile(message: {
-  id: string;
-  path: string;
-  content: unknown;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handleUpdateFile(
+  message: {
+    id: string;
+    path: string;
+    content: unknown;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Updating file with smart diff", {
     path: message.path,
     launcherBundleId: message.launcherBundleId,
@@ -259,33 +307,42 @@ export async function handleUpdateFile(message: {
       path: message.path,
       changed: result,
     });
-    postResponse({
-      type: "updateFile",
-      id: message.id,
-      success: true,
-      data: result,
-    });
+    postResponse(
+      {
+        type: "updateFile",
+        id: message.id,
+        success: true,
+        data: result,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to update file", {
       path: message.path,
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "updateFile",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "updateFile",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }
 
-export async function handlePatchFile(message: {
-  id: string;
-  path: string;
-  jsonPath: string[];
-  value: unknown;
-  launcherBundleId: string;
-}): Promise<void> {
+export async function handlePatchFile(
+  message: {
+    id: string;
+    path: string;
+    jsonPath: string[];
+    value: unknown;
+    launcherBundleId: string;
+  },
+  sourceClient: Client,
+): Promise<void> {
   logger.debug("Patching file", {
     path: message.path,
     jsonPath: message.jsonPath,
@@ -309,22 +366,28 @@ export async function handlePatchFile(message: {
     );
 
     logger.debug("File patch completed", { path: message.path, result });
-    postResponse({
-      type: "patchFile",
-      id: message.id,
-      success: true,
-      data: result,
-    });
+    postResponse(
+      {
+        type: "patchFile",
+        id: message.id,
+        success: true,
+        data: result,
+      },
+      sourceClient,
+    );
   } catch (error) {
     logger.error("Failed to patch file", {
       path: message.path,
       error: error instanceof Error ? error.message : String(error),
     });
-    postResponse({
-      type: "patchFile",
-      id: message.id,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postResponse(
+      {
+        type: "patchFile",
+        id: message.id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      sourceClient,
+    );
   }
 }

@@ -33,6 +33,12 @@ export interface FetchEvent extends Event {
   respondWith(response: Promise<Response> | Response): void;
 }
 
+// Watcher entry that includes the client ID for routing callbacks
+export interface WatcherEntry {
+  watcher: { stop: () => void };
+  clientId: string;
+}
+
 // Bundle state for a single bundle instance
 export type BundleState =
   | {
@@ -52,7 +58,7 @@ export type BundleState =
       appSlug: string;
       wsUrl: string;
       healthCheckInterval: number | null;
-      watchers: Map<string, { stop: () => void }>;
+      watchers: Map<string, WatcherEntry>;
       connectionHealthy: boolean;
       reconnectAttempts: number;
     }
