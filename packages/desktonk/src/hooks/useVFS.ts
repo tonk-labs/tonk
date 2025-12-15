@@ -20,6 +20,7 @@ export function useVFS() {
     });
   }, [vfs]);
 
+  // TODO: Currently unused. Re-enable when bundle lifecycle management is needed.
   // Reset connection when TonkCore changes (e.g., switching between tonks)
   const resetConnection = useCallback(async () => {
     await vfs.reset();

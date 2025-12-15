@@ -7,7 +7,7 @@ var e = Object.defineProperty,
   };
 const r = 5e3;
 var i = { debug: 0, info: 1, warn: 2, error: 3, none: 4 },
-  a = `debug`;
+  a = `warn`;
 function o() {
   let e = self;
   return e.SW_LOG_LEVEL && e.SW_LOG_LEVEL in i ? e.SW_LOG_LEVEL : a;
@@ -3826,8 +3826,8 @@ async function gn(e) {
 }
 var _n = self;
 (u.info(`Service worker starting`, {
-  version: `mj73g6ot`,
-  buildTime: `2025-12-15T11:52:11.740Z`,
+  version: `mj73zisi`,
+  buildTime: `2025-12-15T12:07:13.890Z`,
   location: self.location.href,
 }),
   u.debug(`Checking for cached state`),

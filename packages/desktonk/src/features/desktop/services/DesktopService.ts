@@ -299,8 +299,10 @@ export class DesktopService {
 
   /**
    * Soft refresh - reload files and positions from VFS without destroying watchers.
-   * Called when switching back to a bundle that was already loaded (tonk:activate).
    * This preserves watchers and connections while ensuring data is fresh.
+   *
+   * TODO: Currently unused. Re-enable when bundle switching optimization is needed.
+   * This would be called on tonk:activate when switching back to an already-loaded bundle.
    */
   async softRefresh(): Promise<void> {
     console.log("[DesktopService] Soft refresh - reloading data from VFS");
@@ -323,8 +325,9 @@ export class DesktopService {
 
   /**
    * Cleanup and stop watching.
-   * Called on tonk:bundleReloaded when the bundle is actually reloaded.
-   * For tonk:activate (switching back to a loaded bundle), use softRefresh() instead.
+   *
+   * TODO: Currently unused. Re-enable when bundle lifecycle management is needed.
+   * This would be called on tonk:bundleReloaded when the bundle is actually reloaded.
    */
   async destroy(): Promise<void> {
     const vfs = getVFSService();
@@ -715,8 +718,9 @@ export function getDesktopService(): DesktopService {
 
 /**
  * Full reset - destroys the service instance and all watchers.
- * Only call this on tonk:bundleReloaded when the bundle is actually reloaded.
- * For tonk:activate (switching back to a loaded bundle), use softRefreshDesktopService() instead.
+ *
+ * TODO: Currently unused. Re-enable when bundle lifecycle management is needed.
+ * This would be called on tonk:bundleReloaded when the bundle is actually reloaded.
  */
 export function resetDesktopService(): void {
   if (desktopServiceInstance) {
@@ -727,8 +731,10 @@ export function resetDesktopService(): void {
 
 /**
  * Soft refresh - reloads files and positions without destroying watchers.
- * Call this on tonk:activate when switching back to an already-loaded bundle.
  * This preserves the connection and watchers while ensuring data is fresh.
+ *
+ * TODO: Currently unused. Re-enable when bundle switching optimization is needed.
+ * This would be called on tonk:activate when switching back to an already-loaded bundle.
  */
 export async function softRefreshDesktopService(): Promise<void> {
   if (desktopServiceInstance) {
