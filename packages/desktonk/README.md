@@ -6,10 +6,12 @@ the launcher.
 ## Features
 
 - **Desktop Canvas** - An infinite tldraw canvas with file/folder icons you can arrange
-- **Text Editor** - TipTap-based rich text editor with collaborative editing support
+- **Text Editor** - TipTap-based rich text editor with markdown support and dual-mode editing
+- **Dock** - Application launcher dock (Tinki app launcher)
 - **Chat** - Integrated chat window
 - **Presence** - Real-time user presence indicators
-- **Dark Mode** - System-aware theme with manual toggle
+- **Members Bar** - Shows connected users
+- **Dark Mode** - System-aware theme with manual toggle, syncs with launcher
 
 ## Architecture
 
@@ -17,13 +19,21 @@ the launcher.
 src/
 ├── features/
 │   ├── desktop/          # tldraw canvas with file icons
-│   ├── text-editor/      # TipTap editor app
-│   ├── editor/           # TipTap components and UI
+│   ├── text-editor/      # TipTap editor app (standalone route)
+│   ├── editor/           # TipTap components and UI primitives
+│   ├── dock/             # Application launcher dock
 │   ├── chat/             # Chat window
+│   ├── members-bar/      # Connected users display
 │   └── presence/         # User presence tracking
 ├── contexts/             # React contexts (feature flags)
 ├── components/           # Shared UI components
-├── hooks/                # Custom hooks (useVFS, etc.)
+├── hooks/                # Custom hooks (useVFS, useTheme, etc.)
+├── stores/               # Zustand stores
+├── lib/                  # Core utilities (middleware, storeBuilder, feature flags)
+├── vfs-client/           # Virtual File System client service
+├── utils/                # Utility functions (sample files)
+├── styles/               # Shared styles
+├── assets/               # Static assets
 └── Router.tsx            # Route definitions
 ```
 
@@ -37,7 +47,7 @@ src/
 ## Development
 
 ```bash
-# Start dev server with relay
+# Start dev server with relay (uses mprocs)
 bun run dev
 
 # Build the app
@@ -46,15 +56,22 @@ bun run build
 # Create a .tonk bundle
 bun run bundle
 
-# Lint and format
+# Lint (biome + oxlint)
 bun run lint
+
+# Format
 bun run format
+
+# Create sample files for testing
+bun run create-samples
 ```
 
-## Dependencies
+## Key Dependencies
 
-- **tldraw** - Canvas framework
-- **TipTap** - Rich text editor
-- **@tonk/core** - Tonk VFS integration
-- **Zustand** - State management
-- **React Router** - Routing
+- **tldraw** - Canvas framework for desktop icons
+- **TipTap** - Rich text editor with markdown extension
+- **@tonk/core** - Tonk VFS integration and CRDT sync
+- **Zustand** - State management with immer middleware
+- **React Router** - Client-side routing
+- **Tailwind CSS** - Styling
+- **Radix UI** - Accessible UI primitives
