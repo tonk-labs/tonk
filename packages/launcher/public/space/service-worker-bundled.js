@@ -7,7 +7,7 @@ var e = Object.defineProperty,
   };
 const r = 5e3;
 var i = { debug: 0, info: 1, warn: 2, error: 3, none: 4 },
-  a = `warn`;
+  a = `debug`;
 function o() {
   let e = self;
   return e.SW_LOG_LEVEL && e.SW_LOG_LEVEL in i ? e.SW_LOG_LEVEL : a;
@@ -452,18 +452,20 @@ function ke(e) {
     });
     return;
   }
-  if (l?.appSlug && !i) {
-    let n = l.appSlug;
+  {
+    let n = l?.appSlug;
     if (
       t.pathname.startsWith(`/@vite`) ||
       t.pathname.startsWith(`/@react-refresh`) ||
+      t.pathname.startsWith(`/@fs/`) ||
       t.pathname.startsWith(`/src/`) ||
-      t.pathname.startsWith(`/${n}/@vite`) ||
-      t.pathname.startsWith(`/${n}/node_modules`) ||
-      t.pathname.startsWith(`/${n}/src/`) ||
       t.pathname.startsWith(`/node_modules`) ||
       t.pathname.includes(`__vite__`) ||
-      t.searchParams.has(`t`)
+      t.searchParams.has(`t`) ||
+      (n &&
+        (t.pathname.startsWith(`/${n}/@vite`) ||
+          t.pathname.startsWith(`/${n}/node_modules`) ||
+          t.pathname.startsWith(`/${n}/src/`)))
     ) {
       (u.debug(`Vite HMR asset - proxying to dev server`, {
         pathname: t.pathname,
@@ -500,40 +502,42 @@ function ke(e) {
         ));
       return;
     }
-    (u.debug(`TONK_SERVE_LOCAL - proxying to dev server`, {
-      pathname: t.pathname,
-    }),
-      e.respondWith(
-        (async () => {
-          try {
-            let e = `http://localhost:4001${t.pathname}${t.search}`,
-              n = await fetch(e),
-              r = new Headers(n.headers);
-            return (
-              r.set(`Cache-Control`, `no-cache, no-store, must-revalidate`),
-              r.set(`Pragma`, `no-cache`),
-              r.set(`Expires`, `0`),
-              new Response(n.body, {
-                status: n.status,
-                statusText: n.statusText,
-                headers: r,
-              })
-            );
-          } catch (e) {
-            return (
-              u.error(`Failed to fetch from local dev server`, {
-                error: e instanceof Error ? e.message : String(e),
-                pathname: t.pathname,
-              }),
-              new Response(`Local dev server unreachable on port 4001`, {
-                status: 502,
-                headers: { "Content-Type": `text/plain` },
-              })
-            );
-          }
-        })(),
-      ));
-    return;
+    if (n && !i) {
+      (u.debug(`TONK_SERVE_LOCAL - proxying to dev server`, {
+        pathname: t.pathname,
+      }),
+        e.respondWith(
+          (async () => {
+            try {
+              let e = `http://localhost:4001${t.pathname}${t.search}`,
+                n = await fetch(e),
+                r = new Headers(n.headers);
+              return (
+                r.set(`Cache-Control`, `no-cache, no-store, must-revalidate`),
+                r.set(`Pragma`, `no-cache`),
+                r.set(`Expires`, `0`),
+                new Response(n.body, {
+                  status: n.status,
+                  statusText: n.statusText,
+                  headers: r,
+                })
+              );
+            } catch (e) {
+              return (
+                u.error(`Failed to fetch from local dev server`, {
+                  error: e instanceof Error ? e.message : String(e),
+                  pathname: t.pathname,
+                }),
+                new Response(`Local dev server unreachable on port 4001`, {
+                  status: 502,
+                  headers: { "Content-Type": `text/plain` },
+                })
+              );
+            }
+          })(),
+        ));
+      return;
+    }
   }
   if (l && t.origin === location.origin && !i) {
     let { launcherBundleId: r, appSlug: i } = l;
@@ -598,14 +602,74 @@ function ke(e) {
             u.debug(`Serving file from VFS`, { path: s });
             let c = await o.tonk.readFile(s);
             return await Oe(c);
-          } catch (n) {
+          } catch (e) {
+            let n = e instanceof Error ? e.message : String(e);
             return (
               u.error(`Failed to fetch from VFS`, {
-                error: n instanceof Error ? n.message : String(n),
+                error: n,
                 url: t.href,
+                launcherBundleId: r,
               }),
-              u.debug(`Falling back to network request`, { url: t.href }),
-              fetch(e.request)
+              new Response(
+                `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bundle Error</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      padding: 2rem;
+      max-width: 600px;
+      margin: 0 auto;
+      background: #f5f5f5;
+    }
+    .error-container {
+      background: white;
+      border-radius: 8px;
+      padding: 2rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 { color: #e53e3e; margin-top: 0; }
+    .details { 
+      background: #f7fafc; 
+      padding: 1rem; 
+      border-radius: 4px; 
+      font-family: monospace;
+      font-size: 0.875rem;
+      word-break: break-all;
+    }
+    .actions { margin-top: 1.5rem; }
+    button {
+      background: #3182ce;
+      color: white;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    button:hover { background: #2c5282; }
+  </style>
+</head>
+<body>
+  <div class="error-container">
+    <h1>Failed to Load Bundle</h1>
+    <p>The application could not be loaded from the bundle.</p>
+    <div class="details">
+      <strong>Bundle ID:</strong> ${r}<br>
+      <strong>Path:</strong> ${t.pathname}<br>
+      <strong>Error:</strong> ${n}
+    </div>
+    <div class="actions">
+      <button onclick="window.location.reload()">Retry</button>
+    </div>
+  </div>
+</body>
+</html>`,
+                { status: 500, headers: { "Content-Type": `text/html` } },
+              )
             );
           }
         })(),
@@ -3762,8 +3826,8 @@ async function gn(e) {
 }
 var _n = self;
 (u.info(`Service worker starting`, {
-  version: `mj35lh2c`,
-  buildTime: `2025-12-12T17:41:12.996Z`,
+  version: `mj71dl6x`,
+  buildTime: `2025-12-15T10:54:11.336Z`,
   location: self.location.href,
 }),
   u.debug(`Checking for cached state`),

@@ -91,21 +91,26 @@ export function handleFetch(event: FetchEvent): void {
   }
 
   // Handle TONK_SERVE_LOCAL mode (development with Vite HMR)
-  if (TONK_SERVE_LOCAL && parsed?.appSlug && !isRootRequest) {
-    const appSlug = parsed.appSlug;
+  if (TONK_SERVE_LOCAL) {
+    const appSlug = parsed?.appSlug;
 
-    // Intercept and proxy Vite HMR assets
-    if (
+    // Check if this is a Vite dev asset that should be proxied to the dev server
+    // These need to be proxied regardless of whether the URL matches /space/<bundleId>/<appSlug>/
+    // because the controlled page loads assets with absolute paths like /src/main.tsx
+    const isViteAsset =
       url.pathname.startsWith("/@vite") ||
       url.pathname.startsWith("/@react-refresh") ||
+      url.pathname.startsWith("/@fs/") ||
       url.pathname.startsWith("/src/") ||
-      url.pathname.startsWith(`/${appSlug}/@vite`) ||
-      url.pathname.startsWith(`/${appSlug}/node_modules`) ||
-      url.pathname.startsWith(`/${appSlug}/src/`) ||
       url.pathname.startsWith("/node_modules") ||
       url.pathname.includes("__vite__") ||
-      url.searchParams.has("t") // cache-busting params
-    ) {
+      url.searchParams.has("t") || // cache-busting params
+      (appSlug &&
+        (url.pathname.startsWith(`/${appSlug}/@vite`) ||
+          url.pathname.startsWith(`/${appSlug}/node_modules`) ||
+          url.pathname.startsWith(`/${appSlug}/src/`)));
+
+    if (isViteAsset) {
       logger.debug("Vite HMR asset - proxying to dev server", {
         pathname: url.pathname,
       });
@@ -142,40 +147,43 @@ export function handleFetch(event: FetchEvent): void {
       return;
     }
 
-    logger.debug("TONK_SERVE_LOCAL - proxying to dev server", {
-      pathname: url.pathname,
-    });
+    // For /space/<bundleId>/<appSlug>/ paths, also proxy to dev server
+    if (appSlug && !isRootRequest) {
+      logger.debug("TONK_SERVE_LOCAL - proxying to dev server", {
+        pathname: url.pathname,
+      });
 
-    event.respondWith(
-      (async () => {
-        try {
-          const localDevUrl = `http://localhost:4001${url.pathname}${url.search}`;
-          const response = await fetch(localDevUrl);
+      event.respondWith(
+        (async () => {
+          try {
+            const localDevUrl = `http://localhost:4001${url.pathname}${url.search}`;
+            const response = await fetch(localDevUrl);
 
-          // Add no-cache headers
-          const headers = new Headers(response.headers);
-          headers.set("Cache-Control", "no-cache, no-store, must-revalidate");
-          headers.set("Pragma", "no-cache");
-          headers.set("Expires", "0");
+            // Add no-cache headers
+            const headers = new Headers(response.headers);
+            headers.set("Cache-Control", "no-cache, no-store, must-revalidate");
+            headers.set("Pragma", "no-cache");
+            headers.set("Expires", "0");
 
-          return new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: headers,
-          });
-        } catch (err) {
-          logger.error("Failed to fetch from local dev server", {
-            error: err instanceof Error ? err.message : String(err),
-            pathname: url.pathname,
-          });
-          return new Response("Local dev server unreachable on port 4001", {
-            status: 502,
-            headers: { "Content-Type": "text/plain" },
-          });
-        }
-      })(),
-    );
-    return;
+            return new Response(response.body, {
+              status: response.status,
+              statusText: response.statusText,
+              headers: headers,
+            });
+          } catch (err) {
+            logger.error("Failed to fetch from local dev server", {
+              error: err instanceof Error ? err.message : String(err),
+              pathname: url.pathname,
+            });
+            return new Response("Local dev server unreachable on port 4001", {
+              status: 502,
+              headers: { "Content-Type": "text/plain" },
+            });
+          }
+        })(),
+      );
+      return;
+    }
   }
 
   // Handle VFS requests for /space/<launcherBundleId>/<appSlug>/... URLs
@@ -270,14 +278,78 @@ export function handleFetch(event: FetchEvent): void {
           );
           return response;
         } catch (e) {
+          const errorMessage = e instanceof Error ? e.message : String(e);
           logger.error("Failed to fetch from VFS", {
-            error: e instanceof Error ? e.message : String(e),
+            error: errorMessage,
             url: url.href,
+            launcherBundleId,
           });
 
-          // Fall back to the original request
-          logger.debug("Falling back to network request", { url: url.href });
-          return fetch(event.request);
+          // Return an error page instead of falling back to network
+          // (network fallback would serve the launcher shell due to SPA routing)
+          return new Response(
+            `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bundle Error</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      padding: 2rem;
+      max-width: 600px;
+      margin: 0 auto;
+      background: #f5f5f5;
+    }
+    .error-container {
+      background: white;
+      border-radius: 8px;
+      padding: 2rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 { color: #e53e3e; margin-top: 0; }
+    .details { 
+      background: #f7fafc; 
+      padding: 1rem; 
+      border-radius: 4px; 
+      font-family: monospace;
+      font-size: 0.875rem;
+      word-break: break-all;
+    }
+    .actions { margin-top: 1.5rem; }
+    button {
+      background: #3182ce;
+      color: white;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    button:hover { background: #2c5282; }
+  </style>
+</head>
+<body>
+  <div class="error-container">
+    <h1>Failed to Load Bundle</h1>
+    <p>The application could not be loaded from the bundle.</p>
+    <div class="details">
+      <strong>Bundle ID:</strong> ${launcherBundleId}<br>
+      <strong>Path:</strong> ${url.pathname}<br>
+      <strong>Error:</strong> ${errorMessage}
+    </div>
+    <div class="actions">
+      <button onclick="window.location.reload()">Retry</button>
+    </div>
+  </div>
+</body>
+</html>`,
+            {
+              status: 500,
+              headers: { "Content-Type": "text/html" },
+            },
+          );
         }
       })(),
     );
