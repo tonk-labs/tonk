@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   type DesktopState,
   getDesktopService,
+  softRefreshDesktopService,
 } from "../services/DesktopService";
 
 /**
@@ -24,17 +25,21 @@ export function useDesktop(): DesktopState {
   // Counter to trigger re-subscription when bundle reloads
   const [subscriptionKey, setSubscriptionKey] = useState(0);
 
-  // Listen for bundle reload to re-subscribe to new service instance
+  // Listen for bundle reload/activate to handle state appropriately
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       if (event.data?.type === "tonk:bundleReloaded") {
+        // Full reset - new TonkCore instance loaded, need to re-subscribe to new service
         console.log(
           "[useDesktop] Bundle reloaded, will re-subscribe to new service",
         );
-        // Reset state to loading while new service initializes
         setState({ files: [], positions: new Map(), isLoading: true });
-        // Trigger re-subscription
         setSubscriptionKey((k) => k + 1);
+      } else if (event.data?.type === "tonk:activate") {
+        // Soft refresh - just switching back to this bundle in the iframe pool
+        // Don't destroy watchers, just reload data from VFS to ensure we have latest state
+        console.log("[useDesktop] Bundle activated, triggering soft refresh");
+        softRefreshDesktopService();
       }
     };
 
@@ -42,6 +47,7 @@ export function useDesktop(): DesktopState {
     return () => window.removeEventListener("message", handler);
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: subscriptionKey is intentionally used to trigger re-subscription on bundle reload
   useEffect(() => {
     const service = getDesktopService();
 

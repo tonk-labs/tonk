@@ -3826,8 +3826,8 @@ async function gn(e) {
 }
 var _n = self;
 (u.info(`Service worker starting`, {
-  version: `mj71dl6x`,
-  buildTime: `2025-12-15T10:54:11.336Z`,
+  version: `mj73g6ot`,
+  buildTime: `2025-12-15T11:52:11.740Z`,
   location: self.location.href,
 }),
   u.debug(`Checking for cached state`),

@@ -298,7 +298,33 @@ export class DesktopService {
   }
 
   /**
+   * Soft refresh - reload files and positions from VFS without destroying watchers.
+   * Called when switching back to a bundle that was already loaded (tonk:activate).
+   * This preserves watchers and connections while ensuring data is fresh.
+   */
+  async softRefresh(): Promise<void> {
+    console.log("[DesktopService] Soft refresh - reloading data from VFS");
+
+    try {
+      // Reload files and positions from VFS
+      await this.loadFiles();
+      await this.loadPositions();
+
+      // Re-setup position file watchers for any new files that were added
+      // while the bundle was in the background
+      await this.setupPositionFileWatchers();
+
+      this.notifyListeners();
+      console.log("[DesktopService] Soft refresh complete");
+    } catch (error) {
+      console.error("[DesktopService] Soft refresh failed:", error);
+    }
+  }
+
+  /**
    * Cleanup and stop watching.
+   * Called on tonk:bundleReloaded when the bundle is actually reloaded.
+   * For tonk:activate (switching back to a loaded bundle), use softRefresh() instead.
    */
   async destroy(): Promise<void> {
     const vfs = getVFSService();
@@ -687,9 +713,25 @@ export function getDesktopService(): DesktopService {
   return desktopServiceInstance;
 }
 
+/**
+ * Full reset - destroys the service instance and all watchers.
+ * Only call this on tonk:bundleReloaded when the bundle is actually reloaded.
+ * For tonk:activate (switching back to a loaded bundle), use softRefreshDesktopService() instead.
+ */
 export function resetDesktopService(): void {
   if (desktopServiceInstance) {
     desktopServiceInstance.destroy();
     desktopServiceInstance = null;
+  }
+}
+
+/**
+ * Soft refresh - reloads files and positions without destroying watchers.
+ * Call this on tonk:activate when switching back to an already-loaded bundle.
+ * This preserves the connection and watchers while ensuring data is fresh.
+ */
+export async function softRefreshDesktopService(): Promise<void> {
+  if (desktopServiceInstance) {
+    await desktopServiceInstance.softRefresh();
   }
 }

@@ -11,8 +11,10 @@ export function useCanvasPersistence() {
   const { connectionState, resetConnection } = useVFS();
   const hasLoadedRef = useRef(false);
   const [isReady, setIsReady] = useState(false);
+  // Flag to prevent saves during bundle switching - avoids race conditions
+  const isSwitchingRef = useRef(false);
 
-  // Handle bundle reload - reset state so canvas reloads from new VFS
+  // Handle full bundle reload - reset everything for new TonkCore instance
   const handleBundleReload = useCallback(() => {
     console.log(
       "[useCanvasPersistence] Bundle reloaded, resetting all app state",
@@ -28,25 +30,69 @@ export function useCanvasPersistence() {
     resetConnection();
   }, [resetConnection]);
 
+  // Handle soft activation - just reload canvas state without destroying services
+  const handleBundleActivate = useCallback(async () => {
+    console.log(
+      "[useCanvasPersistence] Bundle activated, soft refresh canvas state",
+    );
+
+    // Block saves during activation to prevent race conditions
+    isSwitchingRef.current = true;
+
+    try {
+      const vfs = getVFSService();
+      const exists = await vfs.exists(CANVAS_STATE_PATH);
+
+      if (!exists) {
+        console.log("[useCanvasPersistence] No canvas state to reload");
+        return;
+      }
+
+      const doc = await vfs.readFile(CANVAS_STATE_PATH);
+      const content = doc.content as unknown as {
+        schema: TLStoreSnapshot["schema"];
+        store: TLStoreSnapshot["store"];
+      };
+
+      if (content?.schema && content?.store) {
+        const snapshot: TLStoreSnapshot = {
+          schema: content.schema,
+          store: content.store,
+        };
+
+        // Reload canvas state from VFS
+        editor.loadSnapshot(snapshot);
+        console.log("[useCanvasPersistence] Canvas state reloaded from VFS");
+      }
+    } catch (err) {
+      console.error("[useCanvasPersistence] Error during soft refresh:", err);
+    } finally {
+      // Re-enable saves after a short delay to let state settle
+      setTimeout(() => {
+        isSwitchingRef.current = false;
+      }, 100);
+    }
+  }, [editor]);
+
   // Listen for tonk:bundleReloaded and tonk:activate messages from runtime/launcher
   // tonk:activate is sent when switching back to an already-loaded tonk in the iframe pool
+  //   → Soft refresh: reload data from VFS without destroying services
   // tonk:bundleReloaded is sent after the SW loads a new TonkCore
-  // Both need to trigger the reload flow to resume services
+  //   → Full reset: destroy services and reconnect to new TonkCore
   // Note: tonk:deactivate is no longer needed with multi-bundle isolation - each bundle
   // has its own TonkCore instance, so there's no cross-contamination risk
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      if (
-        event.data?.type === "tonk:bundleReloaded" ||
-        event.data?.type === "tonk:activate"
-      ) {
+      if (event.data?.type === "tonk:bundleReloaded") {
         handleBundleReload();
+      } else if (event.data?.type === "tonk:activate") {
+        handleBundleActivate();
       }
     };
 
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [handleBundleReload]);
+  }, [handleBundleReload, handleBundleActivate]);
 
   // Load canvas state once on mount
   useEffect(() => {
@@ -119,6 +165,11 @@ export function useCanvasPersistence() {
     // Save canvas state on changes
     const unsubscribe = editor.store.listen(
       async () => {
+        // Skip saves during bundle switching to prevent race conditions
+        if (isSwitchingRef.current) {
+          return;
+        }
+
         try {
           const snapshot = editor.getSnapshot();
           const content = {
