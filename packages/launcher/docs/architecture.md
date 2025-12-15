@@ -1,32 +1,33 @@
 # Launcher Architecture
 
-How the Tonk Launcher loads bundles, manages service workers, and runs apps.
+This document explains how the Tonk Launcher loads bundles, manages service workers, and supports development workflows.
 
 ## Overview
 
-The launcher has two parts:
+The launcher comprises two parts:
 
-1. **Launcher App** (`src/main.tsx` → `src/App.tsx`) — Main UI with sidebar for managing bundles
-2. **Runtime App** (`src/runtime/main.tsx` → `src/runtime/RuntimeApp.tsx`) — Runs inside an iframe, manages the service worker, hosts Tonk apps
+1. **Launcher App** (`src/main.tsx` → `src/App.tsx`) — The main UI with a sidebar for managing bundles
+2. **Runtime App** (`src/runtime/main.tsx` → `src/runtime/RuntimeApp.tsx`) — Runs inside an iframe, manages the service worker, and hosts Tonk apps
 
 ```mermaid
 graph TB
     subgraph Launcher["Launcher (localhost:5173)"]
         subgraph Sidebar
-            B1[Bundle 1]
-            B2[Bundle 2]
-            Add[+ Add]
+            B1["Bundle 1"]
+            B2["Bundle 2"]
+            Add["+ Add"]
         end
         subgraph MainArea["Main Area"]
             subgraph IFrame["iframe: /app/index.html"]
-                Runtime[Runtime App]
-                SW[Service Worker]
-                Tonk[TonkCore VFS]
-                Runtime --> SW
-                SW --> Tonk
+                Runtime["Runtime App"]
+                SW["Service Worker"]
+                TonkCore["TonkCore (VFS)"]
             end
         end
     end
+
+    Runtime --> SW
+    SW --> TonkCore
 ```
 
 ## Key Components
@@ -35,7 +36,7 @@ graph TB
 
 **File:** `src/launcher/services/bundleStorage.ts`
 
-Bundles reside in IndexedDB under the database `tonk-launcher`. The launcher and runtime share this storage (same origin).
+The launcher stores bundles in IndexedDB under the database `tonk-launcher`. Both the launcher and runtime share this storage (same origin).
 
 ```typescript
 // Save a bundle
@@ -52,9 +53,9 @@ const bundles = await bundleStorage.list();
 
 **File:** `src/App.tsx`
 
-The launcher displays bundles and handles:
+The launcher displays available bundles and handles:
 
-- Importing bundles via file upload
+- Importing new bundles via file upload
 - Launching bundles by setting the iframe URL
 
 When launching a bundle:
@@ -78,18 +79,44 @@ The runtime runs inside `/app/index.html` and:
 
 ```mermaid
 flowchart TD
-    A[Check URL params] --> B{bundleId?}
-    B -->|Yes| C[Fetch from IndexedDB<br/>Send to SW]
-    B -->|No| D[Boot from SW cache<br/>auto-initialized]
-    C --> E[Boot first app<br/>redirect to /appSlug/]
-    D --> E
+    A["Check URL params"] --> B{"bundleId?"}
+    B -->|Yes| C["Fetch from IndexedDB"]
+    C --> D["Send to SW"]
+    B -->|No| E["Boot from SW cache<br/>(auto-initialized)"]
+    D --> F["Boot first app<br/>(redirect to /{appSlug}/)"]
+    E --> F
 ```
 
 ### 4. Service Worker
 
 **Directory:** `src/launcher/sw/`
 
-The service worker forms the system's core. It:
+The service worker forms the system's core, organized into modular components:
+
+```
+src/launcher/sw/
+├── index.ts              # Entry point, event listeners
+├── state.ts              # State management (BundleState machine)
+├── cache.ts              # Cache API persistence
+├── tonk-lifecycle.ts     # TonkCore init, bundle loading
+├── connection.ts         # WebSocket health/reconnect
+├── fetch-handler.ts      # Fetch interception, VFS serving
+├── wasm-init.ts          # WASM initialization
+├── types.ts              # Type definitions
+├── message-handlers/
+│   ├── index.ts          # Message router
+│   ├── file-ops.ts       # read/write/delete/rename/exists
+│   ├── directory-ops.ts  # listDirectory
+│   ├── watch-ops.ts      # file/directory watchers
+│   ├── bundle-ops.ts     # loadBundle, toBytes, forkToBytes
+│   └── init-ops.ts       # init, initializeFrom*, getManifest
+└── utils/
+    ├── logging.ts        # log() helper
+    ├── path.ts           # determinePath()
+    └── response.ts       # postResponse(), targetToResponse()
+```
+
+The service worker:
 
 - Manages TonkCore (the VFS/CRDT engine)
 - Intercepts fetch requests and serves files from the VFS
@@ -108,49 +135,51 @@ type TonkState =
 
 #### Message Types
 
-| Message         | Direction | Purpose                             |
-| --------------- | --------- | ----------------------------------- |
-| `loadBundle`    | Page → SW | Load bundle bytes into TonkCore     |
-| `setAppSlug`    | Page → SW | Set current app slug for path resolution |
-| `getManifest`   | Page → SW | Get manifest with entrypoints       |
-| `listDirectory` | Page → SW | List files in VFS directory         |
-| `readFile`      | Page → SW | Read file from VFS                  |
-| `writeFile`     | Page → SW | Write file to VFS                   |
-| `ready`         | SW → Page | Service worker ready                |
+| Message         | Direction | Purpose                                      |
+| --------------- | --------- | -------------------------------------------- |
+| `loadBundle`    | Page → SW | Load bundle bytes into TonkCore              |
+| `setAppSlug`    | Page → SW | Set the current app slug for path resolution |
+| `getManifest`   | Page → SW | Get manifest with entrypoints                |
+| `listDirectory` | Page → SW | List files in VFS directory                  |
+| `readFile`      | Page → SW | Read file from VFS                           |
+| `writeFile`     | Page → SW | Write file to VFS                            |
+| `ready`         | SW → Page | Service worker is ready                      |
 
 #### Auto-Initialization from Cache
 
-On startup, `autoInitializeFromCache()` restores state:
+On startup, `autoInitializeFromCache()` attempts to restore state:
 
 ```mermaid
 flowchart TD
-    A["Check Cache API for:<br/>appSlug, bundleBytes, wsUrl"] --> B{Found?}
-    B -->|Yes| C[Initialize TonkCore<br/>from cache]
-    B -->|No| D[Wait for<br/>loadBundle message]
+    A["SW Startup"] --> B["Check Cache API for:<br/>• appSlug<br/>• bundleBytes<br/>• wsUrl"]
+    B --> C{"Found?"}
+    C -->|Yes| D["Initialize TonkCore<br/>from cache"]
+    C -->|No| E["Wait for<br/>loadBundle message"]
 ```
 
 #### Fetch Interception
 
-When `appSlug` is set, the SW intercepts same-origin requests:
+When `appSlug` is set, the service worker intercepts same-origin requests:
 
 ```mermaid
 flowchart LR
-    A["/myapp/index.html"] --> B["determinePath()"]
-    B --> C["tonk.readFile('/myapp/index.html')"]
-    C --> D[Return Response]
+    A["Request: /myapp/index.html"] --> B["determinePath()"]
+    B --> C["'myapp/index.html'"]
+    C --> D["tonk.readFile('/myapp/index.html')"]
+    D --> E["Return Response<br/>with file content"]
 ```
 
 ## Build Artifacts
 
-The runtime app and service worker are pre-built in `public/app/`:
+The runtime app and service worker are pre-built and placed in `public/app/`:
 
 ```
 public/app/
-├── index.html                 # Runtime HTML entry
-├── main.js                    # Runtime app bundle
-├── main.css                   # Runtime styles
+├── index.html              # Runtime HTML entry
+├── main.js                 # Runtime app bundle
+├── main.css                # Runtime styles
 ├── service-worker-bundled.js  # Service worker bundle
-└── *.otf                      # Fonts
+└── *.otf                   # Fonts
 ```
 
 ## Build Commands
@@ -161,7 +190,7 @@ public/app/
 bun run build:host
 ```
 
-Runs `scripts/build-runtime.ts`:
+This runs `scripts/build-runtime.ts`, which:
 
 1. Builds service worker → `dist-sw/`
 2. Builds runtime app → `dist-runtime/`
@@ -173,14 +202,14 @@ Runs `scripts/build-runtime.ts`:
 **Service Worker only:**
 
 ```bash
-TONK_SERVE_LOCAL=false vite build -c vite.sw.config.ts
+TONK_SERVE_LOCAL=false npx vite build -c vite.sw.config.ts
 cp dist-sw/service-worker-bundled.js public/app/
 ```
 
 **Runtime App only:**
 
 ```bash
-TONK_SERVE_LOCAL=true vite build -c vite.runtime.config.ts
+TONK_SERVE_LOCAL=true npx vite build -c vite.runtime.config.ts
 cp -r dist-runtime/* public/app/
 ```
 
@@ -190,12 +219,12 @@ cp -r dist-runtime/* public/app/
 bun run dev
 ```
 
-Starts:
+This starts:
 
 - Vite dev server for launcher on port 5173
-- SW watch/rebuild in background (`watch:sw`)
+- Service worker watch/rebuild in background (`watch:sw`)
 
-**Note:** The runtime app (`public/app/main.js`) is not watched. Rebuild manually after changes to `src/runtime/`.
+**Note:** The runtime app (`public/app/main.js`) is not watched. Rebuild it manually after changes to `src/runtime/`.
 
 ## Configuration Flags
 
@@ -203,10 +232,10 @@ Starts:
 
 Controls whether the service worker proxies requests to a local dev server.
 
-| Value   | Behavior                                            |
-| ------- | --------------------------------------------------- |
-| `true`  | SW proxies requests to `http://localhost:4001` (HMR) |
-| `false` | SW serves files from VFS bundle                     |
+| Value   | Behavior                                     |
+| ------- | -------------------------------------------- |
+| `true`  | SW proxies requests to `http://localhost:4001` for HMR |
+| `false` | SW serves files from VFS bundle              |
 
 **When to use:**
 
@@ -227,30 +256,33 @@ The relay server URL for WebSocket sync.
 ```mermaid
 sequenceDiagram
     participant User
-    participant Launcher as App.tsx
+    participant App as App.tsx
     participant IFrame as iframe
     participant Runtime as RuntimeApp
+    participant IDB as IndexedDB
     participant SW as Service Worker
-    participant Tonk as TonkCore
+    participant TC as TonkCore
     participant Relay
 
-    User->>Launcher: Click bundle in sidebar
-    Launcher->>IFrame: setRuntimeUrl('/app/index.html?bundleId=abc123')
-    IFrame->>Runtime: Mount
-    Runtime->>SW: Register/wait for SW
-    Runtime->>Runtime: bundleStorage.get('abc123')
-    Runtime->>SW: loadBundle(bundleBytes)
-    SW->>Tonk: Initialize WASM
-    SW->>Tonk: TonkCore.fromBytes(bundleBytes)
-    SW->>Relay: Connect WebSocket
-    SW->>SW: Wait for PathIndex sync
-    SW->>SW: tonkState = { status: 'ready' }
-    SW->>SW: Persist to Cache API
-    SW->>Runtime: loadBundle success
+    User->>App: Click bundle in sidebar
+    App->>IFrame: setRuntimeUrl('/app/index.html?bundleId=abc123')
+    IFrame->>Runtime: Load and mount
+    Runtime->>SW: Register/wait for service worker
+    Runtime->>IDB: bundleStorage.get('abc123')
+    IDB-->>Runtime: bytes
+    Runtime->>SW: sendMessage({ type: 'loadBundle', bundleBytes })
+    SW->>SW: Initialize WASM if needed
+    SW->>TC: TonkCore.fromBytes(bundleBytes)
+    TC->>Relay: Connect WebSocket
+    TC->>TC: Wait for PathIndex sync
+    SW->>SW: tonkState = { status: 'ready', tonk, manifest }
+    SW->>SW: Persist bundleBytes to Cache API
+    SW-->>Runtime: postResponse({ type: 'loadBundle', success: true })
     Runtime->>SW: queryAvailableApps()
-    SW->>Runtime: manifest.entrypoints
+    SW-->>Runtime: entrypoints from manifest
+    Runtime->>Runtime: confirmBoot(appSlug)
     Runtime->>IFrame: redirect to /{appSlug}/
-    SW->>Tonk: Intercept requests, serve from VFS
+    SW->>SW: Intercept requests, serve from VFS
 ```
 
 ## Troubleshooting
@@ -259,31 +291,31 @@ sequenceDiagram
 
 The service worker has not finished loading the bundle. Causes:
 
-- Bundle loading in progress (race condition)
+- Bundle not loaded yet (race condition)
 - Auto-initialization from cache failed
 - `loadBundle` message failed
 
-**Fix:** The SW waits for initialization before handling fetch requests (15s timeout).
+**Fix:** The service worker now waits for initialization before handling fetch requests (15-second timeout).
 
 ### CORS errors with localhost:4001
 
-The SW was built with `TONK_SERVE_LOCAL=true` but no app dev server is running.
+The service worker was built with `TONK_SERVE_LOCAL=true` but no app dev server is running.
 
-**Fix:** Rebuild SW with `TONK_SERVE_LOCAL=false`:
+**Fix:** Rebuild the service worker with `TONK_SERVE_LOCAL=false`:
 
 ```bash
-TONK_SERVE_LOCAL=false vite build -c vite.sw.config.ts
+TONK_SERVE_LOCAL=false npx vite build -c vite.sw.config.ts
 cp dist-sw/service-worker-bundled.js public/app/
 ```
 
-### RuntimeApp changes not taking effect
+### Changes to RuntimeApp not taking effect
 
 The `public/app/main.js` is pre-built and not watched in dev mode.
 
 **Fix:** Rebuild the runtime:
 
 ```bash
-vite build -c vite.runtime.config.ts
+npx vite build -c vite.runtime.config.ts
 cp -r dist-runtime/* public/app/
 ```
 
@@ -296,31 +328,100 @@ Browsers cache service workers aggressively.
 1. DevTools → Application → Service Workers → "Unregister"
 2. Hard refresh (Cmd+Shift+R / Ctrl+Shift+R)
 
-### Bundle loads but app does not render
+### Bundle loads but app doesn't render
 
 Check that:
 
-1. `appSlug` is set correctly in SW
+1. `appSlug` is set correctly in the service worker
 2. Files exist in VFS at `/{appSlug}/index.html`
-3. The hosted app has no JavaScript errors
+3. No JavaScript errors occur in the hosted app
 
 ## File Reference
 
-| File                                     | Purpose                  |
-| ---------------------------------------- | ------------------------ |
-| `src/App.tsx`                            | Launcher UI              |
-| `src/main.tsx`                           | Launcher entry           |
-| `src/runtime/RuntimeApp.tsx`             | Runtime/iframe app       |
-| `src/runtime/main.tsx`                   | Runtime entry            |
-| `src/launcher/sw/index.ts`               | Service worker entry     |
-| `src/launcher/sw/state.ts`               | Bundle state machine     |
-| `src/launcher/sw/tonk-lifecycle.ts`      | TonkCore lifecycle mgmt  |
-| `src/launcher/sw/fetch-handler.ts`       | Request interception     |
-| `src/launcher/services/bundleStorage.ts` | IndexedDB bundle storage |
-| `src/launcher/services/bundleManager.ts` | Bundle import/management |
-| `src/runtime/hooks/useServiceWorker.ts`  | SW communication hook    |
-| `vite.config.ts`                         | Launcher vite config     |
-| `vite.sw.config.ts`                      | Service worker config    |
-| `vite.runtime.config.ts`                 | Runtime app config       |
-| `scripts/build-runtime.ts`               | Full build script        |
-| `scripts/watch-sw-copy.ts`               | SW watch/copy script     |
+| File                                     | Purpose                    |
+| ---------------------------------------- | -------------------------- |
+| `src/App.tsx`                            | Launcher UI                |
+| `src/main.tsx`                           | Launcher entry             |
+| `src/runtime/RuntimeApp.tsx`             | Runtime/iframe app         |
+| `src/runtime/main.tsx`                   | Runtime entry              |
+| `src/launcher/sw/index.ts`               | Service worker entry       |
+| `src/launcher/sw/state.ts`               | Bundle state machine       |
+| `src/launcher/sw/tonk-lifecycle.ts`      | TonkCore lifecycle mgmt    |
+| `src/launcher/sw/fetch-handler.ts`       | Request interception       |
+| `src/launcher/services/bundleStorage.ts` | IndexedDB bundle storage   |
+| `src/launcher/services/bundleManager.ts` | Bundle import/management   |
+| `src/runtime/hooks/useServiceWorker.ts`  | SW communication hook      |
+| `vite.config.ts`                         | Launcher vite config       |
+| `vite.sw.config.ts`                      | Service worker vite config |
+| `vite.runtime.config.ts`                 | Runtime app vite config    |
+| `scripts/build-runtime.ts`               | Full build script          |
+| `scripts/watch-sw-copy.ts`               | SW watch/copy script       |
+
+## Known Limitations
+
+### Single TonkCore Instance
+
+The service worker maintains a **single TonkCore instance** that serves all bundle iframes. When switching between bundles, the service worker replaces the active TonkCore.
+
+**Current behavior:**
+
+- Each iframe sends `loadBundle` with its `launcherBundleId` when activated
+- The service worker compares `launcherBundleId` to decide if reload is needed
+- If different, the service worker tears down the old TonkCore and creates a new one
+- If the same, the service worker skips reload (optimization for re-selecting same bundle)
+
+**Implication:** All file operations go through the currently active TonkCore. When you switch bundles:
+
+1. Old TonkCore disconnects (watchers stop, WebSocket closes)
+2. New TonkCore loads and connects to its relay
+3. App receives `tonk:bundleReloaded` message to reset state
+
+### Why launcherBundleId vs rootId?
+
+- **rootId** (from manifest): Genesis document ID needed by TonkCore to rebuild Automerge files
+- **launcherBundleId** (from IndexedDB): Unique identifier for the imported bundle in the launcher
+
+Two bundles can share the same `rootId` if they have the same code but different data (e.g., two desktonk instances connected to different relays). Using `launcherBundleId` for skip logic ensures proper switching.
+
+---
+
+## Future: Multi-Bundle Isolation
+
+For true isolation where each bundle maintains its own TonkCore simultaneously, the architecture would need significant changes.
+
+### Proposed Architecture
+
+```mermaid
+graph TB
+    subgraph SW["Service Worker"]
+        subgraph BSM["Bundle State Map"]
+            Map["Map&lt;launcherBundleId, {<br/>  tonk: TonkCore,<br/>  manifest: Manifest,<br/>  watchers: Map&lt;...&gt;,<br/>  wsUrl: string,<br/>}&gt;"]
+        end
+    end
+```
+
+### Required Changes
+
+1. **`sw/state.ts`**: Change from single `BundleState` to `Map<string, BundleState>`
+2. **`sw/tonk-lifecycle.ts`**:
+   - `loadBundle()` creates or returns existing TonkCore instead of replacing
+   - Add `unloadBundle(launcherBundleId)` for cleanup when iframe evicted
+3. **`sw/fetch-handler.ts`**: Route requests to correct TonkCore based on referrer/client ID
+4. **`sw/message-handlers/*`**: All handlers identify which TonkCore to use
+5. **Message protocol**: All messages include `launcherBundleId` for routing
+6. **`RuntimeApp.tsx`**: Include `launcherBundleId` in all service worker messages, not just `loadBundle`
+7. **`App.tsx`**: Notify service worker when iframe evicts from pool for cleanup
+
+### Challenges
+
+- **Memory**: Multiple TonkCore instances consume more memory
+- **WebSocket connections**: Each bundle maintains its own connection
+- **Cache management**: Need per-bundle cache keys
+- **Message routing**: Service worker must route messages to correct TonkCore based on client
+
+### Migration Path
+
+1. ✅ Implement Option 1 — uses `launcherBundleId` for skip logic (current state)
+2. Change `state.ts` to use Map with `launcherBundleId` as key
+3. Update all message handlers to accept `launcherBundleId` and route to correct instance
+4. Add cleanup on iframe eviction from pool
