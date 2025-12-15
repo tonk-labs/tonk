@@ -1,6 +1,6 @@
-import type { DocumentData } from '@tonk/core';
-import type { StateCreator } from 'zustand';
-import { getVFSService } from '@/vfs-client';
+import type { DocumentData } from "@tonk/core";
+import type { StateCreator } from "zustand";
+import { getVFSService } from "@/vfs-client";
 
 // biome-ignore lint/suspicious/noExplicitAny: Middleware types are complex
 interface SyncOptions<T = any> {
@@ -12,13 +12,15 @@ export const sync =
   <T extends object>(
     // biome-ignore lint/suspicious/noExplicitAny: Middleware types are complex
     config: StateCreator<T, any, any>,
-    options?: SyncOptions
+    options?: SyncOptions,
     // biome-ignore lint/suspicious/noExplicitAny: Middleware types are complex
   ): StateCreator<T, any, any> =>
   (set, get, api) => {
     // If no options provided, just return the config without sync
     if (!options || !options.path) {
-      console.warn('Sync middleware called without path option, skipping sync functionality');
+      console.warn(
+        "Sync middleware called without path option, skipping sync functionality",
+      );
       return config(set, get, api);
     }
 
@@ -34,7 +36,9 @@ export const sync =
     // biome-ignore lint/suspicious/noExplicitAny: State type is dynamic
     const serializeState = (state: T): any => {
       // Use partialize if provided, otherwise use full state
-      const stateToSerialize = options.partialize ? options.partialize(state) : state;
+      const stateToSerialize = options.partialize
+        ? options.partialize(state)
+        : state;
       // Remove functions and non-serializable values
       const serializable = JSON.parse(JSON.stringify(stateToSerialize));
       return serializable;
@@ -67,7 +71,7 @@ export const sync =
             console.warn(`Error saving state to ${options.path}:`, error);
           }
         },
-        create ? 0 : SAVE_DEBOUNCE_MS
+        create ? 0 : SAVE_DEBOUNCE_MS,
       ); // Immediate on create, debounced on update
     };
 
@@ -82,7 +86,9 @@ export const sync =
         }
       } catch {
         // File might not exist yet, that's okay
-        console.log(`No existing state file at ${options.path}, starting fresh`);
+        console.log(
+          `No existing state file at ${options.path}, starting fresh`,
+        );
       }
       return null;
     };
@@ -96,7 +102,10 @@ export const sync =
           await vfs.unwatchFile(watchId);
           watchId = null;
         } catch (error) {
-          console.warn(`Error unwatching previous watcher for ${options.path}:`, error);
+          console.warn(
+            `Error unwatching previous watcher for ${options.path}:`,
+            error,
+          );
         }
       }
 
@@ -110,11 +119,17 @@ export const sync =
             // biome-ignore lint/suspicious/noExplicitAny: State type is dynamic
             set(mergedState as T, true as any); // Replace entire state
           } catch (error) {
-            console.warn(`Error parsing external changes from ${options.path}:`, error);
+            console.warn(
+              `Error parsing external changes from ${options.path}:`,
+              error,
+            );
           }
         });
       } catch (error) {
-        console.warn(`Error setting up file watcher for ${options.path}:`, error);
+        console.warn(
+          `Error setting up file watcher for ${options.path}:`,
+          error,
+        );
       }
     };
 
@@ -137,7 +152,7 @@ export const sync =
             const initialValue = initialState[key as keyof typeof initialState];
 
             // Only merge if the initial value is not a function
-            if (typeof initialValue !== 'function') {
+            if (typeof initialValue !== "function") {
               (mergedState as Record<string, unknown>)[key] = savedValue;
             }
           });
@@ -161,7 +176,7 @@ export const sync =
     // Create the initial state
     const wrappedSet = (
       partial: T | Partial<T> | ((state: T) => T | Partial<T>),
-      replace?: boolean
+      replace?: boolean,
     ) => {
       // Apply changes to Zustand state first
       if (replace === true) {
@@ -183,19 +198,35 @@ export const sync =
     const state = config(wrappedSet, get, api);
 
     // Listen for connection state changes
-    connectionStateUnsubscribe = vfs.onConnectionStateChange(async (connectionState) => {
-      if (connectionState === 'connected' && !isInitialized) {
-        await initializeFromFile(state);
-      } else if (connectionState === 'connected' && isInitialized) {
-        await setupWatcher();
-      }
-    });
+    connectionStateUnsubscribe = vfs.onConnectionStateChange(
+      async (connectionState) => {
+        if (connectionState === "reconnecting") {
+          // TonkCore is being switched - reset so we reload from new VFS
+          console.log(
+            `[sync] Connection reconnecting, resetting state for ${options.path}`,
+          );
+          isInitialized = false;
+          if (watchId) {
+            // Old watcher is dead anyway, just clear the reference
+            watchId = null;
+          }
+          if (saveTimeout) {
+            clearTimeout(saveTimeout);
+            saveTimeout = null;
+          }
+        } else if (connectionState === "connected" && !isInitialized) {
+          await initializeFromFile(state);
+        } else if (connectionState === "connected" && isInitialized) {
+          await setupWatcher();
+        }
+      },
+    );
 
     // Initialize from file when VFS is ready
     const waitForVFS = () => {
-      console.log('waiting for vfs', vfs);
+      console.log("waiting for vfs", vfs);
       if (vfs.isInitialized()) {
-        console.log('init from file start');
+        console.log("init from file start");
         initializeFromFile(state);
         return;
       }
@@ -212,6 +243,21 @@ export const sync =
       if (connectionStateUnsubscribe) {
         connectionStateUnsubscribe();
         connectionStateUnsubscribe = null;
+      }
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        saveTimeout = null;
+      }
+    };
+
+    // Add reset function for when TonkCore changes (e.g., switching between tonks)
+    // This resets initialization state so the store reloads from the new VFS
+    (state as T & { __reset?: () => void }).__reset = () => {
+      console.log(`[sync] Resetting middleware for ${options.path}`);
+      isInitialized = false;
+      if (watchId) {
+        vfs.unwatchFile(watchId).catch(console.warn);
+        watchId = null;
       }
       if (saveTimeout) {
         clearTimeout(saveTimeout);

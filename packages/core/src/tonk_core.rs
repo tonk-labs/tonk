@@ -26,9 +26,10 @@ pub enum StorageConfig {
     /// Use filesystem storage at the specified path
     #[cfg(not(target_arch = "wasm32"))]
     Filesystem(PathBuf),
-    /// Use IndexedDB storage
+    /// Use IndexedDB storage with optional namespace for isolation
+    /// When namespace is provided, creates database named `samod_storage_{namespace}`
     #[cfg(target_arch = "wasm32")]
-    IndexedDB,
+    IndexedDB { namespace: Option<String> },
 }
 
 /// Builder for creating TonkCore instances with custom configurations
@@ -113,8 +114,13 @@ impl TonkCoreBuilder {
                         .await;
                     (samod, None)
                 }
-                StorageConfig::IndexedDB => {
-                    let storage = IndexedDbStorage::new();
+                StorageConfig::IndexedDB { ref namespace } => {
+                    let storage = match namespace {
+                        Some(ns) => {
+                            IndexedDbStorage::with_names(&format!("samod_storage_{}", ns), "data")
+                        }
+                        None => IndexedDbStorage::new(),
+                    };
 
                     // Check for manifest
                     let stored_root_id = if let Ok(manifest_key) =
@@ -276,8 +282,13 @@ impl TonkCoreBuilder {
                     .await
             }
             #[cfg(target_arch = "wasm32")]
-            StorageConfig::IndexedDB => {
-                let storage = IndexedDbStorage::new();
+            StorageConfig::IndexedDB { ref namespace } => {
+                let storage = match namespace {
+                    Some(ns) => {
+                        IndexedDbStorage::with_names(&format!("samod_storage_{}", ns), "data")
+                    }
+                    None => IndexedDbStorage::new(),
+                };
 
                 // Extract storage entries from bundle and populate IndexedDB
                 let storage_prefix = BundlePath::from("storage");

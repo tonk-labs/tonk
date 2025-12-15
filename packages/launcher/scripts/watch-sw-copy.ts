@@ -1,13 +1,13 @@
-import { watch } from 'node:fs';
-import { copyFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { watch } from "node:fs";
+import { copyFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 
-const LAUNCHER_DIR = join(import.meta.dir, '..');
-const DIST_SW = join(LAUNCHER_DIR, 'dist-sw');
-const OUTPUT_DIR = join(LAUNCHER_DIR, 'public/app');
-const SW_FILE = 'service-worker-bundled.js';
+const LAUNCHER_DIR = join(import.meta.dir, "..");
+const DIST_SW = join(LAUNCHER_DIR, "dist-sw");
+const OUTPUT_DIR = join(LAUNCHER_DIR, "public/space");
+const SW_FILE = "service-worker-bundled.js";
 
-console.log('[watch-sw-copy] Starting service worker copy watcher...');
+console.log("[watch-sw-copy] Starting service worker copy watcher...");
 console.log(`[watch-sw-copy] Watching: ${DIST_SW}`);
 console.log(`[watch-sw-copy] Output: ${OUTPUT_DIR}/${SW_FILE}`);
 
@@ -24,13 +24,16 @@ async function copyWithRetry(retries = 3) {
       const src = join(DIST_SW, SW_FILE);
       const dest = join(OUTPUT_DIR, SW_FILE);
       await copyFile(src, dest);
-      console.log(`[watch-sw-copy] Copied ${SW_FILE} to public/app`);
+      console.log(`[watch-sw-copy] Copied ${SW_FILE} to public/space`);
       return;
     } catch (err) {
       if (i < retries - 1) {
         await new Promise((resolve) => setTimeout(resolve, 500));
       } else {
-        console.error(`[watch-sw-copy] Failed to copy after ${retries} attempts:`, err);
+        console.error(
+          `[watch-sw-copy] Failed to copy after ${retries} attempts:`,
+          err,
+        );
       }
     }
   }
@@ -50,4 +53,4 @@ watch(DIST_SW, { recursive: false }, async (_eventType, filename) => {
 await copyWithRetry();
 
 // Keep the process running
-console.log('[watch-sw-copy] Watching for changes...');
+console.log("[watch-sw-copy] Watching for changes...");

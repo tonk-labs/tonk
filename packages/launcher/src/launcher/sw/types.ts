@@ -1,4 +1,4 @@
-import type { Manifest, TonkCore } from '@tonk/core/slim';
+import type { Manifest, TonkCore } from "@tonk/core/slim";
 
 // Service Worker global scope types
 declare global {
@@ -14,11 +14,12 @@ declare global {
 
   interface Client {
     postMessage(message: unknown): void;
+    id: string;
   }
 
   interface ClientQueryOptions {
     includeUncontrolled?: boolean;
-    type?: 'window' | 'worker' | 'sharedworker' | 'all';
+    type?: "window" | "worker" | "sharedworker" | "all";
   }
 
   interface ExtendableEvent extends Event {
@@ -32,26 +33,42 @@ export interface FetchEvent extends Event {
   respondWith(response: Promise<Response> | Response): void;
 }
 
-// Bundle state machine types
+// Watcher entry that includes the client ID for routing callbacks
+export interface WatcherEntry {
+  watcher: { stop: () => void };
+  clientId: string;
+}
+
+// Bundle state for a single bundle instance
 export type BundleState =
-  | { status: 'idle' }
-  | { status: 'loading'; bundleId: string; promise: Promise<void> }
   | {
-      status: 'active';
+      status: "loading";
+      launcherBundleId: string;
       bundleId: string;
+      promise: Promise<void>;
+    }
+  | {
+      status: "active";
+      /** Root document ID from manifest */
+      bundleId: string;
+      /** Unique IndexedDB bundle ID from launcher - used to differentiate bundles with same rootId */
+      launcherBundleId: string;
       tonk: TonkCore;
       manifest: Manifest;
       appSlug: string;
       wsUrl: string;
       healthCheckInterval: number | null;
-      watchers: Map<string, { stop: () => void }>;
+      watchers: Map<string, WatcherEntry>;
       connectionHealthy: boolean;
       reconnectAttempts: number;
     }
-  | { status: 'error'; error: Error; previousBundleId?: string };
+  | { status: "error"; launcherBundleId: string; error: Error };
 
 // Helper type to extract active state
-export type ActiveBundleState = Extract<BundleState, { status: 'active' }>;
+export type ActiveBundleState = Extract<BundleState, { status: "active" }>;
+
+// Map of all loaded bundles, keyed by launcherBundleId
+export type BundleStateMap = Map<string, BundleState>;
 
 // Constants
 export const MAX_RECONNECT_ATTEMPTS = 10;

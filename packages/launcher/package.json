@@ -9,7 +9,7 @@
     "dev": "bun run clean:vite-cache && bun run setup-wasm && bun run build:sw:dev && (bun run watch:sw & vite)",
     "build": "tsc -b && vite build",
     "build:runtime": "bun run scripts/build-runtime.ts",
-    "build:sw:dev": "TONK_SERVE_LOCAL=true vite build -c vite.sw.config.ts && cp dist-sw/service-worker-bundled.js public/app/service-worker-bundled.js",
+    "build:sw:dev": "TONK_SERVE_LOCAL=true vite build -c vite.sw.config.ts && mkdir -p public/space && cp dist-sw/service-worker-bundled.js public/space/service-worker-bundled.js",
     "watch:sw": "TONK_SERVE_LOCAL=true vite build -c vite.sw.config.ts --watch & bun scripts/watch-sw-copy.ts",
     "preview": "vite preview",
     "lint": "bun run lint:biome && bun run lint:arch",
@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@base-ui-components/react": "^1.0.0-beta.6",
-    "@tonk/core": "^0.1.4",
+    "@tonk/core": "^0.1.5",
     "clsx": "^2.1.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

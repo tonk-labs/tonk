@@ -1,4 +1,4 @@
-import type { WasmBundle, WasmTonkCore } from './tonk_core.js';
+import type { WasmBundle, WasmTonkCore } from "./tonk_core.js";
 
 /**
  * Entry in a directory listing
@@ -7,7 +7,7 @@ export interface RefNode {
   /** Name of the file or directory */
   name: string;
   /** Type of the entry */
-  type: 'directory' | 'document';
+  type: "directory" | "document";
   //the UUID of the automerge URL
   pointer: string;
   timestamps: DocumentTimestamps;
@@ -17,7 +17,7 @@ export interface DirectoryNode {
   /** Name of the file or directory */
   name: string;
   /** Type of the entry */
-  type: 'directory';
+  type: "directory";
   //the UUID of the automerge URL
   pointer: string;
   timestamps: DocumentTimestamps;
@@ -66,7 +66,7 @@ export interface DocumentData {
   content: JsonValue;
   name: string;
   timestamps: DocumentTimestamps;
-  type: 'document' | 'directory';
+  type: "document" | "directory";
   bytes?: string; // Base64-encoded binary data when file was created with bytes
 }
 
@@ -98,7 +98,9 @@ export interface Manifest {
  */
 export interface StorageConfig {
   /** Storage type: 'memory' for in-memory storage, 'indexeddb' for IndexedDB storage */
-  type: 'memory' | 'indexeddb';
+  type: "memory" | "indexeddb";
+  /** Optional namespace for IndexedDB isolation (creates separate database per namespace) */
+  namespace?: string;
 }
 
 /**
@@ -133,10 +135,10 @@ export interface BundleConfig {
 export class TonkError extends Error {
   constructor(
     message: string,
-    public code?: string
+    public code?: string,
   ) {
     super(message);
-    this.name = 'TonkError';
+    this.name = "TonkError";
   }
 }
 
@@ -145,8 +147,8 @@ export class TonkError extends Error {
  */
 export class ConnectionError extends TonkError {
   constructor(message: string) {
-    super(message, 'CONNECTION_ERROR');
-    this.name = 'ConnectionError';
+    super(message, "CONNECTION_ERROR");
+    this.name = "ConnectionError";
   }
 }
 
@@ -155,8 +157,8 @@ export class ConnectionError extends TonkError {
  */
 export class FileSystemError extends TonkError {
   constructor(message: string) {
-    super(message, 'FILESYSTEM_ERROR');
-    this.name = 'FileSystemError';
+    super(message, "FILESYSTEM_ERROR");
+    this.name = "FileSystemError";
   }
 }
 
@@ -165,8 +167,8 @@ export class FileSystemError extends TonkError {
  */
 export class BundleError extends TonkError {
   constructor(message: string) {
-    super(message, 'BUNDLE_ERROR');
-    this.name = 'BundleError';
+    super(message, "BUNDLE_ERROR");
+    this.name = "BundleError";
   }
 }
 
@@ -216,7 +218,7 @@ export class Bundle {
   static async fromBytes(data: Uint8Array, wasmModule?: any): Promise<Bundle> {
     try {
       const { create_bundle_from_bytes } =
-        wasmModule || (await import('./tonk_core.js'));
+        wasmModule || (await import("./tonk_core.js"));
       return new Bundle(create_bundle_from_bytes(data));
     } catch (error) {
       throw new BundleError(`Failed to create bundle from bytes: ${error}`);
@@ -398,15 +400,16 @@ export class TonkCore {
    */
   static async create(
     config?: TonkConfig,
-    wasmModule?: any
+    wasmModule?: any,
   ): Promise<TonkCore> {
-    const module = wasmModule || (await import('./tonk_core.js'));
+    const module = wasmModule || (await import("./tonk_core.js"));
 
     if (config?.peerId && config?.storage) {
       const { create_tonk_with_config } = module;
       const wasm = await create_tonk_with_config(
         config.peerId,
-        config.storage.type === 'indexeddb'
+        config.storage.type === "indexeddb",
+        config.storage.namespace,
       );
       return new TonkCore(wasm);
     } else if (config?.peerId) {
@@ -416,7 +419,8 @@ export class TonkCore {
     } else if (config?.storage) {
       const { create_tonk_with_storage } = module;
       const wasm = await create_tonk_with_storage(
-        config.storage.type === 'indexeddb'
+        config.storage.type === "indexeddb",
+        config.storage.namespace,
       );
       return new TonkCore(wasm);
     } else {
@@ -436,10 +440,10 @@ export class TonkCore {
    */
   static async createWithPeerId(
     peerId: string,
-    wasmModule?: any
+    wasmModule?: any,
   ): Promise<TonkCore> {
     const { create_tonk_with_peer_id } =
-      wasmModule || (await import('./tonk_core.js'));
+      wasmModule || (await import("./tonk_core.js"));
     const wasm = await create_tonk_with_peer_id(peerId);
     return new TonkCore(wasm);
   }
@@ -467,15 +471,16 @@ export class TonkCore {
   static async fromBundle(
     bundle: Bundle,
     config?: TonkConfig,
-    wasmModule?: any
+    wasmModule?: any,
   ): Promise<TonkCore> {
-    const module = wasmModule || (await import('./tonk_core.js'));
+    const module = wasmModule || (await import("./tonk_core.js"));
 
     if (config?.storage) {
       const { create_tonk_from_bundle_with_storage } = module;
       const wasm = await create_tonk_from_bundle_with_storage(
         bundle,
-        config.storage.type === 'indexeddb'
+        config.storage.type === "indexeddb",
+        config.storage.namespace,
       );
       return new TonkCore(wasm);
     } else {
@@ -508,15 +513,16 @@ export class TonkCore {
   static async fromBytes(
     data: Uint8Array,
     config?: TonkConfig,
-    wasmModule?: any
+    wasmModule?: any,
   ): Promise<TonkCore> {
-    const module = wasmModule || (await import('./tonk_core.js'));
+    const module = wasmModule || (await import("./tonk_core.js"));
 
     if (config?.storage) {
       const { create_tonk_from_bytes_with_storage } = module;
       const wasm = await create_tonk_from_bytes_with_storage(
         data,
-        config.storage.type === 'indexeddb'
+        config.storage.type === "indexeddb",
+        config.storage.namespace,
       );
       return new TonkCore(wasm);
     } else {
@@ -564,7 +570,7 @@ export class TonkCore {
       const result = await this.#wasm.isConnected();
       return result;
     } catch (error) {
-      console.error('🔌 [CORE-JS] isConnected() error:', error);
+      console.error("🔌 [CORE-JS] isConnected() error:", error);
       return false;
     }
   }
@@ -579,8 +585,8 @@ export class TonkCore {
       const result = await this.#wasm.getConnectionState();
       return result;
     } catch (error) {
-      console.error('📡 [CORE-JS] getConnectionState() error:', error);
-      return 'failed:' + String(error);
+      console.error("📡 [CORE-JS] getConnectionState() error:", error);
+      return "failed:" + String(error);
     }
   }
 
@@ -656,11 +662,11 @@ export class TonkCore {
   async createFileWithBytes(
     path: string,
     content: JsonValue,
-    bytes: Uint8Array | string
+    bytes: Uint8Array | string,
   ): Promise<void> {
     try {
       const normalizedBytes: Uint8Array =
-        typeof bytes === 'string' ? extractBytes(bytes) : bytes;
+        typeof bytes === "string" ? extractBytes(bytes) : bytes;
 
       await this.#wasm.createFileWithBytes(path, content, normalizedBytes);
     } catch (error) {
@@ -702,7 +708,7 @@ export class TonkCore {
       return {
         ...intermediary,
         content:
-          typeof intermediary.content === 'string'
+          typeof intermediary.content === "string"
             ? JSON.parse(intermediary.content)
             : intermediary.content,
         bytes: normalizedBytes,
@@ -762,11 +768,11 @@ export class TonkCore {
   async setFileWithBytes(
     path: string,
     content: JsonValue,
-    bytes: Uint8Array | string
+    bytes: Uint8Array | string,
   ): Promise<boolean> {
     try {
       const normalizedBytes: Uint8Array =
-        typeof bytes === 'string' ? extractBytes(bytes) : bytes;
+        typeof bytes === "string" ? extractBytes(bytes) : bytes;
       return await this.#wasm.setFileWithBytes(path, content, normalizedBytes);
     } catch (error) {
       throw new FileSystemError(`Failed to set file at ${path}: ${error}`);
@@ -823,7 +829,7 @@ export class TonkCore {
   async patchFile(
     path: string,
     jsonPath: string[],
-    value: JsonValue | string | number | boolean | null
+    value: JsonValue | string | number | boolean | null,
   ): Promise<boolean> {
     try {
       return await (this.#wasm as any).patchFile(path, jsonPath, value);
@@ -860,7 +866,7 @@ export class TonkCore {
     jsonPath: string[],
     index: number,
     deleteCount: number,
-    insert: string
+    insert: string,
   ): Promise<boolean> {
     try {
       return await (this.#wasm as any).spliceText(
@@ -868,7 +874,7 @@ export class TonkCore {
         jsonPath,
         index,
         deleteCount,
-        insert
+        insert,
       );
     } catch (error) {
       throw new FileSystemError(`Failed to splice text at ${path}: ${error}`);
@@ -906,7 +912,7 @@ export class TonkCore {
       await this.#wasm.createDirectory(path);
     } catch (error) {
       throw new FileSystemError(
-        `Failed to create directory at ${path}: ${error}`
+        `Failed to create directory at ${path}: ${error}`,
       );
     }
   }
@@ -931,13 +937,13 @@ export class TonkCore {
       const entries = await this.#wasm.listDirectory(path);
       return entries.map((entry: any) => ({
         name: entry.name,
-        type: entry.type as 'directory' | 'document',
+        type: entry.type as "directory" | "document",
         timestamps: entry.timestamps,
         pointer: entry.pointer,
       }));
     } catch (error) {
       throw new FileSystemError(
-        `Failed to list directory at ${path}: ${error}`
+        `Failed to list directory at ${path}: ${error}`,
       );
     }
   }
@@ -953,7 +959,7 @@ export class TonkCore {
       return await this.#wasm.exists(path);
     } catch (error) {
       throw new FileSystemError(
-        `Failed to check existence of ${path}: ${error}`
+        `Failed to check existence of ${path}: ${error}`,
       );
     }
   }
@@ -980,7 +986,7 @@ export class TonkCore {
       return await this.#wasm.rename(oldPath, newPath);
     } catch (error) {
       throw new FileSystemError(
-        `Failed to rename ${oldPath} to ${newPath}: ${error}`
+        `Failed to rename ${oldPath} to ${newPath}: ${error}`,
       );
     }
   }
@@ -1036,7 +1042,7 @@ export class TonkCore {
    */
   async watchFile(
     path: string,
-    callback: (result: DocumentData) => void
+    callback: (result: DocumentData) => void,
   ): Promise<DocumentWatcher> {
     try {
       const result = await this.#wasm.watchDocument(path, (doc: any) => {
@@ -1047,7 +1053,7 @@ export class TonkCore {
         callback({
           ...doc,
           content:
-            typeof doc.content === 'string'
+            typeof doc.content === "string"
               ? JSON.parse(doc.content)
               : doc.content,
           bytes: normalizedBytes,
@@ -1061,7 +1067,7 @@ export class TonkCore {
     } catch (error) {
       if (error instanceof FileSystemError) throw error;
       throw new FileSystemError(
-        `Failed to watch file at path ${path}: ${error}`
+        `Failed to watch file at path ${path}: ${error}`,
       );
     }
   }
@@ -1084,7 +1090,7 @@ export class TonkCore {
    */
   async watchDirectory(
     path: string,
-    callback: (result: DirectoryNode) => void
+    callback: (result: DirectoryNode) => void,
   ): Promise<DocumentWatcher> {
     try {
       const result = await this.#wasm.watchDirectory(path, callback);
@@ -1096,7 +1102,7 @@ export class TonkCore {
     } catch (error) {
       if (error instanceof FileSystemError) throw error;
       throw new FileSystemError(
-        `Failed to watch directory at path ${path}: ${error}`
+        `Failed to watch directory at path ${path}: ${error}`,
       );
     }
   }
@@ -1182,14 +1188,14 @@ const extractBytes = (bytes: string) => {
  */
 const normalizeBytes = (bytes: any): string => {
   // Normalize bytes to always be base64 string
-  if (typeof bytes === 'string') {
+  if (typeof bytes === "string") {
     // Already a base64 string
     return bytes;
   } else if (Array.isArray(bytes)) {
     // Convert array of char codes to base64 string
     // Process in chunks to avoid maximum call stack exceeded errors
     const chunkSize = 8192; // Safe chunk size for String.fromCharCode
-    let binaryString = '';
+    let binaryString = "";
     for (let i = 0; i < bytes.length; i += chunkSize) {
       const chunk = bytes.slice(i, i + chunkSize);
       binaryString += String.fromCharCode(...chunk);
@@ -1197,7 +1203,7 @@ const normalizeBytes = (bytes: any): string => {
     return btoa(binaryString);
   } else {
     throw new FileSystemError(
-      `Unrecognized bytes type in readFile ${typeof bytes}`
+      `Unrecognized bytes type in readFile ${typeof bytes}`,
     );
   }
 };
