@@ -1,6 +1,6 @@
 {
   "name": "@tonk/core",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Core library of the Tonk stack, providing sync engine and bundling",
   "type": "module",
   "main": "./dist/index.js",
