@@ -1,5 +1,6 @@
 public/tonk_core_bg.wasm
-public/app/service-worker-bundled.js
+public/service-worker-bundled.js
+public/space/
 tonk_core_bg.wasm
 .vite/
 dist-sw/
