@@ -9,25 +9,20 @@ The launcher comprises two parts:
 1. **Launcher App** (`src/main.tsx` → `src/App.tsx`) — The main UI with a sidebar for managing bundles
 2. **Runtime App** (`src/runtime/main.tsx` → `src/runtime/RuntimeApp.tsx`) — Runs inside an iframe, manages the service worker, and hosts Tonk apps
 
-```mermaid
-graph TB
-    subgraph Launcher["Launcher (localhost:5173)"]
-        subgraph Sidebar
-            B1["Bundle 1"]
-            B2["Bundle 2"]
-            Add["+ Add"]
-        end
-        subgraph MainArea["Main Area"]
-            subgraph IFrame["iframe: /app/index.html"]
-                Runtime["Runtime App"]
-                SW["Service Worker"]
-                TonkCore["TonkCore (VFS)"]
-            end
-        end
-    end
-
-    Runtime --> SW
-    SW --> TonkCore
+```
+┌─────────────────────────────────────────────────────────┐
+│ Launcher (localhost:5173)                               │
+│ ┌──────────┐  ┌────────────────────────────────────────┐│
+│ │ Sidebar  │  │ Main Area                              ││
+│ │          │  │ ┌────────────────────────────────────┐ ││
+│ │ Bundle 1 │  │ │ iframe: /app/index.html            │ ││
+│ │ Bundle 2 │  │ │                                    │ ││
+│ │ + Add    │  │ │  Runtime App → Service Worker      │ ││
+│ │          │  │ │                    ↓               │ ││
+│ │          │  │ │              TonkCore (VFS)        │ ││
+│ └──────────┘  │ └────────────────────────────────────┘ ││
+│               └────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────┘
 ```
 
 ## Key Components

@@ -18,24 +18,20 @@ Open http://localhost:5173 in Chrome or Safari. Firefox lacks support.
 
 The launcher uses a **two-app architecture**:
 
-```mermaid
-graph TB
-    subgraph Launcher["Launcher (localhost:5173)"]
-        subgraph Sidebar
-            B1[Bundle 1]
-            B2[Bundle 2]
-            Add[+ Add]
-        end
-        subgraph MainArea["Main Area"]
-            subgraph IFrame["iframe: /app/index.html"]
-                Runtime[Runtime App]
-                SW[Service Worker]
-                Tonk[TonkCore VFS]
-                Runtime --> SW
-                SW --> Tonk
-            end
-        end
-    end
+```
+┌─────────────────────────────────────────────────────────┐
+│ Launcher (localhost:5173)                               │
+│ ┌──────────┐  ┌────────────────────────────────────────┐│
+│ │ Sidebar  │  │ Main Area                              ││
+│ │          │  │ ┌────────────────────────────────────┐ ││
+│ │ Bundle 1 │  │ │ iframe: /app/index.html            │ ││
+│ │ Bundle 2 │  │ │                                    │ ││
+│ │ + Add    │  │ │  Runtime App → Service Worker      │ ││
+│ │          │  │ │                    ↓               │ ││
+│ │          │  │ │              TonkCore (VFS)        │ ││
+│ └──────────┘  │ └────────────────────────────────────┘ ││
+│               └────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────┘
 ```
 
 1. **Launcher App** (`src/App.tsx`) — Manages the bundle library: import, delete, launch
