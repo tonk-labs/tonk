@@ -38,17 +38,6 @@ graph TB
 
 The launcher stores bundles in IndexedDB under the database `tonk-launcher`. Both the launcher and runtime share this storage (same origin).
 
-```typescript
-// Save a bundle
-await bundleStorage.save(id, { name, bytes, size });
-
-// Retrieve a bundle
-const bundle = await bundleStorage.get(id);
-
-// List all bundles (metadata only)
-const bundles = await bundleStorage.list();
-```
-
 ### 2. Launcher App
 
 **File:** `src/App.tsx`
@@ -284,57 +273,6 @@ sequenceDiagram
     Runtime->>IFrame: redirect to /{appSlug}/
     SW->>SW: Intercept requests, serve from VFS
 ```
-
-## Troubleshooting
-
-### "Tonk not initialized" errors
-
-The service worker has not finished loading the bundle. Causes:
-
-- Bundle not loaded yet (race condition)
-- Auto-initialization from cache failed
-- `loadBundle` message failed
-
-**Fix:** The service worker now waits for initialization before handling fetch requests (15-second timeout).
-
-### CORS errors with localhost:4001
-
-The service worker was built with `TONK_SERVE_LOCAL=true` but no app dev server is running.
-
-**Fix:** Rebuild the service worker with `TONK_SERVE_LOCAL=false`:
-
-```bash
-TONK_SERVE_LOCAL=false npx vite build -c vite.sw.config.ts
-cp dist-sw/service-worker-bundled.js public/app/
-```
-
-### Changes to RuntimeApp not taking effect
-
-The `public/app/main.js` is pre-built and not watched in dev mode.
-
-**Fix:** Rebuild the runtime:
-
-```bash
-npx vite build -c vite.runtime.config.ts
-cp -r dist-runtime/* public/app/
-```
-
-### Service worker not updating
-
-Browsers cache service workers aggressively.
-
-**Fix:**
-
-1. DevTools → Application → Service Workers → "Unregister"
-2. Hard refresh (Cmd+Shift+R / Ctrl+Shift+R)
-
-### Bundle loads but app doesn't render
-
-Check that:
-
-1. `appSlug` is set correctly in the service worker
-2. Files exist in VFS at `/{appSlug}/index.html`
-3. No JavaScript errors occur in the hosted app
 
 ## File Reference
 

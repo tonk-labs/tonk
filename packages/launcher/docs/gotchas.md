@@ -42,11 +42,7 @@ alias rebuild-runtime="cd /path/to/launcher && vite build -c vite.runtime.config
 
 **Cause:** Browsers cache service workers aggressively. A running SW refuses to update until all tabs close.
 
-**Fix:**
-
-1. Open DevTools → Application → Service Workers
-2. Click "Unregister"
-3. Hard refresh: `Cmd+Shift+R` (Mac) or `Ctrl+Shift+R` (Windows/Linux)
+**Fix:** Unregister the SW in DevTools (Application → Service Workers) and hard refresh.
 
 **Tip:** Enable "Update on reload" in DevTools during development.
 
@@ -94,29 +90,6 @@ Common development issues.
 ```bash
 bun run setup-wasm
 ```
-
----
-
-### StrictMode Double Initialization
-
-**Symptom:** Initialization code runs twice in development.
-
-**Cause:** React StrictMode (used in the launcher) intentionally double-invokes effects.
-
-**Fix:** Use a ref guard pattern:
-
-```typescript
-const initializingRef = useRef(false);
-
-useEffect(() => {
-  if (initializingRef.current) return;
-  initializingRef.current = true;
-
-  // initialization code
-}, []);
-```
-
-RuntimeApp already uses this pattern. Copy it for any new initialization logic.
 
 ---
 
@@ -212,16 +185,6 @@ Edge cases.
 **Cause:** Aggressive reconnection (10 attempts with exponential backoff).
 
 **Note:** This behavior is intentional for reliability. Consider reducing for mobile/battery scenarios.
-
----
-
-### IndexedDB in Private Browsing
-
-**Symptom:** Storage errors in incognito/private mode.
-
-**Cause:** Some browsers restrict IndexedDB in private mode.
-
-**Fix:** Handle storage errors gracefully in UI code.
 
 ---
 

@@ -115,34 +115,11 @@ const id = createShapeId(`file-icon:${fileId}`);
 
 ### Theme in onMount, Not useEffect
 
-Set TLDraw theme in `onMount`. useEffect causes a flash of wrong theme.
-
-```typescript
-// Wrong
-useEffect(() => {
-  editor.setTheme(isDark ? 'dark' : 'light');
-}, [isDark]);
-
-// Right
-<Tldraw
-  onMount={(editor) => {
-    editor.setTheme(isDark ? 'dark' : 'light');
-  }}
-/>
-```
+Set TLDraw theme in `onMount` callback, not useEffect, to prevent flash.
 
 ### track() Wrapper Required
 
-Components reading TLDraw editor state need `track()` for re-renders:
-
-```typescript
-import { track } from 'tldraw';
-
-const MyComponent = track(function MyComponent() {
-  const selectedIds = editor.getSelectedShapeIds();
-  // ...
-});
-```
+Components reading TLDraw editor state need `track()` for re-renders. See [tldraw docs](https://tldraw.dev/docs/editor#primitives).
 
 ### Icon CSS Masks
 
@@ -153,23 +130,6 @@ TLDraw icons use CSS masks. Without `background-color: currentColor`, icons appe
 ---
 
 ## State Management Gotchas
-
-### Immer Mutations
-
-Inside `store.set()`, use direct mutations (Immer handles immutability):
-
-```typescript
-// Wrong
-myStore.set((state) => ({
-  ...state,
-  data: newValue,
-}));
-
-// Right
-myStore.set((state) => {
-  state.data = newValue;
-});
-```
 
 ### partialize Fields
 

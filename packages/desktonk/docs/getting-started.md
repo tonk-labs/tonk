@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-This monorepo uses **Bun**. Avoid npm, yarn, and pnpm.
+This monorepo uses **Bun**.
 
 ```bash
 # From monorepo root
@@ -107,72 +107,9 @@ const createMyActions = () => ({
 export const useMyFeature = myStore.createFactory(createMyActions());
 ```
 
-### 4. Add Route (if needed)
-
-Edit `src/Router.tsx`:
-
-```typescript
-import { MyFeature } from './features/my-feature';
-
-// Inside Routes
-<Route path="/my-feature" element={<MyFeature />} />
-```
-
 ## Adding a Custom TLDraw Shape
 
-### 1. Create Shape Util
-
-```typescript
-// src/features/desktop/shapes/MyShapeUtil.tsx
-import { ShapeUtil, T, Rectangle2d, HTMLContainer } from 'tldraw';
-
-interface MyShape {
-  type: 'my-shape';
-  props: {
-    label: string;
-    optional: string | null;
-  };
-}
-
-export class MyShapeUtil extends ShapeUtil<MyShape> {
-  static override type = 'my-shape' as const;
-
-  static override props = {
-    label: T.string,
-    optional: T.string.nullable().optional(),  // Use this pattern!
-  };
-
-  getDefaultProps(): MyShape['props'] {
-    return { label: 'Default', optional: null };
-  }
-
-  getGeometry(shape: MyShape) {
-    return new Rectangle2d({ width: 100, height: 100, isFilled: true });
-  }
-
-  component(shape: MyShape) {
-    return (
-      <HTMLContainer>
-        <div>{shape.props.label}</div>
-      </HTMLContainer>
-    );
-  }
-
-  indicator(shape: MyShape) {
-    return <rect width={100} height={100} />;
-  }
-}
-```
-
-### 2. Register Shape
-
-Edit `src/features/desktop/components/Desktop.tsx`:
-
-```typescript
-import { MyShapeUtil } from '../shapes/MyShapeUtil';
-
-const customShapeUtils = [FileIconUtil, MyShapeUtil];
-```
+See `FileIconUtil.tsx` for project patterns and [tldraw docs](https://tldraw.dev/docs/shapes) for the API.
 
 ## Working with VFS
 
@@ -224,17 +161,6 @@ import { useFeatureFlags } from '@lib/featureFlags';
 
 function MyComponent() {
   const { plainTextMode, togglePlainTextMode } = useFeatureFlags();
-  // ...
-}
-```
-
-### Use Theme Hook
-
-```typescript
-import { useTheme } from '@/hooks/useTheme';
-
-function MyComponent() {
-  const { isDark, toggle } = useTheme();
   // ...
 }
 ```

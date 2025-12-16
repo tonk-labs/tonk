@@ -58,8 +58,7 @@ graph TB
 
 ## Documentation
 
-- [Architecture Deep Dive](./architecture.md) — Complete technical reference
-- [Getting Started Guide](./getting-started.md) — Adding features and components
+- [Architecture](./architecture.md) — Complete technical reference
 - [Gotchas](./gotchas.md) — **Read first** to avoid common pitfalls
 
 ## Browser Support
@@ -67,12 +66,3 @@ graph TB
 - **Chrome** — Full support
 - **Safari** — Full support
 - **Firefox** — Not supported (ES modules in service workers)
-
-## Key Technologies
-
-- **React 19** with TypeScript strict mode
-- **Vite** (rolldown-vite) for builds
-- **TailwindCSS v4** for styling
-- **Biome** for linting and formatting
-- **@tonk/core** — Rust/WASM CRDT engine
-- **ast-grep** for architectural lint rules
