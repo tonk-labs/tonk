@@ -1011,6 +1011,16 @@ impl AutomergeHelpers {
     }
 
     /// Reconcile two JSON objects, applying minimal changes
+    ///
+    /// ## Merge Semantics
+    ///
+    /// - **Added keys**: Keys in new but not in old are added
+    /// - **Changed keys**: Keys in both with different values are recursively reconciled
+    /// - **Preserved keys**: Keys in old but not in new are **preserved**
+    /// - **Explicit deletion**: Keys with explicit `null` value in new are **deleted**
+    ///
+    /// This design is safe for CRDT-based collaborative editing where concurrent
+    /// additions from different clients should be preserved
     fn reconcile_objects(
         tx: &mut automerge::transaction::Transaction<'_>,
         obj_id: automerge::ObjId,
@@ -1019,16 +1029,17 @@ impl AutomergeHelpers {
     ) -> Result<bool> {
         let mut changed = false;
 
-        // Delete keys that exist in old but not in new
-        for key in old_map.keys() {
-            if !new_map.contains_key(key) {
-                tx.delete(obj_id.clone(), key.as_str())?;
-                changed = true;
-            }
-        }
-
-        // Add or update keys from new
+        // Add, update, or explicitly delete keys from new
         for (key, new_value) in new_map {
+            // Explicit null = delete the key
+            if new_value.is_null() {
+                if old_map.contains_key(key) {
+                    tx.delete(obj_id.clone(), key.as_str())?;
+                    changed = true;
+                }
+                continue;
+            }
+
             match old_map.get(key) {
                 None => {
                     // Key doesn't exist in old - add it
@@ -1063,6 +1074,12 @@ impl AutomergeHelpers {
         old_value: &serde_json::Value,
         new_value: &serde_json::Value,
     ) -> Result<bool> {
+        // Explicit null = delete (handles nested nulls like {"foo": {"bar": null}})
+        if new_value.is_null() {
+            tx.delete(obj_id, key)?;
+            return Ok(true);
+        }
+
         match (old_value, new_value) {
             // Both objects - recurse
             (serde_json::Value::Object(old_map), serde_json::Value::Object(new_map)) => {
@@ -1094,6 +1111,30 @@ impl AutomergeHelpers {
     }
 
     /// Update document content with intelligent diffing
+    ///
+    /// ## Merge Semantics
+    ///
+    /// This function applies minimal changes by comparing the new content against
+    /// existing content. It is designed for collaborative editing where multiple
+    /// clients may make concurrent changes
+    ///
+    /// - **Preserved keys**: Keys in the existing document but missing from new content
+    ///   are **preserved**. This ensures concurrent additions from other clients survive
+    /// - **Explicit deletion**: Set a key to `null` to delete it
+    /// - **Nested objects**: Recursively merged using the same rules
+    /// - **Arrays**: Fully replaced (not merged element-by-element)
+    /// - **No-change detection**: Returns `false` if content is structurally equal
+    ///
+    /// ## Example
+    ///
+    /// ```text
+    /// Existing: { "a": 1, "b": 2, "c": 3 }
+    /// Update:   { "a": 10, "d": 4, "b": null }
+    /// Result:   { "a": 10, "c": 3, "d": 4 }
+    ///           ^^^^^^^^  ^^^^^  ^^^^^
+    ///           changed   kept   added
+    ///                     "b" deleted via null
+    /// ```
     pub fn update_document_content<T>(handle: &DocHandle, content: T) -> Result<bool>
     where
         T: serde::Serialize,

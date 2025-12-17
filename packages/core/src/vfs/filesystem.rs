@@ -1,10 +1,10 @@
-use crate::Bundle;
 use crate::bundle::{BundleConfig, RandomAccess};
 use crate::error::{Result, VfsError};
 use crate::vfs::backend::AutomergeHelpers;
 use crate::vfs::path_index::PathIndex;
 use crate::vfs::types::*;
 use crate::vfs::watcher::DocumentWatcher;
+use crate::Bundle;
 use automerge::Automerge;
 use bytes::Bytes;
 use samod::storage::StorageKey;
@@ -259,8 +259,8 @@ impl VirtualFileSystem {
     pub async fn to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
         use crate::bundle::{Manifest, Version};
         use std::io::{Cursor, Write};
-        use zip::ZipWriter;
         use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
 
         // Get the root document from VFS
         let root_id = self.root_id();
@@ -539,6 +539,17 @@ impl VirtualFileSystem {
     }
 
     /// Update a document with intelligent diffing
+    ///
+    /// ## Merge Semantics
+    ///
+    /// - **Preserved keys**: Keys in the existing document but missing from new content
+    ///   are preserved. This ensures concurrent additions from other clients survive
+    /// - **Explicit deletion**: Set a key to `null` to delete it
+    /// - **Nested objects**: Recursively merged using the same rules
+    /// - **Arrays**: Fully replaced (not merged element-by-element)
+    ///
+    /// Returns `true` if changes were made, `false` if content was unchanged or
+    /// the document doesn't exist
     pub async fn update_document<T>(&self, path: &str, content: T) -> Result<bool>
     where
         T: serde::Serialize + Send + 'static,
@@ -2032,7 +2043,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_document_removes_missing_keys() {
+    async fn test_update_document_preserves_missing_keys() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
 
@@ -2040,16 +2051,16 @@ mod tests {
         let initial = serde_json::json!({ "a": 1, "b": 2 });
         vfs.create_document("/test.json", initial).await.unwrap();
 
-        // Update with only one key - should remove "b"
-        let updated = serde_json::json!({ "a": 1 });
+        // Update with only one key - "b" should be preserved
+        let updated = serde_json::json!({ "a": 10 });
         let changed = vfs.update_document("/test.json", updated).await.unwrap();
         assert!(changed);
 
-        // Verify content - "b" should be gone
+        // Verify content - "b" should still be there
         let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
         let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
             AutomergeHelpers::read_document(&handle).unwrap();
-        assert_eq!(doc_node.content, serde_json::json!({ "a": 1 }));
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 10, "b": 2 }));
     }
 
     #[tokio::test]
@@ -2166,5 +2177,95 @@ mod tests {
             .await
             .unwrap();
         assert!(!changed);
+    }
+
+    #[tokio::test]
+    async fn test_update_document_explicit_null_deletes_key() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document with multiple keys
+        let initial = serde_json::json!({ "a": 1, "b": 2, "c": 3 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update with explicit null to delete "b"
+        let updated = serde_json::json!({ "b": null });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify "b" is deleted, others preserved
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 1, "c": 3 }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_nested_null_deletes_nested_key() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document with nested structure
+        let initial = serde_json::json!({ "x": { "a": 1, "b": 2 } });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update with nested null to delete "x.b"
+        let updated = serde_json::json!({ "x": { "b": null } });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify "x.b" is deleted, "x.a" preserved
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "x": { "a": 1 } }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_null_on_nonexistent_key_noop() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document
+        let initial = serde_json::json!({ "a": 1 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Update with null on non-existent key - should be no-op
+        let updated = serde_json::json!({ "nonexistent": null });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(!changed);
+
+        // Verify content unchanged
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 1 }));
+    }
+
+    #[tokio::test]
+    async fn test_update_document_concurrent_additions_preserved() {
+        let tonk = TonkCore::new().await.unwrap();
+        let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
+
+        // Create initial document
+        let initial = serde_json::json!({ "a": 1 });
+        vfs.create_document("/test.json", initial).await.unwrap();
+
+        // Simulate Client A adding "b" (directly via set_document to simulate concurrent edit)
+        vfs.set_document("/test.json", serde_json::json!({ "a": 1, "b": 2 }))
+            .await
+            .unwrap();
+
+        // Client B updates "a" without knowing about "b"
+        // With the new semantics, "b" should be preserved
+        let updated = serde_json::json!({ "a": 10 });
+        let changed = vfs.update_document("/test.json", updated).await.unwrap();
+        assert!(changed);
+
+        // Verify both Client A's "b" and Client B's update to "a" are present
+        let handle = vfs.find_document("/test.json").await.unwrap().unwrap();
+        let doc_node: crate::vfs::types::DocNode<serde_json::Value> =
+            AutomergeHelpers::read_document(&handle).unwrap();
+        assert_eq!(doc_node.content, serde_json::json!({ "a": 10, "b": 2 }));
     }
 }
