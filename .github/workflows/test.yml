@@ -66,6 +66,28 @@ jobs:
         uses: nix-community/cache-nix-action@v6
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            rust/tonk-core/examples/server/node_modules
+            rust/tonk-core/examples/node/node_modules
+            rust/tonk-core/tests/node-sync/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('rust/tonk-core/examples/server/bun.lock', 'rust/tonk-core/examples/node/bun.lock', 'rust/tonk-core/tests/node-sync/bun.lock') }}
+          restore-keys: |
+            node-modules-${{ runner.os }}-
+
+      - name: Install Node.js dependencies for sync tests
+        shell: bash
+        run: |
+          nix develop .#ci --command bash -c '
+            echo "Installing Node.js dependencies for sync tests..."
+            (cd rust/tonk-core/examples/server && bun install --frozen-lockfile)
+            (cd rust/tonk-core/examples/node && bun install --frozen-lockfile)
+            (cd rust/tonk-core/tests/node-sync && bun install --frozen-lockfile)
+          '
+
       - name: 'Run `cargo test`'
         shell: bash
         run: |
