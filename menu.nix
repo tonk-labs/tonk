@@ -32,27 +32,31 @@ let
        .+%=*::+.*-    ##*@+--#@@@+.....=:.==. *-*+%  +%+
   '';
 
-  makeMenu = commands:
+  makeMenu =
+    commands:
     let
-      names =
-        builtins.attrNames commands;
+      names = builtins.attrNames commands;
 
-      makeCommand = { name, script, description ? "<No description given>" }:
+      makeCommand =
+        {
+          name,
+          script,
+          description ? "<No description given>",
+        }:
         {
           inherit name description;
 
-          package =
-            pkgs.writeScriptBin name ''
-              #!${pkgs.bash}/bin/bash
-              ${pkgs.figlet}/bin/figlet '${name}' | ${pkgs.lolcat}/bin/lolcat
-              ${script}
-            '';
+          package = pkgs.writeScriptBin name ''
+            #!${pkgs.bash}/bin/bash
+            ${pkgs.figlet}/bin/figlet '${name}' | ${pkgs.lolcat}/bin/lolcat
+            ${script}
+          '';
         };
 
-      intoPackages = name:
+      intoPackages =
+        name:
         let
-          element =
-            builtins.getAttr name commands;
+          element = builtins.getAttr name commands;
 
           task = makeCommand {
             inherit name;
@@ -62,19 +66,19 @@ let
         in
         task.package;
 
-      intoLines = acc: name:
+      intoLines =
+        acc: name:
         let
           description = (builtins.getAttr name commands).description;
         in
         acc + " && echo '${name};${description}'";
 
-      scripts =
-        map intoPackages names;
+      scripts = map intoPackages names;
 
       menuLines = builtins.foldl' intoLines "echo ''" names;
 
       menu = ''
-        echo "$(${menuLines})"  | column -t --s ';'
+        echo "$(${menuLines})"  | column -t -s ';'
       '';
     in
     {
