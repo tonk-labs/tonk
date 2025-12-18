@@ -569,6 +569,11 @@ impl TonkCore {
             use crate::vfs::types::NodeType;
             use bytes::Bytes;
 
+            // Create the directory in the destination VFS if it doesn't exist
+            if path != "/" && !dest_vfs.exists(path).await? {
+                dest_vfs.create_directory(path).await?;
+            }
+
             // List all entries in the current directory
             let entries = source_vfs.list_directory(path).await?;
 
