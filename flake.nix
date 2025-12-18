@@ -8,6 +8,7 @@
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
@@ -16,6 +17,7 @@
       nixpkgs,
       flake-utils,
       fenix,
+      crane,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -51,6 +53,41 @@
             useFetchCargoVendor = true;
           };
 
+        # Set up crane with the fenix toolchain
+        craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchainStable);
+
+        # Source filtering for Rust builds
+        src = craneLib.cleanCargoSource ./.;
+
+        # Vendor dependencies with git dependency hashes
+        cargoVendorDir = craneLib.vendorCargoDeps {
+          inherit src;
+          outputHashes = {
+            "git+https://github.com/tonk-labs/samod?branch=wasm-runtime#fe92f4d6fbb53fe107b1f4d9eea3fe5da7a30322" =
+              "sha256-0mr/mtsnm+BZHlQLPEfe+wmzWjPldcULSvOzCOf5yMc=";
+          };
+        };
+
+        # Shared build dependencies for both Nix builds and dev shells
+        sharedBuildInputs = with pkgs; [
+          openssl
+        ];
+
+        sharedNativeBuildInputs = with pkgs; [
+          pkg-config
+        ];
+
+        # Common arguments for crane builds
+        commonArgs = {
+          inherit src cargoVendorDir;
+          strictDeps = true;
+          nativeBuildInputs = sharedNativeBuildInputs;
+          buildInputs = sharedBuildInputs;
+        };
+
+        # Build dependencies only (for caching)
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
         # Common build inputs for all dev shells
         commonBuildInputs =
           with pkgs;
@@ -59,6 +96,8 @@
             wasm-bindgen-cli
             bun
           ]
+          ++ sharedBuildInputs
+          ++ sharedNativeBuildInputs
           ++ lib.optionals stdenv.isLinux [
             # Linux-specific inputs
           ]
@@ -109,80 +148,40 @@
         };
 
         checks = {
-          clippy = pkgs.rustPlatform.buildRustPackage {
-            pname = "tonk-clippy-lint";
-            version = "0.1.0";
-            src = ./.;
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              outputHashes = {
-                "dialog-artifacts-0.1.0" = "sha256-veYCuACVZEIveVuwh9O3XuoJtrihE/t+cWQTe7zWYsg=";
-                "ucan-0.5.0" = "sha256-CCQar9nU3KhBn1Kl5RsRJUASX8bO77pu7wbzzoLccBs=";
-                "samod-0.5.0" = "sha256-0mr/mtsnm+BZHlQLPEfe+wmzWjPldcULSvOzCOf5yMc=";
-              };
-            };
-            nativeBuildInputs = [ rustToolchainStable ];
-            buildPhase = ''
-              cargo clippy --all-targets -- -D warnings
-            '';
-            installPhase = ''
-              touch $out
-            '';
-          };
+          # Run clippy on the crate source
+          clippy = craneLib.cargoClippy (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+            }
+          );
 
-          rustfmt =
-            pkgs.runCommand "tonk-fmt-check"
-              {
-                nativeBuildInputs = [ rustToolchainStable ];
-              }
-              ''
-                cd ${./.}
-                cargo fmt --check
-                touch $out
-              '';
+          # Check formatting
+          rustfmt = craneLib.cargoFmt {
+            inherit src;
+            pname = "tonk";
+          };
         };
 
         packages = {
-          tonk-core = pkgs.rustPlatform.buildRustPackage {
-            pname = "tonk-core";
-            version = "0.1.0";
-            src = ./.;
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              outputHashes = {
-                "dialog-artifacts-0.1.0" = "sha256-veYCuACVZEIveVuwh9O3XuoJtrihE/t+cWQTe7zWYsg=";
-                "ucan-0.5.0" = "sha256-CCQar9nU3KhBn1Kl5RsRJUASX8bO77pu7wbzzoLccBs=";
-                "samod-0.5.0" = "sha256-0mr/mtsnm+BZHlQLPEfe+wmzWjPldcULSvOzCOf5yMc=";
-              };
-            };
-            nativeBuildInputs = [ rustToolchainStable ];
-            buildPhase = ''
-              cargo clippy --all-targets --all-features -- -D warnings
-            '';
-            installPhase = ''
-              touch $out
-            '';
-          };
+          tonk-core = craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              pname = "tonk-core";
+              version = "0.1.0";
+            }
+          );
 
-          tonk-space = pkgs.rustPlatform.buildRustPackage {
-            pname = "tonk-space";
-            version = "0.1.0";
-            src = ./.;
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              outputHashes = {
-                "dialog-artifacts-0.1.0" = "sha256-veYCuACVZEIveVuwh9O3XuoJtrihE/t+cWQTe7zWYsg=";
-                "ucan-0.5.0" = "sha256-CCQar9nU3KhBn1Kl5RsRJUASX8bO77pu7wbzzoLccBs=";
-              };
-            };
-            nativeBuildInputs = [ rustToolchainStable ];
-            buildPhase = ''
-              cargo clippy --all-targets -- -D warnings
-            '';
-            installPhase = ''
-              touch $out
-            '';
-          };
+          tonk-space = craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              pname = "tonk-space";
+              version = "0.1.0";
+            }
+          );
         };
       }
     );
