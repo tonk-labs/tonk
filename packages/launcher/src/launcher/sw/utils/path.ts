@@ -17,7 +17,7 @@ export function parseSpaceUrl(pathname: string): ParsedSpaceUrl | null {
   return {
     launcherBundleId: match[1],
     appSlug: match[2],
-    remainingPath: match[3] || "/",
+    remainingPath: match[3] || '/',
   };
 }
 
@@ -25,22 +25,22 @@ export function parseSpaceUrl(pathname: string): ParsedSpaceUrl | null {
 // URL structure: /space/<launcherBundleId>/<appSlug>/path/to/file
 // VFS path structure: <appSlug>/path/to/file
 export function determinePath(url: URL, appSlug: string | null): string {
-  console.log("determinePath START", {
+  console.log('determinePath START', {
     url: url.href,
     pathname: url.pathname,
-    appSlug: appSlug || "none",
+    appSlug: appSlug || 'none',
   });
 
   // If no appSlug is set, we can't determine the path
   if (!appSlug) {
-    console.error("determinePath - NO APP SLUG SET");
+    console.error('determinePath - NO APP SLUG SET');
     throw new Error(`No app slug available for ${url.pathname}`);
   }
 
   // Strip the scope (/space/) from the pathname
   const scopePath = new URL(
     // @ts-expect-error - self.registration exists in ServiceWorkerGlobalScope
-    (self.registration?.scope ?? self.location.href) as string,
+    (self.registration?.scope ?? self.location.href) as string
   ).pathname;
   const strippedPath = url.pathname.startsWith(scopePath)
     ? url.pathname.slice(scopePath.length)
@@ -48,13 +48,13 @@ export function determinePath(url: URL, appSlug: string | null): string {
 
   // Remove leading slashes and split into segments
   // After stripping /space/, we get <launcherBundleId>/<appSlug>/path/to/file
-  const segments = strippedPath.replace(/^\/+/, "").split("/").filter(Boolean);
+  const segments = strippedPath.replace(/^\/+/, '').split('/').filter(Boolean);
 
-  console.log("determinePath - segments", {
+  console.log('determinePath - segments', {
     scopePath,
     strippedPath,
     segments: [...segments],
-    firstSegment: segments[0] || "none",
+    firstSegment: segments[0] || 'none',
   });
 
   // New URL structure: /space/<launcherBundleId>/<appSlug>/...
@@ -68,17 +68,17 @@ export function determinePath(url: URL, appSlug: string | null): string {
     // launcherBundleId is first, appSlug is second - skip first, keep rest
     pathSegments = segments.slice(2);
     console.log(
-      "determinePath - new URL structure detected, using path after appSlug",
+      'determinePath - new URL structure detected, using path after appSlug',
       {
         launcherBundleId: segments[0],
         appSlug: segments[1],
         pathSegments: [...pathSegments],
-      },
+      }
     );
   } else if (segments[0] === appSlug) {
     // Old URL structure fallback: /space/<appSlug>/...
     pathSegments = segments.slice(1);
-    console.log("determinePath - old URL structure, using path after appSlug", {
+    console.log('determinePath - old URL structure, using path after appSlug', {
       appSlug: segments[0],
       pathSegments: [...pathSegments],
     });
@@ -86,22 +86,22 @@ export function determinePath(url: URL, appSlug: string | null): string {
     // Unknown structure, use all segments as path
     pathSegments = segments;
     console.log(
-      "determinePath - unknown structure, using all segments as path",
+      'determinePath - unknown structure, using all segments as path',
       {
         pathSegments: [...pathSegments],
-      },
+      }
     );
   }
 
   // If no segments left or path ends with slash, default to index.html
-  if (pathSegments.length === 0 || url.pathname.endsWith("/")) {
+  if (pathSegments.length === 0 || url.pathname.endsWith('/')) {
     const result = `${appSlug}/index.html`;
-    console.log("determinePath - defaulting to index.html", { result });
+    console.log('determinePath - defaulting to index.html', { result });
     return result;
   }
 
   // Regular file path
-  const result = `${appSlug}/${pathSegments.join("/")}`;
-  console.log("determinePath - returning file path", { result });
+  const result = `${appSlug}/${pathSegments.join('/')}`;
+  console.log('determinePath - returning file path', { result });
   return result;
 }

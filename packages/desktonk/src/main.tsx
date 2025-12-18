@@ -15,7 +15,7 @@ function AppLauncher() {
     getVFSService()
       .connect()
       .then(() => setReady(true))
-      .catch((err) => {
+      .catch(err => {
         console.warn('VFS connection warning:', err);
         setError(err instanceof Error ? err : new Error(String(err)));
       });

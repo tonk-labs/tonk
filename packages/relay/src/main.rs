@@ -4,13 +4,13 @@ mod server;
 mod storage;
 
 use error::Result;
-use samod::RepoBuilder;
 use samod::storage::TokioFilesystemStorage;
+use samod::RepoBuilder;
 use server::RelayServer;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {

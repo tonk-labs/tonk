@@ -1,6 +1,6 @@
-use crate::StorageConfig;
 use crate::bundle::{Bundle, BundleConfig, BundlePath};
 use crate::tonk_core::TonkCore;
+use crate::StorageConfig;
 use automerge::AutoSerde;
 use bytes::Bytes;
 use js_sys::{Array, Function, Promise, Uint8Array};
@@ -9,7 +9,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{JsFuture, future_to_promise, spawn_local};
+use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
 #[cfg(feature = "wee_alloc")]
 #[global_allocator]

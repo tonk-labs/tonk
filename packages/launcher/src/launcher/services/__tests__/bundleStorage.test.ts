@@ -59,7 +59,7 @@ describe('BundleStorage', () => {
     const list = await storage.list();
     expect(list).toHaveLength(2);
 
-    const b1 = list.find((b) => b.id === id1);
+    const b1 = list.find(b => b.id === id1);
     expect(b1).toBeDefined();
     expect(b1?.name).toBe('b1');
     // @ts-expect-error - 'bytes' should not be present in list view (runtime check)

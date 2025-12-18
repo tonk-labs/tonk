@@ -26,7 +26,10 @@ function getTonkCoreWasmPath(): string | null {
   }
 
   // Try 2: Direct workspace path (for local dev before install)
-  const workspacePath = resolve(__dirname, '../../core-js/dist/tonk_core_bg.wasm');
+  const workspacePath = resolve(
+    __dirname,
+    '../../core-js/dist/tonk_core_bg.wasm'
+  );
   if (existsSync(workspacePath)) {
     return workspacePath;
   }

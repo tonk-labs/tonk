@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState } from 'react';
 import {
   type DesktopState,
   getDesktopService,
-} from "../services/DesktopService";
+} from '../services/DesktopService';
 
 /**
  * React hook to consume desktop state from DesktopService.
@@ -19,12 +19,12 @@ import {
  */
 export function useDesktop(): DesktopState {
   const [state, setState] = useState<DesktopState>(() =>
-    getDesktopService().getState(),
+    getDesktopService().getState()
   );
 
   useEffect(() => {
     const service = getDesktopService();
-    return service.subscribe((newState) => {
+    return service.subscribe(newState => {
       setState(newState);
     });
   }, []);

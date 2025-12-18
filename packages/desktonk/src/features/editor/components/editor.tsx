@@ -86,7 +86,10 @@ export function Editor({
 
   // Get extensions based on mode
   const extensions = useMemo(
-    () => (editorMode === 'richtext' ? getRichTextExtensions() : getPlainTextExtensions()),
+    () =>
+      editorMode === 'richtext'
+        ? getRichTextExtensions()
+        : getPlainTextExtensions(),
     [editorMode]
   );
 
@@ -136,7 +139,12 @@ export function Editor({
 
   // Set initial markdown content after editor is ready
   useEffect(() => {
-    if (editor && isMarkdownFile && initialContent && editorMode === 'richtext') {
+    if (
+      editor &&
+      isMarkdownFile &&
+      initialContent &&
+      editorMode === 'richtext'
+    ) {
       // Use setContent with markdown parsing - contentType tells TipTap to parse as markdown
       editor.commands.setContent(initialContent, {
         emitUpdate: false,
@@ -145,7 +153,13 @@ export function Editor({
       // Store the initial markdown
       setRawMarkdownContent(initialContent);
     }
-  }, [editor, isMarkdownFile, initialContent, editorMode, setRawMarkdownContent]);
+  }, [
+    editor,
+    isMarkdownFile,
+    initialContent,
+    editorMode,
+    setRawMarkdownContent,
+  ]);
 
   // Sync remote updates from store to TipTap
   useEffect(() => {

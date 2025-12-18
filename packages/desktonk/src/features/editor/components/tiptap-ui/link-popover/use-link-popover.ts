@@ -168,7 +168,10 @@ export function useLinkHandler(props: LinkHandlerProps) {
 /**
  * Custom hook for link popover state management
  */
-export function useLinkState(props: { editor: Editor | null; hideWhenUnavailable: boolean }) {
+export function useLinkState(props: {
+  editor: Editor | null;
+  hideWhenUnavailable: boolean;
+}) {
   const { editor, hideWhenUnavailable = false } = props;
 
   const canSet = canSetLink(editor);
@@ -242,7 +245,11 @@ export function useLinkState(props: { editor: Editor | null; hideWhenUnavailable
  * ```
  */
 export function useLinkPopover(config?: UseLinkPopoverConfig) {
-  const { editor: providedEditor, hideWhenUnavailable = false, onSetLink } = config || {};
+  const {
+    editor: providedEditor,
+    hideWhenUnavailable = false,
+    onSetLink,
+  } = config || {};
 
   const { editor } = useTiptapEditor(providedEditor);
 

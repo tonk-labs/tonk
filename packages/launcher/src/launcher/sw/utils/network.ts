@@ -5,11 +5,11 @@ declare const TONK_SERVER_URL: string;
  */
 export function getWsUrlFromManifest(
   manifest: { networkUris?: string[] },
-  fallbackUrl: string = TONK_SERVER_URL,
+  fallbackUrl: string = TONK_SERVER_URL
 ): string {
   if (manifest.networkUris && manifest.networkUris.length > 0) {
     const networkUri = manifest.networkUris[0];
-    return networkUri.replace(/^http/, "ws");
+    return networkUri.replace(/^http/, 'ws');
   }
-  return fallbackUrl.replace(/^http/, "ws");
+  return fallbackUrl.replace(/^http/, 'ws');
 }

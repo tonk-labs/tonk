@@ -1,9 +1,9 @@
-import type { Manifest } from "@tonk/core/slim";
-import { Bundle } from "@tonk/core/slim";
-import { getTonkForBundle } from "../state";
-import { loadBundle, unloadBundle } from "../tonk-lifecycle";
-import { logger } from "../utils/logging";
-import { postResponse } from "../utils/response";
+import type { Manifest } from '@tonk/core/slim';
+import { Bundle } from '@tonk/core/slim';
+import { getTonkForBundle } from '../state';
+import { loadBundle, unloadBundle } from '../tonk-lifecycle';
+import { logger } from '../utils/logging';
+import { postResponse } from '../utils/response';
 
 declare const TONK_SERVER_URL: string;
 
@@ -15,9 +15,9 @@ export async function handleLoadBundle(
     manifest?: Manifest;
     launcherBundleId: string;
   },
-  sourceClient: Client,
+  sourceClient: Client
 ): Promise<void> {
-  logger.debug("Loading new bundle", {
+  logger.debug('Loading new bundle', {
     byteLength: message.bundleBytes.byteLength,
     serverUrl: message.serverUrl,
     hasCachedManifest: !!message.manifest,
@@ -27,12 +27,12 @@ export async function handleLoadBundle(
   if (!message.launcherBundleId) {
     postResponse(
       {
-        type: "loadBundle",
+        type: 'loadBundle',
         id: message.id,
         success: false,
-        error: "launcherBundleId is required",
+        error: 'launcherBundleId is required',
       },
-      sourceClient,
+      sourceClient
     );
     return;
   }
@@ -45,18 +45,18 @@ export async function handleLoadBundle(
     serverUrl,
     message.launcherBundleId,
     message.id,
-    message.manifest,
+    message.manifest
   );
 
   postResponse(
     {
-      type: "loadBundle",
+      type: 'loadBundle',
       id: message.id,
       success: result.success,
       skipped: result.skipped,
       error: result.error,
     },
-    sourceClient,
+    sourceClient
   );
 }
 
@@ -65,21 +65,21 @@ export async function handleUnloadBundle(
     id?: string;
     launcherBundleId: string;
   },
-  sourceClient: Client,
+  sourceClient: Client
 ): Promise<void> {
-  logger.debug("Unloading bundle", {
+  logger.debug('Unloading bundle', {
     launcherBundleId: message.launcherBundleId,
   });
 
   if (!message.launcherBundleId) {
     postResponse(
       {
-        type: "unloadBundle",
+        type: 'unloadBundle',
         id: message.id,
         success: false,
-        error: "launcherBundleId is required",
+        error: 'launcherBundleId is required',
       },
-      sourceClient,
+      sourceClient
     );
     return;
   }
@@ -88,11 +88,11 @@ export async function handleUnloadBundle(
 
   postResponse(
     {
-      type: "unloadBundle",
+      type: 'unloadBundle',
       id: message.id,
       success: result,
     },
-    sourceClient,
+    sourceClient
   );
 }
 
@@ -101,45 +101,45 @@ export async function handleToBytes(
     id: string;
     launcherBundleId: string;
   },
-  sourceClient: Client,
+  sourceClient: Client
 ): Promise<void> {
-  logger.debug("Converting tonk to bytes", {
+  logger.debug('Converting tonk to bytes', {
     launcherBundleId: message.launcherBundleId,
   });
   try {
     const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
-      throw new Error("Tonk not initialized");
+      throw new Error('Tonk not initialized');
     }
 
     const bytes = await tonkInstance.tonk.toBytes();
     const rootId = tonkInstance.manifest.rootId;
-    logger.debug("Tonk converted to bytes", {
+    logger.debug('Tonk converted to bytes', {
       byteLength: bytes.length,
       rootId,
     });
     postResponse(
       {
-        type: "toBytes",
+        type: 'toBytes',
         id: message.id,
         success: true,
         data: bytes,
         rootId,
       },
-      sourceClient,
+      sourceClient
     );
   } catch (error) {
-    logger.error("Failed to convert tonk to bytes", {
+    logger.error('Failed to convert tonk to bytes', {
       error: error instanceof Error ? error.message : String(error),
     });
     postResponse(
       {
-        type: "toBytes",
+        type: 'toBytes',
         id: message.id,
         success: false,
         error: error instanceof Error ? error.message : String(error),
       },
-      sourceClient,
+      sourceClient
     );
   }
 }
@@ -149,15 +149,15 @@ export async function handleForkToBytes(
     id: string;
     launcherBundleId: string;
   },
-  sourceClient: Client,
+  sourceClient: Client
 ): Promise<void> {
-  logger.debug("Forking tonk to bytes", {
+  logger.debug('Forking tonk to bytes', {
     launcherBundleId: message.launcherBundleId,
   });
   try {
     const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
-      throw new Error("Tonk not initialized");
+      throw new Error('Tonk not initialized');
     }
 
     const bytes = await tonkInstance.tonk.forkToBytes();
@@ -167,29 +167,29 @@ export async function handleForkToBytes(
     const forkedManifest = await forkedBundle.getManifest();
     const rootId = forkedManifest.rootId;
 
-    logger.debug("Tonk forked to bytes", { byteLength: bytes.length, rootId });
+    logger.debug('Tonk forked to bytes', { byteLength: bytes.length, rootId });
     postResponse(
       {
-        type: "forkToBytes",
+        type: 'forkToBytes',
         id: message.id,
         success: true,
         data: bytes,
         rootId,
       },
-      sourceClient,
+      sourceClient
     );
   } catch (error) {
-    logger.error("Failed to fork tonk to bytes", {
+    logger.error('Failed to fork tonk to bytes', {
       error: error instanceof Error ? error.message : String(error),
     });
     postResponse(
       {
-        type: "forkToBytes",
+        type: 'forkToBytes',
         id: message.id,
         success: false,
         error: error instanceof Error ? error.message : String(error),
       },
-      sourceClient,
+      sourceClient
     );
   }
 }

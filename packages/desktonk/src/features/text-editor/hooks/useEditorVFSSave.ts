@@ -1,6 +1,9 @@
 import type { JSONContent } from '@tiptap/react';
 import { useCallback, useEffect, useRef } from 'react';
-import { getDesktopService, invalidateThumbnailCache } from '@/features/desktop';
+import {
+  getDesktopService,
+  invalidateThumbnailCache,
+} from '@/features/desktop';
 import { THUMBNAILS_DIRECTORY } from '@/features/desktop/constants';
 import type { DesktopFile } from '@/features/desktop/types';
 import { generateTextThumbnailFromContent } from '@/features/desktop/utils/thumbnailGenerator';
@@ -19,13 +22,22 @@ interface UseEditorVFSSaveOptions {
  * Generate and save thumbnail for a file.
  * Called once when leaving the editor (on unmount).
  */
-async function generateThumbnail(text: string, filePath: string, vfs: VFSService): Promise<void> {
+async function generateThumbnail(
+  text: string,
+  filePath: string,
+  vfs: VFSService
+): Promise<void> {
   const fileName = filePath.split('/').pop() || 'file.txt';
-  const fileId = fileName.startsWith('.') ? fileName : fileName.replace(/\.[^.]+$/, '');
+  const fileId = fileName.startsWith('.')
+    ? fileName
+    : fileName.replace(/\.[^.]+$/, '');
 
   console.log('[EditorVFSSave] Generating thumbnail on unmount for:', fileName);
 
-  const thumbnailDataUrl = await generateTextThumbnailFromContent(text, fileName);
+  const thumbnailDataUrl = await generateTextThumbnailFromContent(
+    text,
+    fileName
+  );
   if (!thumbnailDataUrl) return;
 
   const thumbnailPath = `${THUMBNAILS_DIRECTORY}/${fileId}.png`;
@@ -67,14 +79,21 @@ async function generateThumbnail(text: string, filePath: string, vfs: VFSService
   const desktopService = getDesktopService();
   await desktopService.reloadFile(filePath);
 
-  console.log('[EditorVFSSave] ✅ Thumbnail generated on unmount:', thumbnailPath);
+  console.log(
+    '[EditorVFSSave] ✅ Thumbnail generated on unmount:',
+    thumbnailPath
+  );
 }
 
 /**
  * Hook that auto-saves editor content to VFS when changes occur.
  * Debounces writes to avoid excessive VFS operations.
  */
-export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditorVFSSaveOptions) {
+export function useEditorVFSSave({
+  filePath,
+  vfs,
+  debounceMs = 1000,
+}: UseEditorVFSSaveOptions) {
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedContentRef = useRef<string | null>(null);
   const lastFilePathRef = useRef<string | null>(null);
@@ -85,7 +104,10 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
   // This prevents unnecessary saves when closing without changes
   useEffect(() => {
     // Detect rename: filePath changed while we had a previous path
-    if (filePath !== lastFilePathRef.current && lastFilePathRef.current !== null) {
+    if (
+      filePath !== lastFilePathRef.current &&
+      lastFilePathRef.current !== null
+    ) {
       wasRenamedRef.current = true;
     }
 
@@ -129,8 +151,13 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
         let existingDesktopMeta: DesktopMeta | undefined;
         try {
           const existingDoc = await vfs.readFile(filePath);
-          const existingContent = existingDoc.content as { desktopMeta?: DesktopMeta };
-          if (existingContent?.desktopMeta && typeof existingContent.desktopMeta === 'object') {
+          const existingContent = existingDoc.content as {
+            desktopMeta?: DesktopMeta;
+          };
+          if (
+            existingContent?.desktopMeta &&
+            typeof existingContent.desktopMeta === 'object'
+          ) {
             existingDesktopMeta = existingContent.desktopMeta;
           }
         } catch {
@@ -155,7 +182,7 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
     if (!filePath || !vfs) return;
 
     // Subscribe to editor store changes
-    const unsubscribe = useEditorStore.subscribe((state) => {
+    const unsubscribe = useEditorStore.subscribe(state => {
       if (!state.document) return;
 
       // Clear pending save
@@ -200,8 +227,11 @@ export function useEditorVFSSave({ filePath, vfs, debounceMs = 1000 }: UseEditor
         saveToVFS(currentState.document);
 
         // Generate thumbnail (fire-and-forget, will complete after navigation)
-        generateThumbnail(text, filePath, vfs).catch((error) => {
-          console.warn('[EditorVFSSave] Failed to generate thumbnail on unmount:', error);
+        generateThumbnail(text, filePath, vfs).catch(error => {
+          console.warn(
+            '[EditorVFSSave] Failed to generate thumbnail on unmount:',
+            error
+          );
         });
       }
     };
@@ -216,11 +246,11 @@ function jsonContentToText(content: JSONContent): string {
   if (!content.content) return '';
 
   return content.content
-    .map((node) => {
+    .map(node => {
       if (node.type === 'paragraph') {
         if (!node.content) return '';
         return node.content
-          .map((child) => {
+          .map(child => {
             if (child.type === 'text') return child.text || '';
             return '';
           })
@@ -229,7 +259,7 @@ function jsonContentToText(content: JSONContent): string {
       // Handle other node types as needed
       if (node.type === 'heading' && node.content) {
         return node.content
-          .map((child) => (child.type === 'text' ? child.text || '' : ''))
+          .map(child => (child.type === 'text' ? child.text || '' : ''))
           .join('');
       }
       return '';

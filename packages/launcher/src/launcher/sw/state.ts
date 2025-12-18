@@ -1,5 +1,10 @@
 import type { Manifest, TonkCore } from '@tonk/core/slim';
-import type { ActiveBundleState, BundleState, BundleStateMap, WatcherEntry } from './types';
+import type {
+  ActiveBundleState,
+  BundleState,
+  BundleStateMap,
+  WatcherEntry,
+} from './types';
 import { logger } from './utils/logging';
 
 // Global state - Map of bundle states keyed by launcherBundleId
@@ -38,12 +43,17 @@ export function getAllBundleIds(): string[] {
 }
 
 // Get bundle state by launcherBundleId
-export function getBundleState(launcherBundleId: string): BundleState | undefined {
+export function getBundleState(
+  launcherBundleId: string
+): BundleState | undefined {
   return bundleStates.get(launcherBundleId);
 }
 
 // Set bundle state
-export function setBundleState(launcherBundleId: string, state: BundleState): void {
+export function setBundleState(
+  launcherBundleId: string,
+  state: BundleState
+): void {
   const oldState = bundleStates.get(launcherBundleId);
 
   logger.debug('Setting bundle state', {
@@ -101,14 +111,18 @@ export function getTonkForBundle(
 }
 
 // Get active bundle state for a specific bundle
-export function getActiveBundleState(launcherBundleId: string): ActiveBundleState | null {
+export function getActiveBundleState(
+  launcherBundleId: string
+): ActiveBundleState | null {
   const state = bundleStates.get(launcherBundleId);
   return state?.status === 'active' ? state : null;
 }
 
 // Get active bundle state (uses lastActiveBundleId if no ID provided)
 // This provides backwards compatibility for code that doesn't have bundle context
-export function getActiveBundle(launcherBundleId?: string): ActiveBundleState | null {
+export function getActiveBundle(
+  launcherBundleId?: string
+): ActiveBundleState | null {
   const id = launcherBundleId ?? lastActiveBundleId;
   if (!id) return null;
   return getActiveBundleState(id);
@@ -116,7 +130,9 @@ export function getActiveBundle(launcherBundleId?: string): ActiveBundleState | 
 
 // Get TonkCore instance (uses lastActiveBundleId if no ID provided)
 // This provides backwards compatibility
-export function getTonk(launcherBundleId?: string): { tonk: TonkCore; manifest: Manifest } | null {
+export function getTonk(
+  launcherBundleId?: string
+): { tonk: TonkCore; manifest: Manifest } | null {
   const id = launcherBundleId ?? lastActiveBundleId;
   if (!id) return null;
   return getTonkForBundle(id);
@@ -194,7 +210,10 @@ export function setAppSlug(launcherBundleId: string, slug: string): boolean {
 }
 
 // Update connection health on a bundle's active state
-export function setConnectionHealth(launcherBundleId: string, healthy: boolean): void {
+export function setConnectionHealth(
+  launcherBundleId: string,
+  healthy: boolean
+): void {
   const state = bundleStates.get(launcherBundleId);
   if (state?.status === 'active') {
     bundleStates.set(launcherBundleId, {
@@ -227,7 +246,10 @@ export function resetReconnectAttempts(launcherBundleId: string): void {
 }
 
 // Set health check interval for a bundle
-export function setHealthCheckInterval(launcherBundleId: string, interval: number | null): void {
+export function setHealthCheckInterval(
+  launcherBundleId: string,
+  interval: number | null
+): void {
   const state = bundleStates.get(launcherBundleId);
   if (state?.status === 'active') {
     bundleStates.set(launcherBundleId, {
@@ -252,7 +274,10 @@ export function addWatcher(
 }
 
 // Remove a watcher from a bundle
-export function removeWatcher(launcherBundleId: string, watcherId: string): boolean {
+export function removeWatcher(
+  launcherBundleId: string,
+  watcherId: string
+): boolean {
   const state = bundleStates.get(launcherBundleId);
   if (state?.status === 'active') {
     const entry = state.watchers.get(watcherId);
@@ -294,7 +319,9 @@ export function getWatcherClientId(
 }
 
 // Get all watcher entries for a bundle (for reestablishing after reconnect)
-export function getWatcherEntries(launcherBundleId: string): [string, WatcherEntry][] {
+export function getWatcherEntries(
+  launcherBundleId: string
+): [string, WatcherEntry][] {
   const state = bundleStates.get(launcherBundleId);
   if (state?.status === 'active') {
     return Array.from(state.watchers.entries());
@@ -303,7 +330,10 @@ export function getWatcherEntries(launcherBundleId: string): [string, WatcherEnt
 }
 
 // Remove all watchers for a specific client ID (for cleanup when client disconnects)
-export function removeWatchersByClientId(launcherBundleId: string, clientId: string): number {
+export function removeWatchersByClientId(
+  launcherBundleId: string,
+  clientId: string
+): number {
   const state = bundleStates.get(launcherBundleId);
   if (state?.status !== 'active') {
     return 0;

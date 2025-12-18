@@ -37,7 +37,10 @@ export interface UseImageUploadConfig {
  */
 export function canInsertImage(editor: Editor | null): boolean {
   if (!editor || !editor.isEditable) return false;
-  if (!isExtensionAvailable(editor, 'imageUpload') || isNodeTypeSelected(editor, ['image']))
+  if (
+    !isExtensionAvailable(editor, 'imageUpload') ||
+    isNodeTypeSelected(editor, ['image'])
+  )
     return false;
 
   return editor.can().insertContent({ type: 'imageUpload' });
@@ -127,7 +130,11 @@ export function shouldShowButton(props: {
  * ```
  */
 export function useImageUpload(config?: UseImageUploadConfig) {
-  const { editor: providedEditor, hideWhenUnavailable = false, onInserted } = config || {};
+  const {
+    editor: providedEditor,
+    hideWhenUnavailable = false,
+    onInserted,
+  } = config || {};
 
   const { editor } = useTiptapEditor(providedEditor);
   const isMobile = useIsMobile();
@@ -163,7 +170,7 @@ export function useImageUpload(config?: UseImageUploadConfig) {
 
   useHotkeys(
     IMAGE_UPLOAD_SHORTCUT_KEY,
-    (event) => {
+    event => {
       event.preventDefault();
       handleImage();
     },

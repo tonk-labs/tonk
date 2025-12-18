@@ -1,4 +1,4 @@
-import mime from "mime";
+import mime from 'mime';
 import type {
   ConnectionState,
   ConnectionStateListener,
@@ -8,8 +8,8 @@ import type {
   VFSWorkerMessage,
   VFSWorkerResponse,
   WatcherMetadata,
-} from "./types";
-import { bytesToString, stringToBytes, uint8ArrayToBase64 } from "./vfs-utils";
+} from './types';
+import { bytesToString, stringToBytes, uint8ArrayToBase64 } from './vfs-utils';
 
 const verbose = () => false;
 
@@ -27,26 +27,26 @@ export class VFSService {
   private watchers = new Map<string, (documentData: DocumentData) => void>();
   private directoryWatchers = new Map<string, (changeData: unknown) => void>();
   private watcherMetadata = new Map<string, WatcherMetadata>();
-  private connectionState: ConnectionState = "disconnected";
+  private connectionState: ConnectionState = 'disconnected';
   private connectionListeners = new Set<ConnectionStateListener>();
   private messageHandler: (event: MessageEvent) => void;
 
   constructor() {
     this.messageHandler = this.handleMessage.bind(this);
-    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
-      navigator.serviceWorker.addEventListener("message", this.messageHandler);
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', this.messageHandler);
 
       // Handle controller change (e.g. when SW claims clients)
-      navigator.serviceWorker.addEventListener("controllerchange", () => {
-        console.log("[VFSService] Controller changed");
-        this.notifyConnectionStateChange("connected");
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        console.log('[VFSService] Controller changed');
+        this.notifyConnectionStateChange('connected');
         // If we were already tracking watchers, re-establish them
         if (this.watcherMetadata.size > 0) {
           this.reestablishWatchers();
         }
       });
     } else {
-      console.error("[VFSService] Service Worker not supported");
+      console.error('[VFSService] Service Worker not supported');
     }
 
     // Try to extract launcherBundleId from URL on construction
@@ -58,14 +58,14 @@ export class VFSService {
    * URL structure: /space/<launcherBundleId>/<appSlug>/...
    */
   private extractBundleIdFromUrl(): void {
-    if (typeof window === "undefined") return;
+    if (typeof window === 'undefined') return;
 
     const match = window.location.pathname.match(/^\/space\/([^/]+)\/[^/]+/);
     if (match) {
       this.launcherBundleId = match[1];
       console.log(
-        "[VFSService] Extracted launcherBundleId from URL:",
-        this.launcherBundleId,
+        '[VFSService] Extracted launcherBundleId from URL:',
+        this.launcherBundleId
       );
     }
   }
@@ -75,7 +75,7 @@ export class VFSService {
    */
   setLauncherBundleId(id: string): void {
     this.launcherBundleId = id;
-    console.log("[VFSService] Set launcherBundleId:", id);
+    console.log('[VFSService] Set launcherBundleId:', id);
   }
 
   /**
@@ -100,8 +100,8 @@ export class VFSService {
         listener(state);
       } catch (error) {
         console.error(
-          "[VFSService] Error in connection state listener:",
-          error,
+          '[VFSService] Error in connection state listener:',
+          error
         );
       }
     }
@@ -115,54 +115,54 @@ export class VFSService {
     const response = event.data as VFSWorkerResponse;
 
     // Handle ready message
-    if ((response as { type: string }).type === "ready") {
-      verbose() && console.log("[VFSService] Service Worker is ready");
+    if ((response as { type: string }).type === 'ready') {
+      verbose() && console.log('[VFSService] Service Worker is ready');
       return;
     }
 
     // Handle connection state messages
-    if (response.type === "disconnected") {
-      this.notifyConnectionStateChange("disconnected");
+    if (response.type === 'disconnected') {
+      this.notifyConnectionStateChange('disconnected');
       return;
     }
 
-    if (response.type === "reconnecting") {
-      this.notifyConnectionStateChange("reconnecting");
+    if (response.type === 'reconnecting') {
+      this.notifyConnectionStateChange('reconnecting');
       return;
     }
 
-    if (response.type === "reconnected") {
-      this.notifyConnectionStateChange("connected");
+    if (response.type === 'reconnected') {
+      this.notifyConnectionStateChange('connected');
       return;
     }
 
-    if (response.type === "watchersReestablished") {
+    if (response.type === 'watchersReestablished') {
       console.log(`[VFSService] Watchers re-established: ${response.count}`);
       return;
     }
 
     // Handle watch notifications
-    if (response.type === "fileChanged" && "watchId" in response) {
+    if (response.type === 'fileChanged' && 'watchId' in response) {
       const callback = this.watchers.get(response.watchId);
       if (callback) {
         try {
           callback(response.documentData);
         } catch (error) {
-          console.error("[VFSService] Error in file watcher callback:", error);
+          console.error('[VFSService] Error in file watcher callback:', error);
         }
       }
       return;
     }
 
-    if (response.type === "directoryChanged" && "watchId" in response) {
+    if (response.type === 'directoryChanged' && 'watchId' in response) {
       const callback = this.directoryWatchers.get(response.watchId);
       if (callback) {
         try {
           callback(response.changeData);
         } catch (error) {
           console.error(
-            "[VFSService] Error in directory watcher callback:",
-            error,
+            '[VFSService] Error in directory watcher callback:',
+            error
           );
         }
       }
@@ -170,49 +170,49 @@ export class VFSService {
     }
 
     // Handle request-response messages
-    if ("id" in response && response.id) {
+    if ('id' in response && response.id) {
       const pending = this.pendingRequests.get(response.id);
       if (pending) {
         this.pendingRequests.delete(response.id);
         if (response.success) {
-          pending.resolve("data" in response ? response.data : undefined);
+          pending.resolve('data' in response ? response.data : undefined);
         } else {
-          pending.reject(new Error(response.error || "Unknown error"));
+          pending.reject(new Error(response.error || 'Unknown error'));
         }
       }
     }
   }
 
   private async ensureServiceWorker(): Promise<ServiceWorker> {
-    if (!("serviceWorker" in navigator)) {
-      throw new Error("Service Worker is not supported");
+    if (!('serviceWorker' in navigator)) {
+      throw new Error('Service Worker is not supported');
     }
 
     if (navigator.serviceWorker.controller) {
       return navigator.serviceWorker.controller;
     }
 
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
       const onControllerChange = () => {
         navigator.serviceWorker.removeEventListener(
-          "controllerchange",
-          onControllerChange,
+          'controllerchange',
+          onControllerChange
         );
         if (navigator.serviceWorker.controller) {
           resolve(navigator.serviceWorker.controller);
         }
       };
       navigator.serviceWorker.addEventListener(
-        "controllerchange",
-        onControllerChange,
+        'controllerchange',
+        onControllerChange
       );
 
       // Fallback timeout
       setTimeout(() => {
         if (navigator.serviceWorker.controller) {
           navigator.serviceWorker.removeEventListener(
-            "controllerchange",
-            onControllerChange,
+            'controllerchange',
+            onControllerChange
           );
           resolve(navigator.serviceWorker.controller);
         }
@@ -221,7 +221,7 @@ export class VFSService {
   }
 
   async connect(): Promise<void> {
-    this.notifyConnectionStateChange("connecting");
+    this.notifyConnectionStateChange('connecting');
     await this.ensureServiceWorker();
 
     // Try to extract bundleId from URL if not already set
@@ -232,51 +232,51 @@ export class VFSService {
     try {
       // Check if already initialized/running by asking for server URL
       const id = this.generateId();
-      await this.sendMessage({ type: "getServerUrl", id });
+      await this.sendMessage({ type: 'getServerUrl', id });
 
       this.initialized = true;
-      this.notifyConnectionStateChange("connected");
+      this.notifyConnectionStateChange('connected');
 
       if (this.watcherMetadata.size > 0) {
         await this.reestablishWatchers();
       }
     } catch (error) {
       console.log(
-        "[VFSService] Service Worker available but not initialized",
-        error,
+        '[VFSService] Service Worker available but not initialized',
+        error
       );
       // We remain in connected state (to SW), but initialized=false
-      this.notifyConnectionStateChange("connected");
+      this.notifyConnectionStateChange('connected');
     }
   }
 
   async initialize(manifestUrl: string, wsUrl: string): Promise<void> {
-    this.notifyConnectionStateChange("connecting");
+    this.notifyConnectionStateChange('connecting');
     await this.ensureServiceWorker();
 
     try {
       const id = this.generateId();
-      console.log("[VFSService] Sending initializeFromUrl...", {
+      console.log('[VFSService] Sending initializeFromUrl...', {
         manifestUrl,
         wsUrl,
       });
 
       await this.sendMessage({
-        type: "initializeFromUrl",
+        type: 'initializeFromUrl',
         id,
         manifestUrl,
         wsUrl,
       });
 
-      console.log("[VFSService] Initialization successful");
+      console.log('[VFSService] Initialization successful');
       this.initialized = true;
-      this.notifyConnectionStateChange("connected");
+      this.notifyConnectionStateChange('connected');
 
       if (this.watcherMetadata.size > 0) await this.reestablishWatchers();
     } catch (error) {
-      this.notifyConnectionStateChange("disconnected");
+      this.notifyConnectionStateChange('disconnected');
       throw new Error(
-        `Failed to initialize VFS: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to initialize VFS: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
@@ -286,7 +286,7 @@ export class VFSService {
   }
 
   private async sendMessage<T>(
-    message: VFSWorkerMessage & { id: string },
+    message: VFSWorkerMessage & { id: string }
   ): Promise<T> {
     const controller = await this.ensureServiceWorker();
 
@@ -308,7 +308,7 @@ export class VFSService {
       setTimeout(() => {
         if (this.pendingRequests.has(message.id)) {
           this.pendingRequests.delete(message.id);
-          reject(new Error("Request timeout"));
+          reject(new Error('Request timeout'));
         }
       }, 30000);
     });
@@ -316,12 +316,12 @@ export class VFSService {
 
   async readFile(path: string): Promise<DocumentData> {
     if (!path) {
-      console.error("[VFSService] readFile called with no path");
-      throw new Error("Path is required for readFile");
+      console.error('[VFSService] readFile called with no path');
+      throw new Error('Path is required for readFile');
     }
     const id = this.generateId();
     return this.sendMessage<DocumentData>({
-      type: "readFile",
+      type: 'readFile',
       id,
       path,
     });
@@ -330,16 +330,16 @@ export class VFSService {
   async writeFile(
     path: string,
     content: DocumentContent,
-    create = false,
+    create = false
   ): Promise<void> {
     if (!path) {
-      console.error("[VFSService] writeFile called with no path");
-      throw new Error("Path is required for writeFile");
+      console.error('[VFSService] writeFile called with no path');
+      throw new Error('Path is required for writeFile');
     }
     const id = this.generateId();
 
     return this.sendMessage<void>({
-      type: "writeFile",
+      type: 'writeFile',
       id,
       path,
       content,
@@ -351,7 +351,7 @@ export class VFSService {
     path: string,
     content: JsonValue,
     bytes: Uint8Array | string,
-    create = false,
+    create = false
   ): Promise<void> {
     let bytesData: string;
     if (bytes instanceof Uint8Array) {
@@ -366,30 +366,30 @@ export class VFSService {
   async writeStringAsBytes(
     path: string,
     stringData: string,
-    create = false,
+    create = false
   ): Promise<void> {
     const base64Data = stringToBytes(stringData);
-    const mimeType = mime.getType(path) || "application/octet-stream";
+    const mimeType = mime.getType(path) || 'application/octet-stream';
 
     return this.writeFile(
       path,
       { content: { mime: mimeType }, bytes: base64Data },
-      create,
+      create
     );
   }
 
   async patchFile(
     path: string,
     jsonPath: string[],
-    value: JsonValue | string | number | boolean | null,
+    value: JsonValue | string | number | boolean | null
   ): Promise<boolean> {
     if (!path) {
-      console.error("[VFSService] patchFile called with no path");
-      throw new Error("Path is required for patchFile");
+      console.error('[VFSService] patchFile called with no path');
+      throw new Error('Path is required for patchFile');
     }
     const id = this.generateId();
     return this.sendMessage<boolean>({
-      type: "patchFile",
+      type: 'patchFile',
       id,
       path,
       jsonPath,
@@ -399,12 +399,12 @@ export class VFSService {
 
   async updateFile(path: string, content: JsonValue): Promise<boolean> {
     if (!path) {
-      console.error("[VFSService] updateFile called with no path");
-      throw new Error("Path is required for updateFile");
+      console.error('[VFSService] updateFile called with no path');
+      throw new Error('Path is required for updateFile');
     }
     const id = this.generateId();
     return this.sendMessage<boolean>({
-      type: "updateFile",
+      type: 'updateFile',
       id,
       path,
       content,
@@ -416,7 +416,7 @@ export class VFSService {
 
     if (!documentData.bytes) {
       console.warn(
-        `file ${path} was not stored as bytes, returning content instead`,
+        `file ${path} was not stored as bytes, returning content instead`
       );
       return JSON.stringify(documentData.content);
     }
@@ -426,7 +426,7 @@ export class VFSService {
 
   async renameFile(oldPath: string, newPath: string): Promise<void> {
     if (!oldPath || !newPath) {
-      throw new Error("Both oldPath and newPath are required for renameFile");
+      throw new Error('Both oldPath and newPath are required for renameFile');
     }
 
     try {
@@ -434,11 +434,11 @@ export class VFSService {
       await this.writeFile(
         newPath,
         { content: doc.content, bytes: doc.bytes },
-        true,
+        true
       );
       await this.deleteFile(oldPath);
     } catch (err) {
-      console.error("[VFSService] Rename failed", err);
+      console.error('[VFSService] Rename failed', err);
       throw err;
     }
   }
@@ -446,7 +446,7 @@ export class VFSService {
   async deleteFile(path: string): Promise<void> {
     const id = this.generateId();
     return this.sendMessage<void>({
-      type: "deleteFile",
+      type: 'deleteFile',
       id,
       path,
     });
@@ -455,7 +455,7 @@ export class VFSService {
   async listDirectory(path: string): Promise<unknown[]> {
     const id = this.generateId();
     return this.sendMessage<unknown[]>({
-      type: "listDirectory",
+      type: 'listDirectory',
       id,
       path,
     });
@@ -463,11 +463,11 @@ export class VFSService {
 
   async exists(path: string): Promise<boolean> {
     if (!path) {
-      throw new Error("Path is required for exists check");
+      throw new Error('Path is required for exists check');
     }
     const id = this.generateId();
     return this.sendMessage<boolean>({
-      type: "exists",
+      type: 'exists',
       id,
       path,
     });
@@ -475,15 +475,15 @@ export class VFSService {
 
   async watchFile(
     path: string,
-    callback: (documentData: DocumentData) => void,
+    callback: (documentData: DocumentData) => void
   ): Promise<string> {
     const id = this.generateId();
     this.watchers.set(id, callback);
-    this.watcherMetadata.set(id, { path, type: "file" });
+    this.watcherMetadata.set(id, { path, type: 'file' });
 
     try {
       await this.sendMessage<void>({
-        type: "watchFile",
+        type: 'watchFile',
         id,
         path,
       });
@@ -499,23 +499,23 @@ export class VFSService {
     this.watchers.delete(watchId);
     this.watcherMetadata.delete(watchId);
     return this.sendMessage<void>({
-      type: "unwatchFile",
+      type: 'unwatchFile',
       id: watchId,
-      path: "",
+      path: '',
     });
   }
 
   async watchDirectory(
     path: string,
-    callback: (changeData: unknown) => void,
+    callback: (changeData: unknown) => void
   ): Promise<string> {
     const id = this.generateId();
     this.directoryWatchers.set(id, callback);
-    this.watcherMetadata.set(id, { path, type: "directory" });
+    this.watcherMetadata.set(id, { path, type: 'directory' });
 
     try {
       await this.sendMessage<void>({
-        type: "watchDirectory",
+        type: 'watchDirectory',
         id,
         path,
       });
@@ -531,9 +531,9 @@ export class VFSService {
     this.directoryWatchers.delete(watchId);
     this.watcherMetadata.delete(watchId);
     return this.sendMessage<void>({
-      type: "unwatchDirectory",
+      type: 'unwatchDirectory',
       id: watchId,
-      path: "",
+      path: '',
     });
   }
 
@@ -542,26 +542,26 @@ export class VFSService {
   }
 
   private async reestablishWatchers(): Promise<void> {
-    console.log("[VFSService] Re-establishing watchers after reconnection...");
+    console.log('[VFSService] Re-establishing watchers after reconnection...');
 
     const watcherPromises: Promise<void>[] = [];
 
     for (const [watchId, metadata] of this.watcherMetadata.entries()) {
-      if (metadata.type === "file") {
+      if (metadata.type === 'file') {
         const callback = this.watchers.get(watchId);
         if (callback) {
           const promise = this.sendMessage<void>({
-            type: "watchFile",
+            type: 'watchFile',
             id: watchId,
             path: metadata.path,
           });
           watcherPromises.push(promise);
         }
-      } else if (metadata.type === "directory") {
+      } else if (metadata.type === 'directory') {
         const callback = this.directoryWatchers.get(watchId);
         if (callback) {
           const promise = this.sendMessage<void>({
-            type: "watchDirectory",
+            type: 'watchDirectory',
             id: watchId,
             path: metadata.path,
           });
@@ -572,7 +572,7 @@ export class VFSService {
 
     await Promise.all(watcherPromises);
     console.log(
-      `[VFSService] Re-established ${watcherPromises.length} watchers`,
+      `[VFSService] Re-established ${watcherPromises.length} watchers`
     );
   }
 
@@ -584,10 +584,10 @@ export class VFSService {
     this.connectionListeners.clear();
     this.initialized = false;
     this.launcherBundleId = null;
-    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       navigator.serviceWorker.removeEventListener(
-        "message",
-        this.messageHandler,
+        'message',
+        this.messageHandler
       );
     }
   }
@@ -597,21 +597,21 @@ export class VFSService {
    * Called when the app is reactivated after being in the background.
    */
   async reset(): Promise<void> {
-    console.log("[VFSService] Resetting connection...");
+    console.log('[VFSService] Resetting connection...');
 
     // Clear pending requests (they won't be valid)
     for (const [, pending] of this.pendingRequests) {
-      pending.reject(new Error("Connection reset"));
+      pending.reject(new Error('Connection reset'));
     }
     this.pendingRequests.clear();
 
     // Notify listeners that we're reconnecting
-    this.notifyConnectionStateChange("reconnecting");
+    this.notifyConnectionStateChange('reconnecting');
 
     // Reconnect and re-establish watchers
     await this.connect();
 
-    console.log("[VFSService] Reset complete");
+    console.log('[VFSService] Reset complete');
   }
 }
 

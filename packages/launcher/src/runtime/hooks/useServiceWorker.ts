@@ -1,6 +1,6 @@
-import { useCallback } from "react";
-import { useTonk } from "../context/TonkContext";
-import type { ServiceWorkerMessage } from "../types";
+import { useCallback } from 'react';
+import { useTonk } from '../context/TonkContext';
+import type { ServiceWorkerMessage } from '../types';
 
 export function useServiceWorker() {
   const { showLoadingScreen, showError } = useTonk();
@@ -10,7 +10,7 @@ export function useServiceWorker() {
   const sendMessage = useCallback(<T = unknown>(message: any): Promise<T> => {
     return new Promise((resolve, reject) => {
       if (!navigator.serviceWorker.controller) {
-        reject(new Error("No service worker controller available"));
+        reject(new Error('No service worker controller available'));
         return;
       }
 
@@ -24,25 +24,25 @@ export function useServiceWorker() {
           event.data.id === requestId
         ) {
           navigator.serviceWorker.removeEventListener(
-            "message",
-            messageHandler,
+            'message',
+            messageHandler
           );
 
           if (event.data.success) {
             resolve(event.data as T);
           } else {
-            reject(new Error(event.data.error || "Operation failed"));
+            reject(new Error(event.data.error || 'Operation failed'));
           }
         }
       };
 
-      navigator.serviceWorker.addEventListener("message", messageHandler);
+      navigator.serviceWorker.addEventListener('message', messageHandler);
       navigator.serviceWorker.controller.postMessage(messageWithId);
 
       // Timeout after 120 seconds
       setTimeout(() => {
-        navigator.serviceWorker.removeEventListener("message", messageHandler);
-        reject(new Error("Timeout waiting for service worker response"));
+        navigator.serviceWorker.removeEventListener('message', messageHandler);
+        reject(new Error('Timeout waiting for service worker response'));
       }, 120000);
     });
   }, []);
@@ -52,42 +52,42 @@ export function useServiceWorker() {
     async (launcherBundleId: string): Promise<string[]> => {
       try {
         if (!navigator.serviceWorker.controller) {
-          console.log("No service worker controller, returning empty app list");
+          console.log('No service worker controller, returning empty app list');
           return [];
         }
 
         // Try to get apps from manifest entrypoints
         try {
           const manifestResponse = await sendMessage<ServiceWorkerMessage>({
-            type: "getManifest",
+            type: 'getManifest',
             launcherBundleId,
           });
 
           if (manifestResponse.success && manifestResponse.data?.entrypoints) {
             const apps = manifestResponse.data.entrypoints;
             if (apps.length > 0) {
-              console.log("Extracted apps from manifest entrypoints:", apps);
+              console.log('Extracted apps from manifest entrypoints:', apps);
               return apps;
             }
           }
         } catch (_manifestError) {
           console.log(
-            "Could not get manifest, falling back to directory listing",
+            'Could not get manifest, falling back to directory listing'
           );
         }
 
         // Fallback: use first listed root directory
         const response = await sendMessage<ServiceWorkerMessage>({
-          type: "listDirectory",
-          path: "/",
+          type: 'listDirectory',
+          path: '/',
           launcherBundleId,
         });
 
         if (response.success && response.data) {
           const apps = response.data
-            .filter((file: { type: string }) => file.type === "directory")
+            .filter((file: { type: string }) => file.type === 'directory')
             .map((file: { name: string }) => file.name);
-          console.log("Extracted apps from directory listing:", apps);
+          console.log('Extracted apps from directory listing:', apps);
           return apps;
         }
 
@@ -96,41 +96,41 @@ export function useServiceWorker() {
         // If VFS not initialized, return empty array instead of failing
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        if (errorMessage?.includes("not initialized")) {
-          console.log("VFS not initialized yet, returning empty app list");
+        if (errorMessage?.includes('not initialized')) {
+          console.log('VFS not initialized yet, returning empty app list');
           return [];
         }
-        console.error("Failed to query apps:", error);
+        console.error('Failed to query apps:', error);
         throw error;
       }
     },
-    [sendMessage],
+    [sendMessage]
   );
 
   // Confirm boot and redirect to app
   // New URL structure: /space/<launcherBundleId>/<appSlug>/
   const confirmBoot = useCallback(
     async (appSlug: string, launcherBundleId: string) => {
-      console.log("Booting application:", { appSlug, launcherBundleId });
+      console.log('Booting application:', { appSlug, launcherBundleId });
       showLoadingScreen(`Loading ${appSlug}...`);
 
       if (navigator.serviceWorker.controller) {
         navigator.serviceWorker.controller.postMessage({
-          type: "setAppSlug",
+          type: 'setAppSlug',
           slug: appSlug,
           launcherBundleId,
         });
 
-        localStorage.setItem("appSlug", appSlug);
-        localStorage.setItem("launcherBundleId", launcherBundleId);
+        localStorage.setItem('appSlug', appSlug);
+        localStorage.setItem('launcherBundleId', launcherBundleId);
 
         // Navigate to new URL structure: /space/<launcherBundleId>/<appSlug>/
         window.location.href = `/space/${launcherBundleId}/${appSlug}/`;
       } else {
-        showError("Service worker not ready. Please refresh the page.");
+        showError('Service worker not ready. Please refresh the page.');
       }
     },
-    [showLoadingScreen, showError],
+    [showLoadingScreen, showError]
   );
 
   return {

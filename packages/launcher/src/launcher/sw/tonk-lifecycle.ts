@@ -1,6 +1,6 @@
-import "./types"; // Import for global type declarations
-import type { Manifest } from "@tonk/core/slim";
-import { Bundle, TonkCore } from "@tonk/core/slim";
+import './types'; // Import for global type declarations
+import type { Manifest } from '@tonk/core/slim';
+import { Bundle, TonkCore } from '@tonk/core/slim';
 import {
   clearAllCache,
   persistBundleBytes,
@@ -12,24 +12,24 @@ import {
   restoreLastActiveBundleId,
   restoreNamespace,
   restoreWsUrl,
-} from "./cache";
-import { startHealthMonitoring } from "./connection";
+} from './cache';
+import { startHealthMonitoring } from './connection';
 import {
   getBundleState,
   getLastActiveBundleId,
   removeBundleState,
   setBundleState,
   setLastActiveBundleId,
-} from "./state";
-import { logger } from "./utils/logging";
-import { getWsUrlFromManifest } from "./utils/network";
-import { ensureWasmInitialized } from "./wasm-init";
+} from './state';
+import { logger } from './utils/logging';
+import { getWsUrlFromManifest } from './utils/network';
+import { ensureWasmInitialized } from './wasm-init';
 
 // Helper to wait for PathIndex to sync from remote
 export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
-  logger.debug("Waiting for PathIndex to sync from remote...");
+  logger.debug('Waiting for PathIndex to sync from remote...');
 
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     let syncDetected = false;
     let watcherHandle: { stop: () => void } | null = null;
 
@@ -39,23 +39,23 @@ export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
         try {
           watcherHandle.stop();
         } catch (error) {
-          logger.warn("Error stopping PathIndex watcher on timeout", {
+          logger.warn('Error stopping PathIndex watcher on timeout', {
             error: error instanceof Error ? error.message : String(error),
           });
         }
       }
       if (!syncDetected) {
-        logger.debug("No PathIndex changes detected after 1s - proceeding");
+        logger.debug('No PathIndex changes detected after 1s - proceeding');
         resolve();
       }
     }, 1000);
 
     // Watch root directory (which watches the PathIndex document)
     tonk
-      .watchDirectory("/", (documentData: unknown) => {
+      .watchDirectory('/', (documentData: unknown) => {
         if (!syncDetected) {
           syncDetected = true;
-          logger.debug("PathIndex synced from remote", {
+          logger.debug('PathIndex synced from remote', {
             documentType: (documentData as { type?: string }).type,
           });
           clearTimeout(timeout);
@@ -65,7 +65,7 @@ export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
             try {
               watcherHandle.stop();
             } catch (error) {
-              logger.warn("Error stopping PathIndex watcher after sync", {
+              logger.warn('Error stopping PathIndex watcher after sync', {
                 error: error instanceof Error ? error.message : String(error),
               });
             }
@@ -76,12 +76,12 @@ export async function waitForPathIndexSync(tonk: TonkCore): Promise<void> {
       })
       .then((watcher: { stop: () => void; document_id?: string }) => {
         watcherHandle = watcher;
-        logger.debug("PathIndex watcher established", {
-          watcherId: watcher?.document_id || "unknown",
+        logger.debug('PathIndex watcher established', {
+          watcherId: watcher?.document_id || 'unknown',
         });
       })
       .catch((error: Error) => {
-        logger.error("Failed to establish PathIndex watcher", {
+        logger.error('Failed to establish PathIndex watcher', {
           error: error.message,
         });
         // Still resolve to allow initialization to proceed
@@ -103,11 +103,11 @@ export async function autoInitializeFromCache(): Promise<void> {
 
     if (!restoredSlug || !bundleBytes) {
       logger.debug(
-        "No cached state found, waiting for initialization message",
+        'No cached state found, waiting for initialization message',
         {
           hasSlug: !!restoredSlug,
           hasBundle: !!bundleBytes,
-        },
+        }
       );
       return;
     }
@@ -116,13 +116,13 @@ export async function autoInitializeFromCache(): Promise<void> {
     const launcherBundleId = restoredBundleId || restoredNamespace;
     if (!launcherBundleId) {
       logger.debug(
-        "No launcher bundle ID found in cache, waiting for initialization message",
+        'No launcher bundle ID found in cache, waiting for initialization message'
       );
       return;
     }
 
     // Found cached state - auto-initialize
-    logger.info("Auto-initializing from cache", {
+    logger.info('Auto-initializing from cache', {
       slug: restoredSlug,
       bundleSize: bundleBytes.length,
       launcherBundleId,
@@ -134,19 +134,19 @@ export async function autoInitializeFromCache(): Promise<void> {
     // Create bundle and manifest
     const bundle = await Bundle.fromBytes(bundleBytes);
     const manifest = await bundle.getManifest();
-    logger.debug("Bundle and manifest restored from cache", {
+    logger.debug('Bundle and manifest restored from cache', {
       rootId: manifest.rootId,
     });
 
     // Create TonkCore instance with namespace for IndexedDB isolation
     const storageConfig = {
-      type: "indexeddb" as const,
+      type: 'indexeddb' as const,
       namespace: launcherBundleId,
     };
     const tonk = await TonkCore.fromBytes(bundleBytes, {
       storage: storageConfig,
     });
-    logger.debug("TonkCore created from cached bundle", {
+    logger.debug('TonkCore created from cached bundle', {
       namespace: launcherBundleId,
     });
 
@@ -158,20 +158,20 @@ export async function autoInitializeFromCache(): Promise<void> {
       await persistWsUrl(wsUrl);
     }
 
-    logger.debug("Connecting to websocket...", {
+    logger.debug('Connecting to websocket...', {
       wsUrl,
       localRootId: manifest.rootId,
     });
     await tonk.connectWebsocket(wsUrl);
-    logger.debug("Websocket connected");
+    logger.debug('Websocket connected');
 
     // Wait for PathIndex to sync from remote
     await waitForPathIndexSync(tonk);
-    logger.info("Auto-initialization complete");
+    logger.info('Auto-initialization complete');
 
     // Set bundle state in map
     setBundleState(launcherBundleId, {
-      status: "active",
+      status: 'active',
       bundleId: manifest.rootId,
       launcherBundleId,
       tonk,
@@ -189,7 +189,7 @@ export async function autoInitializeFromCache(): Promise<void> {
 
     startHealthMonitoring(launcherBundleId);
   } catch (error) {
-    logger.error("Auto-initialization failed", {
+    logger.error('Auto-initialization failed', {
       error: error instanceof Error ? error.message : String(error),
     });
 
@@ -202,9 +202,9 @@ export async function autoInitializeFromCache(): Promise<void> {
 
     allClients.forEach((client: Client) => {
       client.postMessage({
-        type: "needsReinit",
+        type: 'needsReinit',
         appSlug: null,
-        reason: "Auto-initialization failed",
+        reason: 'Auto-initialization failed',
       });
     });
   }
@@ -216,9 +216,9 @@ export async function loadBundle(
   serverUrl: string,
   launcherBundleId: string,
   _messageId?: string,
-  cachedManifest?: Manifest,
+  cachedManifest?: Manifest
 ): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
-  logger.debug("Loading bundle", {
+  logger.debug('Loading bundle', {
     byteLength: bundleBytes.length,
     serverUrl,
     hasCachedManifest: !!cachedManifest,
@@ -228,8 +228,8 @@ export async function loadBundle(
   try {
     // Check if this bundle is already loaded
     const existingState = getBundleState(launcherBundleId);
-    if (existingState?.status === "active") {
-      logger.debug("Bundle already loaded, skipping reload", {
+    if (existingState?.status === 'active') {
+      logger.debug('Bundle already loaded, skipping reload', {
         launcherBundleId,
         bundleId: existingState.bundleId,
       });
@@ -240,8 +240,8 @@ export async function loadBundle(
     }
 
     // If bundle is currently loading, wait for it
-    if (existingState?.status === "loading") {
-      logger.debug("Bundle is currently loading, waiting...", {
+    if (existingState?.status === 'loading') {
+      logger.debug('Bundle is currently loading, waiting...', {
         launcherBundleId,
       });
       await existingState.promise;
@@ -257,45 +257,45 @@ export async function loadBundle(
     let manifest: Manifest;
 
     if (cachedManifest) {
-      logger.info("Using cached manifest, skipping Bundle.fromBytes", {
+      logger.info('Using cached manifest, skipping Bundle.fromBytes', {
         rootId: cachedManifest.rootId,
       });
       manifest = cachedManifest;
     } else {
-      logger.debug("No cached manifest, parsing bundle", {
+      logger.debug('No cached manifest, parsing bundle', {
         byteLength: bundleBytes.length,
       });
       const bundle = await Bundle.fromBytes(bundleBytes);
       manifest = await bundle.getManifest();
       bundle.free();
-      logger.debug("Bundle manifest extracted", { rootId: manifest.rootId });
+      logger.debug('Bundle manifest extracted', { rootId: manifest.rootId });
     }
 
     // Create loading state with promise
     let resolveLoading: () => void;
-    const loadingPromise = new Promise<void>((resolve) => {
+    const loadingPromise = new Promise<void>(resolve => {
       resolveLoading = resolve;
     });
 
     setBundleState(launcherBundleId, {
-      status: "loading",
+      status: 'loading',
       launcherBundleId,
       bundleId: manifest.rootId,
       promise: loadingPromise,
     });
 
     // Create new TonkCore instance with namespace for IndexedDB isolation
-    logger.debug("Creating new TonkCore from bundle bytes", {
+    logger.debug('Creating new TonkCore from bundle bytes', {
       launcherBundleId,
     });
     const loadStorageConfig = {
-      type: "indexeddb" as const,
+      type: 'indexeddb' as const,
       namespace: launcherBundleId,
     };
     const newTonk = await TonkCore.fromBytes(bundleBytes, {
       storage: loadStorageConfig,
     });
-    logger.debug("New TonkCore created successfully", {
+    logger.debug('New TonkCore created successfully', {
       rootId: manifest.rootId,
       namespace: launcherBundleId,
     });
@@ -305,7 +305,7 @@ export async function loadBundle(
 
     // URL params can still override if present
     const urlParams = new URLSearchParams(self.location.search);
-    const bundleParam = urlParams.get("bundle");
+    const bundleParam = urlParams.get('bundle');
 
     if (bundleParam) {
       try {
@@ -315,13 +315,13 @@ export async function loadBundle(
           wsUrl = bundleConfig.wsUrl;
         }
       } catch (error) {
-        logger.warn("Could not parse bundle config for wsUrl", {
+        logger.warn('Could not parse bundle config for wsUrl', {
           error: error instanceof Error ? error.message : String(error),
         });
       }
     }
 
-    logger.debug("Determined websocket URL", {
+    logger.debug('Determined websocket URL', {
       wsUrl,
       serverUrl,
     });
@@ -329,26 +329,26 @@ export async function loadBundle(
     // Connect to websocket
     await persistWsUrl(wsUrl);
 
-    logger.debug("Connecting new tonk to websocket", {
+    logger.debug('Connecting new tonk to websocket', {
       wsUrl,
       localRootId: manifest.rootId,
     });
 
     if (wsUrl) {
       await newTonk.connectWebsocket(wsUrl);
-      logger.debug("Websocket connection established");
+      logger.debug('Websocket connection established');
 
       // Wait for PathIndex to sync from remote
       await waitForPathIndexSync(newTonk);
-      logger.debug("PathIndex sync complete after loadBundle");
+      logger.debug('PathIndex sync complete after loadBundle');
     }
 
     // Get app slug from manifest or use default
-    const appSlug = manifest.entrypoints?.[0] || "app";
+    const appSlug = manifest.entrypoints?.[0] || 'app';
 
     // Set active state in map
     setBundleState(launcherBundleId, {
-      status: "active",
+      status: 'active',
       bundleId: manifest.rootId,
       launcherBundleId,
       tonk: newTonk,
@@ -370,26 +370,26 @@ export async function loadBundle(
     // Persist bundle bytes and namespace to survive service worker restarts
     await persistBundleBytes(bundleBytes);
     await persistNamespace(launcherBundleId);
-    logger.debug("Bundle bytes and namespace persisted to cache", {
+    logger.debug('Bundle bytes and namespace persisted to cache', {
       namespace: launcherBundleId,
     });
 
     // Resolve the loading promise
     resolveLoading!();
 
-    logger.info("Bundle loaded successfully", {
+    logger.info('Bundle loaded successfully', {
       rootId: manifest.rootId,
       launcherBundleId,
     });
     return { success: true };
   } catch (error) {
-    logger.error("Failed to load bundle", {
+    logger.error('Failed to load bundle', {
       error: error instanceof Error ? error.message : String(error),
       launcherBundleId,
     });
 
     setBundleState(launcherBundleId, {
-      status: "error",
+      status: 'error',
       launcherBundleId,
       error: error instanceof Error ? error : new Error(String(error)),
     });
@@ -403,19 +403,19 @@ export async function loadBundle(
 
 // Unload a bundle (cleanup resources and remove from map)
 export async function unloadBundle(launcherBundleId: string): Promise<boolean> {
-  logger.debug("Unloading bundle", { launcherBundleId });
+  logger.debug('Unloading bundle', { launcherBundleId });
 
   const removed = removeBundleState(launcherBundleId);
 
   if (removed) {
-    logger.info("Bundle unloaded successfully", { launcherBundleId });
+    logger.info('Bundle unloaded successfully', { launcherBundleId });
 
     // If this was the last active bundle, clear cache
     if (getLastActiveBundleId() === null) {
       await clearAllCache();
     }
   } else {
-    logger.warn("Bundle not found for unload", { launcherBundleId });
+    logger.warn('Bundle not found for unload', { launcherBundleId });
   }
 
   return removed;

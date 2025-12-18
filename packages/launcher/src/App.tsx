@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Sidebar } from "./components/sidebar/sidebar";
-import GradientLogo from "./components/ui/gradientLogo";
-import { GradientText } from "./components/ui/gradientText";
-import { bundleManager } from "./launcher/services/bundleManager";
-import { bundleStorage } from "./launcher/services/bundleStorage";
-import type { Bundle } from "./launcher/types";
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Sidebar } from './components/sidebar/sidebar';
+import GradientLogo from './components/ui/gradientLogo';
+import { GradientText } from './components/ui/gradientText';
+import { bundleManager } from './launcher/services/bundleManager';
+import { bundleStorage } from './launcher/services/bundleStorage';
+import type { Bundle } from './launcher/types';
 
 interface PooledIframe {
   bundleId: string;
@@ -21,7 +21,7 @@ function App() {
   const [importing, setImporting] = useState(false);
   const [activeBundleId, setActiveBundleId] = useState<string | null>(null);
   const [iframePool, setIframePool] = useState<Map<string, PooledIframe>>(
-    () => new Map(),
+    () => new Map()
   );
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map());
 
@@ -32,8 +32,8 @@ function App() {
       setBundles(list);
       setError(null);
     } catch (err) {
-      console.error("Failed to load bundles:", err);
-      setError("Failed to load bundles");
+      console.error('Failed to load bundles:', err);
+      setError('Failed to load bundles');
     } finally {
       setLoading(false);
     }
@@ -48,7 +48,7 @@ function App() {
       // Verify bundle exists before launching
       const bundle = await bundleStorage.get(id);
       if (!bundle) {
-        throw new Error("Bundle not found");
+        throw new Error('Bundle not found');
       }
 
       const url = `/space/_runtime/index.html?bundleId=${encodeURIComponent(id)}`;
@@ -60,7 +60,7 @@ function App() {
       // With multi-bundle isolation, we no longer need to deactivate the previous iframe
       // Each bundle maintains its own TonkCore instance in the SW
 
-      setIframePool((prevPool) => {
+      setIframePool(prevPool => {
         const newPool = new Map(prevPool);
 
         // Update or add the iframe to the pool
@@ -79,7 +79,7 @@ function App() {
           // Remove oldest entries until we're at max size
           const toRemove = entries.slice(
             0,
-            entries.length - MAX_IFRAME_POOL_SIZE,
+            entries.length - MAX_IFRAME_POOL_SIZE
           );
           for (const [bundleId] of toRemove) {
             // Don't evict the one we're about to activate
@@ -87,12 +87,12 @@ function App() {
               // Send unloadBundle message to SW to free resources
               if (navigator.serviceWorker.controller) {
                 navigator.serviceWorker.controller.postMessage({
-                  type: "unloadBundle",
+                  type: 'unloadBundle',
                   launcherBundleId: bundleId,
                 });
                 console.log(
-                  "[Launcher] Sent unloadBundle for evicted iframe:",
-                  bundleId,
+                  '[Launcher] Sent unloadBundle for evicted iframe:',
+                  bundleId
                 );
               }
               newPool.delete(bundleId);
@@ -114,21 +114,21 @@ function App() {
         if (iframe?.contentWindow) {
           iframe.contentWindow.postMessage(
             {
-              type: "tonk:activate",
+              type: 'tonk:activate',
               launcherBundleId: id,
             },
-            "*",
+            '*'
           );
         }
       }
     } catch (err) {
-      console.error("Failed to launch bundle:", err);
-      alert("Failed to launch bundle");
+      console.error('Failed to launch bundle:', err);
+      alert('Failed to launch bundle');
     }
   };
 
   const handleFileUpload = async (
-    event: React.ChangeEvent<HTMLInputElement>,
+    event: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -141,10 +141,10 @@ function App() {
       await handleLaunch(id);
 
       // Reset input
-      event.target.value = "";
+      event.target.value = '';
     } catch (err) {
-      console.error("Failed to import bundle:", err);
-      alert(err instanceof Error ? err.message : "Failed to import bundle");
+      console.error('Failed to import bundle:', err);
+      alert(err instanceof Error ? err.message : 'Failed to import bundle');
     } finally {
       setImporting(false);
     }
@@ -183,12 +183,12 @@ function App() {
             </div>
           </div>
         )}
-        {loading && "loading"}
+        {loading && 'loading'}
         {/* Render all pooled iframes, showing only the active one */}
-        {Array.from(iframePool.values()).map((pooledIframe) => (
+        {Array.from(iframePool.values()).map(pooledIframe => (
           <iframe
             key={pooledIframe.bundleId}
-            ref={(el) => {
+            ref={el => {
               if (el) {
                 iframeRefs.current.set(pooledIframe.bundleId, el);
               }
@@ -197,14 +197,14 @@ function App() {
             className="absolute inset-0 w-full h-full border-none"
             style={{
               visibility:
-                pooledIframe.bundleId === activeBundleId ? "visible" : "hidden",
+                pooledIframe.bundleId === activeBundleId ? 'visible' : 'hidden',
               pointerEvents:
-                pooledIframe.bundleId === activeBundleId ? "auto" : "none",
+                pooledIframe.bundleId === activeBundleId ? 'auto' : 'none',
             }}
             title={
               pooledIframe.bundleId
                 ? `Runtime for bundle ${pooledIframe.bundleId}`
-                : "Runtime"
+                : 'Runtime'
             }
             allow="clipboard-read; clipboard-write"
           />

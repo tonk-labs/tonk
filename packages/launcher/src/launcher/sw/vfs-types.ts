@@ -1,4 +1,9 @@
-import type { DocumentData, JsonValue, Manifest, RefNode } from '@tonk/core/slim';
+import type {
+  DocumentData,
+  JsonValue,
+  Manifest,
+  RefNode,
+} from '@tonk/core/slim';
 
 // Re-export core types for convenience
 export type { JsonValue, DocumentData, RefNode, Manifest };

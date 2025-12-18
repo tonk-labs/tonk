@@ -1,23 +1,23 @@
 use crate::error::{RelayError, Result};
 use crate::network::handle_websocket_connection;
 use crate::storage::{BundleStorageAdapter, S3Storage};
-use axum::extract::ws::{WebSocket, WebSocketUpgrade, rejection::WebSocketUpgradeRejection};
+use axum::extract::ws::{rejection::WebSocketUpgradeRejection, WebSocket, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::{
-    Json, Router,
     body::Bytes,
     extract::{Path, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
+    Json, Router,
 };
 use samod::Repo;
 use serde_json::json;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_http::cors::{Any, CorsLayer};
 use zip::ZipArchive;
@@ -270,8 +270,8 @@ async fn download_bundle_manifest(
     let storage_folder_prefix = format!("storage/{}", root_id_prefix);
 
     use std::io::Write;
-    use zip::ZipWriter;
     use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
 
     let mut zip_data = Vec::new();
     let mut zip_writer = ZipWriter::new(std::io::Cursor::new(&mut zip_data));

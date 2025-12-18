@@ -1,7 +1,14 @@
 import { getVFSService } from '@/vfs-client';
-import { DESKTOP_DIRECTORY, LAYOUT_DIRECTORY, THUMBNAILS_DIRECTORY } from '../constants';
+import {
+  DESKTOP_DIRECTORY,
+  LAYOUT_DIRECTORY,
+  THUMBNAILS_DIRECTORY,
+} from '../constants';
 import type { DesktopFile } from '../types';
-import { extractDesktopFile, getNextAutoLayoutPosition } from '../utils/fileMetadata';
+import {
+  extractDesktopFile,
+  getNextAutoLayoutPosition,
+} from '../utils/fileMetadata';
 
 /**
  * Position data stored per file.
@@ -145,7 +152,11 @@ export class DesktopService {
   /**
    * Internal method to persist position to VFS.
    */
-  private async savePositionToVFS(fileId: string, x: number, y: number): Promise<void> {
+  private async savePositionToVFS(
+    fileId: string,
+    x: number,
+    y: number
+  ): Promise<void> {
     const file = this.files.get(fileId);
 
     // Allow saving position even if file isn't loaded yet
@@ -261,7 +272,10 @@ export class DesktopService {
       this.files.delete(fileId);
       this.notifyListeners();
     } catch (error) {
-      console.error('[DesktopService] Failed to delete associated files:', error);
+      console.error(
+        '[DesktopService] Failed to delete associated files:',
+        error
+      );
     }
   }
 
@@ -347,7 +361,10 @@ export class DesktopService {
       try {
         await vfs.unwatchFile(watchId);
       } catch (err) {
-        console.warn(`[DesktopService] Error unwatching position file ${fileId}:`, err);
+        console.warn(
+          `[DesktopService] Error unwatching position file ${fileId}:`,
+          err
+        );
       }
     }
     this.positionFileWatchers.clear();
@@ -368,22 +385,35 @@ export class DesktopService {
     // Ensure user files directory exists
     const userDirExists = await vfs.exists(DESKTOP_DIRECTORY);
     if (!userDirExists) {
-      console.log('[DesktopService] Creating user files directory:', DESKTOP_DIRECTORY);
+      console.log(
+        '[DesktopService] Creating user files directory:',
+        DESKTOP_DIRECTORY
+      );
       await vfs.writeFile(`${DESKTOP_DIRECTORY}/.keep`, { content: {} }, true);
     }
 
     // Ensure layout directory exists
     const layoutDirExists = await vfs.exists(LAYOUT_DIRECTORY);
     if (!layoutDirExists) {
-      console.log('[DesktopService] Creating layout directory:', LAYOUT_DIRECTORY);
+      console.log(
+        '[DesktopService] Creating layout directory:',
+        LAYOUT_DIRECTORY
+      );
       await vfs.writeFile(`${LAYOUT_DIRECTORY}/.keep`, { content: {} }, true);
     }
 
     // Ensure thumbnails directory exists
     const thumbnailsDirExists = await vfs.exists(THUMBNAILS_DIRECTORY);
     if (!thumbnailsDirExists) {
-      console.log('[DesktopService] Creating thumbnails directory:', THUMBNAILS_DIRECTORY);
-      await vfs.writeFile(`${THUMBNAILS_DIRECTORY}/.keep`, { content: {} }, true);
+      console.log(
+        '[DesktopService] Creating thumbnails directory:',
+        THUMBNAILS_DIRECTORY
+      );
+      await vfs.writeFile(
+        `${THUMBNAILS_DIRECTORY}/.keep`,
+        { content: {} },
+        true
+      );
     }
   }
 
@@ -408,7 +438,10 @@ export class DesktopService {
             const doc = await vfs.readFile(path);
             return extractDesktopFile(path, doc);
           } catch (error) {
-            console.error(`[DesktopService] Failed to load file ${entry.name}:`, error);
+            console.error(
+              `[DesktopService] Failed to load file ${entry.name}:`,
+              error
+            );
             return null;
           }
         });
@@ -421,7 +454,7 @@ export class DesktopService {
           (r): r is PromiseFulfilledResult<DesktopFile> =>
             r.status === 'fulfilled' && r.value !== null
         )
-        .forEach((r) => {
+        .forEach(r => {
           const file = r.value;
           const fileId = this.pathToFileId(file.path);
           this.files.set(fileId, file);
@@ -445,7 +478,8 @@ export class DesktopService {
       const positionPromises = entries
         .filter(
           // biome-ignore lint/suspicious/noExplicitAny: VFS entry type is dynamic
-          (entry: any) => entry.type === 'document' && entry.name.endsWith('.json')
+          (entry: any) =>
+            entry.type === 'document' && entry.name.endsWith('.json')
         )
         // biome-ignore lint/suspicious/noExplicitAny: VFS entry type is dynamic
         .map(async (entry: any) => {
@@ -465,10 +499,15 @@ export class DesktopService {
               return content as PositionData;
             }
 
-            console.warn(`[DesktopService] Invalid position data in ${entry.name}`);
+            console.warn(
+              `[DesktopService] Invalid position data in ${entry.name}`
+            );
             return null;
           } catch (error) {
-            console.error(`[DesktopService] Failed to load position ${entry.name}:`, error);
+            console.error(
+              `[DesktopService] Failed to load position ${entry.name}:`,
+              error
+            );
             return null;
           }
         });
@@ -481,7 +520,7 @@ export class DesktopService {
           (r): r is PromiseFulfilledResult<PositionData> =>
             r.status === 'fulfilled' && r.value !== null
         )
-        .forEach((r) => {
+        .forEach(r => {
           const data = r.value;
           this.positions.set(data.fileId, { x: data.x, y: data.y });
         });
@@ -495,10 +534,16 @@ export class DesktopService {
 
     // Watch user files directory (note: only fires for local changes, not remote)
     // Debounced to coalesce rapid events from non-atomic rename operations
-    this.filesWatcherId = await vfs.watchDirectory(DESKTOP_DIRECTORY, (changeData) => {
-      console.log('[DesktopService] ⚡ Files directory changed (local):', changeData);
-      this.handleFilesChangeDebounced();
-    });
+    this.filesWatcherId = await vfs.watchDirectory(
+      DESKTOP_DIRECTORY,
+      changeData => {
+        console.log(
+          '[DesktopService] ⚡ Files directory changed (local):',
+          changeData
+        );
+        this.handleFilesChangeDebounced();
+      }
+    );
     console.log(
       '[DesktopService] ✅ Watching files directory:',
       DESKTOP_DIRECTORY,
@@ -539,7 +584,10 @@ export class DesktopService {
       try {
         await vfs.unwatchFile(watchId);
       } catch (err) {
-        console.warn(`[DesktopService] Error unwatching position file ${fileId}:`, err);
+        console.warn(
+          `[DesktopService] Error unwatching position file ${fileId}:`,
+          err
+        );
       }
     }
     this.positionFileWatchers.clear();
@@ -567,7 +615,7 @@ export class DesktopService {
       const exists = await vfs.exists(positionPath);
       if (!exists) return;
 
-      const watchId = await vfs.watchFile(positionPath, async (documentData) => {
+      const watchId = await vfs.watchFile(positionPath, async documentData => {
         // Check if file was deleted (VFS might send null/empty on deletion)
         if (!documentData || !documentData.content) {
           // File was deleted - clean up
@@ -580,7 +628,11 @@ export class DesktopService {
 
         // biome-ignore lint/suspicious/noExplicitAny: Document content structure is dynamic
         const content = documentData.content as any;
-        if (content && typeof content.x === 'number' && typeof content.y === 'number') {
+        if (
+          content &&
+          typeof content.x === 'number' &&
+          typeof content.y === 'number'
+        ) {
           // Update local state
           this.positions.set(fileId, { x: content.x, y: content.y });
           // Notify listeners
@@ -591,7 +643,10 @@ export class DesktopService {
       this.positionFileWatchers.set(fileId, watchId);
       console.log(`[DesktopService] ✅ Set up position watcher for ${fileId}`);
     } catch (err) {
-      console.error(`[DesktopService] Error setting up watcher for ${fileId}:`, err);
+      console.error(
+        `[DesktopService] Error setting up watcher for ${fileId}:`,
+        err
+      );
     }
   }
 
@@ -653,7 +708,9 @@ export class DesktopService {
     // Set up watchers for any position files we don't have watchers for
     for (const fileId of this.positions.keys()) {
       if (!this.positionFileWatchers.has(fileId)) {
-        console.log(`[DesktopService] 🔄 Reconciling missing position watcher for ${fileId}`);
+        console.log(
+          `[DesktopService] 🔄 Reconciling missing position watcher for ${fileId}`
+        );
         await this.setupSinglePositionFileWatcher(fileId);
       }
     }
@@ -668,7 +725,9 @@ export class DesktopService {
   }
 
   private async handleLayoutChange(): Promise<void> {
-    console.log('[DesktopService] 📂 Layout directory changed, reconciling watchers');
+    console.log(
+      '[DesktopService] 📂 Layout directory changed, reconciling watchers'
+    );
     await this.reconcilePositionFileWatchers();
     this.notifyListeners();
   }
@@ -688,7 +747,9 @@ export class DesktopService {
     // Extract filename and use as ID
     const fileName = path.split('/').pop() || path;
     // Keep extension for dotfiles (.keep, .gitignore), remove for others
-    return fileName.startsWith('.') ? fileName : fileName.replace(/\.[^.]+$/, '');
+    return fileName.startsWith('.')
+      ? fileName
+      : fileName.replace(/\.[^.]+$/, '');
   }
 }
 

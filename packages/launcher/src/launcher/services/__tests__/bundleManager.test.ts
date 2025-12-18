@@ -75,7 +75,9 @@ describe('BundleManager', () => {
 
     vi.mocked(Bundle.fromBytes).mockRejectedValue(new Error('Corrupt data'));
 
-    await expect(manager.loadBundleFromFile(file)).rejects.toThrow('Invalid bundle: Corrupt data');
+    await expect(manager.loadBundleFromFile(file)).rejects.toThrow(
+      'Invalid bundle: Corrupt data'
+    );
     expect(bundleStorage.save).not.toHaveBeenCalled();
   });
 
@@ -89,7 +91,9 @@ describe('BundleManager', () => {
     // biome-ignore lint/suspicious/noExplicitAny: mocking requires any
     vi.mocked(Bundle.fromBytes).mockResolvedValue(mockBundle as any);
 
-    await expect(manager.loadBundleFromFile(file)).rejects.toThrow('Bundle has no entrypoints');
+    await expect(manager.loadBundleFromFile(file)).rejects.toThrow(
+      'Bundle has no entrypoints'
+    );
     expect(mockBundle.free).toHaveBeenCalled();
     expect(bundleStorage.save).not.toHaveBeenCalled();
   });

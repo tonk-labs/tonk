@@ -1,6 +1,6 @@
 use crate::error::{RelayError, Result};
-use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::Client;
 use std::time::SystemTime;
 
 #[derive(Clone)]

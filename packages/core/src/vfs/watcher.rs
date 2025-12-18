@@ -52,7 +52,7 @@ impl DocumentWatcher {
 mod tests {
     use super::*;
     use crate::tonk_core::TonkCore;
-    use automerge::{AutomergeError, ROOT, ReadDoc, transaction::Transactable};
+    use automerge::{transaction::Transactable, AutomergeError, ReadDoc, ROOT};
     use std::sync::{Arc, Mutex};
     use tokio::time::Duration;
 

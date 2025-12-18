@@ -60,7 +60,10 @@ const MainToolbarContent = ({
 
       <ToolbarGroup>
         <HeadingDropdownMenu levels={[1, 2, 3, 4]} portal={isMobile} />
-        <ListDropdownMenu types={['bulletList', 'orderedList', 'taskList']} portal={isMobile} />
+        <ListDropdownMenu
+          types={['bulletList', 'orderedList', 'taskList']}
+          portal={isMobile}
+        />
         <BlockquoteButton />
         <CodeBlockButton />
       </ToolbarGroup>
@@ -135,7 +138,11 @@ const MobileToolbarContent = ({
 
     <ToolbarSeparator />
 
-    {type === 'highlighter' ? <ColorHighlightPopoverContent /> : <LinkContent />}
+    {type === 'highlighter' ? (
+      <ColorHighlightPopoverContent />
+    ) : (
+      <LinkContent />
+    )}
   </>
 );
 
@@ -150,7 +157,9 @@ const PlainTextToolbarContent = () => (
     <Spacer />
 
     <ToolbarGroup>
-      <span className="text-xs text-gray-500 dark:text-gray-400 px-2 py-1">Plain Text</span>
+      <span className="text-xs text-gray-500 dark:text-gray-400 px-2 py-1">
+        Plain Text
+      </span>
     </ToolbarGroup>
   </>
 );
@@ -160,10 +169,15 @@ interface SimpleEditorProps {
   editorMode?: EditorMode;
 }
 
-export function SimpleEditor({ editor, editorMode = 'richtext' }: SimpleEditorProps) {
+export function SimpleEditor({
+  editor,
+  editorMode = 'richtext',
+}: SimpleEditorProps) {
   const isMobile = useIsMobile();
   const { height } = useWindowSize();
-  const [mobileView, setMobileView] = React.useState<'main' | 'highlighter' | 'link'>('main');
+  const [mobileView, setMobileView] = React.useState<
+    'main' | 'highlighter' | 'link'
+  >('main');
   const toolbarRef = React.useRef<HTMLDivElement>(null);
 
   const rect = useCursorVisibility({

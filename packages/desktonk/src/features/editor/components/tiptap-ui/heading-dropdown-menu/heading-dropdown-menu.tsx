@@ -8,8 +8,14 @@ import type { UseHeadingDropdownMenuConfig } from '@/features/editor/components/
 import { useHeadingDropdownMenu } from '@/features/editor/components/tiptap-ui/heading-dropdown-menu';
 // --- UI Primitives ---
 import type { ButtonProps } from '@/features/editor/components/tiptap-ui-primitive/button';
-import { Button, ButtonGroup } from '@/features/editor/components/tiptap-ui-primitive/button';
-import { Card, CardBody } from '@/features/editor/components/tiptap-ui-primitive/card';
+import {
+  Button,
+  ButtonGroup,
+} from '@/features/editor/components/tiptap-ui-primitive/button';
+import {
+  Card,
+  CardBody,
+} from '@/features/editor/components/tiptap-ui-primitive/card';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,7 +44,10 @@ export interface HeadingDropdownMenuProps
  *
  * For custom dropdown implementations, use the `useHeadingDropdownMenu` hook instead.
  */
-export const HeadingDropdownMenu = React.forwardRef<HTMLButtonElement, HeadingDropdownMenuProps>(
+export const HeadingDropdownMenu = React.forwardRef<
+  HTMLButtonElement,
+  HeadingDropdownMenuProps
+>(
   (
     {
       editor: providedEditor,
@@ -97,7 +106,7 @@ export const HeadingDropdownMenu = React.forwardRef<HTMLButtonElement, HeadingDr
           <Card>
             <CardBody>
               <ButtonGroup>
-                {levels.map((level) => (
+                {levels.map(level => (
                   <DropdownMenuItem key={`heading-${level}`} asChild>
                     <HeadingButton
                       editor={editor}

@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
-import { type Editor, type TLStoreSnapshot, useEditor } from "tldraw";
-import { getVFSService, type JsonValue } from "@/vfs-client";
-import { useVFS } from "../../../hooks/useVFS";
+import { useEffect, useRef, useState } from 'react';
+import { type Editor, type TLStoreSnapshot, useEditor } from 'tldraw';
+import { getVFSService, type JsonValue } from '@/vfs-client';
+import { useVFS } from '../../../hooks/useVFS';
 
-const CANVAS_STATE_PATH = "/.state/desktop";
+const CANVAS_STATE_PATH = '/.state/desktop';
 
 /**
  * Helper to load canvas snapshot from VFS into editor.
@@ -16,8 +16,8 @@ async function loadCanvasSnapshot(editor: Editor): Promise<boolean> {
 
   const doc = await vfs.readFile(CANVAS_STATE_PATH);
   const content = doc.content as unknown as {
-    schema: TLStoreSnapshot["schema"];
-    store: TLStoreSnapshot["store"];
+    schema: TLStoreSnapshot['schema'];
+    store: TLStoreSnapshot['store'];
   };
 
   if (content?.schema && content?.store) {
@@ -38,7 +38,7 @@ export function useCanvasPersistence() {
 
   // Load canvas state once on mount
   useEffect(() => {
-    if (connectionState !== "connected") return;
+    if (connectionState !== 'connected') return;
     if (hasLoadedRef.current) return;
 
     let cancelled = false;
@@ -50,11 +50,11 @@ export function useCanvasPersistence() {
           hasLoadedRef.current = true;
           setIsReady(true);
           if (loaded) {
-            console.log("[useCanvasPersistence] Canvas state loaded from VFS");
+            console.log('[useCanvasPersistence] Canvas state loaded from VFS');
           }
         }
       } catch (err) {
-        console.error("[useCanvasPersistence] Canvas state load failed", err);
+        console.error('[useCanvasPersistence] Canvas state load failed', err);
         if (!cancelled) {
           hasLoadedRef.current = true;
           setIsReady(true);
@@ -69,7 +69,7 @@ export function useCanvasPersistence() {
 
   // Save canvas state on changes
   useEffect(() => {
-    if (connectionState !== "connected") return;
+    if (connectionState !== 'connected') return;
 
     const vfs = getVFSService();
 
@@ -91,10 +91,10 @@ export function useCanvasPersistence() {
 
           await vfs.updateFile(CANVAS_STATE_PATH, content);
         } catch (err) {
-          console.error("[useCanvasPersistence] Canvas state save failed", err);
+          console.error('[useCanvasPersistence] Canvas state save failed', err);
         }
       },
-      { source: "user", scope: "document" },
+      { source: 'user', scope: 'document' }
     );
 
     return unsubscribe;
@@ -103,7 +103,7 @@ export function useCanvasPersistence() {
   // Watch for external changes to canvas state (cross-tab sync)
   // biome-ignore lint/correctness/useExhaustiveDependencies: editor.loadSnapshot is stable, only depends on connectionState
   useEffect(() => {
-    if (connectionState !== "connected") return;
+    if (connectionState !== 'connected') return;
     if (!hasLoadedRef.current) return;
 
     const vfs = getVFSService();
@@ -112,15 +112,15 @@ export function useCanvasPersistence() {
 
     const setupWatcher = async () => {
       try {
-        watchId = await vfs.watchFile(CANVAS_STATE_PATH, async (docData) => {
+        watchId = await vfs.watchFile(CANVAS_STATE_PATH, async docData => {
           if (isLoadingExternal) return;
 
           try {
             isLoadingExternal = true;
 
             const content = docData.content as unknown as {
-              schema: TLStoreSnapshot["schema"];
-              store: TLStoreSnapshot["store"];
+              schema: TLStoreSnapshot['schema'];
+              store: TLStoreSnapshot['store'];
             };
 
             if (content?.schema && content?.store) {
@@ -131,8 +131,8 @@ export function useCanvasPersistence() {
             }
           } catch (err) {
             console.error(
-              "[useCanvasPersistence] Error loading external canvas state:",
-              err,
+              '[useCanvasPersistence] Error loading external canvas state:',
+              err
             );
           } finally {
             isLoadingExternal = false;
@@ -140,8 +140,8 @@ export function useCanvasPersistence() {
         });
       } catch (err) {
         console.error(
-          "[useCanvasPersistence] Error setting up file watcher:",
-          err,
+          '[useCanvasPersistence] Error setting up file watcher:',
+          err
         );
       }
     };
@@ -150,8 +150,8 @@ export function useCanvasPersistence() {
 
     return () => {
       if (watchId) {
-        vfs.unwatchFile(watchId).catch((err) => {
-          console.warn("[useCanvasPersistence] Error unwatching file:", err);
+        vfs.unwatchFile(watchId).catch(err => {
+          console.warn('[useCanvasPersistence] Error unwatching file:', err);
         });
       }
     };

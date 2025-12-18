@@ -35,7 +35,7 @@ const DesktopInner = track(() => {
 
     const service = getDesktopService();
 
-    service.initialize().catch((error) => {
+    service.initialize().catch(error => {
       console.error('[Desktop] Failed to initialize service:', error);
       addToast({
         title: 'Failed to load desktop',
@@ -52,10 +52,16 @@ const DesktopInner = track(() => {
         colorScheme: e.detail.isDark ? 'dark' : 'light',
       });
     };
-    window.addEventListener('theme-changed', handleThemeChange as EventListener);
+    window.addEventListener(
+      'theme-changed',
+      handleThemeChange as EventListener
+    );
 
     return () => {
-      window.removeEventListener('theme-changed', handleThemeChange as EventListener);
+      window.removeEventListener(
+        'theme-changed',
+        handleThemeChange as EventListener
+      );
     };
   }, [editor.user]);
 
@@ -68,18 +74,23 @@ const DesktopInner = track(() => {
     // Get current shapes
     const existingShapes = new Map(
       Array.from(editor.getCurrentPageShapeIds())
-        .map((id) => editor.getShape(id))
-        .filter((shape): shape is NonNullable<typeof shape> => shape?.type === 'file-icon')
-        .map((shape) => [shape.id, shape])
+        .map(id => editor.getShape(id))
+        .filter(
+          (shape): shape is NonNullable<typeof shape> =>
+            shape?.type === 'file-icon'
+        )
+        .map(shape => [shape.id, shape])
     );
 
     const currentFileIds = new Set<string>();
 
     // Create or update shapes for each file
-    files.forEach((file) => {
+    files.forEach(file => {
       const fileName = file.path.split('/').pop() || file.path;
       // Use filename with extension for dotfiles, without extension for others
-      const fileId = fileName.startsWith('.') ? fileName : fileName.replace(/\.[^.]+$/, '');
+      const fileId = fileName.startsWith('.')
+        ? fileName
+        : fileName.replace(/\.[^.]+$/, '');
       const shapeId = `shape:file-icon:${fileId}` as TLShapeId;
       currentFileIds.add(shapeId);
 
@@ -96,10 +107,12 @@ const DesktopInner = track(() => {
         // Check if position or props changed
         // biome-ignore lint/suspicious/noExplicitAny: Shape props type
         const existingProps = (existingShape as any).props || {};
-        const positionChanged = existingShape.x !== position.x || existingShape.y !== position.y;
+        const positionChanged =
+          existingShape.x !== position.x || existingShape.y !== position.y;
         const propsChanged =
           existingProps.thumbnailPath !== file.desktopMeta?.thumbnailPath ||
-          existingProps.thumbnailVersion !== file.desktopMeta?.thumbnailVersion ||
+          existingProps.thumbnailVersion !==
+            file.desktopMeta?.thumbnailVersion ||
           existingProps.mimeType !== file.mimeType ||
           existingProps.customIcon !== file.desktopMeta?.icon;
 
@@ -146,7 +159,11 @@ const DesktopInner = track(() => {
             },
           });
         } catch (error) {
-          console.error('[Desktop] Failed to create shape for:', file.name, error);
+          console.error(
+            '[Desktop] Failed to create shape for:',
+            file.name,
+            error
+          );
         }
       }
     });
@@ -168,7 +185,7 @@ const DesktopInner = track(() => {
     const vfs = getVFSService();
 
     const unsubscribe = editor.store.listen(
-      (change) => {
+      change => {
         // Handle position updates
         const updatedShapes = [
           ...Object.values(change.changes.updated).map(([_prev, next]) => next),
@@ -196,13 +213,16 @@ const DesktopInner = track(() => {
             const filePath = fileIconShape.props?.filePath;
 
             if (filePath) {
-              console.log('[Desktop] Shape deleted, removing file from VFS:', filePath);
+              console.log(
+                '[Desktop] Shape deleted, removing file from VFS:',
+                filePath
+              );
               // Delete from VFS
-              vfs.deleteFile(filePath).catch((err) => {
+              vfs.deleteFile(filePath).catch(err => {
                 console.error('[Desktop] Failed to delete file from VFS:', err);
               });
               // Delete position file
-              service.onFileDeleted(fileId).catch((err) => {
+              service.onFileDeleted(fileId).catch(err => {
                 console.error('[Desktop] Failed to delete position file:', err);
               });
             }
@@ -313,14 +333,18 @@ function Desktop() {
   // biome-ignore lint/suspicious/noExplicitAny: Editor type is complex
   const handleMount = (editor: any) => {
     const zoomLevel = 1.35;
-    editor.setCamera({ x: 0, y: 0, z: zoomLevel }, { animation: { duration: 0 } });
+    editor.setCamera(
+      { x: 0, y: 0, z: zoomLevel },
+      { animation: { duration: 0 } }
+    );
 
     // Set initial theme immediately on mount (before any useEffect runs)
     // This fixes the race condition where tldraw renders with default light theme
     // before canvasPersistenceReady becomes true
     const isDark =
       localStorage.theme === 'dark' ||
-      (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      (!('theme' in localStorage) &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches);
     editor.user.updateUserPreferences({
       colorScheme: isDark ? 'dark' : 'light',
     });
@@ -345,11 +369,18 @@ function Desktop() {
 
 // Wrapper that connects drag handlers to outer container
 function DragDropWrapper() {
-  const { isDraggingOver, handleDrop, handleDragOver, handleDragEnter, handleDragLeave } =
-    useFileDrop();
+  const {
+    isDraggingOver,
+    handleDrop,
+    handleDragOver,
+    handleDragEnter,
+    handleDragLeave,
+  } = useFileDrop();
 
   useEffect(() => {
-    const container = document.querySelector(`.${styles.desktopContainer}`) as HTMLElement;
+    const container = document.querySelector(
+      `.${styles.desktopContainer}`
+    ) as HTMLElement;
     if (!container) return;
 
     const dropHandler = (e: DragEvent) => {
@@ -387,7 +418,13 @@ function DragDropWrapper() {
       container.removeEventListener('dragleave', dragLeaveHandler, true);
       container.classList.remove(styles.draggingOver);
     };
-  }, [isDraggingOver, handleDrop, handleDragOver, handleDragEnter, handleDragLeave]);
+  }, [
+    isDraggingOver,
+    handleDrop,
+    handleDragOver,
+    handleDragEnter,
+    handleDragLeave,
+  ]);
 
   const dragOverlay = isDraggingOver ? (
     <div className={styles.dropOverlay}>

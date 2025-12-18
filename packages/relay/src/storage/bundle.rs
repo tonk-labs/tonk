@@ -78,8 +78,8 @@ impl BundleStorageAdapter {
 
     pub async fn create_slim_bundle(&self) -> Result<Vec<u8>> {
         use std::io::Write;
-        use zip::ZipWriter;
         use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
 
         let (manifest_json, all_keys) = {
             let bundle = self.bundle.read().await;
