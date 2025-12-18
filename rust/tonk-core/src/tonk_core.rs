@@ -666,15 +666,40 @@ impl TonkCore {
     }
 
     /// Connect to a WebSocket peer
+    ///
+    /// Returns a `ConnectionHandle` that can be used to control the connection.
+    /// The connection runs in a background task and will remain active until:
+    /// - The server closes the connection
+    /// - `ConnectionHandle::disconnect()` is called
+    /// - The `ConnectionHandle` is dropped (connection continues in background)
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use tonk_core::TonkCore;
+    /// # async fn example() {
+    /// let tonk = TonkCore::new().await.unwrap();
+    /// let handle = tonk.connect_websocket("ws://localhost:8080").await.unwrap();
+    ///
+    /// // Check if connected
+    /// if handle.is_connected() {
+    ///     println!("Connected!");
+    /// }
+    ///
+    /// // Disconnect when done
+    /// handle.disconnect();
+    /// # }
+    /// ```
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn connect_websocket(&self, url: &str) -> Result<()> {
+    pub async fn connect_websocket(
+        &self,
+        url: &str,
+    ) -> Result<crate::websocket::ConnectionHandle> {
         info!("Connecting to WebSocket peer at: {}", url);
 
-        let conn_finished = crate::websocket::connect(Arc::clone(&self.samod), url).await?;
+        let handle = crate::websocket::connect(Arc::clone(&self.samod), url).await?;
 
-        info!("Successfully connected to WebSocket peer at: {}", url);
-        info!("Connection finished with reason: {:?}", conn_finished);
-        Ok(())
+        info!("WebSocket connection initiated to: {}", url);
+        Ok(handle)
     }
 
     /// Connect using network URIs from manifest
