@@ -7,7 +7,6 @@ const {
   initWasm,
   generatePeerId,
   TestData,
-  createTestBundle,
   assertUint8ArraysEqual,
   PerfTimer,
 } = require("../../shared/test-utils");
@@ -20,74 +19,68 @@ describe("Basic Integration Tests", () => {
     wasm = await initWasm();
   });
 
-  describe("Sync Engine", () => {
-    it("should create a sync engine with random peer ID", async () => {
-      const engine = await wasm.create_sync_engine();
-      expect(engine).to.not.be.undefined;
+  describe("TonkCore Creation", () => {
+    it("should create a TonkCore with random peer ID", async () => {
+      const tonk = await wasm.create_tonk();
+      expect(tonk).to.not.be.undefined;
 
-      const peerId = await engine.getPeerId();
+      const peerId = await tonk.getPeerId();
       expect(peerId).to.be.a("string");
       expect(peerId.length).to.be.greaterThan(0);
     });
 
-    it("should create a sync engine with specific peer ID", async () => {
+    it("should create a TonkCore with specific peer ID", async () => {
       const customPeerId = generatePeerId();
-      const engine = await wasm.create_sync_engine_with_peer_id(customPeerId);
-      expect(engine).to.not.be.undefined;
+      const tonk = await wasm.create_tonk_with_peer_id(customPeerId);
+      expect(tonk).to.not.be.undefined;
 
-      const peerId = await engine.getPeerId();
+      const peerId = await tonk.getPeerId();
       expect(peerId).to.equal(customPeerId);
-    });
-
-    it("should provide access to VFS", async () => {
-      const engine = await wasm.create_sync_engine();
-      const vfs = await engine.getVfs();
-      expect(vfs).to.not.be.undefined;
     });
   });
 
   describe("Virtual File System", () => {
-    let engine, vfs;
+    let tonk;
 
     beforeEach(async () => {
-      engine = await wasm.create_sync_engine();
-      vfs = await engine.getVfs();
+      tonk = await wasm.create_tonk();
     });
 
-    it("should create and read files", async () => {
+    it("should create and check file existence", async () => {
       const path = "/test/hello.txt";
       const content = TestData.simpleText;
 
-      await vfs.createFile(path, content);
-      const exists = await vfs.exists(path);
+      await tonk.createFile(path, content);
+      const exists = await tonk.exists(path);
       expect(exists).to.be.true;
-
-      // Note: Reading file content would require WASM binding implementation
     });
 
     it("should create directories", async () => {
       const path = "/documents";
 
-      await vfs.createDirectory(path);
-      const exists = await vfs.exists(path);
+      await tonk.createDirectory(path);
+      const exists = await tonk.exists(path);
       expect(exists).to.be.true;
     });
 
     it("should handle nested directory creation", async () => {
-      const path = "/projects/web/src/components";
+      // Create parent directories first (createDirectory doesn't auto-create parents)
+      await tonk.createDirectory("/projects");
+      await tonk.createDirectory("/projects/web");
+      await tonk.createDirectory("/projects/web/src");
+      await tonk.createDirectory("/projects/web/src/components");
 
-      await vfs.createDirectory(path);
-      const exists = await vfs.exists(path);
+      const exists = await tonk.exists("/projects/web/src/components");
       expect(exists).to.be.true;
     });
 
     it("should list directory contents", async () => {
       // Create test structure
-      await vfs.createDirectory("/docs");
-      await vfs.createFile("/docs/readme.md", "README content");
-      await vfs.createFile("/docs/guide.md", "Guide content");
+      await tonk.createDirectory("/docs");
+      await tonk.createFile("/docs/readme.md", "README content");
+      await tonk.createFile("/docs/guide.md", "Guide content");
 
-      const entries = await vfs.listDirectory("/docs");
+      const entries = await tonk.listDirectory("/docs");
       expect(entries).to.be.an("array");
       expect(entries.length).to.equal(2);
 
@@ -99,131 +92,171 @@ describe("Basic Integration Tests", () => {
     it("should delete files", async () => {
       const path = "/temp/deleteme.txt";
 
-      await vfs.createFile(path, "temporary content");
-      expect(await vfs.exists(path)).to.be.true;
+      await tonk.createFile(path, "temporary content");
+      expect(await tonk.exists(path)).to.be.true;
 
-      const deleted = await vfs.deleteFile(path);
+      const deleted = await tonk.deleteFile(path);
       expect(deleted).to.be.true;
-      expect(await vfs.exists(path)).to.be.false;
+      expect(await tonk.exists(path)).to.be.false;
     });
 
     it("should get file metadata", async () => {
       const path = "/data/info.json";
       const content = TestData.jsonConfig;
 
-      await vfs.createFile(path, content);
-      const metadata = await vfs.getMetadata(path);
+      await tonk.createFile(path, content);
+      const metadata = await tonk.getMetadata(path);
 
       expect(metadata).to.be.an("object");
-      // Note: metadata.name may not be implemented in current WASM binding
-      // expect(metadata.name).to.equal('info.json');
-      // TODO: Verify WASM binding implements name property correctly
       if (metadata.name !== undefined) {
         expect(metadata.name).to.equal("info.json");
       }
-      // Additional metadata checks would depend on WASM implementation
     });
 
     it("should handle non-existent paths gracefully", async () => {
-      const exists = await vfs.exists("/non/existent/path.txt");
+      const exists = await tonk.exists("/non/existent/path.txt");
       expect(exists).to.be.false;
+    });
+
+    it("should read file content", async () => {
+      const path = "/readable.txt";
+      const content = { message: "Hello, World!" };
+
+      await tonk.createFile(path, content);
+      const retrieved = await tonk.readFile(path);
+
+      expect(retrieved).to.not.be.null;
+      expect(retrieved.content).to.deep.equal(content);
+    });
+
+    it("should update file content", async () => {
+      const path = "/updatable.txt";
+
+      await tonk.createFile(path, { version: 1 });
+      await tonk.setFile(path, { version: 2 });
+
+      const retrieved = await tonk.readFile(path);
+      expect(retrieved.content).to.deep.equal({ version: 2 });
+    });
+
+    it("should rename files", async () => {
+      const oldPath = "/old-name.txt";
+      const newPath = "/new-name.txt";
+
+      await tonk.createFile(oldPath, "content");
+      await tonk.rename(oldPath, newPath);
+
+      expect(await tonk.exists(oldPath)).to.be.false;
+      expect(await tonk.exists(newPath)).to.be.true;
     });
   });
 
   describe("Bundle Operations", () => {
-    it("should create an empty bundle", async () => {
-      const bundle = await wasm.create_bundle();
+    it("should export TonkCore to bytes and create bundle", async () => {
+      // Create TonkCore with some content
+      const tonk = await wasm.create_tonk();
+      await tonk.createFile("/test.txt", "Test content");
+      await tonk.createDirectory("/folder");
+      await tonk.createFile("/folder/nested.txt", "Nested content");
+
+      // Export to bytes
+      const bytes = await tonk.toBytes(null);
+      expect(bytes).to.be.instanceOf(Uint8Array);
+      expect(bytes.length).to.be.greaterThan(0);
+
+      // Create bundle from bytes
+      const bundle = wasm.create_bundle_from_bytes(bytes);
       expect(bundle).to.not.be.undefined;
+
+      // List keys in bundle
+      const keys = await bundle.listKeys();
+      expect(keys).to.be.an("array");
+      expect(keys.length).to.be.greaterThan(0);
     });
 
-    it("should store and retrieve data", async () => {
-      const bundle = await wasm.create_bundle();
-      const key = "test/data.txt";
-      const value = new TextEncoder().encode(TestData.simpleText);
+    it("should retrieve data from bundle", async () => {
+      // Create TonkCore with content
+      const tonk = await wasm.create_tonk();
+      await tonk.createFile("/data.json", { key: "value" });
 
-      await bundle.put(key, value);
-      const retrieved = await bundle.get(key);
+      // Export and create bundle
+      const bytes = await tonk.toBytes(null);
+      const bundle = wasm.create_bundle_from_bytes(bytes);
 
-      expect(retrieved).to.be.instanceOf(Uint8Array);
-      assertUint8ArraysEqual(retrieved, value);
+      // Get manifest
+      const manifest = await bundle.getManifest();
+      expect(manifest).to.be.an("object");
+
+      // Get root ID
+      const rootId = await bundle.getRootId();
+      expect(rootId).to.be.a("string");
     });
 
-    it("should list keys", async () => {
-      const bundle = await wasm.create_bundle();
-      const keys = ["file1.txt", "file2.txt", "dir/file3.txt"];
+    it("should load TonkCore from bundle bytes", async () => {
+      // Create original TonkCore
+      const tonk1 = await wasm.create_tonk();
+      await tonk1.createFile("/persistent.txt", "Persisted data");
 
-      for (const key of keys) {
-        const value = new TextEncoder().encode(`Content of ${key}`);
-        await bundle.put(key, value);
+      // Export to bytes
+      const bytes = await tonk1.toBytes(null);
+
+      // Create new TonkCore from bytes
+      const tonk2 = await wasm.create_tonk_from_bytes(bytes);
+
+      // Verify data persisted
+      const exists = await tonk2.exists("/persistent.txt");
+      expect(exists).to.be.true;
+
+      const content = await tonk2.readFile("/persistent.txt");
+      // Content is wrapped in { value: ... } for primitive types
+      expect(content.content.value || content.content).to.equal("Persisted data");
+    });
+
+    it("should handle bundle serialization round-trip", async () => {
+      // Create and populate TonkCore
+      const tonk1 = await wasm.create_tonk();
+
+      const testFiles = [
+        { path: "/config.json", content: { theme: "dark" } },
+        { path: "/readme.txt", content: "Hello World" },
+        { path: "/data/nested.json", content: { nested: true } },
+      ];
+
+      for (const file of testFiles) {
+        await tonk1.createFile(file.path, file.content);
       }
 
-      const listedKeys = await bundle.listKeys();
-      expect(listedKeys).to.be.an("array");
-      expect(listedKeys).to.have.lengthOf(keys.length + 2); // +2 for manifest and root doc
+      // Export to bytes
+      const bytes = await tonk1.toBytes(null);
 
-      for (const key of keys) {
-        expect(listedKeys).to.include(key);
+      // Load into new TonkCore
+      const tonk2 = await wasm.create_tonk_from_bytes(bytes);
+
+      // Verify all files exist and have correct content
+      for (const file of testFiles) {
+        const exists = await tonk2.exists(file.path);
+        expect(exists).to.be.true;
+
+        const retrieved = await tonk2.readFile(file.path);
+        // Handle both wrapped primitives ({ value: ... }) and objects
+        const actualContent = retrieved.content.value !== undefined 
+          ? retrieved.content.value 
+          : retrieved.content;
+        expect(actualContent).to.deep.equal(file.content);
       }
-    });
-
-    it("should delete keys", async () => {
-      const bundle = await wasm.create_bundle();
-      const key = "deleteme.txt";
-      const value = new TextEncoder().encode("delete this");
-
-      await bundle.put(key, value);
-      expect(await bundle.get(key)).to.not.be.null;
-
-      await bundle.delete(key);
-
-      try {
-        await bundle.get(key);
-        expect.fail("Expected error when getting deleted key");
-      } catch (error) {
-        // Expected behavior
-        expect(error).to.not.be.undefined;
-      }
-    });
-
-    it("should handle binary data", async () => {
-      const bundle = await wasm.create_bundle();
-      const key = "binary.data";
-      const value = TestData.binaryData;
-
-      await bundle.put(key, value);
-      const retrieved = await bundle.get(key);
-
-      assertUint8ArraysEqual(retrieved, value);
-    });
-
-    it("should handle large data efficiently", async function () {
-      this.timeout(10000); // Large data operations can take time
-
-      const timer = new PerfTimer("Large data storage");
-      const bundle = await wasm.create_bundle();
-      const key = "large.txt";
-      const value = new TextEncoder().encode(TestData.largeText);
-
-      await bundle.put(key, value);
-      const retrieved = await bundle.get(key);
-      const duration = timer.stop();
-
-      assertUint8ArraysEqual(retrieved, value);
-      expect(duration).to.be.lessThan(5000); // Should complete within 5 seconds
     });
   });
 
   describe("Error Handling", () => {
-    let engine, vfs;
+    let tonk;
 
     beforeEach(async () => {
-      engine = await wasm.create_sync_engine();
-      vfs = await engine.getVfs();
+      tonk = await wasm.create_tonk();
     });
 
     it("should handle invalid paths", async () => {
       try {
-        await vfs.createFile("", "content");
+        await tonk.createFile("", "content");
         expect.fail("Expected error for empty path");
       } catch (error) {
         expect(error).to.not.be.undefined;
@@ -233,10 +266,10 @@ describe("Basic Integration Tests", () => {
     it("should handle duplicate file creation", async () => {
       const path = "/duplicate.txt";
 
-      await vfs.createFile(path, "first content");
+      await tonk.createFile(path, "first content");
 
       try {
-        await vfs.createFile(path, "second content");
+        await tonk.createFile(path, "second content");
         expect.fail("Expected error for duplicate file");
       } catch (error) {
         expect(error).to.not.be.undefined;
@@ -245,22 +278,21 @@ describe("Basic Integration Tests", () => {
   });
 
   describe("Performance", () => {
-    it("should create multiple engines efficiently", async () => {
-      const timer = new PerfTimer("Multiple engine creation");
-      const engines = [];
+    it("should create multiple TonkCore instances efficiently", async () => {
+      const timer = new PerfTimer("Multiple TonkCore creation");
+      const instances = [];
 
       for (let i = 0; i < 10; i++) {
-        engines.push(await wasm.create_sync_engine());
+        instances.push(await wasm.create_tonk());
       }
 
       const duration = timer.stop();
-      expect(engines).to.have.lengthOf(10);
+      expect(instances).to.have.lengthOf(10);
       expect(duration).to.be.lessThan(2000); // Should complete within 2 seconds
     });
 
     it("should handle concurrent VFS operations", async () => {
-      const engine = await wasm.create_sync_engine();
-      const vfs = await engine.getVfs();
+      const tonk = await wasm.create_tonk();
 
       const timer = new PerfTimer("Concurrent VFS operations");
       const operations = [];
@@ -268,7 +300,7 @@ describe("Basic Integration Tests", () => {
       // Create 50 files concurrently
       for (let i = 0; i < 50; i++) {
         operations.push(
-          vfs.createFile(`/concurrent/file${i}.txt`, `Content ${i}`),
+          tonk.createFile(`/concurrent/file${i}.txt`, `Content ${i}`),
         );
       }
 
@@ -277,7 +309,7 @@ describe("Basic Integration Tests", () => {
 
       // Verify all files exist
       for (let i = 0; i < 50; i++) {
-        const exists = await vfs.exists(`/concurrent/file${i}.txt`);
+        const exists = await tonk.exists(`/concurrent/file${i}.txt`);
         expect(exists).to.be.true;
       }
 

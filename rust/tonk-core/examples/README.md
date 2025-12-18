@@ -285,7 +285,7 @@ npm run build:all
 
 ```bash
 # Run specific test file
-npx mocha integration/basic.test.js
+bun run mocha integration/basic.test.js
 
 # Debug with increased timeout
 npm test -- --timeout 30000

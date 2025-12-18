@@ -1,39 +1,35 @@
 #!/usr/bin/env node
 
-import { create_sync_engine } from "../../pkg-node/tonk_core.js";
+// Import the WASM module using CommonJS pattern (required for wasm-bindgen output)
+import pkg from "../../pkg-node/tonk_core.js";
+const { create_tonk, create_tonk_with_peer_id } = pkg;
 
-class SamodTestClient {
-  constructor(clientId, serverUrl = "ws://127.0.0.1:8081") {
+class TonkTestClient {
+  constructor(clientId, serverUrl = "ws://127.0.0.1:8082") {
     this.clientId = clientId;
     this.serverUrl = serverUrl;
-    this.syncEngine = null;
-    this.repo = null;
+    this.tonk = null;
     this.connected = false;
   }
 
   async init() {
     try {
-      console.log(`[${this.clientId}] Creating SyncEngine...`);
-      this.syncEngine = await create_sync_engine();
+      console.log(`[${this.clientId}] Creating TonkCore...`);
+      this.tonk = await create_tonk_with_peer_id(this.clientId);
 
-      // Get the samod repo directly instead of VFS
-      console.log(`[${this.clientId}] Getting Repo from SyncEngine...`);
-      this.repo = await this.syncEngine.getRepo();
-      console.log(`[${this.clientId}] Repo obtained successfully`);
-
-      console.log(`[${this.clientId}] SyncEngine created successfully`);
-      const peerId = await this.syncEngine.getPeerId();
+      console.log(`[${this.clientId}] TonkCore created successfully`);
+      const peerId = await this.tonk.getPeerId();
       console.log(`[${this.clientId}] Peer ID: ${peerId}`);
 
       return true;
     } catch (error) {
-      console.error(`[${this.clientId}] Failed to create SyncEngine:`, error);
+      console.error(`[${this.clientId}] Failed to create TonkCore:`, error);
       return false;
     }
   }
 
   async connect() {
-    if (!this.syncEngine) {
+    if (!this.tonk) {
       throw new Error(`[${this.clientId}] Must call init() first`);
     }
 
@@ -41,7 +37,7 @@ class SamodTestClient {
       console.log(
         `[${this.clientId}] Connecting to WebSocket: ${this.serverUrl}`,
       );
-      await this.syncEngine.connectWebsocket(this.serverUrl);
+      await this.tonk.connectWebsocket(this.serverUrl);
       console.log(`[${this.clientId}] Connected to WebSocket successfully`);
       this.connected = true;
 
@@ -58,64 +54,69 @@ class SamodTestClient {
   }
 
   async createDocument(
-    docId = null,
+    path,
     content = `Hello from ${this.clientId} at ${Date.now()}!`,
   ) {
-    if (!this.repo) {
-      throw new Error(`[${this.clientId}] No Repo available`);
+    if (!this.tonk) {
+      throw new Error(`[${this.clientId}] No TonkCore available`);
     }
 
     try {
-      console.log(`[${this.clientId}] Creating document via Repo directly`);
+      console.log(`[${this.clientId}] Creating document at path: ${path}`);
       console.log(`[${this.clientId}] Content: ${content}`);
 
-      // Create a new document using the repo
-      const docId = await this.repo.createDocument(content);
+      // Create a document using TonkCore VFS
+      await this.tonk.createFile(path, content);
 
-      console.log(`[${this.clientId}] Repo createDocument result:`, docId);
-      console.log(
-        `[${this.clientId}] Document created successfully with ID: ${docId}`,
-      );
+      console.log(`[${this.clientId}] Document created successfully at: ${path}`);
 
-      return { docId, content };
+      return { path, content };
     } catch (error) {
       console.error(`[${this.clientId}] Failed to create document:`, error);
       throw error;
     }
   }
 
-  async readDocument(docId) {
-    if (!this.repo) {
-      throw new Error(`[${this.clientId}] No Repo available`);
+  async readDocument(path) {
+    if (!this.tonk) {
+      throw new Error(`[${this.clientId}] No TonkCore available`);
     }
 
     try {
-      console.log(
-        `[${this.clientId}] Reading document from Repo with ID: ${docId}`,
-      );
-      const content = await this.repo.findDocument(docId);
+      console.log(`[${this.clientId}] Reading document at path: ${path}`);
+      
+      const exists = await this.tonk.exists(path);
+      if (!exists) {
+        console.log(`[${this.clientId}] Document not found at path: ${path}`);
+        return null;
+      }
 
-      if (content !== null) {
-        console.log(`[${this.clientId}] Found document with ID: ${docId}`);
-        console.log(`[${this.clientId}] Content: ${content}`);
+      const result = await this.tonk.readFile(path);
+
+      if (result !== null) {
+        console.log(`[${this.clientId}] Found document at path: ${path}`);
+        // Handle wrapped primitives
+        const content = result.content?.value !== undefined 
+          ? result.content.value 
+          : result.content;
+        console.log(`[${this.clientId}] Content:`, content);
         return content;
       } else {
-        console.log(`[${this.clientId}] Document not found with ID: ${docId}`);
+        console.log(`[${this.clientId}] Document not found at path: ${path}`);
         return null;
       }
     } catch (error) {
       console.error(`[${this.clientId}] Error reading document:`, error);
-      // Return null instead of throwing to match the original VFS behavior
       return null;
     }
   }
 }
 
-// Test samod repo API directly (without WebSocket)
-async function testSamodRepoAPI() {
-  console.log("=== Testing Samod Repo API Directly ===");
+// Test TonkCore VFS API directly (without WebSocket)
+async function testTonkVfsAPI() {
+  console.log("=== Testing TonkCore VFS API Directly ===");
 
-  const client1 = new SamodTestClient("SAMOD-1");
+  const client1 = new TonkTestClient("TONK-1");
 
   try {
     // Initialize client
@@ -126,50 +127,53 @@ async function testSamodRepoAPI() {
       throw new Error("Failed to initialize client");
     }
 
-    console.log("Testing direct Samod repo document creation and retrieval...");
+    console.log("Testing direct TonkCore VFS document creation and retrieval...");
 
-    // Client 1 creates a document via Samod repo directly
+    // Client 1 creates a document via TonkCore VFS
+    const testPath = "/test-doc.txt";
     const testContent = `Hello from Client 1 via Node.js! Time: ${Date.now()}`;
-    const { docId, content: originalContent } = await client1.createDocument(
-      null,
+    const { path, content: originalContent } = await client1.createDocument(
+      testPath,
       testContent,
     );
 
-    console.log(`Document created with ID: ${docId}`);
+    console.log(`Document created at path: ${path}`);
 
     // Same client tries to read back the document
     console.log("Same client attempting to read back the document...");
-    const retrievedContent = await client1.readDocument(docId);
+    const retrievedContent = await client1.readDocument(path);
 
     if (retrievedContent !== null) {
       console.log(
-        "✅ Samod Repo API working! Document was created and retrieved",
+        "TonkCore VFS API working! Document was created and retrieved",
       );
       console.log("Original content:", originalContent);
       console.log("Retrieved content:", retrievedContent);
 
-      if (retrievedContent.includes("Hello from Client 1")) {
-        console.log("✅ Content matches - repo API working correctly!");
+      if (retrievedContent.includes && retrievedContent.includes("Hello from Client 1")) {
+        console.log("Content matches - VFS API working correctly!");
+      } else if (retrievedContent === originalContent) {
+        console.log("Content matches exactly - VFS API working correctly!");
       } else {
-        console.log("❌ Content mismatch - repo API issue detected");
+        console.log("Content mismatch - VFS API issue detected");
       }
     } else {
-      console.log("❌ Samod Repo API failed - could not retrieve the document");
+      console.log("TonkCore VFS API failed - could not retrieve the document");
     }
 
-    console.log("=== Samod Repo API Test Complete ===\n");
+    console.log("=== TonkCore VFS API Test Complete ===\n");
   } catch (error) {
-    console.error("❌ Samod repo API test failed:", error);
+    console.error("TonkCore VFS API test failed:", error);
     throw error;
   }
 }
 
-// Test samod document sync directly
+// Test TonkCore document sync via WebSocket
 async function testSamodDirectSync() {
-  console.log("=== Testing Direct Samod Document Sync ===");
+  console.log("=== Testing TonkCore Document Sync via WebSocket ===");
 
-  const client1 = new SamodTestClient("SAMOD-1");
-  const client2 = new SamodTestClient("SAMOD-2");
+  const client1 = new TonkTestClient("TONK-SYNC-1");
+  const client2 = new TonkTestClient("TONK-SYNC-2");
 
   try {
     // Initialize both clients
@@ -191,17 +195,18 @@ async function testSamodDirectSync() {
     }
 
     console.log(
-      "Both clients connected, testing direct Samod document creation...",
+      "Both clients connected, testing TonkCore document creation...",
     );
 
-    // Client 1 creates a document via Samod directly
+    // Client 1 creates a document
+    const testPath = "/sync-test.txt";
     const testContent = `Hello from Client 1 via Node.js! Time: ${Date.now()}`;
-    const { docId, content: originalContent } = await client1.createDocument(
-      null,
+    const { path, content: originalContent } = await client1.createDocument(
+      testPath,
       testContent,
     );
 
-    console.log(`Document created with ID: ${docId}`);
+    console.log(`Document created at path: ${path}`);
 
     // Wait for sync propagation
     console.log("Waiting for sync propagation...");
@@ -209,44 +214,47 @@ async function testSamodDirectSync() {
 
     // Client 2 tries to read the document
     console.log("Client 2 attempting to read the document...");
-    const syncedContent = await client2.readDocument(docId);
+    const syncedContent = await client2.readDocument(path);
 
     if (syncedContent !== null) {
       console.log(
-        "✅ Samod Document sync successful! Client 2 found the document",
+        "Document sync successful! Client 2 found the document",
       );
       console.log("Original content (Client 1):", originalContent);
       console.log("Synced content (Client 2):", syncedContent);
 
-      if (syncedContent.includes("Hello from Client 1")) {
-        console.log("✅ Content matches - sync working correctly!");
+      if (syncedContent.includes && syncedContent.includes("Hello from Client 1")) {
+        console.log("Content matches - sync working correctly!");
+      } else if (syncedContent === originalContent) {
+        console.log("Content matches exactly - sync working correctly!");
       } else {
-        console.log("❌ Content mismatch - sync issue detected");
+        console.log("Content mismatch - sync issue detected");
       }
     } else {
       console.log(
-        "❌ Samod Document sync failed - Client 2 could not find the document",
+        "Document sync failed - Client 2 could not find the document",
       );
       console.log(
-        "This indicates that samod itself may not be syncing documents properly",
+        "This indicates that sync may not be propagating documents properly",
       );
     }
 
-    console.log("=== Samod Direct Sync Test Complete ===\n");
+    console.log("=== TonkCore Sync Test Complete ===\n");
   } catch (error) {
-    console.error("❌ Samod sync test failed:", error);
+    console.error("TonkCore sync test failed:", error);
     throw error;
   }
 }
 
-export { SamodTestClient, testSamodDirectSync, testSamodRepoAPI };
+export { TonkTestClient, testSamodDirectSync, testTonkVfsAPI };
 
 // Run test if this file is executed directly
 if (process.argv[1] === new URL(import.meta.url).pathname) {
-  // First test the repo API directly
-  testSamodDirectSync()
+  // First test the VFS API directly
+  testTonkVfsAPI()
+    .then(() => testSamodDirectSync())
     .then(() => {
-      console.log("Samod repo API test completed");
+      console.log("TonkCore tests completed");
       process.exit(0);
     })
     .catch((error) => {

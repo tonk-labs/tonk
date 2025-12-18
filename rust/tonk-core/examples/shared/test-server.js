@@ -84,14 +84,22 @@ class TestServer extends EventEmitter {
         return;
       }
 
-      // Close all client connections
-      for (const [clientId, client] of this.clients) {
-        client.ws.close();
+      // HACK: Force terminate all connections using server.clients (from ws library)
+      // This handles both tracked clients and any WASM-based connections
+      for (const ws of this.server.clients) {
+        ws.terminate(); // Force terminate instead of graceful close
       }
       this.clients.clear();
 
+      // Set a timeout in case close callback never fires
+      const timeout = setTimeout(() => {
+        console.log('Test server force-stopped (timeout)');
+        resolve();
+      }, 1000);
+
       this.server.close(() => {
-        console.log(`Test server stopped`);
+        clearTimeout(timeout);
+        console.log('Test server stopped');
         resolve();
       });
     });

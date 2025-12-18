@@ -1,5 +1,8 @@
 /**
  * Bundle operations integration tests
+ * 
+ * Note: Bundles in the WASM API are created by exporting TonkCore state via toBytes().
+ * Bundles are read-only - you cannot directly write to them.
  */
 
 const { expect } = require("chai");
@@ -20,282 +23,254 @@ describe("Bundle Integration Tests", () => {
     wasm = await initWasm();
   });
 
-  describe("Bundle Creation and Basic Operations", () => {
-    it("should create bundle from existing data", async () => {
-      // Create a test zip file (this would normally be created by the bundle)
-      const bundle = await wasm.create_bundle();
+  describe("Bundle Creation via TonkCore Export", () => {
+    it("should create bundle from TonkCore with multiple files", async () => {
+      const tonk = await wasm.create_tonk();
 
-      // Add some test data
+      // Add test files
       const testFiles = [
-        { key: "config.json", content: TestData.jsonConfig },
-        { key: "readme.txt", content: TestData.simpleText },
-        { key: "data/binary.dat", content: TestData.binaryData },
+        { path: "/config.json", content: JSON.parse(TestData.jsonConfig) },
+        { path: "/readme.txt", content: TestData.simpleText },
+        { path: "/data/info.json", content: { type: "info", version: 1 } },
       ];
 
       for (const file of testFiles) {
-        const content =
-          typeof file.content === "string"
-            ? new TextEncoder().encode(file.content)
-            : file.content;
-        await bundle.put(file.key, content);
+        await tonk.createFile(file.path, file.content);
       }
 
-      // Verify all files are stored
+      // Export to bundle bytes
+      const bytes = await tonk.toBytes(null);
+      expect(bytes).to.be.instanceOf(Uint8Array);
+      expect(bytes.length).to.be.greaterThan(0);
+
+      // Create bundle from bytes
+      const bundle = wasm.create_bundle_from_bytes(bytes);
+      expect(bundle).to.not.be.undefined;
+
+      // Verify bundle has keys
       const keys = await bundle.listKeys();
-      expect(keys).to.have.lengthOf(testFiles.length + 2); // +2 for manifest and root doc
-
-      for (const file of testFiles) {
-        expect(keys).to.include(file.key);
-      }
+      expect(keys).to.be.an("array");
+      expect(keys.length).to.be.greaterThan(0);
     });
 
-    it("should handle hierarchical paths", async () => {
-      const bundle = await wasm.create_bundle();
+    it("should handle hierarchical paths in bundle", async () => {
+      const tonk = await wasm.create_tonk();
 
       const hierarchicalFiles = [
-        "root.txt",
-        "dir1/file1.txt",
-        "dir1/file2.txt",
-        "dir1/subdir/file3.txt",
-        "dir2/another.txt",
+        "/root.txt",
+        "/dir1/file1.txt",
+        "/dir1/file2.txt",
+        "/dir1/subdir/file3.txt",
+        "/dir2/another.txt",
       ];
 
       for (const [index, path] of hierarchicalFiles.entries()) {
-        const content = new TextEncoder().encode(`Content ${index}: ${path}`);
-        await bundle.put(path, content);
+        await tonk.createFile(path, `Content ${index}: ${path}`);
       }
 
+      // Export and verify structure preserved
+      const bytes = await tonk.toBytes(null);
+      const bundle = wasm.create_bundle_from_bytes(bytes);
+
       const keys = await bundle.listKeys();
-      expect(keys).to.have.lengthOf(hierarchicalFiles.length + 2); // +2 for manifest and root doc
+      expect(keys.length).to.be.greaterThan(0);
 
-      // Verify we can retrieve all files
+      // Load back into TonkCore and verify all files
+      const tonk2 = await wasm.create_tonk_from_bytes(bytes);
+
       for (const path of hierarchicalFiles) {
-        const data = await bundle.get(path);
-        expect(data).to.not.be.null;
-
-        const content = new TextDecoder().decode(data);
-        expect(content).to.include(path);
+        const exists = await tonk2.exists(path);
+        expect(exists).to.be.true;
       }
     });
 
-    it("should preserve data integrity", async () => {
-      const bundle = await wasm.create_bundle();
+    it("should preserve data integrity through bundle round-trip", async () => {
+      const tonk1 = await wasm.create_tonk();
 
       // Test with various data types
       const testCases = [
-        { key: "text.txt", data: TestData.simpleText },
-        { key: "json.json", data: TestData.jsonConfig },
-        { key: "large.txt", data: TestData.largeText.substring(0, 1000) }, // Smaller for test speed
-        { key: "binary.dat", data: TestData.binaryData },
+        { path: "/text.txt", content: TestData.simpleText },
+        { path: "/json.json", content: { theme: "dark", language: "en" } },
+        { path: "/nested.json", content: { a: { b: { c: "deep" } } } },
+        { path: "/array.json", content: [1, 2, 3, "four", { five: 5 }] },
       ];
 
       // Store all data
       for (const testCase of testCases) {
-        const content =
-          typeof testCase.data === "string"
-            ? new TextEncoder().encode(testCase.data)
-            : testCase.data;
-        await bundle.put(testCase.key, content);
+        await tonk1.createFile(testCase.path, testCase.content);
       }
+
+      // Export and reload
+      const bytes = await tonk1.toBytes(null);
+      const tonk2 = await wasm.create_tonk_from_bytes(bytes);
 
       // Retrieve and verify
       for (const testCase of testCases) {
-        const retrieved = await bundle.get(testCase.key);
-        const expected =
-          typeof testCase.data === "string"
-            ? new TextEncoder().encode(testCase.data)
-            : testCase.data;
-
-        assertUint8ArraysEqual(retrieved, expected);
-      }
-    });
-
-    it("should handle overwrites correctly", async function () {
-      const bundle = await wasm.create_bundle();
-      const key = "overwrite-test.txt";
-
-      // Initial content
-      const content1 = new TextEncoder().encode("Initial content");
-      await bundle.put(key, content1);
-
-      let retrieved = await bundle.get(key);
-      assertUint8ArraysEqual(retrieved, content1);
-
-      try {
-        // Overwrite
-        const content2 = new TextEncoder().encode(
-          "Updated content - much longer this time",
-        );
-        await bundle.put(key, content2);
-
-        retrieved = await bundle.get(key);
-        assertUint8ArraysEqual(retrieved, content2);
-
-        // Verify keys list still has only one entry
-        const keys = await bundle.listKeys();
-        const matchingKeys = keys.filter((k) => k === key);
-        expect(matchingKeys).to.have.lengthOf(1);
-      } catch (error) {
-        // If overwrite fails due to ZIP limitations, this is a known issue
-        if (
-          error.message &&
-          error.message.includes("Failed to start new file in ZIP")
-        ) {
-          this.skip(
-            "Bundle overwrite not supported due to ZIP library limitations",
-          );
-        } else {
-          throw error;
-        }
+        const retrieved = await tonk2.readFile(testCase.path);
+        // Handle both wrapped primitives ({ value: ... }) and objects
+        const actualContent = retrieved.content.value !== undefined
+          ? retrieved.content.value
+          : retrieved.content;
+        expect(actualContent).to.deep.equal(testCase.content);
       }
     });
   });
 
-  describe("Bundle Serialization", () => {
-    it("should serialize and deserialize bundle data", async () => {
-      // Create and populate a bundle
-      const originalBundle = await wasm.create_bundle();
+  describe("Bundle Reading Operations", () => {
+    let bundle, bytes;
 
-      const testData = [
-        { key: "file1.txt", content: "Hello World" },
-        { key: "dir/file2.json", content: '{"test": true}' },
-        { key: "binary.dat", content: TestData.binaryData },
-      ];
+    beforeEach(async () => {
+      // Create a TonkCore with test data
+      const tonk = await wasm.create_tonk();
+      await tonk.createFile("/test.txt", "Test content");
+      await tonk.createFile("/data.json", { key: "value" });
+      await tonk.createDirectory("/folder");
+      await tonk.createFile("/folder/nested.txt", "Nested");
 
-      for (const item of testData) {
-        const content =
-          typeof item.content === "string"
-            ? new TextEncoder().encode(item.content)
-            : item.content;
-        await originalBundle.put(item.key, content);
-      }
+      bytes = await tonk.toBytes(null);
+      bundle = wasm.create_bundle_from_bytes(bytes);
+    });
 
-      // Serialize to bytes
-      const serialized = await originalBundle.toBytes();
-      expect(serialized).to.be.instanceOf(Uint8Array);
-      expect(serialized.length).to.be.greaterThan(0);
+    it("should list all keys in bundle", async () => {
+      const keys = await bundle.listKeys();
 
-      // Create new bundle from serialized data
-      const deserializedBundle =
-        await wasm.create_bundle_from_bytes(serialized);
+      expect(keys).to.be.an("array");
+      expect(keys.length).to.be.greaterThan(0);
+    });
 
-      // Verify all data is preserved
-      const keys = await deserializedBundle.listKeys();
-      expect(keys).to.have.lengthOf(testData.length + 2); // +2 for manifest and root doc
+    it("should get manifest from bundle", async () => {
+      const manifest = await bundle.getManifest();
 
-      for (const item of testData) {
-        const retrieved = await deserializedBundle.get(item.key);
-        const expected =
-          typeof item.content === "string"
-            ? new TextEncoder().encode(item.content)
-            : item.content;
-        assertUint8ArraysEqual(retrieved, expected);
+      expect(manifest).to.be.an("object");
+    });
+
+    it("should get root ID from bundle", async () => {
+      const rootId = await bundle.getRootId();
+
+      expect(rootId).to.be.a("string");
+      expect(rootId.length).to.be.greaterThan(0);
+    });
+
+    it("should get raw data by key", async () => {
+      const keys = await bundle.listKeys();
+
+      // Try to get each key
+      for (const key of keys) {
+        const data = await bundle.get(key);
+        // Data should be either Uint8Array or null
+        if (data !== null) {
+          expect(data).to.be.instanceOf(Uint8Array);
+        }
       }
     });
 
-    it("should handle empty bundle serialization", async () => {
-      const bundle = await wasm.create_bundle();
+    it("should get entries by prefix", async () => {
+      const entries = await bundle.getPrefix("");
 
+      expect(entries).to.be.an("array");
+      // Each entry should have key and value
+      for (const entry of entries) {
+        expect(entry).to.have.property("key");
+        expect(entry).to.have.property("value");
+      }
+    });
+
+    it("should serialize bundle to bytes", async () => {
       const serialized = await bundle.toBytes();
-      expect(serialized).to.be.instanceOf(Uint8Array);
 
-      const deserialized = await wasm.create_bundle_from_bytes(serialized);
-      const keys = await deserialized.listKeys();
-      expect(keys).to.have.lengthOf(2); // +2 for manifest and root doc
+      expect(serialized).to.be.instanceOf(Uint8Array);
+      expect(serialized.length).to.be.greaterThan(0);
+
+      // Should be able to create another bundle from these bytes
+      const bundle2 = wasm.create_bundle_from_bytes(serialized);
+      const keys2 = await bundle2.listKeys();
+
+      expect(keys2.length).to.be.greaterThan(0);
     });
   });
 
   describe("Bundle Performance", () => {
     it("should handle large numbers of files efficiently", async function () {
-      this.timeout(15000);
+      this.timeout(20000);
 
-      const bundle = await wasm.create_bundle();
-      const fileCount = 1000;
+      const tonk = await wasm.create_tonk();
+      const fileCount = 500;
 
-      const timer = new PerfTimer(`Storing ${fileCount} files`);
+      const timer = new PerfTimer(`Creating ${fileCount} files`);
 
-      // Store many small files
+      // Create many files
       for (let i = 0; i < fileCount; i++) {
-        const key = `files/file_${i.toString().padStart(4, "0")}.txt`;
-        const content = new TextEncoder().encode(`Content of file ${i}`);
-        await bundle.put(key, content);
+        const path = `/files/file_${i.toString().padStart(4, "0")}.txt`;
+        await tonk.createFile(path, `Content of file ${i}`);
       }
 
-      const storeTime = timer.stop();
+      const createTime = timer.stop();
 
-      // Verify count
-      const keys = await bundle.listKeys();
-      expect(keys).to.have.lengthOf(fileCount + 2); // +2 for manifest and root doc
+      // Export to bundle
+      const exportTimer = new PerfTimer("Exporting to bundle");
+      const bytes = await tonk.toBytes(null);
+      const exportTime = exportTimer.stop();
 
-      // Time retrieval
-      const retrieveTimer = new PerfTimer("Retrieving all files");
-      for (let i = 0; i < fileCount; i++) {
-        const key = `files/file_${i.toString().padStart(4, "0")}.txt`;
-        const data = await bundle.get(key);
-        expect(data).to.not.be.null;
-      }
-      const retrieveTime = retrieveTimer.stop();
+      // Load from bundle
+      const loadTimer = new PerfTimer("Loading from bundle");
+      const tonk2 = await wasm.create_tonk_from_bytes(bytes);
+      const loadTime = loadTimer.stop();
 
-      console.log(
-        `    Store rate: ${((fileCount / storeTime) * 1000).toFixed(0)} files/sec`,
-      );
-      console.log(
-        `    Retrieve rate: ${((fileCount / retrieveTime) * 1000).toFixed(0)} files/sec`,
-      );
+      // Verify file count
+      const entries = await tonk2.listDirectory("/files");
+      expect(entries).to.have.lengthOf(fileCount);
 
-      expect(storeTime).to.be.lessThan(10000);
-      expect(retrieveTime).to.be.lessThan(5000);
+      console.log(`    Create rate: ${((fileCount / createTime) * 1000).toFixed(0)} files/sec`);
+      console.log(`    Export time: ${exportTime.toFixed(2)}ms`);
+      console.log(`    Load time: ${loadTime.toFixed(2)}ms`);
+
+      expect(createTime).to.be.lessThan(20000);
+      expect(exportTime).to.be.lessThan(5000);
+      expect(loadTime).to.be.lessThan(5000);
     });
 
-    it("should handle large files efficiently", async function () {
+    it("should handle large file content efficiently", async function () {
       this.timeout(10000);
 
-      const bundle = await wasm.create_bundle();
-      const largeContent = new TextEncoder().encode("x".repeat(100 * 1024)); // 100KB
+      const tonk = await wasm.create_tonk();
+      const largeContent = "x".repeat(100 * 1024); // 100KB string
 
-      const timer = new PerfTimer("Large file operations");
+      const timer = new PerfTimer("Large content operations");
 
-      await bundle.put("large-file.txt", largeContent);
-      const retrieved = await bundle.get("large-file.txt");
+      await tonk.createFile("/large-file.txt", largeContent);
+      const bytes = await tonk.toBytes(null);
+      const tonk2 = await wasm.create_tonk_from_bytes(bytes);
+      const retrieved = await tonk2.readFile("/large-file.txt");
 
       const duration = timer.stop();
 
-      assertUint8ArraysEqual(retrieved, largeContent);
+      // Handle wrapped primitive
+      const actualContent = retrieved.content.value !== undefined
+        ? retrieved.content.value
+        : retrieved.content;
+      expect(actualContent).to.equal(largeContent);
       expect(duration).to.be.lessThan(3000);
     });
   });
 
   describe("Bundle Error Handling", () => {
-    it("should handle non-existent keys gracefully", async () => {
-      const bundle = await wasm.create_bundle();
-
-      try {
-        await bundle.get("non-existent-key.txt");
-        expect.fail("Expected error for non-existent key");
-      } catch (error) {
-        expect(error).to.not.be.undefined;
-      }
-    });
-
-    it("should handle deletion of non-existent keys", async () => {
-      const bundle = await wasm.create_bundle();
-
-      // This might not throw an error, depending on implementation
-      try {
-        await bundle.delete("non-existent-key.txt");
-        // If no error is thrown, that's also valid behavior
-      } catch (error) {
-        // Error is also acceptable
-        expect(error).to.not.be.undefined;
-      }
-    });
-
-    it("should handle invalid serialized data", async () => {
+    it("should handle invalid bundle data gracefully", async () => {
       const invalidData = new Uint8Array([1, 2, 3, 4, 5]); // Invalid bundle data
 
       try {
-        await wasm.create_bundle_from_bytes(invalidData);
+        wasm.create_bundle_from_bytes(invalidData);
         expect.fail("Expected error for invalid bundle data");
+      } catch (error) {
+        expect(error).to.not.be.undefined;
+      }
+    });
+
+    it("should handle empty Uint8Array", async () => {
+      const emptyData = new Uint8Array(0);
+
+      try {
+        wasm.create_bundle_from_bytes(emptyData);
+        expect.fail("Expected error for empty data");
       } catch (error) {
         expect(error).to.not.be.undefined;
       }
@@ -304,36 +279,99 @@ describe("Bundle Integration Tests", () => {
 
   describe("Bundle Integration with File System", () => {
     it("should save bundle to file and load it back", async () => {
-      // Create and populate bundle
-      const originalBundle = await wasm.create_bundle();
-      await originalBundle.put(
-        "test.txt",
-        new TextEncoder().encode("test content"),
-      );
+      // Create TonkCore with content
+      const tonk = await wasm.create_tonk();
+      await tonk.createFile("/test.txt", "test content");
 
-      // Serialize to bytes
-      const bundleBytes = await originalBundle.toBytes();
+      // Export to bytes
+      const bundleBytes = await tonk.toBytes(null);
 
       // Save to temporary file
-      const tempFile = createTempFile("", ".bundle");
+      const tempFile = createTempFile("", ".tonk");
       fs.writeFileSync(tempFile.name, bundleBytes);
 
-      // Read from file and create bundle
+      // Read from file
       const fileData = fs.readFileSync(tempFile.name);
-      const loadedBundle = await wasm.create_bundle_from_bytes(
-        new Uint8Array(fileData),
-      );
+      const loadedBytes = new Uint8Array(fileData);
+
+      // Create TonkCore from loaded bytes
+      const tonk2 = await wasm.create_tonk_from_bytes(loadedBytes);
 
       // Verify data
-      const keys = await loadedBundle.listKeys();
-      expect(keys).to.include("test.txt");
+      const exists = await tonk2.exists("/test.txt");
+      expect(exists).to.be.true;
 
-      const content = await loadedBundle.get("test.txt");
-      const text = new TextDecoder().decode(content);
-      expect(text).to.equal("test content");
+      const content = await tonk2.readFile("/test.txt");
+      // Handle wrapped primitive
+      const actualContent = content.content.value !== undefined
+        ? content.content.value
+        : content.content;
+      expect(actualContent).to.equal("test content");
 
       // Cleanup
       tempFile.removeCallback();
+    });
+
+    it("should handle multiple save/load cycles", async () => {
+      let tonk = await wasm.create_tonk();
+      await tonk.createFile("/cycle-test.txt", "initial");
+
+      // Perform multiple save/load cycles
+      for (let cycle = 1; cycle <= 3; cycle++) {
+        // Update content
+        await tonk.setFile("/cycle-test.txt", `cycle ${cycle}`);
+
+        // Save and reload
+        const bytes = await tonk.toBytes(null);
+        tonk = await wasm.create_tonk_from_bytes(bytes);
+
+        // Verify
+        const content = await tonk.readFile("/cycle-test.txt");
+        // Handle wrapped primitive
+        const actualContent = content.content.value !== undefined
+          ? content.content.value
+          : content.content;
+        expect(actualContent).to.equal(`cycle ${cycle}`);
+      }
+    });
+  });
+
+  describe("TonkCore from Bundle with Storage Config", () => {
+    it("should create TonkCore from bundle with in-memory storage", async () => {
+      // Create original TonkCore
+      const tonk1 = await wasm.create_tonk();
+      await tonk1.createFile("/storage-test.txt", "Storage test content");
+
+      // Export to bytes
+      const bytes = await tonk1.toBytes(null);
+
+      // Create bundle and then TonkCore with storage config
+      const bundle = wasm.create_bundle_from_bytes(bytes);
+      const tonk2 = await wasm.create_tonk_from_bundle(bundle);
+
+      // Verify data
+      const exists = await tonk2.exists("/storage-test.txt");
+      expect(exists).to.be.true;
+    });
+
+    it("should create TonkCore from bytes with storage config", async () => {
+      // Create original
+      const tonk1 = await wasm.create_tonk();
+      await tonk1.createFile("/bytes-storage.txt", "Bytes storage test");
+
+      // Export
+      const bytes = await tonk1.toBytes(null);
+
+      // Load with storage config (in-memory)
+      const tonk2 = await wasm.create_tonk_from_bytes_with_storage(bytes, false, null);
+
+      // Verify
+      const content = await tonk2.readFile("/bytes-storage.txt");
+      // Handle wrapped primitive
+      const actualContent = content.content.value !== undefined
+        ? content.content.value
+        : content.content;
+      expect(actualContent).to.equal("Bytes storage test");
     });
   });
 });

@@ -13,9 +13,9 @@
     "build:node": "wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node",
     "build:browser": "wasm-pack build --target web --out-dir pkg-browser -- --features wasm-browser",
     "build:docker": "./build-wasm-docker.sh",
-    "test": "wasm-pack test --headless --firefox",
+    "test": "wasm-pack test --headless --firefox -- --features wasm-browser",
     "test:browser": "bun run build:browser && bun run serve:test",
-    "test:node": "cd examples/node && bun test",
+    "test:node": "cd examples/node && bun run test",
     "test:integration": "bun run test:node && bun run test:browser",
     "serve:test": "node examples/browser/server.js --port=8081 --dir=.",
     "clean": "rm -rf pkg pkg-node pkg-browser"

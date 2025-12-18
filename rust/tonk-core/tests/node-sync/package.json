@@ -4,6 +4,7 @@
   "description": "Node.js tests for samod document synchronization",
   "type": "module",
   "scripts": {
+    "postinstall": "bun2nix -o bun.nix",
     "test": "node run-sync-test.js",
     "server": "node test-server.js"
   },

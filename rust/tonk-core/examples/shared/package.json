@@ -1,0 +1,13 @@
+{
+  "name": "@tonk/core-examples-shared",
+  "version": "0.1.0",
+  "description": "Shared test utilities for Tonk Core examples",
+  "private": true,
+  "scripts": {
+    "postinstall": "bun2nix -o bun.nix"
+  },
+  "dependencies": {
+    "tmp": "^0.2.1",
+    "ws": "^8.16.0"
+  }
+}

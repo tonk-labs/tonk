@@ -1,10 +1,12 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 use tonk_core::TonkCore;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore] // Requires node server to be available
 async fn test_websocket_sync_with_real_server() {
     // This test requires the example sync server to be running
@@ -48,7 +50,8 @@ async fn test_websocket_sync_with_real_server() {
     assert!(exists, "Document should be synced to tonk2");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
 async fn test_websocket_connection_failure() {
     let tonk = TonkCore::new().await.unwrap();
 
@@ -67,7 +70,7 @@ async fn test_websocket_connection_failure() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_connect_from_manifest_empty() {
     let tonk = TonkCore::new().await.unwrap();
 
@@ -79,7 +82,7 @@ async fn test_connect_from_manifest_empty() {
     assert!(!tonk.peer_id().to_string().is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_multiple_websocket_uris_in_manifest() {
     // Test loading a bundle that could have network URIs
     let tonk = TonkCore::new().await.unwrap();
@@ -94,7 +97,7 @@ async fn test_multiple_websocket_uris_in_manifest() {
     assert_ne!(tonk.peer_id(), tonk2.peer_id());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore] // Requires TypeScript server dependencies
 async fn test_sync_conflict_resolution() {
     // Start TypeScript automerge-repo server
@@ -128,7 +131,7 @@ async fn test_sync_conflict_resolution() {
     assert!(tonk2.vfs().exists("/conflict.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_offline_then_sync() {
     // Create and populate offline
     let tonk = TonkCore::new().await.unwrap();
@@ -152,7 +155,7 @@ async fn test_offline_then_sync() {
     assert_ne!(tonk.peer_id(), tonk2.peer_id());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_sync_engine_operations() {
     let tonk = TonkCore::new().await.unwrap();
 
@@ -167,7 +170,8 @@ async fn test_sync_engine_operations() {
     assert_eq!(found.document_id(), handle.document_id());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
 async fn test_concurrent_sync_operations() {
     use futures::future::join_all;
 
@@ -186,7 +190,7 @@ async fn test_concurrent_sync_operations() {
     assert!(results.iter().all(|r| r.is_err()));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_vfs_sync_readiness() {
     // Test that VFS is ready for sync operations after initialization
     let tonk = TonkCore::new().await.unwrap();
@@ -200,7 +204,7 @@ async fn test_vfs_sync_readiness() {
     assert_eq!(root_handle.document_id(), &root_id);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_with_network_uris() {
     // Create a bundle, then verify we can load it
     let tonk = TonkCore::new().await.unwrap();

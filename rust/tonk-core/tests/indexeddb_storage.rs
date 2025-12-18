@@ -1,7 +1,8 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm_tests {
     use std::sync::Once;
-    use tonk_core::{StorageConfig, TonkCore};
+    use tonk_core::vfs::backend::AutomergeHelpers;
+    use tonk_core::{DocNode, StorageConfig, TonkCore};
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
@@ -24,7 +25,7 @@ mod wasm_tests {
 
         // Create TonkCore with IndexedDB storage
         let tonk1 = TonkCore::builder()
-            .with_storage(StorageConfig::IndexedDB)
+            .with_storage(StorageConfig::IndexedDB { namespace: None })
             .build()
             .await
             .expect("Failed to create TonkCore with IndexedDB storage");
@@ -73,7 +74,7 @@ mod wasm_tests {
         // Load from the bundle to test persistence
         let tonk3 = TonkCore::from_bundle(
             tonk_core::Bundle::from_bytes(bundle_bytes).expect("Failed to parse bundle"),
-            StorageConfig::IndexedDB,
+            StorageConfig::IndexedDB { namespace: None },
         )
         .await
         .expect("Failed to load from bundle with IndexedDB");
@@ -103,67 +104,34 @@ mod wasm_tests {
             .await
             .expect("Failed to find document")
             .expect("Document not found");
-        let content1: String = handle1.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content1, "\"IndexedDB test content 1\"");
+        let doc_node1: DocNode<String> =
+            AutomergeHelpers::read_document(&handle1).expect("Failed to read document");
+        assert_eq!(doc_node1.content, "IndexedDB test content 1");
 
         let handle2 = vfs3
             .find_document("/test2.txt")
             .await
             .expect("Failed to find document")
             .expect("Document not found");
-        let content2: String = handle2.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content2, "\"IndexedDB test content 2\"");
+        let doc_node2: DocNode<String> =
+            AutomergeHelpers::read_document(&handle2).expect("Failed to read document");
+        assert_eq!(doc_node2.content, "IndexedDB test content 2");
 
         let handle3 = vfs3
             .find_document("/folder/nested.txt")
             .await
             .expect("Failed to find document")
             .expect("Document not found");
-        let content3: String = handle3.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content3, "\"Nested content in IndexedDB\"");
+        let doc_node3: DocNode<String> =
+            AutomergeHelpers::read_document(&handle3).expect("Failed to read document");
+        assert_eq!(doc_node3.content, "Nested content in IndexedDB");
     }
 
     #[wasm_bindgen_test]
     async fn test_indexeddb_storage_modification_persistence() {
         // Create TonkCore with IndexedDB storage
         let tonk1 = TonkCore::builder()
-            .with_storage(StorageConfig::IndexedDB)
+            .with_storage(StorageConfig::IndexedDB { namespace: None })
             .build()
             .await
             .expect("Failed to create TonkCore with IndexedDB storage");
@@ -175,19 +143,14 @@ mod wasm_tests {
             .await
             .expect("Failed to create document");
 
-        // Modify the document
+        // Modify the document using proper API
         let handle = vfs1
             .find_document("/modifiable.txt")
             .await
             .expect("Failed to find document")
             .expect("Document not found");
-        handle.with_document(|doc| {
-            use automerge::transaction::Transactable;
-            let mut tx = doc.transaction();
-            tx.put(automerge::ROOT, "content", "Modified content")
-                .expect("Failed to update content");
-            tx.commit();
-        });
+        AutomergeHelpers::set_document_content(&handle, "Modified content".to_string())
+            .expect("Failed to update content");
 
         // Export to bundle
         let bundle_bytes = tonk1.to_bytes(None).await.expect("Failed to export bundle");
@@ -195,7 +158,7 @@ mod wasm_tests {
         // Load from bundle in new instance
         let tonk2 = TonkCore::from_bundle(
             tonk_core::Bundle::from_bytes(bundle_bytes).expect("Failed to parse bundle"),
-            StorageConfig::IndexedDB,
+            StorageConfig::IndexedDB { namespace: None },
         )
         .await
         .expect("Failed to load from bundle");
@@ -208,20 +171,9 @@ mod wasm_tests {
             .await
             .expect("Failed to find document")
             .expect("Document not found");
-        let content: String = handle2.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content, "Modified content");
+        let doc_node: DocNode<String> =
+            AutomergeHelpers::read_document(&handle2).expect("Failed to read document");
+        assert_eq!(doc_node.content, "Modified content");
     }
 
     #[wasm_bindgen_test]
@@ -233,7 +185,7 @@ mod wasm_tests {
         let bundle_bytes = include_bytes!("data/blank.tonk");
         let tonk1 = TonkCore::from_bundle(
             tonk_core::Bundle::from_bytes(bundle_bytes.to_vec()).expect("Failed to parse bundle"),
-            StorageConfig::IndexedDB,
+            StorageConfig::IndexedDB { namespace: None },
         )
         .await
         .expect("Failed to load from bundle with IndexedDB");
@@ -251,7 +203,7 @@ mod wasm_tests {
         // Step 2: Create a new TonkCore instance with IndexedDB
         // This simulates a subsequent app load where no network is needed
         let tonk2 = TonkCore::builder()
-            .with_storage(StorageConfig::IndexedDB)
+            .with_storage(StorageConfig::IndexedDB { namespace: None })
             .build()
             .await
             .expect("Failed to create TonkCore from stored manifest");
@@ -279,20 +231,9 @@ mod wasm_tests {
             .await
             .expect("Failed to find document")
             .expect("Document not found");
-        let content: String = handle.with_document(|doc| {
-            use automerge::ReadDoc;
-            match doc.get(automerge::ROOT, "content") {
-                Ok(Some((value, _))) => {
-                    if let Some(s) = value.to_str() {
-                        s.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => String::new(),
-            }
-        });
-        assert_eq!(content, "\"Offline content\"");
+        let doc_node: DocNode<String> =
+            AutomergeHelpers::read_document(&handle).expect("Failed to read document");
+        assert_eq!(doc_node.content, "Offline content");
 
         // Step 3: Verify that we can create new documents in the restored instance
         vfs2.create_document(
@@ -316,7 +257,7 @@ mod native_tests {
     // These tests demonstrate how IndexedDB storage would be tested if it were available in native context
     // Currently IndexedDB is only available in WASM/browser environments
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_indexeddb_not_available_native() {
         // This test verifies that IndexedDB storage config is only available for WASM targets
         // In native builds, we should only have InMemory and Filesystem options

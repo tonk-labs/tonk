@@ -1,3 +1,16 @@
+#![cfg(not(target_arch = "wasm32"))]
+
+//! Sync integration tests for TonkCore.
+//!
+//! Tests marked with `#[ignore]` require an external TypeScript automerge-repo server
+//! and are run as part of the `node-tests` Nix check instead of the standard `cargo test`.
+//!
+//! To run ignored tests locally:
+//! ```sh
+//! cd rust/tonk-core/examples/server && bun install
+//! cargo test --test sync -- --ignored
+//! ```
+
 mod common;
 
 use samod::DocumentId;
@@ -5,7 +18,8 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tonk_core::TonkCore;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires external TypeScript server"]
 async fn test_e2e_bundle_sync_workflow() {
     // Test the complete workflow: create bundle -> load in multiple clients -> sync
     // This test explores whether bundle-based initialization enables sync compatibility
@@ -105,7 +119,8 @@ async fn test_e2e_bundle_sync_workflow() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires external TypeScript server"]
 async fn test_shared_root_document_sync() {
     // Test the pattern where all clients share the same root document ID
     // by fetching it from the automerge-repo server's /root endpoint
@@ -174,7 +189,8 @@ async fn test_shared_root_document_sync() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires external TypeScript server"]
 async fn test_bundle_content_sync_behavior() {
     // Test sync behavior when clients load from the same bundle
     // Note: Clients will have different root document IDs but should be able to sync content
@@ -277,7 +293,8 @@ async fn test_bundle_content_sync_behavior() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires external TypeScript server"]
 async fn test_different_bundles_isolated_sync() {
     // Test that clients from different bundles don't interfere with each other
 
@@ -325,7 +342,8 @@ async fn test_different_bundles_isolated_sync() {
     assert!(!client_b.vfs().exists("/bundle1.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires external TypeScript server"]
 async fn test_sequential_bundle_client_joins() {
     // Test clients joining at different times but sharing the same bundle
 
@@ -391,7 +409,7 @@ async fn test_sequential_bundle_client_joins() {
     assert!(client1.vfs().exists("/late_content.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_websocket_connection_failure() {
     let tonk = TonkCore::new().await.unwrap();
 
@@ -410,7 +428,7 @@ async fn test_websocket_connection_failure() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_peer_id_uniqueness_after_bundle_load() {
     // Test that each client gets unique peer ID even from same bundle
 

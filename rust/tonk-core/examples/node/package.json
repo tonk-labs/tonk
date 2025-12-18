@@ -5,6 +5,7 @@
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
+    "postinstall": "bun2nix -o bun.nix",
     "test": "npm run build:wasm && mocha --timeout 10000 integration/*.test.js",
     "test:watch": "npm run test -- --watch",
     "test:verbose": "npm run test -- --reporter spec",

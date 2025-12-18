@@ -21,6 +21,8 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: DeterminateSystems/flake-checker-action@main
         with:
           send-statistics: false
@@ -28,28 +30,59 @@ jobs:
 
   checks:
     name: 'Nix Checks'
-     needs: ['lint_nix']
-     runs-on: 'ubuntu-latest'
+    needs: ['lint_nix']
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: wimpysworld/nothing-but-nix@main
         with:
           hatchet-protocol: cleave
       - uses: DeterminateSystems/nix-installer-action@main
-      - name: Restore and save Nix store
-        uses: nix-community/cache-nix-action@v6
-        with:
-          # Include Cargo.lock for better Rust dependency caching
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock', '**/Cargo.lock') }}
+      - uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: 'Run all checks (fmt, clippy, tests)'
         shell: bash
         run: |
           # Build all checks
           # SEE: https://github.com/NixOS/nix/issues/8881
-          nix build .#checks.x86_64-linux.rustfmt
-          nix build .#checks.x86_64-linux.clippy
-          nix build .#checks.x86_64-linux.tests
+          nix build -L .#checks.x86_64-linux.rustfmt
+          nix build -L .#checks.x86_64-linux.clippy
+          nix build -L .#checks.x86_64-linux.tests
+
+  wasm-tests:
+    name: 'WASM Browser Tests'
+    needs: ['checks']
+    runs-on: 'ubuntu-latest'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+        with:
+          hatchet-protocol: cleave
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: 'Run WASM browser tests (Firefox headless)'
+        shell: bash
+        run: |
+          nix build -L .#checks.x86_64-linux.wasm-tests
+
+  node-tests:
+    name: 'Node.js Integration Tests'
+    needs: ['checks']
+    runs-on: 'ubuntu-latest'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+        with:
+          hatchet-protocol: cleave
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: 'Run Node.js integration tests'
+        shell: bash
+        run: |
+          nix build -L .#checks.x86_64-linux.node-tests
 
   build:
     name: 'Build Packages'

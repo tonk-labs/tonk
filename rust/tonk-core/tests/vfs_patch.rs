@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 //! Tests for native Automerge storage, patch_document, and splice_text functionality
 
 use serde_json::json;
@@ -7,7 +9,7 @@ use tonk_core::TonkCore;
 // Native Storage Tests
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_create_and_read_document() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -27,7 +29,7 @@ async fn test_create_and_read_document() {
     assert!(doc.is_some(), "Document should exist");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_nested_object_storage() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -50,7 +52,7 @@ async fn test_nested_object_storage() {
     assert!(exists, "Nested document should exist");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_array_storage() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -68,7 +70,7 @@ async fn test_array_storage() {
     assert!(exists, "Array document should exist");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_mixed_nested_structures() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -96,7 +98,7 @@ async fn test_mixed_nested_structures() {
 // Patch Document Tests
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_patch_top_level_field() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -120,7 +122,7 @@ async fn test_patch_top_level_field() {
     assert!(updated, "Patch should return true for existing document");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_patch_nested_field() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -149,7 +151,7 @@ async fn test_patch_nested_field() {
     assert!(updated, "Patch should succeed for nested field");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_patch_preserves_other_fields() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -173,7 +175,7 @@ async fn test_patch_preserves_other_fields() {
     assert!(exists, "Document should still exist after patch");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_patch_nonexistent_file() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -187,7 +189,7 @@ async fn test_patch_nonexistent_file() {
     assert!(!result, "Patch should return false for non-existent file");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_patch_with_empty_path_replaces_content() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -205,7 +207,7 @@ async fn test_patch_with_empty_path_replaces_content() {
     assert!(result.unwrap(), "Patch should return true");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_patch_overwrites_value_type() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -230,7 +232,7 @@ async fn test_patch_overwrites_value_type() {
 // Splice Text Tests
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_splice_insert_text() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -251,7 +253,7 @@ async fn test_splice_insert_text() {
     assert!(updated, "Splice insert should succeed");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_splice_delete_text() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -272,7 +274,7 @@ async fn test_splice_delete_text() {
     assert!(updated, "Splice delete should succeed");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_splice_replace_text() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -293,7 +295,7 @@ async fn test_splice_replace_text() {
     assert!(updated, "Splice replace should succeed");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_splice_at_beginning() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -314,7 +316,7 @@ async fn test_splice_at_beginning() {
     assert!(updated, "Splice at beginning should succeed");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_splice_creates_text_field() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -335,7 +337,7 @@ async fn test_splice_creates_text_field() {
     assert!(updated, "Splice should create new text field");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_splice_nonexistent_file() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -349,7 +351,7 @@ async fn test_splice_nonexistent_file() {
     assert!(!result, "Splice should return false for non-existent file");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_splice_nested_text_field() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -374,7 +376,7 @@ async fn test_splice_nested_text_field() {
 // Integration Tests
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_patch_then_read_roundtrip() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -396,7 +398,7 @@ async fn test_patch_then_read_roundtrip() {
     assert!(exists, "Document should exist after patch");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_multiple_patches_accumulate() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
