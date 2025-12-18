@@ -57,6 +57,7 @@
           [
             rustToolchainStable
             wasm-bindgen-cli
+            bun
           ]
           ++ lib.optionals stdenv.isLinux [
             # Linux-specific inputs
@@ -76,7 +77,14 @@
           };
           "test:all" = {
             description = "Runs the full test suite";
-            command = "cargo test";
+            command = ''
+              echo "Installing Node.js dependencies for sync tests..."
+              (cd rust/tonk-core/examples/server && bun install --frozen-lockfile)
+              (cd rust/tonk-core/examples/node && bun install --frozen-lockfile)
+              (cd rust/tonk-core/tests/node-sync && bun install --frozen-lockfile)
+              echo "Running cargo test..."
+              cargo test
+            '';
           };
         };
 
