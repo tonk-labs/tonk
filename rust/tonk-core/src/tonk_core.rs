@@ -829,13 +829,13 @@ mod tests {
     use tempfile::TempDir;
     use tokio::time::{Duration, timeout};
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_sync_engine_creation() {
         let tonk = TonkCore::new().await.unwrap();
         assert!(!tonk.peer_id().to_string().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_sync_engine_with_peer_id() {
         let mut rng = rand::rng();
         let peer_id = PeerId::new_with_rng(&mut rng);
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(tonk.peer_id(), peer_id);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_document_creation() {
         let tonk = TonkCore::new().await.unwrap();
         let doc = automerge::Automerge::new();
@@ -851,7 +851,7 @@ mod tests {
         assert!(!handle.document_id().to_string().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_vfs_integration() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = tonk.vfs();
@@ -868,7 +868,7 @@ mod tests {
         assert_eq!(tonk.peer_id(), samod.peer_id());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_websocket_connection_failure() {
         let tonk = TonkCore::new().await.unwrap();
 
@@ -887,7 +887,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_bundle_export() {
         // Create a new sync engine and add some data
         let tonk = TonkCore::new().await.unwrap();
@@ -910,7 +910,7 @@ mod tests {
         // assert_eq!(manifest.root, "root");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(not(target_arch = "wasm32"))]
     async fn test_bundle_round_trip() {
         // Create first engine with some data
@@ -958,7 +958,7 @@ mod tests {
         info!("Bundle round-trip test passed - root document structure preserved");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_in_memory_storage() {
         use crate::vfs::backend::AutomergeHelpers;
 
@@ -982,7 +982,7 @@ mod tests {
         assert_eq!(doc_node.content, "test content");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(not(target_arch = "wasm32"))]
     async fn test_filesystem_storage() {
         use crate::vfs::backend::AutomergeHelpers;
@@ -1013,7 +1013,7 @@ mod tests {
         assert!(storage_path.exists());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_with_peer_id_and_storage() {
         let mut rng = rand::rng();
         let peer_id = PeerId::new_with_rng(&mut rng);
@@ -1028,7 +1028,7 @@ mod tests {
         assert_eq!(tonk.peer_id(), peer_id);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(not(target_arch = "wasm32"))]
     async fn test_bundle_with_in_memory_storage() {
         use crate::vfs::backend::AutomergeHelpers;
@@ -1066,7 +1066,7 @@ mod tests {
         assert_eq!(doc_node.content, "bundle test");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(not(target_arch = "wasm32"))]
     async fn test_fork_to_bytes() {
         use crate::vfs::backend::AutomergeHelpers;

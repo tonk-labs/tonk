@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tonk_core::{Bundle, DocNode, TonkCore, vfs::backend::AutomergeHelpers};
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_basic_bundle_round_trip() {
     // Create a TonkCore instance with some content
     let tonk1 = TonkCore::new().await.unwrap();
@@ -56,7 +56,7 @@ async fn test_basic_bundle_round_trip() {
     assert_eq!(doc_node.content, "Hello from bundle test");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_empty_bundle() {
     // Create empty TonkCore
     let tonk1 = TonkCore::new().await.unwrap();
@@ -77,7 +77,7 @@ async fn test_empty_bundle() {
     assert!(entries.is_empty(), "Root directory should be empty");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_bundle_with_complex_structure() {
     let tonk = TonkCore::new().await.unwrap();
@@ -138,7 +138,7 @@ async fn test_bundle_with_complex_structure() {
     assert_eq!(src_files.len(), 3); // main.rs, lib.rs, utils/
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[cfg(not(target_arch = "wasm32"))]
 async fn test_bundle_file_persistence() {
     use tempfile::NamedTempFile;
@@ -167,7 +167,7 @@ async fn test_bundle_file_persistence() {
     assert!(tonk2.vfs().exists("/test.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_multiple_save_load_cycles() {
     let mut tonk = TonkCore::new().await.unwrap();
 
@@ -217,7 +217,7 @@ async fn test_multiple_save_load_cycles() {
     assert!(final_tonk.vfs().exists("/cycle3.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_preserves_timestamps() {
     let tonk1 = TonkCore::new().await.unwrap();
 
@@ -251,7 +251,7 @@ async fn test_bundle_preserves_timestamps() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_with_special_characters() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -284,7 +284,7 @@ async fn test_bundle_with_special_characters() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_peer_id_regeneration() {
     // Create TonkCore and save to bundle
     let tonk1 = TonkCore::new().await.unwrap();
@@ -315,7 +315,7 @@ async fn test_peer_id_regeneration() {
     assert!(tonk3.vfs().exists("/test.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_concurrent_bundle_operations() {
     use futures::future::join_all;
 
@@ -350,7 +350,7 @@ async fn test_concurrent_bundle_operations() {
     }
 }
 
-// #[tokio::test]
+// #[tokio::test(flavor = "multi_thread")]
 // async fn test_bundle_with_large_content() {
 //     let tonk = TonkCore::new().await.unwrap();
 //
@@ -402,7 +402,7 @@ async fn test_concurrent_bundle_operations() {
 //     }
 // }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_manifest_metadata() {
     // Create bundle and verify manifest
     let tonk = TonkCore::new().await.unwrap();
@@ -433,7 +433,7 @@ async fn test_bundle_manifest_metadata() {
 
 // ============ Error Handling Tests ============
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_load_corrupted_bundle() {
     // Create invalid ZIP data
     let corrupted_data = vec![0xFF, 0xFE, 0xFD, 0xFC];
@@ -442,7 +442,7 @@ async fn test_load_corrupted_bundle() {
     assert!(result.is_err(), "Loading corrupted bundle should fail");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_load_empty_bundle_data() {
     let empty_data = vec![];
 
@@ -450,7 +450,7 @@ async fn test_load_empty_bundle_data() {
     assert!(result.is_err(), "Loading empty data should fail");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_without_manifest() {
     use std::io::Cursor;
     use zip::ZipWriter;
@@ -474,7 +474,7 @@ async fn test_bundle_without_manifest() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_with_invalid_manifest() {
     use std::io::Cursor;
     use zip::ZipWriter;
@@ -504,7 +504,7 @@ async fn test_bundle_with_invalid_manifest() {
     assert!(result.is_err(), "Bundle with invalid manifest should fail");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_with_unsupported_manifest_version() {
     use std::io::Cursor;
     use zip::ZipWriter;
@@ -541,7 +541,7 @@ async fn test_bundle_with_unsupported_manifest_version() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_without_root_document() {
     use std::io::Cursor;
     use zip::ZipWriter;
@@ -577,7 +577,7 @@ async fn test_bundle_without_root_document() {
     assert!(result.is_err(), "Bundle without root document should fail");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_with_corrupted_root_document() {
     use std::io::Cursor;
     use zip::ZipWriter;
@@ -622,7 +622,7 @@ async fn test_bundle_with_corrupted_root_document() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_file_operations_on_nonexistent_bundle_file() {
     use std::path::Path;
 
@@ -632,7 +632,7 @@ async fn test_file_operations_on_nonexistent_bundle_file() {
     assert!(result.is_err(), "Loading nonexistent file should fail");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_save_bundle_to_invalid_path() {
     let tonk = TonkCore::new().await.unwrap();
 
@@ -643,7 +643,7 @@ async fn test_save_bundle_to_invalid_path() {
     assert!(result.is_err(), "Saving to invalid path should fail");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_bundle_size_limits() {
     // Test with a very large number of files to check memory handling
@@ -682,7 +682,7 @@ async fn test_bundle_size_limits() {
     assert!(tonk2.vfs().exists("/stress/file_0999.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_bundle_with_deep_nesting() {
     let tonk = TonkCore::new().await.unwrap();
@@ -709,7 +709,7 @@ async fn test_bundle_with_deep_nesting() {
     assert!(tonk2.vfs().exists(&path).await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[cfg(not(target_arch = "wasm32"))]
 async fn test_bundle_partial_write_recovery() {
     use std::io::Write;
@@ -738,7 +738,7 @@ async fn test_bundle_partial_write_recovery() {
 
 // ============ Sync Integration Tests ============
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore] // Requires TypeScript server dependencies
 async fn test_bundle_load_then_sync() {
     // Start TypeScript automerge-repo server
@@ -782,7 +782,7 @@ async fn test_bundle_load_then_sync() {
     assert!(tonk3.vfs().exists("/post-bundle.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_offline_bundle_online_workflow() {
     // Simulate offline work -> bundle -> online sync workflow
 
@@ -859,7 +859,7 @@ async fn test_offline_bundle_online_workflow() {
     // let _ = online_tonk.connect_websocket("wss://sync.example.com").await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_multiple_peers_from_same_bundle() {
     // Test that multiple peers loading the same bundle get different peer IDs
     // but same content and can sync together
@@ -893,7 +893,7 @@ async fn test_multiple_peers_from_same_bundle() {
     assert!(peer3.vfs().exists("/shared.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_crdt_merge_behavior() {
     // Test that CRDT merge behavior works correctly after bundle load
 
@@ -929,7 +929,7 @@ async fn test_bundle_crdt_merge_behavior() {
     // The actual merge would happen during sync, with CRDT resolving conflicts
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_with_network_uris_in_manifest() {
     // Test that we can include network URIs in bundle manifest
     // (Note: actual connection functionality is not yet implemented)
@@ -955,7 +955,7 @@ async fn test_bundle_with_network_uris_in_manifest() {
     assert!(tonk2.vfs().exists("/networked.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_sync_after_bundle_modifications() {
     // Test that modifications after bundle load are properly synced
 
@@ -1010,7 +1010,7 @@ async fn test_sync_after_bundle_modifications() {
     assert_eq!(doc_node.content, "Modified content".to_string());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_storage_isolation() {
     // Test that each bundle load gets its own isolated storage
 
@@ -1050,7 +1050,7 @@ async fn test_bundle_storage_isolation() {
 
 // ============ Stress and Performance Tests ============
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore] // This test is slow, run with --ignored flag
 async fn test_bundle_stress_many_small_files() {
     // Create 5000 small files to stress test bundle creation
@@ -1102,7 +1102,7 @@ async fn test_bundle_stress_many_small_files() {
     assert!(tonk2.vfs().exists("/dir49/file_4999.txt").await.unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore] // This test is memory intensive
 async fn test_bundle_memory_stress() {
     // Test with progressively larger content to find memory limits
@@ -1135,7 +1135,7 @@ async fn test_bundle_memory_stress() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_bundle_concurrent_modifications() {
     use futures::future::join_all;
@@ -1191,7 +1191,7 @@ async fn test_bundle_concurrent_modifications() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_bundle_rapid_save_load_cycles() {
     // Test rapid save/load cycles to check for resource leaks
     let mut tonk = TonkCore::new().await.unwrap();
@@ -1226,7 +1226,7 @@ async fn test_bundle_rapid_save_load_cycles() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_load_bundle_from_blank_bundle_tonk_file() {
     use tonk_core::StorageConfig;
 
@@ -1331,7 +1331,7 @@ async fn test_load_bundle_from_blank_bundle_tonk_file() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore] // Run with: cargo test --package tonk-core --test bundle generate_blank_tonk -- --ignored --nocapture
 async fn generate_blank_tonk() {
     use tonk_core::TonkCore;

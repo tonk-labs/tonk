@@ -316,7 +316,7 @@ mod native_tests {
     // These tests demonstrate how IndexedDB storage would be tested if it were available in native context
     // Currently IndexedDB is only available in WASM/browser environments
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_indexeddb_not_available_native() {
         // This test verifies that IndexedDB storage config is only available for WASM targets
         // In native builds, we should only have InMemory and Filesystem options
