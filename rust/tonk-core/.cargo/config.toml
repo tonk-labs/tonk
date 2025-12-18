@@ -1,0 +1,10 @@
+# Configuration for wasm32-unknown-unknown target (browsers, wasm-pack)
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"', '-C', 'target-feature=+bulk-memory,+mutable-globals']
+
+# Configuration for wasm32-wasi target
+[target.wasm32-wasip2]
+# WASI has proper random support, so no special configuration needed
+
+[unstable]
+build-std = ["panic_abort", "std"]

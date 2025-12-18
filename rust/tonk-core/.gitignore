@@ -1,0 +1,55 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+Cargo.lock
+# Remove Cargo.lock from gitignore if creating an executable, leave it for libraries
+# More info: https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html
+
+# WASM build artifacts
+/pkg/
+/wasm-pack.log
+
+# IDE specific files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Debug artifacts
+*.dSYM/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test coverage
+*.profraw
+*.profdata
+/coverage/
+/tarpaulin-report.html
+
+# Benchmark results
+/target/criterion/
+
+# Documentation
+/target/doc/
+
+# Environment files
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+
+Cargo.lock

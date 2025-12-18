@@ -1,0 +1,36 @@
+{
+  "name": "@tonk/core-examples-node",
+  "version": "0.1.0",
+  "description": "Node.js integration tests and examples for Tonk Core",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "npm run build:wasm && mocha --timeout 10000 integration/*.test.js",
+    "test:watch": "npm run test -- --watch",
+    "test:verbose": "npm run test -- --reporter spec",
+    "build:wasm": "cd ../.. && npm run build:node",
+    "example:basic": "npm run build:wasm && node examples/basic-usage.js",
+    "example:sync": "npm run build:wasm && node examples/file-sync.js",
+    "example:collab": "npm run build:wasm && node examples/collaborative-edit.js",
+    "clean": "cd ../.. && npm run clean"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "mocha": "^10.2.0",
+    "chai": "^4.3.10",
+    "sinon": "^17.0.1",
+    "tmp": "^0.2.1"
+  },
+  "keywords": [
+    "tonk",
+    "local-first",
+    "sync",
+    "integration-test",
+    "examples",
+    "wasm"
+  ],
+  "author": "Tonk Labs",
+  "license": "MIT"
+}
