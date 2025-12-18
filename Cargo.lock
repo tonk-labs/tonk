@@ -1510,7 +1510,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#89bb0b37963c27bf7bd8d5c1a69b365cf7104c91"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-propagate-novelty#42f03344da76cb4ebdffa67432d63572c089cfa5"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1544,15 +1544,19 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#89bb0b37963c27bf7bd8d5c1a69b365cf7104c91"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-propagate-novelty#42f03344da76cb4ebdffa67432d63572c089cfa5"
 dependencies = [
  "blake3",
+ "futures-util",
+ "thiserror 2.0.17",
+ "tokio",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
 name = "dialog-prolly-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#89bb0b37963c27bf7bd8d5c1a69b365cf7104c91"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-propagate-novelty#42f03344da76cb4ebdffa67432d63572c089cfa5"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1572,7 +1576,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#89bb0b37963c27bf7bd8d5c1a69b365cf7104c91"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-propagate-novelty#42f03344da76cb4ebdffa67432d63572c089cfa5"
 dependencies = [
  "async-stream",
  "dialog-artifacts",
@@ -1592,7 +1596,7 @@ dependencies = [
 [[package]]
 name = "dialog-query-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#89bb0b37963c27bf7bd8d5c1a69b365cf7104c91"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-propagate-novelty#42f03344da76cb4ebdffa67432d63572c089cfa5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1602,7 +1606,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#89bb0b37963c27bf7bd8d5c1a69b365cf7104c91"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-propagate-novelty#42f03344da76cb4ebdffa67432d63572c089cfa5"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -5424,7 +5428,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

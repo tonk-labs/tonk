@@ -29,7 +29,7 @@ ucan = { git = "https://github.com/ucan-wg/rs-ucan.git", branch = "main", packag
 varsig = { git = "https://github.com/ucan-wg/rs-ucan.git", branch = "main", package = "varsig" }
 
 # Dialog DB
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }

@@ -97,8 +97,10 @@ impl Space {
             transaction.assert(Ownership::from(delegation));
         }
 
-        // Commit the transaction
-        session.commit(transaction).await?;
+        // Only commit if we have changes - empty transactions fail on new branches
+        if !transaction.is_empty() {
+            session.commit(transaction).await?;
+        }
 
         Ok(Space {
             did: space_did,

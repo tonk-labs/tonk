@@ -907,6 +907,17 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
     crate::state::set_active_space(&authority.did, &space_did)?;
     println!("   ✓ Space added to session");
 
+    // Step 9: Initialize space database (replica and main branch)
+    println!("9️⃣  Initializing space database...");
+    let storage_path = get_space_storage_path(&operator_did, &authority.did, &space_did)?;
+    let issuer = Issuer::from_secret(&operator.to_bytes());
+
+    // Create space with empty delegations - this sets up the replica and main branch
+    Space::create(space_did.clone(), issuer, storage_path, vec![])
+        .await
+        .context("Failed to initialize space database")?;
+    println!("   ✓ Replica and main branch created");
+
     // Load or create space metadata
     if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(&space_did) {
         println!("\n✅ Successfully joined space!");
