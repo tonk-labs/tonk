@@ -410,13 +410,13 @@ async fn test_multiple_patches_accumulate() {
     vfs.create_document("/multi.json", content).await.unwrap();
 
     // Apply multiple patches
-    vfs.patch_document("/multi.json", &vec!["a".to_string()], json!(10))
+    vfs.patch_document("/multi.json", &["a".to_string()], json!(10))
         .await
         .unwrap();
-    vfs.patch_document("/multi.json", &vec!["b".to_string()], json!(20))
+    vfs.patch_document("/multi.json", &["b".to_string()], json!(20))
         .await
         .unwrap();
-    vfs.patch_document("/multi.json", &vec!["c".to_string()], json!(30))
+    vfs.patch_document("/multi.json", &["c".to_string()], json!(30))
         .await
         .unwrap();
 

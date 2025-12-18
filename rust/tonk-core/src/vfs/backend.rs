@@ -64,10 +64,9 @@ impl AutomergeHelpers {
                 for i in 0..len {
                     if let Ok(Some((Value::Object(ObjType::Map), child_obj_id))) =
                         doc.get(children_obj_id.clone(), i)
+                        && let Ok(ref_node) = Self::read_ref_node(doc, child_obj_id)
                     {
-                        if let Ok(ref_node) = Self::read_ref_node(doc, child_obj_id) {
-                            children.push(ref_node);
-                        }
+                        children.push(ref_node);
                     }
                 }
             }
@@ -100,19 +99,16 @@ impl AutomergeHelpers {
             for i in 0..len {
                 if let Ok(Some((Value::Object(ObjType::Map), child_obj_id))) =
                     tx.get(children_obj_id.clone(), i)
+                    && let Ok(Some((existing_name, _))) = tx.get(child_obj_id.clone(), "name")
+                    && Self::extract_string_value(&existing_name).as_deref()
+                        == Some(&child_ref.name)
                 {
-                    if let Ok(Some((existing_name, _))) = tx.get(child_obj_id.clone(), "name") {
-                        if Self::extract_string_value(&existing_name).as_deref()
-                            == Some(&child_ref.name)
-                        {
-                            // Child already exists, update it
-                            Self::write_ref_node(&mut tx, child_obj_id, child_ref)?;
-                            Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+                    // Child already exists, update it
+                    Self::write_ref_node(&mut tx, child_obj_id, child_ref)?;
+                    Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
 
-                            tx.commit();
-                            return Ok(());
-                        }
-                    }
+                    tx.commit();
+                    return Ok(());
                 }
             }
 
@@ -142,18 +138,14 @@ impl AutomergeHelpers {
                 for i in 0..len {
                     if let Ok(Some((Value::Object(ObjType::Map), child_obj_id))) =
                         tx.get(children_obj_id.clone(), i)
+                        && let Ok(Some((existing_name, _))) = tx.get(child_obj_id.clone(), "name")
+                        && Self::extract_string_value(&existing_name).as_deref() == Some(child_name)
                     {
-                        if let Ok(Some((existing_name, _))) = tx.get(child_obj_id.clone(), "name") {
-                            if Self::extract_string_value(&existing_name).as_deref()
-                                == Some(child_name)
-                            {
-                                // Found the child, read it before deleting
-                                found_child = Self::read_ref_node_from_tx(&tx, child_obj_id).ok();
-                                tx.delete(children_obj_id, i)?;
-                                Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
-                                break;
-                            }
-                        }
+                        // Found the child, read it before deleting
+                        found_child = Self::read_ref_node_from_tx(&tx, child_obj_id).ok();
+                        tx.delete(children_obj_id, i)?;
+                        Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+                        break;
                     }
                 }
             }
@@ -723,14 +715,13 @@ impl AutomergeHelpers {
         T: serde::de::DeserializeOwned,
     {
         // Check if this is a wrapped primitive ({"value": X})
-        if let serde_json::Value::Object(ref map) = json_value {
-            if map.len() == 1 {
-                if let Some(inner_value) = map.get("value") {
-                    // Try deserializing the unwrapped value first
-                    if let Ok(content) = serde_json::from_value(inner_value.clone()) {
-                        return Ok(content);
-                    }
-                }
+        if let serde_json::Value::Object(ref map) = json_value
+            && map.len() == 1
+            && let Some(inner_value) = map.get("value")
+        {
+            // Try deserializing the unwrapped value first
+            if let Ok(content) = serde_json::from_value(inner_value.clone()) {
+                return Ok(content);
             }
         }
 
@@ -986,7 +977,7 @@ impl AutomergeHelpers {
                     return false;
                 }
                 a.iter()
-                    .all(|(k, v)| b.get(k).map_or(false, |bv| Self::json_values_equal(v, bv)))
+                    .all(|(k, v)| b.get(k).is_some_and(|bv| Self::json_values_equal(v, bv)))
             }
             _ => false,
         }
@@ -1344,22 +1335,16 @@ impl AutomergeHelpers {
                 for i in 0..len {
                     if let Ok(Some((Value::Object(ObjType::Map), child_obj_id))) =
                         tx.get(children_obj_id.clone(), i)
+                        && let Ok(Some((existing_name, _))) = tx.get(child_obj_id.clone(), "name")
+                        && Self::extract_string_value(&existing_name).as_deref() == Some(child_name)
+                        && let Ok(Some((Value::Object(_), ts_obj_id))) =
+                            tx.get(child_obj_id, "timestamps")
                     {
-                        if let Ok(Some((existing_name, _))) = tx.get(child_obj_id.clone(), "name") {
-                            if Self::extract_string_value(&existing_name).as_deref()
-                                == Some(child_name)
-                            {
-                                // Found the child, update its timestamp
-                                if let Ok(Some((Value::Object(_), ts_obj_id))) =
-                                    tx.get(child_obj_id, "timestamps")
-                                {
-                                    let now = chrono::Utc::now().timestamp_millis();
-                                    tx.put(ts_obj_id, "modified", now)?;
-                                    found = true;
-                                    break;
-                                }
-                            }
-                        }
+                        // Found the child, update its timestamp
+                        let now = chrono::Utc::now().timestamp_millis();
+                        tx.put(ts_obj_id, "modified", now)?;
+                        found = true;
+                        break;
                     }
                 }
             }
@@ -1423,12 +1408,11 @@ impl AutomergeHelpers {
             let mut index = PathIndex::new();
 
             // Read last_updated
-            if let Ok(Some((Value::Scalar(s), _))) = doc.get(automerge::ROOT, "last_updated") {
-                if let Some(ts) = s.to_i64() {
-                    if let Some(dt) = chrono::DateTime::from_timestamp_millis(ts) {
-                        index.last_updated = dt;
-                    }
-                }
+            if let Ok(Some((Value::Scalar(s), _))) = doc.get(automerge::ROOT, "last_updated")
+                && let Some(ts) = s.to_i64()
+                && let Some(dt) = chrono::DateTime::from_timestamp_millis(ts)
+            {
+                index.last_updated = dt;
             }
 
             // Read entries map
@@ -1439,10 +1423,9 @@ impl AutomergeHelpers {
                 for key in doc.keys(entries_id.clone()) {
                     if let Ok(Some((Value::Object(ObjType::Map), entry_id))) =
                         doc.get(entries_id.clone(), key.as_str())
+                        && let Some(entry) = Self::read_path_entry_from_obj(doc, entry_id.clone())
                     {
-                        if let Some(entry) = Self::read_path_entry_from_obj(doc, entry_id.clone()) {
-                            index.paths.insert(key.to_string(), entry);
-                        }
+                        index.paths.insert(key.to_string(), entry);
                     }
                 }
             }
@@ -1470,7 +1453,7 @@ impl AutomergeHelpers {
             .flatten()
             .and_then(|(v, _)| Self::extract_string_value(&v))?;
 
-        let node_type = NodeType::from_str(&node_type_str)?;
+        let node_type = node_type_str.parse::<NodeType>().ok()?;
 
         let created = doc
             .get(entry_id.clone(), "created")
@@ -1768,14 +1751,12 @@ impl AutomergeHelpers {
                     };
 
                     // Only direct children (no more slashes)
-                    if !remainder.contains('/') {
-                        if let Ok(Some((Value::Object(ObjType::Map), entry_id))) =
+                    if !remainder.contains('/')
+                        && let Ok(Some((Value::Object(ObjType::Map), entry_id))) =
                             doc.get(entries_id.clone(), key.as_str())
-                        {
-                            if let Some(entry) = Self::read_path_entry_from_obj(doc, entry_id) {
-                                children.push((path, entry));
-                            }
-                        }
+                        && let Some(entry) = Self::read_path_entry_from_obj(doc, entry_id)
+                    {
+                        children.push((path, entry));
                     }
                 }
             }
