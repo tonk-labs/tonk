@@ -1,0 +1,22 @@
+FROM rust:1.87-slim-bookworm
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN cargo install wasm-pack --version 0.13.1 --locked
+
+COPY rust-toolchain.toml /build/rust-toolchain.toml
+RUN rustup show
+
+COPY Cargo.toml /build/Cargo.toml
+COPY Cargo.lock /build/Cargo.lock
+
+COPY src /build/src
+COPY .cargo /build/.cargo
+
+CMD ["echo", "Build container ready. Use build-wasm-docker.sh to build."]
