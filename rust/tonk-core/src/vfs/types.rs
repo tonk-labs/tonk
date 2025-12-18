@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use samod::DocumentId;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum NodeType {
@@ -18,13 +19,16 @@ impl NodeType {
             NodeType::Directory => "directory",
         }
     }
+}
 
-    /// Parse from string representation
-    pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for NodeType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "document" => Some(NodeType::Document),
-            "directory" => Some(NodeType::Directory),
-            _ => None,
+            "document" => Ok(NodeType::Document),
+            "directory" => Ok(NodeType::Directory),
+            _ => Err(()),
         }
     }
 }
