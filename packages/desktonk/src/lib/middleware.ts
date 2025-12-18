@@ -29,7 +29,7 @@ export const sync =
     let initializationPromise: Promise<void> | null = null;
     let connectionStateUnsubscribe: (() => void) | null = null;
     let saveTimeout: ReturnType<typeof setTimeout> | null = null;
-    const SAVE_DEBOUNCE_MS = 2000; // Debounce saves by 2 seconds
+    // const SAVE_DEBOUNCE_MS = 2000; // Debounce saves by 2 seconds
 
     // Helper to serialize state for storage
     // biome-ignore lint/suspicious/noExplicitAny: State type is dynamic
@@ -42,34 +42,52 @@ export const sync =
     };
 
     // Helper to save state to file (debounced)
-    const saveToFile = (state: T, create = false) => {
+    // const saveToFile = (state: T, create = false): Promise<void> | void => {
+    //   if (!vfs.isInitialized()) return;
+    //
+    //   // Clear any pending save
+    //   if (saveTimeout) {
+    //     clearTimeout(saveTimeout);
+    //   }
+    //
+    //   const content = serializeState(state);
+    //
+    //   if (create) {
+    //     return (async () => {
+    //       try {
+    //         await vfs.writeFile(options.path, { content }, true);
+    //         console.log(`[sync] Created new file: ${options.path}`);
+    //       } catch (err) {
+    //         console.warn(`Error creating file at ${options.path}:`, err);
+    //       }
+    //     })();
+    //   }
+    //
+    //   saveTimeout = setTimeout(async () => {
+    //     try {
+    //       await vfs.updateFile(options.path, content);
+    //     } catch (err) {
+    //       console.warn(`Error saving state to ${options.path}:`, err);
+    //     }
+    //   }, SAVE_DEBOUNCE_MS);
+    // };
+
+    // Helper to save state to file (debounced)
+    const saveToFile = async (state: T, create = false): Promise<void> => {
       if (!vfs.isInitialized()) return;
 
-      // Clear any pending save
-      if (saveTimeout) {
-        clearTimeout(saveTimeout);
+      try {
+        const content = serializeState(state);
+
+        if (create) {
+          await vfs.writeFile(options.path, { content }, true);
+          console.log(`[sync] Created new file: ${options.path}`);
+        } else {
+          await vfs.updateFile(options.path, content);
+        }
+      } catch (err) {
+        console.warn(`Error saving state to ${options.path}:`, err);
       }
-
-      // Debounce the save
-      saveTimeout = setTimeout(
-        async () => {
-          try {
-            const content = serializeState(state);
-
-            if (create) {
-              // First save: create full document
-              await vfs.writeFile(options.path, { content }, true);
-              console.log(`[sync] Created new file: ${options.path}`);
-              return;
-            }
-
-            await vfs.updateFile(options.path, content);
-          } catch (error) {
-            console.warn(`Error saving state to ${options.path}:`, error);
-          }
-        },
-        create ? 0 : SAVE_DEBOUNCE_MS
-      ); // Immediate on create, debounced on update
     };
 
     // Helper to load state from file
@@ -161,7 +179,7 @@ export const sync =
             }
           } else {
             console.log(`File doesn't exist, creating new file: ${options.path}`);
-            saveToFile(state, true);
+            await saveToFile(state, true);
             console.log(`Created new file: ${options.path}`);
           }
 
