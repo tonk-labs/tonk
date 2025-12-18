@@ -11,6 +11,8 @@ pub use tonk_core::{StorageConfig, TonkCore, TonkCoreBuilder};
 pub use vfs::{
     DirNode, DocNode, DocumentWatcher, NodeType, RefNode, Timestamps, VfsEvent, VirtualFileSystem,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use websocket::ConnectionHandle;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
