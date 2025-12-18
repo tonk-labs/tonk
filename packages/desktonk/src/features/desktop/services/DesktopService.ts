@@ -176,6 +176,11 @@ export class DesktopService {
           updatedAt: Date.now(),
         };
         await vfs.writeFile(positionPath, { content: positionData }, true);
+
+        // Set up a watcher for this new position file so we receive remote position changes
+        // This is critical for cross-client sync - without this, position updates from other
+        // clients won't be received because the watcher wasn't set up at initialization time
+        await this.setupSinglePositionFileWatcher(fileId);
       }
     } catch (error) {
       console.error('[DesktopService] Failed to save position:', error);
@@ -280,6 +285,32 @@ export class DesktopService {
       this.notifyListeners();
     } catch (error) {
       console.warn('[DesktopService] Failed to reload file:', path, error);
+    }
+  }
+
+  /**
+   * Soft refresh - reload files and positions from VFS without destroying watchers.
+   * This preserves watchers and connections while ensuring data is fresh.
+   *
+   * TODO: Currently unused. Re-enable when bundle switching optimization is needed.
+   * This would be called on tonk:activate when switching back to an already-loaded bundle.
+   */
+  async softRefresh(): Promise<void> {
+    console.log('[DesktopService] Soft refresh - reloading data from VFS');
+
+    try {
+      // Reload files and positions from VFS
+      await this.loadFiles();
+      await this.loadPositions();
+
+      // Re-setup position file watchers for any new files that were added
+      // while the bundle was in the background
+      await this.setupPositionFileWatchers();
+
+      this.notifyListeners();
+      console.log('[DesktopService] Soft refresh complete');
+    } catch (error) {
+      console.error('[DesktopService] Soft refresh failed:', error);
     }
   }
 
@@ -515,37 +546,52 @@ export class DesktopService {
 
     // Set up watchers for each file's position
     for (const [fileId, _file] of this.files.entries()) {
-      const positionPath = `${LAYOUT_DIRECTORY}/${fileId}.json`;
+      await this.setupSinglePositionFileWatcher(fileId);
+    }
+  }
 
-      try {
-        const exists = await vfs.exists(positionPath);
-        if (!exists) continue;
+  /**
+   * Set up a watcher for a single position file.
+   * Called when a new position file is created to ensure remote changes are synced.
+   */
+  private async setupSinglePositionFileWatcher(fileId: string): Promise<void> {
+    // Skip if already watching this file
+    if (this.positionFileWatchers.has(fileId)) {
+      return;
+    }
 
-        const watchId = await vfs.watchFile(positionPath, async (documentData) => {
-          // Check if file was deleted (VFS might send null/empty on deletion)
-          if (!documentData || !documentData.content) {
-            // File was deleted - clean up
-            this.positions.delete(fileId);
-            this.files.delete(fileId);
-            this.positionFileWatchers.delete(fileId);
-            this.notifyListeners();
-            return;
-          }
+    const vfs = getVFSService();
+    const positionPath = `${LAYOUT_DIRECTORY}/${fileId}.json`;
 
-          // biome-ignore lint/suspicious/noExplicitAny: Document content structure is dynamic
-          const content = documentData.content as any;
-          if (content && typeof content.x === 'number' && typeof content.y === 'number') {
-            // Update local state
-            this.positions.set(fileId, { x: content.x, y: content.y });
-            // Notify listeners
-            this.notifyListeners();
-          }
-        });
+    try {
+      const exists = await vfs.exists(positionPath);
+      if (!exists) return;
 
-        this.positionFileWatchers.set(fileId, watchId);
-      } catch (err) {
-        console.error(`[DesktopService] Error setting up watcher for ${fileId}:`, err);
-      }
+      const watchId = await vfs.watchFile(positionPath, async (documentData) => {
+        // Check if file was deleted (VFS might send null/empty on deletion)
+        if (!documentData || !documentData.content) {
+          // File was deleted - clean up
+          this.positions.delete(fileId);
+          this.files.delete(fileId);
+          this.positionFileWatchers.delete(fileId);
+          this.notifyListeners();
+          return;
+        }
+
+        // biome-ignore lint/suspicious/noExplicitAny: Document content structure is dynamic
+        const content = documentData.content as any;
+        if (content && typeof content.x === 'number' && typeof content.y === 'number') {
+          // Update local state
+          this.positions.set(fileId, { x: content.x, y: content.y });
+          // Notify listeners
+          this.notifyListeners();
+        }
+      });
+
+      this.positionFileWatchers.set(fileId, watchId);
+      console.log(`[DesktopService] ✅ Set up position watcher for ${fileId}`);
+    } catch (err) {
+      console.error(`[DesktopService] Error setting up watcher for ${fileId}:`, err);
     }
   }
 
@@ -585,16 +631,45 @@ export class DesktopService {
       }
     }
 
-    // Re-setup position file watchers if files changed
-    if (previousFiles.size !== currentFiles.size) {
-      await this.setupPositionFileWatchers();
-    }
+    // Always reconcile position file watchers when files change
+    // This ensures we have watchers for position files that may have been
+    // created by other clients. We need this because:
+    // 1. The layout directory watcher only fires on file creation/deletion, not modification
+    // 2. Another client may have created the position file before we set up our watcher
+    await this.reconcilePositionFileWatchers();
 
     this.notifyListeners();
   }
 
-  private async handleLayoutChange(): Promise<void> {
+  /**
+   * Ensure we have watchers for all position files that exist.
+   * This reconciles any missing watchers that weren't set up during initialization
+   * or that were created by other clients.
+   */
+  private async reconcilePositionFileWatchers(): Promise<void> {
+    // Reload positions to get the latest from VFS (may include files from other clients)
     await this.loadPositions();
+
+    // Set up watchers for any position files we don't have watchers for
+    for (const fileId of this.positions.keys()) {
+      if (!this.positionFileWatchers.has(fileId)) {
+        console.log(`[DesktopService] 🔄 Reconciling missing position watcher for ${fileId}`);
+        await this.setupSinglePositionFileWatcher(fileId);
+      }
+    }
+
+    // Also check for position files for files we know about but don't have positions for yet
+    for (const fileId of this.files.keys()) {
+      if (!this.positionFileWatchers.has(fileId)) {
+        // Try to set up watcher - it will check if file exists
+        await this.setupSinglePositionFileWatcher(fileId);
+      }
+    }
+  }
+
+  private async handleLayoutChange(): Promise<void> {
+    console.log('[DesktopService] 📂 Layout directory changed, reconciling watchers');
+    await this.reconcilePositionFileWatchers();
     this.notifyListeners();
   }
 

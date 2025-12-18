@@ -1,12 +1,13 @@
-import type { DocumentData } from "@tonk/core/slim";
+import type { DocumentData } from '@tonk/core/slim';
 import {
   addWatcher,
   getTonkForBundle,
   getWatcherEntry,
   removeWatcher,
-} from "../state";
-import { logger } from "../utils/logging";
-import { postResponse, postResponseToClientId } from "../utils/response";
+  removeWatchersByClientId,
+} from '../state';
+import { logger } from '../utils/logging';
+import { postResponse, postResponseToClientId } from '../utils/response';
 
 export async function handleWatchFile(
   message: {
@@ -14,9 +15,9 @@ export async function handleWatchFile(
     path: string;
     launcherBundleId: string;
   },
-  sourceClient: Client,
+  sourceClient: Client
 ): Promise<void> {
-  logger.debug("Starting file watch", {
+  logger.debug('Starting file watch', {
     path: message.path,
     watchId: message.id,
     launcherBundleId: message.launcherBundleId,
@@ -25,7 +26,7 @@ export async function handleWatchFile(
   try {
     const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
-      throw new Error("Tonk not initialized");
+      throw new Error('Tonk not initialized');
     }
 
     // Store the client ID so we can route callbacks to the correct client
@@ -34,52 +35,57 @@ export async function handleWatchFile(
     const watcher = await tonkInstance.tonk.watchFile(
       message.path,
       async (documentData: DocumentData) => {
-        logger.debug("File change detected", {
+        logger.debug('File change detected', {
           watchId: message.id,
           path: message.path,
           clientId,
         });
 
         // Send notification only to the client that registered this watcher
-        await postResponseToClientId(
+        const delivered = await postResponseToClientId(
           {
-            type: "fileChanged",
+            type: 'fileChanged',
             watchId: message.id,
             documentData: documentData,
           },
-          clientId,
+          clientId
         );
-      },
+
+        // If client no longer exists, clean up all watchers for that client
+        if (!delivered) {
+          removeWatchersByClientId(message.launcherBundleId, clientId);
+        }
+      }
     );
 
     if (watcher) {
       addWatcher(message.launcherBundleId, message.id, watcher, clientId);
     }
-    logger.debug("File watch started", {
+    logger.debug('File watch started', {
       path: message.path,
       watchId: message.id,
     });
     postResponse(
       {
-        type: "watchFile",
+        type: 'watchFile',
         id: message.id,
         success: true,
       },
-      sourceClient,
+      sourceClient
     );
   } catch (error) {
-    logger.error("Failed to start file watch", {
+    logger.error('Failed to start file watch', {
       path: message.path,
       error: error instanceof Error ? error.message : String(error),
     });
     postResponse(
       {
-        type: "watchFile",
+        type: 'watchFile',
         id: message.id,
         success: false,
         error: error instanceof Error ? error.message : String(error),
       },
-      sourceClient,
+      sourceClient
     );
   }
 }
@@ -89,42 +95,42 @@ export async function handleUnwatchFile(
     id: string;
     launcherBundleId: string;
   },
-  sourceClient: Client,
+  sourceClient: Client
 ): Promise<void> {
-  logger.debug("Stopping file watch", {
+  logger.debug('Stopping file watch', {
     watchId: message.id,
     launcherBundleId: message.launcherBundleId,
   });
   try {
     const entry = getWatcherEntry(message.launcherBundleId, message.id);
     if (entry) {
-      logger.debug("Found watcher, stopping it", { watchId: message.id });
+      logger.debug('Found watcher, stopping it', { watchId: message.id });
       removeWatcher(message.launcherBundleId, message.id);
-      logger.debug("File watch stopped", { watchId: message.id });
+      logger.debug('File watch stopped', { watchId: message.id });
     } else {
-      logger.debug("No watcher found for ID", { watchId: message.id });
+      logger.debug('No watcher found for ID', { watchId: message.id });
     }
     postResponse(
       {
-        type: "unwatchFile",
+        type: 'unwatchFile',
         id: message.id,
         success: true,
       },
-      sourceClient,
+      sourceClient
     );
   } catch (error) {
-    logger.error("Failed to stop file watch", {
+    logger.error('Failed to stop file watch', {
       watchId: message.id,
       error: error instanceof Error ? error.message : String(error),
     });
     postResponse(
       {
-        type: "unwatchFile",
+        type: 'unwatchFile',
         id: message.id,
         success: false,
         error: error instanceof Error ? error.message : String(error),
       },
-      sourceClient,
+      sourceClient
     );
   }
 }
@@ -135,9 +141,9 @@ export async function handleWatchDirectory(
     path: string;
     launcherBundleId: string;
   },
-  sourceClient: Client,
+  sourceClient: Client
 ): Promise<void> {
-  logger.debug("Starting directory watch", {
+  logger.debug('Starting directory watch', {
     path: message.path,
     watchId: message.id,
     launcherBundleId: message.launcherBundleId,
@@ -146,7 +152,7 @@ export async function handleWatchDirectory(
   try {
     const tonkInstance = getTonkForBundle(message.launcherBundleId);
     if (!tonkInstance) {
-      throw new Error("Tonk not initialized");
+      throw new Error('Tonk not initialized');
     }
 
     // Store the client ID so we can route callbacks to the correct client
@@ -155,53 +161,58 @@ export async function handleWatchDirectory(
     const watcher = await tonkInstance.tonk.watchDirectory(
       message.path,
       async (changeData: unknown) => {
-        logger.debug("Directory change detected", {
+        logger.debug('Directory change detected', {
           watchId: message.id,
           path: message.path,
           clientId,
         });
 
         // Send notification only to the client that registered this watcher
-        await postResponseToClientId(
+        const delivered = await postResponseToClientId(
           {
-            type: "directoryChanged",
+            type: 'directoryChanged',
             watchId: message.id,
             path: message.path,
             changeData,
           },
-          clientId,
+          clientId
         );
-      },
+
+        // If client no longer exists, clean up all watchers for that client
+        if (!delivered) {
+          removeWatchersByClientId(message.launcherBundleId, clientId);
+        }
+      }
     );
 
     if (watcher) {
       addWatcher(message.launcherBundleId, message.id, watcher, clientId);
     }
-    logger.debug("Directory watch started", {
+    logger.debug('Directory watch started', {
       path: message.path,
       watchId: message.id,
     });
     postResponse(
       {
-        type: "watchDirectory",
+        type: 'watchDirectory',
         id: message.id,
         success: true,
       },
-      sourceClient,
+      sourceClient
     );
   } catch (error) {
-    logger.error("Failed to start directory watch", {
+    logger.error('Failed to start directory watch', {
       path: message.path,
       error: error instanceof Error ? error.message : String(error),
     });
     postResponse(
       {
-        type: "watchDirectory",
+        type: 'watchDirectory',
         id: message.id,
         success: false,
         error: error instanceof Error ? error.message : String(error),
       },
-      sourceClient,
+      sourceClient
     );
   }
 }
@@ -211,46 +222,46 @@ export async function handleUnwatchDirectory(
     id: string;
     launcherBundleId: string;
   },
-  sourceClient: Client,
+  sourceClient: Client
 ): Promise<void> {
-  logger.debug("Stopping directory watch", {
+  logger.debug('Stopping directory watch', {
     watchId: message.id,
     launcherBundleId: message.launcherBundleId,
   });
   try {
     const entry = getWatcherEntry(message.launcherBundleId, message.id);
     if (entry) {
-      logger.debug("Found directory watcher, stopping it", {
+      logger.debug('Found directory watcher, stopping it', {
         watchId: message.id,
       });
       removeWatcher(message.launcherBundleId, message.id);
-      logger.debug("Directory watch stopped", { watchId: message.id });
+      logger.debug('Directory watch stopped', { watchId: message.id });
     } else {
-      logger.debug("No directory watcher found for ID", {
+      logger.debug('No directory watcher found for ID', {
         watchId: message.id,
       });
     }
     postResponse(
       {
-        type: "unwatchDirectory",
+        type: 'unwatchDirectory',
         id: message.id,
         success: true,
       },
-      sourceClient,
+      sourceClient
     );
   } catch (error) {
-    logger.error("Failed to stop directory watch", {
+    logger.error('Failed to stop directory watch', {
       watchId: message.id,
       error: error instanceof Error ? error.message : String(error),
     });
     postResponse(
       {
-        type: "unwatchDirectory",
+        type: 'unwatchDirectory',
         id: message.id,
         success: false,
         error: error instanceof Error ? error.message : String(error),
       },
-      sourceClient,
+      sourceClient
     );
   }
 }
