@@ -1045,7 +1045,7 @@ mod tests {
     use super::*;
     use crate::tonk_core::TonkCore;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_vfs_creation() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1053,7 +1053,7 @@ mod tests {
         assert!(!vfs.root_id().to_string().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_event_subscription() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1091,7 +1091,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_path_validation() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1110,7 +1110,7 @@ mod tests {
         assert!(matches!(result, Err(VfsError::RootPathError)));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_document_creation_and_removal() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1135,7 +1135,7 @@ mod tests {
         assert!(found.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_document_set() {
         use serde::{Deserialize, Serialize};
 
@@ -1190,7 +1190,7 @@ mod tests {
         assert!(!updated);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_directory_operations() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1217,7 +1217,7 @@ mod tests {
         assert_eq!(children[0].node_type, NodeType::Document);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_nested_directory_creation() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1245,7 +1245,7 @@ mod tests {
         assert_eq!(children[0].name, "file.txt");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_set_in_nested_directory() {
         use serde::{Deserialize, Serialize};
 
@@ -1282,7 +1282,7 @@ mod tests {
         assert_eq!(doc_node.content.text, "New content");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_duplicate_prevention() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1306,7 +1306,7 @@ mod tests {
         assert!(matches!(result, Err(VfsError::DocumentExists(_))));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_watch_document() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1325,7 +1325,7 @@ mod tests {
         assert!(!watcher.document_id().to_string().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_watch_directory() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1402,7 +1402,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_watch_non_existent_document() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1412,7 +1412,7 @@ mod tests {
         assert!(watcher.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_watch_type_mismatch() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1436,7 +1436,7 @@ mod tests {
         assert!(matches!(result, Err(VfsError::NodeTypeMismatch { .. })));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_file() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1478,7 +1478,7 @@ mod tests {
         assert_eq!(new_children[0].node_type, NodeType::Document);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_watchers() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1553,7 +1553,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_directory() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1597,7 +1597,7 @@ mod tests {
         assert_eq!(dest_children[0].name, "mydir");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_with_rename() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1637,7 +1637,7 @@ mod tests {
         assert!(new_exists);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_to_nested_path() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1668,7 +1668,7 @@ mod tests {
         assert_eq!(file.unwrap().document_id(), &doc_id);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_root_error() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1685,7 +1685,7 @@ mod tests {
         assert!(matches!(result, Err(VfsError::RootPathError)));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_to_existing_path() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1707,7 +1707,7 @@ mod tests {
         assert!(vfs.find_document("/file2.txt").await.unwrap().is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_non_existent() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1719,7 +1719,7 @@ mod tests {
         assert!(matches!(result, Err(VfsError::PathNotFound(_))));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_events() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1784,7 +1784,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_circular_move_prevention() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1820,7 +1820,7 @@ mod tests {
         assert!(!vfs.exists("/parent/child").await.unwrap());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_updates_internal_name() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1900,7 +1900,7 @@ mod tests {
         assert_eq!(dir_internal_name, "newdir");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_move_document_without_rename_no_internal_update() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -1985,7 +1985,7 @@ mod tests {
         assert_eq!(original_modified_time, new_modified_time);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_path_index_operations() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2021,7 +2021,7 @@ mod tests {
         assert!(index.has_path("/dir/file.json"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_adds_new_keys() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2042,7 +2042,7 @@ mod tests {
         assert_eq!(doc_node.content, serde_json::json!({ "a": 1, "b": 2 }));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_preserves_missing_keys() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2063,7 +2063,7 @@ mod tests {
         assert_eq!(doc_node.content, serde_json::json!({ "a": 10, "b": 2 }));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_changes_values() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2084,7 +2084,7 @@ mod tests {
         assert_eq!(doc_node.content, serde_json::json!({ "a": 2 }));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_nested_diff() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2108,7 +2108,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_unchanged_returns_false() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2123,7 +2123,7 @@ mod tests {
         assert!(!changed);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_array_replacement() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2144,7 +2144,7 @@ mod tests {
         assert_eq!(doc_node.content, serde_json::json!({ "items": [1, 2, 4] }));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_type_change() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2165,7 +2165,7 @@ mod tests {
         assert_eq!(doc_node.content, serde_json::json!({ "a": 1 }));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_non_existent_returns_false() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2179,7 +2179,7 @@ mod tests {
         assert!(!changed);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_explicit_null_deletes_key() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2200,7 +2200,7 @@ mod tests {
         assert_eq!(doc_node.content, serde_json::json!({ "a": 1, "c": 3 }));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_nested_null_deletes_nested_key() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2221,7 +2221,7 @@ mod tests {
         assert_eq!(doc_node.content, serde_json::json!({ "x": { "a": 1 } }));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_null_on_nonexistent_key_noop() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();
@@ -2242,7 +2242,7 @@ mod tests {
         assert_eq!(doc_node.content, serde_json::json!({ "a": 1 }));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_update_document_concurrent_additions_preserved() {
         let tonk = TonkCore::new().await.unwrap();
         let vfs = VirtualFileSystem::new(tonk.samod()).await.unwrap();

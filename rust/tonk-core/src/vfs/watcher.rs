@@ -56,7 +56,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::time::Duration;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_document_watcher_creation() {
         let tonk = TonkCore::new().await.unwrap();
         let doc = automerge::Automerge::new();
@@ -66,7 +66,7 @@ mod tests {
         assert_eq!(watcher.document_id(), handle.document_id().clone());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_on_change_callback() {
         let tonk = TonkCore::new().await.unwrap();
         let doc = automerge::Automerge::new();
@@ -122,7 +122,7 @@ mod tests {
         let _ = listener_task.await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_multiple_changes() {
         let tonk = TonkCore::new().await.unwrap();
         let doc = automerge::Automerge::new();
