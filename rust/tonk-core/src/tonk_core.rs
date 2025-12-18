@@ -1,15 +1,15 @@
+use crate::Bundle;
 use crate::bundle::BundleConfig;
 use crate::error::{Result, VfsError};
 use crate::vfs::VirtualFileSystem;
-use crate::Bundle;
 use rand::rng;
+#[cfg(not(target_arch = "wasm32"))]
+use samod::RepoBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 use samod::storage::TokioFilesystemStorage as FilesystemStorage;
 use samod::storage::{InMemoryStorage, StorageKey};
 #[cfg(target_arch = "wasm32")]
 use samod::storage::{IndexedDbStorage, LocalStorage};
-#[cfg(not(target_arch = "wasm32"))]
-use samod::RepoBuilder;
 use samod::{DocHandle, DocumentId, PeerId, Repo};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
@@ -569,6 +569,11 @@ impl TonkCore {
             use crate::vfs::types::NodeType;
             use bytes::Bytes;
 
+            // Create the directory in the destination VFS if it doesn't exist
+            if path != "/" && !dest_vfs.exists(path).await? {
+                dest_vfs.create_directory(path).await?;
+            }
+
             // List all entries in the current directory
             let entries = source_vfs.list_directory(path).await?;
 
@@ -800,7 +805,7 @@ mod tests {
     use super::*;
     #[cfg(not(target_arch = "wasm32"))]
     use tempfile::TempDir;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     #[tokio::test]
     async fn test_sync_engine_creation() {

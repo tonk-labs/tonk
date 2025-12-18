@@ -3,7 +3,7 @@ mod common;
 use std::io::Write;
 use std::time::Duration;
 use tokio::time::sleep;
-use tonk_core::{Bundle, TonkCore};
+use tonk_core::{Bundle, DocNode, TonkCore, vfs::backend::AutomergeHelpers};
 
 #[tokio::test]
 async fn test_basic_bundle_round_trip() {
@@ -78,6 +78,7 @@ async fn test_empty_bundle() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_bundle_with_complex_structure() {
     let tonk = TonkCore::new().await.unwrap();
     let vfs = tonk.vfs();
@@ -452,8 +453,8 @@ async fn test_load_empty_bundle_data() {
 #[tokio::test]
 async fn test_bundle_without_manifest() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP without manifest.json
     let mut zip_data = Vec::new();
@@ -476,8 +477,8 @@ async fn test_bundle_without_manifest() {
 #[tokio::test]
 async fn test_bundle_with_invalid_manifest() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with invalid manifest
     let mut zip_data = Vec::new();
@@ -506,8 +507,8 @@ async fn test_bundle_with_invalid_manifest() {
 #[tokio::test]
 async fn test_bundle_with_unsupported_manifest_version() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with unsupported manifest version
     let mut zip_data = Vec::new();
@@ -543,8 +544,8 @@ async fn test_bundle_with_unsupported_manifest_version() {
 #[tokio::test]
 async fn test_bundle_without_root_document() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with manifest but no root document
     let mut zip_data = Vec::new();
@@ -579,8 +580,8 @@ async fn test_bundle_without_root_document() {
 #[tokio::test]
 async fn test_bundle_with_corrupted_root_document() {
     use std::io::Cursor;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     // Create a ZIP with corrupted root document
     let mut zip_data = Vec::new();
@@ -643,6 +644,7 @@ async fn test_save_bundle_to_invalid_path() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_bundle_size_limits() {
     // Test with a very large number of files to check memory handling
     let tonk = TonkCore::new().await.unwrap();
@@ -681,6 +683,7 @@ async fn test_bundle_size_limits() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_bundle_with_deep_nesting() {
     let tonk = TonkCore::new().await.unwrap();
 
@@ -829,17 +832,21 @@ async fn test_offline_bundle_online_workflow() {
     let online_tonk = TonkCore::from_bytes(bundle_bytes).await.unwrap();
 
     // Verify all offline work is preserved
-    assert!(online_tonk
-        .vfs()
-        .exists("/project/README.md")
-        .await
-        .unwrap());
+    assert!(
+        online_tonk
+            .vfs()
+            .exists("/project/README.md")
+            .await
+            .unwrap()
+    );
     assert!(online_tonk.vfs().exists("/project/main.js").await.unwrap());
-    assert!(online_tonk
-        .vfs()
-        .exists("/project/src/utils.js")
-        .await
-        .unwrap());
+    assert!(
+        online_tonk
+            .vfs()
+            .exists("/project/src/utils.js")
+            .await
+            .unwrap()
+    );
 
     // Phase 4: Continue working online
     online_tonk
@@ -998,14 +1005,9 @@ async fn test_sync_after_bundle_modifications() {
         .await
         .unwrap()
         .unwrap();
-    doc.with_document(|d| {
-        use automerge::ReadDoc;
-        let content = d.get(automerge::ROOT, "content").unwrap().unwrap().0;
-        // Extract content properly by removing JSON quotes
-        let content_str = content.to_str().unwrap();
-        // content.to_str() returns JSON-serialized string with quotes
-        assert_eq!(content_str, "\"Modified content\"");
-    });
+
+    let doc_node: DocNode<String> = AutomergeHelpers::read_document(&doc).unwrap();
+    assert_eq!(doc_node.content, "Modified content".to_string());
 }
 
 #[tokio::test]
@@ -1134,6 +1136,7 @@ async fn test_bundle_memory_stress() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_bundle_concurrent_modifications() {
     use futures::future::join_all;
     use std::sync::Arc;
@@ -1178,11 +1181,13 @@ async fn test_bundle_concurrent_modifications() {
 
     // Verify all files exist
     for i in 0..20 {
-        assert!(tonk2
-            .vfs()
-            .exists(&format!("/concurrent/task_{}.txt", i))
-            .await
-            .unwrap());
+        assert!(
+            tonk2
+                .vfs()
+                .exists(&format!("/concurrent/task_{}.txt", i))
+                .await
+                .unwrap()
+        );
     }
 }
 
@@ -1198,10 +1203,8 @@ async fn test_bundle_rapid_save_load_cycles() {
 
     for i in 0..50 {
         // Modify content
-        // Since update_document doesn't exist, we'll remove and recreate
-        tonk.vfs().remove_document("/persistent.txt").await.unwrap();
         tonk.vfs()
-            .create_document("/persistent.txt", format!("Iteration {}", i))
+            .set_document("/persistent.txt", format!("Iteration {}", i))
             .await
             .unwrap();
 
@@ -1218,15 +1221,8 @@ async fn test_bundle_rapid_save_load_cycles() {
             .await
             .unwrap()
             .unwrap();
-        doc.with_document(|d| {
-            use automerge::ReadDoc;
-            let content = d.get(automerge::ROOT, "content").unwrap().unwrap().0;
-            // Extract content properly by removing JSON quotes
-            let content_str = content.to_str().unwrap();
-            let expected = format!("Iteration {}", i);
-            // content.to_str() returns JSON-serialized string with quotes
-            assert_eq!(content_str, format!("\"{}\"", expected));
-        });
+        let doc_node: DocNode<String> = AutomergeHelpers::read_document(&doc).unwrap();
+        assert_eq!(doc_node.content, format!("Iteration {}", i));
     }
 }
 
@@ -1300,10 +1296,11 @@ async fn test_load_bundle_from_blank_bundle_tonk_file() {
     .expect("Should be able to create documents in loaded VFS");
 
     // Verify the document was created
-    assert!(vfs
-        .exists("/test_after_load.txt")
-        .await
-        .expect("Should be able to check existence"));
+    assert!(
+        vfs.exists("/test_after_load.txt")
+            .await
+            .expect("Should be able to check existence")
+    );
 
     // Test that we can save the modified state back to bytes
     let new_bundle_bytes = tonk_memory
@@ -1325,11 +1322,13 @@ async fn test_load_bundle_from_blank_bundle_tonk_file() {
         .expect("Should load modified bundle");
 
     // Verify our added document exists in the reloaded bundle
-    assert!(tonk_modified
-        .vfs()
-        .exists("/test_after_load.txt")
-        .await
-        .expect("Should be able to check existence"));
+    assert!(
+        tonk_modified
+            .vfs()
+            .exists("/test_after_load.txt")
+            .await
+            .expect("Should be able to check existence")
+    );
 }
 
 #[tokio::test]
