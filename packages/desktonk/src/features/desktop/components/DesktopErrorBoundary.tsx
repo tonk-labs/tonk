@@ -62,7 +62,9 @@ export class DesktopErrorBoundary extends Component<Props, State> {
             backgroundColor: '#f5f5f5',
           }}
         >
-          <h1 style={{ fontSize: '2rem', marginBottom: '1rem', color: '#333' }}>Desktop Error</h1>
+          <h1 style={{ fontSize: '2rem', marginBottom: '1rem', color: '#333' }}>
+            Desktop Error
+          </h1>
           <p
             style={{
               fontSize: '1rem',
@@ -71,8 +73,8 @@ export class DesktopErrorBoundary extends Component<Props, State> {
               maxWidth: '600px',
             }}
           >
-            The desktop encountered an error and couldn't render. This might be due to corrupted
-            shape data or a TLDraw rendering issue.
+            The desktop encountered an error and couldn't render. This might be
+            due to corrupted shape data or a TLDraw rendering issue.
           </p>
           {this.state.error && (
             <details
@@ -121,16 +123,16 @@ export class DesktopErrorBoundary extends Component<Props, State> {
               cursor: 'pointer',
               fontWeight: 'bold',
             }}
-            onMouseOver={(e) => {
+            onMouseOver={e => {
               e.currentTarget.style.backgroundColor = '#0056b3';
             }}
-            onFocus={(e) => {
+            onFocus={e => {
               e.currentTarget.style.backgroundColor = '#0056b3';
             }}
-            onMouseOut={(e) => {
+            onMouseOut={e => {
               e.currentTarget.style.backgroundColor = '#007bff';
             }}
-            onBlur={(e) => {
+            onBlur={e => {
               e.currentTarget.style.backgroundColor = '#007bff';
             }}
           >

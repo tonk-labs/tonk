@@ -1,37 +1,37 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom";
-import { RootLayout } from "./components/layout/RootLayout";
-import { FeatureFlagProvider } from "./contexts/FeatureFlagContext";
-import { Desktop } from "./features/desktop";
-import { DesktopErrorBoundary } from "./features/desktop/components/DesktopErrorBoundary";
-import { usePresenceTracking } from "./features/presence";
-import { TextEditorApp } from "./features/text-editor";
-import "./global.css";
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { RootLayout } from './components/layout/RootLayout';
+import { FeatureFlagProvider } from './contexts/FeatureFlagContext';
+import { Desktop } from './features/desktop';
+import { DesktopErrorBoundary } from './features/desktop/components/DesktopErrorBoundary';
+import { usePresenceTracking } from './features/presence';
+import { TextEditorApp } from './features/text-editor';
+import './global.css';
 
 // Initialize dark mode from localStorage before React renders
 // This prevents flash of wrong theme
 const initDarkMode = () => {
   const isDark =
-    localStorage.theme === "dark" ||
-    (!("theme" in localStorage) &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.classList.toggle("dark", isDark);
+    localStorage.theme === 'dark' ||
+    (!('theme' in localStorage) &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.classList.toggle('dark', isDark);
 };
 initDarkMode();
 
 // Apply theme change and sync to localStorage
 function applyTheme(isDark: boolean) {
-  document.documentElement.classList.toggle("dark", isDark);
-  localStorage.setItem("theme", isDark ? "dark" : "light");
+  document.documentElement.classList.toggle('dark', isDark);
+  localStorage.setItem('theme', isDark ? 'dark' : 'light');
   // Dispatch custom event for components that need to react (e.g., tldraw)
   window.dispatchEvent(
-    new CustomEvent("theme-changed", { detail: { isDark } }),
+    new CustomEvent('theme-changed', { detail: { isDark } })
   );
 }
 
 // Listen for theme changes from parent window (launcher)
-if (typeof window !== "undefined") {
-  window.addEventListener("message", (event) => {
-    if (event.data?.type === "theme-change") {
+if (typeof window !== 'undefined') {
+  window.addEventListener('message', event => {
+    if (event.data?.type === 'theme-change') {
       applyTheme(event.data.isDark);
     }
   });
@@ -63,12 +63,12 @@ function getBasename(): string {
   }
 
   // Standalone dev mode: use first path segment as basename
-  const segments = path.split("/").filter(Boolean);
+  const segments = path.split('/').filter(Boolean);
   if (segments.length > 0) {
     return `/${segments[0]}`;
   }
 
-  return "/";
+  return '/';
 }
 
 function Router() {

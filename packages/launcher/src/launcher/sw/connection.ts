@@ -5,16 +5,16 @@ import {
   resetReconnectAttempts,
   setConnectionHealth,
   setHealthCheckInterval,
-} from "./state";
-import { HEALTH_CHECK_INTERVAL, MAX_RECONNECT_ATTEMPTS } from "./types";
-import { logger } from "./utils/logging";
-import { broadcastToAllClients } from "./utils/response";
+} from './state';
+import { HEALTH_CHECK_INTERVAL, MAX_RECONNECT_ATTEMPTS } from './types';
+import { logger } from './utils/logging';
+import { broadcastToAllClients } from './utils/response';
 
 // Continuous retry flag
 const continuousRetryEnabled = true;
 
 export async function performHealthCheck(
-  launcherBundleId: string,
+  launcherBundleId: string
 ): Promise<boolean> {
   const activeBundle = getActiveBundleState(launcherBundleId);
   if (!activeBundle) {
@@ -25,7 +25,7 @@ export async function performHealthCheck(
     const result = await activeBundle.tonk.isConnected();
     return result;
   } catch (error) {
-    logger.error("performHealthCheck() failed", {
+    logger.error('performHealthCheck() failed', {
       launcherBundleId,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -34,17 +34,17 @@ export async function performHealthCheck(
 }
 
 export async function attemptReconnect(
-  launcherBundleId: string,
+  launcherBundleId: string
 ): Promise<void> {
   const activeBundle = getActiveBundleState(launcherBundleId);
   if (!activeBundle) {
-    logger.error("Cannot reconnect: no active bundle", { launcherBundleId });
+    logger.error('Cannot reconnect: no active bundle', { launcherBundleId });
     return;
   }
 
   const wsUrl = activeBundle.wsUrl;
   if (!wsUrl) {
-    logger.error("Cannot reconnect: wsUrl not stored", { launcherBundleId });
+    logger.error('Cannot reconnect: wsUrl not stored', { launcherBundleId });
     return;
   }
 
@@ -54,20 +54,20 @@ export async function attemptReconnect(
     if (continuousRetryEnabled) {
       resetReconnectAttempts(launcherBundleId);
     } else {
-      logger.error("Max reconnection attempts reached", {
+      logger.error('Max reconnection attempts reached', {
         launcherBundleId,
         attempts,
       });
       // Connection status updates are broadcast to all clients
       await broadcastToAllClients({
-        type: "reconnectionFailed",
+        type: 'reconnectionFailed',
         launcherBundleId,
       });
       return;
     }
   }
 
-  logger.debug("Attempting to reconnect", {
+  logger.debug('Attempting to reconnect', {
     launcherBundleId,
     attempt: attempts,
     maxAttempts: MAX_RECONNECT_ATTEMPTS,
@@ -76,7 +76,7 @@ export async function attemptReconnect(
 
   // Connection status updates are broadcast to all clients
   await broadcastToAllClients({
-    type: "reconnecting",
+    type: 'reconnecting',
     launcherBundleId,
     attempt: attempts,
   });
@@ -84,30 +84,30 @@ export async function attemptReconnect(
   try {
     await activeBundle.tonk.connectWebsocket(wsUrl);
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     const isConnected = await activeBundle.tonk.isConnected();
 
     if (isConnected) {
       setConnectionHealth(launcherBundleId, true);
       resetReconnectAttempts(launcherBundleId);
-      logger.info("Reconnection successful", { launcherBundleId });
+      logger.info('Reconnection successful', { launcherBundleId });
       // Connection status updates are broadcast to all clients
-      await broadcastToAllClients({ type: "reconnected", launcherBundleId });
+      await broadcastToAllClients({ type: 'reconnected', launcherBundleId });
 
       await reestablishWatchers(launcherBundleId);
     } else {
-      throw new Error("Connection check failed after reconnect attempt");
+      throw new Error('Connection check failed after reconnect attempt');
     }
   } catch (error) {
-    logger.warn("Reconnection failed", {
+    logger.warn('Reconnection failed', {
       launcherBundleId,
       error: error instanceof Error ? error.message : String(error),
       attempt: attempts,
     });
 
     const backoffDelay = Math.min(1000 * 2 ** (attempts - 1), 30000);
-    logger.debug("Scheduling next reconnect attempt", {
+    logger.debug('Scheduling next reconnect attempt', {
       launcherBundleId,
       delayMs: backoffDelay,
       nextAttempt: attempts + 1,
@@ -117,25 +117,25 @@ export async function attemptReconnect(
 }
 
 export async function reestablishWatchers(
-  launcherBundleId: string,
+  launcherBundleId: string
 ): Promise<void> {
   const watcherEntries = getWatcherEntries(launcherBundleId);
 
-  logger.debug("Re-establishing watchers after reconnection", {
+  logger.debug('Re-establishing watchers after reconnection', {
     launcherBundleId,
     watcherCount: watcherEntries.length,
   });
 
   // Note: The actual re-establishment logic would need to track
   // watcher paths and recreate them. For now, just log.
-  logger.debug("Watcher re-establishment complete", {
+  logger.debug('Watcher re-establishment complete', {
     launcherBundleId,
     watcherCount: watcherEntries.length,
   });
 
   // Connection status updates are broadcast to all clients
   await broadcastToAllClients({
-    type: "watchersReestablished",
+    type: 'watchersReestablished',
     launcherBundleId,
     count: watcherEntries.length,
   });
@@ -144,7 +144,7 @@ export async function reestablishWatchers(
 export function startHealthMonitoring(launcherBundleId: string): void {
   const activeBundle = getActiveBundleState(launcherBundleId);
   if (!activeBundle) {
-    logger.warn("Cannot start health monitoring: no active bundle", {
+    logger.warn('Cannot start health monitoring: no active bundle', {
       launcherBundleId,
     });
     return;
@@ -155,7 +155,7 @@ export function startHealthMonitoring(launcherBundleId: string): void {
     clearInterval(activeBundle.healthCheckInterval);
   }
 
-  logger.debug("Starting health monitoring", {
+  logger.debug('Starting health monitoring', {
     launcherBundleId,
     intervalMs: HEALTH_CHECK_INTERVAL,
   });
@@ -171,16 +171,16 @@ export function startHealthMonitoring(launcherBundleId: string): void {
 
     if (!isHealthy && currentBundle.connectionHealthy) {
       setConnectionHealth(launcherBundleId, false);
-      logger.warn("Connection lost, starting reconnection attempts", {
+      logger.warn('Connection lost, starting reconnection attempts', {
         launcherBundleId,
       });
       // Connection status updates are broadcast to all clients
-      await broadcastToAllClients({ type: "disconnected", launcherBundleId });
+      await broadcastToAllClients({ type: 'disconnected', launcherBundleId });
       attemptReconnect(launcherBundleId);
     } else if (isHealthy && !currentBundle.connectionHealthy) {
       setConnectionHealth(launcherBundleId, true);
       resetReconnectAttempts(launcherBundleId);
-      logger.debug("Connection health restored", { launcherBundleId });
+      logger.debug('Connection health restored', { launcherBundleId });
     }
   }, HEALTH_CHECK_INTERVAL) as unknown as number;
 

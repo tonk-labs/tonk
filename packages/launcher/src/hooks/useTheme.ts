@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 // Broadcast theme change to all iframes
 function broadcastThemeToIframes(isDark: boolean) {
   const iframes = document.querySelectorAll('iframe');
-  iframes.forEach((iframe) => {
+  iframes.forEach(iframe => {
     iframe.contentWindow?.postMessage({ type: 'theme-change', isDark }, '*');
   });
 }

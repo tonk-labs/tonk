@@ -2,7 +2,10 @@ import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getVFSService } from '@/vfs-client';
 import { getDesktopService } from '@/features/desktop/services/DesktopService';
-import { DESKTOP_DIRECTORY, THUMBNAILS_DIRECTORY } from '@/features/desktop/constants';
+import {
+  DESKTOP_DIRECTORY,
+  THUMBNAILS_DIRECTORY,
+} from '@/features/desktop/constants';
 import { generateTextThumbnailFromContent } from '@/features/desktop/utils/thumbnailGenerator';
 
 export function useDockActions() {
@@ -32,7 +35,10 @@ export function useDockActions() {
       const fileId = fileName.replace(/\.[^.]+$/, '');
       let thumbnailPath: string | undefined;
 
-      const thumbnailDataUrl = await generateTextThumbnailFromContent('', fileName);
+      const thumbnailDataUrl = await generateTextThumbnailFromContent(
+        '',
+        fileName
+      );
       if (thumbnailDataUrl) {
         thumbnailPath = `${THUMBNAILS_DIRECTORY}/${fileId}.png`;
         const base64Data = thumbnailDataUrl.split(',')[1];
@@ -49,7 +55,10 @@ export function useDockActions() {
             true
           );
         } catch (thumbnailError) {
-          console.warn('[useDockActions] Failed to write thumbnail:', thumbnailError);
+          console.warn(
+            '[useDockActions] Failed to write thumbnail:',
+            thumbnailError
+          );
           thumbnailPath = undefined;
         }
       }
@@ -60,7 +69,11 @@ export function useDockActions() {
         ...(thumbnailPath && { thumbnailPath }),
       };
 
-      await vfs.writeFile(filePath, { content: { text: '', desktopMeta } }, true);
+      await vfs.writeFile(
+        filePath,
+        { content: { text: '', desktopMeta } },
+        true
+      );
 
       // Notify desktop service about new file
       await desktopService.onFileAdded(filePath);

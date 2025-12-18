@@ -9,7 +9,9 @@ export function MembersBar() {
   const currentUser = getCurrentUser();
 
   useEffect(() => {
-    console.log(`[users online]: ${onlineUsers.length} \n[users offline]: ${offlineUsers.length}`);
+    console.log(
+      `[users online]: ${onlineUsers.length} \n[users offline]: ${offlineUsers.length}`
+    );
   }, [onlineUsers, offlineUsers]);
 
   return (
@@ -17,7 +19,9 @@ export function MembersBar() {
       <div className="h-full bg-night-50 dark:bg-night-950 border-l border-night-200 dark:border-night-800 flex flex-col overflow-hidden">
         {/* Header */}
         <div className="p-4 border-b border-night-200 dark:border-night-800 flex-shrink-0">
-          <div className="text-xs font-semibold text-night-600 dark:text-night-100">MEMBERS</div>
+          <div className="text-xs font-semibold text-night-600 dark:text-night-100">
+            MEMBERS
+          </div>
           <div className="text-[11px] text-night-400 dark:text-night-400 mt-1">
             {onlineUsers.length} online
           </div>
@@ -33,7 +37,7 @@ export function MembersBar() {
               </div>
               {onlineUsers
                 .sort((a, b) => a.name.localeCompare(b.name))
-                .map((user) => (
+                .map(user => (
                   <MemberItem key={user.id} user={user} online />
                 ))}
             </div>
@@ -47,7 +51,7 @@ export function MembersBar() {
               </div>
               {offlineUsers
                 .sort((a, b) => a.name.localeCompare(b.name))
-                .map((user) => (
+                .map(user => (
                   <MemberItem key={user.id} user={user} />
                 ))}
             </div>
@@ -55,7 +59,12 @@ export function MembersBar() {
         </div>
         <div className="px-4 pt-4 border-t border-night-200 dark:border-night-800 bg-night-100 dark:bg-night-900">
           {currentUser && (
-            <MemberItem key={currentUser.id} user={currentUser} online={true} className="pb-4" />
+            <MemberItem
+              key={currentUser.id}
+              user={currentUser}
+              online={true}
+              className="pb-4"
+            />
           )}
         </div>
       </div>

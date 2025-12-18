@@ -214,21 +214,17 @@ async fn test_bundle_content_sync_behavior() {
 
     // Verify both have the same initial content from bundle
     assert!(client1.vfs().exists("/foundation.txt").await.unwrap());
-    assert!(
-        client1
-            .vfs()
-            .exists("/shared_folder/data.json")
-            .await
-            .unwrap()
-    );
+    assert!(client1
+        .vfs()
+        .exists("/shared_folder/data.json")
+        .await
+        .unwrap());
     assert!(client2.vfs().exists("/foundation.txt").await.unwrap());
-    assert!(
-        client2
-            .vfs()
-            .exists("/shared_folder/data.json")
-            .await
-            .unwrap()
-    );
+    assert!(client2
+        .vfs()
+        .exists("/shared_folder/data.json")
+        .await
+        .unwrap());
 
     // Connect both to server
     client1.connect_websocket(&server_url).await.unwrap();

@@ -17,7 +17,10 @@ const loadingPaths = new Set<string>();
  * Listeners waiting for a specific path to load.
  * Used to notify multiple components waiting for the same thumbnail.
  */
-const loadListeners = new Map<string, Set<(thumbnail: string | null) => void>>();
+const loadListeners = new Map<
+  string,
+  Set<(thumbnail: string | null) => void>
+>();
 
 /**
  * Listeners for cache invalidation.
@@ -60,7 +63,7 @@ export function useThumbnail(thumbnailPath: string | undefined): {
       // Clear local state and trigger reload
       setThumbnail(null);
       setIsLoading(true);
-      setReloadTrigger((prev) => prev + 1);
+      setReloadTrigger(prev => prev + 1);
     };
 
     if (!invalidationListeners.has(thumbnailPath)) {
@@ -159,7 +162,10 @@ export function useThumbnail(thumbnailPath: string | undefined): {
           }
         }
       } catch (error) {
-        console.warn(`[useThumbnail] Failed to load thumbnail from ${thumbnailPath}:`, error);
+        console.warn(
+          `[useThumbnail] Failed to load thumbnail from ${thumbnailPath}:`,
+          error
+        );
         setThumbnail(null);
 
         // Notify other listeners of failure

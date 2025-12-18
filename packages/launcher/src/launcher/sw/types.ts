@@ -1,4 +1,4 @@
-import type { Manifest, TonkCore } from "@tonk/core/slim";
+import type { Manifest, TonkCore } from '@tonk/core/slim';
 
 // Service Worker global scope types
 declare global {
@@ -19,7 +19,7 @@ declare global {
 
   interface ClientQueryOptions {
     includeUncontrolled?: boolean;
-    type?: "window" | "worker" | "sharedworker" | "all";
+    type?: 'window' | 'worker' | 'sharedworker' | 'all';
   }
 
   interface ExtendableEvent extends Event {
@@ -42,13 +42,13 @@ export interface WatcherEntry {
 // Bundle state for a single bundle instance
 export type BundleState =
   | {
-      status: "loading";
+      status: 'loading';
       launcherBundleId: string;
       bundleId: string;
       promise: Promise<void>;
     }
   | {
-      status: "active";
+      status: 'active';
       /** Root document ID from manifest */
       bundleId: string;
       /** Unique IndexedDB bundle ID from launcher - used to differentiate bundles with same rootId */
@@ -62,10 +62,10 @@ export type BundleState =
       connectionHealthy: boolean;
       reconnectAttempts: number;
     }
-  | { status: "error"; launcherBundleId: string; error: Error };
+  | { status: 'error'; launcherBundleId: string; error: Error };
 
 // Helper type to extract active state
-export type ActiveBundleState = Extract<BundleState, { status: "active" }>;
+export type ActiveBundleState = Extract<BundleState, { status: 'active' }>;
 
 // Map of all loaded bundles, keyed by launcherBundleId
 export type BundleStateMap = Map<string, BundleState>;

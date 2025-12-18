@@ -1,17 +1,17 @@
-import type { Manifest } from "@tonk/core/slim";
-import { getBundleState, getLastActiveBundleId } from "../state";
-import { logger } from "../utils/logging";
-import { postResponse } from "../utils/response";
+import type { Manifest } from '@tonk/core/slim';
+import { getBundleState, getLastActiveBundleId } from '../state';
+import { logger } from '../utils/logging';
+import { postResponse } from '../utils/response';
 // Bundle operations
 import {
   handleForkToBytes,
   handleLoadBundle,
   handleToBytes,
   handleUnloadBundle,
-} from "./bundle-ops";
+} from './bundle-ops';
 
 // Directory operations
-import { handleListDirectory } from "./directory-ops";
+import { handleListDirectory } from './directory-ops';
 // File operations
 import {
   handleDeleteFile,
@@ -21,7 +21,7 @@ import {
   handleRename,
   handleUpdateFile,
   handleWriteFile,
-} from "./file-ops";
+} from './file-ops';
 // Init operations
 import {
   handleGetManifest,
@@ -31,54 +31,54 @@ import {
   handleInitializeFromUrl,
   handlePing,
   handleSetAppSlug,
-} from "./init-ops";
+} from './init-ops';
 // Watch operations
 import {
   handleUnwatchDirectory,
   handleUnwatchFile,
   handleWatchDirectory,
   handleWatchFile,
-} from "./watch-ops";
+} from './watch-ops';
 
 // Message type - we use unknown and cast in handlers
 type Message = Record<string, unknown>;
 
 // Operations allowed when bundle is not initialized
 const allowedWhenUninitialized = [
-  "init",
-  "loadBundle",
-  "unloadBundle",
-  "initializeFromUrl",
-  "initializeFromBytes",
-  "getServerUrl",
-  "ping",
-  "setAppSlug",
+  'init',
+  'loadBundle',
+  'unloadBundle',
+  'initializeFromUrl',
+  'initializeFromBytes',
+  'getServerUrl',
+  'ping',
+  'setAppSlug',
 ];
 
 export async function handleMessage(
   message: Message,
-  sourceClient: Client,
+  sourceClient: Client
 ): Promise<void> {
   const msgType = message.type as string;
   const msgId = message.id as string | undefined;
   const launcherBundleId = message.launcherBundleId as string | undefined;
 
-  logger.debug("Received message", {
+  logger.debug('Received message', {
     type: msgType,
-    id: msgId || "N/A",
-    launcherBundleId: launcherBundleId || "N/A",
+    id: msgId || 'N/A',
+    launcherBundleId: launcherBundleId || 'N/A',
   });
 
   // Handle ping separately (doesn't require bundle context)
-  if (msgType === "ping") {
+  if (msgType === 'ping') {
     await handlePing();
     return;
   }
 
   // Handle setAppSlug separately (requires launcherBundleId)
-  if (msgType === "setAppSlug") {
+  if (msgType === 'setAppSlug') {
     if (!launcherBundleId) {
-      logger.warn("setAppSlug missing launcherBundleId");
+      logger.warn('setAppSlug missing launcherBundleId');
       return;
     }
     await handleSetAppSlug({
@@ -94,7 +94,7 @@ export async function handleMessage(
     const bundleId = launcherBundleId || getLastActiveBundleId();
 
     if (!bundleId) {
-      logger.warn("Operation attempted without bundle context", {
+      logger.warn('Operation attempted without bundle context', {
         type: msgType,
       });
       if (msgId) {
@@ -103,20 +103,20 @@ export async function handleMessage(
             type: msgType,
             id: msgId,
             success: false,
-            error: "No bundle context. Please load a bundle first.",
+            error: 'No bundle context. Please load a bundle first.',
           },
-          sourceClient,
+          sourceClient
         );
       }
       return;
     }
 
     const state = getBundleState(bundleId);
-    if (!state || state.status !== "active") {
-      logger.warn("Operation attempted before bundle initialization", {
+    if (!state || state.status !== 'active') {
+      logger.warn('Operation attempted before bundle initialization', {
         type: msgType,
         launcherBundleId: bundleId,
-        status: state?.status || "none",
+        status: state?.status || 'none',
       });
       if (msgId) {
         postResponse(
@@ -124,9 +124,9 @@ export async function handleMessage(
             type: msgType,
             id: msgId,
             success: false,
-            error: "Bundle not initialized. Please load a bundle first.",
+            error: 'Bundle not initialized. Please load a bundle first.',
           },
-          sourceClient,
+          sourceClient
         );
       }
       return;
@@ -134,12 +134,12 @@ export async function handleMessage(
   }
 
   // Resolve the effective bundle ID for operations that need it
-  const effectiveBundleId = launcherBundleId || getLastActiveBundleId() || "";
+  const effectiveBundleId = launcherBundleId || getLastActiveBundleId() || '';
 
   // Route to appropriate handler
   switch (msgType) {
     // Init operations
-    case "init":
+    case 'init':
       await handleInit(
         {
           ...(msgId !== undefined && { id: msgId }),
@@ -149,11 +149,11 @@ export async function handleMessage(
           }),
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "initializeFromUrl":
+    case 'initializeFromUrl':
       await handleInitializeFromUrl(
         {
           ...(msgId !== undefined && { id: msgId }),
@@ -168,11 +168,11 @@ export async function handleMessage(
           }),
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "initializeFromBytes":
+    case 'initializeFromBytes':
       await handleInitializeFromBytes(
         {
           ...(msgId !== undefined && { id: msgId }),
@@ -185,32 +185,32 @@ export async function handleMessage(
           }),
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "getServerUrl":
+    case 'getServerUrl':
       await handleGetServerUrl(
         {
           id: msgId as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "getManifest":
+    case 'getManifest':
       await handleGetManifest(
         {
           id: msgId as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
     // Bundle operations
-    case "loadBundle":
+    case 'loadBundle':
       await handleLoadBundle(
         {
           ...(msgId !== undefined && { id: msgId }),
@@ -223,53 +223,53 @@ export async function handleMessage(
           }),
           launcherBundleId: message.launcherBundleId as string,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "unloadBundle":
+    case 'unloadBundle':
       await handleUnloadBundle(
         {
           ...(msgId !== undefined && { id: msgId }),
           launcherBundleId: message.launcherBundleId as string,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "toBytes":
+    case 'toBytes':
       await handleToBytes(
         {
           id: msgId as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "forkToBytes":
+    case 'forkToBytes':
       await handleForkToBytes(
         {
           id: msgId as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
     // File operations
-    case "readFile":
+    case 'readFile':
       await handleReadFile(
         {
           id: msgId as string,
           path: message.path as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "writeFile":
+    case 'writeFile':
       await handleWriteFile(
         {
           id: msgId as string,
@@ -280,22 +280,22 @@ export async function handleMessage(
           content: message.content as { bytes?: Uint8Array; content: unknown },
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "deleteFile":
+    case 'deleteFile':
       await handleDeleteFile(
         {
           id: msgId as string,
           path: message.path as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "rename":
+    case 'rename':
       await handleRename(
         {
           id: msgId as string,
@@ -303,22 +303,22 @@ export async function handleMessage(
           newPath: message.newPath as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "exists":
+    case 'exists':
       await handleExists(
         {
           id: msgId as string,
           path: message.path as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "patchFile":
+    case 'patchFile':
       await handlePatchFile(
         {
           id: msgId as string,
@@ -327,11 +327,11 @@ export async function handleMessage(
           value: message.value,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "updateFile":
+    case 'updateFile':
       await handleUpdateFile(
         {
           id: msgId as string,
@@ -339,67 +339,67 @@ export async function handleMessage(
           content: message.content,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
     // Directory operations
-    case "listDirectory":
+    case 'listDirectory':
       await handleListDirectory(
         {
           id: msgId as string,
           path: message.path as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
     // Watch operations
-    case "watchFile":
+    case 'watchFile':
       await handleWatchFile(
         {
           id: msgId as string,
           path: message.path as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "unwatchFile":
+    case 'unwatchFile':
       await handleUnwatchFile(
         {
           id: msgId as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "watchDirectory":
+    case 'watchDirectory':
       await handleWatchDirectory(
         {
           id: msgId as string,
           path: message.path as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
-    case "unwatchDirectory":
+    case 'unwatchDirectory':
       await handleUnwatchDirectory(
         {
           id: msgId as string,
           launcherBundleId: effectiveBundleId,
         },
-        sourceClient,
+        sourceClient
       );
       break;
 
     default:
-      logger.warn("Unknown message type", { type: msgType });
+      logger.warn('Unknown message type', { type: msgType });
       if (msgId) {
         postResponse(
           {
@@ -408,7 +408,7 @@ export async function handleMessage(
             success: false,
             error: `Unknown message type: ${msgType}`,
           },
-          sourceClient,
+          sourceClient
         );
       }
   }

@@ -8,9 +8,19 @@ interface MemberItemProps {
   className?: string;
 }
 
-export function MemberItem({ user, online = false, className }: MemberItemProps) {
+export function MemberItem({
+  user,
+  online = false,
+  className,
+}: MemberItemProps) {
   return (
-    <div className={cn('flex items-center gap-3', !online && 'opacity-50', className)}>
+    <div
+      className={cn(
+        'flex items-center gap-3',
+        !online && 'opacity-50',
+        className
+      )}
+    >
       {/* Avatar */}
       <div
         className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-medium flex-shrink-0"
@@ -25,7 +35,9 @@ export function MemberItem({ user, online = false, className }: MemberItemProps)
       </span>
 
       {/* Status dot */}
-      {online && <div className="w-2 h-2 rounded-full bg-status-online flex-shrink-0" />}
+      {online && (
+        <div className="w-2 h-2 rounded-full bg-status-online flex-shrink-0" />
+      )}
     </div>
   );
 }

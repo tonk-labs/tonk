@@ -29,7 +29,7 @@ interface EditorState {
 }
 
 // TEMP: Using plain Zustand without VFS sync due to connection issues
-export const useEditorStore = create<EditorState>()((set) => ({
+export const useEditorStore = create<EditorState>()(set => ({
   document: null,
   metadata: {
     title: 'Untitled',
@@ -45,7 +45,7 @@ export const useEditorStore = create<EditorState>()((set) => ({
   },
 
   setTitle: (title: string) => {
-    set((state) => ({
+    set(state => ({
       metadata: { ...state.metadata, title },
     }));
   },

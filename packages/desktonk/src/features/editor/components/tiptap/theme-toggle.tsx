@@ -8,7 +8,8 @@ export function ThemeToggle() {
   const [isDarkMode, setIsDarkMode] = React.useState<boolean>(() => {
     return (
       localStorage.theme === 'dark' ||
-      (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)
+      (!('theme' in localStorage) &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches)
     );
   });
 
@@ -31,7 +32,7 @@ export function ThemeToggle() {
 
   // Toggle and persist to localStorage
   const toggleDarkMode = () => {
-    setIsDarkMode((isDark) => {
+    setIsDarkMode(isDark => {
       const newValue = !isDark;
       localStorage.setItem('theme', newValue ? 'dark' : 'light');
       return newValue;

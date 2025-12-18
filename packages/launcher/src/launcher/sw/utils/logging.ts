@@ -69,7 +69,11 @@ function formatPrefix(level: LogLevel): string {
  * @param message - The log message
  * @param data - Optional data to log
  */
-export function log(level: Exclude<LogLevel, 'none'>, message: string, data?: unknown): void {
+export function log(
+  level: Exclude<LogLevel, 'none'>,
+  message: string,
+  data?: unknown
+): void {
   if (!shouldLog(level)) return;
 
   const prefix = formatPrefix(level);

@@ -1,4 +1,9 @@
-import { type ChangeEvent, cloneElement, type ReactElement, useRef } from 'react';
+import {
+  type ChangeEvent,
+  cloneElement,
+  type ReactElement,
+  useRef,
+} from 'react';
 
 interface SelectFileTriggerProps {
   onSelect: (e: ChangeEvent<HTMLInputElement>) => void;

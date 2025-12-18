@@ -3,7 +3,11 @@
 import * as React from 'react';
 
 // basically Exclude<React.ClassAttributes<T>["ref"], string>
-type UserRef<T> = ((instance: T | null) => void) | React.RefObject<T | null> | null | undefined;
+type UserRef<T> =
+  | ((instance: T | null) => void)
+  | React.RefObject<T | null>
+  | null
+  | undefined;
 
 const updateRef = <T>(ref: NonNullable<UserRef<T>>, value: T | null) => {
   if (typeof ref === 'function') {

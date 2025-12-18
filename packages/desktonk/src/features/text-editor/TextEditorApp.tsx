@@ -33,7 +33,9 @@ function TextEditorApp() {
   } = useEditorStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [initialMarkdownContent, setInitialMarkdownContent] = useState<string | null>(null);
+  const [initialMarkdownContent, setInitialMarkdownContent] = useState<
+    string | null
+  >(null);
 
   // Enable presence tracking
   usePresenceTracking();
@@ -137,7 +139,7 @@ function TextEditorApp() {
           const lines = text.split('\n');
           const content: JSONContent = {
             type: 'doc',
-            content: lines.map((line) => ({
+            content: lines.map(line => ({
               type: 'paragraph',
               content: line ? [{ type: 'text', text: line }] : [],
             })),

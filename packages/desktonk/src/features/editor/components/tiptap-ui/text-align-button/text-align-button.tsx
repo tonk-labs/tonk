@@ -22,7 +22,9 @@ import { parseShortcutKeys } from '@/lib/utils';
 type IconProps = React.SVGProps<SVGSVGElement>;
 type IconComponent = ({ className, ...props }: IconProps) => React.ReactElement;
 
-export interface TextAlignButtonProps extends Omit<ButtonProps, 'type'>, UseTextAlignConfig {
+export interface TextAlignButtonProps
+  extends Omit<ButtonProps, 'type'>,
+    UseTextAlignConfig {
   /**
    * Optional text to display alongside the icon.
    */
@@ -53,7 +55,10 @@ export function TextAlignShortcutBadge({
  *
  * For custom button implementations, use the `useTextAlign` hook instead.
  */
-export const TextAlignButton = React.forwardRef<HTMLButtonElement, TextAlignButtonProps>(
+export const TextAlignButton = React.forwardRef<
+  HTMLButtonElement,
+  TextAlignButtonProps
+>(
   (
     {
       editor: providedEditor,
@@ -70,13 +75,20 @@ export const TextAlignButton = React.forwardRef<HTMLButtonElement, TextAlignButt
     ref
   ) => {
     const { editor } = useTiptapEditor(providedEditor);
-    const { isVisible, handleTextAlign, label, canAlign, isActive, Icon, shortcutKeys } =
-      useTextAlign({
-        editor,
-        align,
-        hideWhenUnavailable,
-        onAligned,
-      });
+    const {
+      isVisible,
+      handleTextAlign,
+      label,
+      canAlign,
+      isActive,
+      Icon,
+      shortcutKeys,
+    } = useTextAlign({
+      editor,
+      align,
+      hideWhenUnavailable,
+      onAligned,
+    });
 
     const handleClick = React.useCallback(
       (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -113,7 +125,12 @@ export const TextAlignButton = React.forwardRef<HTMLButtonElement, TextAlignButt
           <>
             <RenderIcon className="tiptap-button-icon" />
             {text && <span className="tiptap-button-text">{text}</span>}
-            {showShortcut && <TextAlignShortcutBadge align={align} shortcutKeys={shortcutKeys} />}
+            {showShortcut && (
+              <TextAlignShortcutBadge
+                align={align}
+                shortcutKeys={shortcutKeys}
+              />
+            )}
           </>
         )}
       </Button>

@@ -1,5 +1,6 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.3.8/schema.json",
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
   "formatter": {
     "enabled": true,
     "formatWithErrors": true,
@@ -20,6 +21,28 @@
   "json": {
     "formatter": {
       "lineWidth": 120
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error"
+      },
+      "style": {
+        "useConst": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noDebugger": "error",
+        "noVar": "error"
+      },
+      "a11y": {
+        "noSvgWithoutTitle": "off",
+        "useSemanticElements": "off"
+      }
     }
   },
   "files": {
@@ -49,7 +72,8 @@
       "!!**/lib-cov",
       "!!**/logs",
       "!**/*.log",
-      "!**/public"
+      "!**/public",
+      "!**/wasm-data.ts"
     ]
   }
 }

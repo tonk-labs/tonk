@@ -1,15 +1,15 @@
-use crate::Bundle;
 use crate::bundle::BundleConfig;
 use crate::error::{Result, VfsError};
 use crate::vfs::VirtualFileSystem;
+use crate::Bundle;
 use rand::rng;
-#[cfg(not(target_arch = "wasm32"))]
-use samod::RepoBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 use samod::storage::TokioFilesystemStorage as FilesystemStorage;
 use samod::storage::{InMemoryStorage, StorageKey};
 #[cfg(target_arch = "wasm32")]
 use samod::storage::{IndexedDbStorage, LocalStorage};
+#[cfg(not(target_arch = "wasm32"))]
+use samod::RepoBuilder;
 use samod::{DocHandle, DocumentId, PeerId, Repo};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
@@ -800,7 +800,7 @@ mod tests {
     use super::*;
     #[cfg(not(target_arch = "wasm32"))]
     use tempfile::TempDir;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
     async fn test_sync_engine_creation() {
