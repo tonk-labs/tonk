@@ -1,6 +1,6 @@
 use crate::error::{Result, VfsError};
 use crate::vfs::types::*;
-use automerge::{transaction::Transactable, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use bytes::Bytes;
 use samod::{DocHandle, DocumentId};
 

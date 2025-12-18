@@ -690,10 +690,7 @@ impl TonkCore {
     /// # }
     /// ```
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn connect_websocket(
-        &self,
-        url: &str,
-    ) -> Result<crate::websocket::ConnectionHandle> {
+    pub async fn connect_websocket(&self, url: &str) -> Result<crate::websocket::ConnectionHandle> {
         info!("Connecting to WebSocket peer at: {}", url);
 
         let handle = crate::websocket::connect(Arc::clone(&self.samod), url).await?;

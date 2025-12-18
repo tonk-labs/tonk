@@ -51,18 +51,21 @@ mod wasm_tests {
         .expect("Failed to create nested document");
 
         // Verify documents exist in first instance
-        assert!(vfs1
-            .exists("/test1.txt")
-            .await
-            .expect("Failed to check existence"));
-        assert!(vfs1
-            .exists("/test2.txt")
-            .await
-            .expect("Failed to check existence"));
-        assert!(vfs1
-            .exists("/folder/nested.txt")
-            .await
-            .expect("Failed to check existence"));
+        assert!(
+            vfs1.exists("/test1.txt")
+                .await
+                .expect("Failed to check existence")
+        );
+        assert!(
+            vfs1.exists("/test2.txt")
+                .await
+                .expect("Failed to check existence")
+        );
+        assert!(
+            vfs1.exists("/folder/nested.txt")
+                .await
+                .expect("Failed to check existence")
+        );
 
         // Export to bundle to test persistence through bundle round-trip
         let bundle_bytes = tonk1.to_bytes(None).await.expect("Failed to export bundle");
@@ -78,18 +81,21 @@ mod wasm_tests {
         let vfs3 = tonk3.vfs();
 
         // Verify all documents are accessible after loading from bundle
-        assert!(vfs3
-            .exists("/test1.txt")
-            .await
-            .expect("Failed to check existence"));
-        assert!(vfs3
-            .exists("/test2.txt")
-            .await
-            .expect("Failed to check existence"));
-        assert!(vfs3
-            .exists("/folder/nested.txt")
-            .await
-            .expect("Failed to check existence"));
+        assert!(
+            vfs3.exists("/test1.txt")
+                .await
+                .expect("Failed to check existence")
+        );
+        assert!(
+            vfs3.exists("/test2.txt")
+                .await
+                .expect("Failed to check existence")
+        );
+        assert!(
+            vfs3.exists("/folder/nested.txt")
+                .await
+                .expect("Failed to check existence")
+        );
 
         // Verify content is preserved
         let handle1 = vfs3

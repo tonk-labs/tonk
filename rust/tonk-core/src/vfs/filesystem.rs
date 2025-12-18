@@ -1,10 +1,10 @@
+use crate::Bundle;
 use crate::bundle::{BundleConfig, RandomAccess};
 use crate::error::{Result, VfsError};
 use crate::vfs::backend::AutomergeHelpers;
 use crate::vfs::path_index::PathIndex;
 use crate::vfs::types::*;
 use crate::vfs::watcher::DocumentWatcher;
-use crate::Bundle;
 use automerge::Automerge;
 use bytes::Bytes;
 use samod::storage::StorageKey;
@@ -259,8 +259,8 @@ impl VirtualFileSystem {
     pub async fn to_bytes(&self, config: Option<BundleConfig>) -> Result<Vec<u8>> {
         use crate::bundle::{Manifest, Version};
         use std::io::{Cursor, Write};
-        use zip::write::SimpleFileOptions;
         use zip::ZipWriter;
+        use zip::write::SimpleFileOptions;
 
         // Get the root document from VFS
         let root_id = self.root_id();

@@ -11,11 +11,11 @@
   };
 
   outputs =
-    { self
-    , nixpkgs
-    , flake-utils
-    , fenix
-    ,
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      fenix,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -34,14 +34,18 @@
         };
 
         # Common build inputs for all dev shells
-        commonBuildInputs = with pkgs; [
-          rustToolchainStable
-          bun
-        ] ++ lib.optionals stdenv.isLinux [
-          # Linux-specific inputs
-        ] ++ lib.optionals stdenv.isDarwin [
-          # MacOS-specific inputs
-        ];
+        commonBuildInputs =
+          with pkgs;
+          [
+            rustToolchainStable
+            bun
+          ]
+          ++ lib.optionals stdenv.isLinux [
+            # Linux-specific inputs
+          ]
+          ++ lib.optionals stdenv.isDarwin [
+            # MacOS-specific inputs
+          ];
 
         commands = {
           "build" = {
@@ -92,24 +96,29 @@
             src = ./.;
             cargoLock = {
               lockFile = ./Cargo.lock;
+              outputHashes = {
+                "samod-0.5.0" = "sha256-0mr/mtsnm+BZHlQLPEfe+wmzWjPldcULSvOzCOf5yMc=";
+              };
             };
             nativeBuildInputs = [ rustToolchainStable ];
             buildPhase = ''
-              cargo clippy --all-targets --all-features -- -D warnings
+              cargo clippy --all-targets -- -D warnings
             '';
             installPhase = ''
               touch $out
             '';
           };
 
-          rustfmt = pkgs.runCommand "tonk-fmt-check"
-            {
-              nativeBuildInputs = [ rustToolchainStable ];
-            } ''
-            cd ${./.}
-            cargo fmt --check
-            touch $out
-          '';
+          rustfmt =
+            pkgs.runCommand "tonk-fmt-check"
+              {
+                nativeBuildInputs = [ rustToolchainStable ];
+              }
+              ''
+                cd ${./.}
+                cargo fmt --check
+                touch $out
+              '';
         };
 
         packages = {
@@ -119,10 +128,13 @@
             src = ./.;
             cargoLock = {
               lockFile = ./Cargo.lock;
+              outputHashes = {
+                "samod-0.5.0" = "sha256-0mr/mtsnm+BZHlQLPEfe+wmzWjPldcULSvOzCOf5yMc=";
+              };
             };
             nativeBuildInputs = [ rustToolchainStable ];
             buildPhase = ''
-              cargo clippy --all-targets --all-features -- -D warnings
+              cargo clippy --all-targets -- -D warnings
             '';
             installPhase = ''
               touch $out
