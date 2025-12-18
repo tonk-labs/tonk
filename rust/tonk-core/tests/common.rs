@@ -65,6 +65,7 @@ impl AutomergeServer {
     }
 
     /// Get the HTTP URL for this server
+    #[allow(dead_code)]
     pub fn http_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
