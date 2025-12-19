@@ -27,7 +27,7 @@ impl Passphrase {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            use js_sys::{global, Object, Reflect, Uint8Array};
+            use js_sys::{Object, Reflect, Uint8Array, global};
             use wasm_bindgen::JsCast;
             use wasm_bindgen_futures::JsFuture;
 

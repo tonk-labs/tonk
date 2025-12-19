@@ -268,7 +268,6 @@ impl<Backend: PlatformBackend + 'static> Source for Space<Backend> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ucan::Delegation as UcanDelegation;
     use ucan::delegation::subject::DelegatedSubject;
     use ucan::did::Ed25519Signer;
 

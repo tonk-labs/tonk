@@ -91,17 +91,17 @@ impl Delegation {
     /// * `Err(DelegationError::NotYetValid)` if the notBefore time hasn't passed
     pub fn validate(&self, now: Timestamp) -> Result<(), DelegationError> {
         // Check expiration - delegation is invalid if now >= expiration
-        if let Some(exp) = self.0.expiration() {
-            if exp <= now {
-                return Err(DelegationError::Expired);
-            }
+        if let Some(exp) = self.0.expiration()
+            && exp <= now
+        {
+            return Err(DelegationError::Expired);
         }
 
         // Check notBefore - delegation is invalid if now < notBefore
-        if let Some(nbf) = self.0.not_before() {
-            if nbf > now {
-                return Err(DelegationError::NotYetValid);
-            }
+        if let Some(nbf) = self.0.not_before()
+            && nbf > now
+        {
+            return Err(DelegationError::NotYetValid);
         }
 
         Ok(())

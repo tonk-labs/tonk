@@ -64,8 +64,8 @@ impl Claim for Ownership {
         };
 
         // subject_entity is the space DID as an Entity
-        let subject_entity = Entity::from_str(&subject_str)
-            .expect("DID strings are valid Entity URIs");
+        let subject_entity =
+            Entity::from_str(&subject_str).expect("DID strings are valid Entity URIs");
 
         Relation::new(
             the!("space/owner"),
@@ -91,8 +91,8 @@ impl Claim for Ownership {
         };
 
         // subject_entity is the space DID as an Entity
-        let subject_entity = Entity::from_str(&subject_str)
-            .expect("DID strings are valid Entity URIs");
+        let subject_entity =
+            Entity::from_str(&subject_str).expect("DID strings are valid Entity URIs");
 
         Relation::new(
             the!("space/owner"),
@@ -107,8 +107,8 @@ impl Claim for Ownership {
 mod tests {
     use super::*;
     use crate::Operator;
-    use ucan::did::Ed25519Signer;
     use ucan::Delegation as UcanDelegation;
+    use ucan::did::Ed25519Signer;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test;
