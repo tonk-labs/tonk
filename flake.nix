@@ -84,6 +84,10 @@
             src = ./.;
             cargoLock = {
               lockFile = ./Cargo.lock;
+              outputHashes = {
+                "dialog-artifacts-0.1.0" = "sha256-veYCuACVZEIveVuwh9O3XuoJtrihE/t+cWQTe7zWYsg=";
+                "ucan-0.5.0" = "sha256-CCQar9nU3KhBn1Kl5RsRJUASX8bO77pu7wbzzoLccBs=";
+              };
             };
             nativeBuildInputs = [ rustToolchainStable ];
             buildPhase = ''
@@ -111,6 +115,10 @@
             src = ./.;
             cargoLock = {
               lockFile = ./Cargo.lock;
+              outputHashes = {
+                "dialog-artifacts-0.1.0" = "sha256-veYCuACVZEIveVuwh9O3XuoJtrihE/t+cWQTe7zWYsg=";
+                "ucan-0.5.0" = "sha256-CCQar9nU3KhBn1Kl5RsRJUASX8bO77pu7wbzzoLccBs=";
+              };
             };
             nativeBuildInputs = [ rustToolchainStable ];
             buildPhase = ''
