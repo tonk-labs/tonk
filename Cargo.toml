@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/tonk-core"]
+members = ["rust/tonk-core", "rust/tonk-space"]
 resolver = "2"
 
 [workspace.package]
@@ -10,6 +10,17 @@ edition = "2024"
 
 [workspace.dependencies]
 tonk-core = { path = "./rust/tonk-core" }
+tonk-space = { path = "./rust/tonk-space" }
+
+# Dialog DB
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
+
+# UCAN
+ucan = { git = "https://github.com/Gozala/rs-ucan.git", branch = "fix/wasm-compile", package = "ucan" }
+varsig = { git = "https://github.com/Gozala/rs-ucan.git", branch = "fix/wasm-compile", package = "varsig" }
 
 [profile.dev]
 opt-level = 1
