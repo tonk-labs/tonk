@@ -19,7 +19,6 @@ automerge = "0.7.0"
 # runtime
 tokio-stream = "0.1.17"
 futures = "0.3.31"
-rayon = "1.11.0"
 
 # serialisation
 serde = "1.0.219"
