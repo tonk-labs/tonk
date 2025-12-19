@@ -1,0 +1,14 @@
+{
+  "name": "samod-sync-tests",
+  "version": "1.0.0",
+  "description": "Node.js tests for samod document synchronization",
+  "type": "module",
+  "scripts": {
+    "test": "node run-sync-test.js",
+    "server": "node test-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {}
+}

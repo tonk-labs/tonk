@@ -1,0 +1,49 @@
+{
+  "name": "@tonk/core-wasm",
+  "version": "0.1.0",
+  "description": "WASM bindings for Tonk Core - local-first sync engine",
+  "main": "pkg/tonk_core.js",
+  "module": "pkg/tonk_core_bg.js",
+  "types": "pkg/tonk_core.d.ts",
+  "files": [
+    "pkg/**/*"
+  ],
+  "scripts": {
+    "build": "bun run build:node && bun run build:browser",
+    "build:node": "wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node",
+    "build:browser": "wasm-pack build --target web --out-dir pkg-browser -- --features wasm-browser",
+    "build:docker": "./build-wasm-docker.sh",
+    "test": "wasm-pack test --headless --firefox",
+    "test:browser": "bun run build:browser && bun run serve:test",
+    "test:node": "cd examples/node && bun test",
+    "test:integration": "bun run test:node && bun run test:browser",
+    "serve:test": "node examples/browser/server.js --port=8081 --dir=.",
+    "clean": "rm -rf pkg pkg-node pkg-browser"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonk-labs/tonk.git"
+  },
+  "keywords": [
+    "tonk",
+    "local-first",
+    "sync",
+    "automerge",
+    "wasm",
+    "real-time",
+    "collaboration"
+  ],
+  "author": "Tonk Labs",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/tonk-labs/tonk/issues"
+  },
+  "homepage": "https://github.com/tonk-labs/tonk#readme",
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "tmp": "^0.2.1",
+    "wasm-pack": "^0.13.1",
+    "ws": "^8.18.3"
+  }
+}

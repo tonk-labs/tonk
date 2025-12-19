@@ -2,6 +2,9 @@
 members = ["rust/tonk-core"]
 resolver = "2"
 
+[workspace.metadata.crane]
+name = "tonk"
+
 [workspace.package]
 version = "0.1.0"
 authors = ["Tonk Labs"]

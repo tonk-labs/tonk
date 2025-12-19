@@ -1,0 +1,1767 @@
+use crate::error::{Result, VfsError};
+use crate::vfs::types::*;
+use automerge::{ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable};
+use bytes::Bytes;
+use samod::{DocHandle, DocumentId};
+
+/// Helper functions for working with Automerge documents in the VFS
+pub struct AutomergeHelpers;
+
+impl AutomergeHelpers {
+    /// Initialize a document as a directory node
+    pub fn init_as_directory(handle: &DocHandle, name: &str) -> Result<()> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "type", "directory")?;
+            tx.put(automerge::ROOT, "name", name)?;
+
+            let now = chrono::Utc::now().timestamp_millis();
+            let timestamps_obj =
+                tx.put_object(automerge::ROOT, "timestamps", automerge::ObjType::Map)?;
+            tx.put(timestamps_obj.clone(), "created", now)?;
+            tx.put(timestamps_obj, "modified", now)?;
+
+            tx.put_object(automerge::ROOT, "children", automerge::ObjType::List)?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Read a directory node from an Automerge document
+    pub fn read_directory(handle: &DocHandle) -> Result<DirNode> {
+        handle.with_document(|doc| {
+            // Check if it's a directory
+            let node_type = doc
+                .get(automerge::ROOT, "type")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_string_value(&value))
+                .unwrap_or_else(|| "directory".to_string());
+
+            if node_type != "directory" {
+                return Err(VfsError::NodeTypeMismatch {
+                    expected: "directory".to_string(),
+                    actual: node_type,
+                });
+            }
+
+            // Get name
+            let name = doc
+                .get(automerge::ROOT, "name")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_string_value(&value))
+                .unwrap_or_else(|| "/".to_string());
+
+            // Get timestamps
+            let timestamps = Self::read_timestamps(doc, automerge::ROOT)?;
+
+            // Get children
+            let mut children = Vec::new();
+            if let Ok(Some((Value::Object(ObjType::List), children_obj_id))) =
+                doc.get(automerge::ROOT, "children")
+            {
+                let len = doc.length(children_obj_id.clone());
+                for i in 0..len {
+                    if let Ok(Some((Value::Object(ObjType::Map), child_obj_id))) =
+                        doc.get(children_obj_id.clone(), i)
+                        && let Ok(ref_node) = Self::read_ref_node(doc, child_obj_id)
+                    {
+                        children.push(ref_node);
+                    }
+                }
+            }
+
+            Ok(DirNode {
+                node_type: NodeType::Directory,
+                name,
+                timestamps,
+                children,
+            })
+        })
+    }
+
+    /// Add a child reference to a directory
+    pub fn add_child_to_directory(handle: &DocHandle, child_ref: &RefNode) -> Result<()> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+
+            // Get or create children array
+            let children_obj_id = match tx.get(automerge::ROOT, "children") {
+                Ok(Some((Value::Object(ObjType::List), obj_id))) => obj_id,
+                _ => {
+                    // Children array doesn't exist, create it
+                    tx.put_object(automerge::ROOT, "children", automerge::ObjType::List)?
+                }
+            };
+
+            // Check if child already exists
+            let len = tx.length(children_obj_id.clone());
+            for i in 0..len {
+                if let Ok(Some((Value::Object(ObjType::Map), child_obj_id))) =
+                    tx.get(children_obj_id.clone(), i)
+                    && let Ok(Some((existing_name, _))) = tx.get(child_obj_id.clone(), "name")
+                    && Self::extract_string_value(&existing_name).as_deref()
+                        == Some(&child_ref.name)
+                {
+                    // Child already exists, update it
+                    Self::write_ref_node(&mut tx, child_obj_id, child_ref)?;
+                    Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+
+                    tx.commit();
+                    return Ok(());
+                }
+            }
+
+            // Child doesn't exist, add it
+            let child_obj = tx.insert_object(children_obj_id, len, automerge::ObjType::Map)?;
+            Self::write_ref_node(&mut tx, child_obj, child_ref)?;
+            Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Remove a child reference from a directory
+    pub fn remove_child_from_directory(
+        handle: &DocHandle,
+        child_name: &str,
+    ) -> Result<Option<RefNode>> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            let mut found_child = None;
+
+            if let Ok(Some((Value::Object(ObjType::List), children_obj_id))) =
+                tx.get(automerge::ROOT, "children")
+            {
+                let len = tx.length(children_obj_id.clone());
+                for i in 0..len {
+                    if let Ok(Some((Value::Object(ObjType::Map), child_obj_id))) =
+                        tx.get(children_obj_id.clone(), i)
+                        && let Ok(Some((existing_name, _))) = tx.get(child_obj_id.clone(), "name")
+                        && Self::extract_string_value(&existing_name).as_deref() == Some(child_name)
+                    {
+                        // Found the child, read it before deleting
+                        found_child = Self::read_ref_node_from_tx(&tx, child_obj_id).ok();
+                        tx.delete(children_obj_id, i)?;
+                        Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+                        break;
+                    }
+                }
+            }
+
+            tx.commit();
+            Ok(found_child)
+        })
+    }
+
+    /// Initialize a document as a document node
+    pub fn init_as_document<T>(handle: &DocHandle, name: &str, content: T) -> Result<()>
+    where
+        T: serde::Serialize,
+    {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "type", "document")?;
+            tx.put(automerge::ROOT, "name", name)?;
+
+            let now = chrono::Utc::now().timestamp_millis();
+            let timestamps_obj =
+                tx.put_object(automerge::ROOT, "timestamps", automerge::ObjType::Map)?;
+            tx.put(timestamps_obj.clone(), "created", now)?;
+            tx.put(timestamps_obj, "modified", now)?;
+
+            // Convert content to JSON value and store as native Automerge objects
+            let json_value =
+                serde_json::to_value(&content).map_err(VfsError::SerializationError)?;
+
+            // Create content object based on JSON type
+            match &json_value {
+                serde_json::Value::Object(map) => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                    for (k, v) in map {
+                        Self::put_json_value(&mut tx, content_obj.clone(), k, v)?;
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::List)?;
+                    for (i, item) in arr.iter().enumerate() {
+                        Self::insert_json_value(&mut tx, content_obj.clone(), i, item)?;
+                    }
+                }
+                // For primitive values, wrap in an object with a "value" key
+                _ => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                    Self::put_json_value(&mut tx, content_obj, "value", &json_value)?;
+                }
+            }
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Initialize a document as a document node with bytes
+    pub fn init_as_document_with_bytes<T>(
+        handle: &DocHandle,
+        name: &str,
+        content: T,
+        bytes: Bytes,
+    ) -> Result<()>
+    where
+        T: serde::Serialize,
+    {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "type", "document")?;
+            tx.put(automerge::ROOT, "name", name)?;
+
+            let now = chrono::Utc::now().timestamp_millis();
+            let timestamps_obj =
+                tx.put_object(automerge::ROOT, "timestamps", automerge::ObjType::Map)?;
+            tx.put(timestamps_obj.clone(), "created", now)?;
+            tx.put(timestamps_obj, "modified", now)?;
+
+            // Convert content to JSON value and store as native Automerge objects
+            let json_value =
+                serde_json::to_value(&content).map_err(VfsError::SerializationError)?;
+
+            // Create content object based on JSON type
+            match &json_value {
+                serde_json::Value::Object(map) => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                    for (k, v) in map {
+                        Self::put_json_value(&mut tx, content_obj.clone(), k, v)?;
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::List)?;
+                    for (i, item) in arr.iter().enumerate() {
+                        Self::insert_json_value(&mut tx, content_obj.clone(), i, item)?;
+                    }
+                }
+                // For primitive values, wrap in an object with a "value" key
+                _ => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                    Self::put_json_value(&mut tx, content_obj, "value", &json_value)?;
+                }
+            }
+
+            // Store bytes value separately
+            let bytes_scalar = ScalarValue::Bytes(bytes.to_vec());
+            tx.put(automerge::ROOT, "bytes", bytes_scalar)?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    // Helper functions
+    pub fn extract_string_value(value: &Value) -> Option<String> {
+        match value {
+            Value::Scalar(s) => {
+                let s_str = s.to_string();
+                // Remove quotes if present
+                if s_str.starts_with('"') && s_str.ends_with('"') && s_str.len() > 1 {
+                    Some(s_str[1..s_str.len() - 1].to_string())
+                } else {
+                    Some(s_str)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn extract_bytes_value(value: &automerge::Value) -> Option<Vec<u8>> {
+        match value {
+            automerge::Value::Scalar(scalar) => match scalar.as_ref() {
+                automerge::ScalarValue::Bytes(bytes) => Some(bytes.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    // ============================================================
+    // JSON <-> Native Automerge Conversion Helpers
+    // ============================================================
+
+    /// Write a JSON value to an Automerge object at the given key
+    fn put_json_value(
+        tx: &mut automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<()> {
+        match value {
+            serde_json::Value::Null => {
+                // Treat null as "delete key"
+                tx.delete(obj_id, key)?;
+            }
+            serde_json::Value::Bool(b) => {
+                tx.put(obj_id, key, *b)?;
+            }
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    tx.put(obj_id, key, i)?;
+                } else if let Some(f) = n.as_f64() {
+                    tx.put(obj_id, key, f)?;
+                }
+            }
+            serde_json::Value::String(s) => {
+                tx.put(obj_id, key, s.as_str())?;
+            }
+            serde_json::Value::Array(arr) => {
+                let list_obj = tx.put_object(obj_id, key, ObjType::List)?;
+                for (i, item) in arr.iter().enumerate() {
+                    Self::insert_json_value(tx, list_obj.clone(), i, item)?;
+                }
+            }
+            serde_json::Value::Object(map) => {
+                let map_obj = tx.put_object(obj_id, key, ObjType::Map)?;
+                for (k, v) in map {
+                    Self::put_json_value(tx, map_obj.clone(), k, v)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Insert a JSON value into an Automerge list at the given index
+    fn insert_json_value(
+        tx: &mut automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+        index: usize,
+        value: &serde_json::Value,
+    ) -> Result<()> {
+        match value {
+            serde_json::Value::Null => {
+                tx.insert(obj_id, index, ())?;
+            }
+            serde_json::Value::Bool(b) => {
+                tx.insert(obj_id, index, *b)?;
+            }
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    tx.insert(obj_id, index, i)?;
+                } else if let Some(f) = n.as_f64() {
+                    tx.insert(obj_id, index, f)?;
+                }
+            }
+            serde_json::Value::String(s) => {
+                tx.insert(obj_id, index, s.as_str())?;
+            }
+            serde_json::Value::Array(arr) => {
+                let list_obj = tx.insert_object(obj_id, index, ObjType::List)?;
+                for (i, item) in arr.iter().enumerate() {
+                    Self::insert_json_value(tx, list_obj.clone(), i, item)?;
+                }
+            }
+            serde_json::Value::Object(map) => {
+                let map_obj = tx.insert_object(obj_id, index, ObjType::Map)?;
+                for (k, v) in map {
+                    Self::put_json_value(tx, map_obj.clone(), k, v)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Read an Automerge value and convert it to a JSON value
+    fn read_automerge_value(
+        doc: &automerge::Automerge,
+        obj_id: automerge::ObjId,
+    ) -> Result<serde_json::Value> {
+        use automerge::ReadDoc;
+
+        let obj_type = doc.object_type(&obj_id);
+
+        match obj_type {
+            Ok(ObjType::Map) | Ok(ObjType::Table) => {
+                let mut map = serde_json::Map::new();
+                for key in doc.keys(&obj_id) {
+                    if let Ok(Some((value, inner_obj_id))) = doc.get(&obj_id, &key) {
+                        let json_val = Self::value_to_json(doc, &value, inner_obj_id)?;
+                        map.insert(key.to_string(), json_val);
+                    }
+                }
+                Ok(serde_json::Value::Object(map))
+            }
+            Ok(ObjType::List) => {
+                let mut arr = Vec::new();
+                let len = doc.length(&obj_id);
+                for i in 0..len {
+                    if let Ok(Some((value, inner_obj_id))) = doc.get(&obj_id, i) {
+                        let json_val = Self::value_to_json(doc, &value, inner_obj_id)?;
+                        arr.push(json_val);
+                    }
+                }
+                Ok(serde_json::Value::Array(arr))
+            }
+            Ok(ObjType::Text) => {
+                let text = doc.text(&obj_id).map_err(VfsError::AutomergeError)?;
+                Ok(serde_json::Value::String(text))
+            }
+            Err(_) => Ok(serde_json::Value::Null),
+        }
+    }
+
+    /// Convert an Automerge Value to a JSON value
+    fn value_to_json(
+        doc: &automerge::Automerge,
+        value: &Value,
+        obj_id: automerge::ObjId,
+    ) -> Result<serde_json::Value> {
+        match value {
+            Value::Object(ObjType::Map)
+            | Value::Object(ObjType::List)
+            | Value::Object(ObjType::Text)
+            | Value::Object(ObjType::Table) => Self::read_automerge_value(doc, obj_id),
+            Value::Scalar(s) => {
+                match s.as_ref() {
+                    ScalarValue::Null => Ok(serde_json::Value::Null),
+                    ScalarValue::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
+                    ScalarValue::Int(i) => Ok(serde_json::Value::Number((*i).into())),
+                    ScalarValue::Uint(u) => Ok(serde_json::Value::Number((*u).into())),
+                    ScalarValue::F64(f) => Ok(serde_json::Number::from_f64(*f)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null)),
+                    ScalarValue::Str(s) => Ok(serde_json::Value::String(s.to_string())),
+                    ScalarValue::Bytes(b) => {
+                        // Encode bytes as base64 string
+                        use base64::Engine;
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(b);
+                        Ok(serde_json::Value::String(encoded))
+                    }
+                    ScalarValue::Counter(c) => Ok(serde_json::Value::Number(i64::from(c).into())),
+                    ScalarValue::Timestamp(t) => Ok(serde_json::Value::Number((*t).into())),
+                    ScalarValue::Unknown { .. } => Ok(serde_json::Value::Null),
+                }
+            }
+        }
+    }
+
+    /// Navigate to a specific path within a document, returning the object ID
+    fn navigate_to_path(doc: &automerge::Automerge, path: &[String]) -> Result<automerge::ObjId> {
+        let mut current = automerge::ROOT;
+
+        for key in path {
+            match doc.get(current.clone(), key.as_str()) {
+                Ok(Some((Value::Object(_), obj_id))) => current = obj_id,
+                Ok(Some(_)) => {
+                    return Err(VfsError::Other(anyhow::anyhow!(
+                        "Path element '{}' is not an object",
+                        key
+                    )));
+                }
+                Ok(None) => {
+                    return Err(VfsError::Other(anyhow::anyhow!(
+                        "Path element '{}' not found",
+                        key
+                    )));
+                }
+                Err(e) => return Err(VfsError::AutomergeError(e)),
+            }
+        }
+
+        Ok(current)
+    }
+
+    /// Navigate to parent of a path, returning (parent_obj_id, final_key)
+    fn navigate_to_parent(
+        doc: &automerge::Automerge,
+        path: &[String],
+    ) -> Result<(automerge::ObjId, String)> {
+        if path.is_empty() {
+            return Err(VfsError::Other(anyhow::anyhow!("Path cannot be empty")));
+        }
+
+        let parent_path = &path[..path.len() - 1];
+        let final_key = path.last().unwrap().clone();
+
+        let parent_obj = if parent_path.is_empty() {
+            automerge::ROOT
+        } else {
+            Self::navigate_to_path(doc, parent_path)?
+        };
+
+        Ok((parent_obj, final_key))
+    }
+
+    fn read_timestamps(doc: &automerge::Automerge, obj_id: automerge::ObjId) -> Result<Timestamps> {
+        let default_time = chrono::Utc::now();
+
+        let created = doc
+            .get(obj_id.clone(), "timestamps")
+            .ok()
+            .flatten()
+            .and_then(|(value, ts_obj_id)| {
+                if let Value::Object(_) = value {
+                    doc.get(ts_obj_id, "created")
+                        .ok()
+                        .flatten()
+                        .and_then(|(ts_val, _)| match ts_val {
+                            Value::Scalar(s) => s.to_string().parse::<i64>().ok(),
+                            _ => None,
+                        })
+                        .and_then(chrono::DateTime::from_timestamp_millis)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(default_time);
+
+        let modified = doc
+            .get(obj_id, "timestamps")
+            .ok()
+            .flatten()
+            .and_then(|(value, ts_obj_id)| {
+                if let Value::Object(_) = value {
+                    doc.get(ts_obj_id, "modified")
+                        .ok()
+                        .flatten()
+                        .and_then(|(ts_val, _)| match ts_val {
+                            Value::Scalar(s) => s.to_string().parse::<i64>().ok(),
+                            _ => None,
+                        })
+                        .and_then(chrono::DateTime::from_timestamp_millis)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(default_time);
+
+        Ok(Timestamps { created, modified })
+    }
+
+    fn read_timestamps_from_tx(
+        tx: &automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+    ) -> Result<Timestamps> {
+        let default_time = chrono::Utc::now();
+
+        let created = tx
+            .get(obj_id.clone(), "timestamps")
+            .ok()
+            .flatten()
+            .and_then(|(value, ts_obj_id)| {
+                if let Value::Object(_) = value {
+                    tx.get(ts_obj_id, "created")
+                        .ok()
+                        .flatten()
+                        .and_then(|(ts_val, _)| match ts_val {
+                            Value::Scalar(s) => s.to_string().parse::<i64>().ok(),
+                            _ => None,
+                        })
+                        .and_then(chrono::DateTime::from_timestamp_millis)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(default_time);
+
+        let modified = tx
+            .get(obj_id, "timestamps")
+            .ok()
+            .flatten()
+            .and_then(|(value, ts_obj_id)| {
+                if let Value::Object(_) = value {
+                    tx.get(ts_obj_id, "modified")
+                        .ok()
+                        .flatten()
+                        .and_then(|(ts_val, _)| match ts_val {
+                            Value::Scalar(s) => s.to_string().parse::<i64>().ok(),
+                            _ => None,
+                        })
+                        .and_then(chrono::DateTime::from_timestamp_millis)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(default_time);
+
+        Ok(Timestamps { created, modified })
+    }
+
+    fn read_ref_node(doc: &automerge::Automerge, obj_id: automerge::ObjId) -> Result<RefNode> {
+        let name = doc
+            .get(obj_id.clone(), "name")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| Self::extract_string_value(&value))
+            .unwrap_or_default();
+
+        let node_type_str = doc
+            .get(obj_id.clone(), "type")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| Self::extract_string_value(&value))
+            .unwrap_or_else(|| "document".to_string());
+
+        let node_type = match node_type_str.as_str() {
+            "directory" => NodeType::Directory,
+            _ => NodeType::Document,
+        };
+
+        let pointer_str = doc
+            .get(obj_id.clone(), "pointer")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| Self::extract_string_value(&value))
+            .ok_or_else(|| VfsError::InvalidDocumentStructure)?;
+
+        let pointer = pointer_str
+            .parse::<DocumentId>()
+            .map_err(|_| VfsError::InvalidDocumentStructure)?;
+
+        let timestamps = Self::read_timestamps(doc, obj_id)?;
+
+        Ok(RefNode {
+            pointer,
+            node_type,
+            timestamps,
+            name,
+        })
+    }
+
+    fn read_ref_node_from_tx(
+        tx: &automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+    ) -> Result<RefNode> {
+        let name = tx
+            .get(obj_id.clone(), "name")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| Self::extract_string_value(&value))
+            .unwrap_or_default();
+
+        let node_type_str = tx
+            .get(obj_id.clone(), "type")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| Self::extract_string_value(&value))
+            .unwrap_or_else(|| "document".to_string());
+
+        let node_type = match node_type_str.as_str() {
+            "directory" => NodeType::Directory,
+            _ => NodeType::Document,
+        };
+
+        let pointer_str = tx
+            .get(obj_id.clone(), "pointer")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| Self::extract_string_value(&value))
+            .ok_or_else(|| VfsError::InvalidDocumentStructure)?;
+
+        let pointer = pointer_str
+            .parse::<DocumentId>()
+            .map_err(|_| VfsError::InvalidDocumentStructure)?;
+
+        let timestamps = Self::read_timestamps_from_tx(tx, obj_id)?;
+
+        Ok(RefNode {
+            pointer,
+            node_type,
+            timestamps,
+            name,
+        })
+    }
+
+    fn write_ref_node(
+        tx: &mut automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+        ref_node: &RefNode,
+    ) -> Result<()> {
+        tx.put(obj_id.clone(), "name", ref_node.name.clone())?;
+        let type_str = match ref_node.node_type {
+            NodeType::Directory => "directory",
+            NodeType::Document => "document",
+        };
+        tx.put(obj_id.clone(), "type", type_str)?;
+        tx.put(obj_id.clone(), "pointer", ref_node.pointer.to_string())?;
+
+        let timestamps_obj = tx.put_object(obj_id, "timestamps", automerge::ObjType::Map)?;
+        tx.put(
+            timestamps_obj.clone(),
+            "created",
+            ref_node.timestamps.created.timestamp_millis(),
+        )?;
+        tx.put(
+            timestamps_obj,
+            "modified",
+            ref_node.timestamps.modified.timestamp_millis(),
+        )?;
+
+        Ok(())
+    }
+
+    fn update_modified_timestamp(
+        tx: &mut automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+    ) -> Result<()> {
+        if let Ok(Some((Value::Object(_), ts_obj_id))) = tx.get(obj_id, "timestamps") {
+            tx.put(ts_obj_id, "modified", chrono::Utc::now().timestamp_millis())?;
+        }
+        Ok(())
+    }
+
+    /// Deserialize content from JSON, handling wrapped primitives
+    ///
+    /// When primitive values (strings, numbers, etc.) are stored, they're wrapped
+    /// in {"value": X}. This helper unwraps them if needed.
+    fn deserialize_content<T>(json_value: serde_json::Value) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        // Check if this is a wrapped primitive ({"value": X})
+        if let serde_json::Value::Object(ref map) = json_value
+            && map.len() == 1
+            && let Some(inner_value) = map.get("value")
+        {
+            // Try deserializing the unwrapped value first
+            if let Ok(content) = serde_json::from_value(inner_value.clone()) {
+                return Ok(content);
+            }
+        }
+
+        // Fallback to deserializing the whole JSON value
+        serde_json::from_value(json_value).map_err(VfsError::SerializationError)
+    }
+
+    /// Read a document node from an Automerge document
+    pub fn read_document<T>(handle: &DocHandle) -> Result<DocNode<T>>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        handle.with_document(|doc| {
+            // Check if it's a document
+            let node_type = doc
+                .get(automerge::ROOT, "type")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_string_value(&value))
+                .unwrap_or_else(|| "document".to_string());
+
+            if node_type != "document" {
+                return Err(VfsError::NodeTypeMismatch {
+                    expected: "document".to_string(),
+                    actual: node_type,
+                });
+            }
+
+            // Get name
+            let name = doc
+                .get(automerge::ROOT, "name")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_string_value(&value))
+                .unwrap_or_default();
+
+            // Get timestamps
+            let timestamps = Self::read_timestamps(doc, automerge::ROOT)?;
+
+            // Get content
+            let content_result = doc
+                .get(automerge::ROOT, "content")
+                .map_err(VfsError::AutomergeError)?;
+
+            let content: T = match content_result {
+                Some((Value::Object(_), content_obj_id)) => {
+                    // Native storage: read as Automerge object and convert to JSON
+                    let json_value = Self::read_automerge_value(doc, content_obj_id)?;
+                    Self::deserialize_content(json_value)?
+                }
+                Some((value, _)) => {
+                    // Legacy storage: content is a JSON string
+                    let content_str = Self::extract_string_value(&value)
+                        .ok_or_else(|| VfsError::InvalidDocumentStructure)?;
+                    serde_json::from_str(&content_str).map_err(VfsError::SerializationError)?
+                }
+                None => {
+                    return Err(VfsError::InvalidDocumentStructure);
+                }
+            };
+
+            Ok(DocNode {
+                node_type: NodeType::Document,
+                name,
+                timestamps,
+                content,
+                bytes: None,
+            })
+        })
+    }
+
+    /// Read a document node from an Automerge document with bytes
+    pub fn read_bytes_document<T>(handle: &DocHandle) -> Result<DocNode<T>>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        handle.with_document(|doc| {
+            // Check if it's a document
+            let node_type = doc
+                .get(automerge::ROOT, "type")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_string_value(&value))
+                .unwrap_or_else(|| "document".to_string());
+
+            if node_type != "document" {
+                return Err(VfsError::NodeTypeMismatch {
+                    expected: "document".to_string(),
+                    actual: node_type,
+                });
+            }
+
+            // Get name
+            let name = doc
+                .get(automerge::ROOT, "name")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_string_value(&value))
+                .unwrap_or_default();
+
+            // Get timestamps
+            let timestamps = Self::read_timestamps(doc, automerge::ROOT)?;
+
+            // Get content
+            let content_result = doc
+                .get(automerge::ROOT, "content")
+                .map_err(VfsError::AutomergeError)?;
+
+            let content: T = match content_result {
+                Some((Value::Object(_), content_obj_id)) => {
+                    // Native storage: read as Automerge object and convert to JSON
+                    let json_value = Self::read_automerge_value(doc, content_obj_id)?;
+                    Self::deserialize_content(json_value)?
+                }
+                Some((value, _)) => {
+                    // Legacy storage: content is a JSON string
+                    let content_str = Self::extract_string_value(&value)
+                        .ok_or_else(|| VfsError::InvalidDocumentStructure)?;
+                    serde_json::from_str(&content_str).map_err(VfsError::SerializationError)?
+                }
+                None => {
+                    return Err(VfsError::InvalidDocumentStructure);
+                }
+            };
+
+            let content_bytes = doc
+                .get(automerge::ROOT, "bytes")
+                .map_err(VfsError::AutomergeError)?
+                .and_then(|(value, _)| Self::extract_bytes_value(&value))
+                .ok_or_else(|| VfsError::InvalidDocumentStructure)?;
+
+            Ok(DocNode {
+                node_type: NodeType::Document,
+                name,
+                timestamps,
+                content,
+                bytes: Some(content_bytes),
+            })
+        })
+    }
+
+    /// Set content of an existing document
+    pub fn set_document_content<T>(handle: &DocHandle, content: T) -> Result<()>
+    where
+        T: serde::Serialize,
+    {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+
+            // Convert content to JSON value and store as native Automerge objects
+            let json_value =
+                serde_json::to_value(&content).map_err(VfsError::SerializationError)?;
+
+            // Delete old content if it exists
+            let _ = tx.delete(automerge::ROOT, "content");
+
+            // Create new content object based on JSON type
+            match &json_value {
+                serde_json::Value::Object(map) => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                    for (k, v) in map {
+                        Self::put_json_value(&mut tx, content_obj.clone(), k, v)?;
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::List)?;
+                    for (i, item) in arr.iter().enumerate() {
+                        Self::insert_json_value(&mut tx, content_obj.clone(), i, item)?;
+                    }
+                }
+                _ => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                    Self::put_json_value(&mut tx, content_obj, "value", &json_value)?;
+                }
+            }
+
+            // Update modified timestamp
+            Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Set content and binary data of an existing document
+    pub fn set_document_content_with_bytes<T>(
+        handle: &DocHandle,
+        content: T,
+        bytes: Bytes,
+    ) -> Result<()>
+    where
+        T: serde::Serialize,
+    {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+
+            // Convert content to JSON value and store as native Automerge objects
+            let json_value =
+                serde_json::to_value(&content).map_err(VfsError::SerializationError)?;
+
+            // Delete old content if it exists
+            let _ = tx.delete(automerge::ROOT, "content");
+
+            // Create new content object based on JSON type
+            match &json_value {
+                serde_json::Value::Object(map) => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                    for (k, v) in map {
+                        Self::put_json_value(&mut tx, content_obj.clone(), k, v)?;
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::List)?;
+                    for (i, item) in arr.iter().enumerate() {
+                        Self::insert_json_value(&mut tx, content_obj.clone(), i, item)?;
+                    }
+                }
+                _ => {
+                    let content_obj = tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                    Self::put_json_value(&mut tx, content_obj, "value", &json_value)?;
+                }
+            }
+
+            // Update binary data
+            let bytes_scalar = ScalarValue::Bytes(bytes.to_vec());
+            tx.put(automerge::ROOT, "bytes", bytes_scalar)?;
+
+            // Update modified timestamp
+            Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    // ============================================================
+    // Smart Update / Reconciliation Helpers
+    // ============================================================
+
+    /// Check if two JSON values are structurally equal
+    fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+        match (a, b) {
+            (serde_json::Value::Null, serde_json::Value::Null) => true,
+            (serde_json::Value::Bool(a), serde_json::Value::Bool(b)) => a == b,
+            (serde_json::Value::Number(a), serde_json::Value::Number(b)) => a == b,
+            (serde_json::Value::String(a), serde_json::Value::String(b)) => a == b,
+            (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                a.iter()
+                    .zip(b.iter())
+                    .all(|(x, y)| Self::json_values_equal(x, y))
+            }
+            (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                a.iter()
+                    .all(|(k, v)| b.get(k).is_some_and(|bv| Self::json_values_equal(v, bv)))
+            }
+            _ => false,
+        }
+    }
+
+    /// Reconcile arrays - currently does full replacement if different.
+    /// Isolated for easy future upgrade to smarter diffing.
+    fn reconcile_arrays(
+        tx: &mut automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+        key: &str,
+        _old_arr: &[serde_json::Value],
+        new_arr: &[serde_json::Value],
+    ) -> Result<bool> {
+        // V1: Full replacement - delete old, create new
+        let _ = tx.delete(obj_id.clone(), key);
+        let list_obj = tx.put_object(obj_id, key, ObjType::List)?;
+        for (i, item) in new_arr.iter().enumerate() {
+            Self::insert_json_value(tx, list_obj.clone(), i, item)?;
+        }
+        Ok(true)
+    }
+
+    /// Reconcile two JSON objects, applying minimal changes
+    ///
+    /// ## Merge Semantics
+    ///
+    /// - **Added keys**: Keys in new but not in old are added
+    /// - **Changed keys**: Keys in both with different values are recursively reconciled
+    /// - **Preserved keys**: Keys in old but not in new are **preserved**
+    /// - **Explicit deletion**: Keys with explicit `null` value in new are **deleted**
+    ///
+    /// This design is safe for CRDT-based collaborative editing where concurrent
+    /// additions from different clients should be preserved
+    fn reconcile_objects(
+        tx: &mut automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+        old_map: &serde_json::Map<String, serde_json::Value>,
+        new_map: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<bool> {
+        let mut changed = false;
+
+        // Add, update, or explicitly delete keys from new
+        for (key, new_value) in new_map {
+            // Explicit null = delete the key
+            if new_value.is_null() {
+                if old_map.contains_key(key) {
+                    tx.delete(obj_id.clone(), key.as_str())?;
+                    changed = true;
+                }
+                continue;
+            }
+
+            match old_map.get(key) {
+                None => {
+                    // Key doesn't exist in old - add it
+                    Self::put_json_value(tx, obj_id.clone(), key, new_value)?;
+                    changed = true;
+                }
+                Some(old_value) => {
+                    // Key exists - check if values differ
+                    if !Self::json_values_equal(old_value, new_value) {
+                        // Values differ - recurse or replace
+                        let did_change = Self::reconcile_json_values_at_key(
+                            tx,
+                            obj_id.clone(),
+                            key,
+                            old_value,
+                            new_value,
+                        )?;
+                        changed = changed || did_change;
+                    }
+                }
+            }
+        }
+
+        Ok(changed)
+    }
+
+    /// Reconcile a JSON value at a specific key within an object
+    fn reconcile_json_values_at_key(
+        tx: &mut automerge::transaction::Transaction<'_>,
+        obj_id: automerge::ObjId,
+        key: &str,
+        old_value: &serde_json::Value,
+        new_value: &serde_json::Value,
+    ) -> Result<bool> {
+        // Explicit null = delete (handles nested nulls like {"foo": {"bar": null}})
+        if new_value.is_null() {
+            tx.delete(obj_id, key)?;
+            return Ok(true);
+        }
+
+        match (old_value, new_value) {
+            // Both objects - recurse
+            (serde_json::Value::Object(old_map), serde_json::Value::Object(new_map)) => {
+                // Get the nested object ID
+                if let Ok(Some((Value::Object(ObjType::Map), nested_obj_id))) =
+                    tx.get(obj_id.clone(), key)
+                {
+                    Self::reconcile_objects(tx, nested_obj_id, old_map, new_map)
+                } else {
+                    // Object doesn't exist or is wrong type - replace
+                    Self::put_json_value(tx, obj_id, key, new_value)?;
+                    Ok(true)
+                }
+            }
+            // Both arrays - use array reconciliation
+            (serde_json::Value::Array(old_arr), serde_json::Value::Array(new_arr)) => {
+                if Self::json_values_equal(old_value, new_value) {
+                    Ok(false)
+                } else {
+                    Self::reconcile_arrays(tx, obj_id, key, old_arr, new_arr)
+                }
+            }
+            // Different types or scalar values - replace
+            _ => {
+                Self::put_json_value(tx, obj_id, key, new_value)?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Update document content with intelligent diffing
+    ///
+    /// ## Merge Semantics
+    ///
+    /// This function applies minimal changes by comparing the new content against
+    /// existing content. It is designed for collaborative editing where multiple
+    /// clients may make concurrent changes
+    ///
+    /// - **Preserved keys**: Keys in the existing document but missing from new content
+    ///   are **preserved**. This ensures concurrent additions from other clients survive
+    /// - **Explicit deletion**: Set a key to `null` to delete it
+    /// - **Nested objects**: Recursively merged using the same rules
+    /// - **Arrays**: Fully replaced (not merged element-by-element)
+    /// - **No-change detection**: Returns `false` if content is structurally equal
+    ///
+    /// ## Example
+    ///
+    /// ```text
+    /// Existing: { "a": 1, "b": 2, "c": 3 }
+    /// Update:   { "a": 10, "d": 4, "b": null }
+    /// Result:   { "a": 10, "c": 3, "d": 4 }
+    ///           ^^^^^^^^  ^^^^^  ^^^^^
+    ///           changed   kept   added
+    ///                     "b" deleted via null
+    /// ```
+    pub fn update_document_content<T>(handle: &DocHandle, content: T) -> Result<bool>
+    where
+        T: serde::Serialize,
+    {
+        handle.with_document(|doc| {
+            // Convert new content to JSON
+            let new_json = serde_json::to_value(&content).map_err(VfsError::SerializationError)?;
+
+            // Read current content
+            let content_result = doc.get(automerge::ROOT, "content");
+            let (has_content, content_obj_id) = match content_result {
+                Ok(Some((Value::Object(_), obj_id))) => (true, Some(obj_id)),
+                _ => (false, None),
+            };
+
+            // Read existing content as JSON before starting transaction
+            let old_json = if has_content {
+                Some(Self::read_automerge_value(
+                    doc,
+                    content_obj_id.clone().unwrap(),
+                )?)
+            } else {
+                None
+            };
+
+            let mut tx = doc.transaction();
+
+            if old_json.is_none() {
+                // No existing content - just set it
+                match &new_json {
+                    serde_json::Value::Object(map) => {
+                        let content_obj =
+                            tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                        for (k, v) in map {
+                            Self::put_json_value(&mut tx, content_obj.clone(), k, v)?;
+                        }
+                    }
+                    serde_json::Value::Array(arr) => {
+                        let content_obj =
+                            tx.put_object(automerge::ROOT, "content", ObjType::List)?;
+                        for (i, item) in arr.iter().enumerate() {
+                            Self::insert_json_value(&mut tx, content_obj.clone(), i, item)?;
+                        }
+                    }
+                    _ => {
+                        let content_obj =
+                            tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                        Self::put_json_value(&mut tx, content_obj, "value", &new_json)?;
+                    }
+                }
+                Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+                tx.commit();
+                return Ok(true);
+            }
+
+            // At this point, old_json is Some since we handled the None case above
+            let old_json = old_json.unwrap();
+
+            // Check if values are equal
+            if Self::json_values_equal(&old_json, &new_json) {
+                return Ok(false);
+            }
+
+            // Reconcile based on types
+            let changed = match (&old_json, &new_json) {
+                (serde_json::Value::Object(old_map), serde_json::Value::Object(new_map)) => {
+                    Self::reconcile_objects(&mut tx, content_obj_id.unwrap(), old_map, new_map)?
+                }
+                _ => {
+                    // Type mismatch or non-object content - full replacement
+                    let _ = tx.delete(automerge::ROOT, "content");
+                    match &new_json {
+                        serde_json::Value::Object(map) => {
+                            let content_obj =
+                                tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                            for (k, v) in map {
+                                Self::put_json_value(&mut tx, content_obj.clone(), k, v)?;
+                            }
+                        }
+                        serde_json::Value::Array(arr) => {
+                            let content_obj =
+                                tx.put_object(automerge::ROOT, "content", ObjType::List)?;
+                            for (i, item) in arr.iter().enumerate() {
+                                Self::insert_json_value(&mut tx, content_obj.clone(), i, item)?;
+                            }
+                        }
+                        _ => {
+                            let content_obj =
+                                tx.put_object(automerge::ROOT, "content", ObjType::Map)?;
+                            Self::put_json_value(&mut tx, content_obj, "value", &new_json)?;
+                        }
+                    }
+                    true
+                }
+            };
+
+            if changed {
+                Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+            }
+
+            tx.commit();
+            Ok(changed)
+        })
+    }
+
+    /// Patch a document at a specific path
+    /// path: ["content", "x"] -> updates doc.content.x
+    pub fn patch_document(
+        handle: &DocHandle,
+        path: &[String],
+        value: serde_json::Value,
+    ) -> Result<()> {
+        if path.is_empty() {
+            return Err(VfsError::Other(anyhow::anyhow!("Path cannot be empty")));
+        }
+
+        handle.with_document(|doc| {
+            // Navigate to parent BEFORE creating transaction (borrow checker)
+            let (parent_obj, final_key) = Self::navigate_to_parent(doc, path)?;
+
+            // Now create the transaction
+            let mut tx = doc.transaction();
+
+            // Update the value at the path
+            Self::put_json_value(&mut tx, parent_obj, &final_key, &value)?;
+
+            // Update modified timestamp
+            Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Splice text at a specific path within a document
+    /// Uses Automerge's Text CRDT for character-level collaborative editing
+    pub fn splice_text(
+        handle: &DocHandle,
+        path: &[String],
+        index: usize,
+        delete_count: isize,
+        insert: &str,
+    ) -> Result<()> {
+        if path.is_empty() {
+            return Err(VfsError::Other(anyhow::anyhow!("Path cannot be empty")));
+        }
+
+        handle.with_document(|doc| {
+            // Navigate to parent BEFORE creating transaction (borrow checker)
+            let (parent_obj, final_key) = Self::navigate_to_parent(doc, path)?;
+
+            // Now create the transaction
+            let mut tx = doc.transaction();
+
+            // Check if text object exists at this path
+            let text_obj = match tx.get(parent_obj.clone(), final_key.as_str()) {
+                Ok(Some((Value::Object(ObjType::Text), obj_id))) => obj_id,
+                Ok(Some((Value::Scalar(scalar), _))) => {
+                    // Extract existing string content if it's a string scalar
+                    let existing_content = match scalar.as_ref() {
+                        ScalarValue::Str(s) => s.to_string(),
+                        _ => String::new(),
+                    };
+                    // Create a new Text object and initialize with existing content
+                    let text_obj = tx.put_object(parent_obj, final_key.as_str(), ObjType::Text)?;
+                    if !existing_content.is_empty() {
+                        tx.splice_text(text_obj.clone(), 0, 0, &existing_content)
+                            .map_err(VfsError::AutomergeError)?;
+                    }
+                    text_obj
+                }
+                Ok(None) => {
+                    // Create a new empty Text object
+                    tx.put_object(parent_obj, final_key.as_str(), ObjType::Text)?
+                }
+                Ok(Some((Value::Object(_), _))) => {
+                    return Err(VfsError::Other(anyhow::anyhow!(
+                        "Path '{}' is an object, not text",
+                        final_key
+                    )));
+                }
+                Err(e) => return Err(VfsError::AutomergeError(e)),
+            };
+
+            // Perform the splice operation
+            tx.splice_text(text_obj, index, delete_count, insert)
+                .map_err(VfsError::AutomergeError)?;
+
+            // Update modified timestamp
+            Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Update the timestamp of a RefNode in a directory
+    pub fn update_child_ref_timestamp(handle: &DocHandle, child_name: &str) -> Result<bool> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            let mut found = false;
+
+            if let Ok(Some((Value::Object(ObjType::List), children_obj_id))) =
+                tx.get(automerge::ROOT, "children")
+            {
+                let len = tx.length(children_obj_id.clone());
+                for i in 0..len {
+                    if let Ok(Some((Value::Object(ObjType::Map), child_obj_id))) =
+                        tx.get(children_obj_id.clone(), i)
+                        && let Ok(Some((existing_name, _))) = tx.get(child_obj_id.clone(), "name")
+                        && Self::extract_string_value(&existing_name).as_deref() == Some(child_name)
+                        && let Ok(Some((Value::Object(_), ts_obj_id))) =
+                            tx.get(child_obj_id, "timestamps")
+                    {
+                        // Found the child, update its timestamp
+                        let now = chrono::Utc::now().timestamp_millis();
+                        tx.put(ts_obj_id, "modified", now)?;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            if found {
+                // Also update the directory's own modified timestamp
+                Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+            }
+
+            tx.commit();
+            Ok(found)
+        })
+    }
+
+    /// Update the name field of a document or directory
+    pub fn update_document_name(handle: &DocHandle, new_name: &str) -> Result<()> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "name", new_name)?;
+            Self::update_modified_timestamp(&mut tx, automerge::ROOT)?;
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    // ============================================================================
+    // Path Index Helpers (Native Automerge Structure)
+    // ============================================================================
+
+    /// Initialize a document as a path index with native Automerge structure
+    ///
+    /// Structure:
+    /// ```text
+    /// ROOT
+    /// ├── type: "path_index"
+    /// ├── version: 2
+    /// ├── last_updated: i64
+    /// └── entries: Map (path -> entry)
+    /// ```
+    pub fn init_as_path_index(handle: &DocHandle) -> Result<()> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "type", "path_index")?;
+            tx.put(automerge::ROOT, "version", 2i64)?;
+            tx.put(
+                automerge::ROOT,
+                "last_updated",
+                chrono::Utc::now().timestamp_millis(),
+            )?;
+            tx.put_object(automerge::ROOT, "entries", ObjType::Map)?;
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Read the entire path index from native Automerge structure
+    pub fn read_path_index_native(handle: &DocHandle) -> Result<crate::vfs::path_index::PathIndex> {
+        use crate::vfs::path_index::PathIndex;
+
+        handle.with_document(|doc| {
+            let mut index = PathIndex::new();
+
+            // Read last_updated
+            if let Ok(Some((Value::Scalar(s), _))) = doc.get(automerge::ROOT, "last_updated")
+                && let Some(ts) = s.to_i64()
+                && let Some(dt) = chrono::DateTime::from_timestamp_millis(ts)
+            {
+                index.last_updated = dt;
+            }
+
+            // Read entries map
+            if let Ok(Some((Value::Object(ObjType::Map), entries_id))) =
+                doc.get(automerge::ROOT, "entries")
+            {
+                // Iterate over all keys in the entries map
+                for key in doc.keys(entries_id.clone()) {
+                    if let Ok(Some((Value::Object(ObjType::Map), entry_id))) =
+                        doc.get(entries_id.clone(), key.as_str())
+                        && let Some(entry) = Self::read_path_entry_from_obj(doc, entry_id.clone())
+                    {
+                        index.paths.insert(key.to_string(), entry);
+                    }
+                }
+            }
+
+            Ok(index)
+        })
+    }
+
+    /// Read a single PathEntry from an Automerge object
+    fn read_path_entry_from_obj(
+        doc: &automerge::Automerge,
+        entry_id: automerge::ObjId,
+    ) -> Option<crate::vfs::path_index::PathEntry> {
+        use crate::vfs::path_index::PathEntry;
+
+        let doc_id = doc
+            .get(entry_id.clone(), "doc_id")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| Self::extract_string_value(&v))?;
+
+        let node_type_str = doc
+            .get(entry_id.clone(), "node_type")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| Self::extract_string_value(&v))?;
+
+        let node_type = node_type_str.parse::<NodeType>().ok()?;
+
+        let created = doc
+            .get(entry_id.clone(), "created")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| {
+                if let Value::Scalar(s) = v {
+                    s.to_i64().and_then(chrono::DateTime::from_timestamp_millis)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(chrono::Utc::now);
+
+        let modified = doc
+            .get(entry_id, "modified")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| {
+                if let Value::Scalar(s) = v {
+                    s.to_i64().and_then(chrono::DateTime::from_timestamp_millis)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(chrono::Utc::now);
+
+        Some(PathEntry {
+            doc_id,
+            node_type,
+            created,
+            modified,
+        })
+    }
+
+    /// Set or update a single path entry
+    pub fn set_path_entry(
+        handle: &DocHandle,
+        path: &str,
+        doc_id: &str,
+        node_type: NodeType,
+        created: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<()> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            let now = chrono::Utc::now();
+
+            // Get or create entries map
+            let entries_id = match tx.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => tx.put_object(automerge::ROOT, "entries", ObjType::Map)?,
+            };
+
+            // Check if entry already exists to preserve created timestamp
+            let existing_created =
+                tx.get(entries_id.clone(), path)
+                    .ok()
+                    .flatten()
+                    .and_then(|(v, entry_id)| {
+                        if let Value::Object(ObjType::Map) = v {
+                            tx.get(entry_id, "created")
+                                .ok()
+                                .flatten()
+                                .and_then(|(v, _)| {
+                                    if let Value::Scalar(s) = v {
+                                        s.to_i64().and_then(chrono::DateTime::from_timestamp_millis)
+                                    } else {
+                                        None
+                                    }
+                                })
+                        } else {
+                            None
+                        }
+                    });
+
+            // Create or replace the entry
+            let entry_id = tx.put_object(entries_id, path, ObjType::Map)?;
+            tx.put(entry_id.clone(), "doc_id", doc_id)?;
+            tx.put(entry_id.clone(), "node_type", node_type.as_str())?;
+            tx.put(
+                entry_id.clone(),
+                "created",
+                created
+                    .or(existing_created)
+                    .unwrap_or(now)
+                    .timestamp_millis(),
+            )?;
+            tx.put(entry_id, "modified", now.timestamp_millis())?;
+
+            // Update last_updated
+            tx.put(automerge::ROOT, "last_updated", now.timestamp_millis())?;
+
+            tx.commit();
+            Ok(())
+        })
+    }
+
+    /// Update only the modified timestamp for a path
+    pub fn update_path_modified(handle: &DocHandle, path: &str) -> Result<bool> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            let now = chrono::Utc::now();
+
+            // Get entries map
+            let entries_id = match tx.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(false),
+            };
+
+            // Get the entry for this path
+            let entry_id = match tx.get(entries_id, path) {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(false),
+            };
+
+            // Update only the modified timestamp
+            tx.put(entry_id, "modified", now.timestamp_millis())?;
+            tx.put(automerge::ROOT, "last_updated", now.timestamp_millis())?;
+
+            tx.commit();
+            Ok(true)
+        })
+    }
+
+    /// Remove a path entry
+    pub fn remove_path_entry(handle: &DocHandle, path: &str) -> Result<bool> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+
+            // Get entries map
+            let entries_id = match tx.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(false),
+            };
+
+            // Check if entry exists
+            let exists = tx.get(entries_id.clone(), path).ok().flatten().is_some();
+            if !exists {
+                return Ok(false);
+            }
+
+            // Delete the entry
+            tx.delete(entries_id, path)?;
+
+            // Update last_updated
+            tx.put(
+                automerge::ROOT,
+                "last_updated",
+                chrono::Utc::now().timestamp_millis(),
+            )?;
+
+            tx.commit();
+            Ok(true)
+        })
+    }
+
+    /// Move a path entry (preserves metadata except modified timestamp)
+    pub fn move_path_entry(handle: &DocHandle, from: &str, to: &str) -> Result<bool> {
+        handle.with_document(|doc| {
+            let mut tx = doc.transaction();
+            let now = chrono::Utc::now();
+
+            // Get entries map
+            let entries_id = match tx.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(false),
+            };
+
+            // Read the existing entry
+            let (doc_id, node_type, created) = match tx.get(entries_id.clone(), from) {
+                Ok(Some((Value::Object(ObjType::Map), entry_id))) => {
+                    let doc_id = tx
+                        .get(entry_id.clone(), "doc_id")
+                        .ok()
+                        .flatten()
+                        .and_then(|(v, _)| Self::extract_string_value(&v));
+
+                    let node_type_str = tx
+                        .get(entry_id.clone(), "node_type")
+                        .ok()
+                        .flatten()
+                        .and_then(|(v, _)| Self::extract_string_value(&v));
+
+                    let created = tx
+                        .get(entry_id, "created")
+                        .ok()
+                        .flatten()
+                        .and_then(|(v, _)| {
+                            if let Value::Scalar(s) = v {
+                                s.to_i64()
+                            } else {
+                                None
+                            }
+                        });
+
+                    match (doc_id, node_type_str) {
+                        (Some(d), Some(n)) => (d, n, created),
+                        _ => return Ok(false),
+                    }
+                }
+                _ => return Ok(false),
+            };
+
+            // Delete the old entry
+            tx.delete(entries_id.clone(), from)?;
+
+            // Create the new entry
+            let new_entry_id = tx.put_object(entries_id, to, ObjType::Map)?;
+            tx.put(new_entry_id.clone(), "doc_id", doc_id.as_str())?;
+            tx.put(new_entry_id.clone(), "node_type", node_type.as_str())?;
+            tx.put(
+                new_entry_id.clone(),
+                "created",
+                created.unwrap_or_else(|| now.timestamp_millis()),
+            )?;
+            tx.put(new_entry_id, "modified", now.timestamp_millis())?;
+
+            // Update last_updated
+            tx.put(automerge::ROOT, "last_updated", now.timestamp_millis())?;
+
+            tx.commit();
+            Ok(true)
+        })
+    }
+
+    /// Check if a path exists
+    pub fn path_exists(handle: &DocHandle, path: &str) -> Result<bool> {
+        handle.with_document(|doc| {
+            // Get entries map
+            let entries_id = match doc.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(false),
+            };
+
+            // Check if entry exists
+            Ok(doc.get(entries_id, path).ok().flatten().is_some())
+        })
+    }
+
+    /// Get a single path entry
+    pub fn get_path_entry(
+        handle: &DocHandle,
+        path: &str,
+    ) -> Result<Option<crate::vfs::path_index::PathEntry>> {
+        handle.with_document(|doc| {
+            // Get entries map
+            let entries_id = match doc.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(None),
+            };
+
+            // Get the entry
+            match doc.get(entries_id, path) {
+                Ok(Some((Value::Object(ObjType::Map), entry_id))) => {
+                    Ok(Self::read_path_entry_from_obj(doc, entry_id))
+                }
+                _ => Ok(None),
+            }
+        })
+    }
+
+    /// List children of a directory path
+    pub fn list_path_children(
+        handle: &DocHandle,
+        dir_path: &str,
+    ) -> Result<Vec<(String, crate::vfs::path_index::PathEntry)>> {
+        handle.with_document(|doc| {
+            let mut children = Vec::new();
+
+            // Get entries map
+            let entries_id = match doc.get(automerge::ROOT, "entries") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => return Ok(children),
+            };
+
+            let normalized_dir = dir_path.trim_end_matches('/');
+            let prefix = if normalized_dir.is_empty() || normalized_dir == "/" {
+                "/"
+            } else {
+                normalized_dir
+            };
+
+            // Iterate over all keys
+            for key in doc.keys(entries_id.clone()) {
+                let path = key.to_string();
+
+                // Check if this is a direct child
+                if path.starts_with(prefix) && path != prefix {
+                    let remainder = if prefix == "/" {
+                        &path[1..]
+                    } else if path.len() > prefix.len() {
+                        &path[prefix.len() + 1..]
+                    } else {
+                        continue;
+                    };
+
+                    // Only direct children (no more slashes)
+                    if !remainder.contains('/')
+                        && let Ok(Some((Value::Object(ObjType::Map), entry_id))) =
+                            doc.get(entries_id.clone(), key.as_str())
+                        && let Some(entry) = Self::read_path_entry_from_obj(doc, entry_id)
+                    {
+                        children.push((path, entry));
+                    }
+                }
+            }
+
+            Ok(children)
+        })
+    }
+}
