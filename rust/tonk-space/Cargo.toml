@@ -11,6 +11,11 @@ license.workspace = true
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand = "0.8"
 
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true, features = ["Crypto", "SubtleCrypto", "CryptoKey", "HkdfParams"] }
+
 # Error handling
 thiserror = "2"
 
@@ -41,10 +46,6 @@ hkdf = "0.12"
 sha2 = "0.10"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Crypto", "SubtleCrypto", "CryptoKey", "HkdfParams"] }
 
 [dev-dependencies]
 tempfile = "3"
