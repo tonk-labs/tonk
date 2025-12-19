@@ -13,10 +13,10 @@ tonk-core = { path = "./rust/tonk-core" }
 tonk-space = { path = "./rust/tonk-space" }
 
 # Dialog DB
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-propagate-novelty" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-ecs" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-ecs" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-ecs" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-ecs" }
 
 # UCAN
 ucan = { git = "https://github.com/Gozala/rs-ucan.git", branch = "fix/wasm-compile", package = "ucan" }

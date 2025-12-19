@@ -1,13 +1,13 @@
 //! Space ownership claims.
 //!
 //! This module provides the `Ownership` type which wraps a `Delegation` and
-//! adds an additional `space/owner` relation when asserted. This links a
+//! adds an additional `space_attr/owner` relation when asserted. This links a
 //! space DID to the delegation that grants ownership over it.
 
 use crate::delegation::Delegation;
-use crate::relation::the;
-use dialog_query::claim::{Claim, Relation, Transaction};
-use dialog_query::{Entity, Value};
+use crate::schema::space;
+use dialog_query::claim::{Claim, Transaction};
+use dialog_query::{Entity, With};
 use std::str::FromStr;
 use ucan::delegation::subject::DelegatedSubject;
 use ucan::did::Ed25519Did;
@@ -16,9 +16,9 @@ use ucan::did::Ed25519Did;
 ///
 /// When asserted as a `Claim`, this will:
 /// 1. Assert all the underlying delegation facts (issuer, audience, subject, etc.)
-/// 2. Assert a `space/owner` relation linking the space DID to the delegation CID
+/// 2. Assert a `space_attr/owner` relation linking the space DID to the delegation CID
 ///
-/// This allows querying "who owns this space?" by looking up the `space/owner`
+/// This allows querying "who owns this space?" by looking up the `space_attr/owner`
 /// relation on the space's DID entity.
 pub struct Ownership(pub Delegation);
 
@@ -38,6 +38,17 @@ impl Ownership {
         self.0.subject()
     }
 
+    /// Returns the space DID this ownership applies to.
+    ///
+    /// - If the delegation has a specific subject, returns that subject DID
+    /// - If the delegation is a powerline (`*`), falls back to the issuer DID
+    pub fn space(&self) -> &Ed25519Did {
+        match self.0.subject() {
+            DelegatedSubject::Specific(did) => did,
+            DelegatedSubject::Any => self.0.issuer(),
+        }
+    }
+
     /// Returns a reference to the underlying delegation.
     pub fn delegation(&self) -> &Delegation {
         &self.0
@@ -47,59 +58,37 @@ impl Ownership {
 impl Claim for Ownership {
     /// Asserts the ownership claim as facts in the transaction.
     ///
-    /// This first asserts all delegation facts, then adds the `space/owner`
+    /// This first asserts all delegation facts, then adds the `space_attr/owner`
     /// relation linking the space DID to the delegation CID.
     fn assert(self, transaction: &mut Transaction) {
-        // Get entity and subject before consuming the delegation
-        let delegation_entity = self.0.this();
-        let subject = self.subject().clone();
+        // Get entity and space DID before consuming the delegation
+        let delegation = self.0.this();
+        let space = self.space().to_string();
 
         // Assert all the delegation facts first
         self.0.assert(transaction);
 
-        // Then assert the ownership relation: subject -> space/owner -> delegation_entity
-        let subject_str = match &subject {
-            DelegatedSubject::Specific(did) => did.to_string(),
-            DelegatedSubject::Any => "*".to_string(),
-        };
-
-        // subject_entity is the space DID as an Entity
-        let subject_entity =
-            Entity::from_str(&subject_str).expect("DID strings are valid Entity URIs");
-
-        Relation::new(
-            the!("space/owner"),
-            subject_entity,
-            Value::String(delegation_entity.to_string()),
-        )
-        .assert(transaction);
+        // Then assert the ownership relation
+        transaction.assert(With {
+            this: Entity::from_str(&space).expect("DID strings are valid Entity URIs"),
+            has: space::Owner(delegation),
+        });
     }
 
     /// Retracts the ownership claim from the transaction.
     fn retract(self, transaction: &mut Transaction) {
-        // Get entity and subject before consuming the delegation
-        let delegation_entity = self.0.this();
-        let subject = self.subject().clone();
+        // Get entity and space DID before consuming the delegation
+        let delegation = self.0.this();
+        let space = self.space().to_string();
 
         // Retract all the delegation facts first
         self.0.retract(transaction);
 
         // Then retract the ownership relation
-        let subject_str = match &subject {
-            DelegatedSubject::Specific(did) => did.to_string(),
-            DelegatedSubject::Any => "*".to_string(),
-        };
-
-        // subject_entity is the space DID as an Entity
-        let subject_entity =
-            Entity::from_str(&subject_str).expect("DID strings are valid Entity URIs");
-
-        Relation::new(
-            the!("space/owner"),
-            subject_entity,
-            Value::String(delegation_entity.to_string()),
-        )
-        .retract(transaction);
+        transaction.retract(With {
+            this: Entity::from_str(&space).expect("DID strings are valid Entity URIs"),
+            has: space::Owner(delegation),
+        });
     }
 }
 
@@ -162,5 +151,46 @@ mod tests {
         let ownership = Ownership::from(delegation);
 
         assert_eq!(ownership.subject(), ownership.delegation().subject());
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn it_returns_specific_subject_as_space() {
+        let issuer = Operator::generate();
+        let audience = Operator::generate();
+        let subject = Operator::generate();
+        let expected_space = subject.did().clone();
+
+        let ucan_delegation = UcanDelegation::builder()
+            .issuer(Ed25519Signer::from(&issuer))
+            .audience(audience.did().clone())
+            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .command(vec!["read".to_string()])
+            .try_build()
+            .expect("Failed to build delegation");
+
+        let ownership = Ownership::from(Delegation::from(ucan_delegation));
+
+        assert_eq!(ownership.space(), &expected_space);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn it_returns_issuer_as_space_for_powerline() {
+        let issuer = Operator::generate();
+        let audience = Operator::generate();
+        let expected_space = issuer.did().clone();
+
+        let ucan_delegation = UcanDelegation::builder()
+            .issuer(Ed25519Signer::from(&issuer))
+            .audience(audience.did().clone())
+            .subject(DelegatedSubject::Any)
+            .command(vec!["read".to_string()])
+            .try_build()
+            .expect("Failed to build delegation");
+
+        let ownership = Ownership::from(Delegation::from(ucan_delegation));
+
+        assert_eq!(ownership.space(), &expected_space);
     }
 }

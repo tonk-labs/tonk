@@ -7,8 +7,9 @@
 //! We use a wrapper because Rust's orphan rules prevent implementing external
 //! traits (`Claim`) for external types (`ucan::Delegation`).
 
-use dialog_query::claim::{Claim, Relation, Transaction};
-use dialog_query::{Entity, Value};
+use crate::schema;
+use dialog_query::claim::{Claim, Transaction};
+use dialog_query::{Entity, With};
 pub use ipld_core::cid::Cid;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -20,8 +21,6 @@ use ucan::delegation::subject::DelegatedSubject;
 use ucan::did::{DidSigner, Ed25519Did};
 use ucan::time::timestamp::Timestamp;
 use ucan::unset::Unset;
-
-use crate::relation::the;
 
 /// Errors that can occur when validating delegations.
 #[derive(Debug, Error)]
@@ -184,60 +183,68 @@ impl Claim for Delegation {
     /// Asserts this delegation as facts in the transaction.
     ///
     /// Creates relations for:
-    /// - `db/blob`: Raw CBOR bytes
-    /// - `ucan/issuer`: Issuer DID string
-    /// - `ucan/audience`: Audience DID string
-    /// - `ucan/subject`: Subject DID string (or "*")
-    /// - `ucan/cmd`: Command string
+    /// - `ucan_attr/blob`: Raw CBOR bytes
+    /// - `ucan_attr/issuer`: Issuer DID string
+    /// - `ucan_attr/audience`: Audience DID string
+    /// - `ucan_attr/subject`: Subject DID string (or "*")
+    /// - `ucan_attr/cmd`: Command string
     fn assert(self, transaction: &mut Transaction) {
         let this = self.this();
-        let subject: Value = match self.subject() {
-            DelegatedSubject::Specific(did) => did.to_string().into(),
-            DelegatedSubject::Any => "*".to_string().into(),
+        let subject = match self.subject() {
+            DelegatedSubject::Specific(did) => did.to_string(),
+            DelegatedSubject::Any => "*".to_string(),
         };
 
-        Relation::new(the!("db/blob"), this.clone(), self.to_bytes().into()).assert(transaction);
-        Relation::new(
-            the!("ucan/issuer"),
-            this.clone(),
-            self.issuer().to_string().into(),
-        )
-        .assert(transaction);
-        Relation::new(
-            the!("ucan/audience"),
-            this.clone(),
-            self.audience().to_string().into(),
-        )
-        .assert(transaction);
-        Relation::new(the!("ucan/subject"), this.clone(), subject).assert(transaction);
-        Relation::new(the!("ucan/cmd"), this, self.command().to_string().into())
-            .assert(transaction);
+        transaction.assert(With {
+            this: this.clone(),
+            has: schema::ucan::Blob(self.to_bytes()),
+        });
+        transaction.assert(With {
+            this: this.clone(),
+            has: schema::ucan::Issuer(self.issuer().to_string()),
+        });
+        transaction.assert(With {
+            this: this.clone(),
+            has: schema::ucan::Audience(self.audience().to_string()),
+        });
+        transaction.assert(With {
+            this: this.clone(),
+            has: schema::ucan::Subject(subject),
+        });
+        transaction.assert(With {
+            this,
+            has: schema::ucan::Cmd(self.command().to_string()),
+        });
     }
 
     /// Retracts this delegation's facts from the transaction.
     fn retract(self, transaction: &mut Transaction) {
         let this = self.this();
-        let subject: Value = match self.subject() {
-            DelegatedSubject::Specific(did) => did.to_string().into(),
-            DelegatedSubject::Any => "*".to_string().into(),
+        let subject_str = match self.subject() {
+            DelegatedSubject::Specific(did) => did.to_string(),
+            DelegatedSubject::Any => "*".to_string(),
         };
 
-        Relation::new(the!("db/blob"), this.clone(), self.to_bytes().into()).retract(transaction);
-        Relation::new(
-            the!("ucan/issuer"),
-            this.clone(),
-            self.issuer().to_string().into(),
-        )
-        .retract(transaction);
-        Relation::new(
-            the!("ucan/audience"),
-            this.clone(),
-            self.audience().to_string().into(),
-        )
-        .retract(transaction);
-        Relation::new(the!("ucan/subject"), this.clone(), subject).retract(transaction);
-        Relation::new(the!("ucan/cmd"), this, self.command().to_string().into())
-            .retract(transaction);
+        transaction.retract(With {
+            this: this.clone(),
+            has: schema::ucan::Blob(self.to_bytes()),
+        });
+        transaction.retract(With {
+            this: this.clone(),
+            has: schema::ucan::Issuer(self.issuer().to_string()),
+        });
+        transaction.retract(With {
+            this: this.clone(),
+            has: schema::ucan::Audience(self.audience().to_string()),
+        });
+        transaction.retract(With {
+            this: this.clone(),
+            has: schema::ucan::Subject(subject_str),
+        });
+        transaction.retract(With {
+            this,
+            has: schema::ucan::Cmd(self.command().to_string()),
+        });
     }
 }
 

@@ -268,6 +268,10 @@ impl<Backend: PlatformBackend + 'static> Source for Space<Backend> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema;
+    use dialog_query::concept::Match as _;
+    use dialog_query::{Match, Term, With};
+    use futures_util::TryStreamExt;
     use ucan::delegation::subject::DelegatedSubject;
     use ucan::did::Ed25519Signer;
 
@@ -284,6 +288,22 @@ mod tests {
 
         let ucan_delegation = Delegation::builder()
             .issuer(Ed25519Signer::from(&issuer))
+            .audience(audience.did().clone())
+            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .command(vec!["read".to_string(), "write".to_string()])
+            .try_build()
+            .expect("Failed to build delegation");
+
+        Delegation::from(ucan_delegation)
+    }
+
+    fn make_delegation_with_parts(
+        issuer: &Operator,
+        audience: &Operator,
+        subject: &Operator,
+    ) -> Delegation {
+        let ucan_delegation = Delegation::builder()
+            .issuer(Ed25519Signer::from(issuer))
             .audience(audience.did().clone())
             .subject(DelegatedSubject::Specific(subject.did().clone()))
             .command(vec!["read".to_string(), "write".to_string()])
@@ -378,5 +398,180 @@ mod tests {
 
         assert!(!space.has_upstream().await);
         assert!(space.upstream_info().await.is_none());
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_stores_delegation_issuer() {
+        let backend = MemoryBackend::default();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+
+        let issuer = Operator::generate();
+        let audience = Operator::generate();
+        let subject = Operator::generate();
+        let delegation = make_delegation_with_parts(&issuer, &audience, &subject);
+        let delegation_entity = delegation.this();
+        let expected_issuer = issuer.did().to_string();
+
+        let space = Space::create(space_did, &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space");
+
+        // Query for the issuer attribute on the delegation entity
+        let query = Match::<With<schema::ucan::Issuer>> {
+            this: Term::from(delegation_entity),
+            has: Term::var("issuer"),
+        };
+
+        let results: Vec<_> = query.query(space.clone()).try_collect().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].has.0, expected_issuer);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_stores_delegation_audience() {
+        let backend = MemoryBackend::default();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+
+        let issuer = Operator::generate();
+        let audience = Operator::generate();
+        let subject = Operator::generate();
+        let delegation = make_delegation_with_parts(&issuer, &audience, &subject);
+        let ucan = delegation.this();
+        let expected_audience = audience.did().to_string();
+
+        let space = Space::create(space_did, &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space");
+
+        // Query for the audience attribute on the delegation entity
+        let query = Match::<With<schema::ucan::Audience>> {
+            this: Term::from(ucan),
+            has: Term::var("audience"),
+        };
+
+        let results: Vec<_> = query.query(space.clone()).try_collect().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].has.0, expected_audience);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_stores_delegation_subject() {
+        let backend = MemoryBackend::default();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+
+        let issuer = Operator::generate();
+        let audience = Operator::generate();
+        let subject = Operator::generate();
+        let delegation = make_delegation_with_parts(&issuer, &audience, &subject);
+        let ucan = delegation.this();
+        let expected_subject = subject.did().to_string();
+
+        let space = Space::create(space_did, &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space");
+
+        // Query for the subject attribute on the delegation entity
+        let query = Match::<With<schema::ucan::Subject>> {
+            this: Term::from(ucan),
+            has: Term::var("subject"),
+        };
+
+        let results: Vec<_> = query.query(space.clone()).try_collect().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].has.0, expected_subject);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_stores_delegation_command() {
+        let backend = MemoryBackend::default();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+
+        let issuer = Operator::generate();
+        let audience = Operator::generate();
+        let subject = Operator::generate();
+        let delegation = make_delegation_with_parts(&issuer, &audience, &subject);
+        let ucan = delegation.this();
+
+        let space = Space::create(space_did, &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space");
+
+        // Query for the cmd attribute on the delegation entity
+        let query = Match::<With<schema::ucan::Cmd>> {
+            this: Term::from(ucan),
+            has: Term::var("cmd"),
+        };
+
+        let results: Vec<_> = query.query(space.clone()).try_collect().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].has.0, "/read/write");
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_stores_space_owner() {
+        let backend = MemoryBackend::default();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+
+        let issuer = Operator::generate();
+        let audience = Operator::generate();
+        let subject = Operator::generate();
+        let delegation = make_delegation_with_parts(&issuer, &audience, &subject);
+        let ucan = delegation.this();
+        let space_entity = subject.did().to_string();
+
+        let space = Space::create(space_did, &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space");
+
+        // Query for the owner attribute on the space (subject) entity
+        let query = Match::<With<schema::space::Owner>> {
+            this: Term::from(
+                space_entity
+                    .parse::<dialog_query::Entity>()
+                    .expect("valid entity"),
+            ),
+            has: Term::var("owner"),
+        };
+
+        let results: Vec<_> = query.query(space.clone()).try_collect().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].has.0, ucan);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_can_query_delegations_by_issuer() {
+        let backend = MemoryBackend::default();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+
+        let issuer = Operator::generate();
+        let audience = Operator::generate();
+        let subject = Operator::generate();
+        let delegation = make_delegation_with_parts(&issuer, &audience, &subject);
+        let issuer_did = issuer.did().to_string();
+
+        let space = Space::create(space_did, &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space");
+
+        // Query for any entity with this specific issuer
+        let query = Match::<With<schema::ucan::Issuer>> {
+            this: Term::var("delegation"),
+            has: Term::from(issuer_did),
+        };
+
+        let results: Vec<_> = query.query(space.clone()).try_collect().await.unwrap();
+        assert_eq!(results.len(), 1);
     }
 }
