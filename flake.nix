@@ -43,7 +43,10 @@
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
           filter =
-            path: type: (craneLib.filterCargoSources path type) || (builtins.match ".*\\.toml$" path != null);
+            path: type:
+            (craneLib.filterCargoSources path type)
+            || (builtins.match ".*\\.toml$" path != null)
+            || (builtins.match ".*\\.tonk$" path != null);
         };
 
         # Full source for WASM/Node tests (includes JS, JSON, HTML files)
