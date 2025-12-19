@@ -113,8 +113,8 @@ mod tests {
 
         let ucan_delegation = UcanDelegation::builder()
             .issuer(Ed25519Signer::from(&issuer))
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .audience(*audience.did())
+            .subject(DelegatedSubject::Specific(*subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
             .try_build()
             .expect("Failed to build delegation");
@@ -159,12 +159,12 @@ mod tests {
         let issuer = Operator::generate();
         let audience = Operator::generate();
         let subject = Operator::generate();
-        let expected_space = subject.did().clone();
+        let expected_space = *subject.did();
 
         let ucan_delegation = UcanDelegation::builder()
             .issuer(Ed25519Signer::from(&issuer))
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .audience(*audience.did())
+            .subject(DelegatedSubject::Specific(*subject.did()))
             .command(vec!["read".to_string()])
             .try_build()
             .expect("Failed to build delegation");
@@ -179,11 +179,11 @@ mod tests {
     fn it_returns_issuer_as_space_for_powerline() {
         let issuer = Operator::generate();
         let audience = Operator::generate();
-        let expected_space = issuer.did().clone();
+        let expected_space = *issuer.did();
 
         let ucan_delegation = UcanDelegation::builder()
             .issuer(Ed25519Signer::from(&issuer))
-            .audience(audience.did().clone())
+            .audience(*audience.did())
             .subject(DelegatedSubject::Any)
             .command(vec!["read".to_string()])
             .try_build()

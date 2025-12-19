@@ -268,8 +268,8 @@ mod tests {
 
         let ucan_delegation = UcanDelegation::builder()
             .issuer(Ed25519Signer::from(&issuer))
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .audience(*audience.did())
+            .subject(DelegatedSubject::Specific(*subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
             .try_build()
             .expect("Failed to build delegation");
@@ -324,8 +324,8 @@ mod tests {
 
         let ucan_delegation = UcanDelegation::builder()
             .issuer(Ed25519Signer::from(&issuer))
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .audience(*audience.did())
+            .subject(DelegatedSubject::Specific(*subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
             .try_build()
             .expect("Failed to build delegation");
@@ -402,7 +402,7 @@ mod tests {
 
         let ucan_delegation = UcanDelegation::builder()
             .issuer(Ed25519Signer::from(&issuer))
-            .audience(audience.did().clone())
+            .audience(*audience.did())
             .subject(DelegatedSubject::Any)
             .command(vec!["read".to_string()])
             .try_build()
