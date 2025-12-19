@@ -107,5 +107,8 @@ jobs:
           sudo apt-get remove google-chrome-stable -y || true
           sudo rm -f /usr/bin/chromium /usr/bin/chromium-browser
 
+          # Run tests single-threaded to avoid mutex contention in samod crate
+          # The samod crate uses std::sync::Mutex in async contexts, which can cause
+          # deadlocks when multiple tests run in parallel on CI (Linux)
           # TODO: Running the tests this way undermines Nix-based caching
-          nix develop .#ci --command cargo test ${{ matrix.flags }}
+          nix develop .#ci --command cargo test ${{ matrix.flags }} -- --nocapture --test-threads=1
