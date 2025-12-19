@@ -1,0 +1,58 @@
+[package]
+name = "tonk-space"
+description = "Core space primitives for Tonk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Crypto
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
+
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true, features = ["Crypto", "SubtleCrypto", "CryptoKey", "HkdfParams"] }
+
+# Error handling
+thiserror = "2"
+
+# Filesystem
+dirs = "5"
+
+# Async
+futures-util = "0.3"
+futures-core = "0.3"
+tokio = { version = "1", features = ["sync"] }
+
+# Dialog DB
+dialog-storage = { workspace = true }
+dialog-query = { workspace = true }
+dialog-artifacts = { workspace = true }
+dialog-common = { workspace = true }
+
+# UCAN
+ucan = { workspace = true }
+ipld-core = "0.4"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_ipld_dagcbor = "0.6"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+hkdf = "0.12"
+sha2 = "0.10"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+tokio = { version = "1", features = ["sync"] }

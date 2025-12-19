@@ -1,0 +1,54 @@
+// Folder-specific settings
+//
+// For a full list of overridable settings, and general information on folder-specific settings,
+// see the documentation: https://zed.dev/docs/configuring-zed#settings-files
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "target": null,
+        // get more cargo-less diagnostics from rust-analyzer,
+        // which might include false-positives (those can be turned off by their names)
+        "diagnostics": {
+          "experimental": {
+            "enable": true,
+          },
+          "disabled": ["E0308"],
+        },
+        // To disable the checking entirely
+        // (ignores all cargo and check settings below)
+        "checkOnSave": true,
+        "cargo": {
+          "allTargets": true,
+        },
+        // Use `-p` instead of `--workspace` for cargo check
+        "check": {
+          "workspace": true,
+        },
+      },
+    },
+    "yaml-language-server": {
+      "initialization_options": {
+        "yaml": {
+          "format": {
+            "singleQuote": true, // Set to true for single quotes, false for double quotes
+          },
+        },
+      },
+      "settings": {
+        "yaml": {
+          "format": {
+            "singleQuote": true, // Set to true for single quotes, false for double quotes
+          },
+        },
+      },
+    },
+  },
+  "languages": {
+    "YAML": {
+      "prettier": {
+        "allowed": false,
+      },
+    },
+  },
+}

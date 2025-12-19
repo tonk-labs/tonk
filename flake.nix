@@ -11,11 +11,11 @@
   };
 
   outputs =
-    { self
-    , nixpkgs
-    , flake-utils
-    , fenix
-    ,
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      fenix,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -33,14 +33,37 @@
           sha256 = pkgs.lib.fakeHash;
         };
 
+        wasm-bindgen-cli =
+          with pkgs;
+          rustPlatform.buildRustPackage rec {
+            pname = "wasm-bindgen-cli";
+            version = "0.2.100";
+            buildInputs = [
+              rustToolchainStable
+            ];
+
+            src = fetchCrate {
+              inherit pname version;
+              sha256 = "sha256-3RJzK7mkYFrs7C/WkhW9Rr4LdP5ofb2FdYGz1P7Uxog=";
+            };
+
+            cargoHash = "sha256-qsO12332HSjWCVKtf1cUePWWb9IdYUmT+8OPj/XP2WE=";
+            useFetchCargoVendor = true;
+          };
+
         # Common build inputs for all dev shells
-        commonBuildInputs = with pkgs; [
-          rustToolchainStable
-        ] ++ lib.optionals stdenv.isLinux [
-          # Linux-specific inputs
-        ] ++ lib.optionals stdenv.isDarwin [
-          # MacOS-specific inputs
-        ];
+        commonBuildInputs =
+          with pkgs;
+          [
+            rustToolchainStable
+            wasm-bindgen-cli
+          ]
+          ++ lib.optionals stdenv.isLinux [
+            # Linux-specific inputs
+          ]
+          ++ lib.optionals stdenv.isDarwin [
+            # MacOS-specific inputs
+          ];
 
         commands = {
           "build" = {
@@ -84,6 +107,10 @@
             src = ./.;
             cargoLock = {
               lockFile = ./Cargo.lock;
+              outputHashes = {
+                "dialog-artifacts-0.1.0" = "sha256-veYCuACVZEIveVuwh9O3XuoJtrihE/t+cWQTe7zWYsg=";
+                "ucan-0.5.0" = "sha256-CCQar9nU3KhBn1Kl5RsRJUASX8bO77pu7wbzzoLccBs=";
+              };
             };
             nativeBuildInputs = [ rustToolchainStable ];
             buildPhase = ''
@@ -94,14 +121,16 @@
             '';
           };
 
-          rustfmt = pkgs.runCommand "tonk-fmt-check"
-            {
-              nativeBuildInputs = [ rustToolchainStable ];
-            } ''
-            cd ${./.}
-            cargo fmt --check
-            touch $out
-          '';
+          rustfmt =
+            pkgs.runCommand "tonk-fmt-check"
+              {
+                nativeBuildInputs = [ rustToolchainStable ];
+              }
+              ''
+                cd ${./.}
+                cargo fmt --check
+                touch $out
+              '';
         };
 
         packages = {
@@ -111,6 +140,30 @@
             src = ./.;
             cargoLock = {
               lockFile = ./Cargo.lock;
+              outputHashes = {
+                "dialog-artifacts-0.1.0" = "sha256-veYCuACVZEIveVuwh9O3XuoJtrihE/t+cWQTe7zWYsg=";
+                "ucan-0.5.0" = "sha256-CCQar9nU3KhBn1Kl5RsRJUASX8bO77pu7wbzzoLccBs=";
+              };
+            };
+            nativeBuildInputs = [ rustToolchainStable ];
+            buildPhase = ''
+              cargo clippy --all-targets --all-features -- -D warnings
+            '';
+            installPhase = ''
+              touch $out
+            '';
+          };
+
+          tonk-space = pkgs.rustPlatform.buildRustPackage {
+            pname = "tonk-space";
+            version = "0.1.0";
+            src = ./.;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = {
+                "dialog-artifacts-0.1.0" = "sha256-veYCuACVZEIveVuwh9O3XuoJtrihE/t+cWQTe7zWYsg=";
+                "ucan-0.5.0" = "sha256-CCQar9nU3KhBn1Kl5RsRJUASX8bO77pu7wbzzoLccBs=";
+              };
             };
             nativeBuildInputs = [ rustToolchainStable ];
             buildPhase = ''
