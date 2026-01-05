@@ -274,7 +274,7 @@ impl TonkCoreBuilder {
                     .await
             }
             #[cfg(target_arch = "wasm32")]
-            StorageConfig::IndexedDB { ref namespace } => {
+            StorageConfig::IndexedDB { namespace } => {
                 let storage = match namespace {
                     Some(ns) => {
                         IndexedDbStorage::with_names(&format!("samod_storage_{}", ns), "data")

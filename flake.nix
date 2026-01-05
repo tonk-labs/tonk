@@ -25,14 +25,9 @@
         pkgs = nixpkgs.legacyPackages.${system};
         fenixPkgs = fenix.packages.${system};
 
-        rustToolchainStable = fenixPkgs.fromToolchainFile {
+        rustToolchain = fenixPkgs.fromToolchainFile {
           file = ./rust-toolchain.toml;
-          sha256 = "sha256-sqSWJDUxc+zaz1nBWMAJKTAGBuGWP25GCftIOlCEAtA=";
-        };
-
-        rustToolchainNightly = fenixPkgs.fromToolchainFile {
-          file = ./rust-toolchain-nightly.toml;
-          sha256 = pkgs.lib.fakeHash;
+          sha256 = "sha256-iksnAJGL0yvaXLqz2iX8TqG+4GuyTvJNHfiQmX7zWlE=";
         };
 
         wasm-bindgen-cli =
@@ -41,7 +36,7 @@
             pname = "wasm-bindgen-cli";
             version = "0.2.100";
             buildInputs = [
-              rustToolchainStable
+              rustToolchain
             ];
 
             src = fetchCrate {
@@ -50,11 +45,10 @@
             };
 
             cargoHash = "sha256-qsO12332HSjWCVKtf1cUePWWb9IdYUmT+8OPj/XP2WE=";
-            useFetchCargoVendor = true;
           };
 
         # Set up crane with the fenix toolchain
-        craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchainStable);
+        craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
         # Source filtering for Rust builds
         src = craneLib.cleanCargoSource ./.;
@@ -65,6 +59,10 @@
           outputHashes = {
             "git+https://github.com/tonk-labs/samod?branch=wasm-runtime#fe92f4d6fbb53fe107b1f4d9eea3fe5da7a30322" =
               "sha256-0mr/mtsnm+BZHlQLPEfe+wmzWjPldcULSvOzCOf5yMc=";
+            "git+https://github.com/tonk-labs/rs-ucan.git?branch=fix/wasm-compile#25b4a5a02a89b9f9332bc61e5c3d7ddebc7e058f" =
+              "sha256-ZUqBvqG0hvhpcR1uXjAh9TbL/zLKw8Tv2TweSKD1f48=";
+            "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-ecs#288cff4a36e83fb7ce892b37c5132f4ab519a479" =
+              "sha256-veYCuACVZEIveVuwh9O3XuoJtrihE/t+cWQTe7zWYsg=";
           };
         };
 
@@ -92,7 +90,8 @@
         commonBuildInputs =
           with pkgs;
           [
-            rustToolchainStable
+            rustToolchain
+            wasm-pack
             wasm-bindgen-cli
             bun
           ]
@@ -110,10 +109,58 @@
             description = "Builds all of Tonk";
             command = "cargo build";
           };
+
+          "wasm:build" = {
+            description = "Builds WASM for browser and Node.js";
+            command = ''
+              set -e
+              cd rust/tonk-core
+              rm -rf pkg pkg-node pkg-browser
+              echo "Building WASM for browser target..."
+              wasm-pack build --target web --out-dir pkg-browser -- --features wasm-browser
+              echo ""
+              echo "Building WASM for Node.js target..."
+              wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node
+              echo ""
+              echo "WASM build complete!"
+              echo "  Browser: rust/tonk-core/pkg-browser/"
+              echo "  Node.js: rust/tonk-core/pkg-node/"
+            '';
+          };
+
+          "wasm:build:browser" = {
+            description = "Builds WASM for browser target";
+            command = ''
+              set -e
+              cd rust/tonk-core
+              rm -rf pkg-browser
+              wasm-pack build --target web --out-dir pkg-browser -- --features wasm-browser
+            '';
+          };
+
+          "wasm:build:node" = {
+            description = "Builds WASM for Node.js target";
+            command = ''
+              set -e
+              cd rust/tonk-core
+              rm -rf pkg-node
+              wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node
+            '';
+          };
+
+          "wasm:clean" = {
+            description = "Cleans WASM build artifacts";
+            command = ''
+              rm -rf rust/tonk-core/pkg rust/tonk-core/pkg-node rust/tonk-core/pkg-browser
+              echo "WASM artifacts cleaned"
+            '';
+          };
+
           "build:web" = {
             description = "Builds the Tonk web application";
             command = "echo 'TODO'";
           };
+
           "test:all" = {
             description = "Runs the full test suite";
             command = ''
@@ -130,7 +177,6 @@
         menu = (import ./menu.nix { inherit pkgs; }).makeMenu commands;
       in
       {
-
         # Default dev shell - uses basic relay
         devShells = {
           default = pkgs.mkShell {
