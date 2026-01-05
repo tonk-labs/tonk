@@ -108,15 +108,20 @@ function assertUint8ArraysEqual(actual, expected) {
 }
 
 /**
- * Create a bundle with test data
+ * Create a tonk instance with test data and return it as a bundle
+ * Uses the toBytes flow since WasmBundle is read-only
  */
 async function createTestBundle(wasm, files = TestData.fileStructure) {
-  const bundle = await wasm.create_bundle();
+  // Create a tonk instance and populate it with files
+  const tonk = await wasm.create_tonk();
 
   for (const file of files) {
-    const content = new TextEncoder().encode(file.content);
-    await bundle.put(file.path, content);
+    await tonk.createFile(file.path, file.content);
   }
+
+  // Export to bytes and create a bundle from it
+  const bytes = await tonk.toBytes();
+  const bundle = wasm.create_bundle_from_bytes(bytes);
 
   return bundle;
 }

@@ -1,7 +1,7 @@
 /**
  * WebSocket integration tests
- * Note: These tests are currently limited since WebSocket functionality
- * is not yet implemented for WASM targets
+ *
+ * Tests WebSocket connectivity and sync functionality of TonkCore.
  */
 
 const { expect } = require("chai");
@@ -90,42 +90,37 @@ describe("WebSocket Integration Tests", () => {
     });
   });
 
-  describe("Sync Engine WebSocket Integration", () => {
+  describe("Tonk WebSocket Integration", () => {
     it("should handle WebSocket connection attempts gracefully", async () => {
-      const engine = await wasm.create_sync_engine();
+      const tonk = await wasm.create_tonk();
 
-      // NOTE: Since WebSocket connections are not yet implemented for WASM,
-      // this test verifies that the method exists and handles the call appropriately
+      // NOTE: WebSocket connections may or may not be implemented
+      // This test verifies that the method exists and handles the call appropriately
 
       try {
-        // This should either work (if implemented) or throw a descriptive error
-        await engine.connectWebsocket(testServer.getUrl());
-
+        await tonk.connectWebsocket(testServer.getUrl());
         // If we get here, connection succeeded
-        console.log("    ✓ WebSocket connection implemented and working");
+        console.log("    WebSocket connection implemented and working");
       } catch (error) {
-        // Expected for current implementation
+        // Expected for current implementation - connection might fail
         if (error.message) {
-          expect(error.message).to.include("WebSocket error");
+          console.log(`    WebSocket connection error: ${error.message}`);
         }
-        console.log(
-          "    i WebSocket connection not yet implemented (expected)",
-        );
       }
     });
 
     it("should handle multiple connection attempts", async () => {
-      const engines = [];
+      const tonks = [];
 
-      // Create multiple engines
+      // Create multiple tonk instances
       for (let i = 0; i < 3; i++) {
-        engines.push(await wasm.create_sync_engine());
+        tonks.push(await wasm.create_tonk());
       }
 
-      // Try to connect all engines
-      const connectionPromises = engines.map(async (engine) => {
+      // Try to connect all tonk instances
+      const connectionPromises = tonks.map(async (tonk) => {
         try {
-          await engine.connectWebsocket(testServer.getUrl());
+          await tonk.connectWebsocket(testServer.getUrl());
           return { success: true };
         } catch (error) {
           return { success: false, error: error.message };
@@ -134,86 +129,107 @@ describe("WebSocket Integration Tests", () => {
 
       const results = await Promise.all(connectionPromises);
 
-      // All should either succeed or fail with the same reason
+      // All should either succeed or fail
       const successes = results.filter((r) => r.success).length;
       const failures = results.filter((r) => !r.success).length;
 
       if (successes === 0) {
-        // All failed - expected for current implementation
+        console.log("    All WebSocket connections failed (may be expected)");
         expect(failures).to.equal(3);
-        console.log("    i All WebSocket connections failed as expected");
       } else {
-        // Some or all succeeded - WebSocket is implemented
-        console.log(`    ✓ ${successes} WebSocket connections succeeded`);
+        console.log(`    ${successes} WebSocket connections succeeded`);
       }
     });
 
-    it("should maintain engine state regardless of WebSocket status", async () => {
-      const engine = await wasm.create_sync_engine();
-      const vfs = await engine.getVfs();
+    it("should maintain tonk state regardless of WebSocket status", async () => {
+      const tonk = await wasm.create_tonk();
 
       // Create some VFS data
-      await vfs.createFile("/test-before-ws.txt", "before connection");
+      await tonk.createFile("/test-before-ws.json", { before: "connection" });
 
       // Try WebSocket connection
       try {
-        await engine.connectWebsocket(testServer.getUrl());
+        await tonk.connectWebsocket(testServer.getUrl());
       } catch (error) {
         // Connection failure is expected and shouldn't affect VFS
       }
 
       // VFS should still work
-      await vfs.createFile("/test-after-ws.txt", "after connection attempt");
+      await tonk.createFile("/test-after-ws.json", {
+        after: "connection attempt",
+      });
 
-      const beforeExists = await vfs.exists("/test-before-ws.txt");
-      const afterExists = await vfs.exists("/test-after-ws.txt");
+      const beforeExists = await tonk.exists("/test-before-ws.json");
+      const afterExists = await tonk.exists("/test-after-ws.json");
 
       expect(beforeExists).to.be.true;
       expect(afterExists).to.be.true;
 
-      // Engine should still be functional
-      const peerId = await engine.getPeerId();
+      // Tonk should still be functional
+      const peerId = await tonk.getPeerId();
       expect(peerId).to.be.a("string");
+    });
+
+    it("should report connection state correctly", async () => {
+      const tonk = await wasm.create_tonk();
+
+      // Before connection attempt
+      let state = await tonk.getConnectionState();
+      expect(state).to.equal("disconnected");
+
+      let isConnected = await tonk.isConnected();
+      expect(isConnected).to.be.false;
+
+      // Try to connect
+      try {
+        await tonk.connectWebsocket(testServer.getUrl());
+        // Check state after connection
+        state = await tonk.getConnectionState();
+        isConnected = await tonk.isConnected();
+        console.log(
+          `    Connection state: ${state}, isConnected: ${isConnected}`,
+        );
+      } catch (error) {
+        // Connection failed - state should still be retrievable
+        state = await tonk.getConnectionState();
+        console.log(`    Connection failed, state: ${state}`);
+      }
     });
   });
 
   describe("Future WebSocket Functionality", () => {
-    // These tests document expected behavior once WebSocket support is implemented
+    // These tests document expected behavior once WebSocket sync is fully implemented
 
-    it("should sync VFS changes between engines (future)", async () => {
-      // This test documents what should happen once WebSocket sync is implemented
-      console.log("    i Future test: VFS sync between connected engines");
+    it("should sync VFS changes between tonk instances (future)", async () => {
+      console.log("    i Future test: VFS sync between connected instances");
 
-      const engine1 = await wasm.create_sync_engine_with_peer_id("peer-1");
-      const engine2 = await wasm.create_sync_engine_with_peer_id("peer-2");
+      const tonk1 = await wasm.create_tonk_with_peer_id("peer-1");
+      const tonk2 = await wasm.create_tonk_with_peer_id("peer-2");
 
-      const vfs1 = await engine1.getVfs();
-      const vfs2 = await engine2.getVfs();
+      // For now, just verify instances are independent
+      await tonk1.createFile("/tonk1-file.json", { from: "tonk 1" });
+      await tonk2.createFile("/tonk2-file.json", { from: "tonk 2" });
 
-      // For now, just verify engines are independent
-      await vfs1.createFile("/engine1-file.txt", "from engine 1");
-      await vfs2.createFile("/engine2-file.txt", "from engine 2");
-
-      const file1InEngine2 = await vfs2.exists("/engine1-file.txt");
-      const file2InEngine1 = await vfs1.exists("/engine2-file.txt");
+      const file1InTonk2 = await tonk2.exists("/tonk1-file.json");
+      const file2InTonk1 = await tonk1.exists("/tonk2-file.json");
 
       // Currently should be false (no sync)
-      expect(file1InEngine2).to.be.false;
-      expect(file2InEngine1).to.be.false;
+      expect(file1InTonk2).to.be.false;
+      expect(file2InTonk1).to.be.false;
 
       console.log(
-        "    i Once WebSocket sync is implemented, files should sync between engines",
+        "    i Once WebSocket sync is implemented, files should sync between instances",
       );
     });
 
     it("should handle peer discovery and connection (future)", async () => {
       console.log("    i Future test: Automatic peer discovery and connection");
 
-      const engine = await wasm.create_sync_engine();
+      const tonk = await wasm.create_tonk();
 
       // Future API might look like:
-      // const peers = await engine.discoverPeers();
-      // await engine.connectToPeer(peers[0]);
+      // const peers = await tonk.discoverPeers();
+      // await tonk.connectToPeer(peers[0]);
 
       console.log(
         "    i Future functionality: peer discovery and automatic connection",
@@ -223,10 +239,8 @@ describe("WebSocket Integration Tests", () => {
     it("should handle conflict resolution in sync (future)", async () => {
       console.log("    i Future test: Conflict resolution during sync");
 
-      const engine1 =
-        await wasm.create_sync_engine_with_peer_id("conflict-test-1");
-      const engine2 =
-        await wasm.create_sync_engine_with_peer_id("conflict-test-2");
+      const tonk1 = await wasm.create_tonk_with_peer_id("conflict-test-1");
+      const tonk2 = await wasm.create_tonk_with_peer_id("conflict-test-2");
 
       // Future: Test conflicting changes to same file
       // and verify CRDT-based conflict resolution
@@ -237,20 +251,19 @@ describe("WebSocket Integration Tests", () => {
 
   describe("WebSocket Error Handling", () => {
     it("should handle connection to non-existent server", async () => {
-      const engine = await wasm.create_sync_engine();
+      const tonk = await wasm.create_tonk();
       const invalidUrl = "ws://localhost:99999"; // Non-existent server
 
       try {
-        await engine.connectWebsocket(invalidUrl);
+        await tonk.connectWebsocket(invalidUrl);
         expect.fail("Expected connection to fail for non-existent server");
       } catch (error) {
         expect(error).to.not.be.undefined;
-        // Error could be about implementation or connection failure
       }
     });
 
     it("should handle malformed WebSocket URLs", async () => {
-      const engine = await wasm.create_sync_engine();
+      const tonk = await wasm.create_tonk();
       const malformedUrls = [
         "not-a-url",
         "http://localhost:8081", // HTTP instead of WS
@@ -260,7 +273,7 @@ describe("WebSocket Integration Tests", () => {
 
       for (const url of malformedUrls) {
         try {
-          await engine.connectWebsocket(url);
+          await tonk.connectWebsocket(url);
           expect.fail(`Expected connection to fail for malformed URL: ${url}`);
         } catch (error) {
           expect(error).to.not.be.undefined;

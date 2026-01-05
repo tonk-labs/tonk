@@ -1,5 +1,8 @@
 /**
- * Sync engine integration tests
+ * Tonk Core integration tests
+ *
+ * Tests the TonkCore WASM API including peer management, VFS operations,
+ * and persistence.
  */
 
 const { expect } = require("chai");
@@ -11,7 +14,7 @@ const {
   PerfTimer,
 } = require("../../shared/test-utils");
 
-describe("Sync Engine Integration Tests", () => {
+describe("Tonk Core Integration Tests", () => {
   let wasm;
 
   before(async function () {
@@ -19,70 +22,67 @@ describe("Sync Engine Integration Tests", () => {
     wasm = await initWasm();
   });
 
-  describe("Engine Lifecycle", () => {
-    it("should create multiple engines with unique peer IDs", async () => {
-      const engines = [];
+  describe("Tonk Lifecycle", () => {
+    it("should create multiple tonk instances with unique peer IDs", async () => {
+      const tonks = [];
       const peerIds = new Set();
 
-      // Create 5 engines
+      // Create 5 tonk instances
       for (let i = 0; i < 5; i++) {
-        const engine = await wasm.create_sync_engine();
-        const peerId = await engine.getPeerId();
+        const tonk = await wasm.create_tonk();
+        const peerId = await tonk.getPeerId();
 
-        engines.push(engine);
+        tonks.push(tonk);
         peerIds.add(peerId);
       }
 
       // All peer IDs should be unique
       expect(peerIds.size).to.equal(5);
-      expect(engines).to.have.lengthOf(5);
+      expect(tonks).to.have.lengthOf(5);
     });
 
-    it("should create engines with custom peer IDs", async () => {
+    it("should create tonk instances with custom peer IDs", async () => {
       const customIds = ["peer-alpha", "peer-beta", "peer-gamma"];
-      const engines = [];
+      const tonks = [];
 
       for (const customId of customIds) {
-        const engine = await wasm.create_sync_engine_with_peer_id(customId);
-        const peerId = await engine.getPeerId();
+        const tonk = await wasm.create_tonk_with_peer_id(customId);
+        const peerId = await tonk.getPeerId();
 
         expect(peerId).to.equal(customId);
-        engines.push(engine);
+        tonks.push(tonk);
       }
 
-      expect(engines).to.have.lengthOf(customIds.length);
+      expect(tonks).to.have.lengthOf(customIds.length);
     });
 
-    it("should handle rapid engine creation", async () => {
-      const timer = new PerfTimer("Rapid engine creation");
+    it("should handle rapid tonk creation", async () => {
+      const timer = new PerfTimer("Rapid tonk creation");
       const promises = [];
 
-      // Create 20 engines concurrently
+      // Create 20 tonk instances concurrently
       for (let i = 0; i < 20; i++) {
-        promises.push(wasm.create_sync_engine());
+        promises.push(wasm.create_tonk());
       }
 
-      const engines = await Promise.all(promises);
+      const tonks = await Promise.all(promises);
       const duration = timer.stop();
 
-      expect(engines).to.have.lengthOf(20);
+      expect(tonks).to.have.lengthOf(20);
       expect(duration).to.be.lessThan(5000);
 
-      // Verify all engines have unique peer IDs
-      const peerIds = await Promise.all(
-        engines.map((engine) => engine.getPeerId()),
-      );
+      // Verify all instances have unique peer IDs
+      const peerIds = await Promise.all(tonks.map((tonk) => tonk.getPeerId()));
       const uniqueIds = new Set(peerIds);
       expect(uniqueIds.size).to.equal(20);
     });
   });
 
   describe("VFS Integration", () => {
-    let engine, vfs;
+    let tonk;
 
     beforeEach(async () => {
-      engine = await wasm.create_sync_engine();
-      vfs = await engine.getVfs();
+      tonk = await wasm.create_tonk();
     });
 
     it("should maintain VFS state across operations", async () => {
@@ -93,59 +93,62 @@ describe("Sync Engine Integration Tests", () => {
         { type: "dir", path: "/projects/web-app/src" },
         {
           type: "file",
-          path: "/projects/web-app/src/index.js",
-          content: 'console.log("Hello");',
+          path: "/projects/web-app/src/index.json",
+          content: { code: 'console.log("Hello");' },
         },
         {
           type: "file",
           path: "/projects/web-app/package.json",
-          content: '{"name": "web-app"}',
+          content: { name: "web-app" },
         },
         { type: "dir", path: "/projects/mobile-app" },
         {
           type: "file",
-          path: "/projects/mobile-app/main.dart",
-          content: "void main() {}",
+          path: "/projects/mobile-app/main.json",
+          content: { code: "void main() {}" },
         },
       ];
 
       // Create structure
       for (const item of structure) {
         if (item.type === "dir") {
-          await vfs.createDirectory(item.path);
+          await tonk.createDirectory(item.path);
         } else {
-          await vfs.createFile(item.path, item.content);
+          await tonk.createFile(item.path, item.content);
         }
       }
 
       // Verify all items exist
       for (const item of structure) {
-        const exists = await vfs.exists(item.path);
+        const exists = await tonk.exists(item.path);
         expect(exists).to.be.true;
       }
 
       // Test directory listing
-      const webAppContents = await vfs.listDirectory("/projects/web-app");
+      const webAppContents = await tonk.listDirectory("/projects/web-app");
       expect(webAppContents).to.have.lengthOf(2); // src directory and package.json
 
-      const srcContents = await vfs.listDirectory("/projects/web-app/src");
-      expect(srcContents).to.have.lengthOf(1); // index.js
+      const srcContents = await tonk.listDirectory("/projects/web-app/src");
+      expect(srcContents).to.have.lengthOf(1); // index.json
     });
 
     it("should handle concurrent VFS operations safely", async function () {
       this.timeout(10000);
 
+      // Create parent directory first
+      await tonk.createDirectory("/concurrent");
+
       const operations = [];
 
-      // Perform many concurrent operations
+      // Perform many concurrent operations - create directories first, then files
       for (let i = 0; i < 50; i++) {
         const dirPath = `/concurrent/dir${i}`;
-        const filePath = `/concurrent/dir${i}/file${i}.txt`;
+        const filePath = `/concurrent/dir${i}/file${i}.json`;
 
         operations.push(
-          vfs
+          tonk
             .createDirectory(dirPath)
-            .then(() => vfs.createFile(filePath, `Content ${i}`)),
+            .then(() => tonk.createFile(filePath, { content: `Content ${i}` })),
         );
       }
 
@@ -154,151 +157,185 @@ describe("Sync Engine Integration Tests", () => {
       // Verify all operations completed successfully
       for (let i = 0; i < 50; i++) {
         const dirPath = `/concurrent/dir${i}`;
-        const filePath = `/concurrent/dir${i}/file${i}.txt`;
+        const filePath = `/concurrent/dir${i}/file${i}.json`;
 
-        expect(await vfs.exists(dirPath)).to.be.true;
-        expect(await vfs.exists(filePath)).to.be.true;
+        expect(await tonk.exists(dirPath)).to.be.true;
+        expect(await tonk.exists(filePath)).to.be.true;
       }
     });
 
-    it("should persist VFS changes across VFS instances", async () => {
-      // Create files with first VFS instance
-      await vfs.createDirectory("/persistent");
-      await vfs.createFile("/persistent/test.txt", "persistent data");
+    it("should persist VFS changes through export/import cycle", async () => {
+      // Create files
+      await tonk.createDirectory("/persistent");
+      await tonk.createFile("/persistent/test.json", {
+        data: "persistent data",
+      });
 
-      // Get a new VFS instance from the same engine
-      const vfs2 = await engine.getVfs();
+      // Export to bytes
+      const bytes = await tonk.toBytes();
 
-      // Verify data is accessible from second instance
-      const exists = await vfs2.exists("/persistent/test.txt");
+      // Create a new tonk from the bytes
+      const tonk2 = await wasm.create_tonk_from_bytes(bytes);
+
+      // Verify data is accessible from the new instance
+      const exists = await tonk2.exists("/persistent/test.json");
       expect(exists).to.be.true;
 
-      const entries = await vfs2.listDirectory("/persistent");
+      const entries = await tonk2.listDirectory("/persistent");
       expect(entries).to.have.lengthOf(1);
-      expect(entries[0].name).to.equal("test.txt");
+      expect(entries[0].name).to.equal("test.json");
+
+      // readFile returns full doc with metadata
+      const doc = await tonk2.readFile("/persistent/test.json");
+      expect(doc.content).to.deep.equal({ data: "persistent data" });
     });
   });
 
   describe("Document Management", () => {
-    let engine;
+    let tonk;
 
     beforeEach(async () => {
-      engine = await wasm.create_sync_engine();
+      tonk = await wasm.create_tonk();
     });
 
-    // Note: These tests assume WASM bindings for document operations exist
-    // They may need to be adjusted based on actual implementation
-
     it("should create and manage documents", async () => {
-      // This test would require WASM bindings for document creation
-      // For now, we'll test what we can access
-
-      const peerId = await engine.getPeerId();
+      const peerId = await tonk.getPeerId();
       expect(peerId).to.be.a("string");
 
-      // Future: Test document creation, retrieval, and modification
-      // const doc = await engine.createDocument();
-      // const docId = await doc.getId();
-      // expect(docId).to.be.a('string');
+      // Create a document
+      await tonk.createFile("/doc.json", {
+        title: "Test Document",
+        body: "Content here",
+      });
+
+      const exists = await tonk.exists("/doc.json");
+      expect(exists).to.be.true;
+
+      // readFile returns full doc with metadata
+      const doc = await tonk.readFile("/doc.json");
+      expect(doc.content.title).to.equal("Test Document");
+    });
+
+    it("should update documents with updateFile", async () => {
+      const path = "/updatable.json";
+      await tonk.createFile(path, { version: 1, items: ["a", "b"] });
+
+      // Update the document
+      const updated = await tonk.updateFile(path, {
+        version: 2,
+        items: ["a", "b", "c"],
+      });
+      expect(updated).to.be.true;
+
+      // readFile returns full doc with metadata
+      const doc = await tonk.readFile(path);
+      expect(doc.content.version).to.equal(2);
+      expect(doc.content.items).to.deep.equal(["a", "b", "c"]);
+    });
+
+    it("should patch documents at specific paths", async () => {
+      const path = "/patchable.json";
+      await tonk.createFile(path, { config: { theme: "light", size: 12 } });
+
+      // Patch a specific path
+      const patched = await tonk.patchFile(path, ["config", "theme"], "dark");
+      expect(patched).to.be.true;
+
+      // readFile returns full doc with metadata
+      const doc = await tonk.readFile(path);
+      expect(doc.content.config.theme).to.equal("dark");
+      expect(doc.content.config.size).to.equal(12); // Other fields preserved
     });
   });
 
   describe("Memory Management", () => {
-    it("should handle engine cleanup properly", async () => {
-      const engines = [];
+    it("should handle tonk cleanup properly", async () => {
+      const tonks = [];
 
-      // Create many engines
+      // Create many tonk instances
       for (let i = 0; i < 100; i++) {
-        engines.push(await wasm.create_sync_engine());
+        tonks.push(await wasm.create_tonk());
       }
 
-      // Get peer IDs to ensure engines are working
-      const peerIds = await Promise.all(
-        engines.map((engine) => engine.getPeerId()),
-      );
+      // Get peer IDs to ensure instances are working
+      const peerIds = await Promise.all(tonks.map((tonk) => tonk.getPeerId()));
 
       expect(peerIds).to.have.lengthOf(100);
       expect(new Set(peerIds).size).to.equal(100); // All unique
-
-      // Note: In a real scenario, we'd want to test that memory is properly freed
-      // This would require additional WASM bindings or monitoring
     });
 
     it("should handle VFS operations under memory pressure", async function () {
       this.timeout(15000);
 
-      const engine = await wasm.create_sync_engine();
-      const vfs = await engine.getVfs();
+      const tonk = await wasm.create_tonk();
 
       // Create many files to simulate memory pressure
       const fileCount = 500;
       for (let i = 0; i < fileCount; i++) {
-        const path = `/memory-test/file-${i}.txt`;
-        const content = `Content for file ${i} - ${"x".repeat(100)}`;
-        await vfs.createFile(path, content);
+        const path = `/memory-test/file-${i}.json`;
+        const content = {
+          content: `Content for file ${i}`,
+          padding: "x".repeat(100),
+        };
+        await tonk.createFile(path, content);
 
         // Periodically check that we can still list directories
         if (i % 100 === 0) {
-          const entries = await vfs.listDirectory("/memory-test");
+          const entries = await tonk.listDirectory("/memory-test");
           expect(entries.length).to.be.greaterThan(0);
         }
       }
 
       // Final verification
-      const finalEntries = await vfs.listDirectory("/memory-test");
+      const finalEntries = await tonk.listDirectory("/memory-test");
       expect(finalEntries).to.have.lengthOf(fileCount);
     });
   });
 
   describe("Error Recovery", () => {
     it("should recover from VFS errors gracefully", async () => {
-      const engine = await wasm.create_sync_engine();
-      const vfs = await engine.getVfs();
+      const tonk = await wasm.create_tonk();
 
       // Try to create a file with invalid path
       try {
-        await vfs.createFile("", "content");
+        await tonk.createFile("", { content: "test" });
         expect.fail("Expected error for empty path");
       } catch (error) {
         // Error is expected
         expect(error).to.not.be.undefined;
       }
 
-      // Verify VFS still works after error
-      await vfs.createFile("/recovery-test.txt", "recovery content");
-      const exists = await vfs.exists("/recovery-test.txt");
+      // Verify tonk still works after error
+      await tonk.createFile("/recovery-test.json", { recovery: true });
+      const exists = await tonk.exists("/recovery-test.json");
       expect(exists).to.be.true;
     });
 
-    it("should handle engine state after errors", async () => {
-      const engine = await wasm.create_sync_engine();
-
-      // Engine should still be functional after VFS errors
-      const vfs1 = await engine.getVfs();
+    it("should handle tonk state after errors", async () => {
+      const tonk = await wasm.create_tonk();
 
       try {
-        await vfs1.createFile("", "bad content");
+        await tonk.createFile("", { bad: "content" });
       } catch (error) {
         // Expected
       }
 
-      // Should still be able to get new VFS instance
-      const vfs2 = await engine.getVfs();
-      await vfs2.createFile("/post-error.txt", "content");
+      // Should still be able to perform operations
+      await tonk.createFile("/post-error.json", { content: "test" });
 
-      const exists = await vfs2.exists("/post-error.txt");
+      const exists = await tonk.exists("/post-error.json");
       expect(exists).to.be.true;
     });
   });
 
   describe("Performance Benchmarks", () => {
-    it("should benchmark engine creation performance", async () => {
+    it("should benchmark tonk creation performance", async () => {
       const iterations = 50;
       const times = [];
 
       for (let i = 0; i < iterations; i++) {
         const timer = new PerfTimer();
-        await wasm.create_sync_engine();
+        await wasm.create_tonk();
         times.push(timer.stop());
       }
 
@@ -306,7 +343,7 @@ describe("Sync Engine Integration Tests", () => {
       const minTime = Math.min(...times);
       const maxTime = Math.max(...times);
 
-      console.log(`    Engine creation stats (${iterations} iterations):`);
+      console.log(`    Tonk creation stats (${iterations} iterations):`);
       console.log(`      Average: ${avgTime.toFixed(2)}ms`);
       console.log(`      Min: ${minTime.toFixed(2)}ms`);
       console.log(`      Max: ${maxTime.toFixed(2)}ms`);
@@ -315,30 +352,29 @@ describe("Sync Engine Integration Tests", () => {
     });
 
     it("should benchmark VFS operation performance", async () => {
-      const engine = await wasm.create_sync_engine();
-      const vfs = await engine.getVfs();
-
-      const operations = ["createFile", "exists", "listDirectory"];
+      const tonk = await wasm.create_tonk();
       const benchmarks = {};
 
       // Benchmark file creation
       const createTimer = new PerfTimer();
       for (let i = 0; i < 100; i++) {
-        await vfs.createFile(`/bench/file${i}.txt`, `content ${i}`);
+        await tonk.createFile(`/bench/file${i}.json`, {
+          content: `content ${i}`,
+        });
       }
       benchmarks.createFile = createTimer.stop();
 
       // Benchmark exists checks
       const existsTimer = new PerfTimer();
       for (let i = 0; i < 100; i++) {
-        await vfs.exists(`/bench/file${i}.txt`);
+        await tonk.exists(`/bench/file${i}.json`);
       }
       benchmarks.exists = existsTimer.stop();
 
       // Benchmark directory listings
       const listTimer = new PerfTimer();
       for (let i = 0; i < 20; i++) {
-        await vfs.listDirectory("/bench");
+        await tonk.listDirectory("/bench");
       }
       benchmarks.listDirectory = listTimer.stop();
 
@@ -357,6 +393,97 @@ describe("Sync Engine Integration Tests", () => {
       expect(benchmarks.createFile).to.be.lessThan(5000);
       expect(benchmarks.exists).to.be.lessThan(1000);
       expect(benchmarks.listDirectory).to.be.lessThan(1000);
+    });
+  });
+
+  describe("Connection State", () => {
+    it("should report connection state", async () => {
+      const tonk = await wasm.create_tonk();
+
+      const isConnected = await tonk.isConnected();
+      expect(isConnected).to.be.a("boolean");
+
+      const state = await tonk.getConnectionState();
+      expect(state).to.be.a("string");
+      // Default state should be disconnected
+      expect(state).to.equal("disconnected");
+    });
+  });
+
+  describe("Storage Configuration", () => {
+    it("should create tonk with in-memory storage", async () => {
+      const tonk = await wasm.create_tonk_with_storage(false, null);
+      expect(tonk).to.not.be.undefined;
+
+      const peerId = await tonk.getPeerId();
+      expect(peerId).to.be.a("string");
+
+      // Verify VFS works
+      await tonk.createFile("/memory-storage-test.json", { test: true });
+      const exists = await tonk.exists("/memory-storage-test.json");
+      expect(exists).to.be.true;
+    });
+
+    it("should create tonk with full config", async () => {
+      const customPeerId = generatePeerId();
+      const tonk = await wasm.create_tonk_with_config(
+        customPeerId,
+        false,
+        null,
+      );
+
+      expect(tonk).to.not.be.undefined;
+
+      const peerId = await tonk.getPeerId();
+      expect(peerId).to.equal(customPeerId);
+    });
+  });
+
+  describe("Fork Operations", () => {
+    it("should fork tonk to bytes", async () => {
+      const tonk = await wasm.create_tonk();
+      await tonk.createFile("/original.json", { original: true });
+
+      // Fork to bytes (creates a copy) - pass undefined/null for config
+      const forkedBytes = await tonk.forkToBytes(undefined);
+      expect(forkedBytes).to.be.instanceOf(Uint8Array);
+      expect(forkedBytes.length).to.be.greaterThan(0);
+
+      // Create new tonk from forked bytes
+      const forkedTonk = await wasm.create_tonk_from_bytes(forkedBytes);
+      expect(forkedTonk).to.not.be.undefined;
+
+      // Forked tonk should have a valid peer ID
+      const forkedPeerId = await forkedTonk.getPeerId();
+      expect(forkedPeerId).to.be.a("string");
+
+      // Changes to forked instance shouldn't affect original
+      await forkedTonk.createFile("/forked-only.json", { forked: true });
+      const forkedHasFile = await forkedTonk.exists("/forked-only.json");
+      expect(forkedHasFile).to.be.true;
+
+      const originalHasForked = await tonk.exists("/forked-only.json");
+      expect(originalHasForked).to.be.false;
+    });
+
+    it("should preserve data through toBytes round-trip", async () => {
+      const tonk = await wasm.create_tonk();
+      await tonk.createFile("/preserved.json", { data: "preserved" });
+
+      // Export using toBytes
+      const bytes = await tonk.toBytes(undefined);
+      expect(bytes).to.be.instanceOf(Uint8Array);
+
+      // Import from bytes
+      const restoredTonk = await wasm.create_tonk_from_bytes(bytes);
+
+      // Verify the file exists in restored tonk
+      const exists = await restoredTonk.exists("/preserved.json");
+      expect(exists).to.be.true;
+
+      // Verify content is preserved
+      const doc = await restoredTonk.readFile("/preserved.json");
+      expect(doc.content).to.deep.equal({ data: "preserved" });
     });
   });
 });
