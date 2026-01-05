@@ -1,0 +1,19 @@
+{
+  "name": "@tonk/core-examples-shared",
+  "version": "0.1.0",
+  "description": "Shared test utilities for Tonk Core examples and integration tests",
+  "main": "test-utils.js",
+  "type": "commonjs",
+  "dependencies": {
+    "events": "^3.3.0",
+    "tmp": "^0.2.1",
+    "ws": "^8.18.3"
+  },
+  "keywords": [
+    "tonk",
+    "test-utilities",
+    "shared"
+  ],
+  "author": "Tonk Labs",
+  "license": "MIT"
+}

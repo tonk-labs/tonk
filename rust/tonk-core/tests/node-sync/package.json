@@ -1,8 +1,8 @@
 {
-  "name": "samod-sync-tests",
+  "name": "tonk-core-sync-tests",
   "version": "1.0.0",
-  "description": "Node.js tests for samod document synchronization",
-  "type": "module",
+  "description": "Node.js tests for TonkCore document synchronization",
+  "type": "commonjs",
   "scripts": {
     "test": "node run-sync-test.js",
     "server": "node test-server.js"

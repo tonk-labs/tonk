@@ -1,8 +1,20 @@
 #!/usr/bin/env node
 
-import { spawn } from "child_process";
-import { testBasicRelay } from "./test-client.js";
-import { testSamodDirectSync } from "./test-samod-direct.js";
+/**
+ * Test runner for TonkCore sync tests
+ * Manages server lifecycle and runs tests
+ */
+
+// Polyfill WebSocket for Node.js
+const WebSocket = require("ws");
+global.WebSocket = WebSocket;
+
+const { spawn } = require("child_process");
+const path = require("path");
+const { testTonkDirectSync } = require("./test-sync-direct.js");
+
+// Path to the proper automerge-repo sync server
+const SYNC_SERVER_DIR = path.resolve(__dirname, "../../examples/server");
 
 // Test runner that manages server lifecycle and runs tests
 class TestRunner {
@@ -10,91 +22,94 @@ class TestRunner {
     this.serverProcess = null;
   }
 
-  async startServer() {
+  async startSyncServer() {
     return new Promise((resolve, reject) => {
-      console.log("Starting WebSocket relay server...");
+      console.log("Starting automerge-repo sync server...");
+      console.log(`Server directory: ${SYNC_SERVER_DIR}`);
 
-      this.serverProcess = spawn("node", ["test-server.js"], {
+      // Use npx tsx to run the TypeScript server
+      this.serverProcess = spawn("npx", ["tsx", "server.ts", "8081"], {
         stdio: ["pipe", "pipe", "pipe"],
-        cwd: process.cwd(),
+        cwd: SYNC_SERVER_DIR,
+        shell: true,
       });
 
       let serverReady = false;
 
       this.serverProcess.stdout.on("data", (data) => {
         const output = data.toString();
-        console.log(`[SERVER] ${output.trim()}`);
+        console.log(`[SYNC-SERVER] ${output.trim()}`);
 
-        if (output.includes("Ready to relay messages")) {
+        if (output.includes("Listening on port")) {
           serverReady = true;
           resolve();
         }
       });
 
       this.serverProcess.stderr.on("data", (data) => {
-        console.error(`[SERVER ERROR] ${data.toString().trim()}`);
+        const output = data.toString().trim();
+        // Filter out npm/npx noise
+        if (!output.includes("npm") && output.length > 0) {
+          console.error(`[SYNC-SERVER STDERR] ${output}`);
+        }
       });
 
       this.serverProcess.on("close", (code) => {
-        console.log(`[SERVER] Process exited with code ${code}`);
+        console.log(`[SYNC-SERVER] Process exited with code ${code}`);
         this.serverProcess = null;
       });
 
       this.serverProcess.on("error", (error) => {
-        console.error(`[SERVER] Failed to start:`, error);
+        console.error(`[SYNC-SERVER] Failed to start:`, error);
         if (!serverReady) {
           reject(error);
         }
       });
 
-      // Timeout if server doesn't start within 5 seconds
+      // Timeout if server doesn't start within 15 seconds (tsx may take a moment)
       setTimeout(() => {
         if (!serverReady) {
-          reject(new Error("Server failed to start within timeout"));
+          reject(new Error("Sync server failed to start within timeout"));
         }
-      }, 5000);
+      }, 60000);
     });
   }
 
-  stopServer() {
+  stopSyncServer() {
     if (this.serverProcess) {
-      console.log("Stopping WebSocket relay server...");
+      console.log("Stopping sync server...");
       this.serverProcess.kill("SIGTERM");
       this.serverProcess = null;
     }
   }
 
   async runTests() {
-    console.log("🚀 Starting samod sync tests\n");
+    console.log("Starting TonkCore sync tests\n");
 
     try {
-      // Start the relay server
-      await this.startServer();
+      // Start the automerge-repo sync server for all tests
+      console.log("Starting sync server...");
+      await this.startSyncServer();
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      console.log("Sync server started\n");
 
-      // Wait a moment for server to be fully ready
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      console.log("Server started successfully, running tests...\n");
-
-      // Run basic relay test
-      await testBasicRelay();
-
-      // Run direct samod sync test
-      await testSamodDirectSync();
+      // Run TonkCore VFS document sync test
+      console.log("Running TonkCore sync test...\n");
+      await testTonkDirectSync();
 
       console.log("=== All Tests Complete ===");
       return true;
     } catch (error) {
-      console.error("❌ Test suite failed:", error);
+      console.error("*** Test suite failed:", error);
       return false;
     } finally {
-      this.stopServer();
+      this.stopSyncServer();
     }
   }
 }
 
 // Run tests if this file is executed directly
-if (process.argv[1] === new URL(import.meta.url).pathname) {
+if (require.main === module) {
   const runner = new TestRunner();
 
   runner
@@ -109,16 +124,16 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
 
   // Handle cleanup on exit
   process.on("SIGINT", () => {
-    console.log("\n🛑 Received SIGINT, cleaning up...");
-    runner.stopServer();
+    console.log("\nReceived SIGINT, cleaning up...");
+    runner.stopSyncServer();
     process.exit(0);
   });
 
   process.on("SIGTERM", () => {
-    console.log("\n🛑 Received SIGTERM, cleaning up...");
-    runner.stopServer();
+    console.log("\nReceived SIGTERM, cleaning up...");
+    runner.stopSyncServer();
     process.exit(0);
   });
 }
 
-export { TestRunner };
+module.exports = { TestRunner };

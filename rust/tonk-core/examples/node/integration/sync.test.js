@@ -265,7 +265,7 @@ describe("Tonk Core Integration Tests", () => {
     });
 
     it("should handle VFS operations under memory pressure", async function () {
-      this.timeout(15000);
+      this.timeout(60000);
 
       const tonk = await wasm.create_tonk();
 

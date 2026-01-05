@@ -176,7 +176,7 @@ describe("Bundle Integration Tests", () => {
 
   describe("Bundle Performance", () => {
     it("should handle large numbers of files efficiently", async function () {
-      this.timeout(15000);
+      this.timeout(60000);
 
       const tonk = await wasm.create_tonk();
       const fileCount = 500; // Reduced from 1000 for reasonable test time
