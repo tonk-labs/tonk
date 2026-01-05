@@ -110,3 +110,143 @@ jobs:
           # deadlocks when multiple tests run in parallel on CI (Linux)
           # TODO: Running the tests this way undermines Nix-based caching
           nix develop .#ci --command cargo test ${{ matrix.flags }} -- --nocapture --test-threads=1
+
+  wasm_build:
+    name: "WASM Build"
+    needs: ["lints"]
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/tonk-core/target/
+          key: wasm-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            wasm-cargo-${{ runner.os }}-
+      - name: "Build WASM (Browser)"
+        shell: bash
+        run: |
+          nix develop .#ci --command bash -c '
+            cd rust/tonk-core
+            echo "Building WASM for browser target..."
+            wasm-pack build --target web --out-dir pkg-browser -- --features wasm-browser
+          '
+      - name: "Build WASM (Node.js)"
+        shell: bash
+        run: |
+          nix develop .#ci --command bash -c '
+            cd rust/tonk-core
+            echo "Building WASM for Node.js target..."
+            wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node
+          '
+      - name: "Verify WASM outputs"
+        run: |
+          echo "Checking browser WASM..."
+          test -f rust/tonk-core/pkg-browser/tonk_core.js
+          test -f rust/tonk-core/pkg-browser/tonk_core_bg.wasm
+
+          echo "Checking Node.js WASM..."
+          test -f rust/tonk-core/pkg-node/tonk_core.js
+          test -f rust/tonk-core/pkg-node/tonk_core_bg.wasm
+
+          echo "WASM builds verified!"
+
+      # Upload artifacts for use in test jobs
+      - name: "Upload WASM artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-artifacts
+          path: |
+            rust/tonk-core/pkg-browser/
+            rust/tonk-core/pkg-node/
+          retention-days: 1
+
+  wasm_integration_tests:
+    name: "WASM Integration Tests"
+    needs: ["wasm_build"]
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: "Download WASM artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+          path: rust/tonk-core/
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            rust/tonk-core/examples/node/node_modules
+          key: node-modules-integration-${{ runner.os }}-${{ hashFiles('rust/tonk-core/examples/node/bun.lock') }}
+          restore-keys: |
+            node-modules-integration-${{ runner.os }}-
+      - name: "Install test dependencies"
+        shell: bash
+        run: |
+          nix develop .#ci --command bash -c '
+            cd rust/tonk-core/examples/node
+            bun install --frozen-lockfile
+          '
+      - name: "Run integration tests"
+        shell: bash
+        run: |
+          nix develop .#ci --command bash -c '
+            cd rust/tonk-core/examples/node
+            # Run tests directly without rebuilding WASM (using artifacts instead)
+            npx mocha --timeout 10000 integration/*.test.js
+          '
+
+  wasm_sync_tests:
+    name: "WASM Sync Tests"
+    needs: ["wasm_build"]
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: "Download WASM artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+          path: rust/tonk-core/
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            rust/tonk-core/examples/server/node_modules
+            rust/tonk-core/tests/node-sync/node_modules
+          key: node-modules-sync-${{ runner.os }}-${{ hashFiles('rust/tonk-core/examples/server/bun.lock', 'rust/tonk-core/tests/node-sync/bun.lock') }}
+          restore-keys: |
+            node-modules-sync-${{ runner.os }}-
+      - name: "Install test dependencies"
+        shell: bash
+        run: |
+          nix develop .#ci --command bash -c '
+            (cd rust/tonk-core/examples/server && bun install --frozen-lockfile)
+            (cd rust/tonk-core/tests/node-sync && bun install --frozen-lockfile)
+          '
+      - name: "Run sync tests"
+        shell: bash
+        run: |
+          nix develop .#ci --command bash -c '
+            cd rust/tonk-core/tests/node-sync
+            bun run test
+          '
+
+  # Summary job that depends on all test jobs
+  all_tests:
+    name: "All Tests"
+    needs: ["rust_crates", "wasm_integration_tests", "wasm_sync_tests"]
+    runs-on: "ubuntu-latest"
+    steps:
+      - run: echo "All tests passed!"

@@ -161,15 +161,66 @@
             command = "echo 'TODO'";
           };
 
+          "wasm:test" = {
+            description = "Builds WASM and runs Node.js tests";
+            command = ''
+              set -e
+              echo "Building WASM for Node.js..."
+              cd rust/tonk-core
+              wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node
+
+              echo ""
+              echo "Installing test dependencies..."
+              (cd examples/node && bun install --frozen-lockfile)
+
+              echo ""
+              echo "Running integration tests..."
+              (cd examples/node && bun run test)
+            '';
+          };
+
+          "wasm:test:sync" = {
+            description = "Runs sync protocol tests";
+            command = ''
+              set -e
+              echo "Building WASM for Node.js..."
+              cd rust/tonk-core
+              wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node
+
+              echo ""
+              echo "Installing dependencies..."
+              (cd examples/server && bun install --frozen-lockfile)
+              (cd tests/node-sync && bun install --frozen-lockfile)
+
+              echo ""
+              echo "Running sync tests..."
+              (cd tests/node-sync && bun run test)
+            '';
+          };
+
           "test:all" = {
             description = "Runs the full test suite";
             command = ''
-              echo "Installing Node.js dependencies for sync tests..."
+              set -e
+              echo "Installing Node.js dependencies..."
               (cd rust/tonk-core/examples/server && bun install --frozen-lockfile)
               (cd rust/tonk-core/examples/node && bun install --frozen-lockfile)
               (cd rust/tonk-core/tests/node-sync && bun install --frozen-lockfile)
-              echo "Running cargo test..."
+
+              echo ""
+              echo "Running native Rust tests..."
               cargo test
+
+              echo ""
+              echo "Building WASM for Node.js..."
+              (cd rust/tonk-core && wasm-pack build --target nodejs --out-dir pkg-node -- --features wasm-node)
+
+              echo ""
+              echo "Running WASM integration tests..."
+              (cd rust/tonk-core/examples/node && bun run test)
+
+              echo ""
+              echo "All tests passed!"
             '';
           };
         };
