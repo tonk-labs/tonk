@@ -47,6 +47,7 @@ report.*.json
 **/.DS_Store
 
 target
+dist
 !Cargo.lock
 references/
 

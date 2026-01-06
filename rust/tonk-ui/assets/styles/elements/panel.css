@@ -1,0 +1,31 @@
+.panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 14px;
+    overflow: hidden;
+    background: var(--panel-background-color, #fff);
+    border-radius: var(--panel-border-radius, 6px);
+    box-shadow: 0 2px 4px -2px rgba(0, 0, 0, 0.10),
+        0 4px 6px -1px rgba(0, 0, 0, 0.10);
+
+    transition:
+        width 0.3s ease-out,
+        height 0.3s ease-out,
+        border-radius 0.3s ease-out;
+}
+
+.panel>* {
+    transition: opacity 0.3s;
+}
+
+.panel.pending {
+    width: 128px;
+    height: 128px;
+    border-radius: 100px;
+    overflow: hidden;
+}
+
+.panel.pending>* {
+    opacity: 0;
+}

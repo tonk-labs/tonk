@@ -8,16 +8,14 @@
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      flake-utils,
-      fenix,
-      crane,
+    { self
+    , nixpkgs
+    , flake-utils
+    , fenix
+    ,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -35,42 +33,6 @@
           sha256 = pkgs.lib.fakeHash;
         };
 
-        # Crane setup with fenix toolchain
-        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchainStable;
-
-        # Source filtering - only include Rust-relevant files for better caching
-        src = pkgs.lib.cleanSourceWith {
-          src = ./.;
-          filter =
-            path: type: (craneLib.filterCargoSources path type) || (builtins.match ".*\\.toml$" path != null);
-        };
-
-        # Common arguments for all Crane builds
-        commonArgs = {
-          inherit src;
-          pname = "tonk";
-          version = "0.1.0";
-          strictDeps = true;
-          # Build inputs needed for compilation
-          buildInputs =
-            pkgs.lib.optionals pkgs.stdenv.isLinux [
-              pkgs.openssl
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.apple-sdk_15
-              pkgs.libiconv
-            ];
-          nativeBuildInputs = [
-            rustToolchainStable
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.pkg-config
-          ];
-        };
-
-        # Build dependencies only - this is cached and reused
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-
         wasm-bindgen-cli =
           with pkgs;
           rustPlatform.buildRustPackage rec {
@@ -86,6 +48,7 @@
             };
 
             cargoHash = "sha256-qsO12332HSjWCVKtf1cUePWWb9IdYUmT+8OPj/XP2WE=";
+            useFetchCargoVendor = true;
           };
 
         # Common build inputs for all dev shells
@@ -94,15 +57,28 @@
           [
             rustToolchainStable
             wasm-bindgen-cli
-            bun
-            wrangler
+            tailwindcss_4
+            trunk
           ]
           ++ lib.optionals stdenv.isLinux [
             # Linux-specific inputs
+            openssl
+            pkg-config
+            chromium
+            chromedriver
           ]
           ++ lib.optionals stdenv.isDarwin [
             # MacOS-specific inputs
           ];
+
+        # Cargo dependencies that are Git repositories need to have their
+        # expected build hash # recorded separately. We make a shared variable so
+        # that the same dependencies can be # used across all derivations that
+        # need them.
+        cargoGitDependencies = {
+          "dialog-artifacts-0.1.0" = "sha256-wVImYyZnww23y4ebLV7zGO38O4HDED31Z8BDIChJwBg=";
+          "ucan-0.5.0" = "sha256-CCQar9nU3KhBn1Kl5RsRJUASX8bO77pu7wbzzoLccBs=";
+        };
 
         commands = {
           "build" = {
@@ -111,11 +87,45 @@
           };
           "build:web" = {
             description = "Builds the Tonk web application";
-            command = "echo 'TODO'";
+            command = "trunk build --config ./rust/tonk-ui/Trunk.toml";
+          };
+          "dev:web" =
+            {
+              description = "Start a dev server for the Tonk web application";
+              command = "trunk serve --config ./rust/tonk-ui/Trunk.toml";
+            };
+          "lint" = {
+            description = "Run lints against the current tree";
+            command = "nix flake check";
           };
           "test:all" = {
-            description = "Runs the full test suite";
-            command = "cargo test";
+            description = "Run the full test suite (all configurations, grab a coffee)";
+            command = ''
+              test:nat:dbg
+              test:nat:rls
+              test:web:dbg
+              test:web:rls
+            '';
+          };
+
+          "test:nat:dbg" = {
+            description = "Unit and integration tests (${system}, debug)";
+            command = "cargo test --features integration-tests";
+          };
+
+          "test:nat:rls" = {
+            description = "Unit and integration tests (${system}, release)";
+            command = "cargo test --features integration-tests --release";
+          };
+
+          "test:web:dbg" = {
+            description = "Unit tests (wasm32-unknown-unknown, debug)";
+            command = "cargo test --target wasm32-unknown-unknown";
+          };
+
+          "test:web:rls" = {
+            description = "Unit tests (wasm32-unknown-unknown, release)";
+            command = "cargo test --target wasm32-unknown-unknown --release";
           };
         };
 
@@ -124,90 +134,79 @@
       {
 
         # Default dev shell - uses basic relay
-        devShells = {
-          default = pkgs.mkShell {
+        devShells = with pkgs; {
+          default = mkShell {
             buildInputs = commonBuildInputs;
             nativeBuildInputs = menu.commands;
+            env = lib.optionals stdenv.isLinux {
+              "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+            };
             shellHook = ''
               clear
               ${menu.header}
             '';
           };
 
-          ci = pkgs.mkShell {
+          ci = mkShell {
             buildInputs = commonBuildInputs;
+            nativeBuildInputs = menu.commands;
+            env = lib.optionals stdenv.isLinux {
+              "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+              "CHROME" = "${chromium}/bin/chromium";
+            };
           };
         };
 
         checks = {
-          # Clippy check
-          clippy = craneLib.cargoClippy (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              cargoClippyExtraArgs = "--all-targets --all-features -- -D warnings";
-            }
-          );
-
-          # Format check
-          rustfmt = craneLib.cargoFmt {
-            inherit src;
-            pname = "tonk";
+          clippy = pkgs.rustPlatform.buildRustPackage {
+            pname = "tonk-clippy-lint";
+            version = "0.1.0";
+            src = ./.;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = cargoGitDependencies;
+            };
+            nativeBuildInputs = [ rustToolchainStable ];
+            buildPhase = ''
+              cargo clippy --all-targets --all-features -- -D warnings
+            '';
+            installPhase = ''
+              touch $out
+            '';
           };
 
-          # Run tests
-          tests = craneLib.cargoTest (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-            }
-          );
+          rustfmt =
+            pkgs.runCommand "tonk-fmt-check"
+              {
+                nativeBuildInputs = [ rustToolchainStable ];
+              }
+              ''
+                cd ${./.}
+                cargo fmt --check
+                touch $out
+              '';
         };
 
-        packages = {
-          # Build tonk-core library
-          tonk-core = craneLib.buildPackage (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              pname = "tonk-core";
+        packages =
+          {
+            tonk-ui = pkgs.rustPlatform.buildRustPackage {
+              pname = "tonk-ui";
               version = "0.1.0";
-              cargoExtraArgs = "-p tonk-core";
-            }
-          );
-
-          # Build tonk-space library
-          tonk-space = craneLib.buildPackage (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              pname = "tonk-space";
-              version = "0.1.0";
-              cargoExtraArgs = "-p tonk-space";
-            }
-          );
-
-          # Build tonk-access-service
-          tonk-access-service = craneLib.buildPackage (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              pname = "tonk-access-service";
-              version = "0.1.0";
-              cargoExtraArgs = "-p tonk-access-service";
-            }
-          );
-
-          # Build entire workspace
-          default = craneLib.buildPackage (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              pname = "tonk";
-              version = "0.1.0";
-            }
-          );
-        };
+              src = ./.;
+              cargoLock = {
+                lockFile = ./Cargo.lock;
+                outputHashes = cargoGitDependencies;
+              };
+              nativeBuildInputs = [ rustToolchainStable ] ++ commonBuildInputs;
+              buildPhase = ''
+                trunk build --config ./rust/tonk-ui/Trunk.toml
+              '';
+              installPhase = ''
+                mkdir -p $out
+                cp -r ./rust/tonk-ui/dist/* $out/
+              '';
+            };
+          };
       }
     );
 }
