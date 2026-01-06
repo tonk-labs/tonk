@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 
 // Re-export types for CLI use
 pub use dialog_artifacts::replica::{RemoteState, Revision, UpstreamState};
-pub use dialog_storage::{AuthMethod, MemoryStorageBackend, RestStorageConfig, S3Authority};
+pub use dialog_storage::MemoryStorageBackend;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use dialog_storage::FileSystemStorageBackend;

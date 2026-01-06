@@ -1,0 +1,17 @@
+[package]
+name = "tonk-common"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+dialog-common = { workspace = true }
+futures-util = { workspace = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = ["console", "Window"] }
+js-sys = { workspace = true }
+web-time = { workspace = true }
