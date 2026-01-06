@@ -1,0 +1,52 @@
+[package]
+name = "tonk-worker"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+integration-tests = []
+web-integration-tests = []
+
+[dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true, features = ["json", "macros"] }
+axum-wasm-macros = { workspace = true }
+console_error_panic_hook = { workspace = true }
+dialog-artifacts = { workspace = true }
+dialog-common = { workspace = true }
+dialog-query = { workspace = true }
+dialog-storage = { workspace = true }
+futures-util = { workspace = true }
+js-sys = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tonk-common = { workspace = true }
+tower-service = { workspace = true }
+url = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+wasm-streams = { workspace = true }
+web-sys = { workspace = true, features = [
+    "FetchEvent",
+    "Headers",
+    "Request",
+    "RequestInit",
+    "Response",
+    "ResponseInit",
+    "ServiceWorkerGlobalScope",
+] }
+web-time = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+dialog-common = { workspace = true, features = ["helpers"] }
+tower = "0.5"
+wasm-bindgen-test = { workspace = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }

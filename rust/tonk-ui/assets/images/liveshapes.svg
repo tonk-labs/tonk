@@ -1,0 +1,159 @@
+<svg width="700" height="550" viewBox="0 0 700 550" fill="none" xmlns="http://www.w3.org/2000/svg">
+   
+    <defs>
+        <rect id="green-rect" x="-100" y="-100" width="200" height="200" rx="24" transform="rotate(23.4765 434.683 196)" fill="currentColor">
+            <animateTransform
+                attributeName="transform"
+                type="rotate"
+                from="0 0 0"
+                to="360 0 0"
+                dur="13s"
+                repeatCount="indefinite"
+            />
+            <animateTransform
+                attributeName="transform"
+                type="scale"
+                values="1;1.25;1" 
+                dur="5s"
+                calcMode="spline"
+                keySplines="0.45 0 0.55 1; 0.45 0 0.55 1;"
+                repeatCount="indefinite"
+                additive="sum" />
+        </rect>
+
+        <rect id="red-circle" x="-140" y="-140" width="280" height="280" rx="140" fill="currentColor">
+            <animateTransform
+                attributeName="transform"
+                type="translate"
+                values="0 0;0 16;0 0;" 
+                dur="4s"
+                calcMode="spline"
+                keySplines="0.45 0 0.55 1; 0.45 0 0.55 1;"
+                repeatCount="indefinite"
+                />
+            <animateTransform
+                attributeName="transform"
+                type="scale"
+                values="1;1.15;1" 
+                dur="6s"
+                calcMode="spline"
+                keySplines="0.45 0 0.55 1; 0.45 0 0.55 1;"
+                repeatCount="indefinite"
+                additive="sum" />
+        </rect>
+
+        <rect id="blue-rect" x="-60" y="-175" width="170" height="300" rx="32" fill="currentColor">
+            <animateTransform
+                attributeName="transform"
+                type="rotate"
+                values="70 0 0;40 0 0;70 0 0" 
+                dur="9s"
+                calcMode="spline"
+                keySplines="0.45 0 0.55 1; 0.45 0 0.55 1;"
+                repeatCount="indefinite"
+                additive="sum" />
+        </rect>
+
+        <rect id="yellow-pill" x="-90" y="-130" width="180" height="260" rx="91.5" fill="currentColor">
+            <animateTransform
+                attributeName="transform"
+                type="rotate"
+                values="-10 0 0;20 0 0;-10 0 0" 
+                dur="5s"
+                calcMode="spline"
+                keySplines="0.45 0 0.55 1; 0.45 0 0.55 1;"
+                repeatCount="indefinite"
+                additive="sum" />
+        </rect>
+
+        <rect id="purple-pill" x="-70" y="-160" width="140" height="320" rx="70.5" fill="currentColor">
+            <animateTransform
+                attributeName="transform"
+                type="rotate"
+                values="15 0 0;45 0 0;15 0 0" 
+                dur="4s"
+                calcMode="spline"
+                keySplines="0.45 0 0.55 1; 0.45 0 0.55 1;"
+                repeatCount="indefinite"
+                additive="sum" />
+        </rect>
+
+        <path id="blue-triangle" d="M123.411 7.99998C129.569 -2.66668 144.965 -2.66665 151.124 8.00002L272.367 218C278.526 228.667 270.828 242 258.511 242H16.0238C3.70703 242 -3.99093 228.667 2.16747 218L123.411 7.99998Z" fill="currentColor">
+            <animateTransform
+
+                attributeName="transform"
+                type="rotate"
+                from="360 140 170"
+                to="0 140 170"
+                dur="6s"
+                repeatCount="indefinite"
+            />
+        </path>
+
+        <rect id="composite" x="0" y="0" width="700" height="550" mask="url(#compositeMask)" fill="currentColor"/>
+    </defs>
+
+    <!-- <g transform="" color="#fff">
+        <use href="#composite" />
+    </g> -->
+
+    
+    <g id="shapes">
+        <g transform="translate(160, 320)" color="#8D98AF">
+            <use href="#blue-rect" />
+        </g>
+
+        <g transform="translate(480, 220)" color="#EFC4DD">
+            <use href="#purple-pill" />
+        </g>
+
+        <g transform="translate(50, 40)" color="#B2E7E5">
+            <use href="#blue-triangle" />
+        </g>
+
+        <g transform="translate(340, 170)" color="#FBED6B">
+            <use href="#yellow-pill" />
+        </g>
+
+        <g transform="translate(500, 345)" color="#83B577">
+            <use href="#green-rect" />
+        </g>
+
+        <g transform="translate(320, 340)" color="#FF796A">
+            <use href="#red-circle" />
+        </g>
+
+
+    </g>
+
+
+    <mask id="compositeMask">
+        <rect x="0" y="0" width="700" height="550" />
+
+        <g transform="scale(1.25) translate(150, 260)" color="#fff">
+            <use href="#blue-rect" />
+        </g>
+
+        <g transform="translate(40, 20) scale(1.20)" color="#fff">
+            <use href="#blue-triangle" />
+        </g>
+
+        <g transform="translate(460, 220) scale(1.25 1.15)" color="#fff">
+            <use href="#purple-pill" />
+        </g>
+
+        <g transform="scale(1.15) translate(295, 150)" color="#fff">
+            <use href="#yellow-pill" />
+        </g>
+
+        <g transform="scale(1.15) translate(440, 310)" color="#fff">
+            <use href="#green-rect" />
+        </g>
+
+        <g transform="scale(1.15) translate(280, 300)" color="#fff">
+            <use href="#red-circle" />
+        </g>
+
+    </mask>
+
+</svg>

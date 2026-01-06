@@ -1,0 +1,9 @@
+[build]
+public_url = "./"
+offline = true
+
+[serve]
+port = 8080
+
+[watch]
+watch = ["./", "../tonk-common", "../tonk-worker"]

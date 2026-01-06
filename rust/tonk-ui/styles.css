@@ -1,0 +1,5 @@
+@layer base, application;
+@import "tailwindcss" layer(base);
+@import "./assets/styles/common.css" layer(base);
+/* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
+@variant dark (&:where(.dark, .dark *));
