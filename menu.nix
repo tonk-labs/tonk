@@ -37,16 +37,25 @@ let
       names =
         builtins.attrNames commands;
 
-      makeCommand = { name, script, description ? "<No description given>" }:
+      makeCommand = { name, script, description ? "<No description given>", env ? { } }:
         {
           inherit name description;
 
-          package =
-            pkgs.writeScriptBin name ''
-              #!${pkgs.bash}/bin/bash
-              ${pkgs.figlet}/bin/figlet '${name}' | ${pkgs.lolcat}/bin/lolcat
-              ${script}
-            '';
+          package = with pkgs; writeShellApplication
+            {
+              inherit name;
+              runtimeEnv = env;
+              text = ''
+                TITLE="$(${figlet}/bin/figlet -t '${name}')"
+                SUBTITLE="${description}"
+
+                echo "$TITLE
+                $SUBTITLE
+                " | ${lolcat}/bin/lolcat
+
+                ${script}
+              '';
+            };
         };
 
       intoPackages = name:
@@ -58,6 +67,10 @@ let
             inherit name;
             description = element.description;
             script = element.command;
+            env =
+              if builtins.hasAttr "env" element
+              then element.env
+              else { };
           };
         in
         task.package;
@@ -74,17 +87,20 @@ let
       menuLines = builtins.foldl' intoLines "echo ''" names;
 
       menu = ''
-        echo "$(${menuLines})"  | column -t --s ';'
+        echo "$(${menuLines})" | column -t --s ';'
       '';
     in
     {
       header = ''
         echo "${tonkFlower}
 
-        $(${pkgs.figlet}/bin/figlet "Tonk Shell")
+        $(${pkgs.figlet}/bin/figlet -t "Tonk Shell")
 
         $(${menu})
         " | ${pkgs.lolcat}/bin/lolcat;
+      '';
+      menuText = ''
+        echo "$(${menu})" | ${pkgs.lolcat}/bin/lolcat
       '';
       commands = scripts;
     };

@@ -11,65 +11,49 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-  id-token: write
-
 jobs:
-  lint_nix:
-    name: 'Lint Nix'
+  lints:
+    name: 'Lints'
     runs-on: 'ubuntu-latest'
     steps:
       - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/flake-checker-action@main
         with:
           send-statistics: false
           ignore-missing-flake-lock: false
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+      - name: 'Run lints'
+        shell: bash
+        run: |
+          nix develop .#ci -c lint
 
-  checks:
-    name: 'Nix Checks'
-    needs: ['lint_nix']
+  rust_crates:
+    name: 'Rust Crates'
+    needs: ['lints']
     runs-on: 'ubuntu-latest'
+    strategy:
+      matrix:
+        platform: ["native", "web"]
+        profile: ["debug", "release"]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
       - uses: wimpysworld/nothing-but-nix@main
-        with:
-          hatchet-protocol: cleave
       - uses: DeterminateSystems/nix-installer-action@main
       - name: Restore and save Nix store
         uses: nix-community/cache-nix-action@v6
         with:
-          # Include Cargo.lock for better Rust dependency caching
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock', '**/Cargo.lock') }}
-
-      - name: 'Run all checks (fmt, clippy, tests)'
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+      - name: 'Run tests'
         shell: bash
         run: |
-          # Build all checks
-          # SEE: https://github.com/NixOS/nix/issues/8881
-          nix build .#checks.x86_64-linux.rustfmt
-          nix build .#checks.x86_64-linux.clippy
-          nix build .#checks.x86_64-linux.tests
+          # Ensure we don't pick up a built-in chrome / chromedriver
+          # sudo apt-get remove google-chrome-stable -y
+          # sudo rm /usr/bin/chromium /usr/bin/chromium-browser
 
-  build:
-    name: 'Build Packages'
-    needs: ['checks']
-    runs-on: 'ubuntu-latest'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: wimpysworld/nothing-but-nix@main
-        with:
-          hatchet-protocol: cleave
-      - uses: DeterminateSystems/nix-installer-action@main
-      - name: Restore and save Nix store
-        uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock', '**/Cargo.lock') }}
-
-      - name: 'Build all packages'
-        shell: bash
-        run: |
-          # Build workspace
-          nix build .#tonk-core
-          nix build .#tonk-space
-          nix build .#tonk-access-service
+          nix develop .#ci -c test:${{matrix.platform}}:${{matrix.profile}}

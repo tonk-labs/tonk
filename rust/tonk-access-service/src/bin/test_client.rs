@@ -13,6 +13,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::SigningKey;
+use getrandom_0_2 as getrandom;
 use ipld_core::cid::Cid;
 use reqwest::{Client, redirect::Policy};
 use serde::Deserialize;

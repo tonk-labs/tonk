@@ -19,8 +19,7 @@ pub use dialog_artifacts::PlatformBackend;
 pub use dialog_query::claim::Transaction;
 pub use ownership::Ownership;
 pub use space::{
-    AuthMethod, MemoryBackend, MemoryStorageBackend, RemoteState, RestStorageConfig, Revision,
-    S3Authority, Space, SpaceError,
+    MemoryBackend, MemoryStorageBackend, RemoteConfig, RemoteState, Revision, Space, SpaceError,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
