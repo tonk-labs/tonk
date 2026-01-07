@@ -57,6 +57,8 @@
           [
             rustToolchainStable
             wasm-bindgen-cli
+            bun
+            wrangler
           ]
           ++ lib.optionals stdenv.isLinux [
             # Linux-specific inputs
