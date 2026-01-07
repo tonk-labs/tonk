@@ -7,7 +7,16 @@ authors.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "test-client"
+path = "src/bin/test_client.rs"
+required-features = ["test-client"]
+
+[features]
+default = []
+test-client = ["dep:reqwest", "dep:clap", "dep:tokio", "dep:anyhow"]
 
 [dependencies]
 # Cloudflare Workers
@@ -41,3 +50,9 @@ rand = "0.9"
 
 # Async
 futures = "0.3"
+
+# Test client dependencies (optional)
+reqwest = { version = "0.12", features = ["json"], optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"], optional = true }
+anyhow = { version = "1", optional = true }

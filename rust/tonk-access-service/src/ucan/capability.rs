@@ -102,7 +102,11 @@ fn get_blob_arg(args: &BTreeMap<String, Promised>) -> Result<BlobMeta, String> {
 
             let size = match map.get("size") {
                 Some(Promised::Integer(n)) => *n as u64,
-                _ => return Err("blob.size must be an integer".into()),
+                // Also accept string to work around i128 deserialization issues
+                Some(Promised::String(s)) => s
+                    .parse::<u64>()
+                    .map_err(|_| "blob.size must be a valid integer string")?,
+                _ => return Err("blob.size must be an integer or string".into()),
             };
 
             Ok(BlobMeta { digest, size })
