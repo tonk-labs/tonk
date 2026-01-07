@@ -1,6 +1,7 @@
 .vscode
 automerge-repo-data
 .direnv
+.wrangler
 
 # Node dependencies
 node_modules
