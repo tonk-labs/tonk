@@ -52,7 +52,7 @@ impl ServiceIdentity {
 
         // Generate new key
         let mut seed = [0u8; 32];
-        getrandom::fill(&mut seed).map_err(|_| IdentityError::Generation)?;
+        getrandom::getrandom(&mut seed).map_err(|_| IdentityError::Generation)?;
 
         let signing_key = SigningKey::from_bytes(&seed);
 

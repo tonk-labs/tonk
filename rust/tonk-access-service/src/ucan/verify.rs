@@ -103,10 +103,10 @@ pub async fn verify_invocation(
     // Step 3: Check time bounds
     let now = chrono::Utc::now().timestamp() as u64;
 
-    if let Some(exp) = invocation.expiration() {
-        if exp.to_unix() <= now {
-            return Err(VerificationError::Expired);
-        }
+    if let Some(exp) = invocation.expiration()
+        && exp.to_unix() <= now
+    {
+        return Err(VerificationError::Expired);
     }
 
     // Step 4: Build delegation store from proofs
@@ -141,10 +141,10 @@ pub async fn verify_invocation(
 
     // Step 6: Return verified invocation data
     Ok(VerifiedInvocation {
-        subject: invocation.subject().clone(),
+        subject: *invocation.subject(),
         command: invocation.command().segments().clone(),
         arguments: invocation.arguments().clone(),
-        issuer: invocation.issuer().clone(),
+        issuer: *invocation.issuer(),
     })
 }
 
@@ -167,22 +167,22 @@ fn build_delegation_store(
             })?;
 
         // Check time bounds
-        if let Some(exp) = delegation.expiration() {
-            if exp.to_unix() <= now {
-                return Err(VerificationError::ChainInvalid(format!(
-                    "Proof[{}] expired",
-                    i
-                )));
-            }
+        if let Some(exp) = delegation.expiration()
+            && exp.to_unix() <= now
+        {
+            return Err(VerificationError::ChainInvalid(format!(
+                "Proof[{}] expired",
+                i
+            )));
         }
 
-        if let Some(nbf) = delegation.not_before() {
-            if nbf.to_unix() > now {
-                return Err(VerificationError::ChainInvalid(format!(
-                    "Proof[{}] not yet valid",
-                    i
-                )));
-            }
+        if let Some(nbf) = delegation.not_before()
+            && nbf.to_unix() > now
+        {
+            return Err(VerificationError::ChainInvalid(format!(
+                "Proof[{}] not yet valid",
+                i
+            )));
         }
 
         // Compute CID and insert into store

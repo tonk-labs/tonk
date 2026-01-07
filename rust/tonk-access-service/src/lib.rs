@@ -15,9 +15,6 @@ mod ucan;
 /// Worker entrypoint
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    // Panic hook for better error messages
-    console_error_panic_hook::set_once();
-
     // Route requests
     let router = Router::new();
 
