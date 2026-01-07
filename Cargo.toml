@@ -25,8 +25,8 @@ dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch 
 dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-ecs" }
 
 # UCAN
-ucan = { git = "https://github.com/Gozala/rs-ucan.git", branch = "fix/wasm-compile", package = "ucan" }
-varsig = { git = "https://github.com/Gozala/rs-ucan.git", branch = "fix/wasm-compile", package = "varsig" }
+ucan = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check", package = "ucan" }
+varsig = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check", package = "varsig" }
 
 
 [profile.dev]
