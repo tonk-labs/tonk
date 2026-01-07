@@ -2,4 +2,4 @@
 
 pub mod presign;
 
-pub use presign::{PresignError, PresignedUrl};
+pub use presign::{Method, R2Config};

@@ -92,7 +92,7 @@ pub fn presign_url(
     let signed_headers = "host";
 
     // Build canonical query string (alphabetically sorted)
-    let mut query_params = vec![
+    let mut query_params = [
         ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_string()),
         ("X-Amz-Credential", credential.clone()),
         ("X-Amz-Date", timestamp.clone()),
