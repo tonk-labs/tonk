@@ -2864,6 +2864,7 @@ dependencies = [
  "ipld-core",
  "rand 0.9.2",
  "serde",
+ "serde_bytes",
  "serde_ipld_dagcbor",
  "serde_json",
  "sha2 0.10.9",
@@ -3087,7 +3088,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "ucan"
 version = "0.5.0"
-source = "git+https://github.com/tonk-labs/rs-ucan.git?branch=fix%2Fwasm-compile#25b4a5a02a89b9f9332bc61e5c3d7ddebc7e058f"
+source = "git+https://github.com/tonk-labs/rs-ucan.git?branch=jackddouglas%2Ffeat%2Fcheck#f0cd2cd8a70c254a74bbcea63e7403a4e6c54816"
 dependencies = [
  "base58",
  "ed25519-dalek",
@@ -3187,7 +3188,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 [[package]]
 name = "varsig"
 version = "0.1.0"
-source = "git+https://github.com/tonk-labs/rs-ucan.git?branch=fix%2Fwasm-compile#25b4a5a02a89b9f9332bc61e5c3d7ddebc7e058f"
+source = "git+https://github.com/tonk-labs/rs-ucan.git?branch=jackddouglas%2Ffeat%2Fcheck#f0cd2cd8a70c254a74bbcea63e7403a4e6c54816"
 dependencies = [
  "async-signature",
  "ed25519-dalek",
