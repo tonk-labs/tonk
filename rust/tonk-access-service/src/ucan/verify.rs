@@ -15,6 +15,8 @@ use ipld_core::cid::Cid;
 use serde_ipld_dagcbor;
 use ucan::{Delegation, did::Ed25519Did, future::Sendable, invocation::Invocation};
 
+type DelegationStore = Arc<Mutex<HashMap<Cid, Arc<Delegation<Ed25519Did>>>>>;
+
 /// Errors that can occur during verification.
 #[derive(Debug, thiserror::Error)]
 pub enum VerificationError {
@@ -51,17 +53,11 @@ pub enum VerificationError {
 
 /// Result of successful verification.
 pub struct VerifiedInvocation {
-    /// The subject DID (space being accessed)
-    pub subject: Ed25519Did,
-
     /// The command being invoked
     pub command: Vec<String>,
 
     /// The arguments
     pub arguments: std::collections::BTreeMap<String, ucan::promise::Promised>,
-
-    /// The issuer (who signed the invocation)
-    pub issuer: Ed25519Did,
 }
 
 /// Verify a UCAN invocation.
@@ -141,10 +137,8 @@ pub async fn verify_invocation(
 
     // Step 6: Return verified invocation data
     Ok(VerifiedInvocation {
-        subject: *invocation.subject(),
         command: invocation.command().segments().clone(),
         arguments: invocation.arguments().clone(),
-        issuer: *invocation.issuer(),
     })
 }
 
@@ -155,9 +149,8 @@ pub async fn verify_invocation(
 fn build_delegation_store(
     proof_bytes: &[Vec<u8>],
     now: u64,
-) -> Result<Arc<Mutex<HashMap<Cid, Arc<Delegation<Ed25519Did>>>>>, VerificationError> {
-    let store: Arc<Mutex<HashMap<Cid, Arc<Delegation<Ed25519Did>>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+) -> Result<DelegationStore, VerificationError> {
+    let store: DelegationStore = Arc::new(Mutex::new(HashMap::new()));
 
     for (i, bytes) in proof_bytes.iter().enumerate() {
         // Parse the delegation
