@@ -94,6 +94,7 @@
             wasm-pack
             wasm-bindgen-cli
             bun
+            wrangler
           ]
           ++ sharedBuildInputs
           ++ sharedNativeBuildInputs

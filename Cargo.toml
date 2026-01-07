@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/tonk-core", "rust/tonk-space"]
+members = ["rust/tonk-core", "rust/tonk-space", "rust/tonk-access-service"]
 resolver = "2"
 
 [workspace.metadata.crane]
