@@ -127,13 +127,6 @@ impl ServiceError {
         Self::new(ErrorCode::InvalidCbor, message)
     }
 
-    pub fn missing_argument(arg: &str) -> Self {
-        Self::new(
-            ErrorCode::MissingArgument,
-            format!("Missing required argument: {}", arg),
-        )
-    }
-
     pub fn invalid_argument(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidArgument, message)
     }
@@ -167,32 +160,8 @@ impl ServiceError {
         )
     }
 
-    pub fn proof_expired(index: usize) -> Self {
-        Self::new(
-            ErrorCode::ProofExpired,
-            format!("Proof[{}] has expired", index),
-        )
-    }
-
-    pub fn proof_not_yet_valid(index: usize) -> Self {
-        Self::new(
-            ErrorCode::ProofNotYetValid,
-            format!("Proof[{}] is not yet valid", index),
-        )
-    }
-
     pub fn chain_invalid(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::ChainInvalid, message)
-    }
-
-    pub fn command_mismatch(expected: &str, found: &str) -> Self {
-        Self::new(
-            ErrorCode::CommandMismatch,
-            format!(
-                "Command mismatch: invoked {}, but proof authorizes {}",
-                expected, found
-            ),
-        )
     }
 
     pub fn subject_not_allowed() -> Self {

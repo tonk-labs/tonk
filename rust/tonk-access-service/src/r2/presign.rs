@@ -22,9 +22,6 @@ pub struct PresignedUrl {
 /// Errors during pre-signing
 #[derive(Debug, thiserror::Error)]
 pub enum PresignError {
-    #[error("Invalid configuration: {0}")]
-    Config(String),
-
     #[error("HMAC error")]
     Hmac,
 }

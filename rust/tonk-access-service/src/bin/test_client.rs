@@ -328,7 +328,6 @@ struct TestContext {
     service_did: Ed25519Did,
     space_signer: Ed25519Signer,
     operator_signer: Ed25519Signer,
-    delegation: Delegation<Ed25519Did>,
     delegation_bytes: Vec<u8>,
     delegation_cid: Cid,
 }
@@ -371,7 +370,6 @@ impl TestContext {
             service_did,
             space_signer,
             operator_signer,
-            delegation,
             delegation_bytes,
             delegation_cid,
         })
