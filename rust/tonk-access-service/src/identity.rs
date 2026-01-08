@@ -76,9 +76,4 @@ impl ServiceIdentity {
     pub fn did_string(&self) -> String {
         self.signer.did().to_string()
     }
-
-    /// Get the signer for creating signatures
-    pub fn signer(&self) -> &Ed25519Signer {
-        &self.signer
-    }
 }

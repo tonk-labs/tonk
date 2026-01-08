@@ -32,14 +32,8 @@ pub enum VerificationError {
     #[error("Invocation expired")]
     Expired,
 
-    #[error("Invocation not yet valid (nbf in future)")]
-    NotYetValid,
-
     #[error("Delegation chain invalid: {0}")]
     ChainInvalid(String),
-
-    #[error("Missing proofs")]
-    MissingProofs,
 
     #[error("Capability not authorized: {0}")]
     Unauthorized(String),

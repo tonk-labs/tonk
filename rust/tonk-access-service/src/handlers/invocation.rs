@@ -146,10 +146,6 @@ fn map_verification_error(err: VerificationError) -> ServiceError {
             ServiceError::audience_mismatch(&expected, &got)
         }
         VerificationError::Expired => ServiceError::invocation_expired(),
-        VerificationError::NotYetValid => ServiceError::new(
-            ErrorCode::InvocationExpired,
-            "Invocation not yet valid (nbf in future)",
-        ),
         VerificationError::ChainInvalid(msg) => {
             // Check for specific chain errors
             if msg.contains("Subject not allowed") {
@@ -162,9 +158,6 @@ fn map_verification_error(err: VerificationError) -> ServiceError {
             } else {
                 ServiceError::chain_invalid(msg)
             }
-        }
-        VerificationError::MissingProofs => {
-            ServiceError::new(ErrorCode::ProofNotFound, "No proofs provided")
         }
         VerificationError::Unauthorized(msg) => {
             if msg.contains("Command mismatch") {
