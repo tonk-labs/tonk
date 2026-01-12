@@ -2590,6 +2590,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a50f4cf475b65d88e057964e0e9bb1f0aa9bbb2036dc65c64596b42932536984"
 
 [[package]]
+name = "s3-presign"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "hmac",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 2.0.17",
+ "url",
+ "web-time",
+]
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3204,18 +3218,19 @@ dependencies = [
  "getrandom 0.2.16",
  "getrandom 0.3.4",
  "hex",
- "hmac",
  "ipld-core",
  "rand 0.9.2",
  "reqwest",
+ "s3-presign",
  "serde",
  "serde_bytes",
  "serde_ipld_dagcbor",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0-rc.3",
  "thiserror 2.0.17",
  "tokio",
  "ucan",
+ "url",
  "varsig",
  "worker",
  "worker-macros",

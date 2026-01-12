@@ -16,7 +16,7 @@ required-features = ["test-client"]
 
 [features]
 default = []
-test-client = ["dep:reqwest", "dep:clap", "dep:tokio", "dep:anyhow"]
+test-client = ["dep:reqwest", "dep:clap", "dep:tokio", "dep:anyhow", "dep:sha2"]
 
 [dependencies]
 # Cloudflare Workers
@@ -29,8 +29,9 @@ varsig = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddoug
 
 # Cryptography
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-sha2 = "0.10"
-hmac = "0.12"
+
+# S3 presigning
+s3-presign = { workspace = true }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +44,7 @@ ipld-core = { version = "0.4", features = ["serde"] }
 thiserror = "2.0"
 base64 = "0.22"
 hex = "0.4"
+url = "2.5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "wasmbind"] }
 getrandom = { version = "0.2", features = ["js"] }
 getrandom_0_3 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
@@ -56,3 +58,4 @@ reqwest = { version = "0.12", features = ["json"], optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"], optional = true }
 anyhow = { version = "1", optional = true }
+sha2 = { version = "0.11.0-rc.3", optional = true }
