@@ -2,13 +2,15 @@
 //!
 //! This module wraps the `s3-presign` crate with R2-specific configuration.
 
-use s3_presign::{AuthorizationError, Credentials, Invocation};
+use s3_presign::{AuthorizationError, Checksum, Credentials, Invocation};
 use url::Url;
 
 /// Pre-signed URL result
 #[derive(Debug, Clone)]
 pub struct PresignedUrl {
     pub url: String,
+    /// Headers the client must include when following the redirect
+    pub headers: Vec<(String, String)>,
 }
 
 /// Errors during pre-signing
@@ -50,6 +52,7 @@ struct R2Request {
     method: Method,
     region: &'static str,
     expires: u64,
+    checksum: Option<Checksum>,
 }
 
 impl Invocation for R2Request {
@@ -68,6 +71,10 @@ impl Invocation for R2Request {
     fn expires(&self) -> u64 {
         self.expires
     }
+
+    fn checksum(&self) -> Option<&Checksum> {
+        self.checksum.as_ref()
+    }
 }
 
 /// Generate a pre-signed URL for R2.
@@ -78,15 +85,17 @@ impl Invocation for R2Request {
 /// * `method` - HTTP method (GET or PUT)
 /// * `key` - Object key (path within bucket)
 /// * `expires_in_secs` - URL validity duration in seconds
+/// * `checksum` - Optional SHA256 checksum for upload integrity verification
 ///
 /// # Returns
 ///
-/// A `PresignedUrl` containing the URL.
+/// A `PresignedUrl` containing the URL and any required headers.
 pub fn presign_url(
     config: &R2Config,
     method: Method,
     key: &str,
     expires_in_secs: u64,
+    checksum: Option<Checksum>,
 ) -> Result<PresignedUrl, PresignError> {
     // Build R2 URL: https://{account_id}.r2.cloudflarestorage.com/{bucket}/{key}
     let url = Url::parse(&format!(
@@ -99,6 +108,7 @@ pub fn presign_url(
         method,
         region: "auto", // R2 always uses "auto"
         expires: expires_in_secs,
+        checksum,
     };
 
     let credentials = Credentials {
@@ -110,12 +120,14 @@ pub fn presign_url(
 
     Ok(PresignedUrl {
         url: auth.url.to_string(),
+        headers: auth.headers,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use s3_presign::Hasher;
 
     #[test]
     fn test_presign_url_structure() {
@@ -126,7 +138,7 @@ mod tests {
             bucket: "test-bucket".into(),
         };
 
-        let result = presign_url(&config, Method::Get, "test.txt", 3600);
+        let result = presign_url(&config, Method::Get, "test.txt", 3600, None);
         assert!(result.is_ok());
 
         let url = result.unwrap();
@@ -146,7 +158,7 @@ mod tests {
         };
 
         let key = "did:key:z6MkTest/abc123def456";
-        let result = presign_url(&config, Method::Put, key, 3600);
+        let result = presign_url(&config, Method::Put, key, 3600, None);
         assert!(result.is_ok());
 
         let url = result.unwrap();
@@ -154,6 +166,31 @@ mod tests {
         assert!(
             url.url
                 .contains("/tonk-spaces/did:key:z6MkTest/abc123def456")
+        );
+    }
+
+    #[test]
+    fn test_presign_url_with_checksum() {
+        let config = R2Config {
+            account_id: "test123".into(),
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".into(),
+            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
+            bucket: "test-bucket".into(),
+        };
+
+        let checksum = Hasher::Sha256.checksum(b"test content");
+        let result = presign_url(&config, Method::Put, "test.txt", 3600, Some(checksum));
+        assert!(result.is_ok());
+
+        let presigned = result.unwrap();
+        // URL should include checksum in signed headers
+        assert!(presigned.url.contains("x-amz-checksum-sha256"));
+        // Headers should include the checksum for client to send
+        assert!(
+            presigned
+                .headers
+                .iter()
+                .any(|(k, _)| k == "x-amz-checksum-sha256")
         );
     }
 }
