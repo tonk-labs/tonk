@@ -11,11 +11,6 @@ command = "cargo install -q worker-build@0.1.4 && worker-build --release"
 binding = "BUCKET"
 bucket_name = "tonk-spaces"
 
-# KV namespace for service identity
-[[kv_namespaces]]
-binding = "CONFIG"
-id = "9f2cad6c152e4bd68207c4c26e86810c"
-
 # Environment variables
 [vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"

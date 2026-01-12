@@ -4,7 +4,6 @@
 
 use crate::{
     error::{ErrorCode, ServiceError},
-    identity::ServiceIdentity,
     r2::{Method, R2Config, presign},
     ucan::{BlobAllocate, BlobGet, Capability, VerificationError, verify_invocation},
 };
@@ -80,16 +79,8 @@ async fn handle_inner(
         })
         .collect::<std::result::Result<_, _>>()?;
 
-    // Get service identity
-    let kv = ctx
-        .kv("CONFIG")
-        .map_err(|e| ServiceError::internal(format!("KV binding error: {}", e)))?;
-    let identity = ServiceIdentity::get_or_create(&kv)
-        .await
-        .map_err(|e| ServiceError::internal(format!("Identity error: {}", e)))?;
-
     // Verify invocation
-    let verified = verify_invocation(&invocation_bytes, &proof_bytes, identity.did())
+    let verified = verify_invocation(&invocation_bytes, &proof_bytes)
         .await
         .map_err(map_verification_error)?;
 
@@ -104,6 +95,18 @@ async fn handle_inner(
                 ServiceError::invalid_argument(e)
             }
         })?;
+
+    // Verify capability's space matches the verified subject
+    let cap_space = match &capability {
+        Capability::BlobAllocate(alloc) => &alloc.space,
+        Capability::BlobGet(get) => &get.space,
+    };
+    if cap_space != &verified.subject {
+        return Err(ServiceError::invalid_argument(format!(
+            "Space in capability ({}) does not match invocation subject ({})",
+            cap_space, verified.subject
+        )));
+    }
 
     // Get R2 config from environment
     let r2_config = R2Config {

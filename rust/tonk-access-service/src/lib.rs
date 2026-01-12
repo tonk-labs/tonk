@@ -8,7 +8,6 @@ use worker::*;
 
 mod error;
 mod handlers;
-mod identity;
 mod r2;
 mod ucan;
 
