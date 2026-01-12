@@ -6,6 +6,7 @@ use tokio::time::sleep;
 use tonk_core::TonkCore;
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore] // Requires TypeScript server
 async fn test_e2e_bundle_sync_workflow() {
     // Test the complete workflow: create bundle -> load in multiple clients -> sync
     // This test explores whether bundle-based initialization enables sync compatibility
@@ -106,6 +107,7 @@ async fn test_e2e_bundle_sync_workflow() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore] // Requires TypeScript server
 async fn test_shared_root_document_sync() {
     // Test the pattern where all clients share the same root document ID
     // by fetching it from the automerge-repo server's /root endpoint
@@ -175,6 +177,7 @@ async fn test_shared_root_document_sync() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore] // Requires TypeScript server
 async fn test_bundle_content_sync_behavior() {
     // Test sync behavior when clients load from the same bundle
     // Note: Clients will have different root document IDs but should be able to sync content
@@ -278,6 +281,7 @@ async fn test_bundle_content_sync_behavior() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore] // Requires TypeScript server
 async fn test_different_bundles_isolated_sync() {
     // Test that clients from different bundles don't interfere with each other
 
@@ -326,6 +330,7 @@ async fn test_different_bundles_isolated_sync() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore] // Requires TypeScript server
 async fn test_sequential_bundle_client_joins() {
     // Test clients joining at different times but sharing the same bundle
 

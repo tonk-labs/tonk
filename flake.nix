@@ -50,8 +50,12 @@
         # Set up crane with the fenix toolchain
         craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
-        # Source filtering for Rust builds
-        src = craneLib.cleanCargoSource ./.;
+        # Source filtering for Rust builds (include .tonk test data files)
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter =
+            path: type: (craneLib.filterCargoSources path type) || (builtins.match ".*\\.tonk$" path != null);
+        };
 
         # Vendor dependencies with git dependency hashes
         cargoVendorDir = craneLib.vendorCargoDeps {
@@ -59,10 +63,12 @@
           outputHashes = {
             "git+https://github.com/tonk-labs/samod?branch=wasm-runtime#fe92f4d6fbb53fe107b1f4d9eea3fe5da7a30322" =
               "sha256-0mr/mtsnm+BZHlQLPEfe+wmzWjPldcULSvOzCOf5yMc=";
-            "git+https://github.com/tonk-labs/rs-ucan.git?branch=fix/wasm-compile#25b4a5a02a89b9f9332bc61e5c3d7ddebc7e058f" =
-              "sha256-ZUqBvqG0hvhpcR1uXjAh9TbL/zLKw8Tv2TweSKD1f48=";
-            "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-ecs#288cff4a36e83fb7ce892b37c5132f4ab519a479" =
-              "sha256-veYCuACVZEIveVuwh9O3XuoJtrihE/t+cWQTe7zWYsg=";
+            "git+https://github.com/tonk-labs/rs-ucan.git?branch=jackddouglas/feat/check#671a0256621eb4656b42d9e631108da3ec18158b" =
+              "sha256-5KQ7wIXv7PHgd6y1pq0+aUU/VFW7BLxECmVUNk1JfGw=";
+            "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-ecs#b533146c83451cd94fe356c56eb845fd1f0a5586" =
+              "sha256-PFyP3BbNCq0WiLD0Z8TKHXv7LJtAMsv3kXPrvvakjlw=";
+            "git+https://github.com/dialog-db/dialog-db.git?branch=feat/s3-presign-crate#8bc08b44eeab79a930c2d3ea10d2356186a980aa" =
+              "sha256-U20Ngvnqybs8C1GA+9JSVSlq6+5ad/jEw7ZyrCrHwVk=";
           };
         };
 
@@ -260,6 +266,15 @@
             inherit src;
             pname = "tonk";
           };
+
+          # Cargo tests
+          tests = craneLib.cargoTest (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoTestExtraArgs = "-- --test-threads=1";
+            }
+          );
         };
 
         packages = {
@@ -277,6 +292,15 @@
             // {
               inherit cargoArtifacts;
               pname = "tonk-space";
+              version = "0.1.0";
+            }
+          );
+
+          tonk-access-service = craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              pname = "tonk-access-service";
               version = "0.1.0";
             }
           );
