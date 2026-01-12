@@ -16,7 +16,7 @@ required-features = ["test-client"]
 
 [features]
 default = []
-test-client = ["dep:reqwest", "dep:clap", "dep:tokio", "dep:anyhow", "dep:sha2"]
+test-client = ["dep:reqwest", "dep:clap", "dep:tokio", "dep:anyhow", "dep:sha2", "dep:blake3"]
 
 [dependencies]
 # Cloudflare Workers
@@ -59,3 +59,4 @@ clap = { version = "4", features = ["derive"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"], optional = true }
 anyhow = { version = "1", optional = true }
 sha2 = { version = "0.11.0-rc.3", optional = true }
+blake3 = { version = "1.5", optional = true }

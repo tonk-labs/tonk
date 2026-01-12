@@ -102,7 +102,7 @@ enum Commands {
         #[arg(long)]
         delegation: String,
 
-        /// Hex-encoded blob digest (SHA-256)
+        /// Hex-encoded blob digest (blake3 hash for addressing)
         #[arg(long)]
         digest: String,
     },
@@ -500,6 +500,15 @@ impl TestContext {
     }
 }
 
+/// Compute both blake3 (for addressing) and sha256 (for R2 integrity).
+///
+/// Returns (blake3_hex, sha256_base64).
+fn compute_blob_hashes(data: &[u8]) -> (String, String) {
+    let blake3_hash = blake3::hash(data);
+    let sha256_hash = Sha256::digest(data);
+    (blake3_hash.to_hex().to_string(), BASE64.encode(sha256_hash))
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -657,15 +666,15 @@ async fn cmd_invoke_put(
     let delegation_cid = delegation.to_cid();
 
     let file_content = tokio::fs::read(file_path).await?;
-    let digest = Sha256::digest(&file_content);
-    let digest_hex = hex::encode(digest);
+    let (blake3_hex, sha256_b64) = compute_blob_hashes(&file_content);
 
     // Client that follows redirects for actual upload
     let client = Client::new();
 
     println!("Space DID: {}", space_did_str);
     println!("File size: {} bytes", file_content.len());
-    println!("SHA-256 digest: {}", digest_hex);
+    println!("Blake3 (addressing): {}", blake3_hex);
+    println!("SHA256 (integrity):  {}", sha256_b64);
 
     // Build invocation for http/put
     let invocation = InvocationBuilder::new()
@@ -680,12 +689,12 @@ async fn cmd_invoke_put(
 
     let invocation_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
 
-    // Build URL
-    let url = format!("{}/{}/index/{}", service_url, space_did_str, digest_hex);
+    // Build URL using blake3 for addressing
+    let url = format!("{}/{}/index/{}", service_url, space_did_str, blake3_hex);
 
     println!("\nSending PUT request to {}...", url);
 
-    // First get the redirect
+    // First get the redirect (include sha256 checksum for R2 integrity)
     let redirect_client = Client::builder().redirect(Policy::none()).build()?;
     let response = redirect_client
         .put(&url)
@@ -694,6 +703,7 @@ async fn cmd_invoke_put(
             format!("Bearer {}", BASE64.encode(&invocation_bytes)),
         )
         .header("X-UCAN-Proofs", BASE64.encode(&delegation_bytes))
+        .header("X-Checksum-SHA256", &sha256_b64)
         .send()
         .await?;
 
@@ -710,15 +720,26 @@ async fn cmd_invoke_put(
         .ok_or_else(|| anyhow::anyhow!("Missing Location header"))?
         .to_str()?;
 
+    // Parse required headers from response (contains x-amz-checksum-sha256)
+    let required_headers: Vec<(String, String)> = response
+        .headers()
+        .get("x-required-headers")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+
     println!("Got presigned URL, uploading...");
 
-    // Upload to presigned URL
-    let upload_response = client
+    // Upload to presigned URL with required headers (including checksum for R2 integrity)
+    let mut upload_request = client
         .put(presigned_url)
-        .header("Content-Type", "application/octet-stream")
-        .body(file_content)
-        .send()
-        .await?;
+        .header("Content-Type", "application/octet-stream");
+
+    for (name, value) in &required_headers {
+        upload_request = upload_request.header(name, value);
+    }
+
+    let upload_response = upload_request.body(file_content).send().await?;
 
     if upload_response.status().is_success() {
         println!("Upload successful!");
@@ -867,11 +888,11 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
     // Step 4: Prepare test content
     println!("\nStep 4: Preparing test content...");
     let content_bytes = content.as_bytes();
-    let digest = Sha256::digest(content_bytes);
-    let digest_hex = hex::encode(digest);
+    let (blake3_hex, sha256_b64) = compute_blob_hashes(content_bytes);
     println!("  Content: \"{}\"", content);
     println!("  Size: {} bytes", content_bytes.len());
-    println!("  SHA-256: {}", digest_hex);
+    println!("  Blake3 (addressing): {}", blake3_hex);
+    println!("  SHA256 (integrity):  {}", sha256_b64);
 
     // Step 5: Send PUT request
     println!("\nStep 5: Sending PUT request...");
@@ -892,7 +913,7 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
         "{}/{}/index/{}",
         service_url,
         space_signer.did(),
-        digest_hex
+        blake3_hex
     );
     let put_response = redirect_client
         .put(&put_url)
@@ -901,6 +922,7 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
             format!("Bearer {}", BASE64.encode(&put_inv_bytes)),
         )
         .header("X-UCAN-Proofs", BASE64.encode(&delegation_bytes))
+        .header("X-Checksum-SHA256", &sha256_b64)
         .send()
         .await?;
 
@@ -916,16 +938,28 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
         .get("location")
         .ok_or_else(|| anyhow::anyhow!("Missing Location header"))?
         .to_str()?;
+
+    // Parse required headers (contains x-amz-checksum-sha256 for R2 integrity)
+    let required_headers: Vec<(String, String)> = put_response
+        .headers()
+        .get("x-required-headers")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+
     println!("  Got presigned URL");
 
     // Step 6: Upload blob
     println!("\nStep 6: Uploading blob to presigned URL...");
-    let upload_response = client
+    let mut upload_request = client
         .put(presigned_put_url)
-        .header("Content-Type", "application/octet-stream")
-        .body(content_bytes.to_vec())
-        .send()
-        .await?;
+        .header("Content-Type", "application/octet-stream");
+
+    for (name, value) in &required_headers {
+        upload_request = upload_request.header(name, value);
+    }
+
+    let upload_response = upload_request.body(content_bytes.to_vec()).send().await?;
 
     if upload_response.status().is_success() {
         println!("  Upload: SUCCESS");
@@ -954,7 +988,7 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
         "{}/{}/index/{}",
         service_url,
         space_signer.did(),
-        digest_hex
+        blake3_hex
     );
     let get_response = redirect_client
         .get(&get_url)
