@@ -22,8 +22,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/", handlers::info::handle)
         // Health check
         .get_async("/health", handlers::health::handle)
-        // UCAN invocation endpoint
-        .post_async("/", handlers::invocation::handle)
+        // Blob routes with 307 redirects
+        .get_async("/:space_did/index/:digest", handlers::blob::handle_get)
+        .put_async("/:space_did/index/:digest", handlers::blob::handle_put)
         // 404 for everything else
         .run(req, env)
         .await

@@ -13,10 +13,6 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct PresignedUrl {
     /// The complete pre-signed URL
     pub url: String,
-    /// Headers that must be included with the request
-    pub headers: Vec<(String, String)>,
-    /// Unix timestamp when the URL expires
-    pub expires_at: u64,
 }
 
 /// Errors during pre-signing
@@ -148,20 +144,13 @@ pub fn presign_url(
         signature
     );
 
-    // Calculate expiry timestamp
-    let expires_at = now.timestamp() as u64 + expires_in_secs;
-
     // Build required headers
     let mut headers = Vec::new();
     if let Some(ct) = content_type {
         headers.push(("Content-Type".to_string(), ct.to_string()));
     }
 
-    Ok(PresignedUrl {
-        url,
-        headers,
-        expires_at,
-    })
+    Ok(PresignedUrl { url })
 }
 
 /// Derive the signing key using HMAC chain.
