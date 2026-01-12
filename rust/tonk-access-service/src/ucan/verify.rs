@@ -50,9 +50,6 @@ pub struct VerifiedInvocation {
     /// The command being invoked
     pub command: Vec<String>,
 
-    /// The arguments
-    pub arguments: std::collections::BTreeMap<String, ucan::promise::Promised>,
-
     /// The verified subject (space DID)
     pub subject: String,
 }
@@ -136,7 +133,6 @@ pub async fn verify_invocation(
     // Step 6: Return verified invocation data
     Ok(VerifiedInvocation {
         command: invocation.command().segments().clone(),
-        arguments: invocation.arguments().clone(),
         subject: invocation.subject().to_string(),
     })
 }

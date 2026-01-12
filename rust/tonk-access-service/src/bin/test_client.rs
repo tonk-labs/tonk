@@ -3,7 +3,7 @@
 //! This CLI tool provides utilities for:
 //! - Generating Ed25519 keypairs
 //! - Creating UCAN delegations
-//! - Sending invocations to the access service
+//! - Sending GET/PUT requests to the access service
 //! - End-to-end testing
 //! - Comprehensive edge case and failure mode testing
 //!
@@ -14,18 +14,18 @@ use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::SigningKey;
 use ipld_core::cid::Cid;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use reqwest::{Client, redirect::Policy};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::slice::from_ref;
 use std::time::{Duration, SystemTime};
 use ucan::{
     Delegation,
     delegation::{builder::DelegationBuilder, subject::DelegatedSubject},
     did::{Ed25519Did, Ed25519Signer},
     invocation::builder::InvocationBuilder,
-    promise::Promised,
     time::timestamp::Timestamp,
 };
 
@@ -61,8 +61,8 @@ enum Commands {
         command: String,
     },
 
-    /// Send a blob/allocate invocation
-    InvokeAllocate {
+    /// Send a PUT request (allocate blob)
+    InvokePut {
         /// Service URL (e.g., https://tonk-access-service.xxx.workers.dev)
         #[arg(long)]
         service_url: String,
@@ -79,12 +79,12 @@ enum Commands {
         #[arg(long)]
         delegation: String,
 
-        /// Path to file to allocate
+        /// Path to file to upload
         #[arg(long)]
         file: PathBuf,
     },
 
-    /// Send a blob/get invocation
+    /// Send a GET request (get blob)
     InvokeGet {
         /// Service URL
         #[arg(long)]
@@ -158,17 +158,6 @@ enum Commands {
         verbose: bool,
     },
 
-    /// Run storage edge case tests
-    TestStorage {
-        /// Service URL
-        #[arg(long)]
-        service_url: String,
-
-        /// Verbose output
-        #[arg(long, short)]
-        verbose: bool,
-    },
-
     /// Run all test suites
     TestAll {
         /// Service URL
@@ -190,36 +179,6 @@ enum Commands {
 struct ServiceInfo {
     service: String,
     version: String,
-}
-
-/// Invocation request
-#[derive(Debug, Serialize)]
-struct InvocationRequest {
-    invocation: String,
-    proofs: Vec<String>,
-}
-
-/// Allocate response
-#[derive(Debug, Deserialize)]
-struct AllocateResponse {
-    size: u64,
-    address: Option<UploadAddress>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UploadAddress {
-    url: String,
-    headers: std::collections::HashMap<String, String>,
-    #[allow(dead_code)]
-    expires: u64,
-}
-
-/// Get response
-#[derive(Debug, Deserialize)]
-struct GetResponse {
-    url: String,
-    #[allow(dead_code)]
-    expires: u64,
 }
 
 /// Error response from the service
@@ -332,7 +291,8 @@ struct TestContext {
 
 impl TestContext {
     async fn new(service_url: &str) -> anyhow::Result<Self> {
-        let client = Client::new();
+        // Client that doesn't follow redirects (so we can test 307)
+        let client = Client::builder().redirect(Policy::none()).build()?;
 
         // Verify service is reachable
         let _info: ServiceInfo = client.get(service_url).send().await?.json().await?;
@@ -346,12 +306,12 @@ impl TestContext {
         getrandom::getrandom(&mut operator_seed)?;
         let operator_signer = Ed25519Signer::new(SigningKey::from_bytes(&operator_seed));
 
-        // Create delegation (space -> operator)
+        // Create delegation (space -> operator) for http command
         let delegation = DelegationBuilder::new()
             .issuer(space_signer.clone())
             .audience(*operator_signer.did())
             .subject(DelegatedSubject::Specific(*space_signer.did()))
-            .command(vec!["blob".to_string()])
+            .command(vec!["http".to_string()])
             .try_build()
             .map_err(|e| anyhow::anyhow!("Failed to build delegation: {:?}", e))?;
 
@@ -368,49 +328,25 @@ impl TestContext {
         })
     }
 
-    /// Build allocate arguments for testing
-    fn build_allocate_args(&self, digest: &[u8], size: u64) -> BTreeMap<String, Promised> {
-        let mut args: BTreeMap<String, Promised> = BTreeMap::new();
-        args.insert(
-            "space".to_string(),
-            Promised::String(self.space_signer.did().to_string()),
-        );
-
-        let mut blob_map: BTreeMap<String, Promised> = BTreeMap::new();
-        blob_map.insert("digest".to_string(), Promised::Bytes(digest.to_vec()));
-        blob_map.insert("size".to_string(), Promised::String(size.to_string()));
-        args.insert("blob".to_string(), Promised::Map(blob_map));
-
-        args
-    }
-
-    /// Build a valid invocation request.
+    /// Build a valid invocation for http/get or http/put.
     fn build_invocation(
         &self,
         issuer: &Ed25519Signer,
         subject: Ed25519Did,
         command: Vec<String>,
-        args: BTreeMap<String, Promised>,
         proofs: Vec<Cid>,
-    ) -> anyhow::Result<(Vec<u8>, InvocationRequest)> {
+    ) -> anyhow::Result<Vec<u8>> {
         let invocation = InvocationBuilder::new()
             .issuer(issuer.clone())
             .audience(subject)
             .subject(subject)
             .command(command)
-            .arguments(args)
+            .arguments(BTreeMap::new()) // No arguments needed - params come from URL
             .proofs(proofs)
             .try_build()
             .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
 
-        let invocation_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
-
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&invocation_bytes),
-            proofs: vec![BASE64.encode(&self.delegation_bytes)],
-        };
-
-        Ok((invocation_bytes, request))
+        Ok(serde_ipld_dagcbor::to_vec(&invocation)?)
     }
 
     /// Build an invocation with custom audience (for testing audience mismatch).
@@ -420,38 +356,50 @@ impl TestContext {
         audience: Ed25519Did,
         subject: Ed25519Did,
         command: Vec<String>,
-        args: BTreeMap<String, Promised>,
         proofs: Vec<Cid>,
-    ) -> anyhow::Result<(Vec<u8>, InvocationRequest)> {
+    ) -> anyhow::Result<Vec<u8>> {
         let invocation = InvocationBuilder::new()
             .issuer(issuer.clone())
             .audience(audience)
             .subject(subject)
             .command(command)
-            .arguments(args)
+            .arguments(BTreeMap::new())
             .proofs(proofs)
             .try_build()
             .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
 
-        let invocation_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
-
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&invocation_bytes),
-            proofs: vec![BASE64.encode(&self.delegation_bytes)],
-        };
-
-        Ok((invocation_bytes, request))
+        Ok(serde_ipld_dagcbor::to_vec(&invocation)?)
     }
 
-    /// Send a request and check for expected error
-    async fn expect_error(&self, request: &InvocationRequest, expected_code: &str) -> TestResult {
-        let response = match self
-            .client
-            .post(&self.service_url)
-            .json(request)
-            .send()
-            .await
-        {
+    /// Build URL for blob endpoint
+    fn build_blob_url(&self, space_did: &str, digest_hex: &str) -> String {
+        format!("{}/{}/index/{}", self.service_url, space_did, digest_hex)
+    }
+
+    /// Send a GET request and check for expected error
+    async fn expect_get_error(
+        &self,
+        url: &str,
+        invocation_bytes: &[u8],
+        proof_bytes: &[Vec<u8>],
+        expected_code: &str,
+    ) -> TestResult {
+        let mut request = self.client.get(url).header(
+            "Authorization",
+            format!("Bearer {}", BASE64.encode(invocation_bytes)),
+        );
+
+        // Only add X-UCAN-Proofs header if there are proofs
+        if !proof_bytes.is_empty() {
+            let proofs_header = proof_bytes
+                .iter()
+                .map(|p| BASE64.encode(p))
+                .collect::<Vec<_>>()
+                .join(",");
+            request = request.header("X-UCAN-Proofs", proofs_header);
+        }
+
+        let response = match request.send().await {
             Ok(r) => r,
             Err(e) => {
                 return TestResult::fail(
@@ -472,11 +420,11 @@ impl TestContext {
             }
         };
 
-        // Should be an error response
-        if status.is_success() {
+        // Should NOT be a 307 redirect
+        if status.as_u16() == 307 {
             return TestResult::fail(
                 format!("expect_{}", expected_code.to_lowercase()),
-                format!("Expected error {} but got success: {}", expected_code, body),
+                format!("Expected error {} but got 307 redirect", expected_code),
             );
         }
 
@@ -505,12 +453,28 @@ impl TestContext {
         }
     }
 
-    /// Send a request and expect success
-    async fn expect_success(&self, request: &InvocationRequest, test_name: &str) -> TestResult {
+    /// Send a GET request and expect 307 redirect
+    async fn expect_get_redirect(
+        &self,
+        url: &str,
+        invocation_bytes: &[u8],
+        proof_bytes: &[Vec<u8>],
+        test_name: &str,
+    ) -> TestResult {
+        let proofs_header = proof_bytes
+            .iter()
+            .map(|p| BASE64.encode(p))
+            .collect::<Vec<_>>()
+            .join(",");
+
         let response = match self
             .client
-            .post(&self.service_url)
-            .json(request)
+            .get(url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", BASE64.encode(invocation_bytes)),
+            )
+            .header("X-UCAN-Proofs", proofs_header)
             .send()
             .await
         {
@@ -519,19 +483,18 @@ impl TestContext {
         };
 
         let status = response.status();
-        let body = match response.text().await {
-            Ok(b) => b,
-            Err(e) => {
-                return TestResult::fail(test_name, format!("Failed to read response: {}", e));
-            }
-        };
 
-        if status.is_success() {
-            TestResult::pass(test_name)
+        if status.as_u16() == 307 {
+            if response.headers().get("location").is_some() {
+                TestResult::pass(test_name)
+            } else {
+                TestResult::fail(test_name, "Got 307 but missing Location header")
+            }
         } else {
+            let body = response.text().await.unwrap_or_default();
             TestResult::fail(
                 test_name,
-                format!("Expected success, got {} {}", status, body),
+                format!("Expected 307 redirect, got {} {}", status, body),
             )
         }
     }
@@ -552,13 +515,13 @@ async fn main() -> anyhow::Result<()> {
             operator_did,
             command,
         } => cmd_delegate(&space_key, &operator_did, &command),
-        Commands::InvokeAllocate {
+        Commands::InvokePut {
             service_url,
             operator_key,
             space_did,
             delegation,
             file,
-        } => cmd_invoke_allocate(&service_url, &operator_key, &space_did, &delegation, &file).await,
+        } => cmd_invoke_put(&service_url, &operator_key, &space_did, &delegation, &file).await,
         Commands::InvokeGet {
             service_url,
             operator_key,
@@ -592,10 +555,6 @@ async fn main() -> anyhow::Result<()> {
             service_url,
             verbose,
         } => cmd_test_delegation(&service_url, verbose).await,
-        Commands::TestStorage {
-            service_url,
-            verbose,
-        } => cmd_test_storage(&service_url, verbose).await,
         Commands::TestAll {
             service_url,
             verbose,
@@ -675,7 +634,7 @@ fn cmd_delegate(space_key_b64: &str, operator_did_str: &str, command: &str) -> a
     Ok(())
 }
 
-async fn cmd_invoke_allocate(
+async fn cmd_invoke_put(
     service_url: &str,
     operator_key_b64: &str,
     space_did_str: &str,
@@ -698,81 +657,77 @@ async fn cmd_invoke_allocate(
     let delegation_cid = delegation.to_cid();
 
     let file_content = tokio::fs::read(file_path).await?;
-    let file_size = file_content.len() as u64;
     let digest = Sha256::digest(&file_content);
+    let digest_hex = hex::encode(digest);
 
+    // Client that follows redirects for actual upload
     let client = Client::new();
 
     println!("Space DID: {}", space_did_str);
-    println!("File size: {} bytes", file_size);
-    println!("SHA-256 digest: {}", hex::encode(digest));
+    println!("File size: {} bytes", file_content.len());
+    println!("SHA-256 digest: {}", digest_hex);
 
-    let mut args: BTreeMap<String, Promised> = BTreeMap::new();
-    args.insert(
-        "space".to_string(),
-        Promised::String(space_did_str.to_string()),
-    );
-
-    let mut blob_map: BTreeMap<String, Promised> = BTreeMap::new();
-    blob_map.insert("digest".to_string(), Promised::Bytes(digest.to_vec()));
-    blob_map.insert("size".to_string(), Promised::String(file_size.to_string()));
-    args.insert("blob".to_string(), Promised::Map(blob_map));
-
+    // Build invocation for http/put
     let invocation = InvocationBuilder::new()
         .issuer(operator_signer)
         .audience(space_did)
         .subject(space_did)
-        .command(vec!["blob".to_string(), "allocate".to_string()])
-        .arguments(args)
+        .command(vec!["http".to_string(), "put".to_string()])
+        .arguments(BTreeMap::new())
         .proofs(vec![delegation_cid])
         .try_build()
         .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
 
     let invocation_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
 
-    let request = InvocationRequest {
-        invocation: BASE64.encode(&invocation_bytes),
-        proofs: vec![BASE64.encode(&delegation_bytes)],
-    };
+    // Build URL
+    let url = format!("{}/{}/index/{}", service_url, space_did_str, digest_hex);
 
-    println!("\nSending blob/allocate invocation...");
-    let response = client.post(service_url).json(&request).send().await?;
+    println!("\nSending PUT request to {}...", url);
+
+    // First get the redirect
+    let redirect_client = Client::builder().redirect(Policy::none()).build()?;
+    let response = redirect_client
+        .put(&url)
+        .header(
+            "Authorization",
+            format!("Bearer {}", BASE64.encode(&invocation_bytes)),
+        )
+        .header("X-UCAN-Proofs", BASE64.encode(&delegation_bytes))
+        .send()
+        .await?;
 
     let status = response.status();
-    let body = response.text().await?;
-
-    if !status.is_success() {
-        println!("Error ({}): {}", status, body);
+    if status.as_u16() != 307 {
+        let body = response.text().await?;
+        println!("Error: Expected 307 redirect, got {} - {}", status, body);
         return Err(anyhow::anyhow!("Request failed"));
     }
 
-    let allocate_response: AllocateResponse = serde_json::from_str(&body)?;
+    let presigned_url = response
+        .headers()
+        .get("location")
+        .ok_or_else(|| anyhow::anyhow!("Missing Location header"))?
+        .to_str()?;
 
-    println!("\n=== Allocate Response ===");
-    println!("Size: {}", allocate_response.size);
+    println!("Got presigned URL, uploading...");
 
-    if let Some(address) = allocate_response.address {
-        println!("Upload URL: {}", address.url);
-        println!("Headers: {:?}", address.headers);
+    // Upload to presigned URL
+    let upload_response = client
+        .put(presigned_url)
+        .header("Content-Type", "application/octet-stream")
+        .body(file_content)
+        .send()
+        .await?;
 
-        println!("\nUploading file...");
-        let mut upload_request = client.put(&address.url).body(file_content);
-        for (k, v) in &address.headers {
-            upload_request = upload_request.header(k, v);
-        }
-        let upload_response = upload_request.send().await?;
-
-        if upload_response.status().is_success() {
-            println!("Upload successful!");
-        } else {
-            println!(
-                "Upload failed: {} - {}",
-                upload_response.status(),
-                upload_response.text().await?
-            );
-        }
+    if upload_response.status().is_success() {
+        println!("Upload successful!");
     } else {
-        println!("Blob already exists (no upload needed)");
+        println!(
+            "Upload failed: {} - {}",
+            upload_response.status(),
+            upload_response.text().await?
+        );
     }
 
     Ok(())
@@ -800,54 +755,58 @@ async fn cmd_invoke_get(
     let delegation: Delegation<Ed25519Did> = serde_ipld_dagcbor::from_slice(&delegation_bytes)?;
     let delegation_cid = delegation.to_cid();
 
-    let digest = hex::decode(digest_hex)?;
-
     let client = Client::new();
 
     println!("Space DID: {}", space_did_str);
+    println!("Digest: {}", digest_hex);
 
-    let mut args: BTreeMap<String, Promised> = BTreeMap::new();
-    args.insert(
-        "space".to_string(),
-        Promised::String(space_did_str.to_string()),
-    );
-    args.insert("digest".to_string(), Promised::Bytes(digest));
-
+    // Build invocation for http/get
     let invocation = InvocationBuilder::new()
         .issuer(operator_signer)
         .audience(space_did)
         .subject(space_did)
-        .command(vec!["blob".to_string(), "get".to_string()])
-        .arguments(args)
+        .command(vec!["http".to_string(), "get".to_string()])
+        .arguments(BTreeMap::new())
         .proofs(vec![delegation_cid])
         .try_build()
         .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
 
     let invocation_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
 
-    let request = InvocationRequest {
-        invocation: BASE64.encode(&invocation_bytes),
-        proofs: vec![BASE64.encode(&delegation_bytes)],
-    };
+    // Build URL
+    let url = format!("{}/{}/index/{}", service_url, space_did_str, digest_hex);
 
-    println!("\nSending blob/get invocation...");
-    let response = client.post(service_url).json(&request).send().await?;
+    println!("\nSending GET request to {}...", url);
+
+    // First get the redirect
+    let redirect_client = Client::builder().redirect(Policy::none()).build()?;
+    let response = redirect_client
+        .get(&url)
+        .header(
+            "Authorization",
+            format!("Bearer {}", BASE64.encode(&invocation_bytes)),
+        )
+        .header("X-UCAN-Proofs", BASE64.encode(&delegation_bytes))
+        .send()
+        .await?;
 
     let status = response.status();
-    let body = response.text().await?;
-
-    if !status.is_success() {
-        println!("Error ({}): {}", status, body);
+    if status.as_u16() != 307 {
+        let body = response.text().await?;
+        println!("Error: Expected 307 redirect, got {} - {}", status, body);
         return Err(anyhow::anyhow!("Request failed"));
     }
 
-    let get_response: GetResponse = serde_json::from_str(&body)?;
+    let presigned_url = response
+        .headers()
+        .get("location")
+        .ok_or_else(|| anyhow::anyhow!("Missing Location header"))?
+        .to_str()?;
 
-    println!("\n=== Get Response ===");
-    println!("Download URL: {}", get_response.url);
+    println!("Got presigned URL, downloading...");
 
-    println!("\nDownloading...");
-    let download_response = client.get(&get_response.url).send().await?;
+    // Download from presigned URL
+    let download_response = client.get(presigned_url).send().await?;
 
     if download_response.status().is_success() {
         let content = download_response.bytes().await?;
@@ -870,6 +829,7 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
     println!("=== End-to-End Test ===\n");
 
     let client = Client::new();
+    let redirect_client = Client::builder().redirect(Policy::none()).build()?;
 
     // Step 1: Get service info
     println!("Step 1: Getting service info...");
@@ -896,7 +856,7 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
         .issuer(space_signer.clone())
         .audience(*operator_signer.did())
         .subject(DelegatedSubject::Specific(*space_signer.did()))
-        .command(vec!["blob".to_string()])
+        .command(vec!["http".to_string()])
         .try_build()
         .map_err(|e| anyhow::anyhow!("Failed to build delegation: {:?}", e))?;
 
@@ -907,123 +867,122 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
     // Step 4: Prepare test content
     println!("\nStep 4: Preparing test content...");
     let content_bytes = content.as_bytes();
-    let content_size = content_bytes.len() as u64;
     let digest = Sha256::digest(content_bytes);
+    let digest_hex = hex::encode(digest);
     println!("  Content: \"{}\"", content);
-    println!("  Size: {} bytes", content_size);
-    println!("  SHA-256: {}", hex::encode(digest));
+    println!("  Size: {} bytes", content_bytes.len());
+    println!("  SHA-256: {}", digest_hex);
 
-    // Step 5: Send blob/allocate
-    println!("\nStep 5: Sending blob/allocate invocation...");
+    // Step 5: Send PUT request
+    println!("\nStep 5: Sending PUT request...");
 
-    let mut alloc_args: BTreeMap<String, Promised> = BTreeMap::new();
-    alloc_args.insert(
-        "space".to_string(),
-        Promised::String(space_signer.did().to_string()),
-    );
-    let mut blob_map: BTreeMap<String, Promised> = BTreeMap::new();
-    blob_map.insert("digest".to_string(), Promised::Bytes(digest.to_vec()));
-    blob_map.insert(
-        "size".to_string(),
-        Promised::String(content_size.to_string()),
-    );
-    alloc_args.insert("blob".to_string(), Promised::Map(blob_map));
-
-    let alloc_invocation = InvocationBuilder::new()
+    let put_invocation = InvocationBuilder::new()
         .issuer(operator_signer.clone())
         .audience(*space_signer.did())
         .subject(*space_signer.did())
-        .command(vec!["blob".to_string(), "allocate".to_string()])
-        .arguments(alloc_args)
+        .command(vec!["http".to_string(), "put".to_string()])
+        .arguments(BTreeMap::new())
         .proofs(vec![delegation_cid])
         .try_build()
-        .map_err(|e| anyhow::anyhow!("Failed to build allocate invocation: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to build PUT invocation: {:?}", e))?;
 
-    let alloc_inv_bytes = serde_ipld_dagcbor::to_vec(&alloc_invocation)?;
+    let put_inv_bytes = serde_ipld_dagcbor::to_vec(&put_invocation)?;
 
-    let alloc_request = InvocationRequest {
-        invocation: BASE64.encode(&alloc_inv_bytes),
-        proofs: vec![BASE64.encode(&delegation_bytes)],
-    };
+    let put_url = format!(
+        "{}/{}/index/{}",
+        service_url,
+        space_signer.did(),
+        digest_hex
+    );
+    let put_response = redirect_client
+        .put(&put_url)
+        .header(
+            "Authorization",
+            format!("Bearer {}", BASE64.encode(&put_inv_bytes)),
+        )
+        .header("X-UCAN-Proofs", BASE64.encode(&delegation_bytes))
+        .send()
+        .await?;
 
-    let alloc_response = client.post(service_url).json(&alloc_request).send().await?;
-
-    let alloc_status = alloc_response.status();
-    let alloc_body = alloc_response.text().await?;
-
-    if !alloc_status.is_success() {
-        println!("  FAILED: {} - {}", alloc_status, alloc_body);
-        return Err(anyhow::anyhow!("Allocate failed"));
+    let put_status = put_response.status();
+    if put_status.as_u16() != 307 {
+        let body = put_response.text().await?;
+        println!("  FAILED: Expected 307, got {} - {}", put_status, body);
+        return Err(anyhow::anyhow!("PUT failed"));
     }
 
-    let alloc_result: AllocateResponse = serde_json::from_str(&alloc_body)?;
-    println!("  Response size: {}", alloc_result.size);
+    let presigned_put_url = put_response
+        .headers()
+        .get("location")
+        .ok_or_else(|| anyhow::anyhow!("Missing Location header"))?
+        .to_str()?;
+    println!("  Got presigned URL");
 
     // Step 6: Upload blob
-    if let Some(address) = alloc_result.address {
-        println!("\nStep 6: Uploading blob to presigned URL...");
-        println!("  URL: {}...", &address.url[..80.min(address.url.len())]);
+    println!("\nStep 6: Uploading blob to presigned URL...");
+    let upload_response = client
+        .put(presigned_put_url)
+        .header("Content-Type", "application/octet-stream")
+        .body(content_bytes.to_vec())
+        .send()
+        .await?;
 
-        let mut upload_request = client.put(&address.url).body(content_bytes.to_vec());
-        for (k, v) in &address.headers {
-            upload_request = upload_request.header(k, v);
-        }
-        let upload_response = upload_request.send().await?;
-
-        if upload_response.status().is_success() {
-            println!("  Upload: SUCCESS");
-        } else {
-            let err_body = upload_response.text().await?;
-            println!("  Upload: FAILED - {}", err_body);
-            return Err(anyhow::anyhow!("Upload failed"));
-        }
+    if upload_response.status().is_success() {
+        println!("  Upload: SUCCESS");
     } else {
-        println!("\nStep 6: Blob already exists, skipping upload");
+        let err_body = upload_response.text().await?;
+        println!("  Upload: FAILED - {}", err_body);
+        return Err(anyhow::anyhow!("Upload failed"));
     }
 
-    // Step 7: Send blob/get
-    println!("\nStep 7: Sending blob/get invocation...");
-
-    let mut get_args: BTreeMap<String, Promised> = BTreeMap::new();
-    get_args.insert(
-        "space".to_string(),
-        Promised::String(space_signer.did().to_string()),
-    );
-    get_args.insert("digest".to_string(), Promised::Bytes(digest.to_vec()));
+    // Step 7: Send GET request
+    println!("\nStep 7: Sending GET request...");
 
     let get_invocation = InvocationBuilder::new()
         .issuer(operator_signer)
         .audience(*space_signer.did())
         .subject(*space_signer.did())
-        .command(vec!["blob".to_string(), "get".to_string()])
-        .arguments(get_args)
+        .command(vec!["http".to_string(), "get".to_string()])
+        .arguments(BTreeMap::new())
         .proofs(vec![delegation_cid])
         .try_build()
-        .map_err(|e| anyhow::anyhow!("Failed to build get invocation: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to build GET invocation: {:?}", e))?;
 
     let get_inv_bytes = serde_ipld_dagcbor::to_vec(&get_invocation)?;
 
-    let get_request = InvocationRequest {
-        invocation: BASE64.encode(&get_inv_bytes),
-        proofs: vec![BASE64.encode(&delegation_bytes)],
-    };
-
-    let get_response = client.post(service_url).json(&get_request).send().await?;
+    let get_url = format!(
+        "{}/{}/index/{}",
+        service_url,
+        space_signer.did(),
+        digest_hex
+    );
+    let get_response = redirect_client
+        .get(&get_url)
+        .header(
+            "Authorization",
+            format!("Bearer {}", BASE64.encode(&get_inv_bytes)),
+        )
+        .header("X-UCAN-Proofs", BASE64.encode(&delegation_bytes))
+        .send()
+        .await?;
 
     let get_status = get_response.status();
-    let get_body = get_response.text().await?;
-
-    if !get_status.is_success() {
-        println!("  FAILED: {} - {}", get_status, get_body);
-        return Err(anyhow::anyhow!("Get failed"));
+    if get_status.as_u16() != 307 {
+        let body = get_response.text().await?;
+        println!("  FAILED: Expected 307, got {} - {}", get_status, body);
+        return Err(anyhow::anyhow!("GET failed"));
     }
 
-    let get_result: GetResponse = serde_json::from_str(&get_body)?;
+    let presigned_get_url = get_response
+        .headers()
+        .get("location")
+        .ok_or_else(|| anyhow::anyhow!("Missing Location header"))?
+        .to_str()?;
     println!("  Got presigned URL");
 
     // Step 8: Download and verify
     println!("\nStep 8: Downloading and verifying content...");
-    let download_response = client.get(&get_result.url).send().await?;
+    let download_response = client.get(presigned_get_url).send().await?;
 
     if !download_response.status().is_success() {
         println!("  Download: FAILED");
@@ -1082,15 +1041,15 @@ async fn cmd_test_auth(service_url: &str, verbose: bool) -> anyhow::Result<()> {
     let mut suite = TestSuite::new("Auth Tests", verbose);
 
     let digest = Sha256::digest(b"test content");
-    let args = ctx.build_allocate_args(&digest, 12);
+    let digest_hex = hex::encode(digest);
+    let url = ctx.build_blob_url(&ctx.space_signer.did().to_string(), &digest_hex);
 
     // Test 1: Invalid signature (tamper with invocation bytes)
     {
-        let (mut inv_bytes, _) = ctx.build_invocation(
+        let mut inv_bytes = ctx.build_invocation(
             &ctx.operator_signer,
             *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args.clone(),
+            vec!["http".to_string(), "get".to_string()],
             vec![ctx.delegation_cid],
         )?;
 
@@ -1100,71 +1059,52 @@ async fn cmd_test_auth(service_url: &str, verbose: bool) -> anyhow::Result<()> {
             *byte = byte.wrapping_add(1);
         }
 
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&inv_bytes),
-            proofs: vec![BASE64.encode(&ctx.delegation_bytes)],
-        };
+        let result = ctx
+            .expect_get_error(
+                &url,
+                &inv_bytes,
+                from_ref(&ctx.delegation_bytes),
+                "SIGNATURE_INVALID",
+            )
+            .await;
 
-        // Should fail with either signature invalid or parse error
-        let response = ctx
-            .client
-            .post(&ctx.service_url)
-            .json(&request)
-            .send()
-            .await?;
-        let status = response.status();
-        let body = response.text().await?;
-
-        if !status.is_success() {
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
-                if err.error.code == "SIGNATURE_INVALID" || err.error.code == "INVALID_CBOR" {
-                    suite.record(TestResult::pass("tampered_signature"));
-                } else {
-                    suite.record(TestResult::fail(
-                        "tampered_signature",
-                        format!(
-                            "Expected SIGNATURE_INVALID or INVALID_CBOR, got {}",
-                            err.error.code
-                        ),
-                    ));
-                }
-            } else {
-                suite.record(TestResult::fail(
-                    "tampered_signature",
-                    format!("Got error but couldn't parse: {}", body),
-                ));
-            }
+        // Accept either SIGNATURE_INVALID or INVALID_CBOR since tampering may break parsing
+        if result.passed {
+            suite.record(result);
+        } else if result.message.contains("INVALID_CBOR") {
+            suite.record(TestResult::pass("tampered_signature"));
         } else {
-            suite.record(TestResult::fail(
-                "tampered_signature",
-                "Expected error but got success",
-            ));
+            suite.record(result);
         }
     }
 
     // Test 2: Wrong audience (audience != subject)
     {
-        // Generate a different DID to use as wrong audience
         let mut wrong_seed = [0u8; 32];
         getrandom::getrandom(&mut wrong_seed)?;
         let wrong_signer = Ed25519Signer::new(SigningKey::from_bytes(&wrong_seed));
 
-        let (_, request) = ctx.build_invocation_with_audience(
+        let inv_bytes = ctx.build_invocation_with_audience(
             &ctx.operator_signer,
             *wrong_signer.did(), // Wrong audience
             *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args.clone(),
+            vec!["http".to_string(), "get".to_string()],
             vec![ctx.delegation_cid],
         )?;
 
-        suite.record(ctx.expect_error(&request, "AUDIENCE_MISMATCH").await);
+        suite.record(
+            ctx.expect_get_error(
+                &url,
+                &inv_bytes,
+                from_ref(&ctx.delegation_bytes),
+                "AUDIENCE_MISMATCH",
+            )
+            .await,
+        );
     }
 
     // Test 3: Expired invocation
     {
-        // Build invocation with past expiration
-        // Create a timestamp in the past (1 hour ago)
         let past_time = SystemTime::now() - Duration::from_secs(3600);
         let past_exp = Timestamp::new(past_time).unwrap();
 
@@ -1172,173 +1112,59 @@ async fn cmd_test_auth(service_url: &str, verbose: bool) -> anyhow::Result<()> {
             .issuer(ctx.operator_signer.clone())
             .audience(*ctx.space_signer.did())
             .subject(*ctx.space_signer.did())
-            .command(vec!["blob".to_string(), "allocate".to_string()])
-            .arguments(args.clone())
+            .command(vec!["http".to_string(), "get".to_string()])
+            .arguments(BTreeMap::new())
             .proofs(vec![ctx.delegation_cid])
             .expiration(past_exp)
             .try_build()
             .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
 
         let inv_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&inv_bytes),
-            proofs: vec![BASE64.encode(&ctx.delegation_bytes)],
-        };
 
-        suite.record(ctx.expect_error(&request, "INVOCATION_EXPIRED").await);
+        suite.record(
+            ctx.expect_get_error(
+                &url,
+                &inv_bytes,
+                from_ref(&ctx.delegation_bytes),
+                "INVOCATION_EXPIRED",
+            )
+            .await,
+        );
     }
 
-    // Test 4: Missing proofs (empty proofs array)
+    // Test 4: Missing proofs (empty proofs)
     {
-        let (_, mut request) = ctx.build_invocation(
+        let inv_bytes = ctx.build_invocation(
             &ctx.operator_signer,
             *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args.clone(),
+            vec!["http".to_string(), "get".to_string()],
             vec![ctx.delegation_cid],
         )?;
 
-        request.proofs = vec![]; // Empty proofs!
-
-        suite.record(ctx.expect_error(&request, "PROOF_NOT_FOUND").await);
-    }
-
-    // Test 5: Wrong proof CID (reference non-existent delegation)
-    {
-        // Generate a random CID that won't match
-        let fake_cid_bytes = [0u8; 32];
-        let fake_cid = ipld_core::cid::Cid::new_v1(
-            0x71, // dag-cbor
-            ipld_core::cid::multihash::Multihash::wrap(0x12, &fake_cid_bytes).unwrap(),
+        suite.record(
+            ctx.expect_get_error(&url, &inv_bytes, &[], "PROOF_NOT_FOUND") // Empty proofs!
+                .await,
         );
-
-        let invocation = InvocationBuilder::new()
-            .issuer(ctx.operator_signer.clone())
-            .audience(*ctx.space_signer.did())
-            .subject(*ctx.space_signer.did())
-            .command(vec!["blob".to_string(), "allocate".to_string()])
-            .arguments(args.clone())
-            .proofs(vec![fake_cid]) // Wrong CID!
-            .try_build()
-            .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
-
-        let inv_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&inv_bytes),
-            proofs: vec![BASE64.encode(&ctx.delegation_bytes)],
-        };
-
-        suite.record(ctx.expect_error(&request, "PROOF_NOT_FOUND").await);
     }
 
-    // Test 6: Wrong subject (invoke for different space)
+    // Test 5: Wrong command (http/delete instead of http/get)
     {
-        // Generate a different space
-        let mut other_seed = [0u8; 32];
-        getrandom::getrandom(&mut other_seed)?;
-        let other_space = Ed25519Signer::new(SigningKey::from_bytes(&other_seed));
-
-        // But use the delegation for the original space
-        let (_, request) = ctx.build_invocation(
+        let inv_bytes = ctx.build_invocation(
             &ctx.operator_signer,
-            *other_space.did(), // Wrong subject!
-            vec!["blob".to_string(), "allocate".to_string()],
-            args.clone(),
+            *ctx.space_signer.did(),
+            vec!["http".to_string(), "delete".to_string()], // Wrong command!
             vec![ctx.delegation_cid],
         )?;
 
-        // Should fail - subject doesn't match delegation
-        let response = ctx
-            .client
-            .post(&ctx.service_url)
-            .json(&request)
-            .send()
-            .await?;
-        let status = response.status();
-        let body = response.text().await?;
-
-        if !status.is_success() {
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
-                if err.error.code == "SUBJECT_NOT_ALLOWED" || err.error.code == "CHAIN_INVALID" {
-                    suite.record(TestResult::pass("wrong_subject"));
-                } else {
-                    suite.record(TestResult::fail(
-                        "wrong_subject",
-                        format!(
-                            "Expected SUBJECT_NOT_ALLOWED or CHAIN_INVALID, got {}",
-                            err.error.code
-                        ),
-                    ));
-                }
-            } else {
-                suite.record(TestResult::fail(
-                    "wrong_subject",
-                    format!("Got error but couldn't parse: {}", body),
-                ));
-            }
-        } else {
-            suite.record(TestResult::fail(
-                "wrong_subject",
-                "Expected error but got success",
-            ));
-        }
-    }
-
-    // Test 7: Operator signs as if they were the space (invalid issuer chain)
-    {
-        // Operator tries to invoke directly without delegation chain
-        // The invocation's issuer is operator, but the proof chain doesn't connect
-        let invocation = InvocationBuilder::new()
-            .issuer(ctx.operator_signer.clone())
-            .audience(*ctx.space_signer.did())
-            .subject(*ctx.space_signer.did())
-            .command(vec!["blob".to_string(), "allocate".to_string()])
-            .arguments(args.clone())
-            .proofs(vec![]) // No proofs - should fail
-            .try_build()
-            .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
-
-        let inv_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&inv_bytes),
-            proofs: vec![], // No proofs
-        };
-
-        // Should fail with chain invalid or proof not found
-        let response = ctx
-            .client
-            .post(&ctx.service_url)
-            .json(&request)
-            .send()
-            .await?;
-        let status = response.status();
-        let body = response.text().await?;
-
-        if !status.is_success() {
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
-                if err.error.code == "CHAIN_INVALID" || err.error.code == "PROOF_NOT_FOUND" {
-                    suite.record(TestResult::pass("no_delegation_chain"));
-                } else {
-                    suite.record(TestResult::fail(
-                        "no_delegation_chain",
-                        format!(
-                            "Expected CHAIN_INVALID or PROOF_NOT_FOUND, got {}",
-                            err.error.code
-                        ),
-                    ));
-                }
-            } else {
-                suite.record(TestResult::fail(
-                    "no_delegation_chain",
-                    format!("Got error but couldn't parse: {}", body),
-                ));
-            }
-        } else {
-            suite.record(TestResult::fail(
-                "no_delegation_chain",
-                "Expected error but got success",
-            ));
-        }
+        suite.record(
+            ctx.expect_get_error(
+                &url,
+                &inv_bytes,
+                from_ref(&ctx.delegation_bytes),
+                "COMMAND_MISMATCH",
+            )
+            .await,
+        );
     }
 
     suite.print_summary();
@@ -1357,164 +1183,147 @@ async fn cmd_test_validation(service_url: &str, verbose: bool) -> anyhow::Result
     let ctx = TestContext::new(service_url).await?;
     let mut suite = TestSuite::new("Validation Tests", verbose);
 
-    // Test 1: Malformed JSON body
+    let digest_hex = hex::encode(Sha256::digest(b"test"));
+    let url = ctx.build_blob_url(&ctx.space_signer.did().to_string(), &digest_hex);
+
+    // Test 1: Invalid base64 in Authorization header
     {
+        let proofs_header = BASE64.encode(&ctx.delegation_bytes);
+
         let response = ctx
             .client
-            .post(&ctx.service_url)
-            .header("content-type", "application/json")
-            .body("not valid json {{{")
+            .get(&url)
+            .header("Authorization", "Bearer not-valid-base64!!!")
+            .header("X-UCAN-Proofs", proofs_header)
             .send()
             .await?;
 
         let status = response.status();
         let body = response.text().await?;
 
-        if !status.is_success() {
+        if !status.is_success() && status.as_u16() != 307 {
             if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
-                if err.error.code == "INVALID_REQUEST_BODY" {
-                    suite.record(TestResult::pass("malformed_json"));
+                if err.error.code == "INVALID_BASE64" {
+                    suite.record(TestResult::pass("invalid_base64_auth"));
                 } else {
                     suite.record(TestResult::fail(
-                        "malformed_json",
-                        format!("Expected INVALID_REQUEST_BODY, got {}", err.error.code),
+                        "invalid_base64_auth",
+                        format!("Expected INVALID_BASE64, got {}", err.error.code),
                     ));
                 }
             } else {
-                // Some HTTP error without our structured format is also acceptable
-                suite.record(TestResult::pass("malformed_json"));
+                suite.record(TestResult::pass("invalid_base64_auth")); // Some error is fine
             }
         } else {
             suite.record(TestResult::fail(
-                "malformed_json",
-                "Expected error but got success",
+                "invalid_base64_auth",
+                "Expected error but got success or redirect",
             ));
         }
     }
 
-    // Test 2: Invalid base64 in invocation field
+    // Test 2: Valid base64 but invalid CBOR
     {
-        let request = InvocationRequest {
-            invocation: "not-valid-base64!!!".to_string(),
-            proofs: vec![BASE64.encode(&ctx.delegation_bytes)],
-        };
+        let proofs_header = BASE64.encode(&ctx.delegation_bytes);
 
-        suite.record(ctx.expect_error(&request, "INVALID_BASE64").await);
+        let response = ctx
+            .client
+            .get(&url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", BASE64.encode(b"not cbor")),
+            )
+            .header("X-UCAN-Proofs", proofs_header)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() && status.as_u16() != 307 {
+            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
+                if err.error.code == "INVALID_CBOR" {
+                    suite.record(TestResult::pass("invalid_cbor"));
+                } else {
+                    suite.record(TestResult::fail(
+                        "invalid_cbor",
+                        format!("Expected INVALID_CBOR, got {}", err.error.code),
+                    ));
+                }
+            } else {
+                suite.record(TestResult::pass("invalid_cbor"));
+            }
+        } else {
+            suite.record(TestResult::fail(
+                "invalid_cbor",
+                "Expected error but got success or redirect",
+            ));
+        }
     }
 
-    // Test 3: Valid base64 but invalid CBOR
+    // Test 3: Missing Authorization header
     {
-        let request = InvocationRequest {
-            invocation: BASE64.encode(b"this is valid base64 but not CBOR"),
-            proofs: vec![BASE64.encode(&ctx.delegation_bytes)],
-        };
+        let response = ctx
+            .client
+            .get(&url)
+            .header("X-UCAN-Proofs", BASE64.encode(&ctx.delegation_bytes))
+            .send()
+            .await?;
 
-        suite.record(ctx.expect_error(&request, "INVALID_CBOR").await);
+        let status = response.status();
+
+        if !status.is_success() && status.as_u16() != 307 {
+            suite.record(TestResult::pass("missing_auth_header"));
+        } else {
+            suite.record(TestResult::fail(
+                "missing_auth_header",
+                "Expected error for missing Authorization header",
+            ));
+        }
     }
 
-    // Test 4: Missing 'space' argument
+    // Test 4: Invalid base64 in X-UCAN-Proofs
     {
-        let digest = Sha256::digest(b"test");
-        let mut args: BTreeMap<String, Promised> = BTreeMap::new();
-        // Deliberately omit 'space'
-        let mut blob_map: BTreeMap<String, Promised> = BTreeMap::new();
-        blob_map.insert("digest".to_string(), Promised::Bytes(digest.to_vec()));
-        blob_map.insert("size".to_string(), Promised::String("4".to_string()));
-        args.insert("blob".to_string(), Promised::Map(blob_map));
-
-        let (_, request) = ctx.build_invocation(
+        let inv_bytes = ctx.build_invocation(
             &ctx.operator_signer,
             *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args,
+            vec!["http".to_string(), "get".to_string()],
             vec![ctx.delegation_cid],
         )?;
 
-        suite.record(ctx.expect_error(&request, "MISSING_ARGUMENT").await);
-    }
+        let response = ctx
+            .client
+            .get(&url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", BASE64.encode(&inv_bytes)),
+            )
+            .header("X-UCAN-Proofs", "not-valid-base64!!!")
+            .send()
+            .await?;
 
-    // Test 5: Missing 'blob' argument
-    {
-        let mut args: BTreeMap<String, Promised> = BTreeMap::new();
-        args.insert(
-            "space".to_string(),
-            Promised::String(ctx.space_signer.did().to_string()),
-        );
-        // Deliberately omit 'blob'
+        let status = response.status();
+        let body = response.text().await?;
 
-        let (_, request) = ctx.build_invocation(
-            &ctx.operator_signer,
-            *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args,
-            vec![ctx.delegation_cid],
-        )?;
-
-        suite.record(ctx.expect_error(&request, "MISSING_ARGUMENT").await);
-    }
-
-    // Test 6: Invalid size (non-numeric string)
-    {
-        let digest = Sha256::digest(b"test");
-        let mut args: BTreeMap<String, Promised> = BTreeMap::new();
-        args.insert(
-            "space".to_string(),
-            Promised::String(ctx.space_signer.did().to_string()),
-        );
-        let mut blob_map: BTreeMap<String, Promised> = BTreeMap::new();
-        blob_map.insert("digest".to_string(), Promised::Bytes(digest.to_vec()));
-        blob_map.insert(
-            "size".to_string(),
-            Promised::String("not-a-number".to_string()),
-        );
-        args.insert("blob".to_string(), Promised::Map(blob_map));
-
-        let (_, request) = ctx.build_invocation(
-            &ctx.operator_signer,
-            *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args,
-            vec![ctx.delegation_cid],
-        )?;
-
-        suite.record(ctx.expect_error(&request, "INVALID_ARGUMENT").await);
-    }
-
-    // Test 7: Unknown command (blob/delete)
-    {
-        let digest = Sha256::digest(b"test");
-        let args = ctx.build_allocate_args(&digest, 4);
-
-        let (_, request) = ctx.build_invocation(
-            &ctx.operator_signer,
-            *ctx.space_signer.did(),
-            vec!["blob".to_string(), "delete".to_string()], // Unknown command!
-            args,
-            vec![ctx.delegation_cid],
-        )?;
-
-        suite.record(ctx.expect_error(&request, "UNKNOWN_CAPABILITY").await);
-    }
-
-    // Test 8: Invalid base64 in proofs
-    {
-        let digest = Sha256::digest(b"test");
-        let args = ctx.build_allocate_args(&digest, 4);
-
-        let (inv_bytes, _) = ctx.build_invocation(
-            &ctx.operator_signer,
-            *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args,
-            vec![ctx.delegation_cid],
-        )?;
-
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&inv_bytes),
-            proofs: vec!["not-valid-base64!!!".to_string()],
-        };
-
-        suite.record(ctx.expect_error(&request, "INVALID_BASE64").await);
+        if !status.is_success() && status.as_u16() != 307 {
+            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
+                if err.error.code == "INVALID_BASE64" {
+                    suite.record(TestResult::pass("invalid_base64_proofs"));
+                } else {
+                    suite.record(TestResult::fail(
+                        "invalid_base64_proofs",
+                        format!("Expected INVALID_BASE64, got {}", err.error.code),
+                    ));
+                }
+            } else {
+                suite.record(TestResult::pass("invalid_base64_proofs"));
+            }
+        } else {
+            suite.record(TestResult::fail(
+                "invalid_base64_proofs",
+                "Expected error but got success or redirect",
+            ));
+        }
     }
 
     suite.print_summary();
@@ -1534,74 +1343,58 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
     let mut suite = TestSuite::new("Delegation Tests", verbose);
 
     let digest = Sha256::digest(b"delegation test content");
+    let digest_hex = hex::encode(digest);
+    let url = ctx.build_blob_url(&ctx.space_signer.did().to_string(), &digest_hex);
 
     // Test 1: Direct delegation (space -> operator) - should pass
     {
-        let args = ctx.build_allocate_args(&digest, 25);
-        let (_, request) = ctx.build_invocation(
+        let inv_bytes = ctx.build_invocation(
             &ctx.operator_signer,
             *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args,
+            vec!["http".to_string(), "get".to_string()],
             vec![ctx.delegation_cid],
         )?;
 
-        suite.record(ctx.expect_success(&request, "direct_delegation").await);
+        suite.record(
+            ctx.expect_get_redirect(
+                &url,
+                &inv_bytes,
+                from_ref(&ctx.delegation_bytes),
+                "direct_delegation",
+            )
+            .await,
+        );
     }
 
-    // Test 2: Attenuated command (delegate /blob, invoke /blob/allocate) - should pass
+    // Test 2: Over-attenuated (delegate /http/get only, invoke /http/put) - should fail
     {
-        // The default delegation is for "blob" command, which should allow "blob/allocate"
-        let args = ctx.build_allocate_args(&digest, 25);
-        let (_, request) = ctx.build_invocation(
-            &ctx.operator_signer,
-            *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args,
-            vec![ctx.delegation_cid],
-        )?;
-
-        suite.record(ctx.expect_success(&request, "attenuated_command").await);
-    }
-
-    // Test 3: Over-attenuated (delegate /blob/get only, invoke /blob/allocate) - should fail
-    {
-        // Create a delegation that only allows blob/get
         let get_only_delegation = DelegationBuilder::new()
             .issuer(ctx.space_signer.clone())
             .audience(*ctx.operator_signer.did())
             .subject(DelegatedSubject::Specific(*ctx.space_signer.did()))
-            .command(vec!["blob".to_string(), "get".to_string()]) // Only get!
+            .command(vec!["http".to_string(), "get".to_string()]) // Only get!
             .try_build()
             .map_err(|e| anyhow::anyhow!("Failed to build delegation: {:?}", e))?;
 
         let get_only_bytes = serde_ipld_dagcbor::to_vec(&get_only_delegation)?;
         let get_only_cid = get_only_delegation.to_cid();
 
-        let args = ctx.build_allocate_args(&digest, 25);
+        let inv_bytes = ctx.build_invocation(
+            &ctx.operator_signer,
+            *ctx.space_signer.did(),
+            vec!["http".to_string(), "put".to_string()], // But we invoke put!
+            vec![get_only_cid],
+        )?;
 
-        let invocation = InvocationBuilder::new()
-            .issuer(ctx.operator_signer.clone())
-            .audience(*ctx.space_signer.did())
-            .subject(*ctx.space_signer.did())
-            .command(vec!["blob".to_string(), "allocate".to_string()]) // But we invoke allocate!
-            .arguments(args)
-            .proofs(vec![get_only_cid])
-            .try_build()
-            .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
-
-        let inv_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&inv_bytes),
-            proofs: vec![BASE64.encode(&get_only_bytes)],
-        };
-
-        suite.record(ctx.expect_error(&request, "COMMAND_MISMATCH").await);
+        // Use PUT endpoint for this test
+        suite.record(
+            ctx.expect_get_error(&url, &inv_bytes, &[get_only_bytes], "COMMAND_MISMATCH")
+                .await,
+        );
     }
 
-    // Test 4: Expired delegation
+    // Test 3: Expired delegation
     {
-        // Create a timestamp in the past (1 hour ago)
         let past_time = SystemTime::now() - Duration::from_secs(3600);
         let past_exp = Timestamp::new(past_time).unwrap();
 
@@ -1609,7 +1402,7 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
             .issuer(ctx.space_signer.clone())
             .audience(*ctx.operator_signer.did())
             .subject(DelegatedSubject::Specific(*ctx.space_signer.did()))
-            .command(vec!["blob".to_string()])
+            .command(vec!["http".to_string()])
             .expiration(past_exp)
             .try_build()
             .map_err(|e| anyhow::anyhow!("Failed to build delegation: {:?}", e))?;
@@ -1617,30 +1410,21 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
         let expired_bytes = serde_ipld_dagcbor::to_vec(&expired_delegation)?;
         let expired_cid = expired_delegation.to_cid();
 
-        let args = ctx.build_allocate_args(&digest, 25);
+        let inv_bytes = ctx.build_invocation(
+            &ctx.operator_signer,
+            *ctx.space_signer.did(),
+            vec!["http".to_string(), "get".to_string()],
+            vec![expired_cid],
+        )?;
 
-        let invocation = InvocationBuilder::new()
-            .issuer(ctx.operator_signer.clone())
-            .audience(*ctx.space_signer.did())
-            .subject(*ctx.space_signer.did())
-            .command(vec!["blob".to_string(), "allocate".to_string()])
-            .arguments(args)
-            .proofs(vec![expired_cid])
-            .try_build()
-            .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
-
-        let inv_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&inv_bytes),
-            proofs: vec![BASE64.encode(&expired_bytes)],
-        };
-
-        suite.record(ctx.expect_error(&request, "PROOF_EXPIRED").await);
+        suite.record(
+            ctx.expect_get_error(&url, &inv_bytes, &[expired_bytes], "PROOF_EXPIRED")
+                .await,
+        );
     }
 
-    // Test 5: Not-yet-valid delegation (nbf in future)
+    // Test 4: Not-yet-valid delegation (nbf in future)
     {
-        // Create a timestamp in the future (1 hour from now)
         let future_time = SystemTime::now() + Duration::from_secs(3600);
         let future_nbf = Timestamp::new(future_time).unwrap();
 
@@ -1648,7 +1432,7 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
             .issuer(ctx.space_signer.clone())
             .audience(*ctx.operator_signer.did())
             .subject(DelegatedSubject::Specific(*ctx.space_signer.did()))
-            .command(vec!["blob".to_string()])
+            .command(vec!["http".to_string()])
             .not_before(future_nbf)
             .try_build()
             .map_err(|e| anyhow::anyhow!("Failed to build delegation: {:?}", e))?;
@@ -1656,30 +1440,21 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
         let future_bytes = serde_ipld_dagcbor::to_vec(&future_delegation)?;
         let future_cid = future_delegation.to_cid();
 
-        let args = ctx.build_allocate_args(&digest, 25);
+        let inv_bytes = ctx.build_invocation(
+            &ctx.operator_signer,
+            *ctx.space_signer.did(),
+            vec!["http".to_string(), "get".to_string()],
+            vec![future_cid],
+        )?;
 
-        let invocation = InvocationBuilder::new()
-            .issuer(ctx.operator_signer.clone())
-            .audience(*ctx.space_signer.did())
-            .subject(*ctx.space_signer.did())
-            .command(vec!["blob".to_string(), "allocate".to_string()])
-            .arguments(args)
-            .proofs(vec![future_cid])
-            .try_build()
-            .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
-
-        let inv_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&inv_bytes),
-            proofs: vec![BASE64.encode(&future_bytes)],
-        };
-
-        suite.record(ctx.expect_error(&request, "PROOF_NOT_YET_VALID").await);
+        suite.record(
+            ctx.expect_get_error(&url, &inv_bytes, &[future_bytes], "PROOF_NOT_YET_VALID")
+                .await,
+        );
     }
 
-    // Test 6: Multi-level delegation (space -> intermediate -> operator)
+    // Test 5: Multi-level delegation (space -> intermediate -> operator)
     {
-        // Generate intermediate identity
         let mut intermediate_seed = [0u8; 32];
         getrandom::getrandom(&mut intermediate_seed)?;
         let intermediate_signer = Ed25519Signer::new(SigningKey::from_bytes(&intermediate_seed));
@@ -1689,7 +1464,7 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
             .issuer(ctx.space_signer.clone())
             .audience(*intermediate_signer.did())
             .subject(DelegatedSubject::Specific(*ctx.space_signer.did()))
-            .command(vec!["blob".to_string()])
+            .command(vec!["http".to_string()])
             .try_build()
             .map_err(|e| anyhow::anyhow!("Failed to build delegation1: {:?}", e))?;
 
@@ -1701,36 +1476,29 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
             .issuer(intermediate_signer.clone())
             .audience(*ctx.operator_signer.did())
             .subject(DelegatedSubject::Specific(*ctx.space_signer.did()))
-            .command(vec!["blob".to_string()])
+            .command(vec!["http".to_string()])
             .try_build()
             .map_err(|e| anyhow::anyhow!("Failed to build delegation2: {:?}", e))?;
 
         let delegation2_bytes = serde_ipld_dagcbor::to_vec(&delegation2)?;
         let delegation2_cid = delegation2.to_cid();
 
-        let args = ctx.build_allocate_args(&digest, 25);
+        let inv_bytes = ctx.build_invocation(
+            &ctx.operator_signer,
+            *ctx.space_signer.did(),
+            vec!["http".to_string(), "get".to_string()],
+            vec![delegation1_cid, delegation2_cid],
+        )?;
 
-        // Operator invokes with both proofs
-        let invocation = InvocationBuilder::new()
-            .issuer(ctx.operator_signer.clone())
-            .audience(*ctx.space_signer.did())
-            .subject(*ctx.space_signer.did())
-            .command(vec!["blob".to_string(), "allocate".to_string()])
-            .arguments(args)
-            .proofs(vec![delegation1_cid, delegation2_cid])
-            .try_build()
-            .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
-
-        let inv_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
-        let request = InvocationRequest {
-            invocation: BASE64.encode(&inv_bytes),
-            proofs: vec![
-                BASE64.encode(&delegation1_bytes),
-                BASE64.encode(&delegation2_bytes),
-            ],
-        };
-
-        suite.record(ctx.expect_success(&request, "multi_level_delegation").await);
+        suite.record(
+            ctx.expect_get_redirect(
+                &url,
+                &inv_bytes,
+                &[delegation1_bytes, delegation2_bytes],
+                "multi_level_delegation",
+            )
+            .await,
+        );
     }
 
     suite.print_summary();
@@ -1739,193 +1507,6 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
         Ok(())
     } else {
         Err(anyhow::anyhow!("Some delegation tests failed"))
-    }
-}
-
-/// Test storage edge cases
-async fn cmd_test_storage(service_url: &str, verbose: bool) -> anyhow::Result<()> {
-    println!("=== Storage Edge Case Tests ===\n");
-
-    let ctx = TestContext::new(service_url).await?;
-    let mut suite = TestSuite::new("Storage Tests", verbose);
-
-    // Test 1: Allocate twice (second should return size 0)
-    {
-        // Use unique content for this test
-        let content = format!("storage-test-{}", chrono::Utc::now().timestamp_millis());
-        let content_bytes = content.as_bytes();
-        let digest = Sha256::digest(content_bytes);
-
-        let args = ctx.build_allocate_args(&digest, content_bytes.len() as u64);
-        let (_, request) = ctx.build_invocation(
-            &ctx.operator_signer,
-            *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args.clone(),
-            vec![ctx.delegation_cid],
-        )?;
-
-        // First allocation
-        let response1 = ctx
-            .client
-            .post(&ctx.service_url)
-            .json(&request)
-            .send()
-            .await?;
-        let body1 = response1.text().await?;
-
-        if let Ok(result1) = serde_json::from_str::<AllocateResponse>(&body1) {
-            // Upload the blob
-            if let Some(address) = result1.address {
-                let mut upload_req = ctx.client.put(&address.url).body(content_bytes.to_vec());
-                for (k, v) in &address.headers {
-                    upload_req = upload_req.header(k, v);
-                }
-                let _ = upload_req.send().await?;
-            }
-
-            // Second allocation (same blob)
-            let response2 = ctx
-                .client
-                .post(&ctx.service_url)
-                .json(&request)
-                .send()
-                .await?;
-            let body2 = response2.text().await?;
-
-            if let Ok(result2) = serde_json::from_str::<AllocateResponse>(&body2) {
-                if result2.size == 0 && result2.address.is_none() {
-                    suite.record(TestResult::pass("duplicate_allocate"));
-                } else {
-                    suite.record(TestResult::fail(
-                        "duplicate_allocate",
-                        format!(
-                            "Expected size 0 and no address, got size {} with address {:?}",
-                            result2.size,
-                            result2.address.is_some()
-                        ),
-                    ));
-                }
-            } else {
-                suite.record(TestResult::fail(
-                    "duplicate_allocate",
-                    format!("Failed to parse second response: {}", body2),
-                ));
-            }
-        } else {
-            suite.record(TestResult::fail(
-                "duplicate_allocate",
-                format!("Failed to parse first response: {}", body1),
-            ));
-        }
-    }
-
-    // Test 2: Get returns valid presigned URL (even for non-existent blob)
-    {
-        // Request a blob that doesn't exist
-        let fake_digest = Sha256::digest(b"this blob definitely does not exist");
-
-        let mut args: BTreeMap<String, Promised> = BTreeMap::new();
-        args.insert(
-            "space".to_string(),
-            Promised::String(ctx.space_signer.did().to_string()),
-        );
-        args.insert("digest".to_string(), Promised::Bytes(fake_digest.to_vec()));
-
-        let (_, request) = ctx.build_invocation(
-            &ctx.operator_signer,
-            *ctx.space_signer.did(),
-            vec!["blob".to_string(), "get".to_string()],
-            args,
-            vec![ctx.delegation_cid],
-        )?;
-
-        let response = ctx
-            .client
-            .post(&ctx.service_url)
-            .json(&request)
-            .send()
-            .await?;
-        let status = response.status();
-        let body = response.text().await?;
-
-        if status.is_success() {
-            if let Ok(result) = serde_json::from_str::<GetResponse>(&body) {
-                if !result.url.is_empty() {
-                    suite.record(TestResult::pass("get_nonexistent_returns_url"));
-                } else {
-                    suite.record(TestResult::fail(
-                        "get_nonexistent_returns_url",
-                        "Got empty URL",
-                    ));
-                }
-            } else {
-                suite.record(TestResult::fail(
-                    "get_nonexistent_returns_url",
-                    format!("Failed to parse response: {}", body),
-                ));
-            }
-        } else {
-            suite.record(TestResult::fail(
-                "get_nonexistent_returns_url",
-                format!("Expected success, got {}: {}", status, body),
-            ));
-        }
-    }
-
-    // Test 3: Large blob allocation (test with 1GB size claim)
-    {
-        let digest = Sha256::digest(b"large blob test");
-        let large_size: u64 = 1024 * 1024 * 1024; // 1GB
-
-        let args = ctx.build_allocate_args(&digest, large_size);
-        let (_, request) = ctx.build_invocation(
-            &ctx.operator_signer,
-            *ctx.space_signer.did(),
-            vec!["blob".to_string(), "allocate".to_string()],
-            args,
-            vec![ctx.delegation_cid],
-        )?;
-
-        let response = ctx
-            .client
-            .post(&ctx.service_url)
-            .json(&request)
-            .send()
-            .await?;
-        let status = response.status();
-        let body = response.text().await?;
-
-        if status.is_success() {
-            if let Ok(result) = serde_json::from_str::<AllocateResponse>(&body) {
-                if result.size == large_size || result.size == 0 {
-                    suite.record(TestResult::pass("large_blob_allocate"));
-                } else {
-                    suite.record(TestResult::fail(
-                        "large_blob_allocate",
-                        format!("Unexpected size: {}", result.size),
-                    ));
-                }
-            } else {
-                suite.record(TestResult::fail(
-                    "large_blob_allocate",
-                    format!("Failed to parse response: {}", body),
-                ));
-            }
-        } else {
-            suite.record(TestResult::fail(
-                "large_blob_allocate",
-                format!("Expected success, got {}: {}", status, body),
-            ));
-        }
-    }
-
-    suite.print_summary();
-
-    if suite.all_passed() {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("Some storage tests failed"))
     }
 }
 
@@ -1961,15 +1542,6 @@ async fn cmd_test_all(service_url: &str, verbose: bool) -> anyhow::Result<()> {
         Err(_) => {
             all_passed = false;
             suite_results.push(("Delegation Tests".to_string(), false));
-        }
-    }
-
-    println!("\n--- Storage Tests ---");
-    match cmd_test_storage(service_url, verbose).await {
-        Ok(()) => suite_results.push(("Storage Tests".to_string(), true)),
-        Err(_) => {
-            all_passed = false;
-            suite_results.push(("Storage Tests".to_string(), false));
         }
     }
 

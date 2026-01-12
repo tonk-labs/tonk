@@ -8,12 +8,9 @@ use worker::Response;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     // 400 Bad Request - Input validation errors
-    InvalidRequestBody,
     InvalidBase64,
     InvalidCbor,
-    MissingArgument,
     InvalidArgument,
-    UnknownCapability,
 
     // 401 Unauthorized - Authentication errors
     SignatureInvalid,
@@ -37,12 +34,7 @@ impl ErrorCode {
     pub fn status_code(&self) -> u16 {
         match self {
             // 400 Bad Request
-            ErrorCode::InvalidRequestBody
-            | ErrorCode::InvalidBase64
-            | ErrorCode::InvalidCbor
-            | ErrorCode::MissingArgument
-            | ErrorCode::InvalidArgument
-            | ErrorCode::UnknownCapability => 400,
+            ErrorCode::InvalidBase64 | ErrorCode::InvalidCbor | ErrorCode::InvalidArgument => 400,
 
             // 401 Unauthorized
             ErrorCode::SignatureInvalid
@@ -115,10 +107,6 @@ impl ServiceError {
 
     // Convenience constructors for common errors
 
-    pub fn invalid_request_body(message: impl Into<String>) -> Self {
-        Self::new(ErrorCode::InvalidRequestBody, message)
-    }
-
     pub fn invalid_base64(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidBase64, message)
     }
@@ -129,13 +117,6 @@ impl ServiceError {
 
     pub fn invalid_argument(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidArgument, message)
-    }
-
-    pub fn unknown_capability(cmd: &str) -> Self {
-        Self::new(
-            ErrorCode::UnknownCapability,
-            format!("Unknown capability: {}", cmd),
-        )
     }
 
     pub fn signature_invalid(message: impl Into<String>) -> Self {
