@@ -72,7 +72,7 @@ async fn handle_get_inner(
     // 5. Generate presigned URL and return 307
     let r2_config = get_r2_config(ctx)?;
     let key = format!("{}/{}", space_did, digest);
-    let presigned = presign::presign_url(&r2_config, Method::Get, &key, 3600, None)
+    let presigned = presign::presign_url(&r2_config, Method::Get, &key, 3600)
         .map_err(|e| ServiceError::internal(format!("Presign failed: {}", e)))?;
 
     redirect_307(&presigned.url)
@@ -119,14 +119,8 @@ async fn handle_put_inner(
     // No existence check - always redirect, let R2 handle idempotency
     let r2_config = get_r2_config(ctx)?;
     let key = format!("{}/{}", space_did, digest);
-    let presigned = presign::presign_url(
-        &r2_config,
-        Method::Put,
-        &key,
-        3600,
-        Some("application/octet-stream"),
-    )
-    .map_err(|e| ServiceError::internal(format!("Presign failed: {}", e)))?;
+    let presigned = presign::presign_url(&r2_config, Method::Put, &key, 3600)
+        .map_err(|e| ServiceError::internal(format!("Presign failed: {}", e)))?;
 
     redirect_307(&presigned.url)
 }
