@@ -190,7 +190,6 @@ enum Commands {
 struct ServiceInfo {
     service: String,
     version: String,
-    did: String,
 }
 
 /// Invocation request
@@ -325,7 +324,6 @@ impl TestSuite {
 struct TestContext {
     client: Client,
     service_url: String,
-    service_did: Ed25519Did,
     space_signer: Ed25519Signer,
     operator_signer: Ed25519Signer,
     delegation_bytes: Vec<u8>,
@@ -336,12 +334,8 @@ impl TestContext {
     async fn new(service_url: &str) -> anyhow::Result<Self> {
         let client = Client::new();
 
-        // Get service info
-        let info: ServiceInfo = client.get(service_url).send().await?.json().await?;
-        let service_did: Ed25519Did = info
-            .did
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid service DID: {:?}", e))?;
+        // Verify service is reachable
+        let _info: ServiceInfo = client.get(service_url).send().await?.json().await?;
 
         // Generate test keypairs
         let mut space_seed = [0u8; 32];
@@ -367,7 +361,6 @@ impl TestContext {
         Ok(Self {
             client,
             service_url: service_url.to_string(),
-            service_did,
             space_signer,
             operator_signer,
             delegation_bytes,
@@ -391,8 +384,37 @@ impl TestContext {
         args
     }
 
-    /// Build a valid invocation request
+    /// Build a valid invocation request.
     fn build_invocation(
+        &self,
+        issuer: &Ed25519Signer,
+        subject: Ed25519Did,
+        command: Vec<String>,
+        args: BTreeMap<String, Promised>,
+        proofs: Vec<Cid>,
+    ) -> anyhow::Result<(Vec<u8>, InvocationRequest)> {
+        let invocation = InvocationBuilder::new()
+            .issuer(issuer.clone())
+            .audience(subject)
+            .subject(subject)
+            .command(command)
+            .arguments(args)
+            .proofs(proofs)
+            .try_build()
+            .map_err(|e| anyhow::anyhow!("Failed to build invocation: {:?}", e))?;
+
+        let invocation_bytes = serde_ipld_dagcbor::to_vec(&invocation)?;
+
+        let request = InvocationRequest {
+            invocation: BASE64.encode(&invocation_bytes),
+            proofs: vec![BASE64.encode(&self.delegation_bytes)],
+        };
+
+        Ok((invocation_bytes, request))
+    }
+
+    /// Build an invocation with custom audience (for testing audience mismatch).
+    fn build_invocation_with_audience(
         &self,
         issuer: &Ed25519Signer,
         audience: Ed25519Did,
@@ -680,13 +702,8 @@ async fn cmd_invoke_allocate(
     let digest = Sha256::digest(&file_content);
 
     let client = Client::new();
-    let info: ServiceInfo = client.get(service_url).send().await?.json().await?;
-    let service_did: Ed25519Did = info
-        .did
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Invalid service DID: {:?}", e))?;
 
-    println!("Service DID: {}", info.did);
+    println!("Space DID: {}", space_did_str);
     println!("File size: {} bytes", file_size);
     println!("SHA-256 digest: {}", hex::encode(digest));
 
@@ -703,7 +720,7 @@ async fn cmd_invoke_allocate(
 
     let invocation = InvocationBuilder::new()
         .issuer(operator_signer)
-        .audience(service_did)
+        .audience(space_did)
         .subject(space_did)
         .command(vec!["blob".to_string(), "allocate".to_string()])
         .arguments(args)
@@ -786,13 +803,8 @@ async fn cmd_invoke_get(
     let digest = hex::decode(digest_hex)?;
 
     let client = Client::new();
-    let info: ServiceInfo = client.get(service_url).send().await?.json().await?;
-    let service_did: Ed25519Did = info
-        .did
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Invalid service DID: {:?}", e))?;
 
-    println!("Service DID: {}", info.did);
+    println!("Space DID: {}", space_did_str);
 
     let mut args: BTreeMap<String, Promised> = BTreeMap::new();
     args.insert(
@@ -803,7 +815,7 @@ async fn cmd_invoke_get(
 
     let invocation = InvocationBuilder::new()
         .issuer(operator_signer)
-        .audience(service_did)
+        .audience(space_did)
         .subject(space_did)
         .command(vec!["blob".to_string(), "get".to_string()])
         .arguments(args)
@@ -864,12 +876,6 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
     let info: ServiceInfo = client.get(service_url).send().await?.json().await?;
     println!("  Service: {}", info.service);
     println!("  Version: {}", info.version);
-    println!("  DID: {}", info.did);
-
-    let service_did: Ed25519Did = info
-        .did
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Invalid service DID: {:?}", e))?;
 
     // Step 2: Generate keypairs
     println!("\nStep 2: Generating keypairs...");
@@ -925,7 +931,7 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
 
     let alloc_invocation = InvocationBuilder::new()
         .issuer(operator_signer.clone())
-        .audience(service_did)
+        .audience(*space_signer.did())
         .subject(*space_signer.did())
         .command(vec!["blob".to_string(), "allocate".to_string()])
         .arguments(alloc_args)
@@ -987,7 +993,7 @@ async fn cmd_e2e_test(service_url: &str, content: &str) -> anyhow::Result<()> {
 
     let get_invocation = InvocationBuilder::new()
         .issuer(operator_signer)
-        .audience(service_did)
+        .audience(*space_signer.did())
         .subject(*space_signer.did())
         .command(vec!["blob".to_string(), "get".to_string()])
         .arguments(get_args)
@@ -1058,9 +1064,8 @@ async fn cmd_service_info(service_url: &str) -> anyhow::Result<()> {
     let info: ServiceInfo = response.json().await?;
 
     println!("=== Service Info ===");
-    println!("Service: {}", info.service);
-    println!("Version: {}", info.version);
-    println!("DID:     {}", info.did);
+    println!("Service:  {}", info.service);
+    println!("Version:  {}", info.version);
 
     Ok(())
 }
@@ -1083,7 +1088,6 @@ async fn cmd_test_auth(service_url: &str, verbose: bool) -> anyhow::Result<()> {
     {
         let (mut inv_bytes, _) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args.clone(),
@@ -1138,16 +1142,16 @@ async fn cmd_test_auth(service_url: &str, verbose: bool) -> anyhow::Result<()> {
         }
     }
 
-    // Test 2: Wrong audience (send to wrong service DID)
+    // Test 2: Wrong audience (audience != subject)
     {
-        // Generate a different DID
+        // Generate a different DID to use as wrong audience
         let mut wrong_seed = [0u8; 32];
         getrandom::getrandom(&mut wrong_seed)?;
         let wrong_signer = Ed25519Signer::new(SigningKey::from_bytes(&wrong_seed));
 
-        let (_, request) = ctx.build_invocation(
+        let (_, request) = ctx.build_invocation_with_audience(
             &ctx.operator_signer,
-            *wrong_signer.did(), // Wrong audience!
+            *wrong_signer.did(), // Wrong audience
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args.clone(),
@@ -1166,7 +1170,7 @@ async fn cmd_test_auth(service_url: &str, verbose: bool) -> anyhow::Result<()> {
 
         let invocation = InvocationBuilder::new()
             .issuer(ctx.operator_signer.clone())
-            .audience(ctx.service_did)
+            .audience(*ctx.space_signer.did())
             .subject(*ctx.space_signer.did())
             .command(vec!["blob".to_string(), "allocate".to_string()])
             .arguments(args.clone())
@@ -1188,7 +1192,6 @@ async fn cmd_test_auth(service_url: &str, verbose: bool) -> anyhow::Result<()> {
     {
         let (_, mut request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args.clone(),
@@ -1211,7 +1214,7 @@ async fn cmd_test_auth(service_url: &str, verbose: bool) -> anyhow::Result<()> {
 
         let invocation = InvocationBuilder::new()
             .issuer(ctx.operator_signer.clone())
-            .audience(ctx.service_did)
+            .audience(*ctx.space_signer.did())
             .subject(*ctx.space_signer.did())
             .command(vec!["blob".to_string(), "allocate".to_string()])
             .arguments(args.clone())
@@ -1238,7 +1241,6 @@ async fn cmd_test_auth(service_url: &str, verbose: bool) -> anyhow::Result<()> {
         // But use the delegation for the original space
         let (_, request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *other_space.did(), // Wrong subject!
             vec!["blob".to_string(), "allocate".to_string()],
             args.clone(),
@@ -1288,7 +1290,7 @@ async fn cmd_test_auth(service_url: &str, verbose: bool) -> anyhow::Result<()> {
         // The invocation's issuer is operator, but the proof chain doesn't connect
         let invocation = InvocationBuilder::new()
             .issuer(ctx.operator_signer.clone())
-            .audience(ctx.service_did)
+            .audience(*ctx.space_signer.did())
             .subject(*ctx.space_signer.did())
             .command(vec!["blob".to_string(), "allocate".to_string()])
             .arguments(args.clone())
@@ -1422,7 +1424,6 @@ async fn cmd_test_validation(service_url: &str, verbose: bool) -> anyhow::Result
 
         let (_, request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args,
@@ -1443,7 +1444,6 @@ async fn cmd_test_validation(service_url: &str, verbose: bool) -> anyhow::Result
 
         let (_, request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args,
@@ -1471,7 +1471,6 @@ async fn cmd_test_validation(service_url: &str, verbose: bool) -> anyhow::Result
 
         let (_, request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args,
@@ -1488,7 +1487,6 @@ async fn cmd_test_validation(service_url: &str, verbose: bool) -> anyhow::Result
 
         let (_, request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "delete".to_string()], // Unknown command!
             args,
@@ -1505,7 +1503,6 @@ async fn cmd_test_validation(service_url: &str, verbose: bool) -> anyhow::Result
 
         let (inv_bytes, _) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args,
@@ -1543,7 +1540,6 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
         let args = ctx.build_allocate_args(&digest, 25);
         let (_, request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args,
@@ -1559,7 +1555,6 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
         let args = ctx.build_allocate_args(&digest, 25);
         let (_, request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args,
@@ -1587,7 +1582,7 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
 
         let invocation = InvocationBuilder::new()
             .issuer(ctx.operator_signer.clone())
-            .audience(ctx.service_did)
+            .audience(*ctx.space_signer.did())
             .subject(*ctx.space_signer.did())
             .command(vec!["blob".to_string(), "allocate".to_string()]) // But we invoke allocate!
             .arguments(args)
@@ -1626,7 +1621,7 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
 
         let invocation = InvocationBuilder::new()
             .issuer(ctx.operator_signer.clone())
-            .audience(ctx.service_did)
+            .audience(*ctx.space_signer.did())
             .subject(*ctx.space_signer.did())
             .command(vec!["blob".to_string(), "allocate".to_string()])
             .arguments(args)
@@ -1665,7 +1660,7 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
 
         let invocation = InvocationBuilder::new()
             .issuer(ctx.operator_signer.clone())
-            .audience(ctx.service_did)
+            .audience(*ctx.space_signer.did())
             .subject(*ctx.space_signer.did())
             .command(vec!["blob".to_string(), "allocate".to_string()])
             .arguments(args)
@@ -1718,7 +1713,7 @@ async fn cmd_test_delegation(service_url: &str, verbose: bool) -> anyhow::Result
         // Operator invokes with both proofs
         let invocation = InvocationBuilder::new()
             .issuer(ctx.operator_signer.clone())
-            .audience(ctx.service_did)
+            .audience(*ctx.space_signer.did())
             .subject(*ctx.space_signer.did())
             .command(vec!["blob".to_string(), "allocate".to_string()])
             .arguments(args)
@@ -1764,7 +1759,6 @@ async fn cmd_test_storage(service_url: &str, verbose: bool) -> anyhow::Result<()
         let args = ctx.build_allocate_args(&digest, content_bytes.len() as u64);
         let (_, request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args.clone(),
@@ -1840,7 +1834,6 @@ async fn cmd_test_storage(service_url: &str, verbose: bool) -> anyhow::Result<()
 
         let (_, request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "get".to_string()],
             args,
@@ -1888,7 +1881,6 @@ async fn cmd_test_storage(service_url: &str, verbose: bool) -> anyhow::Result<()
         let args = ctx.build_allocate_args(&digest, large_size);
         let (_, request) = ctx.build_invocation(
             &ctx.operator_signer,
-            ctx.service_did,
             *ctx.space_signer.did(),
             vec!["blob".to_string(), "allocate".to_string()],
             args,

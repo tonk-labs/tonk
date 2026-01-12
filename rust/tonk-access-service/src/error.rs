@@ -145,7 +145,10 @@ impl ServiceError {
     pub fn audience_mismatch(expected: &str, got: &str) -> Self {
         Self::new(
             ErrorCode::AudienceMismatch,
-            format!("Audience mismatch: expected {}, got {}", expected, got),
+            format!(
+                "Audience mismatch: audience ({}) must equal subject ({})",
+                got, expected
+            ),
         )
     }
 

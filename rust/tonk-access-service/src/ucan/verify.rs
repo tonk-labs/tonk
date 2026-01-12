@@ -52,6 +52,9 @@ pub struct VerifiedInvocation {
 
     /// The arguments
     pub arguments: std::collections::BTreeMap<String, ucan::promise::Promised>,
+
+    /// The verified subject (space DID)
+    pub subject: String,
 }
 
 /// Verify a UCAN invocation.
@@ -59,15 +62,17 @@ pub struct VerifiedInvocation {
 /// This performs complete verification:
 /// 1. Parse the DAG-CBOR bytes into an Invocation
 /// 2. Verify the Ed25519 signature
-/// 3. Check that `aud` matches our service DID
+/// 3. Check that `aud` matches `sub`
 /// 4. Validate time bounds
 /// 5. Verify the delegation chain using provided proofs
+///
+/// Ensures the invocation is addressed to the space it operates on,
+/// and the delegation chain proves the invoker has authority from that space.
 ///
 /// # Arguments
 ///
 /// * `cbor_bytes` - The raw DAG-CBOR encoded invocation
 /// * `proof_bytes` - DAG-CBOR encoded array of Delegation proofs
-/// * `service_did` - Our service DID (expected audience)
 ///
 /// # Returns
 ///
@@ -76,16 +81,15 @@ pub struct VerifiedInvocation {
 pub async fn verify_invocation(
     cbor_bytes: &[u8],
     proof_bytes: &[Vec<u8>],
-    service_did: &Ed25519Did,
 ) -> Result<VerifiedInvocation, VerificationError> {
     // Step 1: Parse the invocation
     let invocation: Invocation<Ed25519Did> = serde_ipld_dagcbor::from_slice(cbor_bytes)
         .map_err(|e| VerificationError::ParseError(e.to_string()))?;
 
-    // Step 2: Check audience matches our service DID
-    if invocation.audience() != service_did {
+    // Step 2: Check invocation addressed to space
+    if invocation.audience() != invocation.subject() {
         return Err(VerificationError::AudienceMismatch {
-            expected: service_did.to_string(),
+            expected: invocation.subject().to_string(),
             got: invocation.audience().to_string(),
         });
     }
@@ -133,6 +137,7 @@ pub async fn verify_invocation(
     Ok(VerifiedInvocation {
         command: invocation.command().segments().clone(),
         arguments: invocation.arguments().clone(),
+        subject: invocation.subject().to_string(),
     })
 }
 
