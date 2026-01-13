@@ -27,11 +27,10 @@ class TestRunner {
       console.log("Starting automerge-repo sync server...");
       console.log(`Server directory: ${SYNC_SERVER_DIR}`);
 
-      // Use npx tsx to run the TypeScript server
-      this.serverProcess = spawn("npx", ["tsx", "server.ts", "8081"], {
+      // Use bun to run the TypeScript server
+      this.serverProcess = spawn("bun", ["server.ts", "8081"], {
         stdio: ["pipe", "pipe", "pipe"],
         cwd: SYNC_SERVER_DIR,
-        shell: true,
       });
 
       let serverReady = false;
@@ -48,8 +47,7 @@ class TestRunner {
 
       this.serverProcess.stderr.on("data", (data) => {
         const output = data.toString().trim();
-        // Filter out npm/npx noise
-        if (!output.includes("npm") && output.length > 0) {
+        if (output.length > 0) {
           console.error(`[SYNC-SERVER STDERR] ${output}`);
         }
       });
