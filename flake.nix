@@ -67,8 +67,8 @@
               "sha256-5KQ7wIXv7PHgd6y1pq0+aUU/VFW7BLxECmVUNk1JfGw=";
             "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-ecs#b533146c83451cd94fe356c56eb845fd1f0a5586" =
               "sha256-PFyP3BbNCq0WiLD0Z8TKHXv7LJtAMsv3kXPrvvakjlw=";
-            "git+https://github.com/dialog-db/dialog-db.git?branch=feat/s3-presign-crate#8bc08b44eeab79a930c2d3ea10d2356186a980aa" =
-              "sha256-U20Ngvnqybs8C1GA+9JSVSlq6+5ad/jEw7ZyrCrHwVk=";
+            "git+https://github.com/dialog-db/dialog-db.git?branch=feat/s3-presign-crate#bb05dcad94a343d121f8870a5360706aeeb71632" =
+              "sha256-K5wDWTWGUfQ23jAv9NDB0AgTdEPaUJIDx0Yf1KBCqww=";
           };
         };
 

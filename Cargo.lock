@@ -460,9 +460,9 @@ dependencies = [
 
 [[package]]
 name = "clap_lex"
-version = "0.7.6"
+version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
+checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
 name = "colorchoice"
@@ -844,6 +844,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "dialog-s3-credentials"
+version = "0.1.0"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fs3-presign-crate#bb05dcad94a343d121f8870a5360706aeeb71632"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "hmac",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 2.0.17",
+ "url",
+ "web-time",
 ]
 
 [[package]]
@@ -2582,21 +2597,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a50f4cf475b65d88e057964e0e9bb1f0aa9bbb2036dc65c64596b42932536984"
 
 [[package]]
-name = "s3-presign"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fs3-presign-crate#8bc08b44eeab79a930c2d3ea10d2356186a980aa"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "hmac",
- "serde",
- "sha2 0.10.9",
- "thiserror 2.0.17",
- "url",
- "web-time",
-]
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3207,6 +3207,7 @@ dependencies = [
  "blake3",
  "chrono",
  "clap",
+ "dialog-s3-credentials",
  "ed25519-dalek",
  "futures",
  "getrandom 0.2.17",
@@ -3215,7 +3216,6 @@ dependencies = [
  "ipld-core",
  "rand 0.9.2",
  "reqwest",
- "s3-presign",
  "serde",
  "serde_bytes",
  "serde_ipld_dagcbor",
@@ -3296,9 +3296,9 @@ dependencies = [
 
 [[package]]
 name = "tower"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d039ad9159c98b70ecfd540b2573b97f7f52c3e8d9f8ad57a24b916a536975f9"
+checksum = "ebe5ef63511595f1344e2d5cfa636d973292adc0eec1f0ad45fae9f0851ab1d4"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -4297,9 +4297,9 @@ checksum = "40990edd51aae2c2b6907af74ffb635029d5788228222c4bb811e9351c0caad3"
 
 [[package]]
 name = "zmij"
-version = "1.0.13"
+version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac93432f5b761b22864c774aac244fa5c0fd877678a4c37ebf6cf42208f9c9ec"
+checksum = "bd8f3f50b848df28f887acb68e41201b5aea6bc8a8dacc00fb40635ff9a72fea"
 
 [[package]]
 name = "zopfli"

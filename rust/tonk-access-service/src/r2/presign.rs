@@ -1,8 +1,8 @@
 //! AWS Signature V4 pre-signed URL generation for R2.
 //!
-//! This module wraps the `s3-presign` crate with R2-specific configuration.
+//! This module wraps the `dialog-s3-credentials` crate with R2-specific configuration.
 
-use s3_presign::{AuthorizationError, Checksum, Credentials, Invocation};
+use dialog_s3_credentials::{AuthorizationError, Checksum, Credentials, Invocation};
 use url::Url;
 
 /// Pre-signed URL result
@@ -127,7 +127,7 @@ pub fn presign_url(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use s3_presign::Hasher;
+    use dialog_s3_credentials::Hasher;
 
     #[test]
     fn test_presign_url_structure() {

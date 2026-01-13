@@ -26,7 +26,7 @@ dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = 
 dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-ecs" }
 dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-ecs" }
 dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-ecs" }
-s3-presign = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/s3-presign-crate" }
+dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/s3-presign-crate" }
 
 # UCAN
 ucan = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check", package = "ucan" }

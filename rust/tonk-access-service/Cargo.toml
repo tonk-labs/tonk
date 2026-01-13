@@ -31,7 +31,7 @@ varsig = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddoug
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 
 # S3 presigning
-s3-presign = { workspace = true }
+dialog-s3-credentials = { workspace = true }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
