@@ -1,6 +1,11 @@
 {
   description = "Tonk";
 
+  # nixConfig = {
+  #   extra-substituters = [ "https://your-cache.cachix.org" ];
+  #   extra-trusted-public-keys = [ "your-cache.cachix.org-1:AAAA..." ];
+  # };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
@@ -62,6 +67,7 @@
             wasm-bindgen-cli
             tailwindcss_4
             trunk
+            cachix
             cargo-nextest
           ]
           ++ lib.optionals stdenv.isLinux [
@@ -135,29 +141,29 @@
           "test:all" = {
             description = "Run the full test suite (all configurations, grab a coffee)";
             command = ''
-              test:nat:dbg
-              test:nat:rls
-              test:web:dbg
-              test:web:rls
+              test:native:debug
+              test:native:release
+              test:web:debug
+              test:web:release
             '';
           };
 
-          "test:nat:dbg" = {
+          "test:native:debug" = {
             description = "Unit and integration tests (${system}, debug)";
             command = menuTestCommand "tests-native-debug";
           };
 
-          "test:nat:rls" = {
+          "test:native:release" = {
             description = "Unit and integration tests (${system}, release)";
             command = menuTestCommand "tests-native-release";
           };
 
-          "test:web:dbg" = {
+          "test:web:debug" = {
             description = "Unit tests (wasm32-unknown-unknown, debug)";
             command = menuTestCommand "tests-web-debug";
           };
 
-          "test:web:rls" = {
+          "test:web:release" = {
             description = "Unit tests (wasm32-unknown-unknown, release)";
             command = menuTestCommand "tests-web-release";
           };
@@ -197,7 +203,6 @@
             nativeBuildInputs = menu.commands;
             env = lib.optionals stdenv.isLinux {
               "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
-              "CHROME" = "${chromium}/bin/chromium";
             };
           };
         };

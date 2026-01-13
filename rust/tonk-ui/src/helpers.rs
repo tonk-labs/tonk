@@ -25,6 +25,7 @@ mod native {
             let mut caps = DesiredCapabilities::chrome();
             caps.set_headless()?;
             if let Some(chrome_binary) = std::option_env!("CHROME") {
+                println!("USING CHROME BINARY: {chrome_binary}");
                 caps.set_binary(chrome_binary)?;
             }
 
@@ -67,7 +68,7 @@ mod native {
             let chromedriver_port =
                 free_local_port().expect("Could not get a free local port for chromedriver");
             let mut chromedriver = std::process::Command::new("chromedriver")
-                .arg(format!("--port={chromedriver_port}"))
+                .args([&format!("--port={chromedriver_port}"), "--verbose"])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
