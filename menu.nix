@@ -37,23 +37,25 @@ let
       names =
         builtins.attrNames commands;
 
-      makeCommand = { name, script, description ? "<No description given>" }:
+      makeCommand = { name, script, description ? "<No description given>", env ? { } }:
         {
           inherit name description;
 
-          package =
-            pkgs.writeScriptBin name ''
-              #!${pkgs.bash}/bin/bash
+          package = with pkgs; writeShellApplication
+            {
+              inherit name;
+              runtimeEnv = env;
+              text = ''
+                TITLE="$(${figlet}/bin/figlet -t '${name}')"
+                SUBTITLE="${description}"
 
-              TITLE="$(${pkgs.figlet}/bin/figlet -t '${name}')"
-              SUBTITLE="${description}"
+                echo "$TITLE
+                $SUBTITLE
+                " | ${lolcat}/bin/lolcat
 
-              echo "$TITLE
-              $SUBTITLE
-              " | ${pkgs.lolcat}/bin/lolcat
-
-              ${script}
-            '';
+                ${script}
+              '';
+            };
         };
 
       intoPackages = name:
@@ -65,6 +67,10 @@ let
             inherit name;
             description = element.description;
             script = element.command;
+            env =
+              if builtins.hasAttr "env" element
+              then element.env
+              else { };
           };
         in
         task.package;
