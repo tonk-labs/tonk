@@ -1,0 +1,8 @@
+[test-groups]
+serial-integration = { max-threads = 1 }
+
+# NOTE: We run integration tests in serial to avoid building any test
+# environment infrastructure in parallel (which could result in a deadlock)
+[[profile.default.overrides]]
+filter = 'test(/^.*integration_tests::/)'
+test-group = 'serial-integration'

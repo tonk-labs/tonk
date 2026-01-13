@@ -8,6 +8,7 @@
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nix-filter.url = "github:numtide/nix-filter";
   };
 
   outputs =
@@ -15,6 +16,7 @@
     , nixpkgs
     , flake-utils
     , fenix
+    , nix-filter
     ,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -22,6 +24,7 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
         fenixPkgs = fenix.packages.${system};
+        filter = nix-filter.lib;
 
         rustToolchainStable = fenixPkgs.fromToolchainFile {
           file = ./rust-toolchain.toml;
@@ -59,6 +62,7 @@
             wasm-bindgen-cli
             tailwindcss_4
             trunk
+            cargo-nextest
           ]
           ++ lib.optionals stdenv.isLinux [
             # Linux-specific inputs
@@ -71,6 +75,40 @@
             # MacOS-specific inputs
           ];
 
+        rustSource = filter {
+          root = ./.;
+          include = [
+            "Cargo.lock"
+            "Cargo.toml"
+            "rust-toolchain.toml"
+            "rust"
+          ];
+        };
+
+        rustTestPackage = { name, command }: pkgs.rustPlatform.buildRustPackage {
+          pname = "tests-${name}";
+          version = "0.1.0";
+          src = rustSource;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = cargoGitDependencies;
+          };
+          nativeBuildInputs = [ rustToolchainStable ] ++ commonBuildInputs;
+          buildPhase = command;
+          installPhase = ''
+            mkdir -p $out
+            cp -r ./*.tar.zst $out/
+          '';
+        };
+
+        menuTestCommand = target: ''
+          nix build .#${target}
+          TESTS_PATH=`nix eval .#${target}.outPath --raw`
+              cargo nextest run \
+                --archive-file "$TESTS_PATH/${target}.tar.zst" \
+                --workspace-remap ./
+        '';
+
         # Cargo dependencies that are Git repositories need to have their
         # expected build hash # recorded separately. We make a shared variable so
         # that the same dependencies can be # used across all derivations that
@@ -81,12 +119,8 @@
         };
 
         commands = {
-          "build" = {
-            description = "Builds all of Tonk";
-            command = "cargo build";
-          };
           "build:web" = {
-            description = "Builds the Tonk web application";
+            description = "Build the Tonk web application";
             command = "trunk build --config ./rust/tonk-ui/Trunk.toml";
           };
           "dev:web" =
@@ -95,7 +129,7 @@
               command = "trunk serve --config ./rust/tonk-ui/Trunk.toml";
             };
           "lint" = {
-            description = "Run lints against the current tree";
+            description = "Lint the full source tree";
             command = "nix flake check";
           };
           "test:all" = {
@@ -110,22 +144,27 @@
 
           "test:nat:dbg" = {
             description = "Unit and integration tests (${system}, debug)";
-            command = "cargo test --features integration-tests";
+            command = menuTestCommand "tests-native-debug";
           };
 
           "test:nat:rls" = {
             description = "Unit and integration tests (${system}, release)";
-            command = "cargo test --features integration-tests --release";
+            command = menuTestCommand "tests-native-release";
           };
 
           "test:web:dbg" = {
             description = "Unit tests (wasm32-unknown-unknown, debug)";
-            command = "cargo test --target wasm32-unknown-unknown";
+            command = menuTestCommand "tests-web-debug";
           };
 
           "test:web:rls" = {
             description = "Unit tests (wasm32-unknown-unknown, release)";
-            command = "cargo test --target wasm32-unknown-unknown --release";
+            command = menuTestCommand "tests-web-release";
+          };
+
+          "menu" = {
+            description = "Display all Tonk Shell commands";
+            command = ''showTonkMenu'';
           };
         };
 
@@ -144,6 +183,12 @@
             shellHook = ''
               clear
               ${menu.header}
+
+              function showTonkMenu() {
+                ${menu.menuText}
+              }
+
+              export -f showTonkMenu
             '';
           };
 
@@ -161,7 +206,7 @@
           clippy = pkgs.rustPlatform.buildRustPackage {
             pname = "tonk-clippy-lint";
             version = "0.1.0";
-            src = ./.;
+            src = rustSource;
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = cargoGitDependencies;
@@ -189,10 +234,93 @@
 
         packages =
           {
+            tests-native-debug = rustTestPackage {
+              name = "native-debug";
+              command = ''
+                cargo nextest archive \
+                  --features integration-tests \
+                  --archive-file ./tests-native-debug.tar.zst
+              '';
+            };
+
+            tests-native-release = rustTestPackage {
+              name = "native-release";
+              command = ''
+                cargo nextest archive \
+                  --release \
+                  --features integration-tests \
+                  --archive-file ./tests-native-release.tar.zst
+              '';
+            };
+
+            tests-web-debug = rustTestPackage {
+              name = "web-debug";
+              command = ''
+                cargo nextest archive \
+                  --target wasm32-unknown-unknown \
+                  --archive-file ./tests-web-debug.tar.zst
+              '';
+            };
+
+            tests-web-release = rustTestPackage {
+              name = "web-release";
+              command = ''
+                cargo nextest archive \
+                  --release \
+                  --target wasm32-unknown-unknown \
+                  --archive-file ./tests-web-release.tar.zst
+              '';
+            };
+
+            tests = rustTestPackage
+              {
+                name = "all";
+                command = ''
+                  cp ${self.packages.${system}.tests-native-debug}/*.tar.zst ./
+                  cp ${self.packages.${system}.tests-native-release}/*.tar.zst ./
+                  cp ${self.packages.${system}.tests-web-debug}/*.tar.zst ./
+                  cp ${self.packages.${system}.tests-web-release}/*.tar.zst ./
+                '';
+              };
+
+            # tests = pkgs.rustPlatform.buildRustPackage {
+            #   pname = "tonk-ui";
+            #   version = "0.1.0";
+            #   src = rustSource;
+            #   cargoLock = {
+            #     lockFile = ./Cargo.lock;
+            #     outputHashes = cargoGitDependencies;
+            #   };
+            #   nativeBuildInputs = [ rustToolchainStable ] ++ commonBuildInputs;
+            #   buildPhase = ''
+            #     cargo nextest archive \
+            #       --features integration-tests \
+            #       --archive-file ./tests-native-debug.tar.zst
+
+            #     cargo nextest archive \
+            #       --release \
+            #       --features integration-tests \
+            #       --archive-file ./tests-native-release.tar.zst
+
+            #     cargo nextest archive \
+            #       --target wasm32-unknown-unknown \
+            #       --archive-file ./tests-web-debug.tar.zst
+
+            #     cargo nextest archive \
+            #       --release \
+            #       --target wasm32-unknown-unknown \
+            #       --archive-file ./tests-web-release.tar.zst
+            #   '';
+            #   installPhase = ''
+            #     mkdir -p $out
+            #     cp -r ./*.tar.zst $out/
+            #   '';
+            # };
+
             tonk-ui = pkgs.rustPlatform.buildRustPackage {
               pname = "tonk-ui";
               version = "0.1.0";
-              src = ./.;
+              src = rustSource;
               cargoLock = {
                 lockFile = ./Cargo.lock;
                 outputHashes = cargoGitDependencies;
@@ -206,6 +334,13 @@
                 cp -r ./rust/tonk-ui/dist/* $out/
               '';
             };
+
+            tonk-ui-test-server = with pkgs; writeScriptBin "tonk-ui-test-server" ''
+              #!${bash}/bin/bash
+              PORT=''${1:-8080}
+              echo "Test server live at http://127.0.0.1:$PORT"
+              ${static-web-server}/bin/static-web-server --port $PORT -d ${self.packages.${system}.tonk-ui}
+            '';
           };
       }
     );

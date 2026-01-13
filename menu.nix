@@ -44,7 +44,14 @@ let
           package =
             pkgs.writeScriptBin name ''
               #!${pkgs.bash}/bin/bash
-              ${pkgs.figlet}/bin/figlet '${name}' | ${pkgs.lolcat}/bin/lolcat
+
+              TITLE="$(${pkgs.figlet}/bin/figlet '${name}')"
+              SUBTITLE="${description}"
+
+              echo "$TITLE
+              $SUBTITLE
+              " | ${pkgs.lolcat}/bin/lolcat
+
               ${script}
             '';
         };
@@ -85,6 +92,9 @@ let
 
         $(${menu})
         " | ${pkgs.lolcat}/bin/lolcat;
+      '';
+      menuText = ''
+        echo "$(${menu})" | ${pkgs.lolcat}/bin/lolcat
       '';
       commands = scripts;
     };

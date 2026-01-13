@@ -25,7 +25,7 @@ mod native {
             let mut caps = DesiredCapabilities::chrome();
             caps.set_headless()?;
             if let Some(chrome_binary) = std::option_env!("CHROME") {
-                caps.set_binary(&chrome_binary)?;
+                caps.set_binary(chrome_binary)?;
             }
 
             let driver = WebDriver::new(&self.chromedriver.to_string(), caps).await?;
@@ -36,28 +36,22 @@ mod native {
 
     /// Manages test server processes for integration testing.
     pub struct TestServers {
-        trunk_server: Child,
+        web_server: Child,
         chromedriver: Child,
     }
 
     impl TestServers {
         /// Starts the test servers and returns the server handles and environment configuration.
         pub fn start() -> Result<(Self, TestEnvironment)> {
-            let trunk_port =
+            let web_port =
                 free_local_port().expect("Could not get a free local port for test server");
-            let mut trunk_server = std::process::Command::new("trunk")
-                .args([
-                    "serve",
-                    "--config",
-                    "../../rust/tonk-ui/Trunk.toml",
-                    "--port",
-                    &format!("{trunk_port}"),
-                ])
+            let mut web_server = std::process::Command::new("nix")
+                .args(["run", ".#tonk-ui-test-server", "--", &format!("{web_port}")])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
 
-            let stdout = trunk_server
+            let stdout = web_server
                 .stdout
                 .take()
                 .ok_or_else(|| anyhow!("Failed to capture stdout"))?;
@@ -65,7 +59,7 @@ mod native {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 let line = line?;
-                if line.contains("server listening at") {
+                if line.contains("Test server live at") {
                     break;
                 }
             }
@@ -93,11 +87,11 @@ mod native {
 
             Ok((
                 Self {
-                    trunk_server,
+                    web_server,
                     chromedriver,
                 },
                 TestEnvironment {
-                    tonk_web: Url::parse(&format!("http://127.0.0.1:{trunk_port}"))?,
+                    tonk_web: Url::parse(&format!("http://127.0.0.1:{web_port}"))?,
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
                 },
             ))
@@ -105,7 +99,7 @@ mod native {
 
         /// Stops all test server processes.
         pub fn stop(mut self) -> Result<()> {
-            self.trunk_server.kill()?;
+            self.web_server.kill()?;
             self.chromedriver.kill()?;
             Ok(())
         }
