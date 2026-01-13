@@ -11,6 +11,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   lint_nix:
     name: 'Lint Nix'
@@ -28,13 +32,9 @@ jobs:
     runs-on: 'ubuntu-latest'
     steps:
       - uses: actions/checkout@v4
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
+      - uses: wimpysworld/nothing-but-nix@main
+        with:
+          hatchet-protocol: cleave
       - uses: DeterminateSystems/nix-installer-action@main
       - name: Restore and save Nix store
         uses: nix-community/cache-nix-action@v6
@@ -70,13 +70,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
+      - uses: wimpysworld/nothing-but-nix@main
+        with:
+          hatchet-protocol: cleave
       - uses: DeterminateSystems/nix-installer-action@main
       - name: Restore and save Nix store
         uses: nix-community/cache-nix-action@v6

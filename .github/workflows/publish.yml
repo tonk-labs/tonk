@@ -1,0 +1,66 @@
+name: Deploy Access Service
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+      pull-requests: write
+    name: Cloudflare Worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: wimpysworld/nothing-but-nix@main
+        with:
+          hatchet-protocol: cleave
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/flakehub-cache-action@main
+
+      - uses: mshick/add-pr-comment@v2
+        if: github.event_name == 'pull_request'
+        with:
+          message: |
+            Deploying access-service worker preview...
+
+      - name: Build Worker
+        run: |
+          nix develop --command bash -c "
+            cd rust/tonk-access-service
+            cargo install -q worker-build@0.1.4
+            worker-build --release
+          "
+
+      - name: Deploy Preview
+        if: github.event_name == 'pull_request'
+        id: deploy-preview
+        working-directory: rust/tonk-access-service
+        run: |
+          nix develop --command wrangler versions upload --preview-alias pr-${{ github.event.pull_request.number }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy Production
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: rust/tonk-access-service
+        run: nix develop --command wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - uses: mshick/add-pr-comment@v2
+        if: github.event_name == 'pull_request'
+        with:
+          message: |
+            Access service worker preview deployed!
+
+            - URL: https://pr-${{ github.event.pull_request.number }}-tonk-access-service.tonk.workers.dev
+            - SHA: ${{ github.event.pull_request.head.sha }}
