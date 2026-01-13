@@ -183,7 +183,7 @@
           default = mkShell {
             buildInputs = commonBuildInputs;
             nativeBuildInputs = menu.commands;
-            env = lib.optionals stdenv.isLinux {
+            env = lib.optionalAttrs stdenv.isLinux {
               "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
             };
             shellHook = ''
@@ -201,7 +201,7 @@
           ci = mkShell {
             buildInputs = commonBuildInputs;
             nativeBuildInputs = menu.commands;
-            env = lib.optionals stdenv.isLinux {
+            env = lib.optionalAttrs stdenv.isLinux {
               "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
             };
           };
