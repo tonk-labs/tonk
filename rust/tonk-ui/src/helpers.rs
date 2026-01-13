@@ -23,10 +23,18 @@ mod native {
         /// Creates a new WebDriver instance connected to the test environment.
         pub async fn driver(&self) -> Result<WebDriver> {
             let mut caps = DesiredCapabilities::chrome();
-            caps.set_headless()?;
-            if let Some(chrome_binary) = std::option_env!("CHROME") {
-                println!("USING CHROME BINARY: {chrome_binary}");
-                caps.set_binary(chrome_binary)?;
+            // NOTE: Discovered arcana while reverse engineering
+            // wasm-bindgen-test-runner. TL;DR Chrome will crash when running as
+            // root in GHA runners unless you launch with certain flags
+            // SEE: https://stackoverflow.com/a/50642913
+            caps.add_arg("--disable-dev-shm-usage")?;
+            caps.add_arg("--no-sandbox")?;
+            if std::env::var("NO_HEADLESS").ok().is_none() {
+                caps.set_headless()?;
+            }
+
+            if let Ok(chrome_binary) = std::env::var("CHROME") {
+                caps.set_binary(&chrome_binary)?;
             }
 
             let driver = WebDriver::new(&self.chromedriver.to_string(), caps).await?;
@@ -68,7 +76,7 @@ mod native {
             let chromedriver_port =
                 free_local_port().expect("Could not get a free local port for chromedriver");
             let mut chromedriver = std::process::Command::new("chromedriver")
-                .args([&format!("--port={chromedriver_port}"), "--verbose"])
+                .args([&format!("--port={chromedriver_port}")])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
