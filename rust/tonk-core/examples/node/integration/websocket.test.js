@@ -106,6 +106,11 @@ describe("WebSocket Integration Tests", () => {
         if (error.message) {
           console.log(`    WebSocket connection error: ${error.message}`);
         }
+      } finally {
+        // Disconnect to ensure clean teardown
+        if (typeof tonk.disconnect === "function") {
+          await tonk.disconnect();
+        }
       }
     });
 
@@ -121,9 +126,9 @@ describe("WebSocket Integration Tests", () => {
       const connectionPromises = tonks.map(async (tonk) => {
         try {
           await tonk.connectWebsocket(testServer.getUrl());
-          return { success: true };
+          return { success: true, tonk };
         } catch (error) {
-          return { success: false, error: error.message };
+          return { success: false, error: error.message, tonk };
         }
       });
 
@@ -138,6 +143,13 @@ describe("WebSocket Integration Tests", () => {
         expect(failures).to.equal(3);
       } else {
         console.log(`    ${successes} WebSocket connections succeeded`);
+      }
+
+      // Disconnect all tonks for clean teardown
+      for (const result of results) {
+        if (typeof result.tonk.disconnect === "function") {
+          await result.tonk.disconnect();
+        }
       }
     });
 
@@ -168,6 +180,11 @@ describe("WebSocket Integration Tests", () => {
       // Tonk should still be functional
       const peerId = await tonk.getPeerId();
       expect(peerId).to.be.a("string");
+
+      // Disconnect for clean teardown
+      if (typeof tonk.disconnect === "function") {
+        await tonk.disconnect();
+      }
     });
 
     it("should report connection state correctly", async () => {
@@ -193,6 +210,11 @@ describe("WebSocket Integration Tests", () => {
         // Connection failed - state should still be retrievable
         state = await tonk.getConnectionState();
         console.log(`    Connection failed, state: ${state}`);
+      } finally {
+        // Disconnect for clean teardown
+        if (typeof tonk.disconnect === "function") {
+          await tonk.disconnect();
+        }
       }
     });
   });

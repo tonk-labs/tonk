@@ -84,6 +84,12 @@ class TestServer extends EventEmitter {
         return;
       }
 
+      // Force resolve after timeout to prevent hanging tests
+      const timeout = setTimeout(() => {
+        console.log("Test server stop timed out, forcing close");
+        resolve();
+      }, 5000);
+
       // Close all client connections
       for (const [clientId, client] of this.clients) {
         client.ws.close();
@@ -91,6 +97,7 @@ class TestServer extends EventEmitter {
       this.clients.clear();
 
       this.server.close(() => {
+        clearTimeout(timeout);
         console.log(`Test server stopped`);
         resolve();
       });
