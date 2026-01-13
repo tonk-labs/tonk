@@ -45,7 +45,7 @@ let
             pkgs.writeScriptBin name ''
               #!${pkgs.bash}/bin/bash
 
-              TITLE="$(${pkgs.figlet}/bin/figlet '${name}')"
+              TITLE="$(${pkgs.figlet}/bin/figlet -t '${name}')"
               SUBTITLE="${description}"
 
               echo "$TITLE
@@ -81,14 +81,14 @@ let
       menuLines = builtins.foldl' intoLines "echo ''" names;
 
       menu = ''
-        echo "$(${menuLines})"  | column -t --s ';'
+        echo "$(${menuLines})" | column -t --s ';'
       '';
     in
     {
       header = ''
         echo "${tonkFlower}
 
-        $(${pkgs.figlet}/bin/figlet "Tonk Shell")
+        $(${pkgs.figlet}/bin/figlet -t "Tonk Shell")
 
         $(${menu})
         " | ${pkgs.lolcat}/bin/lolcat;

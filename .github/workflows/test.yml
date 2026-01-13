@@ -12,42 +12,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint_nix:
-    name: 'Lint Nix'
-    runs-on: 'ubuntu-latest'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/flake-checker-action@main
-        with:
-          send-statistics: false
-          ignore-missing-flake-lock: false
-
-  lint_rust:
-    name: 'Lint Rust'
-    needs: ['lint_nix']
+  lints:
+    name: 'Lints'
     runs-on: 'ubuntu-latest'
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/flake-checker-action@main
+        with:
+          send-statistics: false
+          ignore-missing-flake-lock: false
       - name: Restore and save Nix store
         uses: nix-community/cache-nix-action@v6
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
-
       - name: 'Run lints'
         shell: bash
         run: |
-          # We can't run checks by name
-          # SEE: https://github.com/NixOS/nix/issues/8881
-          nix build .#checks.x86_64-linux.rustfmt
-          nix build .#checks.x86_64-linux.clippy
-
-  lints:
-    name: 'Lints'
-    needs: ['lint_nix', 'lint_rust']
-    runs-on: 'ubuntu-latest'
-    steps:
-      - run: echo "Lints are good!"
+          nix develop .#ci -c lint
 
   rust_crates:
     name: 'Rust Crates'
@@ -55,11 +37,8 @@ jobs:
     runs-on: 'ubuntu-latest'
     strategy:
       matrix:
-        include:
-          - flags: ''
-          - flags: '--release'
-          - flags: '--target wasm32-unknown-unknown'
-          - flags: '--target wasm32-unknown-unknown --release'
+        platform: ["native", "web"]
+        profile: ["debug", "release"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -68,12 +47,11 @@ jobs:
         uses: nix-community/cache-nix-action@v6
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
-      - name: 'Run `cargo test`'
+      - name: 'Run tests'
         shell: bash
         run: |
           # Ensure we don't pick up a built-in chrome / chromedriver
           sudo apt-get remove google-chrome-stable -y
           sudo rm /usr/bin/chromium /usr/bin/chromium-browser
 
-          # TODO: Running the tests this way undermines Nix-based caching
-          nix develop .#ci --command cargo test ${{ matrix.flags }}
+          nix develop .#ci -c test:${{matrix.platform}}:${{matrix.profile}}
