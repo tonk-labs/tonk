@@ -9,10 +9,10 @@ use crate::{
     axum::{RequestConversion, ResponseConversion},
 };
 use axum::{Router, body::Body};
-use dialog_artifacts::Artifacts;
 use js_sys::Promise;
 use tokio::sync::Mutex;
 use tonk_common::log;
+use tonk_space::{Operator, Space};
 use tower_service::Service;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
@@ -31,7 +31,7 @@ pub struct TonkServiceWorker {
 impl TonkServiceWorker {
     /// Creates a new service worker instance.
     ///
-    /// Initializes the storage backend, artifacts system, and API router.
+    /// Initializes the storage backend, space, and API router.
     ///
     /// # Errors
     ///
@@ -39,13 +39,19 @@ impl TonkServiceWorker {
     #[wasm_bindgen(constructor)]
     pub async fn new() -> Result<Self, JsError> {
         log!("Tonk worker initializing...");
-        let backend = ServiceWorkerStorageBackend::new().await;
-        let artifacts: Artifacts<ServiceWorkerStorageBackend> =
-            Artifacts::open("tonk".into(), backend)
-                .await
-                .expect_throw("Could not open artifacts");
 
-        let router = Arc::new(Mutex::new(api_router(artifacts)));
+        // Create operator from a public passphrase
+        let operator = Operator::from_passphrase("public tonk").await;
+        let space_did = operator.did().to_string();
+
+        // Use space DID as the IndexedDB database name
+        let backend = ServiceWorkerStorageBackend::new(&space_did).await;
+
+        let space: Space<ServiceWorkerStorageBackend> = Space::open(space_did, &operator, backend)
+            .await
+            .expect_throw("Could not open space");
+
+        let router = Arc::new(Mutex::new(api_router(space)));
 
         Ok(Self { router })
     }

@@ -45,7 +45,7 @@ pub async fn authorize(
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
-    use super::super::tests::test_artifacts;
+    use super::super::tests::test_space;
     use crate::{AuthorizeRequest, AuthorizeResponse, api_router};
 
     use axum::body::Body;
@@ -54,8 +54,8 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_authorizes_and_returns_presigned_url() {
-        let artifacts = test_artifacts().await;
-        let app = api_router(artifacts);
+        let space = test_space().await;
+        let app = api_router(space);
 
         let auth_request = AuthorizeRequest {
             secret_key: "test-secret".to_string(),
