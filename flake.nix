@@ -2,10 +2,11 @@
   description = "Tonk";
 
   inputs = {
+    crane.url = "github:ipetkov/crane";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    fenix = {
-      url = "github:nix-community/fenix";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nix-filter.url = "github:numtide/nix-filter";
@@ -17,9 +18,10 @@
 
   outputs =
     { self
+    , crane
     , nixpkgs
     , flake-utils
-    , fenix
+    , rust-overlay
     , nix-filter
     , wrangler-flake
     ,
@@ -27,53 +29,29 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
-        fenixPkgs = fenix.packages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ (import rust-overlay) ];
+        };
         filter = nix-filter.lib;
 
         # We get wrangler from a 3P crate because nixpkgs#wrangler lags
         # the latest release
         wrangler = wrangler-flake.packages.${system}.wrangler;
 
-        rustToolchainStable = fenixPkgs.fromToolchainFile {
-          file = ./rust-toolchain.toml;
-          sha256 = "sha256-sqSWJDUxc+zaz1nBWMAJKTAGBuGWP25GCftIOlCEAtA=";
-        };
-
-        rustToolchainNightly = fenixPkgs.fromToolchainFile {
-          file = ./rust-toolchain-nightly.toml;
-          sha256 = pkgs.lib.fakeHash;
-        };
-
-        wasm-bindgen-cli =
-          with pkgs;
-          rustPlatform.buildRustPackage rec {
-            pname = "wasm-bindgen-cli";
-            version = "0.2.100";
-            buildInputs = [
-              rustToolchainStable
-            ];
-
-            src = fetchCrate {
-              inherit pname version;
-              sha256 = "sha256-3RJzK7mkYFrs7C/WkhW9Rr4LdP5ofb2FdYGz1P7Uxog=";
-            };
-
-            cargoHash = "sha256-qsO12332HSjWCVKtf1cUePWWb9IdYUmT+8OPj/XP2WE=";
-            useFetchCargoVendor = true;
-          };
+        # Use nixpkgs#wasm-bindgen-cli to avoid building it (it is slow!)
+        wasm-bindgen-cli = pkgs.wasm-bindgen-cli_0_2_100;
 
         # Common build inputs for all dev shells
         commonBuildInputs =
           with pkgs;
           [
-            rustToolchainStable
-            wasm-bindgen-cli
             tailwindcss_4
             trunk
             cachix
             cargo-nextest
             wrangler
+            wasm-bindgen-cli
           ]
           ++ lib.optionals stdenv.isLinux [
             # Linux-specific inputs
@@ -86,65 +64,27 @@
             # MacOS-specific inputs
           ];
 
-        rustSource = filter {
-          root = ./.;
-          include = [
-            "Cargo.lock"
-            "Cargo.toml"
-            "rust-toolchain.toml"
-            "rust"
-          ];
+        # Import rust helpers
+        rustHelpers = import ./nix/rust.nix {
+          inherit pkgs filter crane;
+          buildInputs = commonBuildInputs;
+          workspaceRoot = ./.;
         };
 
-        # Builds one or more test archives for use with `cargo-nextest`
-        # The final package name will be `tests-$name`.
-        # SEE: https://nexte.st/docs/ci-features/archiving/
-        rustTestPackage = { name, command }: pkgs.rustPlatform.buildRustPackage {
-          pname = "tests-${name}";
-          version = "0.1.0";
-          src = rustSource;
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            outputHashes = cargoGitDependencies;
-          };
-          nativeBuildInputs = [ rustToolchainStable ] ++ commonBuildInputs;
-          buildPhase = command;
-          installPhase = ''
-            mkdir -p $out
-            cp -r ./*.tar.zst $out/
-          '';
-        };
+        inherit (rustHelpers) buildTrunkCrate buildTestArchive cargoChecks rustToolchain;
 
-        # Helpers for stamping out test commands (which share a lot in common)
-        menuTestCommand = target: ''
-          nix build .#${target}
+        # Include the Rust toolchain in build inputs for dev shells
+        devShellBuildInputs = commonBuildInputs ++ [ rustToolchain ];
 
-          TESTS_PATH=$(nix eval .#${target}.outPath --raw)
+        # Import menu helpers (e.g., colorful Tonk Shell commands)
+        menuHelpers = (import ./nix/menu.nix { inherit pkgs; });
 
-          cargo nextest run \
-            --no-capture \
-            --workspace-remap ./ \
-            --archive-file "$TESTS_PATH/${target}.tar.zst" \
-        '';
-
-        menuTestEnv = with pkgs; lib.optionalAttrs stdenv.isLinux {
-          "CHROME" = "${chromium}/bin/chromium";
-          "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
-        };
-
-        # Cargo dependencies that are Git repositories need to have their
-        # expected build hash # recorded separately. We make a shared variable so
-        # that the same dependencies can be # used across all derivations that
-        # need them.
-        cargoGitDependencies = {
-          "dialog-artifacts-0.1.0" = "sha256-K5wDWTWGUfQ23jAv9NDB0AgTdEPaUJIDx0Yf1KBCqww=";
-          "ucan-0.5.0" = "sha256-5KQ7wIXv7PHgd6y1pq0+aUU/VFW7BLxECmVUNk1JfGw=";
-        };
+        inherit (menuHelpers) makeMenu makeDevShellHook menuTestCommand;
 
         commands = {
           "build:web" = {
             description = "Build the Tonk web application";
-            command = "trunk build --config ./rust/tonk-ui/Trunk.toml";
+            command = "nix build .#tonk-ui";
           };
           "dev:web" =
             {
@@ -163,40 +103,35 @@
               test:web:debug
               test:web:release
             '';
-            env = menuTestEnv;
           };
 
-          "test:native:debug" = {
+          "test:native:debug" = menuTestCommand {
             description = "Unit and integration tests (${system}, debug)";
-            command = menuTestCommand "tests-native-debug";
-            env = menuTestEnv;
+            package = "tests-native-debug";
           };
 
-          "test:native:release" = {
+          "test:native:release" = menuTestCommand {
             description = "Unit and integration tests (${system}, release)";
-            command = menuTestCommand "tests-native-release";
-            env = menuTestEnv;
+            package = "tests-native-release";
           };
 
-          "test:web:debug" = {
+          "test:web:debug" = menuTestCommand {
             description = "Unit tests (wasm32-unknown-unknown, debug)";
-            command = menuTestCommand "tests-web-debug";
-            env = menuTestEnv;
+            package = "tests-web-debug";
           };
 
-          "test:web:release" = {
+          "test:web:release" = menuTestCommand {
             description = "Unit tests (wasm32-unknown-unknown, release)";
-            command = menuTestCommand "tests-web-release";
-            env = menuTestEnv;
+            package = "tests-web-release";
           };
 
           "menu" = {
             description = "Display all Tonk Shell commands";
-            command = ''showTonkMenu'';
+            command = "showTonkMenu";
           };
         };
 
-        menu = (import ./menu.nix { inherit pkgs; }).makeMenu commands;
+        menu = makeMenu commands;
       in
       {
         # Building 3P wrangler is slow; this configures pulling from a cache
@@ -205,28 +140,20 @@
           substituters = [ "https://wrangler.cachix.org" ];
           trusted-public-keys = [ "wrangler.cachix.org-1:N/FIcG2qBQcolSpklb2IMDbsfjZKWg+ctxx0mSMXdSs=" ];
         };
+        checks = cargoChecks;
 
         devShells = with pkgs; {
           default = mkShell {
-            buildInputs = commonBuildInputs;
+            buildInputs = devShellBuildInputs;
             nativeBuildInputs = menu.commands;
             env = lib.optionalAttrs stdenv.isLinux {
               "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
             };
-            shellHook = ''
-              clear
-              ${menu.header}
-
-              function showTonkMenu() {
-                ${menu.menuText}
-              }
-
-              export -f showTonkMenu
-            '';
+            shellHook = makeDevShellHook menu;
           };
 
           ci = mkShell {
-            buildInputs = commonBuildInputs;
+            buildInputs = devShellBuildInputs;
             nativeBuildInputs = menu.commands;
             env = lib.optionalAttrs stdenv.isLinux {
               "CHROME" = "${chromium}/bin/chromium";
@@ -235,105 +162,45 @@
           };
         };
 
-        checks = {
-          clippy = pkgs.rustPlatform.buildRustPackage {
-            pname = "tonk-clippy-lint";
-            version = "0.1.0";
-            src = rustSource;
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              outputHashes = cargoGitDependencies;
-            };
-            nativeBuildInputs = [ rustToolchainStable ];
-            buildPhase = ''
-              cargo clippy --all-targets --all-features -- -D warnings
-            '';
-            installPhase = ''
-              touch $out
-            '';
-          };
-
-          rustfmt =
-            pkgs.runCommand "tonk-fmt-check"
-              {
-                nativeBuildInputs = [ rustToolchainStable ];
-              }
-              ''
-                cd ${./.}
-                cargo fmt --check
-                touch $out
-              '';
-        };
-
         packages =
           {
-            tests-native-debug = rustTestPackage {
+            tests-native-debug = buildTestArchive {
               name = "native-debug";
-              command = ''
-                cargo nextest archive \
-                  --features integration-tests \
-                  --archive-file ./tests-native-debug.tar.zst
-              '';
+              args = "--features integration-tests";
             };
 
-            tests-native-release = rustTestPackage {
+            tests-native-release = buildTestArchive {
               name = "native-release";
-              command = ''
-                cargo nextest archive \
-                  --release \
-                  --features integration-tests \
-                  --archive-file ./tests-native-release.tar.zst
-              '';
+              args = "--features integration-tests";
             };
 
-            tests-web-debug = rustTestPackage {
+            tests-web-debug = buildTestArchive {
               name = "web-debug";
-              command = ''
-                cargo nextest archive \
-                  --target wasm32-unknown-unknown \
-                  --archive-file ./tests-web-debug.tar.zst
-              '';
+              target = "wasm32-unknown-unknown";
             };
 
-            tests-web-release = rustTestPackage {
+            tests-web-release = buildTestArchive {
               name = "web-release";
-              command = ''
-                cargo nextest archive \
-                  --release \
-                  --target wasm32-unknown-unknown \
-                  --archive-file ./tests-web-release.tar.zst
-              '';
+              target = "wasm32-unknown-unknown";
             };
 
-            tests = rustTestPackage
-              {
-                name = "all";
-                command = ''
-                  cp ${self.packages.${system}.tests-native-debug}/*.tar.zst ./
-                  cp ${self.packages.${system}.tests-native-release}/*.tar.zst ./
-                  cp ${self.packages.${system}.tests-web-debug}/*.tar.zst ./
-                  cp ${self.packages.${system}.tests-web-release}/*.tar.zst ./
-                '';
-              };
+            tests = pkgs.runCommand "tests-all" { } ''
+              mkdir -p $out
+              cp ${self.packages.${system}.tests-native-debug}/*.tar.zst $out/
+              cp ${self.packages.${system}.tests-native-release}/*.tar.zst $out/
+              cp ${self.packages.${system}.tests-web-debug}/*.tar.zst $out/
+              cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
+            '';
 
-            tonk-ui = pkgs.rustPlatform.buildRustPackage {
+            tonk-ui = buildTrunkCrate {
               pname = "tonk-ui";
-              version = "0.1.0";
-              src = rustSource;
-              cargoLock = {
-                lockFile = ./Cargo.lock;
-                outputHashes = cargoGitDependencies;
-              };
-              nativeBuildInputs = [ rustToolchainStable ] ++ commonBuildInputs;
-              buildPhase = ''
-                trunk build --config ./rust/tonk-ui/Trunk.toml
-              '';
-              installPhase = ''
-                mkdir -p $out
-                cp -r ./rust/tonk-ui/dist/* $out/
-              '';
+              trunkConfig = "./rust/tonk-ui/Trunk.toml";
+
+              inherit wasm-bindgen-cli;
             };
 
+            # This package is used by integration tests to run a web server
+            # over a local deployment of tonk-ui
             tonk-ui-test-server = with pkgs; writeScriptBin "tonk-ui-test-server" ''
               #!${bash}/bin/bash
               PORT=''${1:-8080}
