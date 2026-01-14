@@ -1,11 +1,6 @@
 {
   description = "Tonk";
 
-  # nixConfig = {
-  #   extra-substituters = [ "https://your-cache.cachix.org" ];
-  #   extra-trusted-public-keys = [ "your-cache.cachix.org-1:AAAA..." ];
-  # };
-
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
@@ -91,6 +86,9 @@
           ];
         };
 
+        # Builds one or more test archives for use with `cargo-nextest`
+        # The final package name will be `tests-$name`.
+        # SEE: https://nexte.st/docs/ci-features/archiving/
         rustTestPackage = { name, command }: pkgs.rustPlatform.buildRustPackage {
           pname = "tests-${name}";
           version = "0.1.0";
@@ -107,13 +105,22 @@
           '';
         };
 
+        # Helpers for stamping out test commands (which share a lot in common)
         menuTestCommand = target: ''
           nix build .#${target}
-          TESTS_PATH=`nix eval .#${target}.outPath --raw`
-              cargo nextest run \
-                --archive-file "$TESTS_PATH/${target}.tar.zst" \
-                --workspace-remap ./
+
+          TESTS_PATH=$(nix eval .#${target}.outPath --raw)
+
+          cargo nextest run \
+            --no-capture \
+            --workspace-remap ./ \
+            --archive-file "$TESTS_PATH/${target}.tar.zst" \
         '';
+
+        menuTestEnv = with pkgs; lib.optionals stdenv.isLinux {
+          "CHROME" = "${chromium}/bin/chromium";
+          "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+        };
 
         # Cargo dependencies that are Git repositories need to have their
         # expected build hash # recorded separately. We make a shared variable so
@@ -146,26 +153,31 @@
               test:web:debug
               test:web:release
             '';
+            env = menuTestEnv;
           };
 
           "test:native:debug" = {
             description = "Unit and integration tests (${system}, debug)";
             command = menuTestCommand "tests-native-debug";
+            env = menuTestEnv;
           };
 
           "test:native:release" = {
             description = "Unit and integration tests (${system}, release)";
             command = menuTestCommand "tests-native-release";
+            env = menuTestEnv;
           };
 
           "test:web:debug" = {
             description = "Unit tests (wasm32-unknown-unknown, debug)";
             command = menuTestCommand "tests-web-debug";
+            env = menuTestEnv;
           };
 
           "test:web:release" = {
             description = "Unit tests (wasm32-unknown-unknown, release)";
             command = menuTestCommand "tests-web-release";
+            env = menuTestEnv;
           };
 
           "menu" = {
@@ -177,13 +189,11 @@
         menu = (import ./menu.nix { inherit pkgs; }).makeMenu commands;
       in
       {
-
-        # Default dev shell - uses basic relay
         devShells = with pkgs; {
           default = mkShell {
             buildInputs = commonBuildInputs;
             nativeBuildInputs = menu.commands;
-            env = lib.optionalAttrs stdenv.isLinux {
+            env = lib.optionals stdenv.isLinux {
               "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
             };
             shellHook = ''
@@ -201,7 +211,8 @@
           ci = mkShell {
             buildInputs = commonBuildInputs;
             nativeBuildInputs = menu.commands;
-            env = lib.optionalAttrs stdenv.isLinux {
+            env = lib.optionals stdenv.isLinux {
+              "CHROME" = "${chromium}/bin/chromium";
               "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
             };
           };
@@ -287,40 +298,6 @@
                   cp ${self.packages.${system}.tests-web-release}/*.tar.zst ./
                 '';
               };
-
-            # tests = pkgs.rustPlatform.buildRustPackage {
-            #   pname = "tonk-ui";
-            #   version = "0.1.0";
-            #   src = rustSource;
-            #   cargoLock = {
-            #     lockFile = ./Cargo.lock;
-            #     outputHashes = cargoGitDependencies;
-            #   };
-            #   nativeBuildInputs = [ rustToolchainStable ] ++ commonBuildInputs;
-            #   buildPhase = ''
-            #     cargo nextest archive \
-            #       --features integration-tests \
-            #       --archive-file ./tests-native-debug.tar.zst
-
-            #     cargo nextest archive \
-            #       --release \
-            #       --features integration-tests \
-            #       --archive-file ./tests-native-release.tar.zst
-
-            #     cargo nextest archive \
-            #       --target wasm32-unknown-unknown \
-            #       --archive-file ./tests-web-debug.tar.zst
-
-            #     cargo nextest archive \
-            #       --release \
-            #       --target wasm32-unknown-unknown \
-            #       --archive-file ./tests-web-release.tar.zst
-            #   '';
-            #   installPhase = ''
-            #     mkdir -p $out
-            #     cp -r ./*.tar.zst $out/
-            #   '';
-            # };
 
             tonk-ui = pkgs.rustPlatform.buildRustPackage {
               pname = "tonk-ui";

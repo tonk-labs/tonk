@@ -31,10 +31,23 @@
     <link rel="shortcut icon" href="/images/mark-white.svg">
     <link rel="apple-touch-icon" href="/images/mark-white.svg">
 
-    <!-- The following are load-bearing configuration for the
-         Trunk build tool (https://trunkrs.dev/assets/); if you
-         need to add build steps or copy static assets, you will
-         want to modify this condiguration here. -->
+    <!-- We need to include this before the snippet that loads the UI so that
+         the `serviceWorkerActivates` function is available when the Wasm blob
+         initializes; the promise is resolved later on. -->
+    <script type="module">
+        const serviceWorkerActivatesPromise = new Promise((resolve, reject) => {
+            self.resolveServiceWorkerActivates = resolve;
+            self.rejectServiceWorkerActivates = reject;
+        });
+
+        self.serviceWorkerActivates = () => {
+            return serviceWorkerActivatesPromise;
+        };
+    </script>
+
+    <!-- The following are load-bearing configuration for the Trunk build tool
+         (https://trunkrs.dev/assets/); if you need to add build steps or copy
+         static assets, you will want to modify this condiguration here. -->
     <link data-trunk rel="rust" data-bin="ui" data-type="main" data-wasm-opt="z" />
     <link data-trunk rel="rust" data-bin="worker" data-type="worker" data-bindgen-target="web" data-wasm-opt="z" />
 
@@ -42,15 +55,42 @@
     <link data-trunk rel="copy-dir" href="./assets/images" />
 
     <link data-trunk rel="tailwind-css" href="./styles.css" />
-
 </head>
 
 <body>
     <script type="module">
+        const resolveWhenActive = worker => {
+            const onStateChange = () => {
+                if (worker.state === 'activated') {
+                    resolveServiceWorkerActivates();
+                    worker.removeEventListener('statechange', onStateChange);
+                }
+            };
+
+            worker.addEventListener('statechange', onStateChange);
+            onStateChange();
+        };
+
         if ("serviceWorker" in navigator) {
-            await navigator.serviceWorker.register("./service_worker.js", { type: "module" });
+            const registration = await navigator.serviceWorker.register("./service_worker.js", { type: "module" });
+            const worker = registration.installing || registration.waiting || registration.active;
+
+            if (worker != null) {
+                resolveWhenActive(worker);
+            } else {
+                registration.addEventListener('updatefound', () => {
+                    const worker = registration.installing;
+
+                    if (worker != null) {
+                        resolveWhenActive(worker);
+                    } else {
+                        rejectServiceWorkerActivates();
+                    }
+                }, { once: true })
+            }
         } else {
-            alert("Service workers not supported; Tonk will not work!");
+            console.error("Service workers not supported; Tonk will not work!");
+            rejectServiceWorkerActivates();
         }
     </script>
 </body>

@@ -3,29 +3,37 @@
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod inner {
     use async_trait::async_trait;
-    use dialog_common::Blake3Hash;
+    use std::sync::Arc;
     use wasm_bindgen::prelude::*;
 
     use dialog_storage::{
-        DialogStorageError, IndexedDbStorageBackend, StorageBackend, TransactionalMemoryBackend,
+        Blake3Hash, CompressedStorage, DialogStorageError, IndexedDbStorageBackend, StorageBackend,
+        StorageCache, web::ObjectSafeStorageBackend,
     };
+    use tokio::sync::Mutex;
 
-    /// Storage backend for the service worker using IndexedDB.
+    /// Storage backend for the service worker using IndexedDB with compression and caching.
     ///
-    /// This wraps an IndexedDB backend that provides both StorageBackend and
-    /// TransactionalMemoryBackend implementations for use with Space.
+    /// This wraps an IndexedDB backend with compression and caching layers to optimize
+    /// storage performance in the browser environment.
     #[derive(Clone)]
-    pub struct ServiceWorkerStorageBackend(IndexedDbStorageBackend<Vec<u8>, Vec<u8>>);
+    pub struct ServiceWorkerStorageBackend(Arc<Mutex<dyn ObjectSafeStorageBackend>>);
 
     impl ServiceWorkerStorageBackend {
         /// Creates a new storage backend instance.
         ///
-        /// Initializes an IndexedDB backend for the service worker.
-        ///
-        /// # Arguments
-        /// * `name` - The name for the IndexedDB database (typically the space/repository ID)
-        pub async fn new(name: &str) -> Self {
-            let backend = IndexedDbStorageBackend::new(name).await.unwrap_throw();
+        /// Initializes an IndexedDB backend wrapped with compression (level 3) and
+        /// a 64K-large in-memory cache for blocks.
+        pub async fn new() -> Self {
+            let backend = IndexedDbStorageBackend::new("tonk-artifacts")
+                .await
+                .unwrap_throw();
+            let backend = CompressedStorage::<3, _>::new(backend);
+            #[allow(clippy::arc_with_non_send_sync)]
+            let backend: Arc<Mutex<dyn ObjectSafeStorageBackend>> = Arc::new(Mutex::new(
+                StorageCache::new(backend, 64_000).unwrap_throw(),
+            ));
+
             Self(backend)
         }
     }
@@ -40,7 +48,7 @@ mod inner {
 
     #[async_trait(?Send)]
     impl StorageBackend for ServiceWorkerStorageBackend {
-        type Key = Vec<u8>;
+        type Key = Blake3Hash;
         type Value = Vec<u8>;
         type Error = DialogStorageError;
 
@@ -50,61 +58,29 @@ mod inner {
 
         async fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error> {
             StorageBackend::get(&self.0, key).await
-        }
-    }
-
-    #[async_trait(?Send)]
-    impl TransactionalMemoryBackend for ServiceWorkerStorageBackend {
-        type Address = Vec<u8>;
-        type Value = Vec<u8>;
-        type Error = DialogStorageError;
-        type Edition = Blake3Hash;
-
-        async fn resolve(
-            &self,
-            address: &Self::Address,
-        ) -> Result<Option<(Self::Value, Self::Edition)>, Self::Error> {
-            TransactionalMemoryBackend::resolve(&self.0, address).await
-        }
-
-        async fn replace(
-            &self,
-            address: &Self::Address,
-            edition: Option<&Self::Edition>,
-            content: Option<Self::Value>,
-        ) -> Result<Option<Self::Edition>, Self::Error> {
-            TransactionalMemoryBackend::replace(&self.0, address, edition, content).await
         }
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 mod inner {
-    use dialog_common::Blake3Hash;
-    use dialog_storage::{
-        DialogStorageError, MemoryStorageBackend, StorageBackend, TransactionalMemoryBackend,
-    };
+    use dialog_storage::{Blake3Hash, DialogStorageError, MemoryStorageBackend, StorageBackend};
 
     /// Storage backend for non-Wasm targets using in-memory storage.
     ///
     /// This is only a placeholder implementation for testing purposes. The worker
     /// has no use case for being used in non-wasm contexts at this time.
     #[derive(Clone)]
-    pub struct ServiceWorkerStorageBackend(MemoryStorageBackend<Vec<u8>, Vec<u8>>);
-
+    pub struct ServiceWorkerStorageBackend(MemoryStorageBackend<Blake3Hash, Vec<u8>>);
     impl ServiceWorkerStorageBackend {
         /// Creates a new in-memory storage backend instance.
-        ///
-        /// # Arguments
-        /// * `_name` - The name for the storage (ignored for in-memory backend)
-        pub async fn new(_name: &str) -> Self {
+        pub async fn new() -> Self {
             Self(MemoryStorageBackend::default())
         }
     }
-
     #[async_trait::async_trait]
     impl StorageBackend for ServiceWorkerStorageBackend {
-        type Key = Vec<u8>;
+        type Key = Blake3Hash;
         type Value = Vec<u8>;
         type Error = DialogStorageError;
 
@@ -114,30 +90,6 @@ mod inner {
 
         async fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error> {
             StorageBackend::get(&self.0, key).await
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl TransactionalMemoryBackend for ServiceWorkerStorageBackend {
-        type Address = Vec<u8>;
-        type Value = Vec<u8>;
-        type Error = DialogStorageError;
-        type Edition = Blake3Hash;
-
-        async fn resolve(
-            &self,
-            address: &Self::Address,
-        ) -> Result<Option<(Self::Value, Self::Edition)>, Self::Error> {
-            TransactionalMemoryBackend::resolve(&self.0, address).await
-        }
-
-        async fn replace(
-            &self,
-            address: &Self::Address,
-            edition: Option<&Self::Edition>,
-            content: Option<Self::Value>,
-        ) -> Result<Option<Self::Edition>, Self::Error> {
-            TransactionalMemoryBackend::replace(&self.0, address, edition, content).await
         }
     }
 }
