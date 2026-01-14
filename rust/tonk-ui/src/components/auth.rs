@@ -1,62 +1,54 @@
 use leptos::prelude::*;
 use tonk_worker::{AuthorizeRequest, AuthorizeResponse};
 
-use crate::{components::ActiveServiceWorker, error::TonkUiError};
+use crate::{components::Status, error::TonkUiError};
 
-/// Authentication form for user login with account credentials.
+/// Authentication form for user login with R2 credentials.
 #[component]
 pub fn TonkAuth() -> impl IntoView {
-    let (is_submitted, set_is_submitted) = signal_local(false);
-    let (account_id, set_account_id) = signal_local(String::new());
-    let (secret_key, set_secret_key) = signal_local(String::new());
+    let (access_key_id, set_access_key_id) = signal_local(String::new());
+    let (secret_access_key, set_secret_access_key) = signal_local(String::new());
 
-    let service_worker = use_context::<LocalResource<ActiveServiceWorker>>()
-        .expect("Missing active service worker resource");
+    let status = use_context::<Signal<Status, LocalStorage>>().expect("Missing status");
 
     let authorize_action =
         use_context::<Action<AuthorizeRequest, Result<AuthorizeResponse, TonkUiError>>>()
-            .expect("Missing expected authorize action");
+            .expect("Missing authorize action");
 
-    let authorization = use_context::<Signal<Option<AuthorizeResponse>, LocalStorage>>()
-        .expect("Missing expected authorization signal");
+    let is_authorizing = move || status.get() == Status::Authorizing;
 
     let ready_to_submit = move || {
-        service_worker.read().is_some()
-            && !account_id.get().is_empty()
-            && !secret_key.get().is_empty()
-            && !is_submitted.get()
+        status.get() == Status::Unauthorized
+            && !access_key_id.get().is_empty()
+            && !secret_access_key.get().is_empty()
     };
 
-    Effect::new(move |_| {
-        if !is_submitted.get() {
-            return;
-        }
-
-        let account_id = account_id.get();
-        let secret_key = secret_key.get();
-
+    let submit = move |_| {
         authorize_action.dispatch(AuthorizeRequest {
-            secret_key,
-            account_id,
+            access_key_id: access_key_id.get(),
+            secret_access_key: secret_access_key.get(),
         });
-    });
+    };
 
     let button_text = move || {
-        if is_submitted.get() {
+        if is_authorizing() {
             "Authorizing..."
         } else {
             "Authorize"
         }
     };
 
+    // Show form when unauthorized or authorizing
+    let show_form = move || matches!(status.get(), Status::Unauthorized | Status::Authorizing);
+
     view! {
         <section
             class="auth"
-            class:pending=move || authorization.get().is_none()
+            class:pending=show_form
         >
             <section
                 class="loading-indicator"
-                class:visible=move || is_submitted.get() && authorization.get().is_none()
+                class:visible=is_authorizing
             >
             </section>
             <section
@@ -64,26 +56,26 @@ pub fn TonkAuth() -> impl IntoView {
             >
                 <input
                     type="text"
-                    placeholder="Account ID"
-                    prop:value=account_id
-                    disabled=is_submitted
+                    placeholder="Access Key ID"
+                    prop:value=access_key_id
+                    disabled=is_authorizing
                     on:input=move |ev| {
-                        set_account_id.set(event_target_value(&ev));
+                        set_access_key_id.set(event_target_value(&ev));
                     }
                 />
                 <input
-                    type="text"
-                    placeholder="Secret Key"
-                    prop:value=secret_key
-                    disabled=is_submitted
+                    type="password"
+                    placeholder="Secret Access Key"
+                    prop:value=secret_access_key
+                    disabled=is_authorizing
                     on:input=move |ev| {
-                        set_secret_key.set(event_target_value(&ev));
+                        set_secret_access_key.set(event_target_value(&ev));
                     }
                 />
                 <button
                     aria-label=button_text
                     disabled=move || !ready_to_submit()
-                    on:click=move |_| set_is_submitted.set(true)
+                    on:click=submit
                 >{button_text}</button>
             </section>
         </section>
@@ -97,15 +89,12 @@ pub fn TonkAuth() -> impl IntoView {
 mod integration_tests {
     #![allow(unexpected_cfgs)]
 
-    use std::time::Duration;
-
     #[cfg_attr(not(feature = "integration-tests"), allow(unused))]
     use crate::helpers::TestEnvironment;
     #[cfg_attr(not(feature = "integration-tests"), allow(unused))]
     use anyhow::Result;
     #[cfg_attr(not(feature = "integration-tests"), allow(unused))]
     use thirtyfour::prelude::*;
-    use tokio::time::sleep;
 
     #[dialog_common::test]
     async fn it_reaches_the_website(test_environment: TestEnvironment) -> Result<()> {
@@ -125,16 +114,20 @@ mod integration_tests {
     ) -> Result<()> {
         let driver = test_environment.driver().await?;
 
-        sleep(Duration::from_secs(3)).await;
-
-        let account_id_input = driver
-            .query(By::Css("[placeholder='Account ID']"))
+        let access_key_id_input = driver
+            .query(By::Css("[placeholder='Access Key ID']"))
             .first()
             .await?;
-        account_id_input.send_keys("abc123").await?;
+        access_key_id_input
+            .send_keys("AKIAIOSFODNN7EXAMPLE")
+            .await?;
 
-        let secret_key_input = driver.find(By::Css("[placeholder='Secret Key']")).await?;
-        secret_key_input.send_keys("123abc").await?;
+        let secret_access_key_input = driver
+            .find(By::Css("[placeholder='Secret Access Key']"))
+            .await?;
+        secret_access_key_input
+            .send_keys("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+            .await?;
 
         let authorize_button = driver
             .query(By::Css("[aria-label='Authorize']:not(:disabled)"))
