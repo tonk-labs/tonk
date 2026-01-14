@@ -82,7 +82,6 @@ dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", br
 ucan = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check", package = "ucan" }
 varsig = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check", package = "varsig" }
 
-
 [profile.dev]
 opt-level = 1
 
