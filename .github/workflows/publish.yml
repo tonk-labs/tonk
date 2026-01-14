@@ -1,0 +1,46 @@
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+name: Publish
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+      pull-requests: write
+    name: Cloudflare Pages
+    steps:
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: mshick/add-pr-comment@v2
+        if: github.event_name == 'pull_request'  
+        with:
+          message: |
+            Generating a preview link for the latest change...
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Build
+        run: |
+          nix build .#tonk-ui
+
+      - name: Publish
+        id: publish
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CDATA_TEMPORARY_CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CDATA_TEMPORARY_CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy ./result --project-name=tonk
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: mshick/add-pr-comment@v2
+        if: github.event_name == 'pull_request'  
+        with:
+          message: |
+            A preview of these changes is available for review!
+
+            ${{ steps.publish.outputs.command-output }}
