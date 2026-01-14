@@ -1,3 +1,5 @@
+# This module contains helpers for assembling and printing
+# the Tonk Shell menu.
 { pkgs, ... }:
 let
   tonkFlower = ''
@@ -104,7 +106,39 @@ let
       '';
       commands = scripts;
     };
+
+  makeDevShellHook = { header, menuText, ... }: ''
+    clear
+    ${header}
+
+    function showTonkMenu() {
+      ${menuText}
+    }
+
+    export -f showTonkMenu
+  '';
+
+  makeMenuTestCommand = package: ''
+    nix build .#${package}
+
+    TESTS_PATH=$(nix eval .#${package}.outPath --raw)
+
+    cargo nextest run \
+      --workspace-remap ./ \
+      --archive-file "$TESTS_PATH/${package}.tar.zst" \
+  '';
+
+  menuTestEnv = with pkgs; lib.optionals stdenv.isLinux {
+    "CHROME" = "${chromium}/bin/chromium";
+    "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+  };
+
+  menuTestCommand = { description, package }: {
+    inherit description;
+    command = makeMenuTestCommand package;
+    env = menuTestEnv;
+  };
 in
 {
-  makeMenu = makeMenu;
+  inherit makeMenu makeDevShellHook menuTestCommand;
 }

@@ -4058,7 +4058,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "ucan"
 version = "0.5.0"
-source = "git+https://github.com/Gozala/rs-ucan.git?branch=fix%2Fwasm-compile#889b7c65a86a37d1998bc158e9937131a0b20237"
+source = "git+https://github.com/tonk-labs/rs-ucan.git?branch=jackddouglas%2Ffeat%2Fcheck#671a0256621eb4656b42d9e631108da3ec18158b"
 dependencies = [
  "base58",
  "ed25519-dalek",
@@ -4169,7 +4169,7 @@ dependencies = [
 [[package]]
 name = "varsig"
 version = "0.1.0"
-source = "git+https://github.com/Gozala/rs-ucan.git?branch=fix%2Fwasm-compile#889b7c65a86a37d1998bc158e9937131a0b20237"
+source = "git+https://github.com/tonk-labs/rs-ucan.git?branch=jackddouglas%2Ffeat%2Fcheck#671a0256621eb4656b42d9e631108da3ec18158b"
 dependencies = [
  "async-signature",
  "ed25519-dalek",
