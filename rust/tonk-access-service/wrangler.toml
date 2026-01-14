@@ -19,3 +19,11 @@ R2_BUCKET_NAME = "tonk-spaces"
 # Secrets are set via `wrangler secret put`
 # R2_ACCESS_KEY_ID
 # R2_SECRET_ACCESS_KEY
+
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
