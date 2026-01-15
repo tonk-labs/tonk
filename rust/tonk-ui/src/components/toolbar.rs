@@ -1,16 +1,16 @@
 use leptos::prelude::*;
-
-use crate::components::Status;
+use tonk_worker::AuthorizeResponse;
 
 /// Top navigation toolbar with app controls and user menu.
 #[component]
 pub fn TonkToolbar() -> impl IntoView {
-    let status = use_context::<Signal<Status, LocalStorage>>().expect("Missing status");
+    let authorization = use_context::<Signal<Option<AuthorizeResponse>, LocalStorage>>()
+        .expect("Missing expected authorization signal");
     // TODO(cdata): This is all placeholder for now
     view! {
         <section
             class="toolbar"
-            class:visible=move || status.get() == Status::Authorized
+            class:visible=move || authorization.get().is_some()
         >
             <img src="/images/tonk-logo.svg" />
             <img src="/images/circle-plus.svg" width="36"/>

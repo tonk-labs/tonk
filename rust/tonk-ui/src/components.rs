@@ -27,18 +27,8 @@ extern "C" {
     async fn service_worker_activates();
 }
 
-/// The current status of the application.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Status {
-    /// Service worker is still loading/activating.
-    Loading,
-    /// Service worker is ready but no upstream remote is configured.
-    Unauthorized,
-    /// Authorization request has been sent, waiting for response.
-    Authorizing,
-    /// Service worker is ready and upstream remote is configured.
-    Authorized,
-}
+/// A marker type to represent the activation status of a service worker
+pub struct ActiveServiceWorker;
 
 /// The root UI component for the Tonk application.
 ///
@@ -47,48 +37,23 @@ pub enum Status {
 #[component]
 pub fn TonkShell() -> impl IntoView {
     log!("Tonk shell initializing...");
-
-    // Fetch status after service worker is ready
-    let status_resource = LocalResource::new(|| async {
+    let active_service_worker = LocalResource::new(|| async {
         log!("Waiting for SW to activate...");
         service_worker_activates().await;
-        log!("SW is activated, fetching status...");
-        api::status().await
+        log!("SW is activated!");
+        ActiveServiceWorker
     });
 
     let authorize_action =
         Action::new_local(|request: &AuthorizeRequest| api::authorize(request.clone()));
-
-    // Derive the application status from status resource and authorize action
-    let status = Signal::derive_local(move || {
-        // Check if status has loaded
-        let response = match status_resource.get() {
-            Some(Ok(response)) => response,
-            _ => return Status::Loading,
-        };
-
-        // Check if already authorized (has upstream)
-        if response.has_upstream {
-            return Status::Authorized;
-        }
-
-        // Check if authorization is in progress
-        if authorize_action.pending().get() {
-            return Status::Authorizing;
-        }
-
-        // Check if authorization succeeded
-        if let Some(Ok(response)) = authorize_action.value().get()
-            && response.success
-        {
-            return Status::Authorized;
-        }
-
-        Status::Unauthorized
+    let authorization = Signal::derive_local(move || match authorize_action.value().get() {
+        Some(Ok(response)) => Some(response),
+        _ => None,
     });
 
-    provide_context(status);
+    provide_context(active_service_worker);
     provide_context(authorize_action);
+    provide_context(authorization);
 
     view! {
         <TonkAuth></TonkAuth>

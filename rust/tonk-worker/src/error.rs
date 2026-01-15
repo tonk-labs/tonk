@@ -7,12 +7,9 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum TonkWorkerError {
     /// An error occurred in the router.
+
     #[error("Router error: {0}")]
     Router(String),
-
-    /// An internal error occurred.
-    #[error("Internal error: {0}")]
-    Internal(String),
 }
 
 impl IntoResponse for TonkWorkerError {

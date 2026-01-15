@@ -117,7 +117,7 @@
             --archive-file "$TESTS_PATH/${target}.tar.zst" \
         '';
 
-        menuTestEnv = with pkgs; lib.optionalAttrs stdenv.isLinux {
+        menuTestEnv = with pkgs; lib.optionals stdenv.isLinux {
           "CHROME" = "${chromium}/bin/chromium";
           "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
         };
@@ -193,7 +193,7 @@
           default = mkShell {
             buildInputs = commonBuildInputs;
             nativeBuildInputs = menu.commands;
-            env = lib.optionalAttrs stdenv.isLinux {
+            env = lib.optionals stdenv.isLinux {
               "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
             };
             shellHook = ''
@@ -211,7 +211,7 @@
           ci = mkShell {
             buildInputs = commonBuildInputs;
             nativeBuildInputs = menu.commands;
-            env = lib.optionalAttrs stdenv.isLinux {
+            env = lib.optionals stdenv.isLinux {
               "CHROME" = "${chromium}/bin/chromium";
               "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
             };

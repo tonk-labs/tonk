@@ -3915,7 +3915,6 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tonk-common",
- "tonk-space",
  "tower",
  "tower-service",
  "url",

@@ -1,5 +1,4 @@
-input[type="text"],
-input[type="password"] {
+input[type="text"] {
     border: 1px solid var(--text-input-border-color, #E4E4E7);
     background-color: var(--text-input-background-color, #F4F4F580);
     border-radius: 6px;
@@ -12,26 +11,22 @@ input[type="password"] {
     outline: none;
 }
 
-input[type="text"][disabled],
-input[type="password"][disabled] {
+input[type="text"][disabled] {
     border-color: var(--text-input-disabled-border-color, #e4e4e7);
     background-color: var(--text-input-disabled-background-color, #F4F4F5);
     color: var(--text-input-disabled-text-color, #71717A);
     cursor: not-allowed;
 }
 
-input[type="text"]::placeholder,
-input[type="password"]::placeholder {
+input[type="text"]::placeholder {
     color: var(--text-input-placeholder-color, #71717A);
 }
 
 
-input[type="text"]:focus,
-input[type="password"]:focus {
+input[type="text"]:focus {
     outline: none;
 }
 
-input[type="text"]:focus-visible,
-input[type="password"]:focus-visible {
+input[type="text"]:focus-visible {
     outline: 2px solid var(--color-gray-900);
 }

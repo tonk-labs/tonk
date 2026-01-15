@@ -1,5 +1,5 @@
 use leptos::{logging::log, prelude::window};
-use tonk_worker::{AuthorizeRequest, AuthorizeResponse, StatusResponse};
+use tonk_worker::{AuthorizeRequest, AuthorizeResponse};
 
 use crate::error::TonkUiError;
 
@@ -15,19 +15,6 @@ fn origin() -> String {
         .location()
         .origin()
         .expect("Could not read window location")
-}
-
-/// Fetches the current status of the space from the service worker.
-pub async fn status() -> Result<StatusResponse, TonkUiError> {
-    log!("Fetching status...");
-
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/status", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    response.json().await.map_err(into_api_error)
 }
 
 /// Authorizes the user with the Tonk service worker.
