@@ -17,6 +17,7 @@ jobs:
     steps:
       - uses: wimpysworld/nothing-but-nix@main
       - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/flakehub-cache-action@main
       - uses: mshick/add-pr-comment@v2
         if: github.event_name == 'pull_request'  
         with:
@@ -31,17 +32,26 @@ jobs:
 
       - name: Publish
         id: publish
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy ./result --project-name=${{ env.CLOUDFLARE_WORKERS_PROJECT_NAME }}
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export CLOUDFLARE_API_TOKEN=${{secrets.CLOUDFLARE_API_TOKEN}}
+          export CLOUDFLARE_ACCOUNT_ID=${{secrets.CLOUDFLARE_ACCOUNT_ID}}
+
+          COMMAND_OUTPUT=$(nix develop -c wrangler pages deploy ./result --project-name=${{ vars.CLOUDFLARE_WORKERS_PROJECT_NAME }})
+          echo "command-output=$WRANGLER_OUTPUT\n" >> $GITHUB_OUTPUT
+
+      # - name: Publish
+      #   id: publish
+      #   uses: cloudflare/wrangler-action@v3
+      #   with:
+      #     apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      #     accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      #     command: pages deploy ./result --project-name=${{ env.CLOUDFLARE_WORKERS_PROJECT_NAME }}
+      #     gitHubToken: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: mshick/add-pr-comment@v2
         if: github.event_name == 'pull_request'  
         with:
           message: |
-            A preview of these changes is available for review!
+            Wrangler output for this change:
 
             ${{ steps.publish.outputs.command-output }}
