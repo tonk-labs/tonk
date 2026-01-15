@@ -17,6 +17,7 @@ jobs:
     runs-on: 'ubuntu-latest'
     steps:
       - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/flake-checker-action@main
         with:
@@ -41,6 +42,7 @@ jobs:
         profile: ["debug", "release"]
     steps:
       - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
       - uses: actions/download-artifact@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - name: Restore and save Nix store
