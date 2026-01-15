@@ -1,7 +1,7 @@
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [stable]
   pull_request:
 
 name: Publish
@@ -32,9 +32,9 @@ jobs:
         id: publish
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken: ${{ secrets.CDATA_TEMPORARY_CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CDATA_TEMPORARY_CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy ./result --project-name=tonk
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy ./result --project-name=${{ env.CLOUDFLARE_WORKERS_PROJECT_NAME }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: mshick/add-pr-comment@v2
