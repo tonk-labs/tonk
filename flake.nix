@@ -10,6 +10,10 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nix-filter.url = "github:numtide/nix-filter";
+    wrangler-flake = {
+      url = "github:emrldnix/wrangler";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -19,6 +23,8 @@
     , flake-utils
     , rust-overlay
     , nix-filter
+    , wrangler-flake
+
     ,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -32,6 +38,11 @@
 
         # Use nixpkgs#wasm-bindgen-cli to avoid building it (it is slow!)
         wasm-bindgen-cli = pkgs.wasm-bindgen-cli_0_2_100;
+
+        # We get wrangler from a 3P crate because nixpkgs#wrangler lags
+        # the latest release
+        wrangler = wrangler-flake.packages.${system}.wrangler;
+
 
         # Common build inputs for all dev shells
         commonBuildInputs =
@@ -63,8 +74,12 @@
 
         inherit (rustHelpers) buildTrunkCrate buildTestArchive cargoChecks rustToolchain;
 
-        # Include the Rust toolchain in build inputs for dev shells
-        devShellBuildInputs = commonBuildInputs ++ [ rustToolchain ];
+        # Include the Rust toolchain and some extras in build inputs
+        # for dev shells
+        devShellBuildInputs = commonBuildInputs ++ [
+          wrangler
+          rustToolchain
+        ];
 
         # Import menu helpers (e.g., colorful Tonk Shell commands)
         menuHelpers = (import ./nix/menu.nix { inherit pkgs; });
@@ -124,7 +139,15 @@
         menu = makeMenu commands;
       in
       {
+        # Building 3P wrangler is slow; this configures pulling from a cache
+        # SEE: https://github.com/emrldnix/wrangler?tab=readme-ov-file#using-the-nar-cache
+        nix.settings = {
+          substituters = [ "https://wrangler.cachix.org" ];
+          trusted-public-keys = [ "wrangler.cachix.org-1:N/FIcG2qBQcolSpklb2IMDbsfjZKWg+ctxx0mSMXdSs=" ];
+        };
+
         checks = cargoChecks;
+
 
         devShells = with pkgs; {
           default = mkShell {
