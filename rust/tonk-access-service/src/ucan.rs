@@ -1,5 +1,5 @@
-//! UCAN verification module
+//! UCAN verification module.
+//!
+//! This module re-exports UCAN verification functionality from `dialog-ucan`.
 
-pub mod verify;
-
-pub use verify::{VerificationError, verify_invocation};
+pub use dialog_ucan::verify_invocation;

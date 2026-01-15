@@ -14,9 +14,10 @@
 use crate::{
     error::{ErrorCode, ServiceError},
     r2::{Checksum, Method, R2Config, presign},
-    ucan::{VerificationError, verify_invocation},
+    ucan::verify_invocation,
 };
 use base64::Engine;
+use dialog_ucan::ServiceError as DialogServiceError;
 use worker::*;
 
 /// GET /{space_did}/index/{digest} → 307 redirect to presigned GET URL
@@ -51,7 +52,7 @@ async fn handle_get_inner(
     let (ucan_bytes, proof_bytes) = parse_auth_headers(req)?;
     let verified = verify_invocation(&ucan_bytes, &proof_bytes)
         .await
-        .map_err(map_verification_error)?;
+        .map_err(|e| -> ServiceError { DialogServiceError::from(e).into() })?;
 
     // 3. Validate command is /http/get
     if verified.command != vec!["http", "get"] {
@@ -97,7 +98,7 @@ async fn handle_put_inner(
     let (ucan_bytes, proof_bytes) = parse_auth_headers(req)?;
     let verified = verify_invocation(&ucan_bytes, &proof_bytes)
         .await
-        .map_err(map_verification_error)?;
+        .map_err(|e| -> ServiceError { DialogServiceError::from(e).into() })?;
 
     // 3. Validate command is /http/put
     if verified.command != vec!["http", "put"] {
@@ -254,36 +255,4 @@ fn redirect_307(
     }
 
     Ok(response.with_status(307))
-}
-
-/// Map VerificationError to ServiceError with appropriate error codes.
-fn map_verification_error(err: VerificationError) -> ServiceError {
-    match err {
-        VerificationError::ParseError(msg) => ServiceError::invalid_cbor(msg),
-        VerificationError::InvalidSignature(msg) => ServiceError::signature_invalid(msg),
-        VerificationError::AudienceMismatch { expected, got } => {
-            ServiceError::audience_mismatch(&expected, &got)
-        }
-        VerificationError::Expired => ServiceError::invocation_expired(),
-        VerificationError::ChainInvalid(msg) => {
-            if msg.contains("Subject not allowed") {
-                ServiceError::subject_not_allowed()
-            } else if msg.contains("Proof[") && msg.contains("expired") {
-                ServiceError::new(ErrorCode::ProofExpired, msg)
-            } else if msg.contains("Proof[") && msg.contains("not yet valid") {
-                ServiceError::new(ErrorCode::ProofNotYetValid, msg)
-            } else {
-                ServiceError::chain_invalid(msg)
-            }
-        }
-        VerificationError::Unauthorized(msg) => {
-            if msg.contains("Command mismatch") {
-                ServiceError::new(ErrorCode::CommandMismatch, msg)
-            } else {
-                ServiceError::chain_invalid(msg)
-            }
-        }
-        VerificationError::ProofNotFound(cid) => ServiceError::proof_not_found(&cid),
-        VerificationError::PolicyFailed(msg) => ServiceError::chain_invalid(msg),
-    }
 }

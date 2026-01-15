@@ -24,6 +24,8 @@ dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "t
 dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-ecs" }
 dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-ecs" }
 dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/s3-presign-crate" }
+# TODO: Update to git reference once dialog-ucan is pushed
+dialog-ucan = { path = "/Users/jackdouglas/repos/dialog-db/rust/dialog-ucan" }
 
 # UCAN
 ucan = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check", package = "ucan" }

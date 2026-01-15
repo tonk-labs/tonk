@@ -33,6 +33,9 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 # S3 presigning
 dialog-s3-credentials = { workspace = true }
 
+# UCAN verification
+dialog-ucan = { workspace = true }
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11.19"

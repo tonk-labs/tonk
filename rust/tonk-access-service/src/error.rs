@@ -1,59 +1,13 @@
 //! Error types for the service.
+//!
+//! This module wraps `dialog_ucan` error types with worker-specific
+//! response conversion functionality.
 
 use serde::Serialize;
 use worker::Response;
 
-/// Error codes returned by the API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ErrorCode {
-    // 400 Bad Request - Input validation errors
-    InvalidBase64,
-    InvalidCbor,
-    InvalidArgument,
-
-    // 401 Unauthorized - Authentication errors
-    SignatureInvalid,
-    AudienceMismatch,
-    InvocationExpired,
-    ProofNotFound,
-    ProofExpired,
-    ProofNotYetValid,
-
-    // 403 Forbidden - Authorization errors
-    ChainInvalid,
-    CommandMismatch,
-    SubjectNotAllowed,
-
-    // 500 Internal Server Error
-    InternalError,
-}
-
-impl ErrorCode {
-    /// Get the HTTP status code for this error.
-    pub fn status_code(&self) -> u16 {
-        match self {
-            // 400 Bad Request
-            ErrorCode::InvalidBase64 | ErrorCode::InvalidCbor | ErrorCode::InvalidArgument => 400,
-
-            // 401 Unauthorized
-            ErrorCode::SignatureInvalid
-            | ErrorCode::AudienceMismatch
-            | ErrorCode::InvocationExpired
-            | ErrorCode::ProofNotFound
-            | ErrorCode::ProofExpired
-            | ErrorCode::ProofNotYetValid => 401,
-
-            // 403 Forbidden
-            ErrorCode::ChainInvalid | ErrorCode::CommandMismatch | ErrorCode::SubjectNotAllowed => {
-                403
-            }
-
-            // 500 Internal Server Error
-            ErrorCode::InternalError => 500,
-        }
-    }
-}
+// Re-export ErrorCode from dialog_ucan
+pub use dialog_ucan::ErrorCode;
 
 /// Structured error response.
 #[derive(Debug, Serialize)]
@@ -85,7 +39,10 @@ impl ErrorResponse {
     }
 }
 
-/// Service error type for internal use.
+/// Service error type with worker-specific response conversion.
+///
+/// This wraps `dialog_ucan::ServiceError` and adds the ability to convert
+/// to a Cloudflare Worker Response.
 #[derive(Debug)]
 pub struct ServiceError {
     pub code: ErrorCode,
@@ -100,7 +57,7 @@ impl ServiceError {
         }
     }
 
-    /// Convert to an error response.
+    /// Convert to a worker error response.
     pub fn to_response(&self) -> worker::Result<Response> {
         ErrorResponse::new(self.code, &self.message).to_response()
     }
@@ -154,5 +111,15 @@ impl ServiceError {
 
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InternalError, message)
+    }
+}
+
+/// Convert from `dialog_ucan::ServiceError` to our worker-aware `ServiceError`.
+impl From<dialog_ucan::ServiceError> for ServiceError {
+    fn from(err: dialog_ucan::ServiceError) -> Self {
+        Self {
+            code: err.code,
+            message: err.message,
+        }
     }
 }

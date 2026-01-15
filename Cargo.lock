@@ -702,6 +702,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-ucan"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ipld-core",
+ "serde",
+ "serde_ipld_dagcbor",
+ "thiserror 2.0.17",
+ "ucan",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2652,6 +2664,7 @@ dependencies = [
  "chrono",
  "clap",
  "dialog-s3-credentials",
+ "dialog-ucan",
  "ed25519-dalek",
  "futures",
  "getrandom 0.2.16",
