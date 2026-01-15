@@ -26,8 +26,8 @@ jobs:
           send-statistics: false
           ignore-missing-flake-lock: false
 
-  lint_rust:
-    name: 'Lint Rust'
+  checks:
+    name: 'Nix Checks'
     needs: ['lint_nix']
     runs-on: 'ubuntu-latest'
     steps:
@@ -39,37 +39,24 @@ jobs:
       - name: Restore and save Nix store
         uses: nix-community/cache-nix-action@v6
         with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          # Include Cargo.lock for better Rust dependency caching
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock', '**/Cargo.lock') }}
 
-      - name: 'Run lints'
+      - name: 'Run all checks (fmt, clippy, tests)'
         shell: bash
         run: |
-          # We can't run checks by name
+          # Build all checks
           # SEE: https://github.com/NixOS/nix/issues/8881
           nix build .#checks.x86_64-linux.rustfmt
           nix build .#checks.x86_64-linux.clippy
+          nix build .#checks.x86_64-linux.tests
 
-  lints:
-    name: 'Lints'
-    needs: ['lint_nix', 'lint_rust']
+  build:
+    name: 'Build Packages'
+    needs: ['checks']
     runs-on: 'ubuntu-latest'
-    steps:
-      - run: echo "Lints are good!"
-
-  rust_crates:
-    name: 'Rust Crates'
-    needs: ['lints']
-    runs-on: 'ubuntu-latest'
-    strategy:
-      matrix:
-        include:
-          - flags: ''
-          - flags: '--release'
-          - flags: '--target wasm32-unknown-unknown'
-          - flags: '--target wasm32-unknown-unknown --release'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
       - uses: wimpysworld/nothing-but-nix@main
         with:
           hatchet-protocol: cleave
@@ -77,13 +64,12 @@ jobs:
       - name: Restore and save Nix store
         uses: nix-community/cache-nix-action@v6
         with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
-      - name: 'Run `cargo test`'
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock', '**/Cargo.lock') }}
+
+      - name: 'Build all packages'
         shell: bash
         run: |
-          # Ensure we don't pick up a built-in chrome / chromedriver
-          sudo apt-get remove google-chrome-stable -y
-          sudo rm /usr/bin/chromium /usr/bin/chromium-browser
-
-          # TODO: Running the tests this way undermines Nix-based caching
-          nix develop .#ci --command cargo test ${{ matrix.flags }}
+          # Build workspace
+          nix build .#tonk-core
+          nix build .#tonk-space
+          nix build .#tonk-access-service
