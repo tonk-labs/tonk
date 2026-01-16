@@ -163,6 +163,23 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         Ok(())
     }
 
+    /// Transact a set of changes to the space.
+    ///
+    /// Creates a transaction, applies all changes, and commits them atomically.
+    /// This is a convenience method that combines `edit()` and `commit()`.
+    pub async fn transact<E, D>(&mut self, changes: D) -> Result<(), SpaceError>
+    where
+        E: dialog_query::claim::Edit,
+        D: IntoIterator<Item = E>,
+    {
+        let mut transaction = self.edit();
+        for change in changes {
+            change.merge(&mut transaction);
+        }
+        self.session.commit(transaction).await?;
+        Ok(())
+    }
+
     /// Add a remote to this space and set it as upstream for the main branch.
     ///
     /// # Arguments

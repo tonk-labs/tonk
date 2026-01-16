@@ -88,4 +88,39 @@ impl TonkServiceWorker {
                 .map_err(JsValue::from)
         })
     }
+
+    /// Pushes local changes to the upstream remote.
+    ///
+    /// This method can be called from JavaScript via `event.waitUntil()` to
+    /// perform push operations in the background without blocking the response.
+    ///
+    /// # Returns
+    ///
+    /// A JavaScript `Promise` that resolves to a boolean indicating success
+    #[wasm_bindgen(js_name = "push")]
+    pub fn push(&self) -> Promise {
+        log!("Background push requested");
+
+        let router = self.router.clone();
+
+        future_to_promise(async move {
+            // Create a push request internally
+            let request = axum::http::Request::builder()
+                .uri("/api/sync/push")
+                .method("POST")
+                .body(Body::empty())
+                .expect("Failed to build push request");
+
+            let response = router
+                .lock()
+                .await
+                .call(request)
+                .await
+                .expect_throw("Failed to handle push request");
+
+            let status = response.status().as_u16();
+            log!("Push completed with status: {}", status);
+            Ok(JsValue::from_bool(status >= 200 && status < 300))
+        })
+    }
 }

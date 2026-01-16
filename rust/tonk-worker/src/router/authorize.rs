@@ -50,8 +50,8 @@ pub async fn authorize(
     let mut space = state.write().await;
 
     // Create remote config with R2 credentials
-    // Prefix is space DID followed by /
-    let prefix = format!("{}/", space.did);
+    // Prefix is the space DID (no trailing slash - the S3 backend adds slashes)
+    let prefix = space.did.clone();
 
     let remote_config = RemoteConfig {
         endpoint: R2_ENDPOINT.to_string(),

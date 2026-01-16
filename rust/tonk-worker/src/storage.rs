@@ -14,8 +14,9 @@ mod inner {
     use tokio::sync::Mutex;
 
     /// Type alias for compressed and cached storage backend.
+    /// Uses Vec<u8> keys to accommodate dialog-artifacts' "index/" prefixed keys.
     type CachedStorage =
-        StorageCache<CompressedStorage<3, IndexedDbStorageBackend<[u8; 32], Vec<u8>>>>;
+        StorageCache<CompressedStorage<3, IndexedDbStorageBackend<Vec<u8>, Vec<u8>>>>;
 
     /// Storage backend for the service worker using IndexedDB with compression and caching.
     ///
@@ -24,7 +25,7 @@ mod inner {
     #[derive(Clone)]
     pub struct ServiceWorkerStorageBackend {
         /// Compressed and cached storage for blobs (StorageBackend).
-        /// Uses [u8; 32] keys internally for content-addressed storage.
+        /// Uses Vec<u8> keys to support dialog-artifacts' prefixed keys (e.g., "index/<hash>").
         storage: Arc<Mutex<CachedStorage>>,
         /// Raw IndexedDB backend for transactional memory (branches, remotes).
         memory: IndexedDbStorageBackend<Vec<u8>, Vec<u8>>,
@@ -36,7 +37,7 @@ mod inner {
         /// Initializes an IndexedDB backend wrapped with compression (level 3) and
         /// a 64K-large in-memory cache for blocks.
         pub async fn new(name: &str) -> Self {
-            let backend: IndexedDbStorageBackend<[u8; 32], Vec<u8>> =
+            let backend: IndexedDbStorageBackend<Vec<u8>, Vec<u8>> =
                 IndexedDbStorageBackend::new(name).await.unwrap_throw();
             let compressed = CompressedStorage::<3, _>::new(backend);
             #[allow(clippy::arc_with_non_send_sync)]
@@ -59,13 +60,6 @@ mod inner {
     unsafe impl Send for ServiceWorkerStorageBackend {}
     unsafe impl Sync for ServiceWorkerStorageBackend {}
 
-    /// Convert Vec<u8> to [u8; 32], assuming the vec contains exactly 32 bytes.
-    fn vec_to_hash(key: &[u8]) -> Result<[u8; 32], DialogStorageError> {
-        key.try_into().map_err(|_| {
-            DialogStorageError::StorageBackend(format!("Key must be 32 bytes, got {}", key.len()))
-        })
-    }
-
     #[async_trait(?Send)]
     impl StorageBackend for ServiceWorkerStorageBackend {
         type Key = Vec<u8>;
@@ -73,13 +67,11 @@ mod inner {
         type Error = DialogStorageError;
 
         async fn set(&mut self, key: Self::Key, value: Self::Value) -> Result<(), Self::Error> {
-            let hash = vec_to_hash(&key)?;
-            self.storage.lock().await.set(hash, value).await
+            self.storage.lock().await.set(key, value).await
         }
 
         async fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error> {
-            let hash = vec_to_hash(key)?;
-            self.storage.lock().await.get(&hash).await
+            self.storage.lock().await.get(key).await
         }
     }
 

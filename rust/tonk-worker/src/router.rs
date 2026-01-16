@@ -11,6 +11,12 @@ use crate::ServiceWorkerStorageBackend;
 mod authorize;
 pub use authorize::{AuthorizeRequest, AuthorizeResponse, StatusResponse, authorize, status};
 
+mod fact;
+pub use fact::{AssertResponse, FactQuery, FactResponse, QueryResponse, assert_fact, query_facts};
+
+mod sync;
+pub use sync::{PullResponse, PushResponse, SyncResponse, pull, push, sync};
+
 /// Shared application state containing the Space.
 pub type AppState = Arc<RwLock<Space<ServiceWorkerStorageBackend>>>;
 
@@ -28,6 +34,14 @@ pub fn api_router(space: Space<ServiceWorkerStorageBackend>) -> Router {
         .route("/api", get(root))
         .route("/api/authorize", post(authorize))
         .route("/api/status", get(status))
+        .route(
+            "/api/fact/assert/{entity}/{attribute_ns}/{attribute_name}",
+            post(assert_fact),
+        )
+        .route("/api/fact/query", get(query_facts))
+        .route("/api/sync", post(sync))
+        .route("/api/sync/pull", post(pull))
+        .route("/api/sync/push", post(push))
         .with_state(state)
 }
 
