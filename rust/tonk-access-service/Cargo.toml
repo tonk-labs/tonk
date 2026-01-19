@@ -24,8 +24,8 @@ worker = "0.6"
 worker-macros = "0.6"
 
 # UCAN (your fork with invocation exports)
-ucan = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check" }
-varsig = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check" }
+ucan = { workspace = true }
+varsig = { workspace = true }
 
 # Cryptography
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
