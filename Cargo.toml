@@ -1,7 +1,7 @@
 [workspace]
 
 members = [
-    # "rust/tonk-access-service",  # Temporarily excluded due to wasm-bindgen version conflict with dialog-db tonk branch
+    "rust/tonk-access-service",
     "rust/tonk-core",
     "rust/tonk-common",
     "rust/tonk-space",

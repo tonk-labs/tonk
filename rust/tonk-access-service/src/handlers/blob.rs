@@ -76,6 +76,7 @@ async fn handle_get_inner(
     let r2_config = get_r2_config(ctx)?;
     let key = format!("{}/{}", space_did, digest);
     let presigned = presign::presign_url(&r2_config, Method::Get, &key, 3600, None)
+        .await
         .map_err(|e| ServiceError::internal(format!("Presign failed: {}", e)))?;
 
     redirect_307(&presigned.url, &presigned.headers)
@@ -126,6 +127,7 @@ async fn handle_put_inner(
     let r2_config = get_r2_config(ctx)?;
     let key = format!("{}/{}", space_did, digest);
     let presigned = presign::presign_url(&r2_config, Method::Put, &key, 3600, checksum)
+        .await
         .map_err(|e| ServiceError::internal(format!("Presign failed: {}", e)))?;
 
     redirect_307(&presigned.url, &presigned.headers)
