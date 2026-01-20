@@ -52,8 +52,4 @@ jobs:
       - name: 'Run tests'
         shell: bash
         run: |
-          # Ensure we don't pick up a built-in chrome / chromedriver
-          # sudo apt-get remove google-chrome-stable -y
-          # sudo rm /usr/bin/chromium /usr/bin/chromium-browser
-
           nix --accept-flake-config develop .#ci -c test:${{matrix.platform}}:${{matrix.profile}}

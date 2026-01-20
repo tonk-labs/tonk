@@ -17,14 +17,14 @@
   };
 
   outputs =
-    { self
-    , crane
-    , nixpkgs
-    , flake-utils
-    , rust-overlay
-    , nix-filter
-    , wrangler-flake
-    ,
+    {
+      self,
+      crane,
+      nixpkgs,
+      flake-utils,
+      rust-overlay,
+      nix-filter,
+      wrangler-flake,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -72,7 +72,14 @@
           workspaceRoot = ./.;
         };
 
-        inherit (rustHelpers) buildWasmCrate buildTrunkCrate buildTestArchive cargoChecks rustToolchain wasm-bindgen-cli;
+        inherit (rustHelpers)
+          buildWasmCrate
+          buildTrunkCrate
+          buildTestArchive
+          cargoChecks
+          rustToolchain
+          wasm-bindgen-cli
+          ;
 
         # Include the Rust toolchain in build inputs for dev shells
         devShellBuildInputs = commonBuildInputs ++ [
@@ -81,18 +88,21 @@
           wasm-bindgen-cli
         ];
 
-        devShellEnvVars = with pkgs; {
-          # These *_BIN envvars are an implicit part of the `worker-build` API
-          # Noting that successfully building inside the Nix sandbox depends on
-          # specific version ranges of `wasm-bindgen-cli`, `esbuild` and the Cargo
-          # `web-sys` crate.
-          "WASM_BINDGEN_BIN" = "${wasm-bindgen-cli}/bin/wasm-bindgen";
-          "ESBUILD_BIN" = "${esbuild}/bin/esbuild";
-          "WASM_OPT_BIN" = "${binaryen}/bin/wasm-opt";
-        } // lib.optionalAttrs stdenv.isLinux {
-          "CHROME" = "${chromium}/bin/chromium";
-          "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
-        };
+        devShellEnvVars =
+          with pkgs;
+          {
+            # These *_BIN envvars are an implicit part of the `worker-build` API
+            # Noting that successfully building inside the Nix sandbox depends on
+            # specific version ranges of `wasm-bindgen-cli`, `esbuild` and the Cargo
+            # `web-sys` crate.
+            "WASM_BINDGEN_BIN" = "${wasm-bindgen-cli}/bin/wasm-bindgen";
+            "ESBUILD_BIN" = "${esbuild}/bin/esbuild";
+            "WASM_OPT_BIN" = "${binaryen}/bin/wasm-opt";
+          }
+          // lib.optionalAttrs stdenv.isLinux {
+            "CHROME" = "${chromium}/bin/chromium";
+            "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+          };
 
         # Import menu helpers (e.g., colorful Tonk Shell commands)
         menuHelpers = (import ./nix/menu.nix { inherit pkgs; });
@@ -104,11 +114,10 @@
             description = "Build the Tonk web application";
             command = "nix build .#tonk-ui";
           };
-          "dev:web" =
-            {
-              description = "Start a dev server for the Tonk web application";
-              command = "trunk serve --config ./rust/tonk-ui/Trunk.toml";
-            };
+          "dev:web" = {
+            description = "Start a dev server for the Tonk web application";
+            command = "trunk serve --config ./rust/tonk-ui/Trunk.toml";
+          };
           "lint" = {
             description = "Lint the full source tree";
             command = "nix flake check";
@@ -153,7 +162,16 @@
       in
       {
 
-        checks = cargoChecks;
+        checks =
+          cargoChecks
+          // (with pkgs; {
+            nixfmt-check = runCommand "nixfmt-check" { } ''
+              cd ${self}
+              echo "Checking Nix file formatting..."
+              ${nixfmt}/bin/nixfmt --check $(find . -name '*.nix' -type f)
+              touch $out
+            '';
+          });
 
         devShells = with pkgs; {
           default = mkShell {
@@ -170,79 +188,79 @@
           };
         };
 
-        packages =
-          rec {
-            tests-native-debug = buildTestArchive {
-              name = "native-debug";
-              args = "--features integration-tests";
-            };
+        packages = rec {
+          tests-native-debug = buildTestArchive {
+            name = "native-debug";
+            args = "--features integration-tests";
+          };
 
-            tests-native-release = buildTestArchive {
-              name = "native-release";
-              args = "--features integration-tests";
-            };
+          tests-native-release = buildTestArchive {
+            name = "native-release";
+            args = "--features integration-tests";
+          };
 
-            tests-web-debug = buildTestArchive {
-              name = "web-debug";
-              target = "wasm32-unknown-unknown";
-            };
+          tests-web-debug = buildTestArchive {
+            name = "web-debug";
+            target = "wasm32-unknown-unknown";
+          };
 
-            tests-web-release = buildTestArchive {
-              name = "web-release";
-              target = "wasm32-unknown-unknown";
-            };
+          tests-web-release = buildTestArchive {
+            name = "web-release";
+            target = "wasm32-unknown-unknown";
+          };
 
-            tests = pkgs.runCommand "tests-all" { } ''
-              mkdir -p $out
-              cp ${self.packages.${system}.tests-native-debug}/*.tar.zst $out/
-              cp ${self.packages.${system}.tests-native-release}/*.tar.zst $out/
-              cp ${self.packages.${system}.tests-web-debug}/*.tar.zst $out/
-              cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
+          tests = pkgs.runCommand "tests-all" { } ''
+            mkdir -p $out
+            cp ${self.packages.${system}.tests-native-debug}/*.tar.zst $out/
+            cp ${self.packages.${system}.tests-native-release}/*.tar.zst $out/
+            cp ${self.packages.${system}.tests-web-debug}/*.tar.zst $out/
+            cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
+          '';
+
+          tonk-ui = buildTrunkCrate {
+            pname = "tonk-ui";
+            trunkConfig = "./rust/tonk-ui/Trunk.toml";
+          };
+
+          tonk-access-service = buildWasmCrate {
+            pname = "tonk-access-service";
+
+            buildPhase = ''
+              cd rust/tonk-access-service
+              worker-build --release
+              echo "fin"
             '';
 
-            tonk-ui = buildTrunkCrate {
-              pname = "tonk-ui";
-              trunkConfig = "./rust/tonk-ui/Trunk.toml";
-            };
-
-            tonk-access-service = buildWasmCrate {
-              pname = "tonk-access-service";
-
-              buildPhase = ''
-                cd rust/tonk-access-service
-                worker-build --release
-                echo "fin"
-              '';
-
-              installPhase = ''
-                mkdir -p $out
-                cp -r ./build/* $out/
-              '';
-            };
-
-            tonk-cloudflare-artifacts = buildWasmCrate {
-              pname = "tonk-cloudflare-assets";
-              buildPhase = ''
-                mkdir -p ./build
-                cp -r ${tonk-access-service} ./build/tonk-access-service
-                cp -r ${tonk-ui} ./build/tonk-ui
-              '';
-              installPhase = ''
-                mkdir -p $out
-                cp -r ./build/* $out/
-              '';
-            };
-
-            # This package is used by integration tests to run a web server
-            # over a local deployment of tonk-ui
-            tonk-ui-test-server = with pkgs;
-              writeScriptBin "tonk-ui-test-server" ''
-                #!${bash}/bin/bash
-                PORT=''${1:-8080}
-                echo "Test server live at http://127.0.0.1:$PORT"
-                ${static-web-server}/bin/static-web-server --port $PORT -d ${self.packages.${system}.tonk-ui}
-              '';
+            installPhase = ''
+              mkdir -p $out
+              cp -r ./build/* $out/
+            '';
           };
+
+          tonk-cloudflare-artifacts = buildWasmCrate {
+            pname = "tonk-cloudflare-assets";
+            buildPhase = ''
+              mkdir -p ./build
+              cp -r ${tonk-access-service} ./build/tonk-access-service
+              cp -r ${tonk-ui} ./build/tonk-ui
+            '';
+            installPhase = ''
+              mkdir -p $out
+              cp -r ./build/* $out/
+            '';
+          };
+
+          # This package is used by integration tests to run a web server
+          # over a local deployment of tonk-ui
+          tonk-ui-test-server =
+            with pkgs;
+            writeScriptBin "tonk-ui-test-server" ''
+              #!${bash}/bin/bash
+              PORT=''${1:-8080}
+              echo "Test server live at http://127.0.0.1:$PORT"
+              ${static-web-server}/bin/static-web-server --port $PORT -d ${self.packages.${system}.tonk-ui}
+            '';
+        };
       }
     );
 

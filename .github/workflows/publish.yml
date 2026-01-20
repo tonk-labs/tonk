@@ -39,9 +39,6 @@ jobs:
             nix --accept-flake-config develop .#ci --command wrangler versions upload --preview-alias pr-${{ github.event.pull_request.number }}
             echo EOF
           } >> "$GITHUB_OUTPUT"
-          # COMMAND_OUTPUT="$(nix --accept-flake-config develop .#ci --command wrangler versions upload --preview-alias pr-${{ github.event.pull_request.number }})"
-          # COMMAND_OUTPUT_ENCODED=$(echo -n "$COMMAND_OUTPUT" | base64)
-          # echo "command-output=$COMMAND_OUTPUT_ENCODED\n" >> $GITHUB_OUTPUT
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
