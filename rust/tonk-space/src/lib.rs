@@ -15,11 +15,13 @@ pub use ::ucan::command::Command;
 pub use ::ucan::delegation::subject::DelegatedSubject;
 pub use ::ucan::did::{Ed25519Did, Ed25519Signer};
 pub use ::ucan::time::timestamp::Timestamp;
-pub use dialog_artifacts::PlatformBackend;
+pub use dialog_artifacts::{PlatformBackend, PlatformStorage};
 pub use dialog_query::claim::Transaction;
+pub use dialog_query::{Attribute, Entity, Fact, Relation, Value};
 pub use ownership::Ownership;
 pub use space::{
-    MemoryBackend, MemoryStorageBackend, RemoteConfig, RemoteState, Revision, Space, SpaceError,
+    MemoryBackend, MemoryStorageBackend, RemoteBackend, RemoteConfig, RemoteState, Revision, Space,
+    SpaceError,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

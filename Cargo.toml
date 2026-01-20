@@ -1,7 +1,7 @@
 [workspace]
 
 members = [
-    "rust/tonk-access-service",
+    # "rust/tonk-access-service",  # Temporarily excluded due to wasm-bindgen version conflict with dialog-db tonk branch
     "rust/tonk-core",
     "rust/tonk-common",
     "rust/tonk-space",
@@ -72,11 +72,11 @@ js-sys = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-rewire" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-rewire" }
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-rewire" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-rewire" }
-dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-rewire" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
 
 # UCAN
 ucan = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check", package = "ucan" }

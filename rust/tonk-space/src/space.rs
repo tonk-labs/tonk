@@ -1,10 +1,11 @@
 use crate::delegation::Delegation;
 use crate::operator::Operator;
 use crate::ownership::Ownership;
-use dialog_artifacts::replica::{Branch, BranchId, Issuer, Replica};
+use dialog_artifacts::replica::{Branch, BranchId, Issuer, RemoteBranch, Replica};
 use dialog_artifacts::selector::Constrained;
 use dialog_artifacts::{
     Artifact, ArtifactSelector, ArtifactStore, DialogArtifactsError, PlatformBackend,
+    PlatformStorage,
 };
 use dialog_query::claim::{Transaction, TransactionError};
 use dialog_query::query::Source;
@@ -15,7 +16,9 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 
 // Re-export types for CLI use
-pub use dialog_artifacts::replica::{RemoteConfig, RemoteState, Revision, UpstreamState};
+pub use dialog_artifacts::replica::{
+    RemoteBackend, RemoteConfig, RemoteState, Revision, UpstreamState,
+};
 pub use dialog_storage::MemoryStorageBackend;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -58,6 +61,8 @@ pub enum SpaceError {
 pub struct Space<Backend: PlatformBackend + 'static> {
     /// The DID of this space
     pub did: String,
+    /// The backend storage
+    backend: Backend,
     /// The replica for managing remotes
     replica: Arc<RwLock<Replica<Backend>>>,
     /// The branch for this space
@@ -84,7 +89,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         delegations: Vec<Delegation>,
     ) -> Result<Self, SpaceError> {
         // Open the replica with the operator as issuer
-        let replica = Replica::open(Issuer::from(operator), backend)?;
+        let replica = Replica::open(Issuer::from(operator), backend.clone())?;
 
         // Create/open the "main" branch for this space
         let branch_id = BranchId::new("main".to_string());
@@ -109,6 +114,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
 
         Ok(Space {
             did: space_did,
+            backend,
             replica: Arc::new(RwLock::new(replica)),
             branch: Arc::new(RwLock::new(branch)),
             session,
@@ -130,7 +136,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         backend: Backend,
     ) -> Result<Self, SpaceError> {
         // Open the replica with the operator as issuer
-        let replica = Replica::open(Issuer::from(operator), backend)?;
+        let replica = Replica::open(Issuer::from(operator), backend.clone())?;
 
         // Open the "main" branch (creates it if it doesn't exist)
         let branch_id = BranchId::new("main".to_string());
@@ -141,6 +147,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
 
         Ok(Space {
             did: space_did,
+            backend,
             replica: Arc::new(RwLock::new(replica)),
             branch: Arc::new(RwLock::new(branch)),
             session,
@@ -244,6 +251,52 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     pub async fn has_upstream(&self) -> bool {
         let branch = self.branch.read().await;
         branch.upstream().is_some()
+    }
+
+    /// Set up an upstream using a custom storage connection.
+    ///
+    /// This allows using custom authorizers (like UcanAuthorizer) instead of
+    /// the default S3 credentials-based remote configuration.
+    ///
+    /// # Arguments
+    /// * `site` - The site name for the remote (e.g., "ucan-remote")
+    /// * `remote_storage` - A pre-configured remote storage backend (e.g., S3 bucket with UcanAuthorizer)
+    ///
+    /// # Returns
+    /// Ok(()) if the upstream was set successfully.
+    pub async fn set_upstream_storage(
+        &mut self,
+        site: String,
+        remote_storage: PlatformStorage<RemoteBackend>,
+    ) -> Result<(), SpaceError> {
+        use dialog_artifacts::CborEncoder;
+
+        // Open the remote branch with the same branch ID as local
+        let branch_id = BranchId::new("main".to_string());
+
+        // Create local storage from our backend for caching remote branch state
+        let local_storage = PlatformStorage::new(self.backend.clone(), CborEncoder);
+
+        // Mount the local cache for the remote branch state
+        let cache = RemoteBranch::<Backend>::mount(&site, &branch_id, &local_storage).await?;
+
+        // Create a remote branch directly with the provided storage
+        let upstream = RemoteBranch {
+            site,
+            id: branch_id,
+            storage: local_storage,
+            remote_storage,
+            cache,
+            canonical: None,
+        };
+
+        // Set the remote branch as upstream for our local branch
+        {
+            let mut branch = self.branch.write().await;
+            branch.set_upstream(upstream).await?;
+        }
+
+        Ok(())
     }
 }
 
