@@ -15,8 +15,8 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 
 // Re-export types for CLI use
-pub use dialog_artifacts::replica::{RemoteState, Revision, UpstreamState};
-pub use dialog_storage::{AuthMethod, MemoryStorageBackend, RestStorageConfig, S3Authority};
+pub use dialog_artifacts::replica::{RemoteConfig, RemoteState, Revision, UpstreamState};
+pub use dialog_storage::MemoryStorageBackend;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use dialog_storage::FileSystemStorageBackend;
@@ -115,7 +115,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         })
     }
 
-    /// Open an existing space.
+    /// Open an existing space, or create the branch if it doesn't exist.
     ///
     /// # Arguments
     /// * `space_did` - The DID of the space
@@ -123,7 +123,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     /// * `backend` - The storage backend to use
     ///
     /// # Returns
-    /// The Space instance with access to the existing branch
+    /// The Space instance with access to the branch
     pub async fn open(
         space_did: String,
         operator: &Operator,
@@ -132,9 +132,9 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         // Open the replica with the operator as issuer
         let replica = Replica::open(Issuer::from(operator), backend)?;
 
-        // Load the "main" branch
+        // Open the "main" branch (creates it if it doesn't exist)
         let branch_id = BranchId::new("main".to_string());
-        let branch = replica.branches.load(&branch_id).await?;
+        let branch = replica.branches.open(&branch_id).await?;
 
         // Create session for the branch (clone branch since Session takes ownership)
         let session = Session::open(branch.clone());

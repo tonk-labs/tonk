@@ -2,212 +2,258 @@
   description = "Tonk";
 
   inputs = {
+    crane.url = "github:ipetkov/crane";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    fenix = {
-      url = "github:nix-community/fenix";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    crane.url = "github:ipetkov/crane";
+    nix-filter.url = "github:numtide/nix-filter";
+    wrangler-flake = {
+      url = "github:emrldnix/wrangler";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      flake-utils,
-      fenix,
-      crane,
+    { self
+    , crane
+    , nixpkgs
+    , flake-utils
+    , rust-overlay
+    , nix-filter
+    , wrangler-flake
+    ,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
-        fenixPkgs = fenix.packages.${system};
-
-        rustToolchainStable = fenixPkgs.fromToolchainFile {
-          file = ./rust-toolchain.toml;
-          sha256 = "sha256-sqSWJDUxc+zaz1nBWMAJKTAGBuGWP25GCftIOlCEAtA=";
-        };
-
-        rustToolchainNightly = fenixPkgs.fromToolchainFile {
-          file = ./rust-toolchain-nightly.toml;
-          sha256 = pkgs.lib.fakeHash;
-        };
-
-        # Crane setup with fenix toolchain
-        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchainStable;
-
-        # Source filtering - only include Rust-relevant files for better caching
-        src = pkgs.lib.cleanSourceWith {
-          src = ./.;
-          filter =
-            path: type: (craneLib.filterCargoSources path type) || (builtins.match ".*\\.toml$" path != null);
-        };
-
-        # Common arguments for all Crane builds
-        commonArgs = {
-          inherit src;
-          pname = "tonk";
-          version = "0.1.0";
-          strictDeps = true;
-          # Build inputs needed for compilation
-          buildInputs =
-            pkgs.lib.optionals pkgs.stdenv.isLinux [
-              pkgs.openssl
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.apple-sdk_15
-              pkgs.libiconv
-            ];
-          nativeBuildInputs = [
-            rustToolchainStable
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.pkg-config
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [
+            (import rust-overlay)
+            (import ./nix/esbuild.nix)
           ];
         };
+        filter = nix-filter.lib;
 
-        # Build dependencies only - this is cached and reused
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-
-        wasm-bindgen-cli =
-          with pkgs;
-          rustPlatform.buildRustPackage rec {
-            pname = "wasm-bindgen-cli";
-            version = "0.2.100";
-            buildInputs = [
-              rustToolchainStable
-            ];
-
-            src = fetchCrate {
-              inherit pname version;
-              sha256 = "sha256-3RJzK7mkYFrs7C/WkhW9Rr4LdP5ofb2FdYGz1P7Uxog=";
-            };
-
-            cargoHash = "sha256-qsO12332HSjWCVKtf1cUePWWb9IdYUmT+8OPj/XP2WE=";
-          };
+        # We get wrangler from a 3P crate because nixpkgs#wrangler lags
+        # the latest release
+        wrangler = wrangler-flake.packages.${system}.wrangler;
 
         # Common build inputs for all dev shells
         commonBuildInputs =
           with pkgs;
           [
-            rustToolchainStable
-            wasm-bindgen-cli
-            bun
-            wrangler
+            tailwindcss_4
+            trunk
+            binaryen
+            cachix
+            cargo-nextest
+            esbuild
+            worker-build
           ]
           ++ lib.optionals stdenv.isLinux [
             # Linux-specific inputs
+            openssl
+            pkg-config
+            chromium
+            chromedriver
           ]
           ++ lib.optionals stdenv.isDarwin [
             # MacOS-specific inputs
           ];
 
-        commands = {
-          "build" = {
-            description = "Builds all of Tonk";
-            command = "cargo build";
-          };
-          "build:web" = {
-            description = "Builds the Tonk web application";
-            command = "echo 'TODO'";
-          };
-          "test:all" = {
-            description = "Runs the full test suite";
-            command = "cargo test";
-          };
+        # Import rust helpers
+        rustHelpers = import ./nix/rust.nix {
+          inherit pkgs filter crane;
+          buildInputs = commonBuildInputs;
+          workspaceRoot = ./.;
         };
 
-        menu = (import ./menu.nix { inherit pkgs; }).makeMenu commands;
-      in
-      {
+        inherit (rustHelpers) buildWasmCrate buildTrunkCrate buildTestArchive cargoChecks rustToolchain wasm-bindgen-cli;
 
-        # Default dev shell - uses basic relay
-        devShells = {
-          default = pkgs.mkShell {
-            buildInputs = commonBuildInputs;
-            nativeBuildInputs = menu.commands;
-            shellHook = ''
-              clear
-              ${menu.header}
+        # Include the Rust toolchain in build inputs for dev shells
+        devShellBuildInputs = commonBuildInputs ++ [
+          wrangler
+          rustToolchain
+          wasm-bindgen-cli
+        ];
+
+        devShellEnvVars = with pkgs; {
+          # These *_BIN envvars are an implicit part of the `worker-build` API
+          # Noting that successfully building inside the Nix sandbox depends on
+          # specific version ranges of `wasm-bindgen-cli`, `esbuild` and the Cargo
+          # `web-sys` crate.
+          "WASM_BINDGEN_BIN" = "${wasm-bindgen-cli}/bin/wasm-bindgen";
+          "ESBUILD_BIN" = "${esbuild}/bin/esbuild";
+          "WASM_OPT_BIN" = "${binaryen}/bin/wasm-opt";
+        } // lib.optionalAttrs stdenv.isLinux {
+          "CHROME" = "${chromium}/bin/chromium";
+          "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+        };
+
+        # Import menu helpers (e.g., colorful Tonk Shell commands)
+        menuHelpers = (import ./nix/menu.nix { inherit pkgs; });
+
+        inherit (menuHelpers) makeMenu makeDevShellHook menuTestCommand;
+
+        commands = {
+          "build:web" = {
+            description = "Build the Tonk web application";
+            command = "nix build .#tonk-ui";
+          };
+          "dev:web" =
+            {
+              description = "Start a dev server for the Tonk web application";
+              command = "trunk serve --config ./rust/tonk-ui/Trunk.toml";
+            };
+          "lint" = {
+            description = "Lint the full source tree";
+            command = "nix flake check";
+          };
+          "test:all" = {
+            description = "Run the full test suite (all configurations, grab a coffee)";
+            command = ''
+              test:native:debug
+              test:native:release
+              test:web:debug
+              test:web:release
             '';
           };
 
-          ci = pkgs.mkShell {
-            buildInputs = commonBuildInputs;
+          "test:native:debug" = menuTestCommand {
+            description = "Unit and integration tests (${system}, debug)";
+            package = "tests-native-debug";
+          };
+
+          "test:native:release" = menuTestCommand {
+            description = "Unit and integration tests (${system}, release)";
+            package = "tests-native-release";
+          };
+
+          "test:web:debug" = menuTestCommand {
+            description = "Unit tests (wasm32-unknown-unknown, debug)";
+            package = "tests-web-debug";
+          };
+
+          "test:web:release" = menuTestCommand {
+            description = "Unit tests (wasm32-unknown-unknown, release)";
+            package = "tests-web-release";
+          };
+
+          "menu" = {
+            description = "Display all Tonk Shell commands";
+            command = "showTonkMenu";
           };
         };
 
-        checks = {
-          # Clippy check
-          clippy = craneLib.cargoClippy (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              cargoClippyExtraArgs = "--all-targets --all-features -- -D warnings";
-            }
-          );
+        menu = makeMenu commands;
+      in
+      {
 
-          # Format check
-          rustfmt = craneLib.cargoFmt {
-            inherit src;
-            pname = "tonk";
+        checks = cargoChecks;
+
+        devShells = with pkgs; {
+          default = mkShell {
+            buildInputs = devShellBuildInputs;
+            nativeBuildInputs = menu.commands;
+            env = devShellEnvVars;
+            shellHook = makeDevShellHook menu;
           };
 
-          # Run tests
-          tests = craneLib.cargoTest (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-            }
-          );
+          ci = mkShell {
+            buildInputs = devShellBuildInputs;
+            nativeBuildInputs = menu.commands;
+            env = devShellEnvVars;
+          };
         };
 
-        packages = {
-          # Build tonk-core library
-          tonk-core = craneLib.buildPackage (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              pname = "tonk-core";
-              version = "0.1.0";
-              cargoExtraArgs = "-p tonk-core";
-            }
-          );
+        packages =
+          rec {
+            tests-native-debug = buildTestArchive {
+              name = "native-debug";
+              args = "--features integration-tests";
+            };
 
-          # Build tonk-space library
-          tonk-space = craneLib.buildPackage (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              pname = "tonk-space";
-              version = "0.1.0";
-              cargoExtraArgs = "-p tonk-space";
-            }
-          );
+            tests-native-release = buildTestArchive {
+              name = "native-release";
+              args = "--features integration-tests";
+            };
 
-          # Build tonk-access-service
-          tonk-access-service = craneLib.buildPackage (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
+            tests-web-debug = buildTestArchive {
+              name = "web-debug";
+              target = "wasm32-unknown-unknown";
+            };
+
+            tests-web-release = buildTestArchive {
+              name = "web-release";
+              target = "wasm32-unknown-unknown";
+            };
+
+            tests = pkgs.runCommand "tests-all" { } ''
+              mkdir -p $out
+              cp ${self.packages.${system}.tests-native-debug}/*.tar.zst $out/
+              cp ${self.packages.${system}.tests-native-release}/*.tar.zst $out/
+              cp ${self.packages.${system}.tests-web-debug}/*.tar.zst $out/
+              cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
+            '';
+
+            tonk-ui = buildTrunkCrate {
+              pname = "tonk-ui";
+              trunkConfig = "./rust/tonk-ui/Trunk.toml";
+            };
+
+            tonk-access-service = buildWasmCrate {
               pname = "tonk-access-service";
-              version = "0.1.0";
-              cargoExtraArgs = "-p tonk-access-service";
-            }
-          );
 
-          # Build entire workspace
-          default = craneLib.buildPackage (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              pname = "tonk";
-              version = "0.1.0";
-            }
-          );
-        };
+              buildPhase = ''
+                cd rust/tonk-access-service
+                worker-build --release
+                echo "fin"
+              '';
+
+              installPhase = ''
+                mkdir -p $out
+                cp -r ./build/* $out/
+              '';
+            };
+
+            tonk-cloudflare-artifacts = buildWasmCrate {
+              pname = "tonk-cloudflare-assets";
+              buildPhase = ''
+                mkdir -p ./build
+                cp -r ${tonk-access-service} ./build/tonk-access-service
+                cp -r ${tonk-ui} ./build/tonk-ui
+              '';
+              installPhase = ''
+                mkdir -p $out
+                cp -r ./build/* $out/
+              '';
+            };
+
+            # This package is used by integration tests to run a web server
+            # over a local deployment of tonk-ui
+            tonk-ui-test-server = with pkgs;
+              writeScriptBin "tonk-ui-test-server" ''
+                #!${bash}/bin/bash
+                PORT=''${1:-8080}
+                echo "Test server live at http://127.0.0.1:$PORT"
+                ${static-web-server}/bin/static-web-server --port $PORT -d ${self.packages.${system}.tonk-ui}
+              '';
+          };
       }
     );
+
+  # Building 3P wrangler is slow; this configures pulling from a cache
+  # SEE: https://github.com/emrldnix/wrangler?tab=readme-ov-file#using-the-nar-cache
+  nixConfig = {
+    extra-substituters = [
+      "https://wrangler.cachix.org"
+    ];
+    extra-trusted-public-keys = [
+      "wrangler.cachix.org-1:N/FIcG2qBQcolSpklb2IMDbsfjZKWg+ctxx0mSMXdSs="
+    ];
+  };
 }

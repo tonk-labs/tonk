@@ -1,3 +1,5 @@
+# This module contains helpers for assembling and printing
+# the Tonk Shell menu.
 { pkgs, ... }:
 let
   tonkFlower = ''
@@ -37,16 +39,25 @@ let
       names =
         builtins.attrNames commands;
 
-      makeCommand = { name, script, description ? "<No description given>" }:
+      makeCommand = { name, script, description ? "<No description given>", env ? { } }:
         {
           inherit name description;
 
-          package =
-            pkgs.writeScriptBin name ''
-              #!${pkgs.bash}/bin/bash
-              ${pkgs.figlet}/bin/figlet '${name}' | ${pkgs.lolcat}/bin/lolcat
-              ${script}
-            '';
+          package = with pkgs; writeShellApplication
+            {
+              inherit name;
+              runtimeEnv = env;
+              text = ''
+                TITLE="$(${figlet}/bin/figlet -t '${name}')"
+                SUBTITLE="${description}"
+
+                echo "$TITLE
+                $SUBTITLE
+                " | ${lolcat}/bin/lolcat
+
+                ${script}
+              '';
+            };
         };
 
       intoPackages = name:
@@ -58,6 +69,10 @@ let
             inherit name;
             description = element.description;
             script = element.command;
+            env =
+              if builtins.hasAttr "env" element
+              then element.env
+              else { };
           };
         in
         task.package;
@@ -74,21 +89,56 @@ let
       menuLines = builtins.foldl' intoLines "echo ''" names;
 
       menu = ''
-        echo "$(${menuLines})"  | column -t --s ';'
+        echo "$(${menuLines})" | column -t --s ';'
       '';
     in
     {
       header = ''
         echo "${tonkFlower}
 
-        $(${pkgs.figlet}/bin/figlet "Tonk Shell")
+        $(${pkgs.figlet}/bin/figlet -t "Tonk Shell")
 
         $(${menu})
         " | ${pkgs.lolcat}/bin/lolcat;
       '';
+      menuText = ''
+        echo "$(${menu})" | ${pkgs.lolcat}/bin/lolcat
+      '';
       commands = scripts;
     };
+
+  makeDevShellHook = { header, menuText, ... }: ''
+    clear
+    ${header}
+
+    function showTonkMenu() {
+      ${menuText}
+    }
+
+    export -f showTonkMenu
+  '';
+
+  makeMenuTestCommand = package: ''
+    nix build .#${package}
+
+    TESTS_PATH=$(nix eval .#${package}.outPath --raw)
+
+    cargo nextest run \
+      --workspace-remap ./ \
+      --archive-file "$TESTS_PATH/${package}.tar.zst" \
+  '';
+
+  menuTestEnv = with pkgs; lib.optionals stdenv.isLinux {
+    "CHROME" = "${chromium}/bin/chromium";
+    "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+  };
+
+  menuTestCommand = { description, package }: {
+    inherit description;
+    command = makeMenuTestCommand package;
+    env = menuTestEnv;
+  };
 in
 {
-  makeMenu = makeMenu;
+  inherit makeMenu makeDevShellHook menuTestCommand;
 }
