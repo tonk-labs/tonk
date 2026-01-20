@@ -36,6 +36,20 @@ let
   rustToolchain = pkgs.rust-bin.fromRustupToolchainFile (workspaceRoot + "/rust-toolchain.toml");
   craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
+  wasm-bindgen-cli = with pkgs; buildWasmBindgenCli rec {
+    src = fetchCrate {
+      pname = "wasm-bindgen-cli";
+      version = "0.2.108";
+      hash = "sha256-UsuxILm1G6PkmVw0I/JF12CRltAfCJQFOaT4hFwvR8E=";
+    };
+
+    cargoDeps = rustPlatform.fetchCargoVendor {
+      inherit src;
+      inherit (src) pname version;
+      hash = "sha256-iqQiWbsKlLBiJFeqIYiXo3cqxGLSjNM8SOWXGM9u43E=";
+    };
+  };
+
   nativeBuildInputs = buildInputs ++ [
     rustToolchain
   ];
@@ -73,6 +87,14 @@ let
     cargoArtifacts = nativeArtifacts;
   } // attributes);
 
+  buildWasmCrate = attributes: craneLib.buildPackage (wasmAttributes // {
+    cargoArtifacts = wasmArtifacts;
+
+    # These *_BIN envvars are an implicit part of the `worker-build` API
+    WASM_OPT_BIN = "${pkgs.binaryen}/bin/wasm-opt";
+    WASM_BINDGEN_BIN = "${wasm-bindgen-cli}/bin/wasm-bindgen";
+    ESBUILD_BIN = "${pkgs.esbuild}/bin/esbuild";
+  } // attributes);
 
   buildTrunkCrate = attributes:
     let
@@ -84,6 +106,7 @@ let
         preBuild = ''
           cd ${crateRoot}
         '';
+        inherit wasm-bindgen-cli;
       } // attributes
     );
 
@@ -129,5 +152,5 @@ let
 
 in
 {
-  inherit buildCrate buildTrunkCrate buildTestArchive rustToolchain cargoChecks;
+  inherit buildCrate buildWasmCrate buildTrunkCrate buildTestArchive rustToolchain cargoChecks wasm-bindgen-cli;
 }

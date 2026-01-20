@@ -30,7 +30,7 @@ jobs:
       - name: 'Run lints'
         shell: bash
         run: |
-          nix develop .#ci -c lint
+          nix --accept-flake-config develop .#ci -c lint
 
   rust_crates:
     name: 'Rust Crates'
@@ -56,4 +56,4 @@ jobs:
           # sudo apt-get remove google-chrome-stable -y
           # sudo rm /usr/bin/chromium /usr/bin/chromium-browser
 
-          nix develop .#ci -c test:${{matrix.platform}}:${{matrix.profile}}
+          nix --accept-flake-config develop .#ci -c test:${{matrix.platform}}:${{matrix.profile}}

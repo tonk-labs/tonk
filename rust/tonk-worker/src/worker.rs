@@ -36,7 +36,6 @@ impl TonkServiceWorker {
     /// # Errors
     ///
     /// Returns a `JsError` if the service worker cannot be initialized.
-    #[wasm_bindgen(constructor)]
     pub async fn new() -> Result<Self, JsError> {
         log!("Tonk worker initializing...");
 

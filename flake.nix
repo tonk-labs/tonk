@@ -31,7 +31,10 @@
       let
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [ (import rust-overlay) ];
+          overlays = [
+            (import rust-overlay)
+            (import ./nix/esbuild.nix)
+          ];
         };
         filter = nix-filter.lib;
 
@@ -39,19 +42,17 @@
         # the latest release
         wrangler = wrangler-flake.packages.${system}.wrangler;
 
-        # Use nixpkgs#wasm-bindgen-cli to avoid building it (it is slow!)
-        wasm-bindgen-cli = pkgs.wasm-bindgen-cli_0_2_100;
-
         # Common build inputs for all dev shells
         commonBuildInputs =
           with pkgs;
           [
             tailwindcss_4
             trunk
+            binaryen
             cachix
             cargo-nextest
-            wrangler
-            wasm-bindgen-cli
+            esbuild
+            worker-build
           ]
           ++ lib.optionals stdenv.isLinux [
             # Linux-specific inputs
@@ -71,10 +72,27 @@
           workspaceRoot = ./.;
         };
 
-        inherit (rustHelpers) buildTrunkCrate buildTestArchive cargoChecks rustToolchain;
+        inherit (rustHelpers) buildWasmCrate buildTrunkCrate buildTestArchive cargoChecks rustToolchain wasm-bindgen-cli;
 
         # Include the Rust toolchain in build inputs for dev shells
-        devShellBuildInputs = commonBuildInputs ++ [ rustToolchain ];
+        devShellBuildInputs = commonBuildInputs ++ [
+          wrangler
+          rustToolchain
+          wasm-bindgen-cli
+        ];
+
+        devShellEnvVars = with pkgs; {
+          # These *_BIN envvars are an implicit part of the `worker-build` API
+          # Noting that successfully building inside the Nix sandbox depends on
+          # specific version ranges of `wasm-bindgen-cli`, `esbuild` and the Cargo
+          # `web-sys` crate.
+          "WASM_BINDGEN_BIN" = "${wasm-bindgen-cli}/bin/wasm-bindgen";
+          "ESBUILD_BIN" = "${esbuild}/bin/esbuild";
+          "WASM_OPT_BIN" = "${binaryen}/bin/wasm-opt";
+        } // lib.optionalAttrs stdenv.isLinux {
+          "CHROME" = "${chromium}/bin/chromium";
+          "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+        };
 
         # Import menu helpers (e.g., colorful Tonk Shell commands)
         menuHelpers = (import ./nix/menu.nix { inherit pkgs; });
@@ -134,36 +152,26 @@
         menu = makeMenu commands;
       in
       {
-        # Building 3P wrangler is slow; this configures pulling from a cache
-        # SEE: https://github.com/emrldnix/wrangler?tab=readme-ov-file#using-the-nar-cache
-        nix.settings = {
-          substituters = [ "https://wrangler.cachix.org" ];
-          trusted-public-keys = [ "wrangler.cachix.org-1:N/FIcG2qBQcolSpklb2IMDbsfjZKWg+ctxx0mSMXdSs=" ];
-        };
+
         checks = cargoChecks;
 
         devShells = with pkgs; {
           default = mkShell {
             buildInputs = devShellBuildInputs;
             nativeBuildInputs = menu.commands;
-            env = lib.optionalAttrs stdenv.isLinux {
-              "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
-            };
+            env = devShellEnvVars;
             shellHook = makeDevShellHook menu;
           };
 
           ci = mkShell {
             buildInputs = devShellBuildInputs;
             nativeBuildInputs = menu.commands;
-            env = lib.optionalAttrs stdenv.isLinux {
-              "CHROME" = "${chromium}/bin/chromium";
-              "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
-            };
+            env = devShellEnvVars;
           };
         };
 
         packages =
-          {
+          rec {
             tests-native-debug = buildTestArchive {
               name = "native-debug";
               args = "--features integration-tests";
@@ -195,19 +203,57 @@
             tonk-ui = buildTrunkCrate {
               pname = "tonk-ui";
               trunkConfig = "./rust/tonk-ui/Trunk.toml";
+            };
 
-              inherit wasm-bindgen-cli;
+            tonk-access-service = buildWasmCrate {
+              pname = "tonk-access-service";
+
+              buildPhase = ''
+                cd rust/tonk-access-service
+                worker-build --release
+                echo "fin"
+              '';
+
+              installPhase = ''
+                mkdir -p $out
+                cp -r ./build/* $out/
+              '';
+            };
+
+            tonk-cloudflare-artifacts = buildWasmCrate {
+              pname = "tonk-cloudflare-assets";
+              buildPhase = ''
+                mkdir -p ./build
+                cp -r ${tonk-access-service} ./build/tonk-access-service
+                cp -r ${tonk-ui} ./build/tonk-ui
+              '';
+              installPhase = ''
+                mkdir -p $out
+                cp -r ./build/* $out/
+              '';
             };
 
             # This package is used by integration tests to run a web server
             # over a local deployment of tonk-ui
-            tonk-ui-test-server = with pkgs; writeScriptBin "tonk-ui-test-server" ''
-              #!${bash}/bin/bash
-              PORT=''${1:-8080}
-              echo "Test server live at http://127.0.0.1:$PORT"
-              ${static-web-server}/bin/static-web-server --port $PORT -d ${self.packages.${system}.tonk-ui}
-            '';
+            tonk-ui-test-server = with pkgs;
+              writeScriptBin "tonk-ui-test-server" ''
+                #!${bash}/bin/bash
+                PORT=''${1:-8080}
+                echo "Test server live at http://127.0.0.1:$PORT"
+                ${static-web-server}/bin/static-web-server --port $PORT -d ${self.packages.${system}.tonk-ui}
+              '';
           };
       }
     );
+
+  # Building 3P wrangler is slow; this configures pulling from a cache
+  # SEE: https://github.com/emrldnix/wrangler?tab=readme-ov-file#using-the-nar-cache
+  nixConfig = {
+    extra-substituters = [
+      "https://wrangler.cachix.org"
+    ];
+    extra-trusted-public-keys = [
+      "wrangler.cachix.org-1:N/FIcG2qBQcolSpklb2IMDbsfjZKWg+ctxx0mSMXdSs="
+    ];
+  };
 }
