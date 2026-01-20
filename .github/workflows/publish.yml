@@ -3,7 +3,7 @@ name: Deploy
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [stable]
 
 jobs:
   deploy:
@@ -47,7 +47,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy production
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/stable'
         working-directory: rust/tonk-access-service
         run: nix --accept-flake-config develop --command wrangler deploy
         env:
