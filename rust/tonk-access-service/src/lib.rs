@@ -2,7 +2,13 @@
 //!
 //! This service provides UCAN-authorized access to R2 storage.
 //! It verifies UCAN invocations and returns pre-signed URLs for
-//! blob read/write operations.
+//! storage read/write operations.
+//!
+//! Supported storage paths:
+//! - `index/*` - Content-addressed tree nodes (blobs)
+//! - `local/*` - Local branch state (e.g., `local/main`)
+//! - `remote/*` - Remote branch cache
+//! - `site/*` - Remote configuration
 
 use worker::*;
 
@@ -28,9 +34,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/", handlers::info::handle)
         // Health check
         .get_async("/health", handlers::health::handle)
-        // Blob routes with 307 redirects
-        .get_async("/:space_did/index/:digest", handlers::blob::handle_get)
-        .put_async("/:space_did/index/:digest", handlers::blob::handle_put)
+        // Storage routes with 307 redirects (catch-all for any path under space_did)
+        .get_async("/:space_did/*path", handlers::storage::handle_get)
+        .put_async("/:space_did/*path", handlers::storage::handle_put)
         // 404 for everything else
         .run(req, env)
         .await?;

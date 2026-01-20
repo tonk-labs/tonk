@@ -1,8 +1,16 @@
-//! Blob GET/PUT handlers with 307 redirects.
+//! Storage GET/PUT handlers with 307 redirects.
 //!
-//! These handlers implement the router pattern:
-//! - GET /{space_did}/index/{digest} → 307 redirect to presigned GET URL
-//! - PUT /{space_did}/index/{digest} → 307 redirect to presigned PUT URL
+//! These handlers provide UCAN-authorized access to R2 storage, supporting all
+//! storage paths used by dialog-db:
+//!
+//! - `index/*` - Content-addressed tree nodes (blobs)
+//! - `local/*` - Local branch state (e.g., `local/main`)
+//! - `remote/*` - Remote branch cache
+//! - `site/*` - Remote configuration
+//!
+//! Routes:
+//! - GET /{space_did}/{*path} → 307 redirect to presigned GET URL
+//! - PUT /{space_did}/{*path} → 307 redirect to presigned PUT URL
 //!
 //! Authorization is provided via headers:
 //! - Authorization: Bearer <base64-dag-cbor-ucan>
@@ -19,7 +27,7 @@ use crate::{
 use base64::Engine;
 use worker::*;
 
-/// GET /{space_did}/index/{digest} → 307 redirect to presigned GET URL
+/// GET /{space_did}/{*path} → 307 redirect to presigned GET URL
 pub async fn handle_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     match handle_get_inner(&req, &ctx).await {
         Ok(response) => Ok(response),
@@ -27,7 +35,7 @@ pub async fn handle_get(req: Request, ctx: RouteContext<()>) -> Result<Response>
     }
 }
 
-/// PUT /{space_did}/index/{digest} → 307 redirect to presigned PUT URL
+/// PUT /{space_did}/{*path} → 307 redirect to presigned PUT URL
 pub async fn handle_put(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     match handle_put_inner(&req, &ctx).await {
         Ok(response) => Ok(response),
@@ -43,9 +51,9 @@ async fn handle_get_inner(
     let space_did = ctx
         .param("space_did")
         .ok_or_else(|| ServiceError::invalid_argument("Missing space_did in path"))?;
-    let digest = ctx
-        .param("digest")
-        .ok_or_else(|| ServiceError::invalid_argument("Missing digest in path"))?;
+    let path = ctx
+        .param("path")
+        .ok_or_else(|| ServiceError::invalid_argument("Missing path in URL"))?;
 
     // 2. Parse and verify UCAN from headers
     let (ucan_bytes, proof_bytes) = parse_auth_headers(req)?;
@@ -74,7 +82,7 @@ async fn handle_get_inner(
 
     // 5. Generate presigned URL and return 307
     let r2_config = get_r2_config(ctx)?;
-    let key = format!("{}/{}", space_did, digest);
+    let key = format!("{}/{}", space_did, path);
     let presigned = presign::presign_url(&r2_config, Method::Get, &key, 3600, None)
         .await
         .map_err(|e| ServiceError::internal(format!("Presign failed: {}", e)))?;
@@ -90,9 +98,9 @@ async fn handle_put_inner(
     let space_did = ctx
         .param("space_did")
         .ok_or_else(|| ServiceError::invalid_argument("Missing space_did in path"))?;
-    let digest = ctx
-        .param("digest")
-        .ok_or_else(|| ServiceError::invalid_argument("Missing digest in path"))?;
+    let path = ctx
+        .param("path")
+        .ok_or_else(|| ServiceError::invalid_argument("Missing path in URL"))?;
 
     // 2. Parse and verify UCAN from headers
     let (ucan_bytes, proof_bytes) = parse_auth_headers(req)?;
@@ -125,7 +133,7 @@ async fn handle_put_inner(
     // 6. Generate presigned URL and return 307
     // No existence check - always redirect, let R2 handle idempotency
     let r2_config = get_r2_config(ctx)?;
-    let key = format!("{}/{}", space_did, digest);
+    let key = format!("{}/{}", space_did, path);
     let presigned = presign::presign_url(&r2_config, Method::Put, &key, 3600, checksum)
         .await
         .map_err(|e| ServiceError::internal(format!("Presign failed: {}", e)))?;
