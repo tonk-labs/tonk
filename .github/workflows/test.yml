@@ -23,10 +23,6 @@ jobs:
         with:
           send-statistics: false
           ignore-missing-flake-lock: false
-      - name: Restore and save Nix store
-        uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
       - name: 'Run lints'
         shell: bash
         run: |
@@ -45,15 +41,7 @@ jobs:
       - uses: actions/download-artifact@v4
       - uses: wimpysworld/nothing-but-nix@main
       - uses: DeterminateSystems/nix-installer-action@main
-      - name: Restore and save Nix store
-        uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
       - name: 'Run tests'
         shell: bash
         run: |
-          # Ensure we don't pick up a built-in chrome / chromedriver
-          # sudo apt-get remove google-chrome-stable -y
-          # sudo rm /usr/bin/chromium /usr/bin/chromium-browser
-
           nix --accept-flake-config develop .#ci -c test:${{matrix.platform}}:${{matrix.profile}}

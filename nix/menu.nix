@@ -34,17 +34,24 @@ let
        .+%=*::+.*-    ##*@+--#@@@+.....=:.==. *-*+%  +%+
   '';
 
-  makeMenu = commands:
+  makeMenu =
+    commands:
     let
-      names =
-        builtins.attrNames commands;
+      names = builtins.attrNames commands;
 
-      makeCommand = { name, script, description ? "<No description given>", env ? { } }:
+      makeCommand =
+        {
+          name,
+          script,
+          description ? "<No description given>",
+          env ? { },
+        }:
         {
           inherit name description;
 
-          package = with pkgs; writeShellApplication
-            {
+          package =
+            with pkgs;
+            writeShellApplication {
               inherit name;
               runtimeEnv = env;
               text = ''
@@ -60,31 +67,28 @@ let
             };
         };
 
-      intoPackages = name:
+      intoPackages =
+        name:
         let
-          element =
-            builtins.getAttr name commands;
+          element = builtins.getAttr name commands;
 
           task = makeCommand {
             inherit name;
             description = element.description;
             script = element.command;
-            env =
-              if builtins.hasAttr "env" element
-              then element.env
-              else { };
+            env = if builtins.hasAttr "env" element then element.env else { };
           };
         in
         task.package;
 
-      intoLines = acc: name:
+      intoLines =
+        acc: name:
         let
           description = (builtins.getAttr name commands).description;
         in
         acc + " && echo '${name};${description}'";
 
-      scripts =
-        map intoPackages names;
+      scripts = map intoPackages names;
 
       menuLines = builtins.foldl' intoLines "echo ''" names;
 
@@ -107,16 +111,18 @@ let
       commands = scripts;
     };
 
-  makeDevShellHook = { header, menuText, ... }: ''
-    clear
-    ${header}
+  makeDevShellHook =
+    { header, menuText, ... }:
+    ''
+      clear
+      ${header}
 
-    function showTonkMenu() {
-      ${menuText}
-    }
+      function showTonkMenu() {
+        ${menuText}
+      }
 
-    export -f showTonkMenu
-  '';
+      export -f showTonkMenu
+    '';
 
   makeMenuTestCommand = package: ''
     nix build .#${package}
@@ -128,16 +134,20 @@ let
       --archive-file "$TESTS_PATH/${package}.tar.zst" \
   '';
 
-  menuTestEnv = with pkgs; lib.optionals stdenv.isLinux {
-    "CHROME" = "${chromium}/bin/chromium";
-    "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
-  };
+  menuTestEnv =
+    with pkgs;
+    lib.optionals stdenv.isLinux {
+      "CHROME" = "${chromium}/bin/chromium";
+      "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+    };
 
-  menuTestCommand = { description, package }: {
-    inherit description;
-    command = makeMenuTestCommand package;
-    env = menuTestEnv;
-  };
+  menuTestCommand =
+    { description, package }:
+    {
+      inherit description;
+      command = makeMenuTestCommand package;
+      env = menuTestEnv;
+    };
 in
 {
   inherit makeMenu makeDevShellHook menuTestCommand;
