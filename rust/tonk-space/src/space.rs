@@ -470,6 +470,54 @@ impl CredentialsInfo {
             }
         }
     }
+
+    /// Query all delegations where the given DID is the audience.
+    ///
+    /// This is useful for finding all delegations that grant authority to a
+    /// specific user. The returned delegations can be used to reconstruct
+    /// authorization chains for UCAN verification.
+    ///
+    /// # Arguments
+    /// * `audience_did` - The DID of the audience to query for
+    ///
+    /// # Returns
+    /// A vector of delegations where the audience matches the given DID
+    pub async fn delegations_for_audience(&self, audience_did: &str) -> Vec<Delegation> {
+        use crate::schema;
+        use dialog_query::concept::Match as _;
+        use dialog_query::{Match, Term, With};
+        use futures_util::TryStreamExt;
+
+        // Query for entities with the specified audience
+        let query = Match::<With<schema::ucan::Audience>> {
+            this: Term::var("delegation"),
+            has: Term::from(audience_did.to_string()),
+        };
+
+        let results: Vec<_> = match query.query(self.clone()).try_collect().await {
+            Ok(r) => r,
+            Err(_) => return vec![],
+        };
+
+        // For each match, fetch the blob and deserialize to Delegation
+        let mut delegations = Vec::new();
+        for result in results {
+            let blob_query = Match::<With<schema::ucan::Blob>> {
+                this: Term::from(result.this),
+                has: Term::var("blob"),
+            };
+
+            if let Ok(blobs) = blob_query.query(self.clone()).try_collect::<Vec<_>>().await {
+                if let Some(blob_result) = blobs.first() {
+                    if let Ok(delegation) = serde_ipld_dagcbor::from_slice(&blob_result.has.0) {
+                        delegations.push(delegation);
+                    }
+                }
+            }
+        }
+
+        delegations
+    }
 }
 
 /// Information about a branch.
@@ -822,5 +870,46 @@ mod tests {
 
         let results: Vec<_> = query.query(space.clone()).try_collect().await.unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_queries_delegations_for_audience() {
+        let backend = MemoryBackend::default();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+
+        let issuer = Operator::generate();
+        let audience = Operator::generate();
+        let subject = Operator::generate();
+        let delegation = make_delegation_with_parts(&issuer, &audience, &subject);
+        let audience_did = audience.did().to_string();
+
+        let space = Space::create(space_did, &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space");
+
+        // Query using the new helper method
+        let delegations = space.delegations_for_audience(&audience_did).await;
+        assert_eq!(delegations.len(), 1);
+        assert_eq!(delegations[0].audience().to_string(), audience_did);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_returns_empty_for_unknown_audience() {
+        let backend = MemoryBackend::default();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+        let delegation = make_test_delegation();
+
+        let space = Space::create(space_did, &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space");
+
+        // Query for an audience that doesn't exist
+        let unknown_audience = "did:key:z6MkUnknownAudienceXXXXXXXXXXXXXXXXXXXXXXXXXX";
+        let delegations = space.delegations_for_audience(unknown_audience).await;
+        assert!(delegations.is_empty());
     }
 }
