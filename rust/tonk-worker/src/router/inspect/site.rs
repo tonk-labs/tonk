@@ -89,7 +89,7 @@ pub async fn site(
     log!("Querying site status for: {}", site_name);
     let tonk_state = state.read().await;
 
-    match tonk_state.space.resolve_site(&site_name).await {
+    match tonk_state.workspace.space().resolve_site(&site_name).await {
         Ok(site_info) => {
             let credentials = site_info.credentials.map(|c| match c {
                 tonk_space::CredentialsInfo::S3 {
@@ -155,7 +155,8 @@ pub async fn branch(
     let tonk_state = state.read().await;
 
     match tonk_state
-        .space
+        .workspace
+        .space()
         .resolve_remote_branch(&params.site, &params.repo_did, &params.branch)
         .await
     {

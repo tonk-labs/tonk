@@ -11,9 +11,9 @@ use tonk_space::{Delegation, Operator, Space, SpaceError};
 use ucan::delegation::subject::DelegatedSubject;
 use ucan::did::{Ed25519Did, Ed25519Signer};
 
+use crate::ServiceWorkerStorageBackend;
 use crate::identity::Identity;
 use crate::user_store::UserStoreError;
-use crate::ServiceWorkerStorageBackend;
 
 /// Errors that can occur when working with workspaces.
 #[derive(Debug, Error)]

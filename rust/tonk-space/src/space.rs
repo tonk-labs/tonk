@@ -388,6 +388,54 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
             revision,
         })
     }
+
+    /// Query all delegations where the given DID is the audience.
+    ///
+    /// This is useful for finding all delegations that grant authority to a
+    /// specific user. The returned delegations can be used to reconstruct
+    /// authorization chains for UCAN verification.
+    ///
+    /// # Arguments
+    /// * `audience_did` - The DID of the audience to query for
+    ///
+    /// # Returns
+    /// A vector of delegations where the audience matches the given DID
+    pub async fn delegations_for_audience(&self, audience_did: &str) -> Vec<Delegation> {
+        use crate::schema;
+        use dialog_query::concept::Match as _;
+        use dialog_query::{Match, Term, With};
+        use futures_util::TryStreamExt;
+
+        // Query for entities with the specified audience
+        let query = Match::<With<schema::ucan::Audience>> {
+            this: Term::var("delegation"),
+            has: Term::from(audience_did.to_string()),
+        };
+
+        let results: Vec<_> = match query.query(self.clone()).try_collect().await {
+            Ok(r) => r,
+            Err(_) => return vec![],
+        };
+
+        // For each match, fetch the blob and deserialize to Delegation
+        let mut delegations = Vec::new();
+        for result in results {
+            let blob_query = Match::<With<schema::ucan::Blob>> {
+                this: Term::from(result.this),
+                has: Term::var("blob"),
+            };
+
+            if let Ok(blobs) = blob_query.query(self.clone()).try_collect::<Vec<_>>().await {
+                if let Some(blob_result) = blobs.first() {
+                    if let Ok(delegation) = serde_ipld_dagcbor::from_slice(&blob_result.has.0) {
+                        delegations.push(delegation);
+                    }
+                }
+            }
+        }
+
+        delegations
+    }
 }
 
 /// Information about a resolved remote branch.
@@ -469,54 +517,6 @@ impl CredentialsInfo {
                 }
             }
         }
-    }
-
-    /// Query all delegations where the given DID is the audience.
-    ///
-    /// This is useful for finding all delegations that grant authority to a
-    /// specific user. The returned delegations can be used to reconstruct
-    /// authorization chains for UCAN verification.
-    ///
-    /// # Arguments
-    /// * `audience_did` - The DID of the audience to query for
-    ///
-    /// # Returns
-    /// A vector of delegations where the audience matches the given DID
-    pub async fn delegations_for_audience(&self, audience_did: &str) -> Vec<Delegation> {
-        use crate::schema;
-        use dialog_query::concept::Match as _;
-        use dialog_query::{Match, Term, With};
-        use futures_util::TryStreamExt;
-
-        // Query for entities with the specified audience
-        let query = Match::<With<schema::ucan::Audience>> {
-            this: Term::var("delegation"),
-            has: Term::from(audience_did.to_string()),
-        };
-
-        let results: Vec<_> = match query.query(self.clone()).try_collect().await {
-            Ok(r) => r,
-            Err(_) => return vec![],
-        };
-
-        // For each match, fetch the blob and deserialize to Delegation
-        let mut delegations = Vec::new();
-        for result in results {
-            let blob_query = Match::<With<schema::ucan::Blob>> {
-                this: Term::from(result.this),
-                has: Term::var("blob"),
-            };
-
-            if let Ok(blobs) = blob_query.query(self.clone()).try_collect::<Vec<_>>().await {
-                if let Some(blob_result) = blobs.first() {
-                    if let Ok(delegation) = serde_ipld_dagcbor::from_slice(&blob_result.has.0) {
-                        delegations.push(delegation);
-                    }
-                }
-            }
-        }
-
-        delegations
     }
 }
 

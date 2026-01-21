@@ -198,10 +198,15 @@ pub async fn assert_fact(
     // Transact the relation
     {
         let mut tonk_state = state.write().await;
-        tonk_state.space.transact([relation]).await.map_err(|e| {
-            log!("Failed to assert fact: {:?}", e);
-            TonkWorkerError::Internal(format!("Failed to assert fact: {}", e))
-        })?;
+        tonk_state
+            .workspace
+            .space_mut()
+            .transact([relation])
+            .await
+            .map_err(|e| {
+                log!("Failed to assert fact: {:?}", e);
+                TonkWorkerError::Internal(format!("Failed to assert fact: {}", e))
+            })?;
     }
 
     log!("Fact asserted successfully");
@@ -279,7 +284,7 @@ pub async fn query_facts(
         .map_err(|e| TonkWorkerError::Internal(format!("Query compilation error: {}", e)))?;
 
     let facts: Vec<FactType<Value>> = compiled
-        .query(&tonk_state.space)
+        .query(tonk_state.workspace.space())
         .try_collect()
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("Query execution error: {}", e)))?;

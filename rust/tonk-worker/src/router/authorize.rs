@@ -64,16 +64,24 @@ pub async fn authorize(
 
     let mut tonk_state = state.write().await;
 
-    // Create delegation chain from our delegation
-    let delegation_chain = DelegationChain::new(tonk_state.delegation.inner().clone());
+    // Get user's delegation for authorization
+    let user_delegations = tonk_state.workspace.user_delegations().await;
 
-    let space_did = tonk_state.space.did.clone();
+    let delegation = user_delegations
+        .into_iter()
+        .next()
+        .ok_or_else(|| TonkWorkerError::Internal("No delegations found for user".to_string()))?;
+
+    let space_did = tonk_state.workspace.space_did().to_string();
     let service_url = get_access_service_url();
     log!(
         "Setting up UCAN credentials for space: {} with URL: {}",
         space_did,
         service_url
     );
+
+    // Create delegation chain from the user's delegation
+    let delegation_chain = DelegationChain::new(delegation.inner().clone());
 
     // Create UCAN credentials with the resolved access service URL
     let ucan_credentials = UcanCredentials::new(service_url, delegation_chain);
@@ -85,7 +93,12 @@ pub async fn authorize(
 
     // Add the remote to the space
     // If the remote already exists, that's fine - treat it as success
-    match tonk_state.space.add_remote(remote_state).await {
+    match tonk_state
+        .workspace
+        .space_mut()
+        .add_remote(remote_state)
+        .await
+    {
         Ok(site) => {
             log!("Remote '{}' added successfully", site);
         }
@@ -102,9 +115,14 @@ pub async fn authorize(
     }
 
     // Set upstream on branch if not already configured
-    if !tonk_state.space.has_upstream().await {
+    if !tonk_state.workspace.space().has_upstream().await {
         log!("Setting 'origin' as upstream for main branch...");
-        match tonk_state.space.set_upstream("origin").await {
+        match tonk_state
+            .workspace
+            .space_mut()
+            .set_upstream("origin")
+            .await
+        {
             Ok(()) => {
                 log!("Upstream set successfully");
             }

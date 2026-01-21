@@ -72,7 +72,10 @@ impl Identity {
     /// # Errors
     /// Returns `WorkspaceError::NoDefaultSpace` if no space_did is provided and
     /// no default space has been set.
-    pub async fn open_workspace(&self, space_did: Option<&str>) -> Result<Workspace, WorkspaceError> {
+    pub async fn open_workspace(
+        &self,
+        space_did: Option<&str>,
+    ) -> Result<Workspace, WorkspaceError> {
         Workspace::open(self, space_did).await
     }
 

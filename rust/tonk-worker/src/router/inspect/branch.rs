@@ -122,7 +122,7 @@ pub async fn branch(
     log!("Querying branch status for: {}", branch_name);
     let tonk_state = state.read().await;
 
-    match tonk_state.space.branch_info(&branch_name).await {
+    match tonk_state.workspace.space().branch_info(&branch_name).await {
         Ok(branch_info) => {
             let upstream = branch_info.upstream.map(|u| {
                 let revision = u.revision.as_ref().map(RevisionResponse::from_revision);
@@ -134,7 +134,7 @@ pub async fn branch(
             });
 
             Ok(Json(BranchStatusResponse {
-                subject: tonk_state.space.did.clone(),
+                subject: tonk_state.workspace.space_did().to_string(),
                 branch: branch_info.name,
                 revision: RevisionResponse::from_revision(&branch_info.revision),
                 base: branch_info.base,
