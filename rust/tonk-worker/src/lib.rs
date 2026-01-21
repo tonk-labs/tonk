@@ -39,5 +39,14 @@ pub use worker::*;
 mod storage;
 pub use storage::*;
 
+mod user_store;
+pub use user_store::*;
+
+mod identity;
+pub use identity::*;
+
+mod workspace;
+pub use workspace::*;
+
 mod r#async;
 pub use r#async::*;

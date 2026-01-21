@@ -4302,6 +4302,7 @@ dependencies = [
  "tonk-space",
  "tower",
  "tower-service",
+ "ucan",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",

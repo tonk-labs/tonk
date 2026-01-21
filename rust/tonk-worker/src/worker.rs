@@ -5,19 +5,26 @@
 use std::sync::Arc;
 
 use crate::{
-    ServiceWorkerStorageBackend, api_router,
+    Identity, Workspace, api_router,
     axum::{RequestConversion, ResponseConversion},
+    workspace::WorkspaceError,
 };
 use axum::{Router, body::Body};
 use js_sys::Promise;
 use tokio::sync::Mutex;
 use tonk_common::log;
-use tonk_space::DelegatedSubject;
-use tonk_space::{Delegation, Ed25519Signer, Operator, Space};
 use tower_service::Service;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 use web_sys::{Request, Response};
+
+/// Application state containing the user's identity and active workspace.
+pub struct TonkState {
+    /// The user's persistent identity.
+    pub identity: Arc<Identity>,
+    /// The currently active workspace.
+    pub workspace: Workspace,
+}
 
 /// The main Tonk service worker that handles browser fetch events.
 ///
@@ -32,7 +39,15 @@ pub struct TonkServiceWorker {
 impl TonkServiceWorker {
     /// Creates a new service worker instance.
     ///
-    /// Initializes the storage backend, space, and API router.
+    /// Initializes the user identity, workspace, and API router.
+    ///
+    /// On first run:
+    /// - Creates a new random identity for the user
+    /// - Creates a new space with a delegation granting the user ownership
+    ///
+    /// On subsequent runs:
+    /// - Loads the existing identity from IndexedDB
+    /// - Opens the default workspace
     ///
     /// The worker creates two keypairs:
     /// - **Space keypair**: Represents the space identity (from "public tonk space" passphrase)
@@ -47,41 +62,34 @@ impl TonkServiceWorker {
     pub async fn new() -> Result<Self, JsError> {
         log!("Tonk worker initializing...");
 
-        // Generate space keypair - this determines the space's DID
-        let space_keypair = Operator::from_passphrase("public tonk space").await;
-        let space_did = space_keypair.did().to_string();
-
-        // Generate operator keypair - this will sign operations
-        let operator = Operator::from_passphrase("public tonk operator").await;
-
-        log!(
-            "Opening space: {} (operator: {})",
-            space_did,
-            operator.did()
-        );
-
-        // Create delegation from space to operator
-        let delegation = Delegation::builder()
-            .issuer(Ed25519Signer::from(&space_keypair))
-            .audience(*operator.did())
-            .subject(DelegatedSubject::Specific(*space_keypair.did()))
-            .command(vec![])
-            .try_build()
-            .expect_throw("Failed to build delegation");
-
-        let delegation = Delegation::from(delegation);
-        log!(
-            "Created delegation: {} -> {}",
-            space_keypair.did(),
-            operator.did()
-        );
-
-        let backend = ServiceWorkerStorageBackend::new(&space_did).await;
-        let space: Space<ServiceWorkerStorageBackend> = Space::open(space_did, &operator, backend)
+        // 1. Load or create user identity
+        let identity = Identity::load_or_create()
             .await
-            .expect_throw("Could not open space");
+            .expect_throw("Could not initialize identity");
+        log!("User DID: {}", identity.did());
 
-        let router = Arc::new(Mutex::new(api_router(space, operator, delegation)));
+        // 2. Open default workspace, or create if none exists
+        let workspace = match identity.open_workspace(None).await {
+            Ok(ws) => ws,
+            Err(WorkspaceError::NoDefaultSpace) => {
+                log!("No default space, creating...");
+                identity
+                    .create_workspace()
+                    .await
+                    .expect_throw("Could not create workspace")
+            }
+            Err(e) => {
+                return Err(JsError::new(&format!("Could not open workspace: {}", e)));
+            }
+        };
+        log!("Space DID: {}", workspace.space_did());
+
+        // 3. Build state and router
+        let state = TonkState {
+            identity: Arc::new(identity),
+            workspace,
+        };
+        let router = Arc::new(Mutex::new(api_router(state)));
 
         Ok(Self { router })
     }
