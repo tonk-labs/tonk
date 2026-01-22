@@ -45,6 +45,9 @@ pub enum SpaceError {
     #[error("Transaction error: {0}")]
     Transaction(#[from] TransactionError),
 
+    #[error("Query error: {0}")]
+    Query(#[from] dialog_query::QueryError),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -56,6 +59,8 @@ pub enum SpaceError {
 }
 
 /// Represents a Space - a collaboration unit backed by a dialog-db branch
+///
+/// The space is generic over the storage backend (e.g., IndexedDB, filesystem, memory).
 #[derive(Clone)]
 pub struct Space<Backend: PlatformBackend + 'static> {
     /// The DID of this space
@@ -85,12 +90,9 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         backend: Backend,
         delegations: Vec<Delegation>,
     ) -> Result<Self, SpaceError> {
-        // Open the replica with the operator as issuer and space DID as subject
-        let replica = Replica::open(
-            ReplicaOperator::from(operator),
-            space_did.clone().into(),
-            backend,
-        )?;
+        // Open the replica with the operator and space DID as subject
+        let replica_operator = ReplicaOperator::from(operator);
+        let replica = Replica::open(replica_operator, space_did.clone().into(), backend)?;
 
         // Create/open the "main" branch for this space
         let branch_id = BranchId::new("main".to_string());
@@ -135,12 +137,9 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         operator: &Operator,
         backend: Backend,
     ) -> Result<Self, SpaceError> {
-        // Open the replica with the operator as issuer and space DID as subject
-        let replica = Replica::open(
-            ReplicaOperator::from(operator),
-            space_did.clone().into(),
-            backend,
-        )?;
+        // Open the replica with the operator and space DID as subject
+        let replica_operator = ReplicaOperator::from(operator);
+        let replica = Replica::open(replica_operator, space_did.clone().into(), backend)?;
 
         // Open the "main" branch (creates it if it doesn't exist)
         let branch_id = BranchId::new("main".to_string());
@@ -400,7 +399,10 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     ///
     /// # Returns
     /// A vector of delegations where the audience matches the given DID
-    pub async fn delegations_for_audience(&self, audience_did: &str) -> Vec<Delegation> {
+    pub async fn delegations_for_audience(
+        &self,
+        audience_did: &str,
+    ) -> Result<Vec<Delegation>, SpaceError> {
         use crate::schema;
         use dialog_query::concept::Match as _;
         use dialog_query::{Match, Term, With};
@@ -412,10 +414,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
             has: Term::from(audience_did.to_string()),
         };
 
-        let results: Vec<_> = match query.query(self.clone()).try_collect().await {
-            Ok(r) => r,
-            Err(_) => return vec![],
-        };
+        let results: Vec<_> = query.query(self.clone()).try_collect().await?;
 
         // For each match, fetch the blob and deserialize to Delegation
         let mut delegations = Vec::new();
@@ -425,16 +424,15 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
                 has: Term::var("blob"),
             };
 
-            if let Ok(blobs) = blob_query.query(self.clone()).try_collect::<Vec<_>>().await {
-                if let Some(blob_result) = blobs.first() {
-                    if let Ok(delegation) = serde_ipld_dagcbor::from_slice(&blob_result.has.0) {
-                        delegations.push(delegation);
-                    }
-                }
+            let blobs: Vec<_> = blob_query.query(self.clone()).try_collect().await?;
+            if let Some(blob_result) = blobs.first() {
+                let delegation: Delegation = serde_ipld_dagcbor::from_slice(&blob_result.has.0)
+                    .map_err(|e| SpaceError::InvalidEntity(e.to_string()))?;
+                delegations.push(delegation);
             }
         }
 
-        delegations
+        Ok(delegations)
     }
 }
 
@@ -890,7 +888,7 @@ mod tests {
             .expect("Failed to create space");
 
         // Query using the new helper method
-        let delegations = space.delegations_for_audience(&audience_did).await;
+        let delegations = space.delegations_for_audience(&audience_did).await.unwrap();
         assert_eq!(delegations.len(), 1);
         assert_eq!(delegations[0].audience().to_string(), audience_did);
     }
@@ -909,7 +907,10 @@ mod tests {
 
         // Query for an audience that doesn't exist
         let unknown_audience = "did:key:z6MkUnknownAudienceXXXXXXXXXXXXXXXXXXXXXXXXXX";
-        let delegations = space.delegations_for_audience(unknown_audience).await;
+        let delegations = space
+            .delegations_for_audience(unknown_audience)
+            .await
+            .unwrap();
         assert!(delegations.is_empty());
     }
 }

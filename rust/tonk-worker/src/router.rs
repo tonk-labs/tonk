@@ -80,7 +80,7 @@ pub mod tests {
     use tower::ServiceExt;
 
     pub async fn test_state() -> TonkState {
-        let identity = Identity::load_or_create()
+        let mut identity = Identity::load_or_create()
             .await
             .expect("Failed to create test identity");
 

@@ -4,16 +4,16 @@
 //! space. It combines the space data with the user's identity context, enabling
 //! operations that require both (like querying delegations granted to the user).
 
-use std::sync::Arc;
-
 use thiserror::Error;
-use tonk_space::{Delegation, Operator, Space, SpaceError};
+use tonk_space::{Delegation, Operator, SpaceError};
 use ucan::delegation::subject::DelegatedSubject;
-use ucan::did::{Ed25519Did, Ed25519Signer};
+use ucan::did::Ed25519Signer;
 
 use crate::ServiceWorkerStorageBackend;
+use crate::account::AccountError;
 use crate::identity::Identity;
-use crate::user_store::UserStoreError;
+use crate::key_store::KeyStoreError;
+use tonk_space::Space;
 
 /// Errors that can occur when working with workspaces.
 #[derive(Debug, Error)]
@@ -26,9 +26,13 @@ pub enum WorkspaceError {
     #[error("Space not found: {0}")]
     SpaceNotFound(String),
 
-    /// Failed to access user store.
-    #[error("User store error: {0}")]
-    UserStore(#[from] UserStoreError),
+    /// Failed to access key store.
+    #[error("Key store error: {0}")]
+    KeyStore(#[from] KeyStoreError),
+
+    /// Failed to access account.
+    #[error("Account error: {0}")]
+    Account(#[from] AccountError),
 
     /// Failed to operate on space.
     #[error("Space error: {0}")]
@@ -40,29 +44,17 @@ pub enum WorkspaceError {
 }
 
 /// An active workspace - a space opened by a specific user.
-///
-/// Combines the space, the user's view of it, and operations requiring both.
-/// The workspace holds a reference to the user's identity, allowing it to
-/// perform operations that need both user and space context.
 pub struct Workspace {
-    /// Reference to the user's identity.
-    identity: Arc<Identity>,
+    /// The user's DID.
+    user_did: String,
     /// The opened space.
     space: Space<ServiceWorkerStorageBackend>,
-    /// The space's own keypair (for signing space-level operations).
+    /// The space's operator (for signing space-level operations).
     space_operator: Operator,
 }
 
 impl Workspace {
     /// Open an existing space (or the default space if space_did is None).
-    ///
-    /// # Arguments
-    /// * `identity` - The user's identity
-    /// * `space_did` - The DID of the space to open, or None for the default space
-    ///
-    /// # Errors
-    /// - `WorkspaceError::NoDefaultSpace` if space_did is None and no default is set
-    /// - `WorkspaceError::SpaceNotFound` if the space secret is not stored
     pub(crate) async fn open(
         identity: &Identity,
         space_did: Option<&str>,
@@ -70,19 +62,18 @@ impl Workspace {
         let space_did = match space_did {
             Some(did) => did.to_string(),
             None => identity
-                .store()
-                .get_default_space()
+                .account()
+                .default_space()
                 .await?
                 .ok_or(WorkspaceError::NoDefaultSpace)?,
         };
 
-        let secret = identity
-            .store()
-            .get_space_secret(&space_did)
+        // Get the space operator from key store
+        let space_operator = identity
+            .key_store()
+            .space_operator(&space_did)
             .await?
             .ok_or_else(|| WorkspaceError::SpaceNotFound(space_did.clone()))?;
-
-        let space_operator = Operator::from_secret(secret);
 
         // Open the space database
         let db_name = format!("tonk-space:{}", space_did);
@@ -90,39 +81,30 @@ impl Workspace {
         let space = Space::open(space_did, &space_operator, backend).await?;
 
         Ok(Self {
-            identity: Arc::new(identity.clone()),
+            user_did: identity.did().to_string(),
             space,
             space_operator,
         })
     }
 
     /// Create a new space owned by this user.
-    ///
-    /// This will:
-    /// 1. Generate a new Ed25519 keypair for the space
-    /// 2. Create a delegation from the space to the user (granting full authority)
-    /// 3. Store the space secret in the user store
-    /// 4. Set this space as the default space
-    /// 5. Create the space with the ownership delegation
-    pub(crate) async fn create(identity: &Identity) -> Result<Self, WorkspaceError> {
+    pub(crate) async fn create(identity: &mut Identity) -> Result<Self, WorkspaceError> {
         // Generate a new keypair for the space
-        let space_operator = Operator::generate();
+        let space_operator = identity.key_store().create_space_operator().await?;
         let space_did = space_operator.did().to_string();
+
+        // Store space operator in key store
+        identity
+            .key_store()
+            .store_space_operator(&space_did, &space_operator)
+            .await?;
 
         // Create delegation: space -> user (space grants user full authority)
         let delegation = Self::create_ownership_delegation(&space_operator, identity.operator())?;
 
-        // Clone identity and get mutable store access
-        let mut identity_clone = identity.clone();
-        let store = identity_clone.store_mut();
-
-        // Store space secret in user store
-        store
-            .set_space_secret(&space_did, space_operator.to_secret())
-            .await?;
-
-        // Set as default space
-        store.set_default_space(&space_did).await?;
+        // Update account with the new space
+        identity.account_mut().set_default_space(&space_did).await?;
+        identity.account_mut().add_known_space(&space_did).await?;
 
         // Create the space database and space with ownership delegation
         let db_name = format!("tonk-space:{}", space_did);
@@ -130,15 +112,13 @@ impl Workspace {
         let space = Space::create(space_did, &space_operator, backend, vec![delegation]).await?;
 
         Ok(Self {
-            identity: Arc::new(identity.clone()),
+            user_did: identity.did().to_string(),
             space,
             space_operator,
         })
     }
 
     /// Create an ownership delegation from space to user.
-    ///
-    /// The delegation grants the user full authority (`/*`) over the space.
     fn create_ownership_delegation(
         space_operator: &Operator,
         user_operator: &Operator,
@@ -157,8 +137,8 @@ impl Workspace {
     // === Accessors ===
 
     /// Get the user's DID.
-    pub fn user_did(&self) -> &Ed25519Did {
-        self.identity.did()
+    pub fn user_did(&self) -> &str {
+        &self.user_did
     }
 
     /// Get the space's DID.
@@ -184,33 +164,18 @@ impl Workspace {
     // === Operations requiring both user and space context ===
 
     /// Get all delegations granted to this user for this space.
-    ///
-    /// This queries the space for delegations where the audience matches
-    /// the current user's DID.
-    pub async fn user_delegations(&self) -> Vec<Delegation> {
-        self.space
-            .delegations_for_audience(&self.identity.did().to_string())
-            .await
+    pub async fn user_delegations(&self) -> Result<Vec<Delegation>, WorkspaceError> {
+        Ok(self.space.delegations_for_audience(&self.user_did).await?)
     }
 
     /// Check if the current user owns this space.
-    ///
-    /// A user owns a space if they have a delegation where:
-    /// - The audience is the user's DID
-    /// - The subject is the space's DID
-    pub async fn user_is_owner(&self) -> bool {
+    pub async fn user_is_owner(&self) -> Result<bool, WorkspaceError> {
         let space_did = self.space_operator.did();
-        self.user_delegations().await.iter().any(|d| {
+        Ok(self.user_delegations().await?.iter().any(|d| {
             matches!(
                 d.subject(),
                 DelegatedSubject::Specific(did) if did == space_did
             )
-        })
+        }))
     }
-}
-
-#[cfg(test)]
-mod tests {
-    // Tests require a mock or the actual IndexedDB backend, which is WASM-only.
-    // Integration tests should be run in the browser context.
 }

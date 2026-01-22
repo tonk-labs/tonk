@@ -63,7 +63,7 @@ impl TonkServiceWorker {
         log!("Tonk worker initializing...");
 
         // 1. Load or create user identity
-        let identity = Identity::load_or_create()
+        let mut identity = Identity::load_or_create()
             .await
             .expect_throw("Could not initialize identity");
         log!("User DID: {}", identity.did());

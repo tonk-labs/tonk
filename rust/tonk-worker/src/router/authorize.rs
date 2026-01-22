@@ -52,6 +52,18 @@ pub struct AuthorizeResponse {
     pub error: Option<String>,
 }
 
+/// Status response indicating the current space state.
+#[allow(dead_code)] // Used in wasm builds via #[wasm_compat] macro
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StatusResponse {
+    /// The DID of the space.
+    pub space_did: String,
+    /// The DID of the operator.
+    pub operator_did: String,
+    /// Whether the space has an upstream remote configured.
+    pub has_upstream: bool,
+}
+
 /// Handles authorization requests and configures the UCAN-based remote for the space.
 ///
 /// Uses the operator and delegation from the worker's state (created at startup).
@@ -65,7 +77,10 @@ pub async fn authorize(
     let mut tonk_state = state.write().await;
 
     // Get user's delegation for authorization
-    let user_delegations = tonk_state.workspace.user_delegations().await;
+    let user_delegations =
+        tonk_state.workspace.user_delegations().await.map_err(|e| {
+            TonkWorkerError::Internal(format!("Failed to query delegations: {}", e))
+        })?;
 
     let delegation = user_delegations
         .into_iter()
@@ -142,4 +157,60 @@ pub async fn authorize(
         success: true,
         error: None,
     }))
+}
+
+/// Returns the current status of the space.
+#[wasm_compat]
+pub async fn status(
+    State(state): State<AppState>,
+) -> Result<Json<StatusResponse>, TonkWorkerError> {
+    let tonk_state = state.read().await;
+    let space = tonk_state.workspace.space();
+
+    Ok(Json(StatusResponse {
+        space_did: space.did.clone(),
+        operator_did: tonk_state.identity.operator().did().to_string(),
+        has_upstream: space.has_upstream().await,
+    }))
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::super::tests::test_state;
+    use crate::StatusResponse;
+    use crate::{AuthorizeResponse, api_router};
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    #[dialog_common::test]
+    async fn it_returns_status_without_upstream() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        let request = Request::builder()
+            .uri("/api/status")
+            .method("GET")
+            .body(Body::empty())
+            .expect("Failed to build request");
+
+        let response = app
+            .oneshot(request)
+            .await
+            .expect("Failed to execute request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("Failed to read response body");
+
+        let status_response: StatusResponse =
+            serde_json::from_slice(&body).expect("Failed to deserialize response");
+
+        assert!(!status_response.has_upstream);
+        assert!(!status_response.space_did.is_empty());
+        assert!(!status_response.operator_did.is_empty());
+    }
 }

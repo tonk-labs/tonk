@@ -311,7 +311,7 @@ pub async fn query_facts(
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
-    use super::super::tests::test_space_with_delegation;
+    use super::super::tests::test_state;
     use super::*;
     use crate::api_router;
 
@@ -321,8 +321,8 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_asserts_and_queries_fact() {
-        let (space, operator, delegation) = test_space_with_delegation().await;
-        let app = api_router(space, operator, delegation);
+        let state = test_state().await;
+        let app = api_router(state);
 
         // Assert a fact
         let request = Request::builder()

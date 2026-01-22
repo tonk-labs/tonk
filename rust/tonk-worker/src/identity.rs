@@ -3,7 +3,8 @@
 //! This module provides the `Identity` type which represents a user's persistent
 //! identity on this device. There is exactly one identity per device/browser.
 
-use crate::user_store::{UserStore, UserStoreError};
+use crate::account::{Account, AccountError};
+use crate::key_store::{KeyStore, KeyStoreError};
 use crate::workspace::{Workspace, WorkspaceError};
 use thiserror::Error;
 use tonk_space::Operator;
@@ -12,15 +13,19 @@ use ucan::did::Ed25519Did;
 /// Errors that can occur when working with identity.
 #[derive(Debug, Error)]
 pub enum IdentityError {
-    /// Failed to access user store.
-    #[error("User store error: {0}")]
-    Store(#[from] UserStoreError),
+    /// Failed to access key store.
+    #[error("Key store error: {0}")]
+    KeyStore(#[from] KeyStoreError),
+
+    /// Failed to access account.
+    #[error("Account error: {0}")]
+    Account(#[from] AccountError),
 }
 
 /// A user's persistent identity on this device.
 ///
 /// There is exactly one Identity per device/browser. The identity is backed by
-/// an Ed25519 keypair that is generated on first use and persisted to IndexedDB.
+/// an Ed25519 keypair that is generated on first use and persisted to storage.
 ///
 /// The Identity provides access to:
 /// - The user's DID (decentralized identifier)
@@ -29,7 +34,8 @@ pub enum IdentityError {
 #[derive(Clone)]
 pub struct Identity {
     operator: Operator,
-    store: UserStore,
+    key_store: KeyStore,
+    account: Account,
 }
 
 impl Identity {
@@ -38,18 +44,20 @@ impl Identity {
     /// On first call, generates a new random Ed25519 keypair and persists it.
     /// On subsequent calls, loads the existing keypair from storage.
     pub async fn load_or_create() -> Result<Self, IdentityError> {
-        let mut store = UserStore::open().await?;
+        let key_store = KeyStore::open().await?;
 
-        let operator = match store.get_identity_secret().await? {
-            Some(secret) => Operator::from_secret(secret),
-            None => {
-                let operator = Operator::generate();
-                store.set_identity_secret(operator.to_secret()).await?;
-                operator
-            }
+        let operator = match key_store.user_operator().await? {
+            Some(op) => op,
+            None => key_store.create_user_operator().await?,
         };
 
-        Ok(Self { operator, store })
+        let account = Account::open(&operator.did().to_string(), &operator).await?;
+
+        Ok(Self {
+            operator,
+            key_store,
+            account,
+        })
     }
 
     /// Get the DID (decentralized identifier) for this identity.
@@ -62,6 +70,21 @@ impl Identity {
     /// Get the operator for signing operations.
     pub fn operator(&self) -> &Operator {
         &self.operator
+    }
+
+    /// Get access to the key store.
+    pub fn key_store(&self) -> &KeyStore {
+        &self.key_store
+    }
+
+    /// Get access to the account.
+    pub fn account(&self) -> &Account {
+        &self.account
+    }
+
+    /// Get mutable access to the account.
+    pub fn account_mut(&mut self) -> &mut Account {
+        &mut self.account
     }
 
     /// Open a workspace for the given space, or the default space if None.
@@ -85,18 +108,8 @@ impl Identity {
     /// - A newly generated Ed25519 keypair
     /// - A delegation granting this user full authority over the space
     /// - The space set as the default space for this user
-    pub async fn create_workspace(&self) -> Result<Workspace, WorkspaceError> {
+    pub async fn create_workspace(&mut self) -> Result<Workspace, WorkspaceError> {
         Workspace::create(self).await
-    }
-
-    /// Get access to the user store (internal use by Workspace).
-    pub(crate) fn store(&self) -> &UserStore {
-        &self.store
-    }
-
-    /// Get mutable access to the user store (internal use by Workspace).
-    pub(crate) fn store_mut(&mut self) -> &mut UserStore {
-        &mut self.store
     }
 }
 
