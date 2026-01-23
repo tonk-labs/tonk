@@ -41,7 +41,8 @@ mod tests {
     use tower::ServiceExt;
 
     pub async fn test_space() -> Space<ServiceWorkerStorageBackend> {
-        let operator = Operator::from_passphrase("test tonk").await;
+        // Generate a unique operator for each test to avoid IndexedDB conflicts
+        let operator = Operator::generate();
         let space_did = operator.did().to_string();
         let backend = ServiceWorkerStorageBackend::new(&space_did).await;
         Space::open(space_did, &operator, backend)
