@@ -17,6 +17,7 @@ console_error_panic_hook = { workspace = true }
 dialog-common = { workspace = true }
 dialog-artifacts = { workspace = true }
 dialog-query = { workspace = true }
+dialog-s3-credentials = { workspace = true }
 dialog-storage = { workspace = true }
 futures-util = { workspace = true }
 js-sys = { workspace = true }

@@ -1,7 +1,9 @@
 use crate::delegation::Delegation;
 use crate::operator::Operator;
 use crate::ownership::Ownership;
-use dialog_artifacts::replica::{Branch, BranchId, Issuer, Replica};
+use dialog_artifacts::replica::{
+    Branch, BranchId, Operator as ReplicaOperator, Remotes, Replica, RemoteSite,
+};
 use dialog_artifacts::selector::Constrained;
 use dialog_artifacts::{
     Artifact, ArtifactSelector, ArtifactStore, DialogArtifactsError, PlatformBackend,
@@ -15,7 +17,7 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 
 // Re-export types for CLI use
-pub use dialog_artifacts::replica::{RemoteConfig, RemoteState, Revision, UpstreamState};
+pub use dialog_artifacts::replica::{RemoteState, Revision, UpstreamState};
 pub use dialog_storage::MemoryStorageBackend;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -83,8 +85,9 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         backend: Backend,
         delegations: Vec<Delegation>,
     ) -> Result<Self, SpaceError> {
-        // Open the replica with the operator as issuer
-        let replica = Replica::open(Issuer::from(operator), backend)?;
+        // Open the replica with the operator as issuer and space DID as subject
+        let subject = space_did.clone().into();
+        let replica = Replica::open(ReplicaOperator::from(operator), subject, backend)?;
 
         // Create/open the "main" branch for this space
         let branch_id = BranchId::new("main".to_string());
@@ -129,8 +132,9 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         operator: &Operator,
         backend: Backend,
     ) -> Result<Self, SpaceError> {
-        // Open the replica with the operator as issuer
-        let replica = Replica::open(Issuer::from(operator), backend)?;
+        // Open the replica with the operator as issuer and space DID as subject
+        let subject = space_did.clone().into();
+        let replica = Replica::open(ReplicaOperator::from(operator), subject, backend)?;
 
         // Open the "main" branch (creates it if it doesn't exist)
         let branch_id = BranchId::new("main".to_string());
@@ -171,15 +175,26 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     /// # Returns
     /// Ok(()) if the remote was added and set as upstream successfully.
     pub async fn add_remote(&mut self, remote_state: RemoteState) -> Result<(), SpaceError> {
-        // Add the remote to the replica
-        let remote = {
+        // Add the remote to the replica and get the site name
+        let (site, subject) = {
             let mut replica = self.replica.write().await;
-            replica.remotes.add(remote_state).await?
+            let site = replica.add_remote(remote_state).await?;
+            let subject = replica.subject().clone();
+            (site, subject)
         };
 
-        // Open the remote branch (same branch ID as local)
-        let branch_id = BranchId::new("main".to_string());
-        let upstream = remote.open(&branch_id).await?;
+        // Load the remote site and get a reference to the remote branch
+        let upstream = {
+            let replica = self.replica.write().await;
+            let remote_site = RemoteSite::load(
+                &site,
+                replica.storage().clone(),
+                replica.issuer().clone(),
+                subject,
+            )
+            .await?;
+            remote_site.repository(&self.did).branch("main")
+        };
 
         // Set the remote branch as upstream for our local branch
         {

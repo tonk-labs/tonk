@@ -1,20 +1,44 @@
 //! UCAN Access Service
 //!
 //! This service provides UCAN-authorized access to R2 storage.
-//! It verifies UCAN invocations and returns pre-signed URLs for
-//! blob read/write operations.
+//! It receives UCAN invocation containers, verifies them using `UcanAuthorizer`,
+//! and returns pre-signed S3 request descriptors.
+//!
+//! ## Endpoint
+//!
+//! - `POST /ucan/` - Authorize a UCAN invocation container
+//!
+//! ## Request Format
+//!
+//! The request body should be a CBOR-encoded UCAN container following the
+//! [UCAN Container spec](https://github.com/ucan-wg/container):
+//!
+//! ```text
+//! { "ctn-v1": [invocation_bytes, delegation_0_bytes, ..., delegation_n_bytes] }
+//! ```
+//!
+//! ## Response Format
+//!
+//! On success, returns a CBOR-encoded `AuthorizedRequest` with:
+//! - `url`: Pre-signed S3 URL
+//! - `method`: HTTP method (GET, PUT, DELETE)
+//! - `headers`: Headers to include in the request
+//!
+//! On failure, returns an error response with appropriate HTTP status code.
 
 use worker::*;
 
 mod error;
 mod handlers;
-mod r2;
-mod ucan;
+
+/// Test helpers for integration testing.
+/// Only available for non-WASM targets with the `helpers` feature.
+#[cfg(all(not(target_arch = "wasm32"), feature = "helpers"))]
+pub mod helpers;
 
 /// Worker entrypoint
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    // Route requests
     let router = Router::new();
 
     router
@@ -22,9 +46,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/", handlers::info::handle)
         // Health check
         .get_async("/health", handlers::health::handle)
-        // Blob routes with 307 redirects
-        .get_async("/:space_did/index/:digest", handlers::blob::handle_get)
-        .put_async("/:space_did/index/:digest", handlers::blob::handle_put)
+        // UCAN authorization endpoint (with CORS preflight support)
+        .options_async("/ucan/", handlers::ucan::handle_options)
+        .post_async("/ucan/", handlers::ucan::handle)
         // 404 for everything else
         .run(req, env)
         .await
