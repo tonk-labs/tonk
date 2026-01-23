@@ -62,3 +62,12 @@ dialog-storage = { workspace = true, features = ["s3", "ucan", "helpers"] }
 dialog-s3-credentials = { workspace = true, features = ["ucan", "helpers"] }
 ucan = { workspace = true }
 anyhow = { workspace = true }
+
+[lints.rust]
+# The dialog_common::test macro uses cfg conditions that originate from the macro crate.
+# We need to tell check-cfg to expect these values.
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
