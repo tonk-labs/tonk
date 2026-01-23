@@ -4,56 +4,115 @@ use std::sync::Arc;
 
 use ::axum::{Router, extract::State, routing::get, routing::post};
 use tokio::sync::RwLock;
-use tonk_space::Space;
+use tonk_space::{Delegation, Operator, Space};
 
 use crate::ServiceWorkerStorageBackend;
 
 mod authorize;
-pub use authorize::{AuthorizeRequest, AuthorizeResponse, StatusResponse, authorize, status};
+pub use authorize::{
+    AddTestSiteRequest, AuthorizeResponse, BranchStatusResponse, CredentialsResponse,
+    RemoteBranchStatusResponse, SiteStatusResponse, StatusResponse, UpstreamStatusResponse,
+    add_test_site, authorize, branch_status, resolve_remote_branch, site_status, status,
+};
 
-/// Shared application state containing the Space.
-pub type AppState = Arc<RwLock<Space<ServiceWorkerStorageBackend>>>;
+mod sync;
+pub use sync::SyncResponse;
+
+/// Application state containing the space, operator, and delegation.
+pub struct TonkState {
+    /// The space being managed
+    pub space: Space<ServiceWorkerStorageBackend>,
+    /// The operator identity for signing invocations
+    pub operator: Operator,
+    /// The delegation from space to operator
+    pub delegation: Delegation,
+}
+
+/// Shared application state.
+pub type AppState = Arc<RwLock<TonkState>>;
 
 /// Root handler that returns a welcome message.
-async fn root(State(_space): State<AppState>) -> &'static str {
+async fn root(State(_state): State<AppState>) -> &'static str {
     "Hello, Tonk!"
 }
 
 /// Creates the API router with all configured routes.
 ///
-/// Sets up the routing tree with the space as shared state.
-pub fn api_router(space: Space<ServiceWorkerStorageBackend>) -> Router {
-    let state: AppState = Arc::new(RwLock::new(space));
+/// Sets up the routing tree with the space, operator, and delegation as shared state.
+///
+/// # Arguments
+/// * `space` - The space being managed
+/// * `operator` - The operator identity for signing invocations
+/// * `delegation` - The delegation from space to operator
+pub fn api_router(
+    space: Space<ServiceWorkerStorageBackend>,
+    operator: Operator,
+    delegation: Delegation,
+) -> Router {
+    let state: AppState = Arc::new(RwLock::new(TonkState {
+        space,
+        operator,
+        delegation,
+    }));
     Router::new()
         .route("/api", get(root))
         .route("/api/authorize", post(authorize))
+        .route("/api/authorize/test", post(add_test_site))
         .route("/api/status", get(status))
+        .route("/api/status/branch/{branch_name}", get(branch_status))
+        .route("/api/status/site/{site_name}", get(site_status))
+        .route(
+            "/api/status/site/{site}/{repo_did}/branch/{branch}",
+            get(resolve_remote_branch),
+        )
+        .route("/api/sync", post(sync::sync))
+        .route("/api/sync/pull", post(sync::pull))
+        .route("/api/sync/push", post(sync::push))
         .with_state(state)
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
+pub mod tests {
     use crate::{ServiceWorkerStorageBackend, api_router};
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use tonk_space::{Operator, Space};
+    use tonk_space::{DelegatedSubject, Delegation, Ed25519Signer, Operator, Space};
     use tower::ServiceExt;
 
-    pub async fn test_space() -> Space<ServiceWorkerStorageBackend> {
-        // Generate a unique operator for each test to avoid IndexedDB conflicts
+    /// Creates a test space with operator and delegation for testing.
+    pub async fn test_space_with_delegation()
+    -> (Space<ServiceWorkerStorageBackend>, Operator, Delegation) {
+        // Generate unique keypairs for each test to avoid IndexedDB conflicts
+        let space_keypair = Operator::generate();
+        let space_did = space_keypair.did().to_string();
+
+        // Generate operator keypair
         let operator = Operator::generate();
-        let space_did = operator.did().to_string();
+
+        // Create delegation from space to operator
+        let delegation = Delegation::builder()
+            .issuer(Ed25519Signer::from(&space_keypair))
+            .audience(*operator.did())
+            .subject(DelegatedSubject::Specific(*space_keypair.did()))
+            .command(vec!["*".to_string()])
+            .try_build()
+            .expect("Failed to build delegation");
+
+        let delegation = Delegation::from(delegation);
+
         let backend = ServiceWorkerStorageBackend::new(&space_did).await;
-        Space::open(space_did, &operator, backend)
+        let space = Space::open(space_did, &operator, backend)
             .await
-            .expect("Failed to create test space")
+            .expect("Failed to create test space");
+
+        (space, operator, delegation)
     }
 
     #[dialog_common::test]
     async fn it_responds_to_root_api_request() {
-        let space = test_space().await;
-        let app = api_router(space);
+        let (space, operator, delegation) = test_space_with_delegation().await;
+        let app = api_router(space, operator, delegation);
 
         let request = Request::builder()
             .uri("/api")
