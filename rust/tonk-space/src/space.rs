@@ -2,7 +2,7 @@ use crate::delegation::Delegation;
 use crate::operator::Operator;
 use crate::ownership::Ownership;
 use dialog_artifacts::replica::{
-    Branch, BranchId, Operator as ReplicaOperator, Remotes, Replica, RemoteSite,
+    Branch, BranchId, Operator as ReplicaOperator, RemoteSite, Remotes, Replica,
 };
 use dialog_artifacts::selector::Constrained;
 use dialog_artifacts::{
@@ -86,7 +86,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         delegations: Vec<Delegation>,
     ) -> Result<Self, SpaceError> {
         // Open the replica with the operator as issuer and space DID as subject
-        let subject = space_did.clone().into();
+        let subject = space_did.clone();
         let replica = Replica::open(ReplicaOperator::from(operator), subject, backend)?;
 
         // Create/open the "main" branch for this space
@@ -133,7 +133,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         backend: Backend,
     ) -> Result<Self, SpaceError> {
         // Open the replica with the operator as issuer and space DID as subject
-        let subject = space_did.clone().into();
+        let subject = space_did.clone();
         let replica = Replica::open(ReplicaOperator::from(operator), subject, backend)?;
 
         // Open the "main" branch (creates it if it doesn't exist)
