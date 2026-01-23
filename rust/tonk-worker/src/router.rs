@@ -95,7 +95,7 @@ pub mod tests {
             .issuer(Ed25519Signer::from(&space_keypair))
             .audience(*operator.did())
             .subject(DelegatedSubject::Specific(*space_keypair.did()))
-            .command(vec!["*".to_string()])
+            .command(vec![])
             .try_build()
             .expect("Failed to build delegation");
 
