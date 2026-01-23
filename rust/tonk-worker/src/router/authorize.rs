@@ -1,6 +1,6 @@
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_s3_credentials::{s3, Address, Credentials};
+use dialog_s3_credentials::{Address, Credentials, s3};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -54,8 +54,10 @@ pub async fn authorize(
 
     // Create S3 credentials for R2
     let address = Address::new(R2_ENDPOINT, R2_REGION, R2_BUCKET);
-    let s3_credentials = s3::Credentials::private(address, &body.access_key_id, &body.secret_access_key)
-        .map_err(|e| TonkWorkerError::Internal(format!("Failed to create credentials: {}", e)))?;
+    let s3_credentials =
+        s3::Credentials::private(address, &body.access_key_id, &body.secret_access_key).map_err(
+            |e| TonkWorkerError::Internal(format!("Failed to create credentials: {}", e)),
+        )?;
 
     let remote_state = RemoteState {
         site: "r2".to_string(),

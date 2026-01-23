@@ -14,8 +14,8 @@ use dialog_common::capability::Principal;
 use dialog_s3_credentials::ucan::{
     Credentials as UcanCredentials, DelegationChain, test_helpers::create_delegation,
 };
-use dialog_storage::s3::{Bucket, Credentials, S3};
 use dialog_storage::StorageBackend;
+use dialog_storage::s3::{Bucket, Credentials, S3};
 use tonk_access_service::helpers::{AccessServiceAddress, Operator};
 
 /// Helper to create a test delegation chain from subject to operator.
