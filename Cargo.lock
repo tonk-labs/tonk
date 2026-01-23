@@ -921,7 +921,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#9cf8915f12047c765183725be1ad42016599523f"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -956,7 +956,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#9cf8915f12047c765183725be1ad42016599523f"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -974,7 +974,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#9cf8915f12047c765183725be1ad42016599523f"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
 dependencies = [
  "blake3",
  "proc-macro2",
@@ -985,7 +985,7 @@ dependencies = [
 [[package]]
 name = "dialog-prolly-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#9cf8915f12047c765183725be1ad42016599523f"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1005,7 +1005,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#9cf8915f12047c765183725be1ad42016599523f"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
 dependencies = [
  "async-stream",
  "blake3",
@@ -1027,7 +1027,7 @@ dependencies = [
 [[package]]
 name = "dialog-query-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#9cf8915f12047c765183725be1ad42016599523f"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1037,7 +1037,7 @@ dependencies = [
 [[package]]
 name = "dialog-s3-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#9cf8915f12047c765183725be1ad42016599523f"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1064,7 +1064,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#9cf8915f12047c765183725be1ad42016599523f"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4188,6 +4188,7 @@ dependencies = [
  "dialog-artifacts",
  "dialog-common",
  "dialog-query",
+ "dialog-s3-credentials",
  "dialog-storage",
  "dirs",
  "ed25519-dalek",
