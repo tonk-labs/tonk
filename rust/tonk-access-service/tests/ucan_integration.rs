@@ -54,7 +54,7 @@ async fn it_performs_storage_get_and_set_via_ucan(env: AccessServiceAddress) -> 
     let operator = Operator::generate();
 
     let delegation =
-        create_test_delegation_chain(operator.signer(), operator.signer().did(), &["storage"]);
+create_test_delegation_chain(operator.signer(), operator.signer().did(), &["storage"]);
 
     let mut bucket = create_ucan_bucket(&env, operator, delegation, "test-store");
 
@@ -77,7 +77,7 @@ async fn it_isolates_stores_via_ucan(env: AccessServiceAddress) -> anyhow::Resul
     let operator = Operator::generate();
 
     let delegation =
-        create_test_delegation_chain(operator.signer(), operator.signer().did(), &["storage"]);
+create_test_delegation_chain(operator.signer(), operator.signer().did(), &["storage"]);
 
     let mut bucket_a = create_ucan_bucket(&env, operator.clone(), delegation.clone(), "store-a");
     let mut bucket_b = create_ucan_bucket(&env, operator, delegation, "store-b");
@@ -108,7 +108,7 @@ async fn it_returns_none_for_nonexistent_key_via_ucan(
     let operator = Operator::generate();
 
     let delegation =
-        create_test_delegation_chain(operator.signer(), operator.signer().did(), &["storage"]);
+create_test_delegation_chain(operator.signer(), operator.signer().did(), &["storage"]);
 
     let bucket = create_ucan_bucket(&env, operator, delegation, "test-nonexistent");
 

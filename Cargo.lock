@@ -4218,6 +4218,7 @@ dependencies = [
  "dialog-artifacts",
  "dialog-common",
  "dialog-query",
+ "dialog-s3-credentials",
  "dialog-storage",
  "dirs",
  "ed25519-dalek",
