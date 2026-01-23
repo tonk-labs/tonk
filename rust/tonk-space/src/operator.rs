@@ -2,9 +2,9 @@
 //!
 //! An `Operator` represents a principal that can sign UCAN delegations and
 //! dialog-db operations. It wraps an Ed25519 signing key and provides
-//! conversions to both `Ed25519Signer` (for UCAN) and `Issuer` (for dialog-db).
+//! conversions to both `Ed25519Signer` (for UCAN) and dialog-db `Operator`.
 
-use dialog_artifacts::replica::Issuer;
+use dialog_artifacts::replica::Operator as ReplicaOperator;
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use ucan::did::{Ed25519Did, Ed25519Signer};
@@ -14,7 +14,7 @@ use ucan::did::{Ed25519Did, Ed25519Signer};
 /// This is the primary identity type for tonk-space. It wraps an Ed25519 signing
 /// key and can be converted to:
 /// - `Ed25519Signer` for signing UCAN delegations
-/// - `Issuer` for signing dialog-db replica operations
+/// - `ReplicaOperator` for signing dialog-db replica operations
 #[derive(Debug, Clone)]
 pub struct Operator(Ed25519Signer);
 
@@ -64,15 +64,15 @@ impl From<&Operator> for Ed25519Signer {
     }
 }
 
-impl From<Operator> for Issuer {
+impl From<Operator> for ReplicaOperator {
     fn from(operator: Operator) -> Self {
-        Issuer::from_secret(&operator.to_secret())
+        ReplicaOperator::from_secret(&operator.to_secret())
     }
 }
 
-impl From<&Operator> for Issuer {
+impl From<&Operator> for ReplicaOperator {
     fn from(operator: &Operator) -> Self {
-        Issuer::from_secret(&operator.to_secret())
+        ReplicaOperator::from_secret(&operator.to_secret())
     }
 }
 
@@ -143,9 +143,9 @@ mod tests {
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_converts_to_issuer() {
+    fn it_converts_to_replica_operator() {
         let operator = Operator::generate();
-        let _issuer: Issuer = (&operator).into();
+        let _replica_op: ReplicaOperator = (&operator).into();
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]

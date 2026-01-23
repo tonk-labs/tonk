@@ -153,14 +153,14 @@ mod inner {
         type Edition = Blake3Hash;
 
         async fn resolve(
-            &self,
+            &mut self,
             address: &Self::Address,
         ) -> Result<Option<(Self::Value, Self::Edition)>, Self::Error> {
             self.0.resolve(address).await
         }
 
         async fn replace(
-            &self,
+            &mut self,
             address: &Self::Address,
             edition: Option<&Self::Edition>,
             content: Option<Self::Value>,

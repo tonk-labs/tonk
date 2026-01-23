@@ -58,6 +58,10 @@ thirtyfour = "0.36"
 thiserror = "2"
 tokio = "1"
 tower-service = "0.3"
+hyper = "1"
+hyper-util = "0.1"
+bytes = "1"
+http-body-util = "0.1"
 url = "2"
 wasm-streams = "0.4"
 web-time = "1"
@@ -72,11 +76,11 @@ js-sys = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-rewire" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-rewire" }
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-rewire" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-rewire" }
-dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk-rewire" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "ucan-provider-caps" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "ucan-provider-caps" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "ucan-provider-caps" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "ucan-provider-caps" }
+dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "ucan-provider-caps" }
 
 # UCAN
 ucan = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check", package = "ucan" }
@@ -97,3 +101,4 @@ opt-level = "s"
 debug = 0
 inherits = "release"
 strip = "debuginfo"
+
