@@ -136,7 +136,7 @@ let
 
   menuTestEnv =
     with pkgs;
-    lib.optionals stdenv.isLinux {
+    lib.optionalAttrs stdenv.isLinux {
       "CHROME" = "${chromium}/bin/chromium";
       "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
     };
