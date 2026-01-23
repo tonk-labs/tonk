@@ -167,27 +167,37 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         Ok(())
     }
 
-    /// Add a remote to this space and set it as upstream for the main branch.
+    /// Add a remote to this space without setting it as upstream.
     ///
     /// # Arguments
     /// * `remote_state` - Configuration for the remote (site name, S3 credentials, etc.)
     ///
     /// # Returns
-    /// Ok(()) if the remote was added and set as upstream successfully.
-    pub async fn add_remote(&mut self, remote_state: RemoteState) -> Result<(), SpaceError> {
-        // Add the remote to the replica and get the site name
-        let (site, subject) = {
-            let mut replica = self.replica.write().await;
-            let site = replica.add_remote(remote_state).await?;
-            let subject = replica.subject().clone();
-            (site, subject)
+    /// The site name of the added remote.
+    pub async fn add_remote(&mut self, remote_state: RemoteState) -> Result<String, SpaceError> {
+        let mut replica = self.replica.write().await;
+        let site = replica.add_remote(remote_state).await?;
+        Ok(site)
+    }
+
+    /// Set a remote as upstream for the main branch.
+    ///
+    /// # Arguments
+    /// * `site` - The site name of the remote to use as upstream
+    ///
+    /// # Returns
+    /// Ok(()) if the upstream was set successfully.
+    pub async fn set_upstream(&mut self, site: &str) -> Result<(), SpaceError> {
+        let subject = {
+            let replica = self.replica.read().await;
+            replica.subject().clone()
         };
 
         // Load the remote site and get a reference to the remote branch
         let upstream = {
-            let replica = self.replica.write().await;
+            let replica = self.replica.read().await;
             let remote_site = RemoteSite::load(
-                &site,
+                &site.to_string(),
                 replica.storage().clone(),
                 replica.issuer().clone(),
                 subject,
@@ -260,6 +270,203 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         let branch = self.branch.read().await;
         branch.upstream().is_some()
     }
+
+    /// Resolve a remote site and return its configuration info.
+    ///
+    /// # Arguments
+    /// * `site` - The site name to resolve
+    ///
+    /// # Returns
+    /// Site info if the site exists, including credentials details.
+    pub async fn resolve_site(&self, site: &str) -> Result<SiteInfo, SpaceError> {
+        let replica = self.replica.read().await;
+        let subject = replica.subject().clone();
+
+        // Attempt to load the remote site - this will fail if it doesn't exist
+        let remote_site = RemoteSite::load(
+            &site.to_string(),
+            replica.storage().clone(),
+            replica.issuer().clone(),
+            subject,
+        )
+        .await?;
+
+        // Get state to extract credentials info
+        let credentials_info = remote_site
+            .state()
+            .map(|state| CredentialsInfo::from_credentials(&state.credentials));
+
+        Ok(SiteInfo {
+            name: site.to_string(),
+            credentials: credentials_info,
+        })
+    }
+
+    /// Get info about a branch.
+    ///
+    /// # Arguments
+    /// * `branch_name` - The branch name to query (use "main" for the default branch)
+    ///
+    /// # Returns
+    /// Branch info including revision and upstream state.
+    pub async fn branch_info(&self, branch_name: &str) -> Result<BranchInfo, SpaceError> {
+        let replica = self.replica.read().await;
+        let branch_id = BranchId::new(branch_name.to_string());
+        let branch = replica.branches.open(&branch_id).await?;
+
+        let revision = branch.revision();
+        let upstream = branch.upstream().map(|u| UpstreamInfo {
+            site: u.site().map(|s| s.to_string()),
+            branch: u.id().to_string(),
+            revision: u.revision(),
+        });
+
+        Ok(BranchInfo {
+            name: branch_name.to_string(),
+            revision,
+            upstream,
+        })
+    }
+
+    /// Resolve a remote branch and return its revision.
+    ///
+    /// This actually connects to the remote and fetches the current revision,
+    /// which validates the credentials and network connectivity.
+    ///
+    /// # Arguments
+    /// * `site` - The remote site name
+    /// * `repo_did` - The repository DID (subject)
+    /// * `branch_name` - The branch name
+    ///
+    /// # Returns
+    /// Remote branch info including the resolved revision.
+    pub async fn resolve_remote_branch(
+        &self,
+        site: &str,
+        repo_did: &str,
+        branch_name: &str,
+    ) -> Result<RemoteBranchInfo, SpaceError> {
+        let replica = self.replica.read().await;
+        let subject = replica.subject().clone();
+
+        // Load the remote site
+        let remote_site = RemoteSite::load(
+            &site.to_string(),
+            replica.storage().clone(),
+            replica.issuer().clone(),
+            subject,
+        )
+        .await?;
+
+        // Get the remote branch reference
+        let mut remote_branch = remote_site.repository(repo_did).branch(branch_name);
+
+        // Resolve the remote branch - this actually connects to the remote
+        let revision = remote_branch.resolve().await?;
+
+        Ok(RemoteBranchInfo {
+            site: site.to_string(),
+            repo_did: repo_did.to_string(),
+            branch: branch_name.to_string(),
+            revision,
+        })
+    }
+}
+
+/// Information about a resolved remote branch.
+#[derive(Clone, Debug)]
+pub struct RemoteBranchInfo {
+    /// The site name
+    pub site: String,
+    /// The repository DID
+    pub repo_did: String,
+    /// The branch name
+    pub branch: String,
+    /// The resolved revision (None if branch doesn't exist on remote)
+    pub revision: Option<Revision>,
+}
+
+/// Information about a remote site.
+#[derive(Clone, Debug)]
+pub struct SiteInfo {
+    /// The site name
+    pub name: String,
+    /// Credentials info (None if state couldn't be loaded)
+    pub credentials: Option<CredentialsInfo>,
+}
+
+/// Information about credentials configuration.
+#[derive(Clone, Debug)]
+pub enum CredentialsInfo {
+    /// S3-based credentials
+    S3 {
+        /// The S3 region
+        region: String,
+        /// The S3 bucket name
+        bucket: String,
+        /// Whether private (signed) access is configured
+        is_private: bool,
+    },
+    /// UCAN-based credentials
+    Ucan {
+        /// The access service endpoint
+        service_url: String,
+        /// The audience DID (operator)
+        audience_did: String,
+        /// The subject DID (from delegation)
+        subject_did: Option<String>,
+        /// The command scope
+        command: Option<String>,
+    },
+}
+
+impl CredentialsInfo {
+    /// Create credentials info from dialog-s3-credentials Credentials
+    pub fn from_credentials(credentials: &dialog_s3_credentials::Credentials) -> Self {
+        match credentials {
+            dialog_s3_credentials::Credentials::S3(s3_creds) => {
+                let is_private =
+                    matches!(s3_creds, dialog_s3_credentials::s3::Credentials::Private(_));
+                CredentialsInfo::S3 {
+                    region: s3_creds.region().to_string(),
+                    bucket: s3_creds.bucket().to_string(),
+                    is_private,
+                }
+            }
+            dialog_s3_credentials::Credentials::Ucan(ucan_creds) => {
+                let delegation = ucan_creds.delegation();
+
+                CredentialsInfo::Ucan {
+                    service_url: ucan_creds.service_url().to_string(),
+                    audience_did: ucan_creds.audience_did().clone(),
+                    subject_did: delegation.subject().map(|d| d.to_string()),
+                    command: Some(delegation.can()),
+                }
+            }
+        }
+    }
+}
+
+/// Information about a branch.
+#[derive(Clone, Debug)]
+pub struct BranchInfo {
+    /// The branch name
+    pub name: String,
+    /// Current revision
+    pub revision: Revision,
+    /// Upstream info if configured
+    pub upstream: Option<UpstreamInfo>,
+}
+
+/// Information about upstream configuration.
+#[derive(Clone, Debug)]
+pub struct UpstreamInfo {
+    /// The site name (None for local upstream)
+    pub site: Option<String>,
+    /// The branch name on the upstream
+    pub branch: String,
+    /// The upstream revision
+    pub revision: Option<Revision>,
 }
 
 /// Implement ArtifactStore for Space by delegating to the inner session

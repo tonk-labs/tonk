@@ -10,7 +10,7 @@ pub fn TonkToolbar() -> impl IntoView {
     view! {
         <section
             class="toolbar"
-            class:visible=move || status.get() == Status::Authorized
+            class:visible=move || status.get() == Status::Ready
         >
             <img src="/images/tonk-logo.svg" />
             <img src="/images/circle-plus.svg" width="36"/>

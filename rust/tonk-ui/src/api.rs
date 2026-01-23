@@ -1,5 +1,5 @@
 use leptos::{logging::log, prelude::window};
-use tonk_worker::{AuthorizeRequest, AuthorizeResponse, StatusResponse};
+use tonk_worker::{AuthorizeResponse, StatusResponse};
 
 use crate::error::TonkUiError;
 
@@ -30,13 +30,15 @@ pub async fn status() -> Result<StatusResponse, TonkUiError> {
     response.json().await.map_err(into_api_error)
 }
 
-/// Authorizes the user with the Tonk service worker.
-pub async fn authorize(body: AuthorizeRequest) -> Result<AuthorizeResponse, TonkUiError> {
-    log!("Authorizing...");
+/// Enables sync by authorizing the space with the access service.
+///
+/// This no longer requires any input - the service worker uses its
+/// internal operator and delegation.
+pub async fn authorize() -> Result<AuthorizeResponse, TonkUiError> {
+    log!("Enabling sync...");
 
     let response = reqwest::Client::new()
         .post(format!("{}/api/authorize", origin()))
-        .json(&body)
         .send()
         .await
         .map_err(into_api_error)?;
