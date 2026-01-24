@@ -92,8 +92,6 @@ pub mod tests {
     use tonk_space::{DelegatedSubject, Delegation, Ed25519Signer, Operator, Space};
     use tower::ServiceExt;
 
-    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
-
     /// Creates a test space with operator and delegation for testing.
     pub async fn test_space_with_delegation()
     -> (Space<ServiceWorkerStorageBackend>, Operator, Delegation) {

@@ -44,8 +44,6 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
-
     #[dialog_common::test]
     async fn it_returns_status_without_upstream() {
         let (space, operator, delegation) = test_space_with_delegation().await;
