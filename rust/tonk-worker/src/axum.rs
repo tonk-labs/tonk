@@ -145,7 +145,7 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     use web_sys::{Headers, RequestInit};
 
-    wasm_bindgen_test_configure!(run_in_service_worker);
+    wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
     #[dialog_common::test]
     async fn it_converts_get_request_without_body() {
