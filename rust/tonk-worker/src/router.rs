@@ -9,11 +9,19 @@ use tonk_space::{Delegation, Operator, Space};
 use crate::ServiceWorkerStorageBackend;
 
 mod authorize;
-pub use authorize::{
-    AddTestSiteRequest, AuthorizeResponse, BranchStatusResponse, CredentialsResponse,
-    RemoteBranchStatusResponse, SiteStatusResponse, StatusResponse, UpstreamStatusResponse,
-    add_test_site, authorize, branch_status, resolve_remote_branch, site_status, status,
+pub use authorize::{AuthorizeResponse, authorize};
+
+mod fact;
+pub use fact::{AssertResponse, FactQuery, FactResponse, QueryResponse, assert_fact, query_facts};
+
+mod inspect;
+pub use inspect::{
+    BranchStatusResponse, CredentialsResponse, RemoteBranchStatusResponse, SiteStatusResponse,
+    UpstreamStatusResponse, branch, site,
 };
+
+mod status;
+pub use status::{StatusResponse, status};
 
 mod sync;
 pub use sync::SyncResponse;
@@ -57,14 +65,18 @@ pub fn api_router(
     Router::new()
         .route("/api", get(root))
         .route("/api/authorize", post(authorize))
-        .route("/api/authorize/test", post(add_test_site))
         .route("/api/status", get(status))
-        .route("/api/status/branch/{branch_name}", get(branch_status))
-        .route("/api/status/site/{site_name}", get(site_status))
+        .route("/api/inspect/branch/{branch_name}", get(inspect::branch))
+        .route("/api/inspect/site/{site_name}", get(inspect::site::site))
         .route(
-            "/api/status/site/{site}/{repo_did}/branch/{branch}",
-            get(resolve_remote_branch),
+            "/api/inspect/site/{site}/{repo_did}/branch/{branch}",
+            get(inspect::site::branch),
         )
+        .route(
+            "/api/fact/assert/{entity}/{attribute_ns}/{attribute_name}",
+            post(assert_fact),
+        )
+        .route("/api/fact/query", get(query_facts))
         .route("/api/sync", post(sync::sync))
         .route("/api/sync/pull", post(sync::pull))
         .route("/api/sync/push", post(sync::push))
