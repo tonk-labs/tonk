@@ -93,20 +93,22 @@ pub mod tests {
     use tower::ServiceExt;
 
     /// Creates a test space with operator and delegation for testing.
+    ///
+    /// Uses a unique random operator for each test to avoid IndexedDB conflicts
+    /// between concurrent test runs, while keeping space_did == operator.did()
+    /// to match how real spaces work.
     pub async fn test_space_with_delegation()
     -> (Space<ServiceWorkerStorageBackend>, Operator, Delegation) {
-        // Generate unique keypairs for each test to avoid IndexedDB conflicts
-        let space_keypair = Operator::generate();
-        let space_did = space_keypair.did().to_string();
-
-        // Generate operator keypair
+        // Generate unique operator - this will be both the space owner AND the operator
+        // Using the same keypair for both matches how spaces work in production
         let operator = Operator::generate();
+        let space_did = operator.did().to_string();
 
-        // Create delegation from space to operator
+        // Create self-delegation (operator delegates to itself)
         let delegation = Delegation::builder()
-            .issuer(Ed25519Signer::from(&space_keypair))
+            .issuer(Ed25519Signer::from(&operator))
             .audience(*operator.did())
-            .subject(DelegatedSubject::Specific(*space_keypair.did()))
+            .subject(DelegatedSubject::Specific(*operator.did()))
             .command(vec![])
             .try_build()
             .expect("Failed to build delegation");
