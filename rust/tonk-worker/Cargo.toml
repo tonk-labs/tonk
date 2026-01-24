@@ -11,7 +11,8 @@ web-integration-tests = []
 
 [dependencies]
 async-trait = { workspace = true }
-axum = { workspace = true, features = ["json", "macros"] }
+axum = { workspace = true, features = ["json", "macros", "query"] }
+base64 = { workspace = true }
 axum-wasm-macros = { workspace = true }
 console_error_panic_hook = { workspace = true }
 dialog-common = { workspace = true }
@@ -41,6 +42,8 @@ web-sys = { workspace = true, features = [
     "Response",
     "ResponseInit",
     "ServiceWorkerGlobalScope",
+    "WorkerGlobalScope",
+    "WorkerLocation",
 ] }
 web-time = { workspace = true }
 
