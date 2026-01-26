@@ -83,6 +83,7 @@
 
         # Include the Rust toolchain in build inputs for dev shells
         devShellBuildInputs = commonBuildInputs ++ [
+          pkgs.cachix
           wrangler
           rustToolchain
           wasm-bindgen-cli
@@ -268,9 +269,11 @@
   # SEE: https://github.com/emrldnix/wrangler?tab=readme-ov-file#using-the-nar-cache
   nixConfig = {
     extra-substituters = [
+      "https://tonk-test-cache.cachix.org"
       "https://wrangler.cachix.org"
     ];
     extra-trusted-public-keys = [
+      "tonk-test-cache.cachix.org-1:H6CaKCO7CeGEq3NTQsHDPuC0+aaxwI1sDXZWloIWqEo="
       "wrangler.cachix.org-1:N/FIcG2qBQcolSpklb2IMDbsfjZKWg+ctxx0mSMXdSs="
     ];
   };
