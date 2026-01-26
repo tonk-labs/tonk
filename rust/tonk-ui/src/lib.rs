@@ -7,6 +7,7 @@
 pub mod api;
 /// UI components for the Tonk application.
 pub mod components;
+
 /// Error types for the Tonk UI.
 pub mod error;
 
