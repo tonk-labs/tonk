@@ -46,6 +46,7 @@ pub struct AccessServer {
     /// The backing S3 server
     pub s3_server: LocalS3,
     shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    server_handle: tokio::task::JoinHandle<()>,
 }
 
 impl AccessServer {
@@ -78,7 +79,7 @@ impl AccessServer {
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let authorizer_clone = authorizer.clone();
-        tokio::spawn(async move {
+        let server_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
@@ -106,6 +107,7 @@ impl AccessServer {
             endpoint,
             s3_server,
             shutdown_tx,
+            server_handle,
         })
     }
 }
@@ -217,7 +219,10 @@ fn cors_response<T>(mut response: Response<T>) -> Response<T> {
 #[async_trait::async_trait]
 impl Provider for AccessServer {
     async fn stop(self) -> anyhow::Result<()> {
+        // Send shutdown signal - ignore error if receiver is already dropped
         let _ = self.shutdown_tx.send(());
+        // Wait for the server task to complete
+        let _ = self.server_handle.await;
         self.s3_server.stop().await
     }
 }
