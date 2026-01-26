@@ -99,6 +99,7 @@
             "WASM_BINDGEN_BIN" = "${wasm-bindgen-cli}/bin/wasm-bindgen";
             "ESBUILD_BIN" = "${esbuild}/bin/esbuild";
             "WASM_OPT_BIN" = "${binaryen}/bin/wasm-opt";
+            "WASM_BINDGEN_TEST_TIMEOUT" = "180";
           }
           // lib.optionalAttrs stdenv.isLinux {
             "CHROME" = "${chromium}/bin/chromium";
