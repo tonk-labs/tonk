@@ -1,10 +1,11 @@
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
+use dialog_s3_credentials::{Address, s3};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_space::{RemoteConfig, RemoteState};
+use tonk_space::RemoteState;
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -13,6 +14,8 @@ use crate::TonkWorkerError;
 const R2_ENDPOINT: &str = "https://5f20ca8a0de0a5ac52a14fa8bf9c90db.r2.cloudflarestorage.com";
 /// R2 bucket name for Tonk spaces.
 const R2_BUCKET: &str = "tonk-spaces";
+/// R2 region (auto for Cloudflare).
+const R2_REGION: &str = "auto";
 
 /// Authorization request with account credentials.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,22 +52,16 @@ pub async fn authorize(
 
     let mut space = state.write().await;
 
-    // Create remote config with R2 credentials
-    // Prefix is space DID followed by /
-    let prefix = format!("{}/", space.did);
-
-    let remote_config = RemoteConfig {
-        endpoint: R2_ENDPOINT.to_string(),
-        region: "auto".to_string(),
-        bucket: R2_BUCKET.to_string(),
-        prefix: Some(prefix),
-        access_key_id: Some(body.access_key_id),
-        secret_access_key: Some(body.secret_access_key),
-    };
+    // Create S3 credentials for R2
+    let address = Address::new(R2_ENDPOINT, R2_REGION, R2_BUCKET);
+    let s3_credentials =
+        s3::Credentials::private(address, &body.access_key_id, &body.secret_access_key).map_err(
+            |e| TonkWorkerError::Internal(format!("Failed to create credentials: {}", e)),
+        )?;
 
     let remote_state = RemoteState {
-        site: "r2".to_string(),
-        address: remote_config,
+        site: "r2".into(),
+        credentials: s3_credentials.into(),
     };
 
     // Add the remote to the space

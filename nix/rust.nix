@@ -18,8 +18,8 @@ let
   # that the same dependencies can be used across all derivations that
   # need them. Crane expects the full git URL as the key.
   cargoGitDependencies = {
-    "git+https://github.com/dialog-db/dialog-db.git?branch=tonk-rewire#3ef57a3a77d5bbc36b04f23c9665bdb14e272acb" =
-      "sha256-RacldpJZ920l6lhcDqiLthKo1NCFU5CbVXELK2AH50o=";
+    "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54" =
+      "sha256-bUWiJ/5jimXakkChIUwoP7Wbq/wmFlXAnkeYul7VrwQ=";
     "git+https://github.com/tonk-labs/rs-ucan.git?branch=jackddouglas/feat/check#671a0256621eb4656b42d9e631108da3ec18158b" =
       "sha256-5KQ7wIXv7PHgd6y1pq0+aUU/VFW7BLxECmVUNk1JfGw=";
   };
