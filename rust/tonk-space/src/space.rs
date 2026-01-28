@@ -447,10 +447,18 @@ impl CredentialsInfo {
                 let delegation = ucan_creds.delegation();
 
                 CredentialsInfo::Ucan {
-                    service_url: ucan_creds.service_url().to_string(),
-                    audience_did: ucan_creds.audience_did().clone(),
+                    service_url: ucan_creds.endpoint().to_string(),
+                    audience_did: ucan_creds.audience().to_string(),
                     subject_did: delegation.subject().map(|d| d.to_string()),
-                    command: Some(delegation.can()),
+                    command: Some(delegation.ability()),
+                }
+            }
+            dialog_artifacts::replica::RemoteCredentials::Memory => {
+                // Memory credentials don't have meaningful info to display
+                CredentialsInfo::S3 {
+                    region: "memory".to_string(),
+                    bucket: "memory".to_string(),
+                    is_private: false,
                 }
             }
         }
