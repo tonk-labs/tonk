@@ -330,6 +330,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         let branch = replica.branches.open(&branch_id).await?;
 
         let revision = branch.revision();
+        let base = format!("{}", branch.base());
         let upstream = branch.upstream().map(|u| UpstreamInfo {
             site: u.site().map(|s| s.to_string()),
             branch: u.id().to_string(),
@@ -339,6 +340,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         Ok(BranchInfo {
             name: branch_name.to_string(),
             revision,
+            base,
             upstream,
         })
     }
@@ -477,6 +479,8 @@ pub struct BranchInfo {
     pub name: String,
     /// Current revision
     pub revision: Revision,
+    /// Base tree hash (the tree we're based off for tracking local changes)
+    pub base: String,
     /// Upstream info if configured
     pub upstream: Option<UpstreamInfo>,
 }
