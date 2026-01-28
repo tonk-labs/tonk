@@ -17,8 +17,12 @@ pub use ::ucan::did::{Ed25519Did, Ed25519Signer};
 pub use ::ucan::time::timestamp::Timestamp;
 pub use dialog_artifacts::PlatformBackend;
 pub use dialog_query::claim::Transaction;
+pub use dialog_query::{ArtifactAttribute as Attribute, Entity, Fact, Relation, Value};
 pub use ownership::Ownership;
-pub use space::{MemoryBackend, MemoryStorageBackend, RemoteState, Revision, Space, SpaceError};
+pub use space::{
+    BranchInfo, CredentialsInfo, MemoryBackend, MemoryStorageBackend, RemoteBranchInfo,
+    RemoteState, Revision, SiteInfo, Space, SpaceError, UpstreamInfo,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use space::{FileSystemStorageBackend, FsBackend};

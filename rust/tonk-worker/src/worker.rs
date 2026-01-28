@@ -12,7 +12,8 @@ use axum::{Router, body::Body};
 use js_sys::Promise;
 use tokio::sync::Mutex;
 use tonk_common::log;
-use tonk_space::{Operator, Space};
+use tonk_space::DelegatedSubject;
+use tonk_space::{Delegation, Ed25519Signer, Operator, Space};
 use tower_service::Service;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
@@ -33,23 +34,54 @@ impl TonkServiceWorker {
     ///
     /// Initializes the storage backend, space, and API router.
     ///
+    /// The worker creates two keypairs:
+    /// - **Space keypair**: Represents the space identity (from "public tonk space" passphrase)
+    /// - **Operator keypair**: Used for signing operations (from "public tonk operator" passphrase)
+    ///
+    /// A delegation is created from the space to the operator, granting
+    /// full capabilities. This delegation is used when setting up upstream sync.
+    ///
     /// # Errors
     ///
     /// Returns a `JsError` if the service worker cannot be initialized.
     pub async fn new() -> Result<Self, JsError> {
         log!("Tonk worker initializing...");
 
-        let operator = Operator::from_passphrase("public tonk").await;
-        let space_did = operator.did().to_string();
+        // Generate space keypair - this determines the space's DID
+        let space_keypair = Operator::from_passphrase("public tonk space").await;
+        let space_did = space_keypair.did().to_string();
 
-        log!("Opening space: {}", space_did);
+        // Generate operator keypair - this will sign operations
+        let operator = Operator::from_passphrase("public tonk operator").await;
+
+        log!(
+            "Opening space: {} (operator: {})",
+            space_did,
+            operator.did()
+        );
+
+        // Create delegation from space to operator
+        let delegation = Delegation::builder()
+            .issuer(Ed25519Signer::from(&space_keypair))
+            .audience(*operator.did())
+            .subject(DelegatedSubject::Specific(*space_keypair.did()))
+            .command(vec![])
+            .try_build()
+            .expect_throw("Failed to build delegation");
+
+        let delegation = Delegation::from(delegation);
+        log!(
+            "Created delegation: {} -> {}",
+            space_keypair.did(),
+            operator.did()
+        );
 
         let backend = ServiceWorkerStorageBackend::new(&space_did).await;
         let space: Space<ServiceWorkerStorageBackend> = Space::open(space_did, &operator, backend)
             .await
             .expect_throw("Could not open space");
 
-        let router = Arc::new(Mutex::new(api_router(space)));
+        let router = Arc::new(Mutex::new(api_router(space, operator, delegation)));
 
         Ok(Self { router })
     }

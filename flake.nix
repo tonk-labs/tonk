@@ -116,8 +116,11 @@
             command = "nix build .#tonk-ui";
           };
           "dev:web" = {
-            description = "Start a dev server for the Tonk web application";
-            command = "trunk serve --config ./rust/tonk-ui/Trunk.toml";
+            description = "Start a dev server (set UCAN_ENDPOINT to override /ucan/ proxy)";
+            command = ''
+              ENDPOINT="''${UCAN_ENDPOINT:-https://tonk-access-service.tonk.workers.dev/ucan/}"
+              trunk serve --config ./rust/tonk-ui/Trunk.toml --proxy-backend "$ENDPOINT"
+            '';
           };
           "lint" = {
             description = "Lint the full source tree";

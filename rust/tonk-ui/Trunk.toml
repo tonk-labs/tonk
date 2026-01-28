@@ -7,3 +7,6 @@ port = 8080
 
 [watch]
 watch = ["./", "../tonk-common", "../tonk-worker"]
+
+# Proxy for /ucan/ is configured via dev:web command.
+# Set UCAN_ENDPOINT env var to override the default.

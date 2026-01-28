@@ -30,8 +30,9 @@ tokio = { version = "1", features = ["sync"] }
 # Dialog DB
 dialog-storage = { workspace = true }
 dialog-query = { workspace = true }
-dialog-artifacts = { workspace = true }
+dialog-artifacts = { workspace = true, features = ["ucan"] }
 dialog-common = { workspace = true }
+dialog-s3-credentials = { workspace = true }
 
 # UCAN
 ucan = { workspace = true }

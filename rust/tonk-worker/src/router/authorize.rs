@@ -1,29 +1,45 @@
+//! Authorization routes using UCAN-based authentication.
+//!
+//! The authorization endpoint uses the operator and delegation that were
+//! created when the service worker started. No external input is needed.
+
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_s3_credentials::{Address, s3};
+use dialog_artifacts::replica::RemoteCredentials;
+use dialog_s3_credentials::ucan::{Credentials as UcanCredentials, DelegationChain};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_space::RemoteState;
+use tonk_space::{RemoteState, SpaceError};
 
 use super::AppState;
 use crate::TonkWorkerError;
 
-/// R2 endpoint for Tonk spaces storage.
-const R2_ENDPOINT: &str = "https://5f20ca8a0de0a5ac52a14fa8bf9c90db.r2.cloudflarestorage.com";
-/// R2 bucket name for Tonk spaces.
-const R2_BUCKET: &str = "tonk-spaces";
-/// R2 region (auto for Cloudflare).
-const R2_REGION: &str = "auto";
+/// Access service path (will be resolved to absolute URL at runtime).
+const ACCESS_SERVICE_PATH: &str = "/ucan/";
 
-/// Authorization request with account credentials.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AuthorizeRequest {
-    /// AWS access key ID.
-    pub access_key_id: String,
-    /// AWS secret access key.
-    pub secret_access_key: String,
+/// Get the absolute URL for the access service.
+///
+/// In WASM (service worker), we resolve against the current origin.
+/// In native, we return the path as-is (for testing).
+fn get_access_service_url() -> String {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use wasm_bindgen::JsCast;
+        use web_sys::ServiceWorkerGlobalScope;
+
+        let global = js_sys::global()
+            .dyn_into::<ServiceWorkerGlobalScope>()
+            .expect("Expected ServiceWorkerGlobalScope");
+
+        let origin = global.location().origin();
+        format!("{}{}", origin, ACCESS_SERVICE_PATH)
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        ACCESS_SERVICE_PATH.to_string()
+    }
 }
 
 /// Authorization response indicating success.
@@ -31,135 +47,81 @@ pub struct AuthorizeRequest {
 pub struct AuthorizeResponse {
     /// Whether the authorization and remote setup succeeded.
     pub success: bool,
+    /// Error message if authorization failed (for debugging).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
-/// Status response indicating the current space state.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct StatusResponse {
-    /// The DID of the space.
-    pub space_did: String,
-    /// Whether the space has an upstream remote configured.
-    pub has_upstream: bool,
-}
-
-/// Handles authorization requests and configures the R2 remote for the space.
+/// Handles authorization requests and configures the UCAN-based remote for the space.
+///
+/// Uses the operator and delegation from the worker's state (created at startup).
+/// No external input is required - just call POST /api/authorize with an empty body.
 #[wasm_compat]
 pub async fn authorize(
     State(state): State<AppState>,
-    Json(body): Json<AuthorizeRequest>,
 ) -> Result<Json<AuthorizeResponse>, TonkWorkerError> {
-    log!("Authorizing and configuring R2 remote...");
+    log!("Authorizing with internal UCAN delegation...");
 
-    let mut space = state.write().await;
+    let mut tonk_state = state.write().await;
 
-    // Create S3 credentials for R2
-    let address = Address::new(R2_ENDPOINT, R2_REGION, R2_BUCKET);
-    let s3_credentials =
-        s3::Credentials::private(address, &body.access_key_id, &body.secret_access_key).map_err(
-            |e| TonkWorkerError::Internal(format!("Failed to create credentials: {}", e)),
-        )?;
+    // Create delegation chain from our delegation
+    let delegation_chain = DelegationChain::new(tonk_state.delegation.inner().clone());
+
+    let space_did = tonk_state.space.did.clone();
+    let service_url = get_access_service_url();
+    log!(
+        "Setting up UCAN credentials for space: {} with URL: {}",
+        space_did,
+        service_url
+    );
+
+    // Create UCAN credentials with the resolved access service URL
+    let ucan_credentials = UcanCredentials::new(service_url, delegation_chain);
 
     let remote_state = RemoteState {
-        site: "r2".into(),
-        credentials: s3_credentials.into(),
+        site: "origin".into(),
+        credentials: RemoteCredentials::Ucan(ucan_credentials),
     };
 
     // Add the remote to the space
-    space.add_remote(remote_state).await.map_err(|e| {
-        log!("Failed to add remote: {:?}", e);
-        TonkWorkerError::Internal(format!("Failed to add remote: {}", e))
-    })?;
+    // If the remote already exists, that's fine - treat it as success
+    match tonk_state.space.add_remote(remote_state).await {
+        Ok(site) => {
+            log!("Remote '{}' added successfully", site);
+        }
+        Err(SpaceError::Replica(ref e)) if format!("{:?}", e).contains("RemoteAlreadyExists") => {
+            log!("Remote 'origin' already configured, skipping add");
+        }
+        Err(e) => {
+            log!("Failed to add remote: {:?}", e);
+            return Err(TonkWorkerError::Internal(format!(
+                "Failed to add remote: {}",
+                e
+            )));
+        }
+    }
 
-    log!("R2 remote configured successfully");
+    // Set upstream on branch if not already configured
+    if !tonk_state.space.has_upstream().await {
+        log!("Setting 'origin' as upstream for main branch...");
+        match tonk_state.space.set_upstream("origin").await {
+            Ok(()) => {
+                log!("Upstream set successfully");
+            }
+            Err(e) => {
+                log!("Failed to set upstream: {:?}", e);
+                return Err(TonkWorkerError::Internal(format!(
+                    "Failed to set upstream: {}",
+                    e
+                )));
+            }
+        }
+    } else {
+        log!("Upstream already configured, skipping");
+    }
 
-    Ok(Json(AuthorizeResponse { success: true }))
-}
-
-/// Returns the current status of the space.
-#[wasm_compat]
-pub async fn status(
-    State(state): State<AppState>,
-) -> Result<Json<StatusResponse>, TonkWorkerError> {
-    let space = state.read().await;
-
-    Ok(Json(StatusResponse {
-        space_did: space.did.clone(),
-        has_upstream: space.has_upstream().await,
+    Ok(Json(AuthorizeResponse {
+        success: true,
+        error: None,
     }))
-}
-
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
-    use super::super::tests::test_space;
-    use crate::StatusResponse;
-    use crate::{AuthorizeRequest, AuthorizeResponse, api_router};
-
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
-
-    #[dialog_common::test]
-    async fn it_authorizes_and_returns_presigned_url() {
-        let artifacts = test_space().await;
-        let app = api_router(artifacts);
-
-        let auth_request = AuthorizeRequest {
-            access_key_id: "test-account".to_string(),
-            secret_access_key: "test-secret".to_string(),
-        };
-
-        let request = Request::builder()
-            .uri("/api/authorize")
-            .method("POST")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::to_vec(&auth_request).expect("Failed to serialize request"),
-            ))
-            .expect("Failed to build request");
-
-        let response = app
-            .oneshot(request)
-            .await
-            .expect("Failed to execute request");
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("Failed to read response body");
-
-        let auth_response: AuthorizeResponse =
-            serde_json::from_slice(&body).expect("Failed to deserialize response");
-
-        assert!(auth_response.success);
-    }
-
-    #[dialog_common::test]
-    async fn it_returns_status_without_upstream() {
-        let space = test_space().await;
-        let app = api_router(space);
-
-        let request = Request::builder()
-            .uri("/api/status")
-            .method("GET")
-            .body(Body::empty())
-            .expect("Failed to build request");
-
-        let response = app
-            .oneshot(request)
-            .await
-            .expect("Failed to execute request");
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("Failed to read response body");
-
-        let status_response: StatusResponse =
-            serde_json::from_slice(&body).expect("Failed to deserialize response");
-
-        assert!(!status_response.has_upstream);
-        assert!(!status_response.space_did.is_empty());
-    }
 }
