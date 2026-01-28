@@ -214,9 +214,12 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         // Load the remote site and get a reference to the remote branch
         let upstream = {
             let replica = self.replica.read().await;
-            let remote_site =
-                RemoteSite::load(&site.to_string(), replica.issuer().clone(), replica.storage().clone())
-                    .await?;
+            let remote_site = RemoteSite::load(
+                &site.to_string(),
+                replica.issuer().clone(),
+                replica.storage().clone(),
+            )
+            .await?;
             remote_site.repository(self.did.clone()).branch("main")
         };
 
@@ -369,7 +372,9 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         .await?;
 
         // Get the remote branch reference
-        let mut remote_branch = remote_site.repository(repo_did.to_string()).branch(branch_name);
+        let mut remote_branch = remote_site
+            .repository(repo_did.to_string())
+            .branch(branch_name);
 
         // Resolve the remote branch - this actually connects to the remote
         let revision = remote_branch.resolve().await?;

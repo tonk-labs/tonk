@@ -173,10 +173,11 @@ pub async fn add_test_site(
         Ok(site) => {
             log!("Test site '{}' added successfully", site);
         }
-        Err(SpaceError::Replica(ref e))
-            if format!("{:?}", e).contains("RemoteAlreadyExists") =>
-        {
-            log!("Test site '{}' already configured, skipping", request.site_name);
+        Err(SpaceError::Replica(ref e)) if format!("{:?}", e).contains("RemoteAlreadyExists") => {
+            log!(
+                "Test site '{}' already configured, skipping",
+                request.site_name
+            );
         }
         Err(e) => {
             log!("Failed to add test site: {:?}", e);
