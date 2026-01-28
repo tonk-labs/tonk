@@ -1,0 +1,27 @@
+.topbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 12px 20px;
+  background-color: var(--color-night-900);
+  color: white;
+  height: 305px;
+  transition: transform 0.3s 0.3s;
+  transform: translateY(-100%);
+}
+
+.topbar.visible {
+  transform: translateY(0);
+}
+
+.space-info {
+  position: absolute;
+  bottom: 0px;
+  margin: 0 0 30px 30px;
+
+  h1 {
+    margin: 0;
+    font-size: 3rem;
+    font-weight: 600;
+  }
+}

@@ -18,6 +18,9 @@ use launcher::*;
 mod toolbar;
 use toolbar::*;
 
+mod topbar;
+use topbar::*;
+
 mod space;
 use space::*;
 
