@@ -93,7 +93,7 @@ let
       menuLines = builtins.foldl' intoLines "echo ''" names;
 
       menu = ''
-        echo "$(${menuLines})" | column -t --s ';'
+        echo "$(${menuLines})" | column -t -s ';'
       '';
     in
     {
