@@ -921,7 +921,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -929,6 +929,7 @@ dependencies = [
  "base58",
  "blake3",
  "csv-async",
+ "dialog-capability",
  "dialog-common",
  "dialog-prolly-tree",
  "dialog-s3-credentials",
@@ -954,16 +955,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-capability"
+version = "0.1.0"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54"
+dependencies = [
+ "async-trait",
+ "dialog-common",
+ "ipld-core",
+ "serde",
+ "thiserror 2.0.18",
+ "ucan",
+]
+
+[[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54"
 dependencies = [
  "anyhow",
  "async-trait",
  "blake3",
  "dialog-macros",
  "futures-util",
- "ipld-core",
+ "getrandom 0.2.17",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -972,9 +986,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-effects"
+version = "0.1.0"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54"
+dependencies = [
+ "async-trait",
+ "dialog-capability",
+ "dialog-common",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54"
 dependencies = [
  "blake3",
  "proc-macro2",
@@ -985,7 +1011,7 @@ dependencies = [
 [[package]]
 name = "dialog-prolly-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1005,7 +1031,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54"
 dependencies = [
  "async-stream",
  "blake3",
@@ -1027,7 +1053,7 @@ dependencies = [
 [[package]]
 name = "dialog-query-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1037,14 +1063,16 @@ dependencies = [
 [[package]]
 name = "dialog-s3-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54"
 dependencies = [
  "anyhow",
  "async-trait",
  "base58",
  "base64",
  "chrono",
+ "dialog-capability",
  "dialog-common",
+ "dialog-effects",
  "ed25519-dalek",
  "getrandom 0.2.17",
  "hmac 0.12.1",
@@ -1064,7 +1092,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=ucan-provider-caps#f630cc278dcde4f54890a7224edac7148070f98d"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#e88a5dce82136459771965be80ed82218a5c3d54"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1075,7 +1103,9 @@ dependencies = [
  "brotli",
  "bytes",
  "chrono",
+ "dialog-capability",
  "dialog-common",
+ "dialog-effects",
  "dialog-s3-credentials",
  "ed25519-dalek",
  "futures-util",
@@ -4773,7 +4803,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

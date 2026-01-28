@@ -76,11 +76,11 @@ js-sys = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "ucan-provider-caps" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "ucan-provider-caps" }
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "ucan-provider-caps" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "ucan-provider-caps" }
-dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "ucan-provider-caps", features = ["ucan"] }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk", features = ["ucan"] }
 
 # UCAN
 ucan = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "jackddouglas/feat/check", package = "ucan" }

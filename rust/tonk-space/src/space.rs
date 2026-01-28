@@ -86,8 +86,11 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         delegations: Vec<Delegation>,
     ) -> Result<Self, SpaceError> {
         // Open the replica with the operator as issuer and space DID as subject
-        let subject = space_did.clone();
-        let replica = Replica::open(ReplicaOperator::from(operator), subject, backend)?;
+        let replica = Replica::open(
+            ReplicaOperator::from(operator),
+            space_did.clone().into(),
+            backend,
+        )?;
 
         // Create/open the "main" branch for this space
         let branch_id = BranchId::new("main".to_string());
@@ -133,8 +136,11 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         backend: Backend,
     ) -> Result<Self, SpaceError> {
         // Open the replica with the operator as issuer and space DID as subject
-        let subject = space_did.clone();
-        let replica = Replica::open(ReplicaOperator::from(operator), subject, backend)?;
+        let replica = Replica::open(
+            ReplicaOperator::from(operator),
+            space_did.clone().into(),
+            backend,
+        )?;
 
         // Open the "main" branch (creates it if it doesn't exist)
         let branch_id = BranchId::new("main".to_string());
@@ -176,24 +182,18 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     /// Ok(()) if the remote was added and set as upstream successfully.
     pub async fn add_remote(&mut self, remote_state: RemoteState) -> Result<(), SpaceError> {
         // Add the remote to the replica and get the site name
-        let (site, subject) = {
+        let site = {
             let mut replica = self.replica.write().await;
-            let site = replica.add_remote(remote_state).await?;
-            let subject = replica.subject().clone();
-            (site, subject)
+            replica.add_remote(remote_state).await?
         };
 
         // Load the remote site and get a reference to the remote branch
         let upstream = {
             let replica = self.replica.write().await;
-            let remote_site = RemoteSite::load(
-                &site,
-                replica.storage().clone(),
-                replica.issuer().clone(),
-                subject,
-            )
-            .await?;
-            remote_site.repository(&self.did).branch("main")
+            let remote_site =
+                RemoteSite::load(&site, replica.issuer().clone(), replica.storage().clone())
+                    .await?;
+            remote_site.repository(self.did.clone()).branch("main")
         };
 
         // Set the remote branch as upstream for our local branch

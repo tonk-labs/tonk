@@ -1,6 +1,6 @@
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_s3_credentials::{Address, Credentials, s3};
+use dialog_s3_credentials::{Address, s3};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -60,8 +60,8 @@ pub async fn authorize(
         )?;
 
     let remote_state = RemoteState {
-        site: "r2".to_string(),
-        credentials: Credentials::S3(s3_credentials),
+        site: "r2".into(),
+        credentials: s3_credentials.into(),
     };
 
     // Add the remote to the space
