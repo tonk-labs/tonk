@@ -93,7 +93,7 @@ let
       menuLines = builtins.foldl' intoLines "echo ''" names;
 
       menu = ''
-        echo "$(${menuLines})" | column -t --s ';'
+        echo "$(${menuLines})" | column -t -s ';'
       '';
     in
     {
@@ -136,7 +136,7 @@ let
 
   menuTestEnv =
     with pkgs;
-    lib.optionals stdenv.isLinux {
+    lib.optionalAttrs stdenv.isLinux {
       "CHROME" = "${chromium}/bin/chromium";
       "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
     };
