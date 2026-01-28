@@ -10,6 +10,7 @@ use tonk_common::log;
 use tonk_space::SpaceError;
 
 use super::super::AppState;
+use super::branch::RevisionResponse;
 use crate::TonkWorkerError;
 
 /// Response for site status query.
@@ -65,18 +66,15 @@ pub struct RemoteBranchPath {
 pub struct RemoteBranchStatusResponse {
     /// The site name.
     pub site: String,
-    /// The repository DID.
-    pub repo_did: String,
+    /// The subject DID (repository/space DID).
+    pub subject: String,
     /// The branch name.
     pub branch: String,
     /// Whether the resolution succeeded.
     pub success: bool,
-    /// The resolved revision period (if successful).
+    /// The resolved revision with full details (if successful).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub period: Option<usize>,
-    /// The resolved revision moment (if successful).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub moment: Option<usize>,
+    pub revision: Option<RevisionResponse>,
     /// Error message if resolution failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -162,18 +160,14 @@ pub async fn branch(
         .await
     {
         Ok(info) => {
-            let (period, moment) = info
-                .revision
-                .map(|r| (Some(r.period), Some(r.moment)))
-                .unwrap_or((None, None));
+            let revision = info.revision.as_ref().map(RevisionResponse::from_revision);
 
             Ok(Json(RemoteBranchStatusResponse {
                 site: info.site,
-                repo_did: info.repo_did,
+                subject: info.repo_did,
                 branch: info.branch,
                 success: true,
-                period,
-                moment,
+                revision,
                 error: None,
             }))
         }
@@ -181,11 +175,10 @@ pub async fn branch(
             log!("Error resolving remote branch: {:?}", e);
             Ok(Json(RemoteBranchStatusResponse {
                 site: params.site,
-                repo_did: params.repo_did,
+                subject: params.repo_did,
                 branch: params.branch,
                 success: false,
-                period: None,
-                moment: None,
+                revision: None,
                 error: Some(format!("{}", e)),
             }))
         }
