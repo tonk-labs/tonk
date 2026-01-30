@@ -57,6 +57,10 @@ pub fn api_router(state: TonkState) -> Router {
             get(inspect::site::branch),
         )
         .route(
+            "/api/inspect/site/{site}/{repo_did}/archive/index/{hash}",
+            get(inspect::site::archive_block),
+        )
+        .route(
             "/api/fact/assert/{entity}/{attribute_ns}/{attribute_name}",
             post(assert_fact),
         )

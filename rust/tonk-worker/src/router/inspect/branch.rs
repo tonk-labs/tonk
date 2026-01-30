@@ -125,11 +125,12 @@ pub async fn branch(
     match tonk_state.session.space().branch_info(&branch_name).await {
         Ok(branch_info) => {
             let upstream = branch_info.upstream.map(|u| {
-                let revision = u.revision.as_ref().map(RevisionResponse::from_revision);
                 UpstreamStatusResponse {
                     site: u.site,
                     branch: u.branch,
-                    revision,
+                    // Revision is not available without connecting to remote
+                    // Use the sync endpoints to get the latest revision
+                    revision: None,
                 }
             });
 

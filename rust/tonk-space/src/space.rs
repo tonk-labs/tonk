@@ -11,6 +11,7 @@ use dialog_artifacts::{
 use dialog_query::claim::{Transaction, TransactionError};
 use dialog_query::query::Source;
 use dialog_query::{Concept, DeductiveRule, Entity, Session};
+use dialog_storage::StorageBackend;
 use futures_core::Stream;
 use std::sync::Arc;
 use thiserror::Error;
@@ -280,9 +281,12 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     /// Get upstream info if configured.
     ///
     /// # Returns
-    /// - `Some((site_name, branch_id, revision))` for remote upstream
+    /// - `Some((site_name, branch_id))` if upstream is configured
     /// - `None` if no upstream is configured
-    pub async fn upstream_info(&self) -> Option<(String, String, Option<Revision>)> {
+    ///
+    /// Note: Revision is not included because for remote upstreams it would
+    /// require connecting to the remote. Use `fetch()` to get the latest revision.
+    pub async fn upstream_info(&self) -> Option<(String, String)> {
         let branch = self.branch.read().await;
         if let Some(upstream) = branch.upstream() {
             let site = upstream
@@ -290,8 +294,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "local".to_string());
             let branch_id = upstream.id().to_string();
-            let revision = upstream.revision();
-            Some((site, branch_id, revision))
+            Some((site, branch_id))
         } else {
             None
         }
@@ -349,7 +352,6 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         let upstream = branch.upstream().map(|u| UpstreamInfo {
             site: u.site().map(|s| s.to_string()),
             branch: u.id().to_string(),
-            revision: u.revision(),
         });
 
         Ok(BranchInfo {
@@ -437,6 +439,55 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
                     .map_err(|e| SpaceError::InvalidEntity(e.to_string()))
             })
             .collect()
+    }
+
+    /// Fetch a raw block from a remote site's archive by its blake3 hash.
+    ///
+    /// # Arguments
+    /// * `site` - The remote site name
+    /// * `repo_did` - The repository DID (subject)
+    /// * `hash` - The blake3 hash bytes (32 bytes)
+    ///
+    /// # Returns
+    /// The raw bytes if found, None if not found.
+    pub async fn fetch_remote_archive_block(
+        &self,
+        site: &str,
+        repo_did: &str,
+        hash: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, SpaceError> {
+        let replica = self.replica.read().await;
+
+        // Load the remote site
+        let remote_site = RemoteSite::load(
+            &site.to_string(),
+            replica.issuer().clone(),
+            replica.storage().clone(),
+        )
+        .await?;
+
+        // Get a reference to a branch (we need to open a connection)
+        // Using "main" as default branch to establish the connection
+        let mut remote_branch = remote_site.repository(repo_did.to_string()).branch("main");
+
+        // Open the connection and get the archive connection
+        let connection = remote_branch.open().await?;
+        let archive = match connection.archive_connection() {
+            Some(archive) => archive,
+            None => {
+                return Err(SpaceError::Storage(
+                    dialog_storage::DialogStorageError::StorageBackend(
+                        "No archive connection available".to_string(),
+                    ),
+                ));
+            }
+        };
+
+        // Fetch the block by hash
+        let key = hash.to_vec();
+        let bytes = archive.get(&key).await.map_err(SpaceError::Storage)?;
+
+        Ok(bytes)
     }
 }
 
@@ -542,8 +593,6 @@ pub struct UpstreamInfo {
     pub site: Option<String>,
     /// The branch name on the upstream
     pub branch: String,
-    /// The upstream revision
-    pub revision: Option<Revision>,
 }
 
 /// Implement ArtifactStore for Space by delegating to the inner session
