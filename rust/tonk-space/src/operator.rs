@@ -50,6 +50,14 @@ impl Operator {
     pub fn to_secret(&self) -> [u8; 32] {
         self.signer().to_bytes()
     }
+
+    /// Create an operator from raw secret key bytes.
+    ///
+    /// This is the inverse of `to_secret()` - it allows reconstructing an
+    /// operator from previously stored secret bytes.
+    pub fn from_secret(secret: [u8; 32]) -> Self {
+        Self(Ed25519Signer::new(SigningKey::from_bytes(&secret)))
+    }
 }
 
 impl From<Operator> for Ed25519Signer {
@@ -129,6 +137,15 @@ mod tests {
         let op1 = Operator::generate();
         let secret = op1.to_secret();
         let op2 = Operator::from(SigningKey::from_bytes(&secret));
+        assert_eq!(op1.did().to_string(), op2.did().to_string());
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn it_roundtrips_through_from_secret() {
+        let op1 = Operator::generate();
+        let secret = op1.to_secret();
+        let op2 = Operator::from_secret(secret);
         assert_eq!(op1.did().to_string(), op2.did().to_string());
     }
 

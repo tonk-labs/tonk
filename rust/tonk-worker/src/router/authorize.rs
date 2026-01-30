@@ -52,6 +52,18 @@ pub struct AuthorizeResponse {
     pub error: Option<String>,
 }
 
+/// Status response indicating the current space state.
+#[allow(dead_code)] // Used in wasm builds via #[wasm_compat] macro
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StatusResponse {
+    /// The DID of the space.
+    pub space_did: String,
+    /// The DID of the operator.
+    pub operator_did: String,
+    /// Whether the space has an upstream remote configured.
+    pub has_upstream: bool,
+}
+
 /// Handles authorization requests and configures the UCAN-based remote for the space.
 ///
 /// Uses the operator and delegation from the worker's state (created at startup).
@@ -64,16 +76,28 @@ pub async fn authorize(
 
     let mut tonk_state = state.write().await;
 
-    // Create delegation chain from our delegation
-    let delegation_chain = DelegationChain::new(tonk_state.delegation.inner().clone());
+    // Get user's delegation for authorization
+    let user_delegations = tonk_state
+        .session
+        .account_delegations()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to query delegations: {}", e)))?;
 
-    let space_did = tonk_state.space.did.clone();
+    let delegation = user_delegations
+        .into_iter()
+        .next()
+        .ok_or_else(|| TonkWorkerError::Internal("No delegations found for user".to_string()))?;
+
+    let space_did = tonk_state.session.space_did().to_string();
     let service_url = get_access_service_url();
     log!(
         "Setting up UCAN credentials for space: {} with URL: {}",
         space_did,
         service_url
     );
+
+    // Create delegation chain from the user's delegation
+    let delegation_chain = DelegationChain::new(delegation.inner().clone());
 
     // Create UCAN credentials with the resolved access service URL
     let ucan_credentials = UcanCredentials::new(service_url, delegation_chain);
@@ -85,7 +109,12 @@ pub async fn authorize(
 
     // Add the remote to the space
     // If the remote already exists, that's fine - treat it as success
-    match tonk_state.space.add_remote(remote_state).await {
+    match tonk_state
+        .session
+        .space_mut()
+        .add_remote(remote_state)
+        .await
+    {
         Ok(site) => {
             log!("Remote '{}' added successfully", site);
         }
@@ -102,9 +131,9 @@ pub async fn authorize(
     }
 
     // Set upstream on branch if not already configured
-    if !tonk_state.space.has_upstream().await {
+    if !tonk_state.session.space().has_upstream().await {
         log!("Setting 'origin' as upstream for main branch...");
-        match tonk_state.space.set_upstream("origin").await {
+        match tonk_state.session.space_mut().set_upstream("origin").await {
             Ok(()) => {
                 log!("Upstream set successfully");
             }
@@ -124,4 +153,60 @@ pub async fn authorize(
         success: true,
         error: None,
     }))
+}
+
+/// Returns the current status of the space.
+#[wasm_compat]
+pub async fn status(
+    State(state): State<AppState>,
+) -> Result<Json<StatusResponse>, TonkWorkerError> {
+    let tonk_state = state.read().await;
+    let space = tonk_state.session.space();
+
+    Ok(Json(StatusResponse {
+        space_did: space.did.clone(),
+        operator_did: tonk_state.identity.operator().did().to_string(),
+        has_upstream: space.has_upstream().await,
+    }))
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::super::tests::test_state;
+    use crate::StatusResponse;
+    use crate::{AuthorizeResponse, api_router};
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    #[dialog_common::test]
+    async fn it_returns_status_without_upstream() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        let request = Request::builder()
+            .uri("/api/status")
+            .method("GET")
+            .body(Body::empty())
+            .expect("Failed to build request");
+
+        let response = app
+            .oneshot(request)
+            .await
+            .expect("Failed to execute request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("Failed to read response body");
+
+        let status_response: StatusResponse =
+            serde_json::from_slice(&body).expect("Failed to deserialize response");
+
+        assert!(!status_response.has_upstream);
+        assert!(!status_response.space_did.is_empty());
+        assert!(!status_response.operator_did.is_empty());
+    }
 }

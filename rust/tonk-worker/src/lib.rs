@@ -39,5 +39,20 @@ pub use worker::*;
 mod storage;
 pub use storage::*;
 
+mod account;
+pub use account::*;
+
+mod key_store;
+pub use key_store::*;
+
+mod identity;
+pub use identity::*;
+
+mod session;
+pub use session::*;
+
+// Note: WebCryptoIssuer removed as part of Plan A (extractable keys).
+// Non-extractable WebCrypto support will be re-introduced in Plan B.
+
 mod r#async;
 pub use r#async::*;

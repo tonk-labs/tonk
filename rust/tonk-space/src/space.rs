@@ -10,7 +10,7 @@ use dialog_artifacts::{
 };
 use dialog_query::claim::{Transaction, TransactionError};
 use dialog_query::query::Source;
-use dialog_query::{DeductiveRule, Session};
+use dialog_query::{Concept, DeductiveRule, Entity, Session};
 use futures_core::Stream;
 use std::sync::Arc;
 use thiserror::Error;
@@ -45,6 +45,9 @@ pub enum SpaceError {
     #[error("Transaction error: {0}")]
     Transaction(#[from] TransactionError),
 
+    #[error("Query error: {0}")]
+    Query(Box<dialog_query::QueryError>),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -55,7 +58,25 @@ pub enum SpaceError {
     InvalidAttribute(String),
 }
 
+impl From<dialog_query::QueryError> for SpaceError {
+    fn from(err: dialog_query::QueryError) -> Self {
+        SpaceError::Query(Box::new(err))
+    }
+}
+
+/// Internal concept for querying delegations by audience with their blob data.
+/// Used by `delegations_for_audience` to perform a single joined query.
+#[doc(hidden)]
+#[derive(Concept, Clone, Debug)]
+pub struct DelegationsByAudience {
+    this: Entity,
+    audience: crate::schema::ucan::Audience,
+    blob: crate::schema::ucan::Blob,
+}
+
 /// Represents a Space - a collaboration unit backed by a dialog-db branch
+///
+/// The space is generic over the storage backend (e.g., IndexedDB, filesystem, memory).
 #[derive(Clone)]
 pub struct Space<Backend: PlatformBackend + 'static> {
     /// The DID of this space
@@ -85,12 +106,9 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         backend: Backend,
         delegations: Vec<Delegation>,
     ) -> Result<Self, SpaceError> {
-        // Open the replica with the operator as issuer and space DID as subject
-        let replica = Replica::open(
-            ReplicaOperator::from(operator),
-            space_did.clone().into(),
-            backend,
-        )?;
+        // Open the replica with the operator and space DID as subject
+        let replica_operator = ReplicaOperator::from(operator);
+        let replica = Replica::open(replica_operator, space_did.clone().into(), backend)?;
 
         // Create/open the "main" branch for this space
         let branch_id = BranchId::new("main".to_string());
@@ -135,12 +153,9 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         operator: &Operator,
         backend: Backend,
     ) -> Result<Self, SpaceError> {
-        // Open the replica with the operator as issuer and space DID as subject
-        let replica = Replica::open(
-            ReplicaOperator::from(operator),
-            space_did.clone().into(),
-            backend,
-        )?;
+        // Open the replica with the operator and space DID as subject
+        let replica_operator = ReplicaOperator::from(operator);
+        let replica = Replica::open(replica_operator, space_did.clone().into(), backend)?;
 
         // Open the "main" branch (creates it if it doesn't exist)
         let branch_id = BranchId::new("main".to_string());
@@ -388,6 +403,41 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
             revision,
         })
     }
+
+    /// Query all delegations where the given DID is the audience.
+    ///
+    /// This is useful for finding all delegations that grant authority to a
+    /// specific user. The returned delegations can be used to reconstruct
+    /// authorization chains for UCAN verification.
+    ///
+    /// # Arguments
+    /// * `audience_did` - The DID of the audience to query for
+    ///
+    /// # Returns
+    /// A vector of delegations where the audience matches the given DID
+    pub async fn delegations_for_audience(
+        &self,
+        audience_did: &str,
+    ) -> Result<Vec<Delegation>, SpaceError> {
+        use dialog_query::{Match, Term};
+        use futures_util::TryStreamExt;
+
+        let query = Match::<DelegationsByAudience> {
+            this: Term::var("ucan"),
+            audience: Term::from(audience_did.to_string()),
+            blob: Term::var("blob"),
+        };
+
+        let results: Vec<_> = query.query(self.clone()).try_collect().await?;
+
+        results
+            .into_iter()
+            .map(|r| {
+                serde_ipld_dagcbor::from_slice(&r.blob.0)
+                    .map_err(|e| SpaceError::InvalidEntity(e.to_string()))
+            })
+            .collect()
+    }
 }
 
 /// Information about a resolved remote branch.
@@ -519,7 +569,7 @@ mod tests {
     use super::*;
     use crate::schema;
     use dialog_query::concept::Match as _;
-    use dialog_query::{Match, Term, With};
+    use dialog_query::{Concept, Entity, Match, Term, With};
     use futures_util::TryStreamExt;
     use ucan::delegation::subject::DelegatedSubject;
     use ucan::did::Ed25519Signer;
@@ -529,6 +579,14 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
+
+    /// Concept for querying delegations by issuer with their blob data.
+    #[derive(Concept, Clone, Debug)]
+    pub struct DelegationsByIssuer {
+        this: Entity,
+        issuer: schema::ucan::Issuer,
+        blob: schema::ucan::Blob,
+    }
 
     fn make_test_delegation() -> Delegation {
         let issuer = Operator::generate();
@@ -814,13 +872,62 @@ mod tests {
             .await
             .expect("Failed to create space");
 
-        // Query for any entity with this specific issuer
-        let query = Match::<With<schema::ucan::Issuer>> {
-            this: Term::var("delegation"),
-            has: Term::from(issuer_did),
+        // Use concept to join issuer and blob in a single query
+        let query = Match::<DelegationsByIssuer> {
+            this: Term::var("ucan"),
+            issuer: Term::from(issuer_did.clone()),
+            blob: Term::var("blob"),
         };
 
         let results: Vec<_> = query.query(space.clone()).try_collect().await.unwrap();
         assert_eq!(results.len(), 1);
+
+        // Verify we can deserialize to the full Delegation
+        let retrieved: Delegation = serde_ipld_dagcbor::from_slice(&results[0].blob.0).unwrap();
+        assert_eq!(retrieved.issuer().to_string(), issuer_did);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_queries_delegations_for_audience() {
+        let backend = MemoryBackend::default();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+
+        let issuer = Operator::generate();
+        let audience = Operator::generate();
+        let subject = Operator::generate();
+        let delegation = make_delegation_with_parts(&issuer, &audience, &subject);
+        let audience_did = audience.did().to_string();
+
+        let space = Space::create(space_did, &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space");
+
+        // Query using the new helper method
+        let delegations = space.delegations_for_audience(&audience_did).await.unwrap();
+        assert_eq!(delegations.len(), 1);
+        assert_eq!(delegations[0].audience().to_string(), audience_did);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_returns_empty_for_unknown_audience() {
+        let backend = MemoryBackend::default();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+        let delegation = make_test_delegation();
+
+        let space = Space::create(space_did, &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space");
+
+        // Query for an audience that doesn't exist
+        let unknown_audience = "did:key:z6MkUnknownAudienceXXXXXXXXXXXXXXXXXXXXXXXXXX";
+        let delegations = space
+            .delegations_for_audience(unknown_audience)
+            .await
+            .unwrap();
+        assert!(delegations.is_empty());
     }
 }

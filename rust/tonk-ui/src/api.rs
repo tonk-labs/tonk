@@ -1,5 +1,5 @@
 use leptos::{logging::log, prelude::window};
-use tonk_worker::{AuthorizeResponse, StatusResponse};
+use tonk_worker::{AuthorizeResponse, DelegationsResponse, IdentifyResponse, StatusResponse};
 
 use crate::error::TonkUiError;
 
@@ -39,6 +39,32 @@ pub async fn authorize() -> Result<AuthorizeResponse, TonkUiError> {
 
     let response = reqwest::Client::new()
         .post(format!("{}/api/authorize", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    response.json().await.map_err(into_api_error)
+}
+
+/// Fetches the current user's identity (DID) from the service worker.
+pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
+    log!("Fetching identity...");
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/identify", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    response.json().await.map_err(into_api_error)
+}
+
+/// Fetches the user's delegations for the current space from the service worker.
+pub async fn delegations() -> Result<DelegationsResponse, TonkUiError> {
+    log!("Fetching delegations...");
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/delegations", origin()))
         .send()
         .await
         .map_err(into_api_error)?;

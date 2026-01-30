@@ -26,17 +26,18 @@ pub async fn status(
     State(state): State<AppState>,
 ) -> Result<Json<StatusResponse>, TonkWorkerError> {
     let tonk_state = state.read().await;
+    let space = tonk_state.session.space();
 
     Ok(Json(StatusResponse {
-        space_did: tonk_state.space.did.clone(),
-        operator_did: tonk_state.operator.did().to_string(),
-        has_upstream: tonk_state.space.has_upstream().await,
+        space_did: space.did.clone(),
+        operator_did: tonk_state.identity.did().to_string(),
+        has_upstream: space.has_upstream().await,
     }))
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
-    use super::super::tests::test_space_with_delegation;
+    use super::super::tests::test_state;
     use super::*;
     use crate::api_router;
 
@@ -46,8 +47,8 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_returns_status_without_upstream() {
-        let (space, operator, delegation) = test_space_with_delegation().await;
-        let app = api_router(space, operator, delegation);
+        let tonk_state = test_state().await;
+        let app = api_router(tonk_state);
 
         let request = Request::builder()
             .uri("/api/status")

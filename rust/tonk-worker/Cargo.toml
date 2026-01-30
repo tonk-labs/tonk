@@ -31,11 +31,13 @@ tokio = { workspace = true }
 tonk-common = { workspace = true }
 tonk-space = { workspace = true }
 tower-service = { workspace = true }
+ucan = { workspace = true }
 url = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 wasm-streams = { workspace = true }
 web-sys = { workspace = true, features = [
+    "CryptoKey",
     "FetchEvent",
     "Headers",
     "Request",
@@ -47,6 +49,9 @@ web-sys = { workspace = true, features = [
     "WorkerLocation",
 ] }
 web-time = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+idb = "0.6"
 
 [dev-dependencies]
 anyhow = { workspace = true }

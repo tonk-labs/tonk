@@ -34,6 +34,13 @@ worker-macros = { workspace = true }
 # S3 presigning with UCAN support
 dialog-s3-credentials = { workspace = true, features = ["ucan"] }
 
+# UCAN
+ucan = { workspace = true }
+varsig = { workspace = true }
+
+# Cryptography
+ed25519-dalek = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }

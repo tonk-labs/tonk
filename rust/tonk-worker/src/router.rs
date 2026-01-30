@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use ::axum::{Router, extract::State, routing::get, routing::post};
 use tokio::sync::RwLock;
-use tonk_space::{Delegation, Operator, Space};
 
-use crate::ServiceWorkerStorageBackend;
+use crate::worker::TonkState;
 
 mod authorize;
 pub use authorize::{AuthorizeResponse, authorize};
@@ -26,17 +25,13 @@ pub use status::{StatusResponse, status};
 mod sync;
 pub use sync::SyncResponse;
 
-/// Application state containing the space, operator, and delegation.
-pub struct TonkState {
-    /// The space being managed
-    pub space: Space<ServiceWorkerStorageBackend>,
-    /// The operator identity for signing invocations
-    pub operator: Operator,
-    /// The delegation from space to operator
-    pub delegation: Delegation,
-}
+mod identify;
+pub use identify::{IdentifyResponse, identify};
 
-/// Shared application state.
+mod delegations;
+pub use delegations::{DelegationsResponse, delegations};
+
+/// Shared application state containing identity and session.
 pub type AppState = Arc<RwLock<TonkState>>;
 
 /// Root handler that returns a welcome message.
@@ -46,26 +41,15 @@ async fn root(State(_state): State<AppState>) -> &'static str {
 
 /// Creates the API router with all configured routes.
 ///
-/// Sets up the routing tree with the space, operator, and delegation as shared state.
-///
-/// # Arguments
-/// * `space` - The space being managed
-/// * `operator` - The operator identity for signing invocations
-/// * `delegation` - The delegation from space to operator
-pub fn api_router(
-    space: Space<ServiceWorkerStorageBackend>,
-    operator: Operator,
-    delegation: Delegation,
-) -> Router {
-    let state: AppState = Arc::new(RwLock::new(TonkState {
-        space,
-        operator,
-        delegation,
-    }));
+/// Sets up the routing tree with the TonkState as shared state.
+pub fn api_router(state: TonkState) -> Router {
+    let state: AppState = Arc::new(RwLock::new(state));
     Router::new()
         .route("/api", get(root))
+        .route("/api/identify", get(identify))
         .route("/api/authorize", post(authorize))
         .route("/api/status", get(status))
+        .route("/api/delegations", get(delegations))
         .route("/api/inspect/branch/{branch_name}", get(inspect::branch))
         .route("/api/inspect/site/{site_name}", get(inspect::site::site))
         .route(
@@ -85,46 +69,49 @@ pub fn api_router(
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 pub mod tests {
-    use crate::{ServiceWorkerStorageBackend, api_router};
+    use std::sync::Arc;
+
+    use crate::worker::TonkState;
+    use crate::{Identity, api_router};
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use tonk_space::{DelegatedSubject, Delegation, Ed25519Signer, Operator, Space};
     use tower::ServiceExt;
 
-    /// Creates a test space with operator and delegation for testing.
-    pub async fn test_space_with_delegation()
-    -> (Space<ServiceWorkerStorageBackend>, Operator, Delegation) {
-        // Generate unique keypairs for each test to avoid IndexedDB conflicts
-        let space_keypair = Operator::generate();
-        let space_did = space_keypair.did().to_string();
-
-        // Generate operator keypair
-        let operator = Operator::generate();
-
-        // Create delegation from space to operator
-        let delegation = Delegation::builder()
-            .issuer(Ed25519Signer::from(&space_keypair))
-            .audience(*operator.did())
-            .subject(DelegatedSubject::Specific(*space_keypair.did()))
-            .command(vec![])
-            .try_build()
-            .expect("Failed to build delegation");
-
-        let delegation = Delegation::from(delegation);
-
-        let backend = ServiceWorkerStorageBackend::new(&space_did).await;
-        let space = Space::open(space_did, &operator, backend)
+    pub async fn test_state() -> TonkState {
+        let mut identity = Identity::load_or_create()
             .await
-            .expect("Failed to create test space");
+            .expect("Failed to create test identity");
 
-        (space, operator, delegation)
+        // Get known spaces, or create if none exist
+        let known_spaces = identity
+            .account()
+            .known_spaces()
+            .await
+            .expect("Could not query known spaces");
+
+        let session = if let Some(space_did) = known_spaces.first() {
+            identity
+                .open_session(space_did)
+                .await
+                .expect("Failed to open session")
+        } else {
+            identity
+                .create_session()
+                .await
+                .expect("Failed to create session")
+        };
+
+        TonkState {
+            identity: Arc::new(identity),
+            session,
+        }
     }
 
     #[dialog_common::test]
     async fn it_responds_to_root_api_request() {
-        let (space, operator, delegation) = test_space_with_delegation().await;
-        let app = api_router(space, operator, delegation);
+        let state = test_state().await;
+        let app = api_router(state);
 
         let request = Request::builder()
             .uri("/api")

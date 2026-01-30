@@ -198,10 +198,15 @@ pub async fn assert_fact(
     // Transact the relation
     {
         let mut tonk_state = state.write().await;
-        tonk_state.space.transact([relation]).await.map_err(|e| {
-            log!("Failed to assert fact: {:?}", e);
-            TonkWorkerError::Internal(format!("Failed to assert fact: {}", e))
-        })?;
+        tonk_state
+            .session
+            .space_mut()
+            .transact([relation])
+            .await
+            .map_err(|e| {
+                log!("Failed to assert fact: {:?}", e);
+                TonkWorkerError::Internal(format!("Failed to assert fact: {}", e))
+            })?;
     }
 
     log!("Fact asserted successfully");
@@ -279,7 +284,7 @@ pub async fn query_facts(
         .map_err(|e| TonkWorkerError::Internal(format!("Query compilation error: {}", e)))?;
 
     let facts: Vec<FactType<Value>> = compiled
-        .query(&tonk_state.space)
+        .query(tonk_state.session.space())
         .try_collect()
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("Query execution error: {}", e)))?;
@@ -306,7 +311,7 @@ pub async fn query_facts(
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
-    use super::super::tests::test_space_with_delegation;
+    use super::super::tests::test_state;
     use super::*;
     use crate::api_router;
 
@@ -316,8 +321,8 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_asserts_and_queries_fact() {
-        let (space, operator, delegation) = test_space_with_delegation().await;
-        let app = api_router(space, operator, delegation);
+        let state = test_state().await;
+        let app = api_router(state);
 
         // Assert a fact
         let request = Request::builder()
