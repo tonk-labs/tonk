@@ -352,6 +352,9 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         let upstream = branch.upstream().map(|u| UpstreamInfo {
             site: u.site().map(|s| s.to_string()),
             branch: u.id().to_string(),
+            // TODO: Use u.subject().to_string() when dialog-db is updated with Upstream::subject() method
+            // See https://github.com/dialog-db/dialog-db/pull/156
+            subject: None,
         });
 
         Ok(BranchInfo {
@@ -593,6 +596,8 @@ pub struct UpstreamInfo {
     pub site: Option<String>,
     /// The branch name on the upstream
     pub branch: String,
+    /// The subject DID of the upstream repository (None for local upstream)
+    pub subject: Option<String>,
 }
 
 /// Implement ArtifactStore for Space by delegating to the inner session
