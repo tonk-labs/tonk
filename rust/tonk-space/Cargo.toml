@@ -8,8 +8,8 @@ license.workspace = true
 
 [dependencies]
 # Crypto
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-rand = "0.8"
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+rand_0_8 = { workspace = true }
 
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
@@ -18,15 +18,15 @@ web-sys = { workspace = true, features = ["Crypto", "SubtleCrypto", "CryptoKey",
 tonk-common = { workspace = true }
 
 # Error handling
-thiserror = "2"
+thiserror = { workspace = true }
 
 # Filesystem
-dirs = "5"
+dirs = { workspace = true }
 
 # Async
-futures-util = "0.3"
-futures-core = "0.3"
-tokio = { version = "1", features = ["sync"] }
+futures-util = { workspace = true }
+futures-core = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 # Dialog DB
 dialog-storage = { workspace = true }
@@ -38,24 +38,24 @@ dialog-capability = { workspace = true }
 
 # UCAN
 ucan = { workspace = true }
-ipld-core = "0.4"
+ipld-core = { workspace = true }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-serde_ipld_dagcbor = "0.6"
+serde = { workspace = true, features = ["derive"] }
+serde_ipld_dagcbor = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-hkdf = "0.12"
-sha2 = "0.10"
+hkdf = { workspace = true }
+sha2_0_10 = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true } 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "0.3"
-tokio = { version = "1", features = ["sync"] }
+wasm-bindgen-test = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
