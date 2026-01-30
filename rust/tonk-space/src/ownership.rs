@@ -107,9 +107,9 @@ mod tests {
 
     /// Create a test delegation with random operators.
     async fn make_test_delegation() -> Delegation {
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
@@ -158,9 +158,9 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     async fn it_returns_specific_subject_as_space() {
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
         let expected_space = *subject.did();
 
         let signer = Ed25519Signer::from(&issuer);
@@ -181,8 +181,8 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     async fn it_returns_issuer_as_space_for_powerline() {
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
         let expected_space = *issuer.did();
 
         let signer = Ed25519Signer::from(&issuer);

@@ -17,7 +17,7 @@ base64 = { workspace = true }
 axum-wasm-macros = { workspace = true }
 console_error_panic_hook = { workspace = true }
 dialog-common = { workspace = true }
-dialog-artifacts = { workspace = true }
+dialog-artifacts = { workspace = true, features = ["webcrypto"] }
 dialog-query = { workspace = true }
 dialog-s3-credentials = { workspace = true, features = ["ucan"] }
 dialog-storage = { workspace = true, features = ["ucan"] }

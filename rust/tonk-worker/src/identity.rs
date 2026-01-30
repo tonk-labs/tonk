@@ -6,9 +6,9 @@
 use crate::account::{Account, AccountError};
 use crate::key_store::{KeyStore, KeyStoreError};
 use crate::session::{Session, SessionError};
+use dialog_artifacts::replica::SigningAuthority;
 use thiserror::Error;
 use tonk_space::Operator;
-use ucan::did::Ed25519Did;
 
 /// Errors that can occur when working with identity.
 #[derive(Debug, Error)]
@@ -27,18 +27,25 @@ pub enum IdentityError {
 /// There is exactly one Identity per device/browser. The identity is backed by
 /// an Ed25519 keypair that is generated on first use and persisted to storage.
 ///
+/// The user operator may use WebCrypto non-extractable keys for enhanced security,
+/// meaning the private key material never leaves the browser's secure environment.
+///
 /// The Identity provides access to:
 /// - The user's DID (decentralized identifier)
 /// - The user's operator (for signing operations)
 /// - Methods to open or create sessions
 #[derive(Clone)]
 pub struct Identity {
-    /// The user's operator keypair for this device.
-    /// Used to sign operations and establish identity.
-    /// TODO: In the future with powerline delegations, this will be the only key
+    /// The user's signing authority for this device.
+    ///
+    /// This is a `SigningAuthority` which may be either:
+    /// - `WebCrypto`: Non-extractable keys via browser's WebCrypto API
+    /// - `Fallback`: Extractable keys when WebCrypto Ed25519 is unavailable
+    ///
+    /// In the future with powerline delegations, this will be the only key
     /// needed - authority over spaces will come from UCAN delegation chains
     /// rather than holding space keys.
-    operator: Operator,
+    operator: SigningAuthority,
     /// Access to the key store for retrieving space operators.
     /// TODO: Once we switch to powerline delegations, space keys won't be stored
     /// and this field may no longer be needed.
@@ -50,6 +57,7 @@ impl Identity {
     /// Load an existing identity or create a new one.
     ///
     /// On first call, generates a new random Ed25519 keypair and persists it.
+    /// When WebCrypto Ed25519 is available, the key will be non-extractable.
     /// On subsequent calls, loads the existing keypair from storage.
     ///
     /// TODO: Consider passing storage as a parameter to make testing easier
@@ -77,13 +85,22 @@ impl Identity {
     /// Get the DID (decentralized identifier) for this identity.
     ///
     /// The DID is derived from the public key and has the format `did:key:z6Mk...`.
-    pub fn did(&self) -> &Ed25519Did {
+    pub fn did(&self) -> &str {
         self.operator.did()
     }
 
-    /// Get the operator for signing operations.
-    pub fn operator(&self) -> &Operator {
+    /// Get the signing authority for signing operations.
+    ///
+    /// This returns a `SigningAuthority` which supports async signing via the
+    /// `Authority` trait. For UCAN delegation signing, use the `AsyncDidSigner`
+    /// trait methods.
+    pub fn operator(&self) -> &SigningAuthority {
         &self.operator
+    }
+
+    /// Get a mutable reference to the signing authority for signing operations.
+    pub fn operator_mut(&mut self) -> &mut SigningAuthority {
+        &mut self.operator
     }
 
     /// Get access to the key store.
@@ -137,7 +154,7 @@ mod tests {
     #[tokio::test]
     async fn it_creates_identity_with_valid_did() {
         let identity = Identity::load_or_create().await.unwrap();
-        let did = identity.did().to_string();
+        let did = identity.did();
         assert!(did.starts_with("did:key:z"));
     }
 

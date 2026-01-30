@@ -84,12 +84,12 @@ js-sys = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk", features = ["ucan"] }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/generic-replica" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/generic-replica" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/generic-replica" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/generic-replica" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/generic-replica" }
+dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/generic-replica", features = ["ucan"] }
 
 # UCAN (using local path for development)
 ucan = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "tonk", package = "ucan" }

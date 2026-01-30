@@ -1,9 +1,7 @@
 use crate::delegation::Delegation;
 use crate::operator::Operator;
 use crate::ownership::Ownership;
-use dialog_artifacts::replica::{
-    Branch, BranchId, Operator as ReplicaOperator, RemoteSite, Remotes, Replica,
-};
+use dialog_artifacts::replica::{Branch, BranchId, RemoteSite, Remotes, Replica, SigningAuthority};
 use dialog_artifacts::selector::Constrained;
 use dialog_artifacts::{
     Artifact, ArtifactSelector, ArtifactStore, DialogArtifactsError, PlatformBackend,
@@ -108,8 +106,8 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         delegations: Vec<Delegation>,
     ) -> Result<Self, SpaceError> {
         // Open the replica with the operator and space DID as subject
-        let replica_operator = ReplicaOperator::from(operator);
-        let replica = Replica::open(replica_operator, space_did.clone().into(), backend)?;
+        let signing_authority = SigningAuthority::from(operator);
+        let replica = Replica::open(signing_authority, space_did.clone().into(), backend)?;
 
         // Create/open the "main" branch for this space
         let branch_id = BranchId::new("main".to_string());
@@ -144,7 +142,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     ///
     /// # Arguments
     /// * `space_did` - The DID of the space
-    /// * `operator` - The operator that will sign operations
+    /// * `operator` - The operator that will sign operations (extractable keys)
     /// * `backend` - The storage backend to use
     ///
     /// # Returns
@@ -155,8 +153,28 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         backend: Backend,
     ) -> Result<Self, SpaceError> {
         // Open the replica with the operator and space DID as subject
-        let replica_operator = ReplicaOperator::from(operator);
-        let replica = Replica::open(replica_operator, space_did.clone().into(), backend)?;
+        let signing_authority = SigningAuthority::from(operator);
+        Self::open_with_authority(space_did, signing_authority, backend).await
+    }
+
+    /// Open an existing space with a `SigningAuthority`.
+    ///
+    /// This variant accepts a `SigningAuthority` directly, which is useful when
+    /// the authority may use WebCrypto non-extractable keys.
+    ///
+    /// # Arguments
+    /// * `space_did` - The DID of the space
+    /// * `authority` - The signing authority for signing operations
+    /// * `backend` - The storage backend to use
+    ///
+    /// # Returns
+    /// The Space instance with access to the branch
+    pub async fn open_with_authority(
+        space_did: String,
+        authority: SigningAuthority,
+        backend: Backend,
+    ) -> Result<Self, SpaceError> {
+        let replica = Replica::open(authority, space_did.clone().into(), backend)?;
 
         // Open the "main" branch (creates it if it doesn't exist)
         let branch_id = BranchId::new("main".to_string());
@@ -635,9 +653,9 @@ mod tests {
     }
 
     async fn make_test_delegation() -> Delegation {
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = Delegation::builder()
@@ -675,7 +693,7 @@ mod tests {
     async fn it_creates_empty_space() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
 
         let space = Space::create(space_did.clone(), &operator, backend, vec![])
             .await
@@ -689,7 +707,7 @@ mod tests {
     async fn it_creates_space_with_delegation() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
         let delegation = make_test_delegation().await;
 
         let space = Space::create(space_did.clone(), &operator, backend, vec![delegation])
@@ -704,7 +722,7 @@ mod tests {
     async fn it_opens_space_after_create() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
         let delegation = make_test_delegation().await;
 
         // Create space first
@@ -730,7 +748,7 @@ mod tests {
     async fn it_tracks_revision() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
         let delegation = make_test_delegation().await;
 
         let space = Space::create(space_did, &operator, backend, vec![delegation])
@@ -747,7 +765,7 @@ mod tests {
     async fn it_has_no_upstream_by_default() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
 
         let space = Space::create(space_did, &operator, backend, vec![])
             .await
@@ -762,11 +780,11 @@ mod tests {
     async fn it_stores_delegation_issuer() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
 
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
         let delegation = make_delegation_with_parts(&issuer, &audience, &subject).await;
         let delegation_entity = delegation.this();
         let expected_issuer = issuer.did().to_string();
@@ -791,11 +809,11 @@ mod tests {
     async fn it_stores_delegation_audience() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
 
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
         let delegation = make_delegation_with_parts(&issuer, &audience, &subject).await;
         let ucan = delegation.this();
         let expected_audience = audience.did().to_string();
@@ -820,11 +838,11 @@ mod tests {
     async fn it_stores_delegation_subject() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
 
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
         let delegation = make_delegation_with_parts(&issuer, &audience, &subject).await;
         let ucan = delegation.this();
         let expected_subject = subject.did().to_string();
@@ -849,11 +867,11 @@ mod tests {
     async fn it_stores_delegation_command() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
 
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
         let delegation = make_delegation_with_parts(&issuer, &audience, &subject).await;
         let ucan = delegation.this();
 
@@ -877,11 +895,11 @@ mod tests {
     async fn it_stores_space_owner() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
 
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
         let delegation = make_delegation_with_parts(&issuer, &audience, &subject).await;
         let ucan = delegation.this();
         let space_entity = subject.did().to_string();
@@ -910,11 +928,11 @@ mod tests {
     async fn it_can_query_delegations_by_issuer() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
 
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
         let delegation = make_delegation_with_parts(&issuer, &audience, &subject).await;
         let issuer_did = issuer.did().to_string();
 
@@ -942,11 +960,11 @@ mod tests {
     async fn it_queries_delegations_for_audience() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
 
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
         let delegation = make_delegation_with_parts(&issuer, &audience, &subject).await;
         let audience_did = audience.did().to_string();
 
@@ -965,7 +983,7 @@ mod tests {
     async fn it_returns_empty_for_unknown_audience() {
         let backend = MemoryBackend::default();
         let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
-        let operator = Operator::generate();
+        let operator = Operator::generate().await;
         let delegation = make_test_delegation().await;
 
         let space = Space::create(space_did, &operator, backend, vec![delegation])

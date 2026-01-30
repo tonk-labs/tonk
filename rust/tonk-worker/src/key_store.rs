@@ -7,12 +7,13 @@
 //! ```text
 //! IndexedDB: "tonk-keys" (WASM) / In-memory HashMap (native)
 //! └── Object Store: "keys"
-//!     ├── "user"          → { secret: [u8; 32] }
-//!     └── "space:{did}"   → { secret: [u8; 32] }
+//!     ├── "user"          → { id, cryptoKey: CryptoKey, did: string } (WebCrypto)
+//!     │                   → { id, secret: Uint8Array }                (Fallback)
+//!     └── "space:{did}"   → { id, secret: Uint8Array }                (always extractable)
 //! ```
 //!
-//! Note: Plan A uses extractable keys stored as secret bytes. Plan B will
-//! re-introduce proper WebCrypto non-extractable keys for WASM.
+//! User identity keys use WebCrypto non-extractable keys when available.
+//! Space keys remain extractable (they'll be replaced by UCAN delegations).
 //!
 //! # Future Direction
 //!
@@ -21,21 +22,20 @@
 //! That way accounts have complete authority over spaces without managing keys.
 //! Unlike keys, those delegations can be kept public as they can't be exploited
 //! without account keys. See: https://github.com/ucan-wg/delegation#powerline
-//!
-//! TODO: Consider using the existing `IndexedDbStorageBackend` instead of this
-//! custom IDB implementation to reduce boilerplate.
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
+    use dialog_artifacts::replica::{CryptoKey, SigningAuthority, WebCryptoEd25519Signer};
     use idb::{Database, DatabaseEvent, Factory, KeyPath, ObjectStoreParams, TransactionMode};
     use js_sys::{Object, Reflect, Uint8Array};
     use std::sync::Arc;
     use thiserror::Error;
     use tonk_space::Operator;
+    use ucan::did::Did as UcanDid;
     use wasm_bindgen::prelude::*;
 
     const DB_NAME: &str = "tonk-keys";
-    const DB_VERSION: u32 = 2; // Bump version for schema change
+    const DB_VERSION: u32 = 3; // Bump version for WebCrypto schema
     const STORE_NAME: &str = "keys";
 
     const USER_KEY: &str = "user";
@@ -55,6 +55,10 @@ mod wasm {
         /// Invalid data in storage.
         #[error("Invalid data: {0}")]
         InvalidData(String),
+
+        /// WebCrypto error.
+        #[error("WebCrypto error: {0}")]
+        WebCrypto(String),
     }
 
     impl From<idb::Error> for KeyStoreError {
@@ -65,9 +69,8 @@ mod wasm {
 
     /// Storage for operator keys in IndexedDB.
     ///
-    /// Keys are stored as 32-byte secret arrays. This is Plan A's temporary
-    /// approach using extractable keys; Plan B will use proper WebCrypto
-    /// non-extractable keys.
+    /// User identity keys use WebCrypto non-extractable keys when available.
+    /// Space keys are stored as extractable secret bytes.
     #[derive(Clone)]
     pub struct KeyStore {
         db: Arc<Database>,
@@ -103,35 +106,50 @@ mod wasm {
         }
 
         /// Get the user's operator if one exists.
-        pub async fn user_operator(&self) -> Result<Option<Operator>, KeyStoreError> {
-            self.get_operator(USER_KEY).await
+        ///
+        /// Returns a `SigningAuthority` which may be either WebCrypto or Fallback variant.
+        pub async fn user_operator(&self) -> Result<Option<SigningAuthority>, KeyStoreError> {
+            self.get_user_operator(USER_KEY).await
         }
 
-        /// Create a new user operator.
-        pub async fn create_user_operator(&self) -> Result<Operator, KeyStoreError> {
-            let operator = Operator::generate();
-            self.store_operator(USER_KEY, &operator).await?;
+        /// Create a new user operator using WebCrypto when available.
+        ///
+        /// This will attempt to use WebCrypto non-extractable keys. If WebCrypto
+        /// Ed25519 is not available, it falls back to extractable keys.
+        pub async fn create_user_operator(&self) -> Result<SigningAuthority, KeyStoreError> {
+            // Use SigningAuthority::generate() which handles WebCrypto fallback
+            let operator = SigningAuthority::generate()
+                .await
+                .map_err(|e| KeyStoreError::WebCrypto(e.to_string()))?;
+            self.store_user_operator(USER_KEY, &operator).await?;
             Ok(operator)
         }
 
         /// Get a space's operator if one exists.
+        ///
+        /// Space operators are always extractable (stored as secret bytes).
         pub async fn space_operator(
             &self,
             space_did: &str,
         ) -> Result<Option<Operator>, KeyStoreError> {
             let key = format!("{}{}", SPACE_KEY_PREFIX, space_did);
-            self.get_operator(&key).await
+            self.get_space_operator(&key).await
         }
 
         /// Store a space operator (for when you have an existing operator to store).
+        ///
+        /// Space operators are always stored as extractable secret bytes.
         pub async fn store_space_operator(&self, operator: &Operator) -> Result<(), KeyStoreError> {
             let space_did = operator.did().to_string();
             let key = format!("{}{}", SPACE_KEY_PREFIX, space_did);
-            self.store_operator(&key, operator).await
+            self.store_extractable_operator(&key, operator).await
         }
 
-        // Internal: Get an operator by key name
-        async fn get_operator(&self, key: &str) -> Result<Option<Operator>, KeyStoreError> {
+        /// Get a user operator (may be WebCrypto or Fallback).
+        async fn get_user_operator(
+            &self,
+            key: &str,
+        ) -> Result<Option<SigningAuthority>, KeyStoreError> {
             let transaction = self
                 .db
                 .transaction(&[STORE_NAME], TransactionMode::ReadOnly)?;
@@ -149,7 +167,134 @@ mod wasm {
             match result {
                 None => Ok(None),
                 Some(value) => {
-                    // Extract secret from the stored object
+                    // Check if this is a WebCrypto key (has cryptoKey field)
+                    let crypto_key_js = Reflect::get(&value, &"cryptoKey".into())
+                        .map_err(|e| KeyStoreError::JsError(format!("{:?}", e)))?;
+
+                    if !crypto_key_js.is_undefined() {
+                        // WebCrypto key: reconstruct from CryptoKey + DID
+                        let crypto_key: CryptoKey = crypto_key_js.unchecked_into();
+
+                        let did_js = Reflect::get(&value, &"did".into())
+                            .map_err(|e| KeyStoreError::JsError(format!("{:?}", e)))?;
+
+                        let did_str = did_js.as_string().ok_or_else(|| {
+                            KeyStoreError::InvalidData("did is not a string".into())
+                        })?;
+
+                        // Parse the DID to get public key bytes
+                        let ed25519_did: ucan::did::Ed25519Did = did_str.parse().map_err(|e| {
+                            KeyStoreError::InvalidData(format!("invalid DID: {:?}", e))
+                        })?;
+
+                        let public_key_bytes =
+                            <ucan::did::Ed25519Did as UcanDid>::verifier(&ed25519_did).to_bytes();
+
+                        // Reconstruct WebCryptoEd25519Signer
+                        let signer = WebCryptoEd25519Signer::from_key(crypto_key, public_key_bytes)
+                            .map_err(|e| KeyStoreError::WebCrypto(format!("{:?}", e)))?;
+
+                        Ok(Some(SigningAuthority::from_webcrypto_signer(signer)))
+                    } else {
+                        // Fallback key: reconstruct from secret bytes
+                        let secret_js = Reflect::get(&value, &"secret".into())
+                            .map_err(|e| KeyStoreError::JsError(format!("{:?}", e)))?;
+
+                        if secret_js.is_undefined() {
+                            return Err(KeyStoreError::InvalidData(
+                                "stored key has neither cryptoKey nor secret".into(),
+                            ));
+                        }
+
+                        let secret_array = Uint8Array::new(&secret_js);
+                        let mut secret_bytes = [0u8; 32];
+
+                        if secret_array.length() != 32 {
+                            return Err(KeyStoreError::InvalidData(format!(
+                                "expected 32-byte secret, got {}",
+                                secret_array.length()
+                            )));
+                        }
+
+                        secret_array.copy_to(&mut secret_bytes);
+
+                        Ok(Some(SigningAuthority::from_secret(&secret_bytes)))
+                    }
+                }
+            }
+        }
+
+        /// Store a user operator (handles both WebCrypto and Fallback).
+        async fn store_user_operator(
+            &self,
+            key: &str,
+            operator: &SigningAuthority,
+        ) -> Result<(), KeyStoreError> {
+            let transaction = self
+                .db
+                .transaction(&[STORE_NAME], TransactionMode::ReadWrite)?;
+            let store = transaction
+                .object_store(STORE_NAME)
+                .map_err(|e| KeyStoreError::Idb(format!("{:?}", e)))?;
+
+            let obj = Object::new();
+
+            Reflect::set(&obj, &"id".into(), &JsValue::from_str(key))
+                .map_err(|e| KeyStoreError::JsError(format!("{:?}", e)))?;
+
+            // Check if this is a WebCrypto operator
+            if let Some(signer) = operator.webcrypto_signer() {
+                // Store CryptoKey + DID
+                Reflect::set(&obj, &"cryptoKey".into(), signer.crypto_key())
+                    .map_err(|e| KeyStoreError::JsError(format!("{:?}", e)))?;
+
+                Reflect::set(
+                    &obj,
+                    &"did".into(),
+                    &JsValue::from_str(&signer.did().to_string()),
+                )
+                .map_err(|e| KeyStoreError::JsError(format!("{:?}", e)))?;
+            } else {
+                // Store secret bytes (Fallback or Native)
+                let secret_bytes = operator.secret_key_bytes().ok_or_else(|| {
+                    KeyStoreError::InvalidData("operator has no secret bytes".into())
+                })?;
+
+                let secret_array = Uint8Array::from(&secret_bytes[..]);
+
+                Reflect::set(&obj, &"secret".into(), &secret_array)
+                    .map_err(|e| KeyStoreError::JsError(format!("{:?}", e)))?;
+            }
+
+            store
+                .put(&obj, None)
+                .map_err(|e| KeyStoreError::Idb(format!("{:?}", e)))?
+                .await?;
+
+            transaction.commit()?.await?;
+
+            Ok(())
+        }
+
+        /// Get a space operator (always extractable).
+        async fn get_space_operator(&self, key: &str) -> Result<Option<Operator>, KeyStoreError> {
+            let transaction = self
+                .db
+                .transaction(&[STORE_NAME], TransactionMode::ReadOnly)?;
+            let store = transaction
+                .object_store(STORE_NAME)
+                .map_err(|e| KeyStoreError::Idb(format!("{:?}", e)))?;
+
+            let result: Option<JsValue> = store
+                .get(JsValue::from_str(key))
+                .map_err(|e| KeyStoreError::Idb(format!("{:?}", e)))?
+                .await?;
+
+            transaction.await?;
+
+            match result {
+                None => Ok(None),
+                Some(value) => {
                     let secret_js = Reflect::get(&value, &"secret".into())
                         .map_err(|e| KeyStoreError::JsError(format!("{:?}", e)))?;
 
@@ -165,14 +310,13 @@ mod wasm {
 
                     secret_array.copy_to(&mut secret_bytes);
 
-                    let operator = Operator::from_secret(secret_bytes);
-                    Ok(Some(operator))
+                    Ok(Some(Operator::from_secret(secret_bytes)))
                 }
             }
         }
 
-        // Internal: Store an operator by key name
-        async fn store_operator(
+        /// Store an extractable operator (for space keys).
+        async fn store_extractable_operator(
             &self,
             key: &str,
             operator: &Operator,
@@ -184,13 +328,11 @@ mod wasm {
                 .object_store(STORE_NAME)
                 .map_err(|e| KeyStoreError::Idb(format!("{:?}", e)))?;
 
-            // Create an object with id and secret
             let obj = Object::new();
 
             Reflect::set(&obj, &"id".into(), &JsValue::from_str(key))
                 .map_err(|e| KeyStoreError::JsError(format!("{:?}", e)))?;
 
-            // Store secret as Uint8Array
             let secret_bytes = operator.to_secret();
             let secret_array = Uint8Array::from(&secret_bytes[..]);
 
@@ -211,6 +353,7 @@ mod wasm {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
+    use dialog_artifacts::replica::SigningAuthority;
     use std::collections::HashMap;
     use std::sync::{Arc, RwLock};
     use thiserror::Error;
@@ -228,12 +371,20 @@ mod native {
         InvalidData(String),
     }
 
+    /// Storage for user operator (as SigningAuthority) and space operators (as tonk_space::Operator).
+    #[derive(Clone, Default)]
+    struct OperatorStorage {
+        user: Option<SigningAuthority>,
+        spaces: HashMap<String, Operator>,
+    }
+
     /// In-memory key store for testing (non-WASM targets).
     ///
-    /// This stores `Operator` instances for native testing purposes.
+    /// User operators are stored as `SigningAuthority` (matching WASM behavior).
+    /// Space operators are stored as `tonk_space::Operator` (extractable).
     #[derive(Clone, Default)]
     pub struct KeyStore {
-        operators: Arc<RwLock<HashMap<String, Operator>>>,
+        storage: Arc<RwLock<OperatorStorage>>,
     }
 
     impl KeyStore {
@@ -243,16 +394,18 @@ mod native {
         }
 
         /// Get the user's operator if one exists.
-        pub async fn user_operator(&self) -> Result<Option<Operator>, KeyStoreError> {
-            let ops = self.operators.read().unwrap();
-            Ok(ops.get("user").cloned())
+        pub async fn user_operator(&self) -> Result<Option<SigningAuthority>, KeyStoreError> {
+            let storage = self.storage.read().unwrap();
+            Ok(storage.user.clone())
         }
 
         /// Create a new user operator.
-        pub async fn create_user_operator(&self) -> Result<Operator, KeyStoreError> {
-            let operator = Operator::generate();
-            let mut ops = self.operators.write().unwrap();
-            ops.insert("user".to_string(), operator.clone());
+        pub async fn create_user_operator(&self) -> Result<SigningAuthority, KeyStoreError> {
+            let operator = SigningAuthority::generate()
+                .await
+                .map_err(|e| KeyStoreError::Storage(e.to_string()))?;
+            let mut storage = self.storage.write().unwrap();
+            storage.user = Some(operator.clone());
             Ok(operator)
         }
 
@@ -261,24 +414,28 @@ mod native {
             &self,
             space_did: &str,
         ) -> Result<Option<Operator>, KeyStoreError> {
-            let ops = self.operators.read().unwrap();
-            Ok(ops.get(&format!("space:{}", space_did)).cloned())
+            let storage = self.storage.read().unwrap();
+            Ok(storage.spaces.get(&format!("space:{}", space_did)).cloned())
         }
 
         /// Create a new space operator.
         pub async fn create_space_operator(&self) -> Result<Operator, KeyStoreError> {
-            let operator = Operator::generate();
+            let operator = Operator::generate().await;
             let space_did = operator.did().to_string();
-            let mut ops = self.operators.write().unwrap();
-            ops.insert(format!("space:{}", space_did), operator.clone());
+            let mut storage = self.storage.write().unwrap();
+            storage
+                .spaces
+                .insert(format!("space:{}", space_did), operator.clone());
             Ok(operator)
         }
 
         /// Store a space operator.
         pub async fn store_space_operator(&self, operator: &Operator) -> Result<(), KeyStoreError> {
             let space_did = operator.did();
-            let mut ops = self.operators.write().unwrap();
-            ops.insert(format!("space:{}", space_did), operator.clone());
+            let mut storage = self.storage.write().unwrap();
+            storage
+                .spaces
+                .insert(format!("space:{}", space_did), operator.clone());
             Ok(())
         }
     }

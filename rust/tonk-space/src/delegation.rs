@@ -262,9 +262,9 @@ mod tests {
 
     /// Create a test delegation with random operators.
     async fn make_test_delegation() -> Delegation {
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
@@ -320,9 +320,9 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     async fn it_serializes_transparently() {
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
-        let subject = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
+        let subject = Operator::generate().await;
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
@@ -401,8 +401,8 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     async fn it_creates_powerline_delegation() {
-        let issuer = Operator::generate();
-        let audience = Operator::generate();
+        let issuer = Operator::generate().await;
+        let audience = Operator::generate().await;
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()

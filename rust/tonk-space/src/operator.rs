@@ -2,9 +2,9 @@
 //!
 //! An `Operator` represents a principal that can sign UCAN delegations and
 //! dialog-db operations. It wraps an Ed25519 signing key and provides
-//! conversions to both `Ed25519Signer` (for UCAN) and dialog-db `Operator`.
+//! conversions to both `Ed25519Signer` (for UCAN) and `SigningAuthority`.
 
-use dialog_artifacts::replica::Operator as ReplicaOperator;
+use dialog_artifacts::replica::SigningAuthority;
 use ed25519_dalek::SigningKey;
 use rand_0_8::rngs::OsRng;
 use ucan::did::{Ed25519Did, Ed25519Signer};
@@ -14,13 +14,13 @@ use ucan::did::{Ed25519Did, Ed25519Signer};
 /// This is the primary identity type for tonk-space. It wraps an Ed25519 signing
 /// key and can be converted to:
 /// - `Ed25519Signer` for signing UCAN delegations
-/// - `ReplicaOperator` for signing dialog-db replica operations
+/// - `SigningAuthority` for signing dialog-db replica operations
 #[derive(Debug, Clone)]
 pub struct Operator(Ed25519Signer);
 
 impl Operator {
     /// Generate a new random operator identity.
-    pub fn generate() -> Self {
+    pub async fn generate() -> Self {
         let signing_key = SigningKey::generate(&mut OsRng);
         Self(Ed25519Signer::new(signing_key))
     }
@@ -72,15 +72,15 @@ impl From<&Operator> for Ed25519Signer {
     }
 }
 
-impl From<Operator> for ReplicaOperator {
+impl From<Operator> for SigningAuthority {
     fn from(operator: Operator) -> Self {
-        ReplicaOperator::from_secret(&operator.to_secret())
+        SigningAuthority::from_secret(&operator.to_secret())
     }
 }
 
-impl From<&Operator> for ReplicaOperator {
+impl From<&Operator> for SigningAuthority {
     fn from(operator: &Operator) -> Self {
-        ReplicaOperator::from_secret(&operator.to_secret())
+        SigningAuthority::from_secret(&operator.to_secret())
     }
 }
 
@@ -107,9 +107,9 @@ mod tests {
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_generates_operator_with_valid_did() {
-        let operator = Operator::generate();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_generates_operator_with_valid_did() {
+        let operator = Operator::generate().await;
         let did = operator.did().to_string();
         assert!(did.starts_with("did:key:z"));
     }
@@ -132,43 +132,43 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_roundtrips_through_secret_bytes() {
-        let op1 = Operator::generate();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_roundtrips_through_secret_bytes() {
+        let op1 = Operator::generate().await;
         let secret = op1.to_secret();
         let op2 = Operator::from(SigningKey::from_bytes(&secret));
         assert_eq!(op1.did().to_string(), op2.did().to_string());
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_roundtrips_through_from_secret() {
-        let op1 = Operator::generate();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_roundtrips_through_from_secret() {
+        let op1 = Operator::generate().await;
         let secret = op1.to_secret();
         let op2 = Operator::from_secret(secret);
         assert_eq!(op1.did().to_string(), op2.did().to_string());
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_converts_to_ed25519_signer() {
-        let operator = Operator::generate();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_converts_to_ed25519_signer() {
+        let operator = Operator::generate().await;
         let did_before = operator.did().to_string();
         let signer: Ed25519Signer = operator.into();
         assert_eq!(signer.did().to_string(), did_before);
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_converts_to_replica_operator() {
-        let operator = Operator::generate();
-        let _replica_op: ReplicaOperator = (&operator).into();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_converts_to_replica_operator() {
+        let operator = Operator::generate().await;
+        let _signing_authority: SigningAuthority = (&operator).into();
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_displays_as_did() {
-        let operator = Operator::generate();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_displays_as_did() {
+        let operator = Operator::generate().await;
         let display = format!("{}", operator);
         assert!(display.starts_with("did:key:z"));
     }

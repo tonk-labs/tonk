@@ -9,9 +9,10 @@
 //! of maintaining a separate list, we could query for delegations where the
 //! account is the audience to discover accessible spaces.
 
+use dialog_artifacts::replica::SigningAuthority;
 use dialog_query::{Attribute, Entity, With};
 use thiserror::Error;
-use tonk_space::{Operator, Space, SpaceError};
+use tonk_space::{Space, SpaceError};
 
 use crate::ServiceWorkerStorageBackend;
 
@@ -50,12 +51,13 @@ impl Account {
     ///
     /// # Arguments
     /// * `db_name` - The database name (should include tonk: prefix for debug clarity)
-    /// * `operator` - The operator for signing account operations
-    pub async fn open(db_name: &str, operator: &Operator) -> Result<Self, AccountError> {
+    /// * `authority` - The signing authority for signing account operations (may use WebCrypto)
+    pub async fn open(db_name: &str, authority: &SigningAuthority) -> Result<Self, AccountError> {
         let backend = ServiceWorkerStorageBackend::new(db_name).await;
 
         // Open the space (creates if doesn't exist)
-        let space = Space::open(db_name.to_string(), operator, backend).await?;
+        let space =
+            Space::open_with_authority(db_name.to_string(), authority.clone(), backend).await?;
 
         Ok(Self { space })
     }

@@ -73,7 +73,7 @@ impl RevisionResponse {
         Self {
             period: *revision.period(),
             moment: *revision.moment(),
-            issuer: revision.issuer().did().to_string(),
+            issuer: revision.issuer().to_string(),
             tree: format!("{}", revision.tree()),
             cause: revision
                 .cause()
