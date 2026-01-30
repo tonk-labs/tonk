@@ -55,6 +55,21 @@ let
       };
     };
 
+  enforce-workspace-deps =
+    with pkgs;
+    rustPlatform.buildRustPackage rec {
+      pname = "cargo-enforce-shared-workspace-deps";
+      version = "0.1.0";
+      buildInputs = [ rustToolchain ];
+
+      src = fetchCrate {
+        inherit pname version;
+        sha256 = "sha256-XOdKeg9tNt/HT+WO9QKtdX3fUMUssVTlXRV0LOIMMzc=";
+      };
+
+      cargoHash = "sha256-O6DQXK8/VVwTLuFlSyh8jtBJyAFMfAUNXnTeMWrXTCM=";
+    };
+
   nativeBuildInputs = buildInputs ++ [
     rustToolchain
   ];
@@ -184,6 +199,16 @@ let
     rustfmt = craneLib.cargoFmt {
       src = rustSource;
       pname = "tonk-fmt-check";
+    };
+
+    sharedWorkspaceDeps = buildCrate {
+      pname = "shared-workspace-deps-check";
+      buildPhase = ''
+        ${enforce-workspace-deps}/bin/cargo-enforce-shared-workspace-deps
+      '';
+      installPhase = ''
+        touch $out
+      '';
     };
   };
 

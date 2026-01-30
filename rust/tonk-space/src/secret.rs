@@ -2,7 +2,7 @@ use ed25519_dalek::SigningKey;
 #[cfg(not(target_arch = "wasm32"))]
 use hkdf::Hkdf;
 #[cfg(not(target_arch = "wasm32"))]
-use sha2::Sha256;
+use sha2_0_10::Sha256;
 
 pub struct Passphrase(String);
 

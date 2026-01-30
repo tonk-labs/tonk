@@ -12,7 +12,7 @@ web-integration-tests = []
 [dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
-base58 = "0.2"
+base58 = { workspace = true }
 base64 = { workspace = true }
 axum-wasm-macros = { workspace = true }
 console_error_panic_hook = { workspace = true }
@@ -56,7 +56,7 @@ idb = "0.6"
 [dev-dependencies]
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
-tower = "0.5"
+tower = { workspace = true }
 wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

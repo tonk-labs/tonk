@@ -6,7 +6,7 @@
 
 use dialog_artifacts::replica::Operator as ReplicaOperator;
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
+use rand_0_8::rngs::OsRng;
 use ucan::did::{Ed25519Did, Ed25519Signer};
 
 /// An operator identity that can sign UCAN delegations and dialog-db operations.
