@@ -10,7 +10,7 @@ use dialog_artifacts::{
 };
 use dialog_query::claim::{Transaction, TransactionError};
 use dialog_query::query::Source;
-use dialog_query::{DeductiveRule, Session};
+use dialog_query::{Concept, DeductiveRule, Entity, Session};
 use futures_core::Stream;
 use std::sync::Arc;
 use thiserror::Error;
@@ -46,7 +46,7 @@ pub enum SpaceError {
     Transaction(#[from] TransactionError),
 
     #[error("Query error: {0}")]
-    Query(#[from] dialog_query::QueryError),
+    Query(Box<dialog_query::QueryError>),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -56,6 +56,22 @@ pub enum SpaceError {
 
     #[error("Invalid attribute: {0}")]
     InvalidAttribute(String),
+}
+
+impl From<dialog_query::QueryError> for SpaceError {
+    fn from(err: dialog_query::QueryError) -> Self {
+        SpaceError::Query(Box::new(err))
+    }
+}
+
+/// Internal concept for querying delegations by audience with their blob data.
+/// Used by `delegations_for_audience` to perform a single joined query.
+#[doc(hidden)]
+#[derive(Concept, Clone, Debug)]
+pub struct DelegationsByAudience {
+    this: Entity,
+    audience: crate::schema::ucan::Audience,
+    blob: crate::schema::ucan::Blob,
 }
 
 /// Represents a Space - a collaboration unit backed by a dialog-db branch
@@ -403,36 +419,24 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         &self,
         audience_did: &str,
     ) -> Result<Vec<Delegation>, SpaceError> {
-        use crate::schema;
-        use dialog_query::concept::Match as _;
-        use dialog_query::{Match, Term, With};
+        use dialog_query::{Match, Term};
         use futures_util::TryStreamExt;
 
-        // Query for entities with the specified audience
-        let query = Match::<With<schema::ucan::Audience>> {
-            this: Term::var("delegation"),
-            has: Term::from(audience_did.to_string()),
+        let query = Match::<DelegationsByAudience> {
+            this: Term::var("ucan"),
+            audience: Term::from(audience_did.to_string()),
+            blob: Term::var("blob"),
         };
 
         let results: Vec<_> = query.query(self.clone()).try_collect().await?;
 
-        // For each match, fetch the blob and deserialize to Delegation
-        let mut delegations = Vec::new();
-        for result in results {
-            let blob_query = Match::<With<schema::ucan::Blob>> {
-                this: Term::from(result.this),
-                has: Term::var("blob"),
-            };
-
-            let blobs: Vec<_> = blob_query.query(self.clone()).try_collect().await?;
-            if let Some(blob_result) = blobs.first() {
-                let delegation: Delegation = serde_ipld_dagcbor::from_slice(&blob_result.has.0)
-                    .map_err(|e| SpaceError::InvalidEntity(e.to_string()))?;
-                delegations.push(delegation);
-            }
-        }
-
-        Ok(delegations)
+        results
+            .into_iter()
+            .map(|r| {
+                serde_ipld_dagcbor::from_slice(&r.blob.0)
+                    .map_err(|e| SpaceError::InvalidEntity(e.to_string()))
+            })
+            .collect()
     }
 }
 
@@ -565,7 +569,7 @@ mod tests {
     use super::*;
     use crate::schema;
     use dialog_query::concept::Match as _;
-    use dialog_query::{Match, Term, With};
+    use dialog_query::{Concept, Entity, Match, Term, With};
     use futures_util::TryStreamExt;
     use ucan::delegation::subject::DelegatedSubject;
     use ucan::did::Ed25519Signer;
@@ -575,6 +579,14 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
+
+    /// Concept for querying delegations by issuer with their blob data.
+    #[derive(Concept, Clone, Debug)]
+    pub struct DelegationsByIssuer {
+        this: Entity,
+        issuer: schema::ucan::Issuer,
+        blob: schema::ucan::Blob,
+    }
 
     fn make_test_delegation() -> Delegation {
         let issuer = Operator::generate();
@@ -860,14 +872,19 @@ mod tests {
             .await
             .expect("Failed to create space");
 
-        // Query for any entity with this specific issuer
-        let query = Match::<With<schema::ucan::Issuer>> {
-            this: Term::var("delegation"),
-            has: Term::from(issuer_did),
+        // Use concept to join issuer and blob in a single query
+        let query = Match::<DelegationsByIssuer> {
+            this: Term::var("ucan"),
+            issuer: Term::from(issuer_did.clone()),
+            blob: Term::var("blob"),
         };
 
         let results: Vec<_> = query.query(space.clone()).try_collect().await.unwrap();
         assert_eq!(results.len(), 1);
+
+        // Verify we can deserialize to the full Delegation
+        let retrieved: Delegation = serde_ipld_dagcbor::from_slice(&results[0].blob.0).unwrap();
+        assert_eq!(retrieved.issuer().to_string(), issuer_did);
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
