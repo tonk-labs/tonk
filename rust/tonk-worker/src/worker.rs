@@ -5,9 +5,8 @@
 use std::sync::Arc;
 
 use crate::{
-    Identity, Workspace, api_router,
+    Identity, Session, api_router,
     axum::{RequestConversion, ResponseConversion},
-    workspace::WorkspaceError,
 };
 use axum::{Router, body::Body};
 use js_sys::Promise;
@@ -18,12 +17,12 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 use web_sys::{Request, Response};
 
-/// Application state containing the user's identity and active workspace.
+/// Application state containing the user's identity and active session.
 pub struct TonkState {
     /// The user's persistent identity.
     pub identity: Arc<Identity>,
-    /// The currently active workspace.
-    pub workspace: Workspace,
+    /// The currently active session.
+    pub session: Session,
 }
 
 /// The main Tonk service worker that handles browser fetch events.
@@ -39,7 +38,7 @@ pub struct TonkServiceWorker {
 impl TonkServiceWorker {
     /// Creates a new service worker instance.
     ///
-    /// Initializes the user identity, workspace, and API router.
+    /// Initializes the user identity, session, and API router.
     ///
     /// On first run:
     /// - Creates a new random identity for the user
@@ -47,11 +46,11 @@ impl TonkServiceWorker {
     ///
     /// On subsequent runs:
     /// - Loads the existing identity from IndexedDB
-    /// - Opens the default workspace
+    /// - Opens the first known space (or creates one if none exist)
     ///
     /// The worker creates two keypairs:
-    /// - **Space keypair**: Represents the space identity (from "public tonk space" passphrase)
-    /// - **Operator keypair**: Used for signing operations (from "public tonk operator" passphrase)
+    /// - **Space keypair**: Represents the space identity
+    /// - **Operator keypair**: Used for signing operations
     ///
     /// A delegation is created from the space to the operator, granting
     /// full capabilities. This delegation is used when setting up upstream sync.
@@ -68,26 +67,32 @@ impl TonkServiceWorker {
             .expect_throw("Could not initialize identity");
         log!("User DID: {}", identity.did());
 
-        // 2. Open default workspace, or create if none exists
-        let workspace = match identity.open_workspace(None).await {
-            Ok(ws) => ws,
-            Err(WorkspaceError::NoDefaultSpace) => {
-                log!("No default space, creating...");
-                identity
-                    .create_workspace()
-                    .await
-                    .expect_throw("Could not create workspace")
-            }
-            Err(e) => {
-                return Err(JsError::new(&format!("Could not open workspace: {}", e)));
-            }
+        // 2. Get known spaces, or create if none exist
+        let known_spaces = identity
+            .account()
+            .known_spaces()
+            .await
+            .expect_throw("Could not query known spaces");
+
+        let session = if let Some(space_did) = known_spaces.first() {
+            log!("Opening known space: {}", space_did);
+            identity
+                .open_session(space_did)
+                .await
+                .expect_throw("Could not open session")
+        } else {
+            log!("No known spaces, creating...");
+            identity
+                .create_session()
+                .await
+                .expect_throw("Could not create session")
         };
-        log!("Space DID: {}", workspace.space_did());
+        log!("Space DID: {}", session.space_did());
 
         // 3. Build state and router
         let state = TonkState {
             identity: Arc::new(identity),
-            workspace,
+            session,
         };
         let router = Arc::new(Mutex::new(api_router(state)));
 

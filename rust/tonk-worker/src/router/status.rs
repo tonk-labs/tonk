@@ -26,7 +26,7 @@ pub async fn status(
     State(state): State<AppState>,
 ) -> Result<Json<StatusResponse>, TonkWorkerError> {
     let tonk_state = state.read().await;
-    let space = tonk_state.workspace.space();
+    let space = tonk_state.session.space();
 
     Ok(Json(StatusResponse {
         space_did: space.did.clone(),

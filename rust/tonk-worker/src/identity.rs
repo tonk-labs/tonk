@@ -5,7 +5,7 @@
 
 use crate::account::{Account, AccountError};
 use crate::key_store::{KeyStore, KeyStoreError};
-use crate::workspace::{Workspace, WorkspaceError};
+use crate::session::{Session, SessionError};
 use thiserror::Error;
 use tonk_space::Operator;
 use ucan::did::Ed25519Did;
@@ -30,10 +30,18 @@ pub enum IdentityError {
 /// The Identity provides access to:
 /// - The user's DID (decentralized identifier)
 /// - The user's operator (for signing operations)
-/// - Methods to open or create workspaces
+/// - Methods to open or create sessions
 #[derive(Clone)]
 pub struct Identity {
+    /// The user's operator keypair for this device.
+    /// Used to sign operations and establish identity.
+    /// TODO: In the future with powerline delegations, this will be the only key
+    /// needed - authority over spaces will come from UCAN delegation chains
+    /// rather than holding space keys.
     operator: Operator,
+    /// Access to the key store for retrieving space operators.
+    /// TODO: Once we switch to powerline delegations, space keys won't be stored
+    /// and this field may no longer be needed.
     key_store: KeyStore,
     account: Account,
 }
@@ -43,6 +51,10 @@ impl Identity {
     ///
     /// On first call, generates a new random Ed25519 keypair and persists it.
     /// On subsequent calls, loads the existing keypair from storage.
+    ///
+    /// TODO: Consider passing storage as a parameter to make testing easier
+    /// and avoid global state. Should also add a test verifying that loading
+    /// across sessions returns the same DID.
     pub async fn load_or_create() -> Result<Self, IdentityError> {
         let key_store = KeyStore::open().await?;
 
@@ -51,7 +63,9 @@ impl Identity {
             None => key_store.create_user_operator().await?,
         };
 
-        let account = Account::open(&operator.did().to_string(), &operator).await?;
+        // Prefix with "tonk:" for debug clarity when viewing IndexedDB in devtools
+        let db_name = format!("tonk:{}", operator.did());
+        let account = Account::open(&db_name, &operator).await?;
 
         Ok(Self {
             operator,
@@ -87,29 +101,21 @@ impl Identity {
         &mut self.account
     }
 
-    /// Open a workspace for the given space, or the default space if None.
+    /// Open a session for the given space.
     ///
     /// # Arguments
-    /// * `space_did` - The DID of the space to open, or None for the default space
-    ///
-    /// # Errors
-    /// Returns `WorkspaceError::NoDefaultSpace` if no space_did is provided and
-    /// no default space has been set.
-    pub async fn open_workspace(
-        &self,
-        space_did: Option<&str>,
-    ) -> Result<Workspace, WorkspaceError> {
-        Workspace::open(self, space_did).await
+    /// * `space_did` - The DID of the space to open
+    pub async fn open_session(&self, space_did: &str) -> Result<Session, SessionError> {
+        Session::open(self, space_did).await
     }
 
-    /// Create a new space owned by this user and open it as a workspace.
+    /// Create a new space owned by this user and open it as a session.
     ///
     /// The new space will have:
     /// - A newly generated Ed25519 keypair
     /// - A delegation granting this user full authority over the space
-    /// - The space set as the default space for this user
-    pub async fn create_workspace(&mut self) -> Result<Workspace, WorkspaceError> {
-        Workspace::create(self).await
+    pub async fn create_session(&mut self) -> Result<Session, SessionError> {
+        Session::create(self).await
     }
 }
 

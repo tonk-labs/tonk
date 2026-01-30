@@ -77,17 +77,18 @@ pub async fn authorize(
     let mut tonk_state = state.write().await;
 
     // Get user's delegation for authorization
-    let user_delegations =
-        tonk_state.workspace.user_delegations().await.map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to query delegations: {}", e))
-        })?;
+    let user_delegations = tonk_state
+        .session
+        .account_delegations()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to query delegations: {}", e)))?;
 
     let delegation = user_delegations
         .into_iter()
         .next()
         .ok_or_else(|| TonkWorkerError::Internal("No delegations found for user".to_string()))?;
 
-    let space_did = tonk_state.workspace.space_did().to_string();
+    let space_did = tonk_state.session.space_did().to_string();
     let service_url = get_access_service_url();
     log!(
         "Setting up UCAN credentials for space: {} with URL: {}",
@@ -109,7 +110,7 @@ pub async fn authorize(
     // Add the remote to the space
     // If the remote already exists, that's fine - treat it as success
     match tonk_state
-        .workspace
+        .session
         .space_mut()
         .add_remote(remote_state)
         .await
@@ -130,14 +131,9 @@ pub async fn authorize(
     }
 
     // Set upstream on branch if not already configured
-    if !tonk_state.workspace.space().has_upstream().await {
+    if !tonk_state.session.space().has_upstream().await {
         log!("Setting 'origin' as upstream for main branch...");
-        match tonk_state
-            .workspace
-            .space_mut()
-            .set_upstream("origin")
-            .await
-        {
+        match tonk_state.session.space_mut().set_upstream("origin").await {
             Ok(()) => {
                 log!("Upstream set successfully");
             }
@@ -165,7 +161,7 @@ pub async fn status(
     State(state): State<AppState>,
 ) -> Result<Json<StatusResponse>, TonkWorkerError> {
     let tonk_state = state.read().await;
-    let space = tonk_state.workspace.space();
+    let space = tonk_state.session.space();
 
     Ok(Json(StatusResponse {
         space_did: space.did.clone(),

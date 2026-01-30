@@ -48,8 +48,8 @@ pub use key_store::*;
 mod identity;
 pub use identity::*;
 
-mod workspace;
-pub use workspace::*;
+mod session;
+pub use session::*;
 
 // Note: WebCryptoIssuer removed as part of Plan A (extractable keys).
 // Non-extractable WebCrypto support will be re-introduced in Plan B.

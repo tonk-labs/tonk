@@ -31,7 +31,7 @@ pub use identify::{IdentifyResponse, identify};
 mod delegations;
 pub use delegations::{DelegationsResponse, delegations};
 
-/// Shared application state containing identity and workspace.
+/// Shared application state containing identity and session.
 pub type AppState = Arc<RwLock<TonkState>>;
 
 /// Root handler that returns a welcome message.
@@ -72,7 +72,6 @@ pub mod tests {
     use std::sync::Arc;
 
     use crate::worker::TonkState;
-    use crate::workspace::WorkspaceError;
     use crate::{Identity, api_router};
 
     use axum::body::Body;
@@ -84,18 +83,28 @@ pub mod tests {
             .await
             .expect("Failed to create test identity");
 
-        let workspace = match identity.open_workspace(None).await {
-            Ok(ws) => ws,
-            Err(WorkspaceError::NoDefaultSpace) => identity
-                .create_workspace()
+        // Get known spaces, or create if none exist
+        let known_spaces = identity
+            .account()
+            .known_spaces()
+            .await
+            .expect("Could not query known spaces");
+
+        let session = if let Some(space_did) = known_spaces.first() {
+            identity
+                .open_session(space_did)
                 .await
-                .expect("Failed to create workspace"),
-            Err(e) => panic!("Failed to open workspace: {}", e),
+                .expect("Failed to open session")
+        } else {
+            identity
+                .create_session()
+                .await
+                .expect("Failed to create session")
         };
 
         TonkState {
             identity: Arc::new(identity),
-            workspace,
+            session,
         }
     }
 

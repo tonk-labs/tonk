@@ -32,10 +32,11 @@ pub async fn delegations(
     let tonk_state = state.read().await;
 
     // Query delegations where audience == user DID
-    let user_delegations =
-        tonk_state.workspace.user_delegations().await.map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to query delegations: {}", e))
-        })?;
+    let user_delegations = tonk_state
+        .session
+        .account_delegations()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to query delegations: {}", e)))?;
 
     // Encode each delegation as base64 DAG-CBOR
     let encoded: Vec<String> = user_delegations

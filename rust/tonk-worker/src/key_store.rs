@@ -13,6 +13,17 @@
 //!
 //! Note: Plan A uses extractable keys stored as secret bytes. Plan B will
 //! re-introduce proper WebCrypto non-extractable keys for WASM.
+//!
+//! # Future Direction
+//!
+//! TODO: We should not be holding onto space keys as those are a liability.
+//! Instead, we should store powerline delegations from space to owner (account/user).
+//! That way accounts have complete authority over spaces without managing keys.
+//! Unlike keys, those delegations can be kept public as they can't be exploited
+//! without account keys. See: https://github.com/ucan-wg/delegation#powerline
+//!
+//! TODO: Consider using the existing `IndexedDbStorageBackend` instead of this
+//! custom IDB implementation to reduce boilerplate.
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {

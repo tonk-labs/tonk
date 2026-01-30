@@ -33,7 +33,7 @@ pub async fn pull(State(state): State<AppState>) -> Result<Json<SyncResponse>, T
 
     let mut tonk_state = state.write().await;
 
-    match tonk_state.workspace.space_mut().pull().await {
+    match tonk_state.session.space_mut().pull().await {
         Ok(Some(_old_revision)) => {
             log!("Pull succeeded, changes applied");
             Ok(Json(SyncResponse {
@@ -70,7 +70,7 @@ pub async fn push(State(state): State<AppState>) -> Result<Json<SyncResponse>, T
 
     let mut tonk_state = state.write().await;
 
-    match tonk_state.workspace.space_mut().push().await {
+    match tonk_state.session.space_mut().push().await {
         Ok(Some(_old_revision)) => {
             log!("Push succeeded, changes sent");
             Ok(Json(SyncResponse {
@@ -108,7 +108,7 @@ pub async fn sync(State(state): State<AppState>) -> Result<Json<SyncResponse>, T
     let mut tonk_state = state.write().await;
 
     // First pull
-    let pull_changed = match tonk_state.workspace.space_mut().pull().await {
+    let pull_changed = match tonk_state.session.space_mut().pull().await {
         Ok(Some(_)) => {
             log!("Pull succeeded, changes applied");
             true
@@ -128,7 +128,7 @@ pub async fn sync(State(state): State<AppState>) -> Result<Json<SyncResponse>, T
     };
 
     // Then push
-    let push_changed = match tonk_state.workspace.space_mut().push().await {
+    let push_changed = match tonk_state.session.space_mut().push().await {
         Ok(Some(_)) => {
             log!("Push succeeded, changes sent");
             true
