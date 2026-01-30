@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_space::{RemoteState, SpaceError};
+use ucan::delegation::subject::DelegatedSubject;
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -83,11 +84,6 @@ pub async fn authorize(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("Failed to query delegations: {}", e)))?;
 
-    let delegation = user_delegations
-        .into_iter()
-        .next()
-        .ok_or_else(|| TonkWorkerError::Internal("No delegations found for user".to_string()))?;
-
     let space_did = tonk_state.session.space_did().to_string();
     let service_url = get_access_service_url();
     log!(
@@ -95,6 +91,17 @@ pub async fn authorize(
         space_did,
         service_url
     );
+
+    // Find delegation where subject matches the space DID
+    let delegation = user_delegations
+        .into_iter()
+        .find(|d| match d.subject() {
+            DelegatedSubject::Specific(did) => did.to_string() == space_did,
+            DelegatedSubject::Any => true, // Powerline delegations apply to any subject
+        })
+        .ok_or_else(|| {
+            TonkWorkerError::Internal(format!("No delegation found for space {}", space_did))
+        })?;
 
     // Create delegation chain from the user's delegation
     let delegation_chain = DelegationChain::new(delegation.inner().clone());

@@ -117,6 +117,11 @@ impl Identity {
     pub async fn create_session(&mut self) -> Result<Session, SessionError> {
         Session::create(self).await
     }
+
+    /// Join a space by making this user an owner and opens it as a session.
+    pub async fn join_session(&mut self, space: Operator) -> Result<Session, SessionError> {
+        Session::import(self, space).await
+    }
 }
 
 impl std::fmt::Display for Identity {

@@ -69,11 +69,13 @@ impl Session {
             .await?
             .ok_or_else(|| SessionError::SpaceNotFound(space_did.to_string()))?;
 
-        // Open the space database
+        // Open the space database using the user's operator as the replica issuer.
+        // This ensures that when making remote requests, the claim.audience() matches
+        // the delegation.audience() (which is the user's operator DID).
         // Prefix with "tonk:" for debug clarity when viewing IndexedDB in devtools
         let db_name = format!("tonk:{}", space_did);
         let backend = ServiceWorkerStorageBackend::new(&db_name).await;
-        let space = Space::open(space_did.to_string(), &operator, backend).await?;
+        let space = Space::open(space_did.to_string(), identity.operator(), backend).await?;
 
         Ok(Self {
             account: identity.did().to_string(),
@@ -87,34 +89,42 @@ impl Session {
     /// TODO: Decouple creation from saving - consider having a separate
     /// `.save(&mut storage)` method for persistence rather than doing it implicitly.
     pub(crate) async fn create(identity: &mut Identity) -> Result<Self, SessionError> {
-        // Generate a new keypair for the space
-        // TODO: Once we switch to powerline delegations, we may not need to store
-        // space keys at all - just the delegation from space to account.
-        let operator = identity.key_store().create_space_operator().await?;
-        let space_did = operator.did().to_string();
+        // Generate new keypair for the space and import it
+        Self::import(identity, Operator::generate()).await
+    }
 
+    /// Imports a space by making this user an owner.
+    pub(crate) async fn import(
+        identity: &mut Identity,
+        space_operator: Operator,
+    ) -> Result<Self, SessionError> {
         // Store space operator in key store
         identity
             .key_store()
-            .store_space_operator(&space_did, &operator)
+            .store_space_operator(&space_operator)
             .await?;
 
         // Create delegation: space -> user (space grants user full authority)
-        let delegation = Self::create_ownership_delegation(&operator, identity.operator()).await?;
+        let delegation =
+            Self::create_ownership_delegation(&space_operator, identity.operator()).await?;
 
         // Update account with the new space
+        let space_did = space_operator.did().to_string();
         identity.account_mut().add_known_space(&space_did).await?;
 
-        // Create the space database and space with ownership delegation
+        // Create the space database using the user's operator as the replica issuer.
+        // This ensures that when making remote requests, the claim.audience() matches
+        // the delegation.audience() (which is the user's operator DID).
         // Prefix with "tonk:" for debug clarity when viewing IndexedDB in devtools
         let db_name = format!("tonk:{}", space_did);
         let backend = ServiceWorkerStorageBackend::new(&db_name).await;
-        let space = Space::create(space_did, &operator, backend, vec![delegation]).await?;
+        let space =
+            Space::create(space_did, identity.operator(), backend, vec![delegation]).await?;
 
         Ok(Self {
             account: identity.did().to_string(),
             space,
-            operator,
+            operator: space_operator,
         })
     }
 

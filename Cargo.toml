@@ -80,6 +80,7 @@ dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = 
 dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
 dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
 dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
 dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk", features = ["ucan"] }
 
 # UCAN (using local path for development)
