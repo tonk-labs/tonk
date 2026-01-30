@@ -108,6 +108,9 @@ pub struct UpstreamStatusResponse {
     pub site: Option<String>,
     /// The branch name on the upstream.
     pub branch: String,
+    /// The subject DID of the upstream repository (None for local upstream).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     /// The upstream revision with full details (if known).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<RevisionResponse>,
@@ -125,11 +128,13 @@ pub async fn branch(
     match tonk_state.session.space().branch_info(&branch_name).await {
         Ok(branch_info) => {
             let upstream = branch_info.upstream.map(|u| {
-                let revision = u.revision.as_ref().map(RevisionResponse::from_revision);
                 UpstreamStatusResponse {
                     site: u.site,
                     branch: u.branch,
-                    revision,
+                    subject: u.subject,
+                    // Revision is not available without connecting to remote
+                    // Use the sync endpoints to get the latest revision
+                    revision: None,
                 }
             });
 

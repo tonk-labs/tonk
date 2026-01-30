@@ -123,23 +123,9 @@ mod wasm {
             self.get_operator(&key).await
         }
 
-        /// Create a new space operator.
-        ///
-        /// Returns the new operator. The space DID is derived from the generated public key.
-        pub async fn create_space_operator(&self) -> Result<Operator, KeyStoreError> {
-            let operator = Operator::generate();
-            let space_did = operator.did().to_string();
-            let key = format!("{}{}", SPACE_KEY_PREFIX, space_did);
-            self.store_operator(&key, &operator).await?;
-            Ok(operator)
-        }
-
         /// Store a space operator (for when you have an existing operator to store).
-        pub async fn store_space_operator(
-            &self,
-            space_did: &str,
-            operator: &Operator,
-        ) -> Result<(), KeyStoreError> {
+        pub async fn store_space_operator(&self, operator: &Operator) -> Result<(), KeyStoreError> {
+            let space_did = operator.did().to_string();
             let key = format!("{}{}", SPACE_KEY_PREFIX, space_did);
             self.store_operator(&key, operator).await
         }
@@ -289,11 +275,8 @@ mod native {
         }
 
         /// Store a space operator.
-        pub async fn store_space_operator(
-            &self,
-            space_did: &str,
-            operator: &Operator,
-        ) -> Result<(), KeyStoreError> {
+        pub async fn store_space_operator(&self, operator: &Operator) -> Result<(), KeyStoreError> {
+            let space_did = operator.did();
             let mut ops = self.operators.write().unwrap();
             ops.insert(format!("space:{}", space_did), operator.clone());
             Ok(())

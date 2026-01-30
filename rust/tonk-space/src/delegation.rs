@@ -261,26 +261,28 @@ mod tests {
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
     /// Create a test delegation with random operators.
-    fn make_test_delegation() -> Delegation {
+    async fn make_test_delegation() -> Delegation {
         let issuer = Operator::generate();
         let audience = Operator::generate();
         let subject = Operator::generate();
 
+        let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
-            .issuer(Ed25519Signer::from(&issuer))
+            .issuer(signer.clone())
             .audience(*audience.did())
             .subject(DelegatedSubject::Specific(*subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
-            .try_build()
+            .try_build(&signer)
+            .await
             .expect("Failed to build delegation");
 
         Delegation::from(ucan_delegation)
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_exposes_delegation_fields() {
-        let delegation = make_test_delegation();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_exposes_delegation_fields() {
+        let delegation = make_test_delegation().await;
 
         assert!(delegation.issuer().to_string().starts_with("did:key:"));
         assert!(delegation.audience().to_string().starts_with("did:key:"));
@@ -294,9 +296,9 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_roundtrips_through_serde() {
-        let delegation = make_test_delegation();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_roundtrips_through_serde() {
+        let delegation = make_test_delegation().await;
 
         let bytes = serde_ipld_dagcbor::to_vec(&delegation).expect("Failed to encode");
         let decoded: Delegation = serde_ipld_dagcbor::from_slice(&bytes).expect("Failed to decode");
@@ -316,18 +318,20 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_serializes_transparently() {
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_serializes_transparently() {
         let issuer = Operator::generate();
         let audience = Operator::generate();
         let subject = Operator::generate();
 
+        let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
-            .issuer(Ed25519Signer::from(&issuer))
+            .issuer(signer.clone())
             .audience(*audience.did())
             .subject(DelegatedSubject::Specific(*subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
-            .try_build()
+            .try_build(&signer)
+            .await
             .expect("Failed to build delegation");
 
         let ucan_bytes =
@@ -351,9 +355,9 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_produces_valid_cid() {
-        let delegation = make_test_delegation();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_produces_valid_cid() {
+        let delegation = make_test_delegation().await;
 
         let cid = delegation.cid();
         let cid_str = format!("ucan:{}", cid);
@@ -363,9 +367,9 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_returns_entity_from_this() {
-        let delegation = make_test_delegation();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_returns_entity_from_this() {
+        let delegation = make_test_delegation().await;
 
         let entity = delegation.this();
         assert!(
@@ -375,9 +379,9 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_produces_deterministic_cid() {
-        let delegation = make_test_delegation();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_produces_deterministic_cid() {
+        let delegation = make_test_delegation().await;
 
         let cid1 = delegation.cid();
         let cid2 = delegation.cid();
@@ -386,26 +390,28 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_validates_delegation_without_expiration() {
-        let delegation = make_test_delegation();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_validates_delegation_without_expiration() {
+        let delegation = make_test_delegation().await;
         let now = Timestamp::now();
 
         assert!(delegation.validate(now).is_ok());
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_creates_powerline_delegation() {
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_creates_powerline_delegation() {
         let issuer = Operator::generate();
         let audience = Operator::generate();
 
+        let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
-            .issuer(Ed25519Signer::from(&issuer))
+            .issuer(signer.clone())
             .audience(*audience.did())
             .subject(DelegatedSubject::Any)
             .command(vec!["read".to_string()])
-            .try_build()
+            .try_build(&signer)
+            .await
             .expect("Failed to build delegation");
 
         let delegation = Delegation::from(ucan_delegation);
@@ -415,9 +421,9 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_provides_access_to_inner() {
-        let delegation = make_test_delegation();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_provides_access_to_inner() {
+        let delegation = make_test_delegation().await;
 
         let inner = delegation.inner();
         assert_eq!(inner.issuer().to_string(), delegation.issuer().to_string());

@@ -12,6 +12,7 @@ use axum::{Router, body::Body};
 use js_sys::Promise;
 use tokio::sync::Mutex;
 use tonk_common::log;
+use tonk_space::Operator;
 use tower_service::Service;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
@@ -81,9 +82,10 @@ impl TonkServiceWorker {
                 .await
                 .expect_throw("Could not open session")
         } else {
-            log!("No known spaces, creating...");
+            log!("No known spaces, join publish shared space");
+            let shared_space = Operator::from_passphrase("public tonk space").await;
             identity
-                .create_session()
+                .join_session(shared_space)
                 .await
                 .expect_throw("Could not create session")
         };

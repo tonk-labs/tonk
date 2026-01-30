@@ -106,26 +106,28 @@ mod tests {
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
     /// Create a test delegation with random operators.
-    fn make_test_delegation() -> Delegation {
+    async fn make_test_delegation() -> Delegation {
         let issuer = Operator::generate();
         let audience = Operator::generate();
         let subject = Operator::generate();
 
+        let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
-            .issuer(Ed25519Signer::from(&issuer))
+            .issuer(signer.clone())
             .audience(*audience.did())
             .subject(DelegatedSubject::Specific(*subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
-            .try_build()
+            .try_build(&signer)
+            .await
             .expect("Failed to build delegation");
 
         Delegation::from(ucan_delegation)
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_creates_ownership_from_delegation() {
-        let delegation = make_test_delegation();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_creates_ownership_from_delegation() {
+        let delegation = make_test_delegation().await;
         let expected_subject = delegation.subject().clone();
         let ownership = Ownership::from(delegation);
 
@@ -133,9 +135,9 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_provides_access_to_underlying_delegation() {
-        let delegation = make_test_delegation();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_provides_access_to_underlying_delegation() {
+        let delegation = make_test_delegation().await;
         let expected_issuer = delegation.issuer().to_string();
         let ownership = Ownership::from(delegation);
 
@@ -145,28 +147,30 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_matches_subject_with_delegation() {
-        let delegation = make_test_delegation();
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_matches_subject_with_delegation() {
+        let delegation = make_test_delegation().await;
         let ownership = Ownership::from(delegation);
 
         assert_eq!(ownership.subject(), ownership.delegation().subject());
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_returns_specific_subject_as_space() {
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_returns_specific_subject_as_space() {
         let issuer = Operator::generate();
         let audience = Operator::generate();
         let subject = Operator::generate();
         let expected_space = *subject.did();
 
+        let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
-            .issuer(Ed25519Signer::from(&issuer))
+            .issuer(signer.clone())
             .audience(*audience.did())
             .subject(DelegatedSubject::Specific(*subject.did()))
             .command(vec!["read".to_string()])
-            .try_build()
+            .try_build(&signer)
+            .await
             .expect("Failed to build delegation");
 
         let ownership = Ownership::from(Delegation::from(ucan_delegation));
@@ -175,18 +179,20 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_returns_issuer_as_space_for_powerline() {
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn it_returns_issuer_as_space_for_powerline() {
         let issuer = Operator::generate();
         let audience = Operator::generate();
         let expected_space = *issuer.did();
 
+        let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
-            .issuer(Ed25519Signer::from(&issuer))
+            .issuer(signer.clone())
             .audience(*audience.did())
             .subject(DelegatedSubject::Any)
             .command(vec!["read".to_string()])
-            .try_build()
+            .try_build(&signer)
+            .await
             .expect("Failed to build delegation");
 
         let ownership = Ownership::from(Delegation::from(ucan_delegation));
