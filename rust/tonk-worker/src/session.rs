@@ -100,7 +100,7 @@ impl Session {
             .await?;
 
         // Create delegation: space -> user (space grants user full authority)
-        let delegation = Self::create_ownership_delegation(&operator, identity.operator())?;
+        let delegation = Self::create_ownership_delegation(&operator, identity.operator()).await?;
 
         // Update account with the new space
         identity.account_mut().add_known_space(&space_did).await?;
@@ -119,16 +119,18 @@ impl Session {
     }
 
     /// Create an ownership delegation from space to user.
-    fn create_ownership_delegation(
+    async fn create_ownership_delegation(
         space_operator: &Operator,
         user_operator: &Operator,
     ) -> Result<Delegation, SessionError> {
+        let signer = Ed25519Signer::from(space_operator);
         let ucan_delegation = Delegation::builder()
-            .issuer(Ed25519Signer::from(space_operator))
+            .issuer(signer.clone())
             .audience(*user_operator.did())
             .subject(DelegatedSubject::Specific(*space_operator.did()))
             .command(vec![]) // Empty command = "/*" (all commands)
-            .try_build()
+            .try_build(&signer)
+            .await
             .expect("Delegation builder should not fail with valid inputs");
 
         Ok(Delegation::from(ucan_delegation))

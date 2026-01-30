@@ -267,7 +267,8 @@ pub async fn archive_block(
     let tonk_state = state.read().await;
 
     match tonk_state
-        .space
+        .session
+        .space()
         .fetch_remote_archive_block(&params.site, &params.repo_did, &hash)
         .await
     {

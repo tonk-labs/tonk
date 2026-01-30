@@ -923,7 +923,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fweb-crypto#ec8da47e9568f7f4764c938614da144faaaefd12"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#c363f189a3e82ecd3e013906cc797645b42b41aa"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -959,7 +959,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fweb-crypto#ec8da47e9568f7f4764c938614da144faaaefd12"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#c363f189a3e82ecd3e013906cc797645b42b41aa"
 dependencies = [
  "async-trait",
  "dialog-common",
@@ -972,7 +972,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fweb-crypto#ec8da47e9568f7f4764c938614da144faaaefd12"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#c363f189a3e82ecd3e013906cc797645b42b41aa"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -990,7 +990,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fweb-crypto#ec8da47e9568f7f4764c938614da144faaaefd12"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#c363f189a3e82ecd3e013906cc797645b42b41aa"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1002,7 +1002,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fweb-crypto#ec8da47e9568f7f4764c938614da144faaaefd12"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#c363f189a3e82ecd3e013906cc797645b42b41aa"
 dependencies = [
  "blake3",
  "proc-macro2",
@@ -1013,7 +1013,7 @@ dependencies = [
 [[package]]
 name = "dialog-prolly-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fweb-crypto#ec8da47e9568f7f4764c938614da144faaaefd12"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#c363f189a3e82ecd3e013906cc797645b42b41aa"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1033,7 +1033,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fweb-crypto#ec8da47e9568f7f4764c938614da144faaaefd12"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#c363f189a3e82ecd3e013906cc797645b42b41aa"
 dependencies = [
  "async-stream",
  "blake3",
@@ -1055,7 +1055,7 @@ dependencies = [
 [[package]]
 name = "dialog-query-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fweb-crypto#ec8da47e9568f7f4764c938614da144faaaefd12"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#c363f189a3e82ecd3e013906cc797645b42b41aa"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1065,7 +1065,7 @@ dependencies = [
 [[package]]
 name = "dialog-s3-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fweb-crypto#ec8da47e9568f7f4764c938614da144faaaefd12"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#c363f189a3e82ecd3e013906cc797645b42b41aa"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1095,7 +1095,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fweb-crypto#ec8da47e9568f7f4764c938614da144faaaefd12"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#c363f189a3e82ecd3e013906cc797645b42b41aa"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4456,7 +4456,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "ucan"
 version = "0.5.0"
-source = "git+https://github.com/tonk-labs/rs-ucan.git?branch=tonk#69ffde436a9d8373a2d0bc6e285860137e9131b0"
+source = "git+https://github.com/tonk-labs/rs-ucan.git?branch=tonk#51d0ec8952ccaf3d95a767f0bb3d302064ac7aa1"
 dependencies = [
  "base58",
  "ed25519-dalek",
@@ -4576,7 +4576,7 @@ dependencies = [
 [[package]]
 name = "varsig"
 version = "0.1.0"
-source = "git+https://github.com/tonk-labs/rs-ucan.git?branch=tonk#69ffde436a9d8373a2d0bc6e285860137e9131b0"
+source = "git+https://github.com/tonk-labs/rs-ucan.git?branch=tonk#51d0ec8952ccaf3d95a767f0bb3d302064ac7aa1"
 dependencies = [
  "async-signature",
  "ed25519-dalek",
@@ -4815,7 +4815,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
