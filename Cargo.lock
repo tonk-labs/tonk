@@ -4270,6 +4270,7 @@ dependencies = [
  "thirtyfour",
  "thiserror 2.0.18",
  "tokio",
+ "tonk-access-service",
  "tonk-worker",
  "url",
  "wasm-bindgen",

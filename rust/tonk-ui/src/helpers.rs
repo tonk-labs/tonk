@@ -2,12 +2,13 @@
 mod native {
     use anyhow::{Result, anyhow};
     use async_trait::async_trait;
-    use dialog_common::helpers::Provider;
+    use dialog_common::helpers::{Provider, Service};
     use port_check::free_local_port;
     use serde::{Deserialize, Serialize};
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Stdio};
     use thirtyfour::{ChromiumLikeCapabilities, DesiredCapabilities, WebDriver};
+    use tonk_access_service::helpers::{AccessServiceAddress, AccessServiceSettings};
     use url::Url;
 
     /// Test environment configuration for integration tests.
@@ -17,6 +18,8 @@ mod native {
         pub tonk_web: Url,
         /// URL of the ChromeDriver server.
         pub chromedriver: Url,
+        /// Access service connection info.
+        pub access_service: AccessServiceAddress,
     }
 
     impl TestEnvironment {
@@ -41,17 +44,23 @@ mod native {
             driver.goto(&self.tonk_web.to_string()).await?;
             Ok(driver)
         }
+
+        /// Returns the access service URL with /ucan/ path appended.
+        pub fn access_service_url(&self) -> String {
+            format!("{}/ucan/", self.access_service.access_service_url)
+        }
     }
 
     /// Manages test server processes for integration testing.
     pub struct TestServers {
         web_server: Child,
         chromedriver: Child,
+        access_service: Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>,
     }
 
     impl TestServers {
         /// Starts the test servers and returns the server handles and environment configuration.
-        pub fn start() -> Result<(Self, TestEnvironment)> {
+        pub async fn start() -> Result<(Self, TestEnvironment)> {
             let web_port =
                 free_local_port().expect("Could not get a free local port for test server");
             let mut web_server = std::process::Command::new("nix")
@@ -94,22 +103,31 @@ mod native {
                 }
             }
 
+            // Start the access service using tonk-access-service's provider
+            let settings = AccessServiceSettings::default();
+            let access_service = tonk_access_service::helpers::access_service(settings).await?;
+
+            let access_service_address = access_service.address.clone();
+
             Ok((
                 Self {
                     web_server,
                     chromedriver,
+                    access_service,
                 },
                 TestEnvironment {
                     tonk_web: Url::parse(&format!("http://127.0.0.1:{web_port}"))?,
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
+                    access_service: access_service_address,
                 },
             ))
         }
 
         /// Stops all test server processes.
-        pub fn stop(mut self) -> Result<()> {
+        pub async fn stop(mut self) -> Result<()> {
             self.web_server.kill()?;
             self.chromedriver.kill()?;
+            self.access_service.stop().await?;
             Ok(())
         }
     }
@@ -117,16 +135,14 @@ mod native {
     #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl Provider for TestServers {
-        async fn stop(mut self) -> anyhow::Result<()> {
-            TestServers::stop(self)
+        async fn stop(self) -> anyhow::Result<()> {
+            TestServers::stop(self).await
         }
     }
 
     #[dialog_common::provider]
     async fn test_servers(_: ()) -> Result<Service<TestEnvironment, TestServers>> {
-        use dialog_common::helpers::Service;
-
-        let (server, address) = TestServers::start()?;
+        let (server, address) = TestServers::start().await?;
         Ok(Service::new(address, server))
     }
 }
