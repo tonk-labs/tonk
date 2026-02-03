@@ -199,6 +199,7 @@ mod tests {
     use crate::StatusResponse;
     use crate::{AuthorizeResponse, SyncResponse, api_router};
 
+    use anyhow::Result;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tonk_access_service::helpers::AccessServiceAddress;
@@ -235,7 +236,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_authorizes_with_access_service(env: AccessServiceAddress) {
+    async fn it_authorizes_with_access_service(env: AccessServiceAddress) -> Result<()> {
         let state = test_state().await;
         let app = api_router(state);
 
@@ -293,10 +294,11 @@ mod tests {
             serde_json::from_slice(&body).expect("Failed to deserialize response");
 
         assert!(status_response.has_upstream);
+        Ok(())
     }
 
     #[dialog_common::test]
-    async fn it_syncs_with_access_service(env: AccessServiceAddress) {
+    async fn it_syncs_with_access_service(env: AccessServiceAddress) -> Result<()> {
         let state = test_state().await;
         let app = api_router(state);
 
@@ -344,5 +346,6 @@ mod tests {
             serde_json::from_slice(&body).expect("Failed to deserialize response");
 
         assert!(sync_response.success, "Sync should succeed");
+        Ok(())
     }
 }
