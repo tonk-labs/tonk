@@ -93,48 +93,10 @@ mod tests {
     use thirtyfour::prelude::*;
     use tonk_worker::{StatusResponse, SyncResponse};
 
-    /// Test that the UI loads and the service worker responds to status requests.
-    /// This test checks initial state before auto-authorization completes.
-    #[dialog_common::test]
-    async fn it_loads_ui_and_gets_status(env: TestEnvironment) -> Result<()> {
-        let driver = env.driver().await?;
-
-        // Wait for service worker to activate before making API calls
-        // Note: We use serviceWorkerActivates here (not .toolbar.visible) to check
-        // the initial state before auto-authorization completes
-        driver
-            .execute("await window.serviceWorkerActivates();", vec![])
-            .await?;
-
-        // Execute JavaScript to call the status API
-        let result = driver
-            .execute(
-                r#"
-                const response = await fetch('/api/status');
-                return await response.json();
-                "#,
-                vec![],
-            )
-            .await?;
-
-        let status: StatusResponse = serde_json::from_value(result.json().clone())?;
-
-        // Status should show no upstream configured initially
-        assert!(!status.has_upstream, "Expected no upstream initially");
-        assert!(!status.space_did.is_empty(), "Expected space_did to be set");
-        assert!(
-            !status.operator_did.is_empty(),
-            "Expected operator_did to be set"
-        );
-
-        driver.quit().await?;
-        Ok(())
-    }
-
-    /// Test that the UI auto-authorizes on load via the access service.
+    /// Test that the UI auto-configures upstream on load via the access service.
     /// The access service is available at /ucan/ via Caddy reverse proxy.
     #[dialog_common::test]
-    async fn it_authorizes_via_browser(env: TestEnvironment) -> Result<()> {
+    async fn it_configures_upstream(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
         // Wait for toolbar to become visible (indicates UI is ready and authorized)
@@ -154,14 +116,14 @@ mod tests {
         let status: StatusResponse = serde_json::from_value(status_result.json().clone())?;
         assert!(
             status.has_upstream,
-            "Expected upstream to be configured after auto-authorization"
+            "Expected upstream to be configured after initialization"
         );
 
         driver.quit().await?;
         Ok(())
     }
 
-    /// Test full sync flow through the browser.
+    /// Test sync via /api/sync endpoint.
     #[dialog_common::test]
     async fn it_syncs_via_sync_route(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
@@ -197,7 +159,12 @@ mod tests {
         // Wait for toolbar to become visible (indicates UI is ready and authorized)
         assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
 
-        // Get status to learn the space_did
+        // Call window.sync() which uses Background Sync API
+        // Note: Background Sync API may not be available in headless Chrome,
+        // in which case it falls back to direct /api/sync call
+        driver.execute("await window.sync();", vec![]).await?;
+
+        // Get the space_did from status to verify sync on remote
         let status_result = driver
             .execute(
                 r#"
@@ -209,11 +176,6 @@ mod tests {
             .await?;
         let status: StatusResponse = serde_json::from_value(status_result.json().clone())?;
         let space_did = status.space_did.clone();
-
-        // Call window.sync() which uses Background Sync API
-        // Note: Background Sync API may not be available in headless Chrome,
-        // in which case it falls back to direct /api/sync call
-        driver.execute("await window.sync();", vec![]).await?;
 
         // Verify data was pushed by checking the remote branch
         // Note: space_did needs to be URL-encoded since it contains ':'

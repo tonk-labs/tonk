@@ -184,7 +184,7 @@ pub async fn status(
 mod tests {
     use super::super::tests::test_state;
     use crate::StatusResponse;
-    use crate::{AuthorizeResponse, SyncResponse, api_router};
+    use crate::api_router;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
