@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use crate::worker::TonkState;
 
 mod authorize;
-pub use authorize::{AuthorizeRequest, AuthorizeResponse, authorize};
+pub use authorize::{AuthorizeResponse, authorize};
 
 mod fact;
 pub use fact::{AssertResponse, FactQuery, FactResponse, QueryResponse, assert_fact, query_facts};

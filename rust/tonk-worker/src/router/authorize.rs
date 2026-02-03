@@ -21,11 +21,12 @@ use crate::TonkWorkerError;
 /// Access service path (will be resolved to absolute URL at runtime).
 const ACCESS_SERVICE_PATH: &str = "/ucan/";
 
+/// Get the absolute URL for the access service.
 /// Get the default absolute URL for the access service.
 ///
 /// In WASM (service worker), we resolve against the current origin.
-/// In native, we return the default path.
-fn get_default_access_service_url() -> String {
+/// In native, we return the path as-is (for testing).
+fn get_access_service_url() -> String {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         use wasm_bindgen::JsCast;
@@ -42,15 +43,6 @@ fn get_default_access_service_url() -> String {
     {
         ACCESS_SERVICE_PATH.to_string()
     }
-}
-
-/// Request body for authorization.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct AuthorizeRequest {
-    /// Optional access service URL override.
-    /// If not provided, defaults to the origin-relative `/ucan/` path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub access_service_url: Option<String>,
 }
 
 /// Authorization response indicating success.
@@ -82,7 +74,6 @@ pub struct StatusResponse {
 #[wasm_compat]
 pub async fn authorize(
     State(state): State<AppState>,
-    body: Option<Json<AuthorizeRequest>>,
 ) -> Result<Json<AuthorizeResponse>, TonkWorkerError> {
     log!("Authorizing with internal UCAN delegation...");
 
@@ -97,10 +88,7 @@ pub async fn authorize(
 
     let space_did = tonk_state.session.space_did().to_string();
 
-    // Use provided URL or fall back to default
-    let service_url = body
-        .and_then(|b| b.access_service_url.clone())
-        .unwrap_or_else(get_default_access_service_url);
+    let service_url = get_access_service_url();
     log!(
         "Setting up UCAN credentials for space: {} with URL: {}",
         space_did,
@@ -195,14 +183,11 @@ pub async fn status(
 #[cfg(test)]
 mod tests {
     use super::super::tests::test_state;
-    use super::AuthorizeRequest;
     use crate::StatusResponse;
     use crate::{AuthorizeResponse, SyncResponse, api_router};
 
-    use anyhow::Result;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use tonk_access_service::helpers::AccessServiceAddress;
     use tower::ServiceExt;
 
     #[dialog_common::test]
@@ -235,117 +220,7 @@ mod tests {
         assert!(!status_response.operator_did.is_empty());
     }
 
-    #[dialog_common::test]
-    async fn it_authorizes_with_access_service(env: AccessServiceAddress) -> Result<()> {
-        let state = test_state().await;
-        let app = api_router(state);
-
-        // Authorize with the test access service URL
-        let authorize_request = AuthorizeRequest {
-            access_service_url: Some(format!("{}/ucan/", env.access_service_url)),
-        };
-
-        let request = Request::builder()
-            .uri("/api/authorize")
-            .method("POST")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::to_string(&authorize_request).unwrap(),
-            ))
-            .expect("Failed to build request");
-
-        let response = app
-            .clone()
-            .oneshot(request)
-            .await
-            .expect("Failed to execute request");
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("Failed to read response body");
-
-        let authorize_response: AuthorizeResponse =
-            serde_json::from_slice(&body).expect("Failed to deserialize response");
-
-        assert!(authorize_response.success);
-        assert!(authorize_response.error.is_none());
-
-        // Verify status now shows upstream configured
-        let request = Request::builder()
-            .uri("/api/status")
-            .method("GET")
-            .body(Body::empty())
-            .expect("Failed to build request");
-
-        let response = app
-            .oneshot(request)
-            .await
-            .expect("Failed to execute request");
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("Failed to read response body");
-
-        let status_response: StatusResponse =
-            serde_json::from_slice(&body).expect("Failed to deserialize response");
-
-        assert!(status_response.has_upstream);
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_syncs_with_access_service(env: AccessServiceAddress) -> Result<()> {
-        let state = test_state().await;
-        let app = api_router(state);
-
-        // First authorize with the test access service
-        let authorize_request = AuthorizeRequest {
-            access_service_url: Some(format!("{}/ucan/", env.access_service_url)),
-        };
-
-        let request = Request::builder()
-            .uri("/api/authorize")
-            .method("POST")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::to_string(&authorize_request).unwrap(),
-            ))
-            .expect("Failed to build request");
-
-        let response = app
-            .clone()
-            .oneshot(request)
-            .await
-            .expect("Failed to execute request");
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // Now perform sync
-        let request = Request::builder()
-            .uri("/api/sync")
-            .method("POST")
-            .body(Body::empty())
-            .expect("Failed to build request");
-
-        let response = app
-            .oneshot(request)
-            .await
-            .expect("Failed to execute request");
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("Failed to read response body");
-
-        let sync_response: SyncResponse =
-            serde_json::from_slice(&body).expect("Failed to deserialize response");
-
-        assert!(sync_response.success, "Sync should succeed");
-        Ok(())
-    }
+    // Note: it_authorizes_with_access_service and it_syncs_with_access_service
+    // tests have been moved to the browser integration tests in tonk-ui/src/components.rs
+    // since they require the /ucan/ proxy to be available (via Caddy in test environment).
 }

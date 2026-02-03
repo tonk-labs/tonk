@@ -14,11 +14,11 @@ mod native {
     /// Test environment configuration for integration tests.
     #[derive(Deserialize, Serialize, Debug, Clone)]
     pub struct TestEnvironment {
-        /// URL of the Tonk web server.
+        /// URL of the Tonk web server (Caddy proxies /ucan/* to the access service).
         pub tonk_web: Url,
         /// URL of the ChromeDriver server.
         pub chromedriver: Url,
-        /// Access service connection info.
+        /// Access service connection info (for direct access if needed).
         pub access_service: AccessServiceAddress,
     }
 
@@ -44,11 +44,6 @@ mod native {
             driver.goto(&self.tonk_web.to_string()).await?;
             Ok(driver)
         }
-
-        /// Returns the access service URL with /ucan/ path appended.
-        pub fn access_service_url(&self) -> String {
-            format!("{}/ucan/", self.access_service.access_service_url)
-        }
     }
 
     /// Manages test server processes for integration testing.
@@ -60,11 +55,33 @@ mod native {
 
     impl TestServers {
         /// Starts the test servers and returns the server handles and environment configuration.
+        ///
+        /// Startup order:
+        /// 1. Start access service first to get its port
+        /// 2. Start Caddy web server with access service port (proxies /ucan/*)
+        /// 3. Start ChromeDriver
         pub async fn start() -> Result<(Self, TestEnvironment)> {
+            // Start the access service first to get its port
+            let settings = AccessServiceSettings::default();
+            let access_service = tonk_access_service::helpers::access_service(settings).await?;
+            let access_service_address = access_service.address.clone();
+
+            // Extract port from access service URL (e.g., "http://127.0.0.1:8090" -> "8090")
+            let access_service_port = Url::parse(&access_service_address.access_service_url)?
+                .port()
+                .ok_or_else(|| anyhow!("Access service URL has no port"))?;
+
+            // Start the web server (Caddy) with access service port for /ucan/* proxying
             let web_port =
                 free_local_port().expect("Could not get a free local port for test server");
             let mut web_server = std::process::Command::new("nix")
-                .args(["run", ".#tonk-ui-test-server", "--", &format!("{web_port}")])
+                .args([
+                    "run",
+                    ".#tonk-ui-test-server",
+                    "--",
+                    &format!("{web_port}"),
+                    &format!("{access_service_port}"),
+                ])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
@@ -82,6 +99,7 @@ mod native {
                 }
             }
 
+            // Start ChromeDriver
             let chromedriver_port =
                 free_local_port().expect("Could not get a free local port for chromedriver");
             let mut chromedriver = std::process::Command::new("chromedriver")
@@ -102,12 +120,6 @@ mod native {
                     break;
                 }
             }
-
-            // Start the access service using tonk-access-service's provider
-            let settings = AccessServiceSettings::default();
-            let access_service = tonk_access_service::helpers::access_service(settings).await?;
-
-            let access_service_address = access_service.address.clone();
 
             Ok((
                 Self {

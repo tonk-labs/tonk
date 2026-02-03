@@ -90,14 +90,18 @@ pub fn TonkShell() -> impl IntoView {
 mod tests {
     use crate::helpers::TestEnvironment;
     use anyhow::Result;
-    use tonk_worker::{AuthorizeRequest, AuthorizeResponse, StatusResponse, SyncResponse};
+    use thirtyfour::prelude::*;
+    use tonk_worker::{StatusResponse, SyncResponse};
 
     /// Test that the UI loads and the service worker responds to status requests.
+    /// This test checks initial state before auto-authorization completes.
     #[dialog_common::test]
     async fn it_loads_ui_and_gets_status(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
         // Wait for service worker to activate before making API calls
+        // Note: We use serviceWorkerActivates here (not .toolbar.visible) to check
+        // the initial state before auto-authorization completes
         driver
             .execute("await window.serviceWorkerActivates();", vec![])
             .await?;
@@ -127,45 +131,16 @@ mod tests {
         Ok(())
     }
 
-    /// Test authorization flow through the browser with access service.
+    /// Test that the UI auto-authorizes on load via the access service.
+    /// The access service is available at /ucan/ via Caddy reverse proxy.
     #[dialog_common::test]
     async fn it_authorizes_via_browser(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for service worker to activate before making API calls
-        driver
-            .execute("await window.serviceWorkerActivates();", vec![])
-            .await?;
+        // Wait for toolbar to become visible (indicates UI is ready and authorized)
+        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
 
-        // Build authorize request with access service URL
-        let authorize_request = AuthorizeRequest {
-            access_service_url: Some(env.access_service_url()),
-        };
-        let request_json = serde_json::to_string(&authorize_request)?;
-
-        // Execute authorization via browser
-        let script = format!(
-            r#"
-            const response = await fetch('/api/authorize', {{
-                method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }},
-                body: '{}'
-            }});
-            return await response.json();
-            "#,
-            request_json.replace('\'', "\\'")
-        );
-
-        let result = driver.execute(&script, vec![]).await?;
-        let auth_response: AuthorizeResponse = serde_json::from_value(result.json().clone())?;
-
-        assert!(auth_response.success, "Authorization should succeed");
-        assert!(
-            auth_response.error.is_none(),
-            "Authorization should not have error"
-        );
-
-        // Verify status now shows upstream configured
+        // Verify status shows upstream configured after auto-authorization
         let status_result = driver
             .execute(
                 r#"
@@ -179,7 +154,7 @@ mod tests {
         let status: StatusResponse = serde_json::from_value(status_result.json().clone())?;
         assert!(
             status.has_upstream,
-            "Expected upstream to be configured after authorization"
+            "Expected upstream to be configured after auto-authorization"
         );
 
         driver.quit().await?;
@@ -191,34 +166,10 @@ mod tests {
     async fn it_syncs_via_sync_route(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for service worker to activate before making API calls
-        driver
-            .execute("await window.serviceWorkerActivates();", vec![])
-            .await?;
+        // Wait for toolbar to become visible (indicates UI is ready and authorized)
+        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
 
-        // First authorize with the access service
-        let authorize_request = AuthorizeRequest {
-            access_service_url: Some(env.access_service_url()),
-        };
-        let request_json = serde_json::to_string(&authorize_request)?;
-
-        let auth_script = format!(
-            r#"
-            const response = await fetch('/api/authorize', {{
-                method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }},
-                body: '{}'
-            }});
-            return await response.json();
-            "#,
-            request_json.replace('\'', "\\'")
-        );
-
-        let auth_result = driver.execute(&auth_script, vec![]).await?;
-        let auth_response: AuthorizeResponse = serde_json::from_value(auth_result.json().clone())?;
-        assert!(auth_response.success, "Authorization should succeed");
-
-        // Now perform sync
+        // Perform sync
         let sync_result = driver
             .execute(
                 r#"
@@ -243,34 +194,10 @@ mod tests {
     async fn it_syncs_via_background_sync_api(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for service worker to activate before making API calls
-        driver
-            .execute("await window.serviceWorkerActivates();", vec![])
-            .await?;
+        // Wait for toolbar to become visible (indicates UI is ready and authorized)
+        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
 
-        // Authorize with the access service first (must happen before status call)
-        let authorize_request = AuthorizeRequest {
-            access_service_url: Some(env.access_service_url()),
-        };
-        let request_json = serde_json::to_string(&authorize_request)?;
-
-        let auth_script = format!(
-            r#"
-            const response = await fetch('/api/authorize', {{
-                method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }},
-                body: '{}'
-            }});
-            return await response.json();
-            "#,
-            request_json.replace('\'', "\\'")
-        );
-
-        let auth_result = driver.execute(&auth_script, vec![]).await?;
-        let auth_response: AuthorizeResponse = serde_json::from_value(auth_result.json().clone())?;
-        assert!(auth_response.success, "Authorization should succeed");
-
-        // Get status to learn the space_did (after authorization)
+        // Get status to learn the space_did
         let status_result = driver
             .execute(
                 r#"
@@ -286,9 +213,7 @@ mod tests {
         // Call window.sync() which uses Background Sync API
         // Note: Background Sync API may not be available in headless Chrome,
         // in which case it falls back to direct /api/sync call
-        driver
-            .execute("await window.sync();", vec![])
-            .await?;
+        driver.execute("await window.sync();", vec![]).await?;
 
         // Verify data was pushed by checking the remote branch
         // Note: space_did needs to be URL-encoded since it contains ':'
