@@ -219,8 +219,4 @@ mod tests {
         assert!(!status_response.space_did.is_empty());
         assert!(!status_response.operator_did.is_empty());
     }
-
-    // Note: it_authorizes_with_access_service and it_syncs_with_access_service
-    // tests have been moved to the browser integration tests in tonk-ui/src/components.rs
-    // since they require the /ucan/ proxy to be available (via Caddy in test environment).
 }
