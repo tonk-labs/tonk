@@ -1,4 +1,5 @@
 .vscode
+.helix
 automerge-repo-data
 .direnv
 .wrangler
