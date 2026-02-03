@@ -159,12 +159,7 @@ mod tests {
         // Wait for toolbar to become visible (indicates UI is ready and authorized)
         assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
 
-        // Call window.sync() which uses Background Sync API
-        // Note: Background Sync API may not be available in headless Chrome,
-        // in which case it falls back to direct /api/sync call
-        driver.execute("await window.sync();", vec![]).await?;
-
-        // Get the space_did from status to verify sync on remote
+        // Get the space_did from status (needed to verify sync on remote)
         let status_result = driver
             .execute(
                 r#"
@@ -177,8 +172,7 @@ mod tests {
         let status: StatusResponse = serde_json::from_value(status_result.json().clone())?;
         let space_did = status.space_did.clone();
 
-        // Verify data was pushed by checking the remote branch
-        // Note: space_did needs to be URL-encoded since it contains ':'
+        // Build the inspect URL (space_did needs URL-encoding since it contains ':')
         use url::form_urlencoded;
         let encoded_space_did: String =
             form_urlencoded::byte_serialize(space_did.as_bytes()).collect();
@@ -191,6 +185,30 @@ mod tests {
             encoded_space_did
         );
 
+        // Verify remote branch has no revision before sync
+        let inspect_result = driver.execute(&inspect_script, vec![]).await?;
+        let branch_status: serde_json::Value =
+            serde_json::from_value(inspect_result.json().clone())?;
+
+        assert!(
+            branch_status["revision"].is_null(),
+            "Remote branch should have no revision before sync: {:?}",
+            branch_status
+        );
+
+        // Register sync using the Background Sync API
+        // This triggers the service worker's sync event handler
+        driver
+            .execute(
+                r#"
+                const registration = await navigator.serviceWorker.ready;
+                await registration.sync.register('tonk-sync');
+                "#,
+                vec![],
+            )
+            .await?;
+
+        // Verify data was pushed by checking the remote branch now has a revision
         let inspect_result = driver.execute(&inspect_script, vec![]).await?;
         let branch_status: serde_json::Value =
             serde_json::from_value(inspect_result.json().clone())?;
