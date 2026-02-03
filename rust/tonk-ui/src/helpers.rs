@@ -1,26 +1,28 @@
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+/// Test environment configuration for integration tests.
+/// Available on all platforms, but can only be constructed on native.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct TestEnvironment {
+    /// URL of the Tonk web server (Caddy proxies /ucan/* to the access service).
+    pub tonk_web: Url,
+    /// URL of the ChromeDriver server.
+    pub chromedriver: Url,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
+    use super::TestEnvironment;
     use anyhow::{Result, anyhow};
     use async_trait::async_trait;
     use dialog_common::helpers::{Provider, Service};
     use port_check::free_local_port;
-    use serde::{Deserialize, Serialize};
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Stdio};
     use thirtyfour::{ChromiumLikeCapabilities, DesiredCapabilities, WebDriver};
     use tonk_access_service::helpers::{AccessServiceAddress, AccessServiceSettings};
     use url::Url;
-
-    /// Test environment configuration for integration tests.
-    #[derive(Deserialize, Serialize, Debug, Clone)]
-    pub struct TestEnvironment {
-        /// URL of the Tonk web server (Caddy proxies /ucan/* to the access service).
-        pub tonk_web: Url,
-        /// URL of the ChromeDriver server.
-        pub chromedriver: Url,
-        /// Access service connection info (for direct access if needed).
-        pub access_service: AccessServiceAddress,
-    }
 
     impl TestEnvironment {
         /// Creates a new WebDriver instance connected to the test environment.
@@ -130,7 +132,6 @@ mod native {
                 TestEnvironment {
                     tonk_web: Url::parse(&format!("http://127.0.0.1:{web_port}"))?,
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
-                    access_service: access_service_address,
                 },
             ))
         }
@@ -144,8 +145,7 @@ mod native {
         }
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    #[async_trait]
     impl Provider for TestServers {
         async fn stop(self) -> anyhow::Result<()> {
             TestServers::stop(self).await

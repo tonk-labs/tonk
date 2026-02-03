@@ -32,7 +32,6 @@ mod error;
 mod handlers;
 
 /// Test helpers for integration testing.
-/// Only available for non-WASM targets with the `helpers` feature.
 #[cfg(feature = "helpers")]
 pub mod helpers;
 

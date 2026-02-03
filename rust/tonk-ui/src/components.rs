@@ -90,6 +90,7 @@ pub fn TonkShell() -> impl IntoView {
 mod tests {
     use crate::helpers::TestEnvironment;
     use anyhow::Result;
+    #[cfg(not(target_arch = "wasm32"))]
     use thirtyfour::prelude::*;
     use tonk_worker::{StatusResponse, SyncResponse};
 
