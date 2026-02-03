@@ -1,8 +1,7 @@
 //! Authorization routes using UCAN-based authentication.
 //!
 //! The authorization endpoint uses the operator and delegation that were
-//! created when the service worker started. An optional access service URL
-//! can be provided for testing purposes.
+//! created when the service worker started. No external input is needed.
 
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
@@ -70,7 +69,7 @@ pub struct StatusResponse {
 /// Handles authorization requests and configures the UCAN-based remote for the space.
 ///
 /// Uses the operator and delegation from the worker's state (created at startup).
-/// Optionally accepts an `access_service_url` in the request body for testing.
+// No external input is required - just call POST /api/authorize with an empty body.
 #[wasm_compat]
 pub async fn authorize(
     State(state): State<AppState>,
@@ -87,7 +86,6 @@ pub async fn authorize(
         .map_err(|e| TonkWorkerError::Internal(format!("Failed to query delegations: {}", e)))?;
 
     let space_did = tonk_state.session.space_did().to_string();
-
     let service_url = get_access_service_url();
     log!(
         "Setting up UCAN credentials for space: {} with URL: {}",
