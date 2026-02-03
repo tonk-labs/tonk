@@ -37,3 +37,14 @@ self.onfetch = event => {
         );
     }
 };
+
+// Background Sync API event handler
+self.onsync = event => {
+    log("Background sync event:", event.tag);
+    event.waitUntil(
+        (async () => {
+            let worker = await activateWorker();
+            return worker.sync();
+        })()
+    );
+};

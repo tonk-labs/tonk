@@ -43,6 +43,26 @@
         self.serviceWorkerActivates = () => {
             return serviceWorkerActivatesPromise;
         };
+
+        // Trigger sync - uses Background Sync API if available, otherwise falls back to /api/sync
+        self.sync = async () => {
+            if ('serviceWorker' in navigator && 'SyncManager' in window) {
+                try {
+                    const registration = await navigator.serviceWorker.ready;
+                    await registration.sync.register('tonk-sync');
+                    console.log('[Tonk] Background sync registered');
+                    return;
+                } catch (e) {
+                    console.warn('[Tonk] Background sync registration failed, falling back:', e);
+                }
+            }
+            // Fallback to direct sync call
+            const response = await fetch('/api/sync', { method: 'POST' });
+            if (!response.ok) {
+                throw new Error(`Sync failed: ${response.status}`);
+            }
+            console.log('[Tonk] Direct sync completed');
+        };
     </script>
 
     <!-- The following are load-bearing configuration for the Trunk build tool

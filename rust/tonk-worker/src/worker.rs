@@ -134,4 +134,44 @@ impl TonkServiceWorker {
                 .map_err(JsValue::from)
         })
     }
+
+    /// Performs a full sync operation (pull then push) with the upstream remote.
+    ///
+    /// This method dispatches to the `/api/sync` route internally, so the sync
+    /// logic is not duplicated. It is intended to be called from the Background
+    /// Sync API event or as a polyfill.
+    ///
+    /// # Returns
+    ///
+    /// A JavaScript `Promise` that resolves to `undefined` on success, or
+    /// rejects with an error if the sync failed.
+    pub fn sync(&self) -> Promise {
+        log!("Background sync triggered, dispatching to /api/sync");
+
+        let router = self.router.clone();
+
+        future_to_promise(async move {
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/sync")
+                .body(Body::empty())
+                .expect_throw("Failed to build sync request");
+
+            let response = router
+                .lock()
+                .await
+                .call(request)
+                .await
+                .expect_throw("Failed to handle sync request");
+
+            if response.status().is_success() {
+                Ok(JsValue::UNDEFINED)
+            } else {
+                Err(JsValue::from_str(&format!(
+                    "Sync failed with status: {}",
+                    response.status()
+                )))
+            }
+        })
+    }
 }

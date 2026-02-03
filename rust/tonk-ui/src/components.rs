@@ -21,6 +21,11 @@ use space::*;
 extern "C" {
     #[wasm_bindgen(js_namespace = window, js_name = serviceWorkerActivates)]
     async fn service_worker_activates();
+
+    /// Triggers a sync operation.
+    /// Uses Background Sync API if available, otherwise falls back to /api/sync.
+    #[wasm_bindgen(js_namespace = window, catch)]
+    pub async fn sync() -> Result<(), JsValue>;
 }
 
 /// The current status of the application.
