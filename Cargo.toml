@@ -17,6 +17,7 @@ license = "MIT"
 edition = "2024"
 
 [workspace.dependencies]
+tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-core = { path = "./rust/tonk-core" }
 tonk-space = { path = "./rust/tonk-space" }

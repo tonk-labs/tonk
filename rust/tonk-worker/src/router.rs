@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use crate::worker::TonkState;
 
 mod authorize;
-pub use authorize::{AuthorizeResponse, authorize};
+pub use authorize::{AuthorizeRequest, AuthorizeResponse, authorize};
 
 mod fact;
 pub use fact::{AssertResponse, FactQuery, FactResponse, QueryResponse, assert_fact, query_facts};
@@ -71,7 +71,8 @@ pub fn api_router(state: TonkState) -> Router {
         .with_state(state)
 }
 
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+/// Test utilities for router tests.
+#[cfg(test)]
 pub mod tests {
     use std::sync::Arc;
 
@@ -82,6 +83,7 @@ pub mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    /// Creates a test state with identity and session for testing routes.
     pub async fn test_state() -> TonkState {
         let mut identity = Identity::load_or_create()
             .await
