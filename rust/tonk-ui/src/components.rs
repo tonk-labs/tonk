@@ -90,10 +90,7 @@ pub fn TonkShell() -> impl IntoView {
 mod tests {
     use crate::helpers::TestEnvironment;
     use anyhow::Result;
-    use tonk_worker::{
-        AuthorizeRequest, AuthorizeResponse, RemoteBranchStatusResponse, StatusResponse,
-        SyncResponse,
-    };
+    use tonk_worker::{AuthorizeRequest, AuthorizeResponse, StatusResponse, SyncResponse};
 
     /// Test that the UI loads and the service worker responds to status requests.
     #[dialog_common::test]
@@ -191,7 +188,7 @@ mod tests {
 
     /// Test full sync flow through the browser.
     #[dialog_common::test]
-    async fn it_syncs_via_browser(env: TestEnvironment) -> Result<()> {
+    async fn it_syncs_via_sync_route(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
         // Wait for service worker to activate before making API calls
@@ -236,6 +233,90 @@ mod tests {
 
         let sync_response: SyncResponse = serde_json::from_value(sync_result.json().clone())?;
         assert!(sync_response.success, "Sync should succeed");
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Test sync via Background Sync API and verify data was pushed to remote.
+    #[dialog_common::test]
+    async fn it_syncs_via_background_sync_api(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        // Wait for service worker to activate before making API calls
+        driver
+            .execute("await window.serviceWorkerActivates();", vec![])
+            .await?;
+
+        // Authorize with the access service first (must happen before status call)
+        let authorize_request = AuthorizeRequest {
+            access_service_url: Some(env.access_service_url()),
+        };
+        let request_json = serde_json::to_string(&authorize_request)?;
+
+        let auth_script = format!(
+            r#"
+            const response = await fetch('/api/authorize', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: '{}'
+            }});
+            return await response.json();
+            "#,
+            request_json.replace('\'', "\\'")
+        );
+
+        let auth_result = driver.execute(&auth_script, vec![]).await?;
+        let auth_response: AuthorizeResponse = serde_json::from_value(auth_result.json().clone())?;
+        assert!(auth_response.success, "Authorization should succeed");
+
+        // Get status to learn the space_did (after authorization)
+        let status_result = driver
+            .execute(
+                r#"
+                const response = await fetch('/api/status');
+                return await response.json();
+                "#,
+                vec![],
+            )
+            .await?;
+        let status: StatusResponse = serde_json::from_value(status_result.json().clone())?;
+        let space_did = status.space_did.clone();
+
+        // Call window.sync() which uses Background Sync API
+        // Note: Background Sync API may not be available in headless Chrome,
+        // in which case it falls back to direct /api/sync call
+        driver
+            .execute("await window.sync();", vec![])
+            .await?;
+
+        // Verify data was pushed by checking the remote branch
+        // Note: space_did needs to be URL-encoded since it contains ':'
+        use url::form_urlencoded;
+        let encoded_space_did: String =
+            form_urlencoded::byte_serialize(space_did.as_bytes()).collect();
+
+        let inspect_script = format!(
+            r#"
+            const response = await fetch('/api/inspect/site/origin/{}/branch/main');
+            return await response.json();
+            "#,
+            encoded_space_did
+        );
+
+        let inspect_result = driver.execute(&inspect_script, vec![]).await?;
+        let branch_status: serde_json::Value =
+            serde_json::from_value(inspect_result.json().clone())?;
+
+        assert!(
+            branch_status["success"].as_bool().unwrap_or(false),
+            "Remote branch resolution should succeed after sync: {:?}",
+            branch_status
+        );
+        assert!(
+            branch_status.get("revision").is_some() && !branch_status["revision"].is_null(),
+            "Remote branch should have a revision after sync"
+        );
 
         driver.quit().await?;
         Ok(())
