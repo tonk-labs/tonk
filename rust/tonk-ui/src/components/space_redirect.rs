@@ -17,16 +17,16 @@ pub fn SpaceRedirect() -> impl IntoView {
     let spaces = LocalResource::new(|| async { api::list_spaces().await });
 
     Effect::new(move |_| {
-        if let Some(Ok(list)) = spaces.get() {
-            if let Some(first) = list.spaces.first() {
-                // Extract multikey from did:key:z6Mk...
-                let multikey = first
-                    .did
-                    .strip_prefix("did:key:")
-                    .unwrap_or(&first.did)
-                    .to_string();
-                navigate(&format!("/{}/", multikey), Default::default());
-            }
+        if let Some(Ok(list)) = spaces.get()
+            && let Some(first) = list.spaces.first()
+        {
+            // Extract multikey from did:key:z6Mk...
+            let multikey = first
+                .did
+                .strip_prefix("did:key:")
+                .unwrap_or(&first.did)
+                .to_string();
+            navigate(&format!("/{}/", multikey), Default::default());
         }
     });
 

@@ -38,7 +38,9 @@ mod space_create;
 pub use space_create::{CreateSpaceRequest, CreateSpaceResponse, create_space};
 
 mod space_metadata;
-pub use space_metadata::{SpaceMetadataResponse, UpdateMetadataRequest, get_metadata, update_metadata};
+pub use space_metadata::{
+    SpaceMetadataResponse, UpdateMetadataRequest, get_metadata, update_metadata,
+};
 
 /// Shared application state containing identity and session.
 pub type AppState = Arc<RwLock<TonkState>>;

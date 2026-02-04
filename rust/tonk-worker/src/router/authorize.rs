@@ -3,7 +3,10 @@
 //! The authorization endpoint uses the operator and delegation that were
 //! created when the service worker started. No external input is needed.
 
-use ::axum::{Json, extract::{Path, State}};
+use ::axum::{
+    Json,
+    extract::{Path, State},
+};
 use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::replica::RemoteCredentials;
 use dialog_s3_credentials::ucan::{Credentials as UcanCredentials, DelegationChain};

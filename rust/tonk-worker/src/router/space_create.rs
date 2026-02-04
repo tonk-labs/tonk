@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 
-use crate::router::AppState;
 use crate::TonkWorkerError;
+use crate::router::AppState;
 
 /// Request body for creating a new space.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -162,6 +162,9 @@ mod tests {
 
         assert!(create_response.did.starts_with("did:key:z6Mk"));
         assert_eq!(create_response.name, Some("Test Space".to_string()));
-        assert_eq!(create_response.description, Some("A test space".to_string()));
+        assert_eq!(
+            create_response.description,
+            Some("A test space".to_string())
+        );
     }
 }

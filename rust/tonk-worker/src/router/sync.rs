@@ -2,7 +2,10 @@
 //!
 //! These endpoints allow synchronizing the local space with the upstream remote.
 
-use ::axum::{Json, extract::{Path, State}};
+use ::axum::{
+    Json,
+    extract::{Path, State},
+};
 use axum_wasm_macros::wasm_compat;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

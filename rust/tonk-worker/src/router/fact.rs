@@ -350,7 +350,10 @@ mod tests {
 
         // Assert a fact
         let request = Request::builder()
-            .uri(format!("/api/{}/fact/assert/test:entity/test/name", multikey))
+            .uri(format!(
+                "/api/{}/fact/assert/test:entity/test/name",
+                multikey
+            ))
             .method("POST")
             .header("content-type", "text/plain")
             .body(Body::from("Test Name"))
@@ -366,7 +369,10 @@ mod tests {
 
         // Query the fact
         let request = Request::builder()
-            .uri(format!("/api/{}/fact/query?the=test/name&of=test:entity", multikey))
+            .uri(format!(
+                "/api/{}/fact/query?the=test/name&of=test:entity",
+                multikey
+            ))
             .method("GET")
             .body(Body::empty())
             .expect("Failed to build request");

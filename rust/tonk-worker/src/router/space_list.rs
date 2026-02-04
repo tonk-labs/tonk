@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 
-use crate::router::AppState;
 use crate::TonkWorkerError;
+use crate::router::AppState;
 
 /// Information about a single space.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,11 +42,7 @@ pub async fn list_spaces(
     let identity = tonk_state.identity.read().await;
 
     // Get known spaces from the account
-    let known_space_dids: Vec<String> = identity
-        .account()
-        .known_spaces()
-        .await
-        .unwrap_or_default();
+    let known_space_dids: Vec<String> = identity.account().known_spaces().await.unwrap_or_default();
 
     // Drop identity lock before fetching metadata (we need tonk_state for session_for_space)
     drop(identity);

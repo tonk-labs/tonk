@@ -1,6 +1,9 @@
 //! Delegations endpoint for retrieving user's UCAN delegations.
 
-use ::axum::{Json, extract::{Path, State}};
+use ::axum::{
+    Json,
+    extract::{Path, State},
+};
 use axum_wasm_macros::wasm_compat;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};

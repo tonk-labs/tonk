@@ -1,15 +1,18 @@
 //! Space metadata endpoints - get and update space name/description.
 
-use axum::{Json, extract::{Path, State}};
+use axum::{
+    Json,
+    extract::{Path, State},
+};
 use axum_wasm_macros::wasm_compat;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
 
+use crate::TonkWorkerError;
 use crate::router::AppState;
 use crate::worker::TonkState;
-use crate::TonkWorkerError;
 
 /// Response for getting space metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +206,9 @@ mod tests {
             serde_json::from_slice(&body).expect("Failed to deserialize response");
 
         assert_eq!(metadata.name, Some("Updated Name".to_string()));
-        assert_eq!(metadata.description, Some("Updated description".to_string()));
+        assert_eq!(
+            metadata.description,
+            Some("Updated description".to_string())
+        );
     }
 }
