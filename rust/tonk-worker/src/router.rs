@@ -34,6 +34,12 @@ pub use delegations::{DelegationsResponse, delegations};
 mod space_list;
 pub use space_list::{ListSpacesResponse, SpaceInfo, list_spaces};
 
+mod space_create;
+pub use space_create::{CreateSpaceRequest, CreateSpaceResponse, create_space};
+
+mod space_metadata;
+pub use space_metadata::{SpaceMetadataResponse, UpdateMetadataRequest, get_metadata, update_metadata};
+
 /// Shared application state containing identity and session.
 pub type AppState = Arc<RwLock<TonkState>>;
 
@@ -57,10 +63,15 @@ pub fn api_router(state: TonkState) -> Router {
         .route("/api", get(root))
         .route("/api/identify", get(identify))
         .route("/api/space/list", get(list_spaces))
+        .route("/api/space/create", post(create_space))
         // Space-specific endpoints - prefixed with multikey
         .route("/api/{multikey}/authorize", post(authorize))
         .route("/api/{multikey}/status", get(status))
         .route("/api/{multikey}/delegations", get(delegations))
+        .route(
+            "/api/{multikey}/metadata",
+            get(get_metadata).put(update_metadata),
+        )
         .route(
             "/api/{multikey}/inspect/branch/{branch_name}",
             get(inspect::branch),

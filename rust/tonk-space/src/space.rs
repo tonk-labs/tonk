@@ -463,6 +463,88 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
             .collect()
     }
 
+    /// Set the name of this space.
+    ///
+    /// The name is stored as a fact on the space's DID entity.
+    pub async fn set_name(&mut self, name: &str) -> Result<(), SpaceError> {
+        use crate::schema::space::Name;
+        use dialog_query::With;
+
+        let space_entity: Entity = self
+            .did
+            .parse()
+            .map_err(|e| SpaceError::InvalidEntity(format!("{:?}", e)))?;
+
+        let mut transaction = self.edit();
+        transaction.assert(With {
+            this: space_entity,
+            has: Name(name.to_string()),
+        });
+        self.commit(transaction).await
+    }
+
+    /// Set the description of this space.
+    ///
+    /// The description is stored as a fact on the space's DID entity.
+    pub async fn set_description(&mut self, description: &str) -> Result<(), SpaceError> {
+        use crate::schema::space::Description;
+        use dialog_query::With;
+
+        let space_entity: Entity = self
+            .did
+            .parse()
+            .map_err(|e| SpaceError::InvalidEntity(format!("{:?}", e)))?;
+
+        let mut transaction = self.edit();
+        transaction.assert(With {
+            this: space_entity,
+            has: Description(description.to_string()),
+        });
+        self.commit(transaction).await
+    }
+
+    /// Get the name of this space, if set.
+    pub async fn get_name(&self) -> Result<Option<String>, SpaceError> {
+        use crate::schema::space::Name;
+        use dialog_query::concept::Match as _;
+        use dialog_query::{Match, Term, With};
+        use futures_util::TryStreamExt;
+
+        let space_entity: Entity = self
+            .did
+            .parse()
+            .map_err(|e| SpaceError::InvalidEntity(format!("{:?}", e)))?;
+
+        let query = Match::<With<Name>> {
+            this: Term::from(space_entity),
+            has: Term::var("name"),
+        };
+
+        let results: Vec<_> = query.query(self.clone()).try_collect().await?;
+        Ok(results.into_iter().next().map(|r| r.has.0))
+    }
+
+    /// Get the description of this space, if set.
+    pub async fn get_description(&self) -> Result<Option<String>, SpaceError> {
+        use crate::schema::space::Description;
+        use dialog_query::concept::Match as _;
+        use dialog_query::{Match, Term, With};
+        use futures_util::TryStreamExt;
+
+        let space_entity: Entity = self
+            .did
+            .parse()
+            .map_err(|e| SpaceError::InvalidEntity(format!("{:?}", e)))?;
+
+        let query = Match::<With<Description>> {
+            this: Term::from(space_entity),
+            has: Term::var("description"),
+        };
+
+        let results: Vec<_> = query.query(self.clone()).try_collect().await?;
+        Ok(results.into_iter().next().map(|r| r.has.0))
+    }
+
     /// Fetch a raw block from a remote site's archive by its blake3 hash.
     ///
     /// # Arguments
