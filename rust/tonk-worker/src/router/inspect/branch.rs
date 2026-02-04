@@ -51,6 +51,16 @@ impl Hasher for ByteCaptureHasher {
 
 use super::super::AppState;
 use crate::TonkWorkerError;
+use crate::worker::TonkState;
+
+/// Path parameters for branch inspection.
+#[derive(Debug, Deserialize)]
+pub struct BranchPath {
+    /// The multikey (z6Mk...) from the URL path.
+    pub multikey: String,
+    /// The branch name.
+    pub branch_name: String,
+}
 
 /// Serializable revision info with all fields.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,26 +130,31 @@ pub struct UpstreamStatusResponse {
 #[wasm_compat]
 pub async fn branch(
     State(state): State<AppState>,
-    Path(branch_name): Path<String>,
+    Path(path): Path<BranchPath>,
 ) -> Result<Json<BranchStatusResponse>, TonkWorkerError> {
-    log!("Querying branch status for: {}", branch_name);
+    log!("Querying branch status for: {}", path.branch_name);
+
+    let space_did = TonkState::multikey_to_did(&path.multikey);
     let tonk_state = state.read().await;
 
-    match tonk_state.session.space().branch_info(&branch_name).await {
+    let session = tonk_state
+        .session_for_space(&space_did)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to open session: {}", e)))?;
+
+    match session.space().branch_info(&path.branch_name).await {
         Ok(branch_info) => {
-            let upstream = branch_info.upstream.map(|u| {
-                UpstreamStatusResponse {
-                    site: u.site,
-                    branch: u.branch,
-                    subject: u.subject,
-                    // Revision is not available without connecting to remote
-                    // Use the sync endpoints to get the latest revision
-                    revision: None,
-                }
+            let upstream = branch_info.upstream.map(|u| UpstreamStatusResponse {
+                site: u.site,
+                branch: u.branch,
+                subject: u.subject,
+                // Revision is not available without connecting to remote
+                // Use the sync endpoints to get the latest revision
+                revision: None,
             });
 
             Ok(Json(BranchStatusResponse {
-                subject: tonk_state.session.space_did().to_string(),
+                subject: session.space_did().to_string(),
                 branch: branch_info.name,
                 revision: RevisionResponse::from_revision(&branch_info.revision),
                 base: branch_info.base,

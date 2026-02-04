@@ -1,6 +1,6 @@
 //! Delegations endpoint for retrieving user's UCAN delegations.
 
-use ::axum::{Json, extract::State};
+use ::axum::{Json, extract::{Path, State}};
 use axum_wasm_macros::wasm_compat;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,7 @@ use tokio::sync::oneshot;
 
 use super::AppState;
 use crate::TonkWorkerError;
+use crate::worker::TonkState;
 
 /// Response containing the user's delegations.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -20,7 +21,7 @@ pub struct DelegationsResponse {
     pub delegations: Vec<String>,
 }
 
-/// Returns all delegations granted to the current user for the current space.
+/// Returns all delegations granted to the current user for the given space.
 ///
 /// This endpoint queries the space for UCAN delegations where the audience
 /// matches the current user's DID. The delegations are returned as base64-encoded
@@ -28,12 +29,18 @@ pub struct DelegationsResponse {
 #[wasm_compat]
 pub async fn delegations(
     State(state): State<AppState>,
+    Path(multikey): Path<String>,
 ) -> Result<Json<DelegationsResponse>, TonkWorkerError> {
+    let space_did = TonkState::multikey_to_did(&multikey);
     let tonk_state = state.read().await;
 
+    let session = tonk_state
+        .session_for_space(&space_did)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to open session: {}", e)))?;
+
     // Query delegations where audience == user DID
-    let user_delegations = tonk_state
-        .session
+    let user_delegations = session
         .account_delegations()
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("Failed to query delegations: {}", e)))?;

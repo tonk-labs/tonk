@@ -90,7 +90,10 @@ pub fn api_router(state: TonkState) -> Router {
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 pub mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
+
+    use tokio::sync::RwLock;
 
     use crate::worker::TonkState;
     use crate::{Identity, api_router};
@@ -99,7 +102,9 @@ pub mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    pub async fn test_state() -> TonkState {
+    /// Creates a test state with a single space.
+    /// Returns the state and the multikey of the test space.
+    pub async fn test_state() -> (TonkState, String) {
         let mut identity = Identity::load_or_create()
             .await
             .expect("Failed to create test identity");
@@ -123,15 +128,27 @@ pub mod tests {
                 .expect("Failed to create session")
         };
 
-        TonkState {
-            identity: Arc::new(identity),
-            session,
-        }
+        let space_did = session.space_did().to_string();
+        let multikey = space_did
+            .strip_prefix("did:key:")
+            .unwrap_or(&space_did)
+            .to_string();
+
+        // Pre-cache the session
+        let mut sessions = HashMap::new();
+        sessions.insert(space_did, session);
+
+        let state = TonkState {
+            identity: Arc::new(RwLock::new(identity)),
+            sessions: Arc::new(RwLock::new(sessions)),
+        };
+
+        (state, multikey)
     }
 
     #[dialog_common::test]
     async fn it_responds_to_root_api_request() {
-        let state = test_state().await;
+        let (state, _multikey) = test_state().await;
         let app = api_router(state);
 
         let request = Request::builder()

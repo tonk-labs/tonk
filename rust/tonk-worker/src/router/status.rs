@@ -1,6 +1,6 @@
 //! Status route for querying current space state.
 
-use ::axum::{Json, extract::State};
+use ::axum::{Json, extract::{Path, State}};
 use axum_wasm_macros::wasm_compat;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -8,6 +8,7 @@ use tokio::sync::oneshot;
 
 use super::AppState;
 use crate::TonkWorkerError;
+use crate::worker::TonkState;
 
 /// Status response indicating the current space state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,13 +25,22 @@ pub struct StatusResponse {
 #[wasm_compat]
 pub async fn status(
     State(state): State<AppState>,
+    Path(multikey): Path<String>,
 ) -> Result<Json<StatusResponse>, TonkWorkerError> {
+    let space_did = TonkState::multikey_to_did(&multikey);
     let tonk_state = state.read().await;
-    let space = tonk_state.session.space();
+
+    let session = tonk_state
+        .session_for_space(&space_did)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to open session: {}", e)))?;
+
+    let space = session.space();
+    let identity = tonk_state.identity.read().await;
 
     Ok(Json(StatusResponse {
         space_did: space.did.clone(),
-        operator_did: tonk_state.identity.did().to_string(),
+        operator_did: identity.did().to_string(),
         has_upstream: space.has_upstream().await,
     }))
 }
@@ -47,11 +57,11 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_returns_status_without_upstream() {
-        let tonk_state = test_state().await;
+        let (tonk_state, multikey) = test_state().await;
         let app = api_router(tonk_state);
 
         let request = Request::builder()
-            .uri("/api/status")
+            .uri(format!("/api/{}/status", multikey))
             .method("GET")
             .body(Body::empty())
             .expect("Failed to build request");

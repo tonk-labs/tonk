@@ -13,6 +13,7 @@ use tonk_space::SpaceError;
 use super::super::AppState;
 use super::branch::RevisionResponse;
 use crate::TonkWorkerError;
+use crate::worker::TonkState;
 
 /// Response for site status query.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,20 +55,33 @@ pub enum CredentialsResponse {
     },
 }
 
+/// Path parameters for site inspection.
+#[derive(Debug, Deserialize)]
+pub struct SitePath {
+    /// The multikey (z6Mk...) from the URL path.
+    pub multikey: String,
+    /// The site name.
+    pub site_name: String,
+}
+
 /// Path parameters for remote branch resolution.
 #[derive(Debug, Deserialize)]
 pub struct RemoteBranchPath {
-    site: String,
-    repo_did: String,
-    branch: String,
+    /// The multikey (z6Mk...) from the URL path.
+    pub multikey: String,
+    pub site: String,
+    pub repo_did: String,
+    pub branch: String,
 }
 
 /// Path parameters for archive block fetch.
 #[derive(Debug, Deserialize)]
 pub struct ArchiveBlockPath {
-    site: String,
-    repo_did: String,
-    hash: String,
+    /// The multikey (z6Mk...) from the URL path.
+    pub multikey: String,
+    pub site: String,
+    pub repo_did: String,
+    pub hash: String,
 }
 
 /// Response for remote branch resolution.
@@ -93,12 +107,19 @@ pub struct RemoteBranchStatusResponse {
 #[wasm_compat]
 pub async fn site(
     State(state): State<AppState>,
-    Path(site_name): Path<String>,
+    Path(path): Path<SitePath>,
 ) -> Result<Json<SiteStatusResponse>, TonkWorkerError> {
-    log!("Querying site status for: {}", site_name);
+    log!("Querying site status for: {}", path.site_name);
+
+    let space_did = TonkState::multikey_to_did(&path.multikey);
     let tonk_state = state.read().await;
 
-    match tonk_state.session.space().resolve_site(&site_name).await {
+    let session = tonk_state
+        .session_for_space(&space_did)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to open session: {}", e)))?;
+
+    match session.space().resolve_site(&path.site_name).await {
         Ok(site_info) => {
             let credentials = site_info.credentials.map(|c| match c {
                 tonk_space::CredentialsInfo::S3 {
@@ -132,7 +153,7 @@ pub async fn site(
         Err(SpaceError::Replica(_)) => {
             // Site doesn't exist
             Ok(Json(SiteStatusResponse {
-                name: site_name,
+                name: path.site_name,
                 exists: false,
                 credentials: None,
             }))
@@ -161,10 +182,16 @@ pub async fn branch(
         params.repo_did,
         params.branch
     );
+
+    let space_did = TonkState::multikey_to_did(&params.multikey);
     let tonk_state = state.read().await;
 
-    match tonk_state
-        .session
+    let session = tonk_state
+        .session_for_space(&space_did)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to open session: {}", e)))?;
+
+    match session
         .space()
         .resolve_remote_branch(&params.site, &params.repo_did, &params.branch)
         .await
@@ -264,10 +291,15 @@ pub async fn archive_block(
         }
     };
 
+    let space_did = TonkState::multikey_to_did(&params.multikey);
     let tonk_state = state.read().await;
 
-    match tonk_state
-        .session
+    let session = tonk_state
+        .session_for_space(&space_did)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to open session: {}", e)))?;
+
+    match session
         .space()
         .fetch_remote_archive_block(&params.site, &params.repo_did, &hash)
         .await

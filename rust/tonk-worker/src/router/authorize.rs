@@ -3,7 +3,7 @@
 //! The authorization endpoint uses the operator and delegation that were
 //! created when the service worker started. No external input is needed.
 
-use ::axum::{Json, extract::State};
+use ::axum::{Json, extract::{Path, State}};
 use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::replica::RemoteCredentials;
 use dialog_s3_credentials::ucan::{Credentials as UcanCredentials, DelegationChain};
@@ -16,6 +16,7 @@ use ucan::delegation::subject::DelegatedSubject;
 
 use super::AppState;
 use crate::TonkWorkerError;
+use crate::worker::TonkState;
 
 /// Access service path (will be resolved to absolute URL at runtime).
 const ACCESS_SERVICE_PATH: &str = "/ucan/";
@@ -53,38 +54,31 @@ pub struct AuthorizeResponse {
     pub error: Option<String>,
 }
 
-/// Status response indicating the current space state.
-#[allow(dead_code)] // Used in wasm builds via #[wasm_compat] macro
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct StatusResponse {
-    /// The DID of the space.
-    pub space_did: String,
-    /// The DID of the operator.
-    pub operator_did: String,
-    /// Whether the space has an upstream remote configured.
-    pub has_upstream: bool,
-}
-
 /// Handles authorization requests and configures the UCAN-based remote for the space.
 ///
 /// Uses the operator and delegation from the worker's state (created at startup).
-/// No external input is required - just call POST /api/authorize with an empty body.
+/// No external input is required - just call POST /api/{multikey}/authorize with an empty body.
 #[wasm_compat]
 pub async fn authorize(
     State(state): State<AppState>,
+    Path(multikey): Path<String>,
 ) -> Result<Json<AuthorizeResponse>, TonkWorkerError> {
     log!("Authorizing with internal UCAN delegation...");
 
-    let mut tonk_state = state.write().await;
+    let space_did = TonkState::multikey_to_did(&multikey);
+    let tonk_state = state.read().await;
+
+    let mut session = tonk_state
+        .session_for_space(&space_did)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to open session: {}", e)))?;
 
     // Get user's delegation for authorization
-    let user_delegations = tonk_state
-        .session
+    let user_delegations = session
         .account_delegations()
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("Failed to query delegations: {}", e)))?;
 
-    let space_did = tonk_state.session.space_did().to_string();
     let service_url = get_access_service_url();
     log!(
         "Setting up UCAN credentials for space: {} with URL: {}",
@@ -116,12 +110,7 @@ pub async fn authorize(
 
     // Add the remote to the space
     // If the remote already exists, that's fine - treat it as success
-    match tonk_state
-        .session
-        .space_mut()
-        .add_remote(remote_state)
-        .await
-    {
+    match session.space_mut().add_remote(remote_state).await {
         Ok(site) => {
             log!("Remote '{}' added successfully", site);
         }
@@ -138,9 +127,9 @@ pub async fn authorize(
     }
 
     // Set upstream on branch if not already configured
-    if !tonk_state.session.space().has_upstream().await {
+    if !session.space().has_upstream().await {
         log!("Setting 'origin' as upstream for main branch...");
-        match tonk_state.session.space_mut().set_upstream("origin").await {
+        match session.space_mut().set_upstream("origin").await {
             Ok(()) => {
                 log!("Upstream set successfully");
             }
@@ -156,31 +145,18 @@ pub async fn authorize(
         log!("Upstream already configured, skipping");
     }
 
+    // Update the cached session
+    tonk_state.update_session(session).await;
+
     Ok(Json(AuthorizeResponse {
         success: true,
         error: None,
     }))
 }
 
-/// Returns the current status of the space.
-#[wasm_compat]
-pub async fn status(
-    State(state): State<AppState>,
-) -> Result<Json<StatusResponse>, TonkWorkerError> {
-    let tonk_state = state.read().await;
-    let space = tonk_state.session.space();
-
-    Ok(Json(StatusResponse {
-        space_did: space.did.clone(),
-        operator_did: tonk_state.identity.operator().did().to_string(),
-        has_upstream: space.has_upstream().await,
-    }))
-}
-
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::super::tests::test_state;
-    use crate::StatusResponse;
     use crate::{AuthorizeResponse, api_router};
 
     use axum::body::Body;
@@ -188,13 +164,13 @@ mod tests {
     use tower::ServiceExt;
 
     #[dialog_common::test]
-    async fn it_returns_status_without_upstream() {
-        let state = test_state().await;
+    async fn it_authorizes_space() {
+        let (state, multikey) = test_state().await;
         let app = api_router(state);
 
         let request = Request::builder()
-            .uri("/api/status")
-            .method("GET")
+            .uri(format!("/api/{}/authorize", multikey))
+            .method("POST")
             .body(Body::empty())
             .expect("Failed to build request");
 
@@ -209,11 +185,9 @@ mod tests {
             .await
             .expect("Failed to read response body");
 
-        let status_response: StatusResponse =
+        let auth_response: AuthorizeResponse =
             serde_json::from_slice(&body).expect("Failed to deserialize response");
 
-        assert!(!status_response.has_upstream);
-        assert!(!status_response.space_did.is_empty());
-        assert!(!status_response.operator_did.is_empty());
+        assert!(auth_response.success);
     }
 }

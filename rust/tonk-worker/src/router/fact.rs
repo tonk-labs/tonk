@@ -17,16 +17,26 @@ use tonk_space::{Attribute, Entity, Relation, Value};
 
 use super::AppState;
 use crate::TonkWorkerError;
+use crate::worker::TonkState;
 
 /// Path parameters for fact assertion.
 #[derive(Debug, Deserialize)]
 pub struct AssertPath {
+    /// The multikey (z6Mk...) from the URL path.
+    pub multikey: String,
     /// The entity identifier.
     pub entity: String,
     /// The attribute namespace.
     pub attribute_ns: String,
     /// The attribute name.
     pub attribute_name: String,
+}
+
+/// Path parameters for fact query.
+#[derive(Debug, Deserialize)]
+pub struct QueryPath {
+    /// The multikey (z6Mk...) from the URL path.
+    pub multikey: String,
 }
 
 /// Query parameters for fact queries.
@@ -161,7 +171,7 @@ fn value_to_json(value: &Value) -> serde_json::Value {
 
 /// Handles fact assertion requests.
 ///
-/// POST /api/fact/assert/:entity/:attribute-ns/:attribute-name
+/// POST /api/{multikey}/fact/assert/:entity/:attribute-ns/:attribute-name
 #[wasm_compat]
 pub async fn assert_fact(
     State(state): State<AppState>,
@@ -175,6 +185,14 @@ pub async fn assert_fact(
         path.entity,
         attribute_str
     );
+
+    let space_did = TonkState::multikey_to_did(&path.multikey);
+    let tonk_state = state.read().await;
+
+    let mut session = tonk_state
+        .session_for_space(&space_did)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to open session: {}", e)))?;
 
     // Parse the entity identifier
     let entity: Entity = path.entity.parse().map_err(|e| {
@@ -196,18 +214,17 @@ pub async fn assert_fact(
     let relation = Relation::new(attribute, entity, value);
 
     // Transact the relation
-    {
-        let mut tonk_state = state.write().await;
-        tonk_state
-            .session
-            .space_mut()
-            .transact([relation])
-            .await
-            .map_err(|e| {
-                log!("Failed to assert fact: {:?}", e);
-                TonkWorkerError::Internal(format!("Failed to assert fact: {}", e))
-            })?;
-    }
+    session
+        .space_mut()
+        .transact([relation])
+        .await
+        .map_err(|e| {
+            log!("Failed to assert fact: {:?}", e);
+            TonkWorkerError::Internal(format!("Failed to assert fact: {}", e))
+        })?;
+
+    // Update the cached session
+    tonk_state.update_session(session).await;
 
     log!("Fact asserted successfully");
 
@@ -220,10 +237,11 @@ pub async fn assert_fact(
 
 /// Handles fact query requests.
 ///
-/// GET /api/fact/query?the=namespace/name&of=entity&is=value
+/// GET /api/{multikey}/fact/query?the=namespace/name&of=entity&is=value
 #[wasm_compat]
 pub async fn query_facts(
     State(state): State<AppState>,
+    Path(path): Path<QueryPath>,
     AxumQuery(query): AxumQuery<FactQuery>,
 ) -> Result<Json<QueryResponse>, TonkWorkerError> {
     use futures_util::TryStreamExt;
@@ -243,7 +261,13 @@ pub async fn query_facts(
         ));
     }
 
+    let space_did = TonkState::multikey_to_did(&path.multikey);
     let tonk_state = state.read().await;
+
+    let session = tonk_state
+        .session_for_space(&space_did)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Failed to open session: {}", e)))?;
 
     // Build the query using the Fact selector
     let mut selector = FactType::<Value>::select();
@@ -284,7 +308,7 @@ pub async fn query_facts(
         .map_err(|e| TonkWorkerError::Internal(format!("Query compilation error: {}", e)))?;
 
     let facts: Vec<FactType<Value>> = compiled
-        .query(tonk_state.session.space())
+        .query(session.space())
         .try_collect()
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("Query execution error: {}", e)))?;
@@ -321,12 +345,12 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_asserts_and_queries_fact() {
-        let state = test_state().await;
+        let (state, multikey) = test_state().await;
         let app = api_router(state);
 
         // Assert a fact
         let request = Request::builder()
-            .uri("/api/fact/assert/test:entity/test/name")
+            .uri(format!("/api/{}/fact/assert/test:entity/test/name", multikey))
             .method("POST")
             .header("content-type", "text/plain")
             .body(Body::from("Test Name"))
@@ -342,7 +366,7 @@ mod tests {
 
         // Query the fact
         let request = Request::builder()
-            .uri("/api/fact/query?the=test/name&of=test:entity")
+            .uri(format!("/api/{}/fact/query?the=test/name&of=test:entity", multikey))
             .method("GET")
             .body(Body::empty())
             .expect("Failed to build request");

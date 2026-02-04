@@ -41,6 +41,7 @@ pub enum SessionError {
 }
 
 /// An active session - an operator authorized to act on behalf of an account in a space.
+#[derive(Clone)]
 pub struct Session {
     /// The account's DID (the identity that authorized this session).
     account: String,
