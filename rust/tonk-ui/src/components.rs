@@ -4,18 +4,22 @@
 //! It compiles to Wasm and runs in the browser.
 
 use leptos::{logging::log, prelude::*};
+use leptos_router::{components::*, path};
 use wasm_bindgen::prelude::*;
 
-use crate::api;
-
 mod launcher;
-use launcher::*;
 
 mod toolbar;
-use toolbar::*;
+pub use toolbar::*;
 
 mod space;
-use space::*;
+pub use space::*;
+
+mod space_redirect;
+pub use space_redirect::*;
+
+mod space_router;
+pub use space_router::*;
 
 #[wasm_bindgen]
 extern "C" {
@@ -26,9 +30,9 @@ extern "C" {
 /// The current status of the application.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
-    /// Service worker is still loading/activating, or setting up upstream.
+    /// Service worker is still loading/activating.
     Loading,
-    /// Service worker is ready and upstream remote is configured.
+    /// Service worker is ready.
     Ready,
 }
 
@@ -37,46 +41,47 @@ pub enum Status {
 /// This component serves as the main entry point for the Tonk user interface,
 /// rendering the primary application view.
 ///
-/// On startup, it waits for the service worker to activate, then automatically
-/// sets up the upstream remote if not already configured.
+/// On startup, it waits for the service worker to activate before rendering
+/// the router. This ensures all API requests are intercepted by the SW.
+/// Space-specific initialization (like setting up upstream) is handled by the
+/// SpaceRouter component which has access to the current space context.
 #[component]
 pub fn TonkShell() -> impl IntoView {
     log!("Tonk shell initializing...");
 
-    // Initialize the space: wait for SW, check status, setup remote if needed
-    let init_resource = LocalResource::new(|| async {
+    // Wait for service worker to activate
+    let sw_ready = LocalResource::new(|| async {
         log!("Waiting for SW to activate...");
         service_worker_activates().await;
-        log!("SW is activated, fetching status...");
-
-        let status = api::status().await?;
-
-        // If no upstream configured, add the remote (but don't set as upstream yet)
-        if !status.has_upstream {
-            log!("No upstream configured, adding remote...");
-            api::authorize().await?;
-            log!("Remote added successfully");
-        }
-
+        log!("SW is activated");
         Ok::<_, crate::error::TonkUiError>(())
     });
 
-    // Derive the application status from init resource
-    let status = Signal::derive_local(move || {
-        match init_resource.get() {
-            Some(Ok(())) => Status::Ready,
-            Some(Err(e)) => {
-                log!("Initialization error: {:?}", e);
-                // Still show as loading on error - could add an Error state later
-                Status::Loading
-            }
-            None => Status::Loading,
+    // Derive the application status from SW ready state
+    let status = Signal::derive_local(move || match sw_ready.get() {
+        Some(Ok(())) => Status::Ready,
+        Some(Err(e)) => {
+            log!("Initialization error: {:?}", e);
+            Status::Loading
         }
+        None => Status::Loading,
     });
 
     provide_context(status);
 
     view! {
-        <TonkLauncher></TonkLauncher>
+        <Suspense fallback=move || view! { <div class="loading">"Initializing..."</div> }>
+            {move || sw_ready.get().map(|_| view! {
+                <Router>
+                    <Routes fallback=|| view! { <div>"Not found"</div> }>
+                        // Root path redirects to first space
+                        <Route path=path!("") view=SpaceRedirect />
+                        // Space-specific routes
+                        <Route path=path!(":multikey") view=SpaceRouter />
+                        <Route path=path!(":multikey/*any") view=SpaceRouter />
+                    </Routes>
+                </Router>
+            })}
+        </Suspense>
     }
 }

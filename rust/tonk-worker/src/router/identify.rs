@@ -25,8 +25,9 @@ pub async fn identify(
     State(state): State<AppState>,
 ) -> Result<Json<IdentifyResponse>, TonkWorkerError> {
     let tonk_state = state.read().await;
+    let identity = tonk_state.identity.read().await;
 
     Ok(Json(IdentifyResponse {
-        user_did: tonk_state.identity.did().to_string(),
+        user_did: identity.did().to_string(),
     }))
 }

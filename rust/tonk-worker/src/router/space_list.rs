@@ -1,9 +1,13 @@
 //! Space list endpoint - returns all known spaces for this identity.
 
 use axum::{Json, extract::State};
+use axum_wasm_macros::wasm_compat;
 use serde::{Deserialize, Serialize};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tokio::sync::oneshot;
 
 use crate::router::AppState;
+use crate::TonkWorkerError;
 
 /// Information about a single space.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,12 +30,15 @@ pub struct ListSpacesResponse {
 /// Handler for GET /api/space/list
 ///
 /// Returns all spaces known to this identity, sorted alphabetically by DID.
-pub async fn list_spaces(State(state): State<AppState>) -> Json<ListSpacesResponse> {
-    let state = state.read().await;
+#[wasm_compat]
+pub async fn list_spaces(
+    State(state): State<AppState>,
+) -> Result<Json<ListSpacesResponse>, TonkWorkerError> {
+    let tonk_state = state.read().await;
+    let identity = tonk_state.identity.read().await;
 
     // Get known spaces from the account
-    let known_space_dids = state
-        .identity
+    let known_space_dids: Vec<String> = identity
         .account()
         .known_spaces()
         .await
@@ -50,5 +57,5 @@ pub async fn list_spaces(State(state): State<AppState>) -> Json<ListSpacesRespon
 
     spaces.sort_by(|a, b| a.did.cmp(&b.did));
 
-    Json(ListSpacesResponse { spaces })
+    Ok(Json(ListSpacesResponse { spaces }))
 }

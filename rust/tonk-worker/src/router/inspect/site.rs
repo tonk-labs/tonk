@@ -69,8 +69,11 @@ pub struct SitePath {
 pub struct RemoteBranchPath {
     /// The multikey (z6Mk...) from the URL path.
     pub multikey: String,
+    /// The site name.
     pub site: String,
+    /// The repository/space DID.
     pub repo_did: String,
+    /// The branch name.
     pub branch: String,
 }
 
@@ -79,8 +82,11 @@ pub struct RemoteBranchPath {
 pub struct ArchiveBlockPath {
     /// The multikey (z6Mk...) from the URL path.
     pub multikey: String,
+    /// The site name.
     pub site: String,
+    /// The repository/space DID.
     pub repo_did: String,
+    /// The block hash (base58 encoded).
     pub hash: String,
 }
 
