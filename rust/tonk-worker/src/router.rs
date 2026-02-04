@@ -31,6 +31,9 @@ pub use identify::{IdentifyResponse, identify};
 mod delegations;
 pub use delegations::{DelegationsResponse, delegations};
 
+mod space_list;
+pub use space_list::{ListSpacesResponse, SpaceInfo, list_spaces};
+
 /// Shared application state containing identity and session.
 pub type AppState = Arc<RwLock<TonkState>>;
 
@@ -42,32 +45,46 @@ async fn root(State(_state): State<AppState>) -> &'static str {
 /// Creates the API router with all configured routes.
 ///
 /// Sets up the routing tree with the TonkState as shared state.
+/// Routes are organized into:
+/// - Global endpoints: `/api/*` - identity-level operations
+/// - Space endpoints: `/api/{multikey}/*` - space-specific operations
+///
+/// The `multikey` is the `z6Mk...` portion of a DID (`did:key:z6Mk...`).
 pub fn api_router(state: TonkState) -> Router {
     let state: AppState = Arc::new(RwLock::new(state));
     Router::new()
+        // Global endpoints (no space context required)
         .route("/api", get(root))
         .route("/api/identify", get(identify))
-        .route("/api/authorize", post(authorize))
-        .route("/api/status", get(status))
-        .route("/api/delegations", get(delegations))
-        .route("/api/inspect/branch/{branch_name}", get(inspect::branch))
-        .route("/api/inspect/site/{site_name}", get(inspect::site::site))
+        .route("/api/space/list", get(list_spaces))
+        // Space-specific endpoints - prefixed with multikey
+        .route("/api/{multikey}/authorize", post(authorize))
+        .route("/api/{multikey}/status", get(status))
+        .route("/api/{multikey}/delegations", get(delegations))
         .route(
-            "/api/inspect/site/{site}/{repo_did}/branch/{branch}",
+            "/api/{multikey}/inspect/branch/{branch_name}",
+            get(inspect::branch),
+        )
+        .route(
+            "/api/{multikey}/inspect/site/{site_name}",
+            get(inspect::site::site),
+        )
+        .route(
+            "/api/{multikey}/inspect/site/{site}/{repo_did}/branch/{branch}",
             get(inspect::site::branch),
         )
         .route(
-            "/api/inspect/site/{site}/{repo_did}/archive/index/{hash}",
+            "/api/{multikey}/inspect/site/{site}/{repo_did}/archive/index/{hash}",
             get(inspect::site::archive_block),
         )
         .route(
-            "/api/fact/assert/{entity}/{attribute_ns}/{attribute_name}",
+            "/api/{multikey}/fact/assert/{entity}/{attribute_ns}/{attribute_name}",
             post(assert_fact),
         )
-        .route("/api/fact/query", get(query_facts))
-        .route("/api/sync", post(sync::sync))
-        .route("/api/sync/pull", post(sync::pull))
-        .route("/api/sync/push", post(sync::push))
+        .route("/api/{multikey}/fact/query", get(query_facts))
+        .route("/api/{multikey}/sync", post(sync::sync))
+        .route("/api/{multikey}/sync/pull", post(sync::pull))
+        .route("/api/{multikey}/sync/push", post(sync::push))
         .with_state(state)
 }
 
