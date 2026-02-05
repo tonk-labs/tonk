@@ -4,6 +4,7 @@
 //! It implements the same handler logic as the Cloudflare Worker but runs
 //! as a native HTTP server with CORS support for browser-based testing.
 
+use super::AccessServiceAddress;
 use dialog_common::helpers::{Provider, Service};
 use dialog_s3_credentials::ucan::UcanAuthorizer;
 use dialog_s3_credentials::{Address, s3};
@@ -16,28 +17,9 @@ use hyper::header::{
 use hyper::server::conn::http1;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
-
-/// Connection info for the UCAN access service test server.
-///
-/// Contains all information needed to configure `ucan::Credentials` and
-/// connect to the backing S3 server for test verification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AccessServiceAddress {
-    /// URL of the UCAN access service (e.g., "http://127.0.0.1:8080")
-    pub access_service_url: String,
-    /// URL of the backing S3 server (for test verification)
-    pub s3_endpoint: String,
-    /// The bucket name
-    pub bucket: String,
-    /// AWS access key ID (used by access service, exposed for verification)
-    pub access_key_id: String,
-    /// AWS secret access key (used by access service, exposed for verification)
-    pub secret_access_key: String,
-}
 
 /// A running UCAN access service test server instance.
 pub struct AccessServer {

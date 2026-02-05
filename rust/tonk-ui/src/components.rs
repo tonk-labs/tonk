@@ -21,6 +21,11 @@ use space::*;
 extern "C" {
     #[wasm_bindgen(js_namespace = window, js_name = serviceWorkerActivates)]
     async fn service_worker_activates();
+
+    /// Triggers a sync operation.
+    /// Uses Background Sync API if available, otherwise falls back to /api/sync.
+    #[wasm_bindgen(js_namespace = window, catch)]
+    pub async fn sync() -> Result<(), JsValue>;
 }
 
 /// The current status of the application.
@@ -78,5 +83,148 @@ pub fn TonkShell() -> impl IntoView {
 
     view! {
         <TonkLauncher></TonkLauncher>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::helpers::TestEnvironment;
+    use anyhow::Result;
+    #[cfg(not(target_arch = "wasm32"))]
+    use thirtyfour::prelude::*;
+    use tonk_worker::{StatusResponse, SyncResponse};
+
+    /// Test that the UI auto-configures upstream on load via the access service.
+    /// The access service is available at /ucan/ via Caddy reverse proxy.
+    #[dialog_common::test]
+    async fn it_configures_upstream(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        // Wait for toolbar to become visible (indicates UI is ready and authorized)
+        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
+
+        // Verify status shows upstream configured after auto-authorization
+        let status_result = driver
+            .execute(
+                r#"
+                const response = await fetch('/api/status');
+                return await response.json();
+                "#,
+                vec![],
+            )
+            .await?;
+
+        let status: StatusResponse = serde_json::from_value(status_result.json().clone())?;
+        assert!(
+            status.has_upstream,
+            "Expected upstream to be configured after initialization"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Test sync via /api/sync endpoint.
+    #[dialog_common::test]
+    async fn it_syncs_via_sync_route(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        // Wait for toolbar to become visible (indicates UI is ready and authorized)
+        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
+
+        // Perform sync
+        let sync_result = driver
+            .execute(
+                r#"
+                const response = await fetch('/api/sync', {
+                    method: 'POST'
+                });
+                return await response.json();
+                "#,
+                vec![],
+            )
+            .await?;
+
+        let sync_response: SyncResponse = serde_json::from_value(sync_result.json().clone())?;
+        assert!(sync_response.success, "Sync should succeed");
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Test sync via Background Sync API and verify data was pushed to remote.
+    #[dialog_common::test]
+    async fn it_syncs_via_background_sync_api(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        // Wait for toolbar to become visible (indicates UI is ready and authorized)
+        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
+
+        // Get the space_did from status (needed to verify sync on remote)
+        let status_result = driver
+            .execute(
+                r#"
+                const response = await fetch('/api/status');
+                return await response.json();
+                "#,
+                vec![],
+            )
+            .await?;
+        let status: StatusResponse = serde_json::from_value(status_result.json().clone())?;
+        let space_did = status.space_did.clone();
+
+        // Build the inspect URL (space_did needs URL-encoding since it contains ':')
+        use url::form_urlencoded;
+        let encoded_space_did: String =
+            form_urlencoded::byte_serialize(space_did.as_bytes()).collect();
+
+        let inspect_script = format!(
+            r#"
+            const response = await fetch('/api/inspect/site/origin/{}/branch/main');
+            return await response.json();
+            "#,
+            encoded_space_did
+        );
+
+        // Verify remote branch has no revision before sync
+        let inspect_result = driver.execute(&inspect_script, vec![]).await?;
+        let branch_status: serde_json::Value =
+            serde_json::from_value(inspect_result.json().clone())?;
+
+        assert!(
+            branch_status["revision"].is_null(),
+            "Remote branch should have no revision before sync: {:?}",
+            branch_status
+        );
+
+        // Register sync using the Background Sync API
+        // This triggers the service worker's sync event handler
+        driver
+            .execute(
+                r#"
+                const registration = await navigator.serviceWorker.ready;
+                await registration.sync.register('tonk-sync');
+                "#,
+                vec![],
+            )
+            .await?;
+
+        // Verify data was pushed by checking the remote branch now has a revision
+        let inspect_result = driver.execute(&inspect_script, vec![]).await?;
+        let branch_status: serde_json::Value =
+            serde_json::from_value(inspect_result.json().clone())?;
+
+        assert!(
+            branch_status["success"].as_bool().unwrap_or(false),
+            "Remote branch resolution should succeed after sync: {:?}",
+            branch_status
+        );
+        assert!(
+            branch_status.get("revision").is_some() && !branch_status["revision"].is_null(),
+            "Remote branch should have a revision after sync"
+        );
+
+        driver.quit().await?;
+        Ok(())
     }
 }

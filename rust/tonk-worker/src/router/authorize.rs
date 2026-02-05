@@ -21,6 +21,7 @@ use crate::TonkWorkerError;
 const ACCESS_SERVICE_PATH: &str = "/ucan/";
 
 /// Get the absolute URL for the access service.
+/// Get the default absolute URL for the access service.
 ///
 /// In WASM (service worker), we resolve against the current origin.
 /// In native, we return the path as-is (for testing).
@@ -68,7 +69,7 @@ pub struct StatusResponse {
 /// Handles authorization requests and configures the UCAN-based remote for the space.
 ///
 /// Uses the operator and delegation from the worker's state (created at startup).
-/// No external input is required - just call POST /api/authorize with an empty body.
+// No external input is required - just call POST /api/authorize with an empty body.
 #[wasm_compat]
 pub async fn authorize(
     State(state): State<AppState>,
@@ -177,11 +178,11 @@ pub async fn status(
     }))
 }
 
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(test)]
 mod tests {
     use super::super::tests::test_state;
     use crate::StatusResponse;
-    use crate::{AuthorizeResponse, api_router};
+    use crate::api_router;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};

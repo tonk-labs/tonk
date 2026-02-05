@@ -32,8 +32,7 @@ mod error;
 mod handlers;
 
 /// Test helpers for integration testing.
-/// Only available for non-WASM targets with the `helpers` feature.
-#[cfg(all(not(target_arch = "wasm32"), feature = "helpers"))]
+#[cfg(feature = "helpers")]
 pub mod helpers;
 
 /// Worker entrypoint

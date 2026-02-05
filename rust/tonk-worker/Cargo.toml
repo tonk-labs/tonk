@@ -56,8 +56,17 @@ idb = "0.6"
 [dev-dependencies]
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
+tonk-access-service = { workspace = true, features = ["helpers"] }
 tower = { workspace = true }
 wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
+
+[lints.rust]
+# The dialog_common::test macro uses cfg conditions that originate from the macro crate.
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
