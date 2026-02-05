@@ -38,8 +38,11 @@ mod integration_tests {
     async fn it_navigates_to_the_default_space(test_environment: TestEnvironment) -> Result<()> {
         let driver = test_environment.driver().await?;
 
-        let launcher = driver.query(By::Css(".launcher")).first().await?;
-        assert_eq!(launcher.text().await?, "Nothing here ¯\\_(ツ)_/¯");
+        let _launcher = driver
+            .query(By::Css(".launcher"))
+            .with_text("Nothing here ¯\\_(ツ)_/¯")
+            .first()
+            .await?;
 
         let space = driver.query(By::Css(".space")).first().await?;
 
