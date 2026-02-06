@@ -4,6 +4,7 @@
 //! It compiles to Wasm and runs in the browser.
 
 use leptos::{logging::log, prelude::*};
+use leptos_router::location::{BrowserUrl, LocationProvider};
 use wasm_bindgen::prelude::*;
 
 use crate::api;
@@ -62,6 +63,8 @@ pub fn TonkShell() -> impl IntoView {
             api::authorize().await?;
             log!("Remote added successfully");
         }
+
+        BrowserUrl::redirect(&format!("/space/{}", status.space_did));
 
         Ok::<_, crate::error::TonkUiError>(())
     });

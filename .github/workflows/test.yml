@@ -35,8 +35,8 @@ jobs:
         run: |
           nix --accept-flake-config develop .#ci -c lint
 
-  rust_crates:
-    name: 'Rust Crates'
+  tests:
+    name: 'Tests'
     needs: ['lints']
     runs-on: 'ubuntu-latest'
     strategy:

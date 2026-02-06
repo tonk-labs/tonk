@@ -2,117 +2,116 @@
 <html lang="en">
 
 <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="title" content="Tonk">
-    <meta name="description"
-        content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now.">
-    <meta name="robots" content="index, follow">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="title" content="Tonk">
+  <meta name="description"
+    content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now.">
+  <meta name="robots" content="index, follow">
 
-    <title>Tonk</title>
+  <title>Tonk</title>
 
-    <meta property="og:title" content="Tonk is impossible software">
-    <meta property="og:description"
-        content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now.">
-    <meta property="og:url" content="https://tonk.xyz">
-    <meta property="og:site_name" content="Tonk">
-    <meta property="og:locale" content="en_US">
-    <meta property="og:image" content="https://tonk.xyz/preview.png">
-    <meta property="og:image:width" content="1200">
-    <meta property="og:image:height" content="630">
-    <meta property="og:image:alt" content="Tonk is impossible software">
-    <meta property="og:type" content="website">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Tonk is impossible software">
-    <meta name="twitter:description"
-        content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now.">
-    <meta name="twitter:image" content="https://tonk.xyz/preview.png">
+  <meta property="og:title" content="Tonk is impossible software">
+  <meta property="og:description"
+    content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now.">
+  <meta property="og:url" content="https://tonk.xyz">
+  <meta property="og:site_name" content="Tonk">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:image" content="https://tonk.xyz/preview.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Tonk is impossible software">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Tonk is impossible software">
+  <meta name="twitter:description"
+    content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now.">
+  <meta name="twitter:image" content="https://tonk.xyz/preview.png">
 
-    <link rel="shortcut icon" href="/images/mark-white.svg">
-    <link rel="apple-touch-icon" href="/images/mark-white.svg">
+  <link rel="shortcut icon" href="/images/mark-white.svg">
+  <link rel="apple-touch-icon" href="/images/mark-white.svg">
 
-    <!-- We need to include this before the snippet that loads the UI so that
+  <!-- We need to include this before the snippet that loads the UI so that
          the `serviceWorkerActivates` function is available when the Wasm blob
          initializes; the promise is resolved later on. -->
-    <script type="module">
-        const serviceWorkerActivatesPromise = new Promise((resolve, reject) => {
-            self.resolveServiceWorkerActivates = resolve;
-            self.rejectServiceWorkerActivates = reject;
-        });
+  <script type="module">
+    const serviceWorkerActivatesPromise = new Promise((resolve, reject) => {
+      self.resolveServiceWorkerActivates = resolve;
+      self.rejectServiceWorkerActivates = reject;
+    });
 
-        self.serviceWorkerActivates = () => {
-            return serviceWorkerActivatesPromise;
-        };
+    self.serviceWorkerActivates = () => {
+      return serviceWorkerActivatesPromise;
+    };
 
-        // Trigger sync - uses Background Sync API if available, otherwise falls back to /api/sync
-        self.sync = async () => {
-            if ('serviceWorker' in navigator && 'SyncManager' in window) {
-                try {
-                    const registration = await navigator.serviceWorker.ready;
-                    await registration.sync.register('tonk-sync');
-                    console.log('[Tonk] Background sync registered');
-                    return;
-                } catch (e) {
-                    console.warn('[Tonk] Background sync registration failed, falling back:', e);
-                }
-            }
-            // Fallback to direct sync call
-            const response = await fetch('/api/sync', { method: 'POST' });
-            if (!response.ok) {
-                throw new Error(`Sync failed: ${response.status}`);
-            }
-            console.log('[Tonk] Direct sync completed');
-        };
-    </script>
-
-    <!-- The following are load-bearing configuration for the Trunk build tool
+    // Trigger sync - uses Background Sync API if available, otherwise falls back to /api/sync
+    self.sync = async () => {
+      if ('serviceWorker' in navigator && 'SyncManager' in window) {
+        try {
+          const registration = await navigator.serviceWorker.ready;
+          await registration.sync.register('tonk-sync');
+          console.log('[Tonk] Background sync registered');
+          return;
+        } catch (e) {
+          console.warn('[Tonk] Background sync registration failed, falling back:', e);
+        }
+      }
+      // Fallback to direct sync call
+      const response = await fetch('/api/sync', {method: 'POST'});
+      if (!response.ok) {
+        throw new Error(`Sync failed: ${response.status}`);
+      }
+      console.log('[Tonk] Direct sync completed');
+    };
+  </script>
+  <!-- The following are load-bearing configuration for the Trunk build tool
          (https://trunkrs.dev/assets/); if you need to add build steps or copy
          static assets, you will want to modify this condiguration here. -->
-    <link data-trunk rel="rust" data-bin="ui" data-type="main" data-wasm-opt="z" />
-    <link data-trunk rel="rust" data-bin="worker" data-type="worker" data-bindgen-target="web" data-wasm-opt="z" />
+  <link data-trunk rel="rust" data-bin="ui" data-type="main" data-wasm-opt="z" />
+  <link data-trunk rel="rust" data-bin="worker" data-type="worker" data-bindgen-target="web" data-wasm-opt="z" />
 
-    <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
-    <link data-trunk rel="copy-dir" href="./assets/images" />
+  <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
+  <link data-trunk rel="copy-dir" href="./assets/images" />
 
-    <link data-trunk rel="tailwind-css" href="./styles.css" />
+  <link data-trunk rel="tailwind-css" href="./styles.css" />
 </head>
 
 <body>
-    <script type="module">
-        const resolveWhenActive = worker => {
-            const onStateChange = () => {
-                if (worker.state === 'activated') {
-                    resolveServiceWorkerActivates();
-                    worker.removeEventListener('statechange', onStateChange);
-                }
-            };
-
-            worker.addEventListener('statechange', onStateChange);
-            onStateChange();
-        };
-
-        if ("serviceWorker" in navigator) {
-            const registration = await navigator.serviceWorker.register("./service_worker.js", { type: "module" });
-            const worker = registration.installing || registration.waiting || registration.active;
-
-            if (worker != null) {
-                resolveWhenActive(worker);
-            } else {
-                registration.addEventListener('updatefound', () => {
-                    const worker = registration.installing;
-
-                    if (worker != null) {
-                        resolveWhenActive(worker);
-                    } else {
-                        rejectServiceWorkerActivates();
-                    }
-                }, { once: true })
-            }
-        } else {
-            console.error("Service workers not supported; Tonk will not work!");
-            rejectServiceWorkerActivates();
+  <script type="module">
+    const resolveWhenActive = worker => {
+      const onStateChange = () => {
+        if (worker.state === 'activated') {
+          resolveServiceWorkerActivates();
+          worker.removeEventListener('statechange', onStateChange);
         }
-    </script>
+      };
+
+      worker.addEventListener('statechange', onStateChange);
+      onStateChange();
+    };
+
+    if ("serviceWorker" in navigator) {
+      const registration = await navigator.serviceWorker.register("/service_worker.js", {type: "module"});
+      const worker = registration.installing || registration.waiting || registration.active;
+
+      if (worker != null) {
+        resolveWhenActive(worker);
+      } else {
+        registration.addEventListener('updatefound', () => {
+          const worker = registration.installing;
+
+          if (worker != null) {
+            resolveWhenActive(worker);
+          } else {
+            rejectServiceWorkerActivates();
+          }
+        }, {once: true})
+      }
+    } else {
+      console.error("Service workers not supported; Tonk will not work!");
+      rejectServiceWorkerActivates();
+    }
+  </script>
 </body>
 
 </html>
