@@ -14,6 +14,9 @@ path = "src/bin/tonk.rs"
 default = []
 
 [dependencies]
+
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # CLI
 clap = { workspace = true, features = ["derive"] }
 dialoguer = { workspace = true }
@@ -64,23 +67,22 @@ dirs = { workspace = true }
 
 # For opening browser
 webbrowser = { workspace = true }
-
 [dev-dependencies]
 tempfile = { workspace = true }
 
 # Platform-specific keyring backends
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(all(not(target_arch = "wasm32"), target_os = "macos"))'.dependencies]
 keyring = { workspace = true, features = ["apple-native"] }
 
-[target.'cfg(target_os = "ios")'.dependencies]
+[target.'cfg(all(not(target_arch = "wasm32"), target_os = "ios"))'.dependencies]
 keyring = { workspace = true, features = ["apple-native"] }
 
-[target.'cfg(target_os = "windows")'.dependencies]
+[target.'cfg(all(not(target_arch = "wasm32"), target_os = "windows"))'.dependencies]
 keyring = { workspace = true, features = ["windows-native"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(all(not(target_arch = "wasm32"), target_os = "linux"))'.dependencies]
 keyring = { workspace = true, features = ["sync-secret-service"] }
 
 # Fallback for other platforms (FreeBSD, etc.)
-[target.'cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux")))'.dependencies]
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux")))'.dependencies]
 keyring = { workspace = true }
