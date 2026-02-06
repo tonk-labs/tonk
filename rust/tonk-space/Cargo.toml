@@ -38,6 +38,7 @@ dialog-capability = { workspace = true }
 
 # UCAN
 ucan = { workspace = true }
+varsig = { workspace = true }
 ipld-core = { workspace = true }
 
 # Serialization

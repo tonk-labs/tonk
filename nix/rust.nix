@@ -18,10 +18,10 @@ let
   # that the same dependencies can be used across all derivations that
   # need them. Crane expects the full git URL as the key.
   cargoGitDependencies = {
-    "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#83a59a367b6b96f99b7ecb884f011c57fbe32c54" =
-      "sha256-s3DRRNklq+ZFAApSDuGHC0hJo9V9ry1ODGhN0rdwMtY=";
-    "git+https://github.com/tonk-labs/rs-ucan.git?branch=tonk#51d0ec8952ccaf3d95a767f0bb3d302064ac7aa1" =
-      "sha256-apwOaUuOLvYfqNGHOTnOeJx3DIOSPvJLFwXpc6p3UkA=";
+    "git+https://github.com/dialog-db/dialog-db.git?branch=tonk#8b05928053e6902fe79e92baa617bc56dd86f2af" =
+      "sha256-digyUYefGIu27fVraJIfA6lMOo/bKSFX4XQDrC3GWzg=";
+    "git+https://github.com/tonk-labs/rs-ucan.git?branch=main#300a5635544855be4599581bffc8ad231e04eb76" =
+      "sha256-mkZ6M7jOrRvlcVyBZ+mUPagD7/hJZ/HvoptDOIm90bs=";
   };
 
   # Filter source to only Rust-relevant files
@@ -80,6 +80,11 @@ let
     src = rustSource;
     strictDeps = true;
     inherit nativeBuildInputs;
+    buildInputs =
+      with pkgs;
+      lib.optionals stdenv.isLinux [
+        dbus
+      ];
 
     # Git dependencies with hashes for offline evaluation
     # Crane will automatically find Cargo.lock from src
@@ -96,8 +101,15 @@ let
   );
 
   # Build WASM dependencies separately (different target)
+  # Exclude native-only crates that can't compile for wasm32-unknown-unknown.
+  # tonk-cli requires tokio["full"] which pulls in mio, a crate that needs
+  # OS-level async I/O primitives (epoll/kqueue) unavailable in WASM.
+  # If you add a new native-only crate, add it to the --exclude list here.
+  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli";
+
   wasmAttributes = commonAttributes // {
     CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
+    cargoExtraArgs = wasmCargoExcludeArgs;
   };
 
   wasmArtifacts = craneLib.buildDepsOnly (
@@ -173,6 +185,7 @@ let
         buildPhaseCargoCommand = ''
           cargo nextest archive \
             ${args} \
+            ${if target == "wasm32-unknown-unknown" then wasmCargoExcludeArgs else ""} \
             --archive-file ./tests-${name}.tar.zst
         '';
 

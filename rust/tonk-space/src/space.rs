@@ -1,9 +1,7 @@
 use crate::delegation::Delegation;
 use crate::operator::Operator;
 use crate::ownership::Ownership;
-use dialog_artifacts::replica::{
-    Branch, BranchId, Operator as ReplicaOperator, RemoteSite, Remotes, Replica,
-};
+use dialog_artifacts::replica::{Branch, BranchId, RemoteSite, Remotes, Replica, SigningAuthority};
 use dialog_artifacts::selector::Constrained;
 use dialog_artifacts::{
     Artifact, ArtifactSelector, ArtifactStore, DialogArtifactsError, PlatformBackend,
@@ -108,8 +106,8 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         delegations: Vec<Delegation>,
     ) -> Result<Self, SpaceError> {
         // Open the replica with the operator and space DID as subject
-        let replica_operator = ReplicaOperator::from(operator);
-        let replica = Replica::open(replica_operator, space_did.clone().into(), backend)?;
+        let authority = SigningAuthority::from(operator);
+        let replica = Replica::open(authority, space_did.clone().into(), backend)?;
 
         // Create/open the "main" branch for this space
         let branch_id = BranchId::new("main".to_string());
@@ -131,7 +129,6 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         if !transaction.is_empty() {
             session.commit(transaction).await?;
         }
-
         Ok(Space {
             did: space_did,
             replica: Arc::new(RwLock::new(replica)),
@@ -155,8 +152,8 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         backend: Backend,
     ) -> Result<Self, SpaceError> {
         // Open the replica with the operator and space DID as subject
-        let replica_operator = ReplicaOperator::from(operator);
-        let replica = Replica::open(replica_operator, space_did.clone().into(), backend)?;
+        let authority = SigningAuthority::from(operator);
+        let replica = Replica::open(authority, space_did.clone().into(), backend)?;
 
         // Open the "main" branch (creates it if it doesn't exist)
         let branch_id = BranchId::new("main".to_string());
@@ -641,11 +638,11 @@ mod tests {
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = Delegation::builder()
-            .issuer(signer.clone())
-            .audience(*audience.did())
-            .subject(DelegatedSubject::Specific(*subject.did()))
+            .issuer(signer)
+            .audience(audience.did().clone())
+            .subject(DelegatedSubject::Specific(subject.did().clone()))
             .command(vec!["read".to_string(), "write".to_string()])
-            .try_build(&signer)
+            .try_build()
             .await
             .expect("Failed to build delegation");
 
@@ -659,11 +656,11 @@ mod tests {
     ) -> Delegation {
         let signer = Ed25519Signer::from(issuer);
         let ucan_delegation = Delegation::builder()
-            .issuer(signer.clone())
-            .audience(*audience.did())
-            .subject(DelegatedSubject::Specific(*subject.did()))
+            .issuer(signer)
+            .audience(audience.did().clone())
+            .subject(DelegatedSubject::Specific(subject.did().clone()))
             .command(vec!["read".to_string(), "write".to_string()])
-            .try_build(&signer)
+            .try_build()
             .await
             .expect("Failed to build delegation");
 
@@ -695,6 +692,22 @@ mod tests {
         let space = Space::create(space_did.clone(), &operator, backend, vec![delegation])
             .await
             .expect("Failed to create space");
+
+        assert_eq!(space.did, space_did);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn it_creates_space_with_delegation_on_fs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backend = FsBackend::new(tmp.path()).await.unwrap();
+        let space_did = "did:key:z6MktRgfR4aqompSzCHvmwCxERDjWyn2QDXURd1vdqBgMozV".to_string();
+        let operator = Operator::generate();
+        let delegation = make_test_delegation().await;
+
+        let space = Space::create(space_did.clone(), &operator, backend, vec![delegation])
+            .await
+            .expect("Failed to create space with FsBackend");
 
         assert_eq!(space.did, space_did);
     }

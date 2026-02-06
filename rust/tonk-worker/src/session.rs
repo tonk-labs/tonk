@@ -135,11 +135,11 @@ impl Session {
     ) -> Result<Delegation, SessionError> {
         let signer = Ed25519Signer::from(space_operator);
         let ucan_delegation = Delegation::builder()
-            .issuer(signer.clone())
-            .audience(*user_operator.did())
-            .subject(DelegatedSubject::Specific(*space_operator.did()))
+            .issuer(signer)
+            .audience(user_operator.did().clone())
+            .subject(DelegatedSubject::Specific(space_operator.did().clone()))
             .command(vec![]) // Empty command = "/*" (all commands)
-            .try_build(&signer)
+            .try_build()
             .await
             .expect("Delegation builder should not fail with valid inputs");
 

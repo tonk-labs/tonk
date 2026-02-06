@@ -2,19 +2,20 @@
 //!
 //! An `Operator` represents a principal that can sign UCAN delegations and
 //! dialog-db operations. It wraps an Ed25519 signing key and provides
-//! conversions to both `Ed25519Signer` (for UCAN) and dialog-db `Operator`.
+//! conversions to both `Ed25519Signer` (for UCAN) and dialog-db `SigningAuthority`.
 
-use dialog_artifacts::replica::Operator as ReplicaOperator;
+use dialog_artifacts::replica::SigningAuthority;
 use ed25519_dalek::SigningKey;
 use rand_0_8::rngs::OsRng;
 use ucan::did::{Ed25519Did, Ed25519Signer};
+use varsig::signature::eddsa::Ed25519SigningKey;
 
 /// An operator identity that can sign UCAN delegations and dialog-db operations.
 ///
 /// This is the primary identity type for tonk-space. It wraps an Ed25519 signing
 /// key and can be converted to:
 /// - `Ed25519Signer` for signing UCAN delegations
-/// - `ReplicaOperator` for signing dialog-db replica operations
+/// - `SigningAuthority` for signing dialog-db replica operations
 #[derive(Debug, Clone)]
 pub struct Operator(Ed25519Signer);
 
@@ -22,7 +23,7 @@ impl Operator {
     /// Generate a new random operator identity.
     pub fn generate() -> Self {
         let signing_key = SigningKey::generate(&mut OsRng);
-        Self(Ed25519Signer::new(signing_key))
+        Self(Ed25519Signer::from(signing_key))
     }
 
     /// Create an operator from a passphrase using HKDF key derivation.
@@ -33,7 +34,7 @@ impl Operator {
     pub async fn from_passphrase(passphrase: &str) -> Self {
         let passphrase = crate::Passphrase::from(passphrase);
         let signing_key = passphrase.derive_signing_key(None).await;
-        Self(Ed25519Signer::new(signing_key))
+        Self(Ed25519Signer::from(signing_key))
     }
 
     /// Get the DID for this operator.
@@ -41,9 +42,23 @@ impl Operator {
         self.0.did()
     }
 
-    /// Get the underlying signing key.
+    /// Get the underlying signing key (native platforms only).
+    ///
+    /// On native, this extracts the `ed25519_dalek::SigningKey` from the
+    /// platform-abstracted `Ed25519SigningKey` enum.
     pub fn signer(&self) -> &SigningKey {
-        self.0.signer()
+        match self.0.signer() {
+            Ed25519SigningKey::Native(key) => key,
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            Ed25519SigningKey::WebCrypto(_) => {
+                panic!("Cannot get native signing key on WASM; use ucan_signer() instead")
+            }
+        }
+    }
+
+    /// Get the underlying `Ed25519Signer` for UCAN operations.
+    pub fn ucan_signer(&self) -> &Ed25519Signer {
+        &self.0
     }
 
     /// Get the secret key bytes.
@@ -56,7 +71,7 @@ impl Operator {
     /// This is the inverse of `to_secret()` - it allows reconstructing an
     /// operator from previously stored secret bytes.
     pub fn from_secret(secret: [u8; 32]) -> Self {
-        Self(Ed25519Signer::new(SigningKey::from_bytes(&secret)))
+        Self(Ed25519Signer::from(SigningKey::from_bytes(&secret)))
     }
 }
 
@@ -72,21 +87,21 @@ impl From<&Operator> for Ed25519Signer {
     }
 }
 
-impl From<Operator> for ReplicaOperator {
+impl From<Operator> for SigningAuthority {
     fn from(operator: Operator) -> Self {
-        ReplicaOperator::from_secret(&operator.to_secret())
+        SigningAuthority::from_secret(&operator.to_secret())
     }
 }
 
-impl From<&Operator> for ReplicaOperator {
+impl From<&Operator> for SigningAuthority {
     fn from(operator: &Operator) -> Self {
-        ReplicaOperator::from_secret(&operator.to_secret())
+        SigningAuthority::from_secret(&operator.to_secret())
     }
 }
 
 impl From<SigningKey> for Operator {
     fn from(signing_key: SigningKey) -> Self {
-        Self(Ed25519Signer::new(signing_key))
+        Self(Ed25519Signer::from(signing_key))
     }
 }
 
@@ -160,9 +175,9 @@ mod tests {
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_converts_to_replica_operator() {
+    fn it_converts_to_signing_authority() {
         let operator = Operator::generate();
-        let _replica_op: ReplicaOperator = (&operator).into();
+        let _authority: SigningAuthority = (&operator).into();
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
