@@ -596,7 +596,7 @@ mod tests {
             .issuer(signer)
             .audience(audience_did)
             .subject(DelegatedSubject::Specific(subject_did))
-            .command(vec!["/".to_string()])
+            .command(vec![]) // Empty = root access "/"
             .try_build()
             .await
             .expect("Failed to build delegation");

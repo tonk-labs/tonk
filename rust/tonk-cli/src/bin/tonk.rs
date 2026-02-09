@@ -227,6 +227,11 @@ enum RemoteCommands {
         /// Name for the remote (e.g., "origin")
         name: String,
 
+        /// UCAN access service URL (e.g., https://access.tonk.xyz).
+        /// When provided, uses UCAN delegation instead of raw S3 credentials.
+        #[arg(long, conflicts_with_all = ["endpoint", "bucket", "region", "access_key_id", "secret_access_key"])]
+        service_url: Option<String>,
+
         /// S3 endpoint URL (e.g., https://s3.amazonaws.com)
         #[arg(long, visible_alias = "host")]
         endpoint: Option<String>,
@@ -341,6 +346,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Remote { command } => match command {
             RemoteCommands::Add {
                 name,
+                service_url,
                 endpoint,
                 bucket,
                 region,
@@ -349,6 +355,7 @@ async fn main() -> anyhow::Result<()> {
             } => {
                 tonk_cli::remote::add(
                     name,
+                    service_url,
                     endpoint,
                     bucket,
                     region,

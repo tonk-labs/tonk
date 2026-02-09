@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, bail};
 use dialog_artifacts::replica::RemoteCredentials;
+use dialog_s3_credentials::ucan::{Credentials as UcanCredentials, DelegationChain};
 use dialog_s3_credentials::{Address, s3};
 use dialoguer::{Input, Password};
 use std::path::PathBuf;
 use tonk_space::{FsBackend, Operator, Revision, Space};
+use ucan::delegation::subject::DelegatedSubject;
 
 use crate::authority;
 use crate::keystore::Keystore;
@@ -40,6 +42,7 @@ fn get_active_space_info() -> Result<(String, PathBuf, Operator)> {
 /// Add a remote to the active space
 pub async fn add(
     name: String,
+    service_url: Option<String>,
     endpoint: Option<String>,
     bucket: Option<String>,
     region: Option<String>,
@@ -48,6 +51,48 @@ pub async fn add(
 ) -> Result<()> {
     // Get active space info
     let (space_did, storage_path, operator) = get_active_space_info()?;
+
+    // UCAN credential path: use access service instead of raw S3 credentials
+    if let Some(service_url) = service_url {
+        let backend = FsBackend::new(&storage_path).await?;
+        let mut space = Space::open(space_did.clone(), &operator, backend).await?;
+
+        // Find a delegation for this operator + space from the space database
+        let operator_did = operator.did().to_string();
+        let delegations = space
+            .delegations_for_audience(&operator_did)
+            .await
+            .context("Failed to query delegations for operator")?;
+
+        let delegation = delegations
+            .into_iter()
+            .find(|d| match d.subject() {
+                DelegatedSubject::Specific(did) => did.to_string() == space_did,
+                DelegatedSubject::Any => true,
+            })
+            .context(
+                "No delegation found for this space. \
+                 Ensure the space has delegated access to your operator.",
+            )?;
+
+        // Build UCAN credentials (mirrors tonk-worker/src/router/authorize.rs)
+        let delegation_chain = DelegationChain::new(delegation.inner().clone());
+        let ucan_credentials = UcanCredentials::new(service_url, delegation_chain);
+
+        let remote_state = tonk_space::RemoteState {
+            site: name.clone(),
+            credentials: RemoteCredentials::Ucan(ucan_credentials),
+        };
+
+        let site = space.add_remote(remote_state).await?;
+        space.set_upstream(&site).await?;
+
+        println!("Remote '{}' added to space (UCAN)", name);
+        println!("Key prefix: {}", space_did);
+        return Ok(());
+    }
+
+    // S3 credential path (existing behavior)
 
     // Prompt for missing values
     let endpoint = match endpoint {

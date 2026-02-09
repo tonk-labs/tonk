@@ -440,7 +440,7 @@ async fn create_owner_delegation(
         .issuer(signer)
         .audience(owner_did_parsed)
         .subject(DelegatedSubject::Specific(space_did_parsed))
-        .command(vec!["/".to_string()]) // Full access
+        .command(vec![]) // Empty = root access "/"
         .try_build()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to build delegation: {}", e))?;
@@ -550,7 +550,7 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
         .issuer(operator_universal_signer)
         .audience(invitee_did_universal)
         .subject(DelegatedSubject::Specific(space_did_universal))
-        .command(vec!["/".to_string()])
+        .command(vec![]) // Empty = root access "/"
         .try_build()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to build invitation: {}", e))?;
@@ -629,7 +629,7 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
         .issuer(operator_signer2)
         .audience(membership_did_parsed)
         .subject(DelegatedSubject::Specific(space_did_parsed))
-        .command(vec!["/".to_string()])
+        .command(vec![]) // Empty = root access "/"
         .try_build()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to build membership delegation: {}", e))?;
@@ -857,7 +857,7 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
         .issuer(membership_signer)
         .audience(authority_did_parsed)
         .subject(DelegatedSubject::Specific(space_did_parsed))
-        .command(vec!["/".to_string()])
+        .command(vec![]) // Empty = root access "/"
         .try_build()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to build membership delegation: {}", e))?;

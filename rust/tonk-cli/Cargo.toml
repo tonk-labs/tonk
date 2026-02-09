@@ -26,7 +26,7 @@ dialog-storage = { workspace = true }
 dialog-query = { workspace = true }
 dialog-artifacts = { workspace = true, features = ["ucan"] }
 dialog-common = { workspace = true }
-dialog-s3-credentials = { workspace = true }
+dialog-s3-credentials = { workspace = true, features = ["ucan"] }
 
 # Async
 futures-util = { workspace = true }
