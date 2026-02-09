@@ -178,7 +178,7 @@ impl Delegation {
         // Save as DAG-CBOR
         let cbor_bytes = self.to_cbor_bytes()?;
         fs::write(&cbor_path, cbor_bytes)?;
-        println!("   Saved to: {}", cbor_path.display());
+        eprintln!("   Saved to: {}", cbor_path.display());
 
         Ok(())
     }
@@ -190,7 +190,7 @@ impl Delegation {
 
         // Save the original CBOR bytes without re-serialization
         fs::write(&cbor_path, raw_cbor)?;
-        println!("   Saved to: {}", cbor_path.display());
+        eprintln!("   Saved to: {}", cbor_path.display());
 
         Ok(())
     }
@@ -216,7 +216,7 @@ impl Delegation {
         let meta_json = serde_json::to_string_pretty(metadata)?;
         fs::write(&meta_path, meta_json)?;
 
-        println!("   Metadata saved to: {}", meta_path.display());
+        eprintln!("   Metadata saved to: {}", meta_path.display());
         Ok(())
     }
 
@@ -246,7 +246,7 @@ impl Delegation {
         let meta_json = serde_json::to_string_pretty(metadata)?;
         fs::write(&meta_path, meta_json)?;
 
-        println!("   Metadata saved to: {}", meta_path.display());
+        eprintln!("   Metadata saved to: {}", meta_path.display());
         Ok(())
     }
 
