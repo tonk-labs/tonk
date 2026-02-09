@@ -14,4 +14,5 @@ pub mod remote;
 pub mod session;
 pub mod space;
 pub mod state;
+pub mod status;
 pub mod util;
