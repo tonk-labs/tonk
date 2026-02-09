@@ -162,7 +162,7 @@ pub async fn execute_self() -> Result<()> {
         .issuer(signer)
         .audience(audience_did)
         .subject(DelegatedSubject::Any) // Powerline
-        .command(vec!["/".to_string()])
+        .command(vec![]) // Empty = root access "/"
         .try_build()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to build self-delegation: {}", e))?;
