@@ -61,17 +61,32 @@ pub fn get_active_authority_from_list(
 }
 
 /// Show the current session DID
-pub async fn show_current() -> Result<()> {
+pub async fn show_current(json: bool) -> Result<()> {
     let authorities = authority::get_authorities()?;
 
     if authorities.is_empty() {
-        println!("🚏 No active sessions found");
-        println!("👤 Run 'tonk login' to create an authorization session\n");
+        if json {
+            println!("{}", serde_json::json!({"authority": null}));
+        } else {
+            println!("🚏 No active sessions found");
+            println!("👤 Run 'tonk login' to create an authorization session\n");
+        }
         return Ok(());
     }
 
     let active_authority = get_active_authority_from_list(&authorities)?;
-    println!("{}", active_authority.did);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "authority": active_authority.did,
+                "expiration": if active_authority.expiration == i64::MAX { serde_json::Value::Null } else { serde_json::json!(active_authority.expiration) },
+            })
+        );
+    } else {
+        println!("{}", active_authority.did);
+    }
 
     Ok(())
 }
@@ -102,7 +117,7 @@ pub async fn set(authority_did: String) -> Result<()> {
 }
 
 /// List all available sessions
-pub async fn list(verbose: bool) -> Result<()> {
+pub async fn list(verbose: bool, json: bool) -> Result<()> {
     // Get operator DID
     let keystore = Keystore::new().context("Failed to initialize keystore")?;
     let operator = keystore
@@ -114,14 +129,48 @@ pub async fn list(verbose: bool) -> Result<()> {
     let authorities = authority::get_authorities()?;
 
     if authorities.is_empty() {
-        println!("🫆 Operator: {}\n", operator_did);
-        println!("🚏 No active sessions found");
-        println!("👤 Run 'tonk login' to create an authorization session\n");
+        if json {
+            println!("[]");
+        } else {
+            println!("🫆 Operator: {}\n", operator_did);
+            println!("🚏 No active sessions found");
+            println!("👤 Run 'tonk login' to create an authorization session\n");
+        }
         return Ok(());
     }
 
     // Get active authority
     let active_authority = get_active_authority_from_list(&authorities)?;
+
+    if json {
+        let mut json_sessions: Vec<serde_json::Value> = Vec::new();
+        for auth in &authorities {
+            let is_active = auth.did == active_authority.did;
+            let spaces = collect_spaces_for_authority(&operator_did, &auth.did)?;
+            let json_spaces: Vec<serde_json::Value> = spaces
+                .values()
+                .map(|space| {
+                    let name = crate::metadata::SpaceMetadata::load(&space.space_did)
+                        .ok()
+                        .flatten()
+                        .map(|m| m.name);
+                    serde_json::json!({
+                        "did": space.space_did,
+                        "name": name,
+                        "is_auth_space": space.is_auth_space,
+                    })
+                })
+                .collect();
+            json_sessions.push(serde_json::json!({
+                "authority": auth.did,
+                "active": is_active,
+                "expiration": if auth.expiration == i64::MAX { serde_json::Value::Null } else { serde_json::json!(auth.expiration) },
+                "spaces": json_spaces,
+            }));
+        }
+        println!("{}", serde_json::to_string(&json_sessions)?);
+        return Ok(());
+    }
 
     // Get home directory for chain building
     let home = crate::util::home_dir().context("Could not determine home directory")?;

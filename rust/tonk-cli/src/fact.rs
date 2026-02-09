@@ -3,11 +3,14 @@ use crate::crypto::Operator;
 use crate::keystore::Keystore;
 use crate::state;
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use dialog_artifacts::replica::{BranchId, Replica, SigningAuthority};
 use dialog_query::claim::{Attribute, Claim, Relation};
 use dialog_query::{Entity, Session, Value};
 use ed25519_dalek::Signer;
 use futures_util::TryStreamExt;
+use serde::{Deserialize, Serialize};
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tonk_space::FsBackend;
@@ -88,8 +91,23 @@ fn get_active_space_storage_path() -> Result<(PathBuf, String)> {
     Ok((path, space_did))
 }
 
+/// Convert a Value to a serde_json::Value for JSON output
+fn value_to_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::UnsignedInt(n) => serde_json::json!(*n),
+        Value::SignedInt(n) => serde_json::json!(*n),
+        Value::Float(f) => serde_json::json!(*f),
+        Value::Boolean(b) => serde_json::Value::Bool(*b),
+        Value::Entity(e) => serde_json::Value::String(e.to_string()),
+        Value::Symbol(s) => serde_json::json!({"symbol": s.to_string()}),
+        Value::Bytes(b) => serde_json::json!({"bytes": base64::engine::general_purpose::STANDARD.encode(b)}),
+        Value::Record(r) => serde_json::json!({"record": base64::engine::general_purpose::STANDARD.encode(r)}),
+    }
+}
+
 /// Assert a fact into the active space
-pub async fn assert(the: String, of: String, is: String) -> Result<()> {
+pub async fn assert(the: String, of: String, is: String, json: bool) -> Result<()> {
     let keystore = Keystore::new().context("Failed to initialize keystore")?;
     let operator = keystore
         .get_or_create_keypair()
@@ -122,16 +140,27 @@ pub async fn assert(the: String, of: String, is: String) -> Result<()> {
     relation.assert(&mut transaction);
     session.commit(transaction).await?;
 
-    println!("✓ Asserted fact:");
-    println!("  the: {}", the);
-    println!("  of:  {} ({})", entity, of);
-    println!("  is:  {:?}", value);
+    if json {
+        let output = serde_json::json!({
+            "ok": true,
+            "op": "assert",
+            "the": the,
+            "of": entity.to_string(),
+            "is": value_to_json(&value),
+        });
+        println!("{}", serde_json::to_string(&output)?);
+    } else {
+        println!("✓ Asserted fact:");
+        println!("  the: {}", the);
+        println!("  of:  {} ({})", entity, of);
+        println!("  is:  {:?}", value);
+    }
 
     Ok(())
 }
 
 /// Retract a fact from the active space
-pub async fn retract(the: String, of: String, is: String) -> Result<()> {
+pub async fn retract(the: String, of: String, is: String, json: bool) -> Result<()> {
     let keystore = Keystore::new().context("Failed to initialize keystore")?;
     let operator = keystore
         .get_or_create_keypair()
@@ -164,10 +193,21 @@ pub async fn retract(the: String, of: String, is: String) -> Result<()> {
     relation.retract(&mut transaction);
     session.commit(transaction).await?;
 
-    println!("✓ Retracted fact:");
-    println!("  the: {}", the);
-    println!("  of:  {} ({})", entity, of);
-    println!("  is:  {:?}", value);
+    if json {
+        let output = serde_json::json!({
+            "ok": true,
+            "op": "retract",
+            "the": the,
+            "of": entity.to_string(),
+            "is": value_to_json(&value),
+        });
+        println!("{}", serde_json::to_string(&output)?);
+    } else {
+        println!("✓ Retracted fact:");
+        println!("  the: {}", the);
+        println!("  of:  {} ({})", entity, of);
+        println!("  is:  {:?}", value);
+    }
 
     Ok(())
 }
@@ -205,6 +245,7 @@ pub async fn find(
     of: Option<String>,
     is: Option<String>,
     format: Option<String>,
+    json: bool,
 ) -> Result<()> {
     let keystore = Keystore::new().context("Failed to initialize keystore")?;
     let operator = keystore
@@ -256,6 +297,32 @@ pub async fn find(
     // Execute the query
     let results: Vec<dialog_query::Fact<Value>> = application.query(&session).try_collect().await?;
 
+    if json {
+        let json_results: Vec<serde_json::Value> = results
+            .iter()
+            .map(|result| match result {
+                dialog_query::Fact::Assertion { the, of, is, .. } => {
+                    serde_json::json!({
+                        "type": "assertion",
+                        "the": the.to_string(),
+                        "of": of.to_string(),
+                        "is": value_to_json(is),
+                    })
+                }
+                dialog_query::Fact::Retraction { the, of, is, .. } => {
+                    serde_json::json!({
+                        "type": "retraction",
+                        "the": the.to_string(),
+                        "of": of.to_string(),
+                        "is": value_to_json(is),
+                    })
+                }
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&json_results)?);
+        return Ok(());
+    }
+
     if results.is_empty() {
         println!("No facts found matching criteria.");
         return Ok(());
@@ -282,6 +349,162 @@ pub async fn find(
         println!("  of:  {}", of_val);
         println!("  is:  {}", is_val);
         println!();
+    }
+
+    Ok(())
+}
+
+/// A batch operation from JSON input
+#[derive(Debug, Deserialize)]
+struct BatchOp {
+    op: String,
+    the: String,
+    of: String,
+    is: String,
+}
+
+/// Result of a single batch operation
+#[derive(Debug, Serialize)]
+struct BatchResult {
+    ok: bool,
+    op: String,
+    the: String,
+    of: String,
+    is: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Batch assert/retract facts from stdin (JSON lines).
+/// Each line: {"op": "assert"|"retract", "the": "...", "of": "...", "is": "..."}
+pub async fn batch(json: bool) -> Result<()> {
+    let keystore = Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore
+        .get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+
+    // Get storage path and create session
+    let (storage_path, space_did) = get_active_space_storage_path()?;
+    let backend = FsBackend::new(&storage_path).await?;
+    let authority = SigningAuthority::from(&operator);
+    let replica = Replica::open(authority, space_did.into(), backend)?;
+
+    let branch_id = BranchId::new("main".to_string());
+    let branch = replica.branches.open(&branch_id).await?;
+
+    let mut session = Session::open(branch);
+
+    // Read lines from stdin
+    let stdin = std::io::stdin();
+    let lines: Vec<String> = stdin.lock().lines().collect::<Result<Vec<_>, _>>()?;
+
+    let mut results: Vec<BatchResult> = Vec::new();
+    let mut transaction = session.edit();
+
+    for line in &lines {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let batch_op: BatchOp = match serde_json::from_str(line) {
+            Ok(op) => op,
+            Err(e) => {
+                results.push(BatchResult {
+                    ok: false,
+                    op: "unknown".to_string(),
+                    the: String::new(),
+                    of: String::new(),
+                    is: serde_json::Value::Null,
+                    error: Some(format!("Parse error: {}", e)),
+                });
+                continue;
+            }
+        };
+
+        let entity = match resolve_entity(&batch_op.of, &operator) {
+            Ok(e) => e,
+            Err(e) => {
+                results.push(BatchResult {
+                    ok: false,
+                    op: batch_op.op.clone(),
+                    the: batch_op.the.clone(),
+                    of: batch_op.of.clone(),
+                    is: serde_json::Value::String(batch_op.is.clone()),
+                    error: Some(format!("Entity error: {}", e)),
+                });
+                continue;
+            }
+        };
+
+        let attribute = match Attribute::from_str(&batch_op.the) {
+            Ok(a) => a,
+            Err(e) => {
+                results.push(BatchResult {
+                    ok: false,
+                    op: batch_op.op.clone(),
+                    the: batch_op.the.clone(),
+                    of: batch_op.of.clone(),
+                    is: serde_json::Value::String(batch_op.is.clone()),
+                    error: Some(format!("Attribute error: {}", e)),
+                });
+                continue;
+            }
+        };
+
+        let value = parse_value(&batch_op.is);
+        let relation = Relation::new(attribute, entity.clone(), value.clone());
+
+        match batch_op.op.as_str() {
+            "assert" => {
+                relation.assert(&mut transaction);
+                results.push(BatchResult {
+                    ok: true,
+                    op: "assert".to_string(),
+                    the: batch_op.the,
+                    of: entity.to_string(),
+                    is: value_to_json(&value),
+                    error: None,
+                });
+            }
+            "retract" => {
+                relation.retract(&mut transaction);
+                results.push(BatchResult {
+                    ok: true,
+                    op: "retract".to_string(),
+                    the: batch_op.the,
+                    of: entity.to_string(),
+                    is: value_to_json(&value),
+                    error: None,
+                });
+            }
+            other => {
+                results.push(BatchResult {
+                    ok: false,
+                    op: other.to_string(),
+                    the: batch_op.the,
+                    of: batch_op.of,
+                    is: serde_json::Value::String(batch_op.is),
+                    error: Some(format!("Unknown operation: {}. Use 'assert' or 'retract'", other)),
+                });
+            }
+        }
+    }
+
+    // Commit all operations in a single transaction
+    session.commit(transaction).await?;
+
+    if json {
+        println!("{}", serde_json::to_string(&results)?);
+    } else {
+        let ok_count = results.iter().filter(|r| r.ok).count();
+        let err_count = results.iter().filter(|r| !r.ok).count();
+        println!("Batch complete: {} succeeded, {} failed", ok_count, err_count);
+        for result in &results {
+            if !result.ok {
+                println!("  ERROR: {} - {}", result.the, result.error.as_deref().unwrap_or("unknown"));
+            }
+        }
     }
 
     Ok(())

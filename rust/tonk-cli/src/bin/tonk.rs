@@ -6,6 +6,10 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    /// Output results as JSON (for machine/agent consumption)
+    #[arg(long, global = true)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -75,6 +79,9 @@ enum Commands {
 
     /// Sync with upstream (pull then push)
     Sync,
+
+    /// Show current context (operator, session, space, remote)
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -228,6 +235,9 @@ enum FactCommands {
         is: Vec<String>,
     },
 
+    /// Batch assert/retract facts from stdin (JSON lines)
+    Batch,
+
     /// Find facts in the active space
     Find {
         /// Filter by attribute (e.g., "user/name")
@@ -294,6 +304,7 @@ enum RemoteCommands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let json = cli.json;
 
     match cli.command {
         Commands::Login {
@@ -311,10 +322,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Session { command, verbose } => match command {
             None => {
-                tonk_cli::session::list(verbose).await?;
+                tonk_cli::session::list(verbose, json).await?;
             }
             Some(SessionCommands::Current) => {
-                tonk_cli::session::show_current().await?;
+                tonk_cli::session::show_current(json).await?;
             }
             Some(SessionCommands::Set { authority_did }) => {
                 tonk_cli::session::set(authority_did).await?;
@@ -322,10 +333,10 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Space { command } => match command {
             None => {
-                tonk_cli::space::list().await?;
+                tonk_cli::space::list(json).await?;
             }
             Some(SpaceCommands::Current) => {
-                tonk_cli::space::show_current().await?;
+                tonk_cli::space::show_current(json).await?;
             }
             Some(SpaceCommands::Set { space }) => {
                 tonk_cli::space::set(space).await?;
@@ -335,7 +346,7 @@ async fn main() -> anyhow::Result<()> {
                 owners,
                 description,
             }) => {
-                tonk_cli::space::create(name, owners, description).await?;
+                tonk_cli::space::create(name, owners, description, json).await?;
             }
             Some(SpaceCommands::Invite { email, space }) => {
                 tonk_cli::space::invite(email, space).await?;
@@ -374,11 +385,11 @@ async fn main() -> anyhow::Result<()> {
         Commands::Fact { command } => match command {
             FactCommands::Assert { the, of, is } => {
                 let is_value = is.join(" ").trim().to_string();
-                tonk_cli::fact::assert(the, of, is_value).await?;
+                tonk_cli::fact::assert(the, of, is_value, json).await?;
             }
             FactCommands::Retract { the, of, is } => {
                 let is_value = is.join(" ").trim().to_string();
-                tonk_cli::fact::retract(the, of, is_value).await?;
+                tonk_cli::fact::retract(the, of, is_value, json).await?;
             }
             FactCommands::Find {
                 the,
@@ -386,7 +397,10 @@ async fn main() -> anyhow::Result<()> {
                 is,
                 format,
             } => {
-                tonk_cli::fact::find(the, of, is, format).await?;
+                tonk_cli::fact::find(the, of, is, format, json).await?;
+            }
+            FactCommands::Batch => {
+                tonk_cli::fact::batch(json).await?;
             }
         },
         Commands::Remote { command } => match command {
@@ -428,6 +442,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Sync => {
             tonk_cli::remote::sync().await?;
+        }
+        Commands::Status => {
+            tonk_cli::status::execute(json).await?;
         }
     }
 
