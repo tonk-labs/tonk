@@ -101,8 +101,12 @@ fn value_to_json(value: &Value) -> serde_json::Value {
         Value::Boolean(b) => serde_json::Value::Bool(*b),
         Value::Entity(e) => serde_json::Value::String(e.to_string()),
         Value::Symbol(s) => serde_json::json!({"symbol": s.to_string()}),
-        Value::Bytes(b) => serde_json::json!({"bytes": base64::engine::general_purpose::STANDARD.encode(b)}),
-        Value::Record(r) => serde_json::json!({"record": base64::engine::general_purpose::STANDARD.encode(r)}),
+        Value::Bytes(b) => {
+            serde_json::json!({"bytes": base64::engine::general_purpose::STANDARD.encode(b)})
+        }
+        Value::Record(r) => {
+            serde_json::json!({"record": base64::engine::general_purpose::STANDARD.encode(r)})
+        }
     }
 }
 
@@ -494,7 +498,10 @@ pub async fn batch(json: bool) -> Result<()> {
                     the: batch_op.the,
                     of: batch_op.of,
                     is: serde_json::Value::String(batch_op.is),
-                    error: Some(format!("Unknown operation: {}. Use 'assert' or 'retract'", other)),
+                    error: Some(format!(
+                        "Unknown operation: {}. Use 'assert' or 'retract'",
+                        other
+                    )),
                 });
             }
         }
@@ -508,10 +515,17 @@ pub async fn batch(json: bool) -> Result<()> {
     } else {
         let ok_count = results.iter().filter(|r| r.ok).count();
         let err_count = results.iter().filter(|r| !r.ok).count();
-        println!("Batch complete: {} succeeded, {} failed", ok_count, err_count);
+        println!(
+            "Batch complete: {} succeeded, {} failed",
+            ok_count, err_count
+        );
         for result in &results {
             if !result.ok {
-                println!("  ERROR: {} - {}", result.the, result.error.as_deref().unwrap_or("unknown"));
+                println!(
+                    "  ERROR: {} - {}",
+                    result.the,
+                    result.error.as_deref().unwrap_or("unknown")
+                );
             }
         }
     }

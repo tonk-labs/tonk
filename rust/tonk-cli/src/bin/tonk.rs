@@ -43,22 +43,49 @@ mod inner {
             command: Option<SpaceCommands>,
         },
 
-        /// Operator commands
-        Operator {
-            #[command(subcommand)]
-            command: OperatorCommands,
+        /// Store context in the active space
+        Remember {
+            /// The content to remember (if omitted, reads from stdin)
+            #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+            content: Vec<String>,
+
+            /// Topic to file this under
+            #[arg(long, short)]
+            topic: Option<String>,
+
+            /// Kind of content (note, decision, finding, artifact, etc.)
+            #[arg(long, short)]
+            kind: Option<String>,
+
+            /// Read content from a file
+            #[arg(long, short)]
+            file: Option<String>,
         },
 
-        /// Inspect delegations and invites
-        Inspect {
-            #[command(subcommand)]
-            command: InspectCommands,
+        /// Retrieve context from the active space
+        Recall {
+            /// Topic to recall (returns all items under this topic)
+            #[arg()]
+            topic: Option<String>,
+
+            /// Filter by kind
+            #[arg(long, short)]
+            kind: Option<String>,
+
+            /// Return the N most recent items
+            #[arg(long, short)]
+            recent: Option<usize>,
+
+            /// Retrieve a specific item by ID
+            #[arg(long)]
+            id: Option<String>,
         },
 
-        /// Manage facts in the active space
-        Fact {
-            #[command(subcommand)]
-            command: FactCommands,
+        /// Show a summary of what's stored in the active space
+        Context {
+            /// Drill into a specific topic
+            #[arg()]
+            topic: Option<String>,
         },
 
         /// Manage remotes for syncing spaces
@@ -78,6 +105,12 @@ mod inner {
 
         /// Show current context (operator, session, space, remote)
         Status,
+
+        /// Developer tools (raw fact operations, inspection, operator keys)
+        Dev {
+            #[command(subcommand)]
+            command: DevCommands,
+        },
     }
 
     #[derive(Subcommand)]
@@ -166,6 +199,27 @@ mod inner {
             /// Output file path (defaults to stdout as base64)
             #[arg(short, long)]
             output: Option<String>,
+        },
+    }
+
+    #[derive(Subcommand)]
+    pub enum DevCommands {
+        /// Raw fact operations on the active space
+        Fact {
+            #[command(subcommand)]
+            command: FactCommands,
+        },
+
+        /// Operator key management
+        Operator {
+            #[command(subcommand)]
+            command: OperatorCommands,
+        },
+
+        /// Inspect delegations, invites, and CBOR data
+        Inspect {
+            #[command(subcommand)]
+            command: InspectCommands,
         },
     }
 
@@ -362,42 +416,63 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::space::delegate(to, space, read_only, output).await?;
             }
         },
-        Commands::Operator { command } => match command {
-            OperatorCommands::Generate => {
-                tonk_cli::operator::generate()?;
-            }
-        },
-        Commands::Inspect { command } => match command {
-            InspectCommands::Delegation { input } => {
-                tonk_cli::delegation::inspect(input)?;
-            }
-            InspectCommands::Invite { path } => {
-                tonk_cli::space::inspect_invite(path)?;
-            }
-            InspectCommands::Cbor { input } => {
-                tonk_cli::inspect::cbor(input)?;
-            }
-        },
-        Commands::Fact { command } => match command {
-            FactCommands::Assert { the, of, is } => {
-                let is_value = is.join(" ").trim().to_string();
-                tonk_cli::fact::assert(the, of, is_value, json).await?;
-            }
-            FactCommands::Retract { the, of, is } => {
-                let is_value = is.join(" ").trim().to_string();
-                tonk_cli::fact::retract(the, of, is_value, json).await?;
-            }
-            FactCommands::Find {
-                the,
-                of,
-                is,
-                format,
-            } => {
-                tonk_cli::fact::find(the, of, is, format, json).await?;
-            }
-            FactCommands::Batch => {
-                tonk_cli::fact::batch(json).await?;
-            }
+        Commands::Remember {
+            content,
+            topic,
+            kind,
+            file,
+        } => {
+            tonk_cli::remember::execute(content, topic, kind, file, json).await?;
+        }
+        Commands::Recall {
+            topic,
+            kind,
+            recent,
+            id,
+        } => {
+            tonk_cli::recall::execute(topic, kind, recent, id, json).await?;
+        }
+        Commands::Context { topic } => {
+            tonk_cli::context::execute(topic, json).await?;
+        }
+        Commands::Dev { command } => match command {
+            DevCommands::Fact { command } => match command {
+                FactCommands::Assert { the, of, is } => {
+                    let is_value = is.join(" ").trim().to_string();
+                    tonk_cli::fact::assert(the, of, is_value, json).await?;
+                }
+                FactCommands::Retract { the, of, is } => {
+                    let is_value = is.join(" ").trim().to_string();
+                    tonk_cli::fact::retract(the, of, is_value, json).await?;
+                }
+                FactCommands::Find {
+                    the,
+                    of,
+                    is,
+                    format,
+                } => {
+                    tonk_cli::fact::find(the, of, is, format, json).await?;
+                }
+                FactCommands::Batch => {
+                    tonk_cli::fact::batch(json).await?;
+                }
+            },
+            DevCommands::Operator { command } => match command {
+                OperatorCommands::Generate => {
+                    tonk_cli::operator::generate()?;
+                }
+            },
+            DevCommands::Inspect { command } => match command {
+                InspectCommands::Delegation { input } => {
+                    tonk_cli::delegation::inspect(input)?;
+                }
+                InspectCommands::Invite { path } => {
+                    tonk_cli::space::inspect_invite(path)?;
+                }
+                InspectCommands::Cbor { input } => {
+                    tonk_cli::inspect::cbor(input)?;
+                }
+            },
         },
         Commands::Remote { command } => match command {
             RemoteCommands::Add {

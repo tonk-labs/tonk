@@ -1018,11 +1018,11 @@ pub async fn delegate(
         let spaces = crate::state::list_spaces_for_session(&auth.did)?;
         let mut found_did = None;
         for sid in &spaces {
-            if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(sid) {
-                if &meta.name == name {
-                    found_did = Some(sid.clone());
-                    break;
-                }
+            if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(sid)
+                && &meta.name == name
+            {
+                found_did = Some(sid.clone());
+                break;
             }
         }
         found_did.context(format!("Space '{}' not found", name))?

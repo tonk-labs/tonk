@@ -1,6 +1,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 pub mod authority;
+pub mod context;
 pub mod crypto;
 pub mod delegation;
 pub mod did;
@@ -10,6 +11,8 @@ pub mod keystore;
 pub mod login;
 pub mod metadata;
 pub mod operator;
+pub mod recall;
+pub mod remember;
 pub mod remote;
 pub mod session;
 pub mod space;
