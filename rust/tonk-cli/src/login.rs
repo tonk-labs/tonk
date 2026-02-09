@@ -1,4 +1,4 @@
-use crate::delegation::{Delegation, DelegationMetadata};
+use crate::delegation::{Delegation, DelegationMetadata, keypair_to_signer};
 use crate::keystore::Keystore;
 use anyhow::{Context, Result};
 use axum::{
@@ -13,6 +13,9 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Notify;
+use ucan::Delegation as UcanDelegation;
+use ucan::delegation::subject::DelegatedSubject;
+use ucan::did::Ed25519Did;
 
 const AUTH_HTML: &str = include_str!("../auth.html");
 
@@ -133,6 +136,147 @@ pub async fn execute(via: Option<String>) -> Result<()> {
             anyhow::bail!("Timeout waiting for authorization");
         }
     }
+
+    Ok(())
+}
+
+/// Execute a self-issued login (agent/non-interactive mode).
+/// The operator creates a powerline delegation to itself, becoming its own authority.
+pub async fn execute_self() -> Result<()> {
+    let keystore = Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore
+        .get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+    let operator_did = operator.did().to_string();
+
+    println!("🤖 Self-auth mode: operator becomes its own authority\n");
+    println!("🫆 Operator: {}\n", operator_did);
+
+    // Create a powerline delegation: operator → operator (self-issued, no expiry)
+    let signer = keypair_to_signer(&operator);
+    let audience_did: Ed25519Did = operator_did
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse operator DID: {:?}", e))?;
+
+    let ucan_delegation: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
+        .issuer(signer)
+        .audience(audience_did)
+        .subject(DelegatedSubject::Any) // Powerline
+        .command(vec!["/".to_string()])
+        .try_build()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to build self-delegation: {}", e))?;
+
+    let delegation = Delegation::from_ucan(ucan_delegation);
+
+    // Save delegation with metadata
+    let metadata = DelegationMetadata {
+        site: "self".to_string(),
+        received_at: chrono::Utc::now(),
+        is_local: true,
+        extra: serde_json::Value::Null,
+    };
+
+    delegation
+        .save_with_metadata(&metadata)
+        .context("Failed to save self-delegation")?;
+
+    // Create and save session metadata
+    let session_meta =
+        crate::metadata::SessionMetadata::new(operator_did.clone(), "self".to_string());
+    session_meta
+        .save(&operator_did)
+        .context("Failed to save session metadata")?;
+
+    // Set as active session
+    crate::state::set_active_session(&operator_did)
+        .context("Failed to set active session")?;
+
+    println!("✅ Self-auth complete!");
+    println!("   Authority: {}", operator_did);
+    println!("   Session is active. You can now create spaces and work with facts.\n");
+
+    Ok(())
+}
+
+/// Import a delegation from a file path or base64-encoded string.
+pub async fn execute_import(input: &str) -> Result<()> {
+    let keystore = Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore
+        .get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+    let operator_did = operator.did().to_string();
+
+    println!("📥 Importing delegation...\n");
+    println!("🫆 Operator: {}\n", operator_did);
+
+    // Read delegation from file or decode from base64
+    let decoded = if std::path::Path::new(input).exists() {
+        println!("📂 Reading from file: {}", input);
+        std::fs::read(input).context("Failed to read delegation file")?
+    } else {
+        println!("📥 Decoding base64...");
+        base64::engine::general_purpose::STANDARD
+            .decode(input)
+            .context("Failed to decode base64. Input is neither a valid file path nor base64.")?
+    };
+
+    // Parse the delegation
+    let delegation =
+        Delegation::from_cbor_bytes(&decoded).context("Failed to parse delegation CBOR")?;
+
+    // Validate audience matches operator DID
+    if delegation.audience() != operator_did {
+        anyhow::bail!(
+            "Delegation audience mismatch!\n   Expected (this operator): {}\n   Got: {}\n   The delegation must be issued TO this operator's DID.",
+            operator_did,
+            delegation.audience()
+        );
+    }
+
+    // Validate not expired
+    if !delegation.is_valid() {
+        anyhow::bail!("Delegation is expired or not yet valid.");
+    }
+
+    println!("✅ Delegation valid!");
+    println!("   Issuer:   {}", delegation.issuer());
+    println!("   Audience: {}", delegation.audience());
+    println!("   Command:  {}", delegation.command_str());
+    println!(
+        "   Subject:  {}",
+        match delegation.subject() {
+            DelegatedSubject::Specific(did) => did.to_string(),
+            DelegatedSubject::Any => "*".to_string(),
+        }
+    );
+
+    // Save delegation with metadata
+    let metadata = DelegationMetadata {
+        site: "import".to_string(),
+        received_at: chrono::Utc::now(),
+        is_local: true,
+        extra: serde_json::Value::Null,
+    };
+
+    delegation
+        .save_raw_with_metadata(&decoded, &metadata)
+        .context("Failed to save delegation")?;
+
+    // Create and save session metadata using the issuer as authority
+    let authority_did = delegation.issuer();
+    let session_meta =
+        crate::metadata::SessionMetadata::new(authority_did.clone(), "import".to_string());
+    session_meta
+        .save(&authority_did)
+        .context("Failed to save session metadata")?;
+
+    // Set as active session
+    crate::state::set_active_session(&authority_did)
+        .context("Failed to set active session")?;
+
+    println!("\n✅ Delegation imported and session activated!");
+    println!("   Authority: {}\n", authority_did);
 
     Ok(())
 }

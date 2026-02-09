@@ -941,6 +941,104 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
     Ok(())
 }
 
+/// Delegate access to a space for another operator.
+/// Creates a delegation CBOR file or outputs base64 to stdout.
+pub async fn delegate(
+    to: String,
+    space_name: Option<String>,
+    read_only: bool,
+    output: Option<String>,
+) -> Result<()> {
+    // Validate target DID
+    if !to.starts_with("did:key:") {
+        anyhow::bail!("Target DID must be a did:key identifier, got: {}", to);
+    }
+
+    // Get operator
+    let keystore = Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore
+        .get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+    let operator_did = operator.did().to_string();
+
+    // Get active authority
+    let auth = authority::get_active_authority()?
+        .context("No active authority. Please run 'tonk login' first")?;
+
+    // Resolve space
+    let space_did = if let Some(name) = &space_name {
+        let spaces = crate::state::list_spaces_for_session(&auth.did)?;
+        let mut found_did = None;
+        for sid in &spaces {
+            if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(sid) {
+                if &meta.name == name {
+                    found_did = Some(sid.clone());
+                    break;
+                }
+            }
+        }
+        found_did.context(format!("Space '{}' not found", name))?
+    } else if let Some(active_id) = crate::state::get_active_space(&auth.did)? {
+        active_id
+    } else {
+        anyhow::bail!("No active space. Create one with 'tonk space create' or specify --space");
+    };
+
+    // Parse target DID
+    let target_did: Ed25519Did = to
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse target DID: {:?}", e))?;
+
+    // Parse space DID for subject
+    let space_did_parsed: Ed25519Did = space_did
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
+
+    // Build the delegation
+    let signer = Ed25519Signer::from(&operator);
+    let capabilities: Vec<String> = if read_only {
+        vec!["read".to_string()]
+    } else {
+        vec!["read".to_string(), "write".to_string()]
+    };
+
+    let ucan_delegation: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
+        .issuer(signer)
+        .audience(target_did)
+        .subject(DelegatedSubject::Specific(space_did_parsed))
+        .command(capabilities)
+        .try_build()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to build delegation: {}", e))?;
+
+    let delegation = Delegation::from_ucan(ucan_delegation);
+    let cbor_bytes = delegation
+        .to_cbor_bytes()
+        .context("Failed to serialize delegation")?;
+
+    // Output
+    if let Some(path) = &output {
+        fs::write(path, &cbor_bytes).context("Failed to write delegation file")?;
+        eprintln!("📜 Delegation written to: {}", path);
+    } else {
+        // Output base64 to stdout for piping
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&cbor_bytes);
+        println!("{}", b64);
+    }
+
+    let access_type = if read_only { "read-only" } else { "read-write" };
+    eprintln!("✅ Delegated {} access to space {}", access_type, space_did);
+    eprintln!("   From: {} (operator)", operator_did);
+    eprintln!("   To:   {}", to);
+    eprintln!(
+        "\n   Recipient can import with: tonk login --delegation {}",
+        output.as_deref().unwrap_or("<base64>")
+    );
+
+    Ok(())
+}
+
 /// Delete a space
 pub async fn delete(space_identifier: String, force: bool) -> Result<()> {
     // Get operator and authority

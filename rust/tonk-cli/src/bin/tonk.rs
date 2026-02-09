@@ -14,8 +14,17 @@ enum Commands {
     Login {
         /// Optional authentication URL (e.g., "https://auth.tonk.xyz").
         /// If not provided, serves auth page locally.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["self_auth", "delegation"])]
         via: Option<String>,
+
+        /// Create a self-issued session (agent/non-interactive mode).
+        /// The operator becomes its own authority.
+        #[arg(long = "self", conflicts_with_all = ["via", "delegation"])]
+        self_auth: bool,
+
+        /// Import a delegation from a file path or base64-encoded string.
+        #[arg(long, conflicts_with_all = ["via", "self_auth"])]
+        delegation: Option<String>,
     },
 
     /// Manage sessions (authority contexts)
@@ -135,6 +144,25 @@ enum SpaceCommands {
         /// Skip confirmation prompt
         #[arg(short, long)]
         force: bool,
+    },
+
+    /// Delegate access to a space for another operator
+    Delegate {
+        /// DID of the operator to delegate to (did:key:...)
+        #[arg(long)]
+        to: String,
+
+        /// Space name or DID (defaults to active space)
+        #[arg(long)]
+        space: Option<String>,
+
+        /// Grant read-only access (default is read-write)
+        #[arg(long)]
+        read_only: bool,
+
+        /// Output file path (defaults to stdout as base64)
+        #[arg(short, long)]
+        output: Option<String>,
     },
 }
 
@@ -268,8 +296,18 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Login { via } => {
-            tonk_cli::login::execute(via).await?;
+        Commands::Login {
+            via,
+            self_auth,
+            delegation,
+        } => {
+            if self_auth {
+                tonk_cli::login::execute_self().await?;
+            } else if let Some(input) = delegation {
+                tonk_cli::login::execute_import(&input).await?;
+            } else {
+                tonk_cli::login::execute(via).await?;
+            }
         }
         Commands::Session { command, verbose } => match command {
             None => {
@@ -307,6 +345,14 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(SpaceCommands::Delete { space, force }) => {
                 tonk_cli::space::delete(space, force).await?;
+            }
+            Some(SpaceCommands::Delegate {
+                to,
+                space,
+                read_only,
+                output,
+            }) => {
+                tonk_cli::space::delegate(to, space, read_only, output).await?;
             }
         },
         Commands::Operator { command } => match command {
