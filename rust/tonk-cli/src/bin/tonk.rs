@@ -141,6 +141,25 @@ mod inner {
             #[arg(short, long)]
             force: bool,
         },
+
+        /// Delegate access to a space for another operator
+        Delegate {
+            /// DID of the operator to delegate to (did:key:...)
+            #[arg(long)]
+            to: String,
+
+            /// Space name or DID (defaults to active space)
+            #[arg(long)]
+            space: Option<String>,
+
+            /// Grant read-only access (default is read-write)
+            #[arg(long)]
+            read_only: bool,
+
+            /// Output file path (defaults to stdout as base64)
+            #[arg(short, long)]
+            output: Option<String>,
+        },
     }
 
     #[derive(Subcommand)]
@@ -322,6 +341,14 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(SpaceCommands::Delete { space, force }) => {
                 tonk_cli::space::delete(space, force).await?;
+            }
+            Some(SpaceCommands::Delegate {
+                to,
+                space,
+                read_only,
+                output,
+            }) => {
+                tonk_cli::space::delegate(to, space, read_only, output).await?;
             }
         },
         Commands::Operator { command } => match command {
