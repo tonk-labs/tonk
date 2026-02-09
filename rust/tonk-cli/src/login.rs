@@ -189,8 +189,7 @@ pub async fn execute_self() -> Result<()> {
         .context("Failed to save session metadata")?;
 
     // Set as active session
-    crate::state::set_active_session(&operator_did)
-        .context("Failed to set active session")?;
+    crate::state::set_active_session(&operator_did).context("Failed to set active session")?;
 
     println!("✅ Self-auth complete!");
     println!("   Authority: {}", operator_did);
@@ -272,8 +271,7 @@ pub async fn execute_import(input: &str) -> Result<()> {
         .context("Failed to save session metadata")?;
 
     // Set as active session
-    crate::state::set_active_session(&authority_did)
-        .context("Failed to set active session")?;
+    crate::state::set_active_session(&authority_did).context("Failed to set active session")?;
 
     println!("\n✅ Delegation imported and session activated!");
     println!("   Authority: {}\n", authority_did);

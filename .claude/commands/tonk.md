@@ -1,6 +1,6 @@
 # tonk CLI — Agent Reference
 
-tonk is a CLI for managing spaces (collaboration units) and facts (EAV triples) with DID-based identity and UCAN authorization. All commands support `--json` for structured output.
+tonk is a CLI for managing spaces (context repositories) with DID-based identity. Spaces store context that persists across sessions — explorations, findings, decisions, artifacts. All commands support `--json` for structured output.
 
 ## Bootstrap (first-time setup)
 
@@ -17,82 +17,74 @@ tonk --json space create "workspace-name"
 # → {"ok":true,"name":"workspace-name","did":"did:key:z...","owners":["did:key:z..."]}
 ```
 
-Always run `tonk --json status` first to see what's already set up before creating new sessions/spaces.
+Always run `tonk --json status` first to orient before creating new sessions/spaces.
 
-## Reading facts
+## Storing context — `tonk remember`
 
 ```bash
-# Query by attribute
-tonk --json fact find --the "namespace/predicate"
+# Simple note (defaults to topic "general", kind "note")
+tonk --json remember "The auth module uses UCAN delegation chains"
 
-# Query by entity
-tonk --json fact find --of "~/my-entity"
+# With topic and kind
+tonk --json remember --topic "auth" --kind "decision" "We chose Ed25519 over secp256k1"
 
-# Query by both
-tonk --json fact find --the "meta/tag" --of "~/my-entity"
+# From stdin (for large content or piped output)
+cat summary.md | tonk --json remember --topic "paper-123" --kind "artifact"
+
+# From file
+tonk --json remember --topic "paper-123" --kind "artifact" --file ./output.md
 ```
 
-Output: `[{"type":"assertion","the":"...","of":"did:key:z...","is":"..."},...]`
+Output: `{"ok":true,"id":"did:key:z...","topic":"auth","kind":"decision","timestamp":1739012345,"summary":"..."}`
 
-An empty result returns `[]`.
+Items are deduplicated by content+topic hash. Re-remembering the same content updates the timestamp.
 
-## Writing facts
+**Kinds** are free-form strings. Common conventions: `note`, `decision`, `finding`, `artifact`, `summary`, `error`, `question`.
+
+## Retrieving context — `tonk recall`
 
 ```bash
-# Single fact
-tonk --json fact assert --the "namespace/predicate" --of "~/entity-path" --is some value here
+# By topic — everything under "auth"
+tonk --json recall "auth"
 
-# Retract a fact
-tonk --json fact retract --the "namespace/predicate" --of "~/entity-path" --is some value here
+# By kind — all decisions
+tonk --json recall --kind "decision"
+
+# By topic and kind
+tonk --json recall "auth" --kind "decision"
+
+# Most recent N items across all topics
+tonk --json recall --recent 5
+
+# Specific item by ID (from a previous remember/recall result)
+tonk --json recall --id "did:key:z..."
 ```
 
-Output: `{"ok":true,"op":"assert","the":"...","of":"did:key:z...","is":"..."}`
+Output: `[{"id":"...","topic":"auth","kind":"decision","timestamp":1739012345,"content":"..."},...]`
 
-## Batch operations
+Large content (>500 chars) is truncated in list results with `"truncated":true`. Use `--id` to get full content.
 
-For multiple writes, use batch mode (one JSON object per line on stdin):
+## Discovering what's stored — `tonk context`
 
 ```bash
-echo '{"op":"assert","the":"meta/tag","of":"~/doc-1","is":"important"}
-{"op":"assert","the":"meta/summary","of":"~/doc-1","is":"A summary of the document"}
-{"op":"retract","the":"meta/tag","of":"~/doc-1","is":"draft"}' | tonk --json fact batch
+# Space summary — topics, kinds, item counts
+tonk --json context
+# → {"space":{"did":"...","name":"..."},"topics":[{"name":"auth","items":12,"latest":1739012345}],"kinds":{"note":25,"decision":8},"total_items":42}
+
+# Drill into a topic — summaries of all items
+tonk --json context "auth"
+# → {"topic":"auth","items":[{"id":"...","kind":"decision","timestamp":...,"summary":"..."},...]}`
 ```
 
-Output: `[{"ok":true,"op":"assert",...},...]`
+**Always start with `tonk --json context`** to see what's in a space before recalling specific items.
 
-Batch commits all operations in a single transaction.
-
-## Key rules
-
-### Attributes
-Format: `namespace/predicate` (must contain a `/`). Examples: `meta/tag`, `finding/summary`, `status/health`, `project/description`.
-
-### Entities (--of)
-- `~/path` — Operator-scoped. Signed with operator key then hashed. Same path = same entity for the same operator, different entity for different operators.
-- Valid URI (e.g., `did:key:z...`, `https://example.com`) — Used as-is.
-- Anything else — blake3 hashed to a `did:key`.
-
-Use `~/` paths for things that belong to you. Use URIs for shared/external references.
-
-### Values (--is)
-Auto-detected: integers become numbers, everything else becomes a string. Multi-word values are joined with spaces.
-
-## Listing spaces
+## Spaces
 
 ```bash
-tonk --json space
-# → [{"did":"did:key:z...","name":"my-space","active":true,"is_auth_space":false},...]
-
-tonk --json space current
-# → {"did":"did:key:z...","name":"my-space"}
-```
-
-## Switching spaces
-
-```bash
-tonk space set "space-name"
-# or
-tonk space set "did:key:z..."
+tonk --json space                    # List accessible spaces
+tonk --json space current            # Show active space
+tonk --json space create "name"      # Create a new space
+tonk space set "name-or-did"         # Switch active space
 ```
 
 ## Full command reference
@@ -100,17 +92,30 @@ tonk space set "did:key:z..."
 | Command | Purpose |
 |---------|---------|
 | `tonk --json status` | Current context (operator, session, space) |
+| `tonk --json context` | What's stored in the active space |
+| `tonk --json context <topic>` | Drill into a topic |
+| `tonk --json remember [--topic T] [--kind K] <content>` | Store context |
+| `tonk --json recall <topic>` | Retrieve by topic |
+| `tonk --json recall --kind <kind>` | Retrieve by kind |
+| `tonk --json recall --recent <n>` | Most recent items |
+| `tonk --json recall --id <id>` | Get full content of a specific item |
 | `tonk login --self` | Non-interactive self-auth |
 | `tonk login --delegation <file>` | Import delegation from file/base64 |
 | `tonk --json space create <name>` | Create a new space |
 | `tonk --json space` | List accessible spaces |
-| `tonk --json space current` | Show active space |
 | `tonk space set <name-or-did>` | Switch active space |
-| `tonk --json fact assert --the A --of E --is V` | Assert a fact |
-| `tonk --json fact retract --the A --of E --is V` | Retract a fact |
-| `tonk --json fact find [--the A] [--of E] [--is V]` | Query facts |
-| `tonk --json fact batch` | Batch ops from stdin (JSON lines) |
+| `tonk space delegate --to <did>` | Delegate space access |
 | `tonk --json session` | List sessions |
-| `tonk --json session current` | Show active session |
-| `tonk space delegate --to <did> [-o file]` | Delegate space access |
 | `tonk sync` | Sync with remote |
+
+## Developer tools
+
+Raw fact operations and inspection are under `tonk dev`:
+
+```bash
+tonk dev fact assert --the "ns/pred" --of "~/entity" --is value
+tonk dev fact find --the "ns/pred"
+tonk dev fact batch                  # JSON lines from stdin
+tonk dev inspect delegation <input>
+tonk dev operator generate
+```
