@@ -43,49 +43,60 @@ mod inner {
             command: Option<SpaceCommands>,
         },
 
-        /// Store context in the active space
-        Remember {
-            /// The content to remember (if omitted, reads from stdin)
+        /// Manage concept definitions (schemas for structured data)
+        Concept {
+            #[command(subcommand)]
+            command: Option<ConceptCommands>,
+        },
+
+        /// Create a new instance of a concept
+        Create {
+            /// Concept name (e.g., "Task")
+            concept: String,
+
+            /// Field values as key=value pairs (e.g., title="Fix bug" status=todo)
             #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-            content: Vec<String>,
+            fields: Vec<String>,
 
-            /// Topic to file this under
-            #[arg(long, short)]
-            topic: Option<String>,
-
-            /// Kind of content (note, decision, finding, artifact, etc.)
-            #[arg(long, short)]
-            kind: Option<String>,
-
-            /// Read content from a file
+            /// Read field values from a JSON file
             #[arg(long, short)]
             file: Option<String>,
-        },
 
-        /// Retrieve context from the active space
-        Recall {
-            /// Topic to recall (returns all items under this topic)
-            #[arg()]
-            topic: Option<String>,
-
-            /// Filter by kind
-            #[arg(long, short)]
-            kind: Option<String>,
-
-            /// Return the N most recent items
-            #[arg(long, short)]
-            recent: Option<usize>,
-
-            /// Retrieve a specific item by ID
+            /// Read field values from stdin as JSON
             #[arg(long)]
-            id: Option<String>,
+            stdin: bool,
         },
 
-        /// Show a summary of what's stored in the active space
-        Context {
-            /// Drill into a specific topic
-            #[arg()]
-            topic: Option<String>,
+        /// Query instances of a concept with optional filters
+        Query {
+            /// Concept name (e.g., "Task")
+            concept: String,
+
+            /// Filters as key=value pairs (e.g., status=todo priority=high)
+            #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+            filters: Vec<String>,
+        },
+
+        /// Show details of an instance by ID
+        Show {
+            /// Instance ID (did:key:...)
+            id: String,
+        },
+
+        /// Update an existing instance
+        Update {
+            /// Instance ID (did:key:...)
+            id: String,
+
+            /// Field values to update as key=value pairs
+            #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+            fields: Vec<String>,
+        },
+
+        /// Delete an instance by ID
+        Delete {
+            /// Instance ID (did:key:...)
+            id: String,
         },
 
         /// Manage remotes for syncing spaces
@@ -199,6 +210,49 @@ mod inner {
             /// Output file path (defaults to stdout as base64)
             #[arg(short, long)]
             output: Option<String>,
+        },
+    }
+
+    #[derive(Subcommand)]
+    pub enum ConceptCommands {
+        /// Define a new concept (schema)
+        Define {
+            /// Concept name (e.g., "Task", "Contact")
+            name: String,
+
+            /// Attribute names (auto-prefixed with concept namespace)
+            #[arg(trailing_var_arg = true)]
+            attributes: Vec<String>,
+
+            /// Optional description of the concept
+            #[arg(short, long)]
+            description: Option<String>,
+        },
+
+        /// Show details of a concept
+        Show {
+            /// Concept name
+            name: String,
+        },
+
+        /// Add attributes to an existing concept
+        Extend {
+            /// Concept name
+            name: String,
+
+            /// New attribute names to add
+            #[arg(trailing_var_arg = true, required = true)]
+            attributes: Vec<String>,
+        },
+
+        /// Delete a concept
+        Delete {
+            /// Concept name
+            name: String,
+
+            /// Also delete all instances of this concept
+            #[arg(short, long)]
+            force: bool,
         },
     }
 
@@ -416,24 +470,47 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::space::delegate(to, space, read_only, output).await?;
             }
         },
-        Commands::Remember {
-            content,
-            topic,
-            kind,
+        Commands::Concept { command } => match command {
+            None => {
+                // `tonk concept` with no subcommand lists all concepts
+                tonk_cli::concept::list(json).await?;
+            }
+            Some(ConceptCommands::Define {
+                name,
+                attributes,
+                description,
+            }) => {
+                tonk_cli::concept::define(name, attributes, description, json).await?;
+            }
+            Some(ConceptCommands::Show { name }) => {
+                tonk_cli::concept::show(name, json).await?;
+            }
+            Some(ConceptCommands::Extend { name, attributes }) => {
+                tonk_cli::concept::extend(name, attributes, json).await?;
+            }
+            Some(ConceptCommands::Delete { name, force }) => {
+                tonk_cli::concept::delete(name, force, json).await?;
+            }
+        },
+        Commands::Create {
+            concept,
+            fields,
             file,
+            stdin,
         } => {
-            tonk_cli::remember::execute(content, topic, kind, file, json).await?;
+            tonk_cli::instance::create(concept, fields, file, stdin, json).await?;
         }
-        Commands::Recall {
-            topic,
-            kind,
-            recent,
-            id,
-        } => {
-            tonk_cli::recall::execute(topic, kind, recent, id, json).await?;
+        Commands::Query { concept, filters } => {
+            tonk_cli::instance::query(concept, filters, json).await?;
         }
-        Commands::Context { topic } => {
-            tonk_cli::context::execute(topic, json).await?;
+        Commands::Show { id } => {
+            tonk_cli::instance::show(id, json).await?;
+        }
+        Commands::Update { id, fields } => {
+            tonk_cli::instance::update(id, fields, json).await?;
+        }
+        Commands::Delete { id } => {
+            tonk_cli::instance::delete(id, json).await?;
         }
         Commands::Dev { command } => match command {
             DevCommands::Fact { command } => match command {

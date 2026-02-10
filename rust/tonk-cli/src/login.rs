@@ -14,7 +14,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-
 const AUTH_HTML: &str = include_str!("../auth.html");
 
 #[derive(Deserialize)]

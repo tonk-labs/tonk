@@ -1,9 +1,9 @@
 use crate::authority;
 use crate::crypto::Operator;
 use crate::keystore::Keystore;
+use crate::schema::value_to_json;
 use crate::state;
 use anyhow::{Context, Result};
-use base64::Engine as _;
 use dialog_artifacts::repository::{BranchId, Credentials, Repository};
 use dialog_query::claim::{Attribute, Claim, Relation};
 use dialog_query::{Entity, Session, Value};
@@ -89,25 +89,6 @@ fn get_active_space_storage_path() -> Result<(PathBuf, String)> {
         .join("facts");
 
     Ok((path, space_did))
-}
-
-/// Convert a Value to a serde_json::Value for JSON output
-fn value_to_json(value: &Value) -> serde_json::Value {
-    match value {
-        Value::String(s) => serde_json::Value::String(s.clone()),
-        Value::UnsignedInt(n) => serde_json::json!(*n),
-        Value::SignedInt(n) => serde_json::json!(*n),
-        Value::Float(f) => serde_json::json!(*f),
-        Value::Boolean(b) => serde_json::Value::Bool(*b),
-        Value::Entity(e) => serde_json::Value::String(e.to_string()),
-        Value::Symbol(s) => serde_json::json!({"symbol": s.to_string()}),
-        Value::Bytes(b) => {
-            serde_json::json!({"bytes": base64::engine::general_purpose::STANDARD.encode(b)})
-        }
-        Value::Record(r) => {
-            serde_json::json!({"record": base64::engine::general_purpose::STANDARD.encode(r)})
-        }
-    }
 }
 
 /// Assert a fact into the active space
@@ -400,7 +381,10 @@ pub async fn batch(json: bool) -> Result<()> {
     let (storage_path, space_did) = get_active_space_storage_path()?;
     let backend = FsBackend::new(&storage_path).await?;
     let credentials = Credentials::from(&operator);
-    let replica = Repository::open(credentials, space_did.into(), backend)?;
+    let space_did_parsed: dialog_varsig::Did = space_did
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
+    let replica = Repository::open(credentials, space_did_parsed, backend)?;
 
     let branch_id = BranchId::new("main".to_string());
     let branch = replica.branches.open(&branch_id).await?;
@@ -507,32 +491,46 @@ pub async fn batch(json: bool) -> Result<()> {
         }
     }
 
-    // Commit all operations in a single transaction
+    let ok_count = results.iter().filter(|r| r.ok).count();
+    let err_count = results.iter().filter(|r| !r.ok).count();
+
+    // If any operations failed, abort the entire batch without committing.
+    // The transaction is dropped, so no partial changes are persisted.
+    if err_count > 0 {
+        if json {
+            println!("{}", serde_json::to_string(&results)?);
+        } else {
+            println!(
+                "Batch aborted: {} succeeded, {} failed (no changes committed)",
+                ok_count, err_count
+            );
+            for result in &results {
+                if !result.ok {
+                    println!(
+                        "  ERROR: {} - {}",
+                        result.the,
+                        result.error.as_deref().unwrap_or("unknown")
+                    );
+                }
+            }
+        }
+        anyhow::bail!(
+            "Batch aborted due to {} error(s). No changes were committed.",
+            err_count
+        );
+    }
+
+    // All operations parsed successfully — commit atomically
     session.commit(transaction).await?;
 
     if json {
         println!("{}", serde_json::to_string(&results)?);
     } else {
-        let ok_count = results.iter().filter(|r| r.ok).count();
-        let err_count = results.iter().filter(|r| !r.ok).count();
-        println!(
-            "Batch complete: {} succeeded, {} failed",
-            ok_count, err_count
-        );
-        for result in &results {
-            if !result.ok {
-                println!(
-                    "  ERROR: {} - {}",
-                    result.the,
-                    result.error.as_deref().unwrap_or("unknown")
-                );
-            }
-        }
+        println!("Batch complete: {} operations committed", ok_count);
     }
 
     Ok(())
 }
-
 /// Format a Value for display
 fn format_value(value: &Value, byte_format: ByteFormat) -> String {
     match value {

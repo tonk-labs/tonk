@@ -1033,12 +1033,12 @@ pub async fn delegate(
     };
 
     // Parse target DID
-    let target_did: Ed25519Did = to
+    let target_did: Did = to
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse target DID: {:?}", e))?;
 
     // Parse space DID for subject
-    let space_did_parsed: Ed25519Did = space_did
+    let space_did_parsed: Did = space_did
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
 
@@ -1050,10 +1050,10 @@ pub async fn delegate(
         vec!["read".to_string(), "write".to_string()]
     };
 
-    let ucan_delegation: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
+    let ucan_delegation: UcanDelegation<Ed25519Signature> = UcanDelegation::builder()
         .issuer(signer)
-        .audience(target_did)
-        .subject(DelegatedSubject::Specific(space_did_parsed))
+        .audience(&target_did)
+        .subject(Subject::Specific(space_did_parsed))
         .command(capabilities)
         .try_build()
         .await
