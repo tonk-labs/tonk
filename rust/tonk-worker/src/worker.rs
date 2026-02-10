@@ -26,6 +26,16 @@ pub struct TonkState {
     pub session: Session,
 }
 
+// SAFETY: Web browsers run Wasm in a single thread only. The interior types
+// (Operator, Space, Identity) contain `web_sys::CryptoKey` handles (via
+// Ed25519SigningKey::WebCrypto) which are !Send/!Sync, but cross-thread access
+// cannot occur in a single-threaded browser context. This follows the same
+// pattern used for ServiceWorkerStorageBackend and KeyStore in this crate.
+#[cfg(target_arch = "wasm32")]
+unsafe impl Send for TonkState {}
+#[cfg(target_arch = "wasm32")]
+unsafe impl Sync for TonkState {}
+
 /// The main Tonk service worker that handles browser fetch events.
 ///
 /// This struct bridges the browser's service worker API with an Axum router,

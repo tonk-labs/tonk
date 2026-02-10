@@ -113,11 +113,11 @@ mod tests {
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
-            .issuer(signer.clone())
-            .audience(*audience.did())
-            .subject(DelegatedSubject::Specific(*subject.did()))
+            .issuer(signer)
+            .audience(audience.did().clone())
+            .subject(DelegatedSubject::Specific(subject.did().clone()))
             .command(vec!["read".to_string(), "write".to_string()])
-            .try_build(&signer)
+            .try_build()
             .await
             .expect("Failed to build delegation");
 
@@ -161,15 +161,15 @@ mod tests {
         let issuer = Operator::generate();
         let audience = Operator::generate();
         let subject = Operator::generate();
-        let expected_space = *subject.did();
+        let expected_space = subject.did().clone();
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
-            .issuer(signer.clone())
-            .audience(*audience.did())
-            .subject(DelegatedSubject::Specific(*subject.did()))
+            .issuer(signer)
+            .audience(audience.did().clone())
+            .subject(DelegatedSubject::Specific(subject.did().clone()))
             .command(vec!["read".to_string()])
-            .try_build(&signer)
+            .try_build()
             .await
             .expect("Failed to build delegation");
 
@@ -183,15 +183,15 @@ mod tests {
     async fn it_returns_issuer_as_space_for_powerline() {
         let issuer = Operator::generate();
         let audience = Operator::generate();
-        let expected_space = *issuer.did();
+        let expected_space = issuer.did().clone();
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
-            .issuer(signer.clone())
-            .audience(*audience.did())
+            .issuer(signer)
+            .audience(audience.did().clone())
             .subject(DelegatedSubject::Any)
             .command(vec!["read".to_string()])
-            .try_build(&signer)
+            .try_build()
             .await
             .expect("Failed to build delegation");
 

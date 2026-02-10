@@ -1,0 +1,86 @@
+[package]
+name = "tonk-cli"
+description = "CLI tool for Tonk authentication and management"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tonk"
+path = "src/bin/tonk.rs"
+
+[features]
+default = []
+
+[dependencies]
+# CLI
+clap = { workspace = true, features = ["derive"] }
+dialoguer = { workspace = true }
+
+# Tonk packages
+tonk-space = { workspace = true }
+
+# Dialog DB
+dialog-storage = { workspace = true }
+dialog-query = { workspace = true }
+dialog-artifacts = { workspace = true, features = ["ucan"] }
+dialog-common = { workspace = true }
+dialog-s3-credentials = { workspace = true, features = ["ucan"] }
+
+# Async
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+# Crypto
+ed25519-dalek = { workspace = true }
+rand_0_8 = { workspace = true }
+bs58 = { workspace = true }
+sha2_0_10 = { workspace = true }
+hex = { workspace = true }
+hkdf = { workspace = true }
+blake3 = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+serde_ipld_dagcbor = { workspace = true }
+ciborium = { workspace = true }
+
+# HTTP server
+axum = { workspace = true, features = ["tokio", "form", "http1"] }
+tower = { workspace = true }
+
+# UCAN
+ucan = { workspace = true }
+varsig = { workspace = true }
+
+# Utilities
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+dirs = { workspace = true }
+
+# For opening browser
+webbrowser = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# Platform-specific keyring backends
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service"] }
+
+# Fallback for other platforms (FreeBSD, etc.)
+[target.'cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux")))'.dependencies]
+keyring = { workspace = true }

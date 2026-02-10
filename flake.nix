@@ -58,6 +58,7 @@
             # Linux-specific inputs
             openssl
             pkg-config
+            dbus
             chromium
             chromedriver
           ]
