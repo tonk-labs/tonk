@@ -107,6 +107,93 @@ tonk space set "name-or-did"         # Switch active space
 
 Concepts and instances are scoped to the active space. Switching spaces gives you a different set of concepts and data.
 
+## Rules — deriving instances from patterns
+
+A rule defines how instances of a concept can be **derived** from patterns across existing facts. Rules use Datalog-style deduction: positive premises (`when`) that must hold, and negative premises (`unless`) that must NOT hold. Variables (prefixed with `?`) bind values and create implicit joins across premises.
+
+Multiple rules can derive the same concept — they act as **OR branches**. Each rule independently produces derived instances, and results are merged. This lets you evolve rules independently rather than maintaining one giant rule with many branches.
+
+When you query a concept that has rules, derived instances are transparently merged with stored instances.
+
+```bash
+# List all rules
+tonk --json rule
+# → [{"name":"safe-meals","conclusion":"SafeMeal"},...]
+
+# Define a rule from JSON (via file)
+tonk --json rule define safe-meals --file rule.json
+
+# Define a rule from JSON (via stdin)
+cat <<'EOF' | tonk --json rule define safe-meals --stdin
+{
+  "conclusion": {
+    "concept": "SafeMeal",
+    "this": "?allergy",
+    "bindings": {
+      "attendee": "?person",
+      "recipe": "?recipe_name"
+    }
+  },
+  "when": [
+    { "the": "allergy/person", "of": "?allergy", "is": "?person" },
+    { "the": "recipe/name", "of": "?recipe", "is": "?recipe_name" },
+    { "the": "recipe/ingredient", "of": "?recipe", "is": "?ingredient" }
+  ],
+  "unless": [
+    { "the": "allergy/substance", "of": "?allergy", "is": "?ingredient" }
+  ]
+}
+EOF
+# → {"ok":true,"name":"safe-meals","conclusion":"SafeMeal","when_count":3,"unless_count":1}
+
+# Show rule details
+tonk --json rule show safe-meals
+
+# Delete a rule
+tonk --json rule delete safe-meals
+
+# Query now includes derived instances transparently
+tonk --json query SafeMeal
+```
+
+### Rule definition JSON format
+
+```json
+{
+  "conclusion": {
+    "concept": "ConceptName",
+    "this": "?entity_var",
+    "bindings": { "attr_short_name": "?variable", ... }
+  },
+  "when": [
+    { "the": "namespace/attribute", "of": "?var_or_constant", "is": "?var_or_constant" },
+    ...
+  ],
+  "unless": [
+    { "the": "namespace/attribute", "of": "?var_or_constant", "is": "?var_or_constant" },
+    ...
+  ]
+}
+```
+
+**Conclusion fields:**
+- `concept` — the name of the concept being derived (must already be defined; referencing an undefined concept is an error)
+- `this` — which entity variable from the premises becomes the derived entity's identity. `this` is distinct from attribute bindings: it designates the *entity identity* of each derived instance, not an attribute value. If omitted, defaults to the first entity variable in the `when` premises.
+- `bindings` — maps concept attribute short names to premise variables (`"?var"`) or constant values (any string without `?` prefix). Not every premise variable needs to appear in bindings — variables can appear only in premises to serve as join variables (e.g. `?ingredient` in the example above joins `when` and `unless` premises without appearing in the conclusion). The rule compiler automatically renames variables to match the concept's operand names; if this would cause a collision with another variable, the conflicting variable is auto-renamed.
+
+**Premise terms:**
+- `"?name"` — variable (binds/joins by name across premises)
+- `"_"` — wildcard (matches anything, no binding)
+- any other string — constant (exact match filter)
+
+**Constraints:**
+- `the` is always a fully qualified attribute name (constant). Premise attributes reference existing data but are not validated against concept schemas — only the conclusion concept must be defined.
+- Every variable in conclusion `bindings` must appear in at least one positive (`when`) premise (appearing only in `unless` is not sufficient — this is a Datalog safety requirement)
+- The conclusion concept must already be defined
+- The `unless` section is optional (negation-as-failure)
+- Rule names are case-insensitive (stored and looked up in lowercase). Names serve as human-friendly identifiers for lookup and deletion.
+- Rules must have at least one positive premise in `when`
+
 ## Typical workflow
 
 ```bash
@@ -141,6 +228,11 @@ tonk sync
 | `tonk --json concept show <name>` | Show concept schema |
 | `tonk --json concept extend <name> <attrs...>` | Add attributes to a concept |
 | `tonk --json concept delete <name> [--force]` | Delete a concept |
+| `tonk --json rule` | List all rules in the active space |
+| `tonk --json rule define <name> --file <json>` | Define a rule from JSON file |
+| `tonk --json rule define <name> --stdin` | Define a rule from stdin JSON |
+| `tonk --json rule show <name>` | Show rule definition |
+| `tonk --json rule delete <name>` | Delete a rule |
 | `tonk --json create <concept> [key=val...]` | Create an instance |
 | `tonk --json query <concept> [key=val...]` | Query/filter instances |
 | `tonk --json show <id>` | Show instance details |
