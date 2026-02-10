@@ -35,6 +35,17 @@ self.onfetch = event => {
                 return (await activateWorker()).onfetch(request);
             })(),
         );
+    // NOTE: Only intercept navigate as candidates for serving
+    // the index.html (in order to provide SPA-style routing)
+    } else if (request.mode === 'navigate') {
+        event.respondWith(
+            fetch(request).then(response => {
+                if (response.status === 404) {
+                    return fetch("/index.html");
+                }
+                return response;
+            }),
+        );
     }
 };
 
