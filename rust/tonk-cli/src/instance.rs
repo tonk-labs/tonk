@@ -201,9 +201,21 @@ pub async fn query(concept_name: String, selectors: Vec<String>, json: bool) -> 
         qualified_selectors.push((qualified, parse_value(value)));
     }
 
-    // Load any rules targeting this concept (may be empty)
-    let rule_defs =
-        crate::rule::load_rules_for_concept(&branch, &ctx.space_did, &stored_name).await?;
+    // Load ALL rules in the space (not just rules for the queried concept),
+    // because rules can depend on each other.
+    let all_rules = crate::rule::load_all_rules(&branch, &ctx.space_did).await?;
+
+    // Compile ALL rules (each against its own conclusion concept's schema)
+    // and register them with the Session.
+    let mut compiled_rules: Vec<dialog_query::DeductiveRule> = Vec::new();
+    for (conclusion_name, def) in &all_rules {
+        let cname = ConceptName::from_stored(conclusion_name.clone());
+        let concept_ent = concept_entity(&ctx.space_did, &cname)?;
+        let concept_attrs =
+            fetch_string_values(&branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
+        let compiled = crate::rule::compile_rule(def, &cname, &concept_attrs)?;
+        compiled_rules.push(compiled);
+    }
 
     // Use Session-based querying which handles both stored instances
     // and rule-derived instances in a single code path.
@@ -212,7 +224,7 @@ pub async fn query(concept_name: String, selectors: Vec<String>, json: bool) -> 
         &schema_attrs,
         &stored_name,
         &qualified_selectors,
-        &rule_defs,
+        &compiled_rules,
     )
     .await?;
 
@@ -220,29 +232,23 @@ pub async fn query(concept_name: String, selectors: Vec<String>, json: bool) -> 
     Ok(())
 }
 
-/// Session-based query with rules. Compiles rules into DeductiveRules,
-/// registers them with a Session, and uses dialog-db's concept application
-/// to merge stored and derived instances.
+/// Session-based query with rules. Registers pre-compiled DeductiveRules
+/// with a Session and uses dialog-db's concept application to merge
+/// stored and derived instances.
 async fn query_with_rules(
     branch: dialog_artifacts::repository::Branch<tonk_space::FsBackend>,
     schema_attrs: &[String],
     stored_name: &ConceptName,
     qualified_selectors: &[(String, Value)],
-    rule_defs: &[crate::rule::RuleDefinition],
+    compiled_rules: &[dialog_query::DeductiveRule],
 ) -> Result<Vec<(String, serde_json::Map<String, serde_json::Value>)>> {
     use dialog_query::{Parameters, Session};
     use futures_util::TryStreamExt;
 
-    // Compile rules
-    let compiled_rules: Vec<dialog_query::DeductiveRule> = rule_defs
-        .iter()
-        .map(|def| crate::rule::compile_rule(def, stored_name, schema_attrs))
-        .collect::<Result<Vec<_>>>()?;
-
-    // Open a Session and register rules
+    // Open a Session and register all rules
     let mut session = Session::open(branch);
     for rule in compiled_rules {
-        session = session.register(rule);
+        session = session.register(rule.clone());
     }
 
     // Build the dynamic concept
@@ -284,7 +290,10 @@ async fn query_with_rules(
         .await
         .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
 
-    // Convert answers to rows
+    // Convert answers to rows, deduplicating by entity ID.
+    // Rules involving multi-valued attributes (like ingredient) can produce
+    // duplicate rows for the same derived entity — we keep only the first.
+    let mut seen_entities = std::collections::HashSet::new();
     let mut rows = Vec::new();
     for answer in &answers {
         let mut data = serde_json::Map::new();
@@ -298,6 +307,11 @@ async fn query_with_rules(
                 "???".to_string()
             }
         };
+
+        // Deduplicate by entity ID
+        if !seen_entities.insert(entity_str.clone()) {
+            continue;
+        }
 
         // Resolve each attribute value
         for attr_var in &attr_vars {

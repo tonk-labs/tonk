@@ -237,26 +237,44 @@ fn build_rename_map(
     let mut rename: HashMap<String, String> = HashMap::new();
 
     // Map each conclusion binding: user variable → attribute short name
+    let mut binding_vars: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (attr_short, var_str) in &definition.conclusion.bindings {
         if let PremiseTerm::Variable(var_name) = PremiseTerm::parse(var_str) {
             // Validate the attribute is in the concept
             let _qualified = qualify_attribute(concept_name, attr_short)?;
-            rename.insert(var_name, attr_short.clone());
+            rename.insert(var_name.clone(), attr_short.clone());
+            binding_vars.insert(var_name);
         }
         // Constants in bindings are allowed — they don't need renaming
     }
 
     // Map `this`: find which entity variable should become "this"
     let this_var = if let Some(ref this_str) = definition.conclusion.this {
-        match PremiseTerm::parse(this_str) {
+        let name = match PremiseTerm::parse(this_str) {
             PremiseTerm::Variable(name) => name,
             _ => anyhow::bail!(
                 "Conclusion 'this' must be a variable (starting with '?'), got: {}",
                 this_str
             ),
+        };
+
+        // If the user explicitly sets `this` to a variable that's also
+        // used as a conclusion binding, that's an error — one variable
+        // can't map to two different operand names.
+        if binding_vars.contains(&name) {
+            anyhow::bail!(
+                "Variable '?{}' is used both as 'this' and as a conclusion binding attribute. \
+                 Use separate variables for the entity (this) and the attribute binding. \
+                 For example, add a dedicated entity variable like '?meal' with 'this: ?meal' \
+                 in the conclusion.",
+                name
+            );
         }
+
+        name
     } else {
         // Auto-detect: use the first entity variable from `when` premises
+        // that is NOT already claimed by a conclusion binding.
         definition
             .when
             .iter()
@@ -265,22 +283,14 @@ fn build_rename_map(
                     .variable_name()
                     .map(|v| v.to_string())
             })
-            .next()
+            .find(|v| !binding_vars.contains(v))
             .context(
-                "No entity variable found in 'when' premises. \
-                 Specify 'this' in the conclusion or use a ?variable in an 'of' field.",
+                "No suitable entity variable found in 'when' premises to use as 'this'. \
+                 All entity variables are already claimed by conclusion bindings. \
+                 Add an explicit 'this: ?var' to a when-premise that uses a dedicated \
+                 entity variable, or set 'this' in the conclusion.",
             )?
     };
-
-    // Check that the this variable isn't already mapped to an attribute name
-    if rename.contains_key(&this_var) {
-        anyhow::bail!(
-            "Variable '?{}' is used both as 'this' and as a binding for attribute '{}'. \
-             Use separate variables.",
-            this_var,
-            rename[&this_var]
-        );
-    }
 
     rename.insert(this_var, "this".to_string());
 
@@ -371,24 +381,79 @@ pub fn compile_rule(
         premises.push(fact_app.into());
     }
 
-    // 4. Build negative premises (unless) with renamed variables
-    for p in &definition.unless {
-        let renamed_of = rename_var(&p.of, &rename);
-        let renamed_is = rename_var(&p.is, &rename);
+    // 4. Build negative premises (unless) with renamed variables.
+    //
+    // Unlike positive premises where each EAV triple is independent,
+    // negative premises must be grouped by entity (`of` value) and
+    // negated as a conjunction. This is because the YAML `unless` section
+    // uses concept-level references where multiple attributes of the same
+    // entity form a single condition: "there must NOT exist an entity with
+    // ALL these attributes simultaneously."
+    //
+    // We achieve this by building a dynamic Concept per entity group and
+    // negating its application, which internally joins the attribute facts.
+    {
+        // Group unless premises by their (renamed) entity value
+        let mut groups: Vec<(String, Vec<&RulePremise>)> = Vec::new();
+        for p in &definition.unless {
+            let renamed_of = rename_var(&p.of, &rename);
+            if let Some(group) = groups.iter_mut().find(|(of, _)| of == &renamed_of) {
+                group.1.push(p);
+            } else {
+                groups.push((renamed_of, vec![p]));
+            }
+        }
 
-        let of_term = parse_term_entity(&renamed_of)?;
-        let is_term = parse_term_value(&renamed_is);
+        for (renamed_of, group) in &groups {
+            // Build a dynamic Concept from the attributes in this group.
+            // Each attribute `the` field is "namespace/name" (e.g., "allergy/person").
+            // We split on "/" to get the namespace and short name, then use the
+            // short name as the operand key.
+            let attr_schemas: Vec<(&str, dialog_query::AttributeSchema<Value>)> = group
+                .iter()
+                .map(|p| {
+                    let (ns, name) = p.the.split_once('/').unwrap_or(("", &p.the));
+                    let short = leak_str(name);
+                    let schema = dialog_query::AttributeSchema::<Value>::new(
+                        leak_str(ns),
+                        short,
+                        leak_str(""),
+                        dialog_query::Type::String,
+                    );
+                    (short, schema)
+                })
+                .collect();
 
-        let fact_app = dialog_query::predicate::Fact::select()
-            .the(p.the.as_str())
-            .of(of_term)
-            .is(is_term)
-            .compile()
-            .context(format!(
-                "Failed to compile negated premise: the={}, of={}, is={}",
-                p.the, p.of, p.is
-            ))?;
-        premises.push(!fact_app); // negation via Not trait
+            let neg_concept = dialog_query::predicate::Concept::new(attr_schemas.into());
+
+            // Build parameters: "this" for entity, each attribute gets its renamed value.
+            // Parameter keys use the short name (e.g., "person", "substance").
+            let mut neg_params = dialog_query::Parameters::new();
+
+            let of_term: Term<Value> = match PremiseTerm::parse(renamed_of) {
+                PremiseTerm::Variable(name) => Term::var(leak_str(&name)),
+                PremiseTerm::Wildcard => Term::blank(),
+                PremiseTerm::Constant(s) => Term::Constant(parse_value(&s)),
+            };
+            neg_params.insert("this".to_string(), of_term);
+
+            for p in group {
+                let (_ns, name) = p.the.split_once('/').unwrap_or(("", &p.the));
+                let renamed_is = rename_var(&p.is, &rename);
+                let is_term = parse_term_value(&renamed_is);
+                neg_params.insert(name.to_string(), is_term);
+            }
+
+            let neg_app = neg_concept.apply(neg_params).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to apply negated concept for unless group (of={}): {}",
+                    renamed_of,
+                    e
+                )
+            })?;
+
+            premises.push(neg_app.not());
+        }
     }
 
     // 5. Compile the DeductiveRule
@@ -408,7 +473,7 @@ pub fn compile_rule(
 /// Checks:
 /// - Conclusion binding keys are valid attributes of the conclusion concept
 /// - All conclusion binding variables appear in at least one premise
-fn validate_definition(
+pub fn validate_definition(
     definition: &RuleDefinition,
     conclusion_attrs: &[String],
     conclusion_name: &ConceptName,
@@ -882,6 +947,35 @@ pub async fn load_rules_for_concept<S: ArtifactStore>(
                 "Warning: rule entity '{}' for concept '{}' has no definition attribute",
                 rule_entity, concept_name
             );
+        }
+    }
+
+    Ok(rules)
+}
+
+/// Load all rule definitions in the space, paired with their conclusion concept name.
+///
+/// Returns `(conclusion_concept_name, RuleDefinition)` for each rule.
+pub async fn load_all_rules<S: ArtifactStore>(
+    store: &S,
+    space_did: &str,
+) -> Result<Vec<(String, RuleDefinition)>> {
+    let registry = registry_entity(space_did)?;
+    let rule_entities = fetch_entity_values(store, &registry, ATTR_REGISTRY_RULE).await?;
+
+    let mut rules = Vec::new();
+    for rule_entity in &rule_entities {
+        let conclusion = match fetch_string(store, rule_entity, ATTR_RULE_CONCLUSION).await? {
+            Some(c) => c,
+            None => continue,
+        };
+        if let Some(def_str) = fetch_string(store, rule_entity, ATTR_RULE_DEFINITION).await? {
+            match serde_json::from_str::<RuleDefinition>(&def_str) {
+                Ok(def) => rules.push((conclusion, def)),
+                Err(e) => {
+                    eprintln!("Warning: skipping rule with malformed definition: {}", e);
+                }
+            }
         }
     }
 

@@ -1,0 +1,34 @@
+user.rules:
+  find-allergy-conflicts:
+    assert:
+      diy.planner/AllergyConflict:
+        person: ?person
+        recipe: ?recipe
+    when:
+      - diy.cook/Recipe:
+          this: ?recipe
+          ingredient: ?ingredient
+      - diy.cook/Ingredient:
+          this: ?ingredient
+          name: ?substance
+      - diy.health/Allergy:
+          this: ?allergy
+          person: ?person
+          substance: ?substance
+
+  respect-dietary-restrictions:
+    assert:
+      diy.planner/SafeMeal:
+        attendee: ?person
+        recipe: ?recipe
+        occasion: ?occasion
+    when:
+      - diy.planner/Meal:
+          this: ?meal
+          attendee: ?person
+          recipe: ?recipe
+          occasion: ?occasion
+    unless:
+      - diy.planner/AllergyConflict:
+          person: ?person
+          recipe: ?recipe

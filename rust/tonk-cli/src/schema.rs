@@ -418,6 +418,12 @@ pub async fn fetch_values<S: ArtifactStore>(
 
 /// Parse a string input into a Value, trying integer -> float -> string.
 pub fn parse_value(input: &str) -> Value {
+    // Entity references (DID URIs)
+    if input.starts_with("did:")
+        && let Ok(entity) = dialog_query::Entity::from_str(input)
+    {
+        return Value::Entity(entity);
+    }
     if let Ok(n) = input.parse::<i128>() {
         if n >= 0 {
             return Value::UnsignedInt(n as u128);
