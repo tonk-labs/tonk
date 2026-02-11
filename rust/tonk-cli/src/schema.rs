@@ -127,6 +127,18 @@ pub const ATTR_INSTANCE_CREATED: &str = "instance/created";
 /// Attribute metadata: human-readable description of the attribute.
 pub const ATTR_ATTRIBUTE_DESCRIPTION: &str = "attribute/description";
 
+/// Attribute metadata: type constraint (e.g. "Text", "Integer", "RecipeStep", or JSON array for enums).
+pub const ATTR_ATTRIBUTE_TYPE: &str = "attribute/type";
+
+/// Attribute metadata: cardinality ("many" for multi-valued, absent for single).
+pub const ATTR_ATTRIBUTE_CARDINALITY: &str = "attribute/cardinality";
+
+/// Attribute metadata: whether the attribute is optional.
+pub const ATTR_ATTRIBUTE_OPTIONAL: &str = "attribute/optional";
+
+/// Concept attribute: the namespace the concept was imported from (e.g. "diy.cook").
+pub const ATTR_CONCEPT_NAMESPACE: &str = "concept/namespace";
+
 /// Registry attribute: points from registry entity to rule entities.
 pub const ATTR_REGISTRY_RULE: &str = "registry/rule";
 

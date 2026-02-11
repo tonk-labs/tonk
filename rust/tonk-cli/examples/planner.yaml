@@ -1,0 +1,31 @@
+diy.health:
+  Allergy:
+    this:
+      the: The allergy person has
+    person:
+      the: Person having an allergy
+    substance:
+      the: Substance person has an allergy for
+      as: Text
+
+diy.planner:
+  Event:
+    this:
+      the: Event being planned
+    title:
+      the: Title of the event
+      as: Text
+    time:
+      the: Time of the event
+      as: Text
+
+  Meal:
+    this:
+      the: The plan for the meal
+    attendee:
+      the: The meal attendee
+    recipe:
+      the: The meal recipe
+    occasion:
+      the: The occasion for the meal
+      as: Event

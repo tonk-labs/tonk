@@ -6,6 +6,7 @@ pub mod crypto;
 pub mod delegation;
 pub mod did;
 pub mod fact;
+pub mod import;
 pub mod inspect;
 pub mod instance;
 pub mod keystore;

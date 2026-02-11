@@ -55,6 +55,16 @@ mod inner {
             command: Option<RuleCommands>,
         },
 
+        /// Import concepts from a YAML file
+        Import {
+            /// Path to a YAML file containing concept definitions
+            file: String,
+
+            /// Overwrite existing concepts instead of failing
+            #[arg(long)]
+            force: bool,
+        },
+
         /// Create a new instance of a concept
         Create {
             /// Concept name (e.g., "Task")
@@ -551,6 +561,9 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::rule::delete(name, json).await?;
             }
         },
+        Commands::Import { file, force } => {
+            tonk_cli::import::import(file, force, json).await?;
+        }
         Commands::Create {
             concept,
             fields,
