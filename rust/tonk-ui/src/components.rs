@@ -97,6 +97,26 @@ mod tests {
     use thirtyfour::prelude::*;
     use tonk_worker::{StatusResponse, SyncResponse};
 
+    #[dialog_common::test]
+    async fn it_falls_back_to_index_for_unhandled_routes(env: TestEnvironment) -> Result<()> {
+        // 1. Navigate to the root to confirm that the page loads
+        let driver = env.driver().await?;
+        let space = driver.query(By::Css(".space")).first().await?;
+        assert!(space.text().await?.starts_with("did:key:"));
+
+        // 2. Navigate again to /unhandled/route
+        driver
+            .goto(&format!("{}/unhandled/route", env.tonk_web))
+            .await?;
+
+        // 3. Confirm that the page loads (DID text rendered in the .space element)
+        let space = driver.query(By::Css(".space")).first().await?;
+        assert!(space.text().await?.starts_with("did:key:"));
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Test that the UI auto-configures upstream on load via the access service.
     /// The access service is available at /ucan/ via Caddy reverse proxy.
     #[dialog_common::test]
