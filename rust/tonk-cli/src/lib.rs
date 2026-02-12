@@ -1,6 +1,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 pub mod authority;
+pub mod batch;
 pub mod concept;
 pub mod crypto;
 pub mod delegation;
