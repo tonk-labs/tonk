@@ -212,6 +212,11 @@
             target = "wasm32-unknown-unknown";
           };
 
+          tests-cli-integration = buildTestArchive {
+            name = "cli-integration";
+            args = "--package tonk-cli --test cli_integration";
+          };
+
           tests = pkgs.runCommand "tests-all" { } ''
             mkdir -p $out
             cp ${self.packages.${system}.tests-native-debug}/*.tar.zst $out/

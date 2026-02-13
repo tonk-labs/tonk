@@ -77,9 +77,8 @@ fn get_active_space_storage_path() -> Result<(PathBuf, String)> {
     let space_did = state::get_active_space(&authority.did)?
         .context("No active space. Please run 'tonk space create' or 'tonk space select' first")?;
 
-    let home = crate::util::home_dir().context("Could not determine home directory")?;
-    let path = home
-        .join(".tonk")
+    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
+    let path = tonk_dir
         .join("operator")
         .join(&operator_did)
         .join("session")

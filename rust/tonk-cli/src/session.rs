@@ -172,8 +172,8 @@ pub async fn list(verbose: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Get home directory for chain building
-    let home = crate::util::home_dir().context("Could not determine home directory")?;
+    // Get tonk directory for chain building
+    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
 
     // Sort authorities to show active one first
     let mut sorted_authorities = authorities.clone();
@@ -299,7 +299,7 @@ pub async fn list(verbose: bool, json: bool) -> Result<()> {
                             cmd,
                             &operator_did,
                             &auth.did,
-                            &home,
+                            &tonk_dir,
                         ) {
                             // Chain is built: [authority→operator, ..., space→authority]
                             // Display from operator (top) to space (bottom/root)
@@ -369,13 +369,13 @@ fn build_authorization_chain(
     cmd: &str,
     operator_did: &str,
     authority_did: &str,
-    home: &std::path::Path,
+    tonk_dir: &std::path::Path,
 ) -> Result<Vec<Delegation>> {
     let mut chain = Vec::new();
     let mut visited = HashSet::new();
 
     // Start by finding the delegation from authority to operator (powerline)
-    if let Some(auth_to_op) = find_delegation_for_chain(authority_did, operator_did, home)? {
+    if let Some(auth_to_op) = find_delegation_for_chain(authority_did, operator_did, tonk_dir)? {
         chain.push(auth_to_op);
     }
 
@@ -384,7 +384,7 @@ fn build_authorization_chain(
         space_did,
         cmd,
         authority_did,
-        home,
+        tonk_dir,
         &mut chain,
         &mut visited,
         0,
@@ -398,7 +398,7 @@ fn trace_to_space(
     space_did: &str,
     cmd: &str,
     current_did: &str,
-    home: &std::path::Path,
+    tonk_dir: &std::path::Path,
     chain: &mut Vec<Delegation>,
     visited: &mut HashSet<String>,
     depth: usize,
@@ -409,7 +409,7 @@ fn trace_to_space(
     visited.insert(current_did.to_string());
 
     // Look for delegations TO current_did
-    let access_dir = home.join(".tonk").join("access").join(current_did);
+    let access_dir = tonk_dir.join("access").join(current_did);
     if !access_dir.exists() {
         return Ok(());
     }
@@ -469,7 +469,7 @@ fn trace_to_space(
                             space_did,
                             cmd,
                             &actual_issuer,
-                            home,
+                            tonk_dir,
                             chain,
                             visited,
                             depth + 1,
@@ -489,13 +489,9 @@ fn trace_to_space(
 fn find_delegation_for_chain(
     issuer_did: &str,
     audience_did: &str,
-    home: &std::path::Path,
+    tonk_dir: &std::path::Path,
 ) -> Result<Option<Delegation>> {
-    let access_dir = home
-        .join(".tonk")
-        .join("access")
-        .join(audience_did)
-        .join(issuer_did);
+    let access_dir = tonk_dir.join("access").join(audience_did).join(issuer_did);
 
     if !access_dir.exists() {
         return Ok(None);
@@ -533,7 +529,7 @@ pub fn collect_spaces_for_authority(
     _operator_did: &str,
     authority_did: &str,
 ) -> Result<HashMap<String, SpaceAccess>> {
-    let home = crate::util::home_dir().context("Could not determine home directory")?;
+    let home = crate::util::tonk_dir().context("Could not determine tonk directory")?;
 
     // First, collect what the authority has direct access to
     let mut spaces: HashMap<String, SpaceAccess> = HashMap::new();
@@ -550,7 +546,7 @@ pub fn collect_spaces_for_authority(
     );
 
     // Check authority's own access (this is what they've been delegated)
-    let authority_access_dir = home.join(".tonk").join("access").join(authority_did);
+    let authority_access_dir = home.join("access").join(authority_did);
 
     if authority_access_dir.exists() {
         for entry in fs::read_dir(&authority_access_dir)? {
@@ -648,7 +644,7 @@ pub fn collect_spaces_for_authority(
 fn collect_spaces_recursive(
     authority_did: &str,
     did: &str,
-    home: &std::path::PathBuf,
+    tonk_dir: &std::path::PathBuf,
     visited: &mut HashSet<String>,
     spaces: &mut HashMap<String, SpaceAccess>,
     depth: usize,
@@ -658,7 +654,7 @@ fn collect_spaces_recursive(
     }
     visited.insert(did.to_string());
 
-    let access_dir = home.join(".tonk").join("access").join(did);
+    let access_dir = tonk_dir.join("access").join(did);
     if !access_dir.exists() {
         return Ok(());
     }
@@ -696,7 +692,7 @@ fn collect_spaces_recursive(
                     collect_spaces_recursive(
                         authority_did,
                         &issuer,
-                        home,
+                        tonk_dir,
                         visited,
                         spaces,
                         depth + 1,

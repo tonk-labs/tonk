@@ -276,9 +276,8 @@ pub fn get_space_context() -> Result<SpaceContext> {
     let space_did = state::get_active_space(&authority.did)?
         .context("No active space. Run 'tonk space create' first")?;
 
-    let home = crate::util::home_dir().context("Could not determine home directory")?;
-    let storage_path = home
-        .join(".tonk")
+    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
+    let storage_path = tonk_dir
         .join("operator")
         .join(&operator_did)
         .join("session")

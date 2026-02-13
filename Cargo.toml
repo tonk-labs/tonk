@@ -91,6 +91,7 @@ web-time = "1"
 webbrowser = "1.0"
 worker = "0.7.4"
 worker-macros = "0.7.4"
+serial_test = "3"
 
 # Bindgen
 wasm-bindgen = "=0.2.108"

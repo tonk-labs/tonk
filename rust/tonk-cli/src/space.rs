@@ -477,9 +477,8 @@ fn get_space_storage_path(
     authority_did: &str,
     space_did: &str,
 ) -> Result<PathBuf> {
-    let home = crate::util::home_dir().context("Could not determine home directory")?;
-    let path = home
-        .join(".tonk")
+    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
+    let path = tonk_dir
         .join("operator")
         .join(operator_did)
         .join("session")
@@ -617,9 +616,8 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     let invitation_hash = hex::encode(invitation_hash_bytes);
 
     // Save to storage (in the operator's access directory for the invitee)
-    let home = crate::util::home_dir().context("Could not determine home directory")?;
-    let access_dir = home
-        .join(".tonk")
+    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
+    let access_dir = tonk_dir
         .join("access")
         .join(&invitee_did)
         .join(&operator_did);
@@ -789,12 +787,8 @@ pub fn inspect_invite(path: String) -> Result<()> {
 
 /// Find a delegation from issuer to audience for a specific subject
 fn find_delegation(issuer: &str, audience: &str) -> Result<Option<Delegation>> {
-    let home = crate::util::home_dir().context("Could not determine home directory")?;
-    let access_dir = home
-        .join(".tonk")
-        .join("access")
-        .join(audience)
-        .join(issuer);
+    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
+    let access_dir = tonk_dir.join("access").join(audience).join(issuer);
 
     if !access_dir.exists() {
         return Ok(None);
@@ -1172,8 +1166,8 @@ pub async fn delete(space_identifier: String, force: bool) -> Result<()> {
     }
 
     // Delete delegations from this space (in access directory)
-    let home = crate::util::home_dir().context("Could not determine home directory")?;
-    let access_dir = home.join(".tonk").join("access");
+    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
+    let access_dir = tonk_dir.join("access");
 
     if access_dir.exists() {
         let mut deleted_delegations = 0;

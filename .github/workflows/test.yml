@@ -46,6 +46,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
       - uses: wimpysworld/nothing-but-nix@main
       - uses: cachix/install-nix-action@v31
         with:
