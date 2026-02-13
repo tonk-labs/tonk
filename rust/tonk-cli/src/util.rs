@@ -13,3 +13,11 @@ pub fn tonk_dir() -> Option<PathBuf> {
     }
     dirs::home_dir().map(|h| h.join(".tonk"))
 }
+
+/// Get the access directory (`~/.tonk/access`).
+///
+/// Delegations are stored under this directory, keyed by audience and issuer
+/// DIDs.
+pub fn access_dir() -> Option<PathBuf> {
+    tonk_dir().map(|d| d.join("access"))
+}

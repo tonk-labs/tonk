@@ -616,9 +616,8 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     let invitation_hash = hex::encode(invitation_hash_bytes);
 
     // Save to storage (in the operator's access directory for the invitee)
-    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
-    let access_dir = tonk_dir
-        .join("access")
+    let access_dir = crate::util::access_dir()
+        .context("Could not determine tonk directory")?
         .join(&invitee_did)
         .join(&operator_did);
     fs::create_dir_all(&access_dir)?;
@@ -787,8 +786,10 @@ pub fn inspect_invite(path: String) -> Result<()> {
 
 /// Find a delegation from issuer to audience for a specific subject
 fn find_delegation(issuer: &str, audience: &str) -> Result<Option<Delegation>> {
-    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
-    let access_dir = tonk_dir.join("access").join(audience).join(issuer);
+    let access_dir = crate::util::access_dir()
+        .context("Could not determine tonk directory")?
+        .join(audience)
+        .join(issuer);
 
     if !access_dir.exists() {
         return Ok(None);
@@ -1166,8 +1167,7 @@ pub async fn delete(space_identifier: String, force: bool) -> Result<()> {
     }
 
     // Delete delegations from this space (in access directory)
-    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
-    let access_dir = tonk_dir.join("access");
+    let access_dir = crate::util::access_dir().context("Could not determine tonk directory")?;
 
     if access_dir.exists() {
         let mut deleted_delegations = 0;

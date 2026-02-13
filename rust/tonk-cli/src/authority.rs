@@ -25,8 +25,9 @@ pub fn get_authorities() -> Result<Vec<Authority>> {
         .context("Failed to get operator keypair")?;
     let operator_did = operator.did().to_string();
 
-    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
-    let access_dir = tonk_dir.join("access").join(&operator_did);
+    let access_dir = crate::util::access_dir()
+        .context("Could not determine tonk directory")?
+        .join(&operator_did);
 
     if !access_dir.exists() {
         return Ok(Vec::new());

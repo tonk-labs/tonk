@@ -139,7 +139,7 @@ impl Delegation {
 
     /// Get the delegation storage path based on delegation fields
     fn storage_path(&self) -> Result<PathBuf, DelegationError> {
-        let tonk_dir: PathBuf = crate::util::tonk_dir().ok_or_else(|| {
+        let access_dir: PathBuf = crate::util::access_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine tonk directory",
@@ -148,7 +148,7 @@ impl Delegation {
 
         // Build path: ~/.tonk/access/{aud}/{sub or iss}/{exp}-{hash}.cbor
         let audience = self.audience();
-        let access_dir = tonk_dir.join("access").join(&audience);
+        let access_dir = access_dir.join(&audience);
 
         let sub_dir = match self.subject() {
             Subject::Specific(did) => {
@@ -279,14 +279,14 @@ impl Delegation {
         exp: i64,
         hash: &str,
     ) -> Result<Self, DelegationError> {
-        let tonk_dir: PathBuf = crate::util::tonk_dir().ok_or_else(|| {
+        let access_dir: PathBuf = crate::util::access_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine tonk directory",
             ))
         })?;
 
-        let access_dir = tonk_dir.join("access").join(aud);
+        let access_dir = access_dir.join(aud);
         let sub_dir = if let Some(sub) = sub {
             access_dir.join(sub)
         } else {
