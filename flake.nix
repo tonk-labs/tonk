@@ -74,6 +74,7 @@
         };
 
         inherit (rustHelpers)
+          buildCrate
           buildWasmCrate
           buildTrunkCrate
           buildTestArchive
@@ -221,6 +222,11 @@
             cp ${self.packages.${system}.tests-web-debug}/*.tar.zst $out/
             cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
           '';
+
+          tonk-cli = buildCrate {
+            pname = "tonk-cli";
+            cargoExtraArgs = "--package tonk-cli";
+          };
 
           tonk-ui = buildTrunkCrate {
             pname = "tonk-ui";
