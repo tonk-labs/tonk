@@ -90,6 +90,7 @@ pub fn TonkShell() -> impl IntoView {
 }
 
 #[cfg(test)]
+#[allow(unused_imports)]
 mod tests {
     use crate::helpers::TestEnvironment;
     use anyhow::Result;

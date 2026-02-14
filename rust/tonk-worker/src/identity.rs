@@ -6,9 +6,9 @@
 use crate::account::{Account, AccountError};
 use crate::key_store::{KeyStore, KeyStoreError};
 use crate::session::{Session, SessionError};
+use dialog_varsig::Did;
 use thiserror::Error;
 use tonk_space::Operator;
-use ucan::did::Ed25519Did;
 
 /// Errors that can occur when working with identity.
 #[derive(Debug, Error)]
@@ -63,8 +63,7 @@ impl Identity {
             None => key_store.create_user_operator().await?,
         };
 
-        // Prefix with "tonk:" for debug clarity when viewing IndexedDB in devtools
-        let db_name = format!("tonk:{}", operator.did());
+        let db_name = operator.did().to_string();
         let account = Account::open(&db_name, &operator).await?;
 
         Ok(Self {
@@ -77,7 +76,7 @@ impl Identity {
     /// Get the DID (decentralized identifier) for this identity.
     ///
     /// The DID is derived from the public key and has the format `did:key:z6Mk...`.
-    pub fn did(&self) -> &Ed25519Did {
+    pub fn did(&self) -> Did {
         self.operator.did()
     }
 

@@ -2,20 +2,20 @@
 //!
 //! An `Operator` represents a principal that can sign UCAN delegations and
 //! dialog-db operations. It wraps an Ed25519 signing key and provides
-//! conversions to both `Ed25519Signer` (for UCAN) and dialog-db `SigningAuthority`.
+//! conversions to both `Ed25519Signer` (for UCAN) and dialog-db `Credentials`.
 
-use dialog_artifacts::replica::SigningAuthority;
+use dialog_artifacts::repository::Credentials;
+use dialog_credentials::{Ed25519Signer, Ed25519SigningKey};
+use dialog_varsig::{Did, Principal};
 use ed25519_dalek::SigningKey;
 use rand_0_8::rngs::OsRng;
-use ucan::did::{Ed25519Did, Ed25519Signer};
-use varsig::signature::eddsa::Ed25519SigningKey;
 
 /// An operator identity that can sign UCAN delegations and dialog-db operations.
 ///
 /// This is the primary identity type for tonk-space. It wraps an Ed25519 signing
 /// key and can be converted to:
 /// - `Ed25519Signer` for signing UCAN delegations
-/// - `SigningAuthority` for signing dialog-db replica operations
+/// - `Credentials` for signing dialog-db repository operations
 #[derive(Debug, Clone)]
 pub struct Operator(Ed25519Signer);
 
@@ -38,8 +38,8 @@ impl Operator {
     }
 
     /// Get the DID for this operator.
-    pub fn did(&self) -> &Ed25519Did {
-        self.0.did()
+    pub fn did(&self) -> Did {
+        Principal::did(&self.0)
     }
 
     /// Get the underlying signing key (native platforms only).
@@ -47,7 +47,7 @@ impl Operator {
     /// On native, this extracts the `ed25519_dalek::SigningKey` from the
     /// platform-abstracted `Ed25519SigningKey` enum.
     pub fn signer(&self) -> &SigningKey {
-        match self.0.signer() {
+        match self.0.signing_key() {
             Ed25519SigningKey::Native(key) => key,
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             Ed25519SigningKey::WebCrypto(_) => {
@@ -87,15 +87,15 @@ impl From<&Operator> for Ed25519Signer {
     }
 }
 
-impl From<Operator> for SigningAuthority {
+impl From<Operator> for Credentials {
     fn from(operator: Operator) -> Self {
-        SigningAuthority::from_secret(&operator.to_secret())
+        Credentials::from(Ed25519Signer::from(operator))
     }
 }
 
-impl From<&Operator> for SigningAuthority {
+impl From<&Operator> for Credentials {
     fn from(operator: &Operator) -> Self {
-        SigningAuthority::from_secret(&operator.to_secret())
+        Credentials::from(Ed25519Signer::from(operator))
     }
 }
 
@@ -170,14 +170,14 @@ mod tests {
         let operator = Operator::generate();
         let did_before = operator.did().to_string();
         let signer: Ed25519Signer = operator.into();
-        assert_eq!(signer.did().to_string(), did_before);
+        assert_eq!(Principal::did(&signer).to_string(), did_before);
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn it_converts_to_signing_authority() {
+    fn it_converts_to_credentials() {
         let operator = Operator::generate();
-        let _authority: SigningAuthority = (&operator).into();
+        let _credentials: Credentials = (&operator).into();
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]

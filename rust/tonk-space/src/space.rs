@@ -1,7 +1,9 @@
 use crate::delegation::Delegation;
 use crate::operator::Operator;
 use crate::ownership::Ownership;
-use dialog_artifacts::replica::{Branch, BranchId, RemoteSite, Remotes, Replica, SigningAuthority};
+use dialog_artifacts::repository::{
+    Branch, BranchId, Credentials, RemoteSite, Remotes, Repository,
+};
 use dialog_artifacts::selector::Constrained;
 use dialog_artifacts::{
     Artifact, ArtifactSelector, ArtifactStore, DialogArtifactsError, PlatformBackend,
@@ -10,13 +12,14 @@ use dialog_query::claim::{Transaction, TransactionError};
 use dialog_query::query::Source;
 use dialog_query::{Concept, DeductiveRule, Entity, Session};
 use dialog_storage::StorageBackend;
+use dialog_varsig::Did;
 use futures_core::Stream;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
 // Re-export types for CLI use
-pub use dialog_artifacts::replica::{RemoteState, Revision, UpstreamState};
+pub use dialog_artifacts::repository::{RemoteState, Revision, UpstreamState};
 pub use dialog_storage::MemoryStorageBackend;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,8 +38,8 @@ pub enum SpaceError {
     #[error("Storage error: {0}")]
     Storage(#[from] dialog_storage::DialogStorageError),
 
-    #[error("Replica error: {0}")]
-    Replica(#[from] dialog_artifacts::replica::ReplicaError),
+    #[error("Repository error: {0}")]
+    Repository(#[from] dialog_artifacts::repository::RepositoryError),
 
     #[error("Artifacts error: {0}")]
     Artifacts(#[from] dialog_artifacts::DialogArtifactsError),
@@ -55,6 +58,9 @@ pub enum SpaceError {
 
     #[error("Invalid attribute: {0}")]
     InvalidAttribute(String),
+
+    #[error("Invalid DID: {0}")]
+    InvalidDid(String),
 }
 
 impl From<dialog_query::QueryError> for SpaceError {
@@ -80,8 +86,8 @@ pub struct DelegationsByAudience {
 pub struct Space<Backend: PlatformBackend + 'static> {
     /// The DID of this space
     pub did: String,
-    /// The replica for managing remotes
-    replica: Arc<RwLock<Replica<Backend>>>,
+    /// The repository for managing remotes
+    repository: Arc<RwLock<Repository<Backend>>>,
     /// The branch for this space
     branch: Arc<RwLock<Branch<Backend>>>,
     /// The session for querying and committing facts
@@ -98,20 +104,23 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     /// * `delegations` - List of delegations to store in the space as ownership claims
     ///
     /// # Returns
-    /// A new Space instance with the replica, branch, and delegations set up
+    /// A new Space instance with the repository, branch, and delegations set up
     pub async fn create(
         space_did: String,
         operator: &Operator,
         backend: Backend,
         delegations: Vec<Delegation>,
     ) -> Result<Self, SpaceError> {
-        // Open the replica with the operator and space DID as subject
-        let authority = SigningAuthority::from(operator);
-        let replica = Replica::open(authority, space_did.clone().into(), backend)?;
+        // Open the repository with the operator and space DID as subject
+        let credentials = Credentials::from(operator);
+        let subject: Did = space_did
+            .parse()
+            .map_err(|e| SpaceError::InvalidDid(format!("{}", e)))?;
+        let repository = Repository::open(credentials, subject, backend)?;
 
         // Create/open the "main" branch for this space
         let branch_id = BranchId::new("main".to_string());
-        let branch = replica.branches.open(&branch_id).await?;
+        let branch = repository.branches.open(&branch_id).await?;
 
         // Create session for the branch (clone branch since Session takes ownership)
         let mut session = Session::open(branch.clone());
@@ -131,7 +140,7 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         }
         Ok(Space {
             did: space_did,
-            replica: Arc::new(RwLock::new(replica)),
+            repository: Arc::new(RwLock::new(repository)),
             branch: Arc::new(RwLock::new(branch)),
             session,
         })
@@ -151,20 +160,23 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         operator: &Operator,
         backend: Backend,
     ) -> Result<Self, SpaceError> {
-        // Open the replica with the operator and space DID as subject
-        let authority = SigningAuthority::from(operator);
-        let replica = Replica::open(authority, space_did.clone().into(), backend)?;
+        // Open the repository with the operator and space DID as subject
+        let credentials = Credentials::from(operator);
+        let subject: Did = space_did
+            .parse()
+            .map_err(|e| SpaceError::InvalidDid(format!("{}", e)))?;
+        let repository = Repository::open(credentials, subject, backend)?;
 
         // Open the "main" branch (creates it if it doesn't exist)
         let branch_id = BranchId::new("main".to_string());
-        let branch = replica.branches.open(&branch_id).await?;
+        let branch = repository.branches.open(&branch_id).await?;
 
         // Create session for the branch (clone branch since Session takes ownership)
         let session = Session::open(branch.clone());
 
         Ok(Space {
             did: space_did,
-            replica: Arc::new(RwLock::new(replica)),
+            repository: Arc::new(RwLock::new(repository)),
             branch: Arc::new(RwLock::new(branch)),
             session,
         })
@@ -211,8 +223,8 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     /// # Returns
     /// The site name of the added remote.
     pub async fn add_remote(&mut self, remote_state: RemoteState) -> Result<String, SpaceError> {
-        let mut replica = self.replica.write().await;
-        let site = replica.add_remote(remote_state).await?;
+        let mut repository = self.repository.write().await;
+        let site = repository.add_remote(remote_state).await?;
         Ok(site)
     }
 
@@ -226,14 +238,18 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     pub async fn set_upstream(&mut self, site: &str) -> Result<(), SpaceError> {
         // Load the remote site and get a reference to the remote branch
         let upstream = {
-            let replica = self.replica.read().await;
+            let repository = self.repository.read().await;
             let remote_site = RemoteSite::load(
                 &site.to_string(),
-                replica.issuer().clone(),
-                replica.storage().clone(),
+                repository.issuer().clone(),
+                repository.storage().clone(),
             )
             .await?;
-            remote_site.repository(self.did.clone()).branch("main")
+            let subject: Did = self
+                .did
+                .parse()
+                .map_err(|e| SpaceError::InvalidDid(format!("{}", e)))?;
+            remote_site.repository(subject).branch("main")
         };
 
         // Set the remote branch as upstream for our local branch
@@ -311,13 +327,13 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     /// # Returns
     /// Site info if the site exists, including credentials details.
     pub async fn resolve_site(&self, site: &str) -> Result<SiteInfo, SpaceError> {
-        let replica = self.replica.read().await;
+        let repository = self.repository.read().await;
 
         // Attempt to load the remote site - this will fail if it doesn't exist
         let remote_site = RemoteSite::load(
             &site.to_string(),
-            replica.issuer().clone(),
-            replica.storage().clone(),
+            repository.issuer().clone(),
+            repository.storage().clone(),
         )
         .await?;
 
@@ -340,9 +356,9 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
     /// # Returns
     /// Branch info including revision and upstream state.
     pub async fn branch_info(&self, branch_name: &str) -> Result<BranchInfo, SpaceError> {
-        let replica = self.replica.read().await;
+        let repository = self.repository.read().await;
         let branch_id = BranchId::new(branch_name.to_string());
-        let branch = replica.branches.open(&branch_id).await?;
+        let branch = repository.branches.open(&branch_id).await?;
 
         let revision = branch.revision();
         let base = format!("{}", branch.base());
@@ -380,20 +396,21 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         repo_did: &str,
         branch_name: &str,
     ) -> Result<RemoteBranchInfo, SpaceError> {
-        let replica = self.replica.read().await;
+        let repository = self.repository.read().await;
 
         // Load the remote site
         let remote_site = RemoteSite::load(
             &site.to_string(),
-            replica.issuer().clone(),
-            replica.storage().clone(),
+            repository.issuer().clone(),
+            repository.storage().clone(),
         )
         .await?;
 
         // Get the remote branch reference
-        let mut remote_branch = remote_site
-            .repository(repo_did.to_string())
-            .branch(branch_name);
+        let subject: Did = repo_did
+            .parse()
+            .map_err(|e| SpaceError::InvalidDid(format!("{}", e)))?;
+        let mut remote_branch = remote_site.repository(subject).branch(branch_name);
 
         // Open the connection and resolve the remote branch
         let connection = remote_branch.open().await?;
@@ -457,19 +474,22 @@ impl<Backend: PlatformBackend + 'static> Space<Backend> {
         repo_did: &str,
         hash: &[u8; 32],
     ) -> Result<Option<Vec<u8>>, SpaceError> {
-        let replica = self.replica.read().await;
+        let repository = self.repository.read().await;
 
         // Load the remote site
         let remote_site = RemoteSite::load(
             &site.to_string(),
-            replica.issuer().clone(),
-            replica.storage().clone(),
+            repository.issuer().clone(),
+            repository.storage().clone(),
         )
         .await?;
 
         // Get a reference to a branch (we need to open a connection)
         // Using "main" as default branch to establish the connection
-        let mut remote_branch = remote_site.repository(repo_did.to_string()).branch("main");
+        let subject: Did = repo_did
+            .parse()
+            .map_err(|e| SpaceError::InvalidDid(format!("{}", e)))?;
+        let mut remote_branch = remote_site.repository(subject).branch("main");
 
         // Open the connection and get the archive
         let connection = remote_branch.open().await?;
@@ -532,9 +552,9 @@ pub enum CredentialsInfo {
 
 impl CredentialsInfo {
     /// Create credentials info from dialog-artifacts RemoteCredentials
-    pub fn from_credentials(credentials: &dialog_artifacts::replica::RemoteCredentials) -> Self {
+    pub fn from_credentials(credentials: &dialog_artifacts::repository::RemoteCredentials) -> Self {
         match credentials {
-            dialog_artifacts::replica::RemoteCredentials::S3(s3_creds) => {
+            dialog_artifacts::repository::RemoteCredentials::S3(s3_creds) => {
                 let is_private =
                     matches!(s3_creds, dialog_s3_credentials::s3::Credentials::Private(_));
                 CredentialsInfo::S3 {
@@ -543,7 +563,7 @@ impl CredentialsInfo {
                     is_private,
                 }
             }
-            dialog_artifacts::replica::RemoteCredentials::Ucan(ucan_creds) => {
+            dialog_artifacts::repository::RemoteCredentials::Ucan(ucan_creds) => {
                 let delegation = ucan_creds.delegation();
 
                 CredentialsInfo::Ucan {
@@ -553,7 +573,7 @@ impl CredentialsInfo {
                     command: Some(delegation.ability()),
                 }
             }
-            dialog_artifacts::replica::RemoteCredentials::Memory => {
+            dialog_artifacts::repository::RemoteCredentials::Memory => {
                 // Memory credentials don't have meaningful info to display
                 CredentialsInfo::S3 {
                     region: "memory".to_string(),
@@ -611,11 +631,11 @@ impl<Backend: PlatformBackend + 'static> Source for Space<Backend> {
 mod tests {
     use super::*;
     use crate::schema;
+    use dialog_credentials::Ed25519Signer;
     use dialog_query::concept::Match as _;
     use dialog_query::{Concept, Entity, Match, Term, With};
+    use dialog_ucan::subject::Subject;
     use futures_util::TryStreamExt;
-    use ucan::delegation::subject::DelegatedSubject;
-    use ucan::did::Ed25519Signer;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test;
@@ -639,8 +659,8 @@ mod tests {
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = Delegation::builder()
             .issuer(signer)
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .audience(&audience.did())
+            .subject(Subject::Specific(subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
             .try_build()
             .await
@@ -657,8 +677,8 @@ mod tests {
         let signer = Ed25519Signer::from(issuer);
         let ucan_delegation = Delegation::builder()
             .issuer(signer)
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .audience(&audience.did())
+            .subject(Subject::Specific(subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
             .try_build()
             .await

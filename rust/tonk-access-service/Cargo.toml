@@ -35,8 +35,9 @@ worker-macros = { workspace = true }
 dialog-s3-credentials = { workspace = true, features = ["ucan"] }
 
 # UCAN
-ucan = { workspace = true }
-varsig = { workspace = true }
+dialog-ucan = { workspace = true }
+dialog-varsig = { workspace = true }
+dialog-credentials = { workspace = true }
 
 # Cryptography
 ed25519-dalek = { workspace = true }
@@ -67,7 +68,7 @@ dialog-common = { workspace = true, optional = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true, features = ["s3", "ucan", "helpers"] }
 dialog-s3-credentials = { workspace = true, features = ["ucan", "helpers"] }
-ucan = { workspace = true }
+dialog-ucan = { workspace = true }
 anyhow = { workspace = true }
 
 [lints.rust]

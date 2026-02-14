@@ -5,14 +5,14 @@
 
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::replica::RemoteCredentials;
+use dialog_artifacts::repository::RemoteCredentials;
 use dialog_s3_credentials::ucan::{Credentials as UcanCredentials, DelegationChain};
+use dialog_ucan::subject::Subject;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_space::{RemoteState, SpaceError};
-use ucan::delegation::subject::DelegatedSubject;
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -97,8 +97,8 @@ pub async fn authorize(
     let delegation = user_delegations
         .into_iter()
         .find(|d| match d.subject() {
-            DelegatedSubject::Specific(did) => did.to_string() == space_did,
-            DelegatedSubject::Any => true, // Powerline delegations apply to any subject
+            Subject::Specific(did) => did.to_string() == space_did,
+            Subject::Any => true, // Powerline delegations apply to any subject
         })
         .ok_or_else(|| {
             TonkWorkerError::Internal(format!("No delegation found for space {}", space_did))
@@ -126,7 +126,9 @@ pub async fn authorize(
         Ok(site) => {
             log!("Remote '{}' added successfully", site);
         }
-        Err(SpaceError::Replica(ref e)) if format!("{:?}", e).contains("RemoteAlreadyExists") => {
+        Err(SpaceError::Repository(ref e))
+            if format!("{:?}", e).contains("RemoteAlreadyExists") =>
+        {
             log!("Remote 'origin' already configured, skipping add");
         }
         Err(e) => {

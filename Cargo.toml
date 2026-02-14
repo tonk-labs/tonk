@@ -99,16 +99,15 @@ js-sys = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git",  branch = "tonk" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk" }
-dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "tonk", features = ["ucan"] }
-
-# UCAN
-ucan = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "main", package = "ucan" }
-varsig = { git = "https://github.com/tonk-labs/rs-ucan.git", branch = "main", package = "varsig" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
+dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14", features = ["ucan"] }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
 
 [profile.dev]
 opt-level = 1

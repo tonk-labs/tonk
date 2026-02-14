@@ -56,8 +56,9 @@ axum = { workspace = true, features = ["tokio", "form", "http1"] }
 tower = { workspace = true }
 
 # UCAN
-ucan = { workspace = true }
-varsig = { workspace = true }
+dialog-ucan = { workspace = true }
+dialog-varsig = { workspace = true }
+dialog-credentials = { workspace = true }
 
 # Utilities
 anyhow = { workspace = true }

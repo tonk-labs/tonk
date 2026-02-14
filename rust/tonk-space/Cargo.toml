@@ -35,10 +35,9 @@ dialog-artifacts = { workspace = true, features = ["ucan"] }
 dialog-common = { workspace = true }
 dialog-s3-credentials = { workspace = true }
 dialog-capability = { workspace = true }
-
-# UCAN
-ucan = { workspace = true }
-varsig = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-ucan = { workspace = true }
+dialog-varsig = { workspace = true }
 ipld-core = { workspace = true }
 
 # Serialization

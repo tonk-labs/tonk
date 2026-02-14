@@ -3,7 +3,7 @@ use crate::crypto::Operator;
 use crate::keystore::Keystore;
 use crate::state;
 use anyhow::{Context, Result};
-use dialog_artifacts::replica::{BranchId, Replica, SigningAuthority};
+use dialog_artifacts::repository::{BranchId, Credentials, Repository};
 use dialog_query::claim::{Attribute, Claim, Relation};
 use dialog_query::{Entity, Session, Value};
 use ed25519_dalek::Signer;
@@ -108,8 +108,11 @@ pub async fn assert(the: String, of: String, is: String) -> Result<()> {
     // Get storage path and create session
     let (storage_path, space_did) = get_active_space_storage_path()?;
     let backend = FsBackend::new(&storage_path).await?;
-    let authority = SigningAuthority::from(&operator);
-    let replica = Replica::open(authority, space_did.into(), backend)?;
+    let credentials = Credentials::from(&operator);
+    let space_did_parsed: dialog_varsig::Did = space_did
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
+    let replica = Repository::open(credentials, space_did_parsed, backend)?;
 
     let branch_id = BranchId::new("main".to_string());
     let branch = replica.branches.open(&branch_id).await?;
@@ -150,8 +153,11 @@ pub async fn retract(the: String, of: String, is: String) -> Result<()> {
     // Get storage path and create session
     let (storage_path, space_did) = get_active_space_storage_path()?;
     let backend = FsBackend::new(&storage_path).await?;
-    let authority = SigningAuthority::from(&operator);
-    let replica = Replica::open(authority, space_did.into(), backend)?;
+    let credentials = Credentials::from(&operator);
+    let space_did_parsed: dialog_varsig::Did = space_did
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
+    let replica = Repository::open(credentials, space_did_parsed, backend)?;
 
     let branch_id = BranchId::new("main".to_string());
     let branch = replica.branches.open(&branch_id).await?;
@@ -245,8 +251,11 @@ pub async fn find(
     // Get storage path and create session
     let (storage_path, space_did) = get_active_space_storage_path()?;
     let backend = FsBackend::new(&storage_path).await?;
-    let authority = SigningAuthority::from(&operator);
-    let replica = Replica::open(authority, space_did.into(), backend)?;
+    let credentials = Credentials::from(&operator);
+    let space_did_parsed: dialog_varsig::Did = space_did
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
+    let replica = Repository::open(credentials, space_did_parsed, backend)?;
 
     let branch_id = BranchId::new("main".to_string());
     let branch = replica.branches.open(&branch_id).await?;
@@ -341,21 +350,14 @@ fn format_bytes(bytes: &[u8], format: ByteFormat) -> String {
             match crate::delegation::Delegation::from_cbor_bytes(bytes) {
                 Ok(delegation) => {
                     let subject = match delegation.subject() {
-                        ucan::delegation::subject::DelegatedSubject::Specific(did) => {
-                            did.to_string()
-                        }
-                        ucan::delegation::subject::DelegatedSubject::Any => "*".to_string(),
+                        dialog_ucan::subject::Subject::Specific(did) => did.to_string(),
+                        dialog_ucan::subject::Subject::Any => "*".to_string(),
                     };
                     let exp = delegation
                         .expiration()
                         .map(|e| e.to_string())
                         .unwrap_or_else(|| "never".to_string());
-                    let cmd = delegation.command().join("/");
-                    let cmd_display = if cmd.is_empty() {
-                        "/".to_string()
-                    } else {
-                        format!("/{}", cmd)
-                    };
+                    let cmd_display = delegation.command_str();
                     format!(
                         "UCAN {{\n  iss: {},\n  aud: {},\n  sub: {},\n  cmd: {},\n  exp: {}\n}}",
                         delegation.issuer(),

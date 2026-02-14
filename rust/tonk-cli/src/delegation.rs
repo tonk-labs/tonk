@@ -2,6 +2,12 @@ use crate::crypto::Operator;
 use anyhow::Result;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
+use dialog_credentials::Ed25519Signer;
+use dialog_ucan::Delegation as UcanDelegation;
+use dialog_ucan::subject::Subject;
+use dialog_ucan::time::Timestamp;
+use dialog_varsig::Did;
+use dialog_varsig::eddsa::Ed25519Signature;
 use serde::{Deserialize, Serialize};
 use serde_ipld_dagcbor::EncodeError;
 use sha2_0_10::{Digest, Sha256};
@@ -9,9 +15,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::{collections::TryReserveError, convert::Infallible};
 use thiserror::Error;
-use ucan::did::{Ed25519Did, Ed25519Signer};
-use ucan::time::timestamp::Timestamp;
-use ucan::{Delegation as UcanDelegation, delegation::subject::DelegatedSubject};
 
 #[derive(Error, Debug)]
 pub enum DelegationError {
@@ -62,22 +65,22 @@ pub struct DelegationMetadata {
 
 /// Wrapper around ucan::Delegation with storage and validation methods
 #[derive(Debug, Clone)]
-pub struct Delegation(UcanDelegation<Ed25519Did>);
+pub struct Delegation(UcanDelegation<Ed25519Signature>);
 
 impl Delegation {
     /// Create from a UCAN delegation
-    pub fn from_ucan(delegation: UcanDelegation<Ed25519Did>) -> Self {
+    pub fn from_ucan(delegation: UcanDelegation<Ed25519Signature>) -> Self {
         Self(delegation)
     }
 
     /// Get the inner UCAN delegation
-    pub fn inner(&self) -> &UcanDelegation<Ed25519Did> {
+    pub fn inner(&self) -> &UcanDelegation<Ed25519Signature> {
         &self.0
     }
 
     /// Deserialize from DAG-CBOR bytes
     pub fn from_cbor_bytes(bytes: &[u8]) -> Result<Self, DelegationError> {
-        let delegation: UcanDelegation<Ed25519Did> = serde_ipld_dagcbor::from_slice(bytes)?;
+        let delegation: UcanDelegation<Ed25519Signature> = serde_ipld_dagcbor::from_slice(bytes)?;
         Ok(Self(delegation))
     }
 
@@ -90,25 +93,9 @@ impl Delegation {
 
     /// Check if the delegation is still valid (not expired and notBefore passed)
     pub fn is_valid(&self) -> bool {
-        let now = chrono::Utc::now().timestamp() as u64;
-
-        // Check expiration
-        if let Some(exp) = self.0.expiration() {
-            let exp_secs = exp.to_unix();
-            if exp_secs <= now {
-                return false;
-            }
-        }
-
-        // Check notBefore
-        if let Some(nbf) = self.0.not_before() {
-            let nbf_secs = nbf.to_unix();
-            if nbf_secs > now {
-                return false;
-            }
-        }
-
-        true
+        let now = Timestamp::now();
+        self.0.expiration().is_none_or(|exp| exp > now)
+            && self.0.not_before().is_none_or(|nbf| nbf <= now)
     }
 
     /// Get the audience (operator DID)
@@ -122,28 +109,23 @@ impl Delegation {
     }
 
     /// Get the subject
-    pub fn subject(&self) -> &DelegatedSubject<Ed25519Did> {
+    pub fn subject(&self) -> &Subject {
         self.0.subject()
     }
 
     /// Check if this is a powerline delegation (subject is *)
     pub fn is_powerline(&self) -> bool {
-        matches!(self.0.subject(), DelegatedSubject::Any)
+        matches!(self.0.subject(), Subject::Any)
     }
 
     /// Get the command as a slash-separated string
     pub fn command_str(&self) -> String {
-        self.command().join("/")
-    }
-
-    /// Get the commands
-    pub fn command(&self) -> &Vec<String> {
-        self.0.command().segments()
+        self.0.command().to_string()
     }
 
     /// Get expiration timestamp (Unix epoch seconds)
     pub fn expiration(&self) -> Option<i64> {
-        self.0.expiration().map(|ts: Timestamp| ts.to_unix() as i64)
+        self.0.expiration().map(|ts| ts.to_unix() as i64)
     }
 
     /// Calculate hash of the delegation (for storage path)
@@ -169,11 +151,11 @@ impl Delegation {
         let access_dir = home.join(".tonk").join("access").join(&audience);
 
         let sub_dir = match self.subject() {
-            DelegatedSubject::Specific(did) => {
+            Subject::Specific(did) => {
                 // Specific subject
                 access_dir.join(did.to_string())
             }
-            DelegatedSubject::Any => {
+            Subject::Any => {
                 // Powerline delegation - use issuer as directory name
                 access_dir.join(self.issuer())
             }
@@ -352,24 +334,24 @@ pub fn keypair_to_signer(operator: &Operator) -> Ed25519Signer {
     Ed25519Signer::from(operator)
 }
 
-/// Convert an Operator to an Ed25519Did (for audience/subject)
-pub fn keypair_to_did(operator: &Operator) -> Ed25519Did {
-    operator.did().clone()
+/// Convert an Operator to a Did (for audience/subject)
+pub fn keypair_to_did(operator: &Operator) -> Did {
+    operator.did()
 }
 
 /// Create an ownership delegation (full access to a space)
 /// This is used when creating a space: Space DID -> Profile DID
 pub async fn create_ownership_delegation(
     issuer: &Operator,
-    audience_did: Ed25519Did,
-    subject_did: Ed25519Did,
-) -> Result<UcanDelegation<Ed25519Did>, DelegationError> {
+    audience_did: &Did,
+    subject_did: Did,
+) -> Result<UcanDelegation<Ed25519Signature>, DelegationError> {
     let signer = Ed25519Signer::from(issuer);
 
     UcanDelegation::builder()
         .issuer(signer)
         .audience(audience_did)
-        .subject(DelegatedSubject::Specific(subject_did))
+        .subject(Subject::Specific(subject_did))
         .command(vec!["read".to_string(), "write".to_string()])
         .try_build()
         .await
@@ -380,17 +362,17 @@ pub async fn create_ownership_delegation(
 /// Commands: "read", "write", or both
 pub async fn create_capability_delegation(
     issuer: &Operator,
-    audience_did: Ed25519Did,
-    subject_did: Ed25519Did,
+    audience_did: &Did,
+    subject_did: Did,
     capabilities: &[&str],
-) -> Result<UcanDelegation<Ed25519Did>, DelegationError> {
+) -> Result<UcanDelegation<Ed25519Signature>, DelegationError> {
     let signer = Ed25519Signer::from(issuer);
     let command: Vec<String> = capabilities.iter().map(|s| s.to_string()).collect();
 
     UcanDelegation::builder()
         .issuer(signer)
         .audience(audience_did)
-        .subject(DelegatedSubject::Specific(subject_did))
+        .subject(Subject::Specific(subject_did))
         .command(command)
         .try_build()
         .await
@@ -400,18 +382,18 @@ pub async fn create_capability_delegation(
 /// Create a read-only delegation
 pub async fn create_read_delegation(
     issuer: &Operator,
-    audience_did: Ed25519Did,
-    subject_did: Ed25519Did,
-) -> Result<UcanDelegation<Ed25519Did>, DelegationError> {
+    audience_did: &Did,
+    subject_did: Did,
+) -> Result<UcanDelegation<Ed25519Signature>, DelegationError> {
     create_capability_delegation(issuer, audience_did, subject_did, &["read"]).await
 }
 
 /// Create a read-write delegation
 pub async fn create_read_write_delegation(
     issuer: &Operator,
-    audience_did: Ed25519Did,
-    subject_did: Ed25519Did,
-) -> Result<UcanDelegation<Ed25519Did>, DelegationError> {
+    audience_did: &Did,
+    subject_did: Did,
+) -> Result<UcanDelegation<Ed25519Signature>, DelegationError> {
     create_capability_delegation(issuer, audience_did, subject_did, &["read", "write"]).await
 }
 
@@ -430,7 +412,7 @@ impl<'de> Deserialize<'de> for Delegation {
     where
         D: serde::Deserializer<'de>,
     {
-        let delegation = UcanDelegation::<Ed25519Did>::deserialize(deserializer)?;
+        let delegation = UcanDelegation::<Ed25519Signature>::deserialize(deserializer)?;
         Ok(Self(delegation))
     }
 }
@@ -476,10 +458,10 @@ pub fn inspect(input: String) -> Result<()> {
             println!("   Command:  {}", delegation.command_str());
 
             match delegation.subject() {
-                DelegatedSubject::Any => {
+                Subject::Any => {
                     println!("   Subject:  * (powerline - any subject)");
                 }
-                DelegatedSubject::Specific(did) => {
+                Subject::Specific(did) => {
                     println!("   Subject:  {}", did);
                 }
             }
@@ -589,13 +571,13 @@ mod tests {
         let audience = crate::crypto::Operator::generate();
 
         let signer = Ed25519Signer::from(&issuer);
-        let audience_did = audience.did().clone();
-        let subject_did = issuer.did().clone();
+        let audience_did = audience.did();
+        let subject_did = issuer.did();
 
-        let delegation: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
+        let delegation: UcanDelegation<Ed25519Signature> = UcanDelegation::builder()
             .issuer(signer)
-            .audience(audience_did)
-            .subject(DelegatedSubject::Specific(subject_did))
+            .audience(&audience_did)
+            .subject(Subject::Specific(subject_did))
             .command(vec![]) // Empty = root access "/"
             .try_build()
             .await
