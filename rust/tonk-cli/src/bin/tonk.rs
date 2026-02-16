@@ -71,7 +71,7 @@ mod inner {
             force: bool,
         },
 
-        /// Create a new instance of a concept
+        /// Create a new entity
         Create {
             /// Concept name (e.g., "Task")
             concept: String,
@@ -89,7 +89,7 @@ mod inner {
             stdin: bool,
         },
 
-        /// Query instances of a concept with optional selectors
+        /// Query entities with optional selectors
         Query {
             /// Concept name (e.g., "Task")
             concept: String,
@@ -99,15 +99,15 @@ mod inner {
             selectors: Vec<String>,
         },
 
-        /// Show details of an instance by ID
+        /// Show details of an entity by ID
         Show {
-            /// Instance ID (did:key:...)
+            /// Entity ID (did:key:...)
             id: String,
         },
 
-        /// Update an existing instance
-        Update {
-            /// Instance ID (did:key:...)
+        /// Assert new attributes on an entity
+        Assert {
+            /// Entity ID (did:key:...)
             id: String,
 
             /// Field values to update as key=value pairs
@@ -115,13 +115,13 @@ mod inner {
             fields: Vec<String>,
         },
 
-        /// Delete an instance by ID
-        Delete {
-            /// Instance ID (did:key:...)
+        /// Retract all known attributes of the entity
+        Retract {
+            /// Entity ID (did:key:...)
             id: String,
         },
 
-        /// Batch operations on instances (create, update, delete multiple at once)
+        /// Batch operations on entities (create, update, delete multiple at once)
         Batch {
             #[command(subcommand)]
             command: BatchCommands,
@@ -278,7 +278,7 @@ mod inner {
             /// Concept name
             name: String,
 
-            /// Also delete all instances of this concept
+            /// Also delete all entities of this concept
             #[arg(short, long)]
             force: bool,
         },
@@ -442,21 +442,21 @@ mod inner {
 
     #[derive(Subcommand)]
     pub enum BatchCommands {
-        /// Create multiple instances of a concept from a JSON array
+        /// Create multiple entities of a concept from a JSON array
         Create {
             /// Concept name (e.g., "Task")
             concept: String,
 
-            /// Read instance data from a JSON file (array of objects)
+            /// Read entity data from a JSON file (array of objects)
             #[arg(long, short)]
             file: Option<String>,
 
-            /// Read instance data from stdin as JSON array
+            /// Read entity data from stdin as JSON array
             #[arg(long)]
             stdin: bool,
         },
 
-        /// Update multiple instances from a JSON array (each object must include "id")
+        /// Update multiple entities from a JSON array (each object must include "id")
         Update {
             /// Concept name (e.g., "Task")
             concept: String,
@@ -470,16 +470,16 @@ mod inner {
             stdin: bool,
         },
 
-        /// Delete multiple instances from a JSON array of IDs
+        /// Delete multiple entities from a JSON array of IDs
         Delete {
             /// Concept name (e.g., "Task")
             concept: String,
 
-            /// Read instance IDs from a JSON file (array of ID strings)
+            /// Read entity IDs from a JSON file (array of ID strings)
             #[arg(long, short)]
             file: Option<String>,
 
-            /// Read instance IDs from stdin as JSON array
+            /// Read entity IDs from stdin as JSON array
             #[arg(long)]
             stdin: bool,
         },
@@ -652,19 +652,19 @@ async fn main() -> anyhow::Result<()> {
             file,
             stdin,
         } => {
-            tonk_cli::instance::create(concept, fields, file, stdin, json).await?;
+            tonk_cli::entity::create(concept, fields, file, stdin, json).await?;
         }
         Commands::Query { concept, selectors } => {
-            tonk_cli::instance::query(concept, selectors, json).await?;
+            tonk_cli::entity::query(concept, selectors, json).await?;
         }
         Commands::Show { id } => {
-            tonk_cli::instance::show(id, json).await?;
+            tonk_cli::entity::show(id, json).await?;
         }
-        Commands::Update { id, fields } => {
-            tonk_cli::instance::update(id, fields, json).await?;
+        Commands::Assert { id, fields } => {
+            tonk_cli::entity::assert(id, fields, json).await?;
         }
-        Commands::Delete { id } => {
-            tonk_cli::instance::delete(id, json).await?;
+        Commands::Retract { id } => {
+            tonk_cli::entity::retract(id, json).await?;
         }
         Commands::Batch { command } => match command {
             BatchCommands::Create {

@@ -1,7 +1,7 @@
 //! Concept management: define, list, show, extend, and delete concepts.
 //!
 //! A concept is a named schema stored as EAV triples in dialog-db. Each concept
-//! defines a set of attributes (with an auto-prefixed namespace) that instances
+//! defines a set of attributes (with an auto-prefixed namespace) that entities
 //! conform to.
 //!
 //! The concept registry is a well-known entity per space that indexes all
@@ -44,17 +44,17 @@ pub async fn list(json: bool) -> Result<()> {
                 entity
             ))?;
         let description = fetch_string(&branch, entity, ATTR_CONCEPT_DESCRIPTION).await?;
-        let instances = fetch_entity_values(&branch, entity, ATTR_CONCEPT_INSTANCE).await?;
-        concepts.push((name, description, instances.len()));
+        let entities = fetch_entity_values(&branch, entity, ATTR_CONCEPT_ENTITY).await?;
+        concepts.push((name, description, entities.len()));
     }
 
     if json {
         let items: Vec<serde_json::Value> = concepts
             .iter()
-            .map(|(name, desc, instance_count)| {
+            .map(|(name, desc, entity_count)| {
                 let mut obj = serde_json::json!({
                     "name": name,
-                    "instances": instance_count,
+                    "entities": entity_count,
                 });
                 if let Some(d) = desc {
                     obj.as_object_mut()
@@ -67,12 +67,12 @@ pub async fn list(json: bool) -> Result<()> {
         println!("{}", serde_json::to_string(&items)?);
     } else {
         println!("Concepts:\n");
-        for (name, desc, instance_count) in &concepts {
+        for (name, desc, entity_count) in &concepts {
             let desc_str = desc
                 .as_ref()
                 .map(|d| format!(" - {}", d))
                 .unwrap_or_default();
-            println!("  {}{} ({} instances)", name, desc_str, instance_count);
+            println!("  {}{} ({} entities)", name, desc_str, entity_count);
         }
     }
 
@@ -216,13 +216,13 @@ pub async fn show(name: String, json: bool) -> Result<()> {
 
     let description = fetch_string(&branch, &concept, ATTR_CONCEPT_DESCRIPTION).await?;
     let attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
-    let instances = fetch_entity_values(&branch, &concept, ATTR_CONCEPT_INSTANCE).await?;
+    let entities = fetch_entity_values(&branch, &concept, ATTR_CONCEPT_ENTITY).await?;
 
     if json {
         let mut output = serde_json::json!({
             "name": stored_name.as_str(),
             "attributes": attrs,
-            "instance_count": instances.len(),
+            "entity_count": entities.len(),
             "entity": concept.to_string(),
         });
         if let Some(desc) = &description {
@@ -241,7 +241,7 @@ pub async fn show(name: String, json: bool) -> Result<()> {
         for attr in &attrs {
             println!("    {}", short_attribute(&stored_name, attr));
         }
-        println!("  Instances: {}", instances.len());
+        println!("  Entities: {}", entities.len());
         println!("  Entity: {}", concept);
     }
 
@@ -337,7 +337,7 @@ pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result
 // Delete a concept
 // ---------------------------------------------------------------------------
 
-/// Delete a concept and optionally its instances.
+/// Delete a concept and optionally its entities.
 pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
     let ctx = get_space_context()?;
     let mut branch = open_branch(&ctx).await?;
@@ -351,23 +351,23 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
         .await?
         .context(format!("Concept '{}' not found", name))?;
 
-    // Check for instances
-    let instances = fetch_entity_values(&branch, &concept, ATTR_CONCEPT_INSTANCE).await?;
-    let instance_count = instances.len();
+    // Check for entities
+    let entities = fetch_entity_values(&branch, &concept, ATTR_CONCEPT_ENTITY).await?;
+    let entity_count = entities.len();
 
-    if instance_count > 0 && !force {
+    if entity_count > 0 && !force {
         if json {
             let output = serde_json::json!({
                 "ok": false,
-                "error": format!("Concept '{}' has {} instance(s). Use --force to delete.", name, instance_count),
-                "instance_count": instance_count,
+                "error": format!("Concept '{}' has {} entity(ies). Use --force to delete.", name, entity_count),
+                "entity_count": entity_count,
             });
             println!("{}", serde_json::to_string(&output)?);
         }
         anyhow::bail!(
-            "Concept '{}' has {} instance(s). Use --force to delete concept and all instances.",
+            "Concept '{}' has {} entity(ies). Use --force to delete concept and all entities.",
             name,
-            instance_count
+            entity_count
         );
     }
 
@@ -375,45 +375,45 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
 
     let mut instructions = Vec::new();
 
-    // If force-deleting, retract all instance data
+    // If force-deleting, retract all entity data
     if force {
-        for instance_entity in &instances {
-            // Retract each attribute value for this instance
+        for entity in &entities {
+            // Retract each attribute value for this entity
             for attr_name in &attrs {
-                let values = fetch_values(&branch, instance_entity, attr_name).await?;
+                let values = fetch_values(&branch, entity, attr_name).await?;
                 for val in values {
                     instructions.push(Instruction::Retract(Artifact {
                         the: Attribute::from_str(attr_name)?,
-                        of: instance_entity.clone(),
+                        of: entity.clone(),
                         is: val,
                         cause: None,
                     }));
                 }
             }
 
-            // Retract instance/type
+            // Retract entity/type
             instructions.push(Instruction::Retract(Artifact {
-                the: Attribute::from_str(ATTR_INSTANCE_TYPE)?,
-                of: instance_entity.clone(),
+                the: Attribute::from_str(ATTR_ENTITY_TYPE)?,
+                of: entity.clone(),
                 is: Value::Entity(concept.clone()),
                 cause: None,
             }));
 
-            // Retract instance/created
-            if let Some(ts) = fetch_value(&branch, instance_entity, ATTR_INSTANCE_CREATED).await? {
+            // Retract entity/created
+            if let Some(ts) = fetch_value(&branch, entity, ATTR_ENTITY_CREATED).await? {
                 instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_INSTANCE_CREATED)?,
-                    of: instance_entity.clone(),
+                    the: Attribute::from_str(ATTR_ENTITY_CREATED)?,
+                    of: entity.clone(),
                     is: ts,
                     cause: None,
                 }));
             }
 
-            // Retract concept/instance back-reference
+            // Retract concept/entity back-reference
             instructions.push(Instruction::Retract(Artifact {
-                the: Attribute::from_str(ATTR_CONCEPT_INSTANCE)?,
+                the: Attribute::from_str(ATTR_CONCEPT_ENTITY)?,
                 of: concept.clone(),
-                is: Value::Entity(instance_entity.clone()),
+                is: Value::Entity(entity.clone()),
                 cause: None,
             }));
         }
@@ -463,13 +463,13 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
         let output = serde_json::json!({
             "ok": true,
             "deleted": name.as_str(),
-            "instances_deleted": if force { instance_count } else { 0 },
+            "entities_deleted": if force { entity_count } else { 0 },
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
         println!("Deleted concept '{}'", name);
-        if force && instance_count > 0 {
-            println!("  Also deleted {} instance(s)", instance_count);
+        if force && entity_count > 0 {
+            println!("  Also deleted {} entity(ies)", entity_count);
         }
     }
 

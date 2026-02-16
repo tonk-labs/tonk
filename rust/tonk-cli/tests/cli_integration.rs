@@ -578,15 +578,15 @@ async fn test_import_nonexistent_file_errors() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Instance CRUD
+// Entity CRUD
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
 #[serial]
-async fn test_create_instance() {
+async fn test_create_entity() {
     let env = TestEnv::new().await.expect("Failed to create test env");
     let _space = env
-        .create_space("instance-space")
+        .create_space("entity-space")
         .await
         .expect("Failed to create space");
 
@@ -600,8 +600,8 @@ async fn test_create_instance() {
     .await
     .expect("Failed to define concept");
 
-    // Create an instance
-    let result = tonk_cli::instance::create(
+    // Create an entity
+    let result = tonk_cli::entity::create(
         "Task".to_string(),
         vec!["title=Fix bug".to_string(), "status=todo".to_string()],
         None,
@@ -611,14 +611,14 @@ async fn test_create_instance() {
     .await;
     assert!(
         result.is_ok(),
-        "create instance should succeed: {:?}",
+        "create entity should succeed: {:?}",
         result.err()
     );
 }
 
 #[tokio::test]
 #[serial]
-async fn test_query_instances() {
+async fn test_query_entities() {
     let env = TestEnv::new().await.expect("Failed to create test env");
     let _space = env
         .create_space("query-space")
@@ -629,9 +629,9 @@ async fn test_query_instances() {
         .await
         .expect("Failed to define concept");
 
-    // Create 3 instances
+    // Create 3 entities
     for name in &["Apple", "Banana", "Cherry"] {
-        tonk_cli::instance::create(
+        tonk_cli::entity::create(
             "Item".to_string(),
             vec![format!("name={}", name)],
             None,
@@ -639,11 +639,11 @@ async fn test_query_instances() {
             true,
         )
         .await
-        .expect("Failed to create instance");
+        .expect("Failed to create entity");
     }
 
-    // Query all instances
-    let result = tonk_cli::instance::query("Item".to_string(), vec![], true).await;
+    // Query all entities
+    let result = tonk_cli::entity::query("Item".to_string(), vec![], true).await;
     assert!(result.is_ok(), "query should succeed: {:?}", result.err());
 }
 
@@ -666,7 +666,7 @@ async fn test_query_with_filter() {
     .expect("Failed to define concept");
 
     // Create tasks with different statuses
-    tonk_cli::instance::create(
+    tonk_cli::entity::create(
         "Task".to_string(),
         vec!["title=Task A".to_string(), "status=todo".to_string()],
         None,
@@ -676,7 +676,7 @@ async fn test_query_with_filter() {
     .await
     .expect("Failed to create task A");
 
-    tonk_cli::instance::create(
+    tonk_cli::entity::create(
         "Task".to_string(),
         vec!["title=Task B".to_string(), "status=done".to_string()],
         None,
@@ -688,7 +688,7 @@ async fn test_query_with_filter() {
 
     // Query with filter
     let result =
-        tonk_cli::instance::query("Task".to_string(), vec!["status=todo".to_string()], true).await;
+        tonk_cli::entity::query("Task".to_string(), vec!["status=todo".to_string()], true).await;
     assert!(
         result.is_ok(),
         "filtered query should succeed: {:?}",
@@ -698,7 +698,7 @@ async fn test_query_with_filter() {
 
 #[tokio::test]
 #[serial]
-async fn test_update_instance() {
+async fn test_update_entity() {
     let env = TestEnv::new().await.expect("Failed to create test env");
     let _space = env
         .create_space("update-space")
@@ -714,10 +714,10 @@ async fn test_update_instance() {
     .await
     .expect("Failed to define concept");
 
-    // Create an instance — we need to capture the ID.
-    // instance::create in JSON mode prints JSON with the ID to stdout.
+    // Create an entity — we need to capture the ID.
+    // entity::create in JSON mode prints JSON with the ID to stdout.
     // We'll use the fact layer to find it after creation.
-    tonk_cli::instance::create(
+    tonk_cli::entity::create(
         "Task".to_string(),
         vec!["title=Update me".to_string(), "status=todo".to_string()],
         None,
@@ -727,36 +727,35 @@ async fn test_update_instance() {
     .await
     .expect("Failed to create task");
 
-    // Find the instance via query (we know there's exactly one)
-    // Use the schema module to query the instance entity
+    // Find the entity via query (we know there's exactly one)
+    // Use the schema module to query the entity
     let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
     let branch = tonk_cli::schema::open_branch(&ctx)
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
     let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
-    let instances =
-        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/instance")
+    let entities =
+        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/entity")
             .await
-            .expect("Failed to fetch instances");
+            .expect("Failed to fetch entities");
 
-    assert_eq!(instances.len(), 1, "Should have exactly 1 instance");
-    let instance_id = instances[0].to_string();
+    assert_eq!(entities.len(), 1, "Should have exactly 1 entity");
+    let entity_id = entities[0].to_string();
 
-    // Update the instance
+    // Update the entity
     let result =
-        tonk_cli::instance::update(instance_id.clone(), vec!["status=done".to_string()], true)
-            .await;
+        tonk_cli::entity::assert(entity_id.clone(), vec!["status=done".to_string()], true).await;
     assert!(result.is_ok(), "update should succeed: {:?}", result.err());
 
     // Show should reflect the update
-    let result = tonk_cli::instance::show(instance_id, true).await;
+    let result = tonk_cli::entity::show(entity_id, true).await;
     assert!(result.is_ok(), "show after update should succeed");
 }
 
 #[tokio::test]
 #[serial]
-async fn test_delete_instance() {
+async fn test_delete_entity() {
     let env = TestEnv::new().await.expect("Failed to create test env");
     let _space = env
         .create_space("delete-inst-space")
@@ -767,7 +766,7 @@ async fn test_delete_instance() {
         .await
         .expect("Failed to define concept");
 
-    tonk_cli::instance::create(
+    tonk_cli::entity::create(
         "Task".to_string(),
         vec!["title=Delete me".to_string()],
         None,
@@ -777,32 +776,32 @@ async fn test_delete_instance() {
     .await
     .expect("Failed to create task");
 
-    // Find the instance ID
+    // Find the entity ID
     let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
     let branch = tonk_cli::schema::open_branch(&ctx)
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
     let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
-    let instances =
-        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/instance")
+    let entities =
+        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/entity")
             .await
-            .expect("Failed to fetch instances");
-    let instance_id = instances[0].to_string();
+            .expect("Failed to fetch entities");
+    let entity_id = entities[0].to_string();
 
     // Delete it
-    tonk_cli::instance::delete(instance_id, true)
+    tonk_cli::entity::retract(entity_id, true)
         .await
-        .expect("Failed to delete instance");
+        .expect("Failed to delete entity");
 
-    // Query should return no instances
-    let result = tonk_cli::instance::query("Task".to_string(), vec![], true).await;
+    // Query should return no entities
+    let result = tonk_cli::entity::query("Task".to_string(), vec![], true).await;
     assert!(result.is_ok(), "query after delete should succeed");
 }
 
 #[tokio::test]
 #[serial]
-async fn test_create_instance_from_json_file() {
+async fn test_create_entity_from_json_file() {
     let env = TestEnv::new().await.expect("Failed to create test env");
     let _space = env
         .create_space("json-file-space")
@@ -819,11 +818,11 @@ async fn test_create_instance_from_json_file() {
     .expect("Failed to define concept");
 
     // Create a temporary JSON file
-    let json_path = env.home_path.join("instance.json");
+    let json_path = env.home_path.join("entity.json");
     std::fs::write(&json_path, r#"{"title": "From file", "status": "todo"}"#)
         .expect("Failed to write JSON file");
 
-    let result = tonk_cli::instance::create(
+    let result = tonk_cli::entity::create(
         "Task".to_string(),
         vec![],
         Some(json_path.to_string_lossy().into_owned()),
@@ -899,7 +898,7 @@ async fn test_batch_delete() {
         .await
         .expect("Failed to define concept");
 
-    // Create some instances first
+    // Create some entities first
     let json_path = env.home_path.join("batch_create.json");
     std::fs::write(
         &json_path,
@@ -919,19 +918,19 @@ async fn test_batch_delete() {
     .await
     .expect("Failed to batch create");
 
-    // Get instance IDs
+    // Get entity IDs
     let ctx = tonk_cli::schema::get_space_context().expect("Failed to get context");
     let branch = tonk_cli::schema::open_branch(&ctx)
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
     let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
-    let instances =
-        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/instance")
+    let entities =
+        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/entity")
             .await
-            .expect("Failed to fetch instances");
+            .expect("Failed to fetch entities");
 
-    let ids: Vec<String> = instances.iter().map(|e| e.to_string()).collect();
+    let ids: Vec<String> = entities.iter().map(|e| e.to_string()).collect();
     let ids_json = serde_json::to_string(&ids).unwrap();
 
     let del_path = env.home_path.join("batch_delete.json");
@@ -1456,15 +1455,15 @@ async fn test_concept_operations_require_space() {
 
 #[tokio::test]
 #[serial]
-async fn test_instance_create_requires_concept() {
+async fn test_entity_create_requires_concept() {
     let env = TestEnv::new().await.expect("Failed to create test env");
     let _space = env
         .create_space("no-concept-space")
         .await
         .expect("Failed to create space");
 
-    // Try to create an instance of a concept that doesn't exist
-    let result = tonk_cli::instance::create(
+    // Try to create an entity of a concept that doesn't exist
+    let result = tonk_cli::entity::create(
         "NonExistent".to_string(),
         vec!["title=Foo".to_string()],
         None,
@@ -1474,7 +1473,7 @@ async fn test_instance_create_requires_concept() {
     .await;
     assert!(
         result.is_err(),
-        "creating instance of non-existent concept should fail"
+        "creating entity of non-existent concept should fail"
     );
 }
 
@@ -1497,8 +1496,8 @@ async fn test_full_crud_workflow() {
         .await
         .expect("Failed to import concepts");
 
-    // 2. Create instances
-    tonk_cli::instance::create(
+    // 2. Create entities
+    tonk_cli::entity::create(
         "Task".to_string(),
         vec![
             "title=Write tests".to_string(),
@@ -1512,7 +1511,7 @@ async fn test_full_crud_workflow() {
     .await
     .expect("Failed to create task 1");
 
-    tonk_cli::instance::create(
+    tonk_cli::entity::create(
         "Task".to_string(),
         vec![
             "title=Review PR".to_string(),
@@ -1527,51 +1526,51 @@ async fn test_full_crud_workflow() {
     .expect("Failed to create task 2");
 
     // 3. Query all tasks
-    let result = tonk_cli::instance::query("Task".to_string(), vec![], true).await;
+    let result = tonk_cli::entity::query("Task".to_string(), vec![], true).await;
     assert!(result.is_ok(), "query all tasks should succeed");
 
     // 4. Query with filter
     let result =
-        tonk_cli::instance::query("Task".to_string(), vec!["status=todo".to_string()], true).await;
+        tonk_cli::entity::query("Task".to_string(), vec!["status=todo".to_string()], true).await;
     assert!(result.is_ok(), "filtered query should succeed");
 
-    // 5. Find an instance and update it
+    // 5. Find an entity and update it
     let ctx = tonk_cli::schema::get_space_context().expect("Failed to get context");
     let branch = tonk_cli::schema::open_branch(&ctx)
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
     let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
-    let instances =
-        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/instance")
+    let entities =
+        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/entity")
             .await
-            .expect("Failed to fetch instances");
-    assert_eq!(instances.len(), 2, "Should have 2 instances");
+            .expect("Failed to fetch entities");
+    assert_eq!(entities.len(), 2, "Should have 2 entities");
 
-    let instance_id = instances[0].to_string();
-    tonk_cli::instance::update(instance_id.clone(), vec!["status=done".to_string()], true)
+    let entity_id = entities[0].to_string();
+    tonk_cli::entity::assert(entity_id.clone(), vec!["status=done".to_string()], true)
         .await
-        .expect("Failed to update instance");
+        .expect("Failed to update entity");
 
-    // 6. Show the updated instance
-    tonk_cli::instance::show(instance_id.clone(), true)
+    // 6. Show the updated entity
+    tonk_cli::entity::show(entity_id.clone(), true)
         .await
-        .expect("Failed to show instance");
+        .expect("Failed to show entity");
 
-    // 7. Delete the instance
-    tonk_cli::instance::delete(instance_id, true)
+    // 7. Delete the entity
+    tonk_cli::entity::retract(entity_id, true)
         .await
-        .expect("Failed to delete instance");
+        .expect("Failed to delete entity");
 
-    // 8. Verify only 1 instance remains
+    // 8. Verify only 1 entity remains
     let branch2 = tonk_cli::schema::open_branch(&ctx)
         .await
         .expect("Failed to re-open branch");
     let remaining =
-        tonk_cli::schema::fetch_entity_values(&branch2, &concept_entity, "concept/instance")
+        tonk_cli::schema::fetch_entity_values(&branch2, &concept_entity, "concept/entity")
             .await
-            .expect("Failed to fetch remaining instances");
-    assert_eq!(remaining.len(), 1, "Should have 1 instance after deletion");
+            .expect("Failed to fetch remaining entities");
+    assert_eq!(remaining.len(), 1, "Should have 1 entity after deletion");
 }
 
 #[tokio::test]
@@ -1621,7 +1620,7 @@ async fn test_import_concepts_and_rules_full_workflow() {
     assert!(result.is_ok(), "rule list should succeed after import");
 
     // 6. Create some data
-    tonk_cli::instance::create(
+    tonk_cli::entity::create(
         "Recipe".to_string(),
         vec!["title=Pasta".to_string()],
         None,
@@ -1631,7 +1630,7 @@ async fn test_import_concepts_and_rules_full_workflow() {
     .await
     .expect("Failed to create recipe");
 
-    tonk_cli::instance::create(
+    tonk_cli::entity::create(
         "Ingredient".to_string(),
         vec!["name=Peanuts".to_string(), "quantity=100".to_string()],
         None,
@@ -1641,11 +1640,11 @@ async fn test_import_concepts_and_rules_full_workflow() {
     .await
     .expect("Failed to create ingredient");
 
-    // 7. Query instances
-    let result = tonk_cli::instance::query("Recipe".to_string(), vec![], true).await;
+    // 7. Query entities
+    let result = tonk_cli::entity::query("Recipe".to_string(), vec![], true).await;
     assert!(result.is_ok(), "recipe query should succeed");
 
-    let result = tonk_cli::instance::query("Ingredient".to_string(), vec![], true).await;
+    let result = tonk_cli::entity::query("Ingredient".to_string(), vec![], true).await;
     assert!(result.is_ok(), "ingredient query should succeed");
 }
 
@@ -1716,8 +1715,8 @@ async fn test_multiple_concepts_same_space() {
     let result = tonk_cli::concept::list(true).await;
     assert!(result.is_ok(), "concept list should succeed");
 
-    // Create instances of each
-    tonk_cli::instance::create(
+    // Create entities of each
+    tonk_cli::entity::create(
         "User".to_string(),
         vec!["name=Alice".to_string(), "email=a@b.com".to_string()],
         None,
@@ -1726,7 +1725,7 @@ async fn test_multiple_concepts_same_space() {
     )
     .await
     .expect("Failed to create user");
-    tonk_cli::instance::create(
+    tonk_cli::entity::create(
         "Post".to_string(),
         vec!["title=Hello".to_string(), "body=World".to_string()],
         None,
@@ -1735,7 +1734,7 @@ async fn test_multiple_concepts_same_space() {
     )
     .await
     .expect("Failed to create post");
-    tonk_cli::instance::create(
+    tonk_cli::entity::create(
         "Comment".to_string(),
         vec!["text=Nice post".to_string()],
         None,
@@ -1747,7 +1746,7 @@ async fn test_multiple_concepts_same_space() {
 
     // Query each concept independently
     for concept in &["User", "Post", "Comment"] {
-        let result = tonk_cli::instance::query(concept.to_string(), vec![], true).await;
+        let result = tonk_cli::entity::query(concept.to_string(), vec![], true).await;
         assert!(result.is_ok(), "{} query should succeed", concept);
     }
 }

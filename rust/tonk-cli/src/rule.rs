@@ -1,6 +1,6 @@
 //! Rule management: define, list, show, and delete deductive rules.
 //!
-//! A rule derives instances of a conclusion concept from patterns across
+//! A rule derives entities of a conclusion concept from patterns across
 //! existing facts. Rules are stored as JSON blobs in dialog-db and compiled
 //! into `DeductiveRule`s at query time.
 
@@ -51,7 +51,7 @@ impl RuleDefinition {
         if def.when.is_empty() {
             anyhow::bail!(
                 "Rule must have at least one positive premise in 'when'. \
-                 Rules with no positive premises cannot derive any instances."
+                 Rules with no positive premises cannot derive any entities."
             );
         }
 
@@ -917,7 +917,7 @@ pub async fn delete(name: String, json: bool) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Rule loading helpers (used by instance::query)
+// Rule loading helpers (used by entity::query)
 // ---------------------------------------------------------------------------
 
 /// Load all rule definitions that conclude a given concept name.

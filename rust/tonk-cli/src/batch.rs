@@ -1,4 +1,4 @@
-//! Batch instance operations: create, update, and delete multiple instances
+//! Batch entity operations: create, update, and delete multiple entities
 //! of a concept in a single atomic commit.
 //!
 //! All batch operations accept a JSON array via `--file` or `--stdin`.
@@ -17,7 +17,7 @@ use std::str::FromStr;
 // Batch create
 // ---------------------------------------------------------------------------
 
-/// Create multiple instances of a concept in a single atomic commit.
+/// Create multiple entities of a concept in a single atomic commit.
 ///
 /// Input is a JSON array of objects, where each object maps short attribute
 /// names to values.
@@ -85,20 +85,20 @@ pub async fn batch_create(
             qualified_fields.push((qualified, value_str));
         }
 
-        let instance_entity = Entity::new().context("Failed to generate instance entity")?;
+        let entity = Entity::new().context("Failed to generate entity")?;
 
-        // Instance type reference
+        // Entity type reference
         instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_INSTANCE_TYPE)?,
-            of: instance_entity.clone(),
+            the: Attribute::from_str(ATTR_ENTITY_TYPE)?,
+            of: entity.clone(),
             is: Value::Entity(concept.clone()),
             cause: None,
         }));
 
-        // Instance creation timestamp
+        // Entity creation timestamp
         instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_INSTANCE_CREATED)?,
-            of: instance_entity.clone(),
+            the: Attribute::from_str(ATTR_ENTITY_CREATED)?,
+            of: entity.clone(),
             is: Value::SignedInt(now as i128),
             cause: None,
         }));
@@ -107,17 +107,17 @@ pub async fn batch_create(
         for (attr_name, value_str) in &qualified_fields {
             instructions.push(Instruction::Assert(Artifact {
                 the: Attribute::from_str(attr_name)?,
-                of: instance_entity.clone(),
+                of: entity.clone(),
                 is: parse_value(value_str),
                 cause: None,
             }));
         }
 
-        // Back-reference from concept to instance
+        // Back-reference from concept to entity
         instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_INSTANCE)?,
+            the: Attribute::from_str(ATTR_CONCEPT_ENTITY)?,
             of: concept.clone(),
-            is: Value::Entity(instance_entity.clone()),
+            is: Value::Entity(entity.clone()),
             cause: None,
         }));
 
@@ -128,7 +128,7 @@ pub async fn batch_create(
             data.insert(short, serde_json::json!(value_str));
         }
         results.push(serde_json::json!({
-            "id": instance_entity.to_string(),
+            "id": entity.to_string(),
             "data": data,
         }));
     }
@@ -146,7 +146,7 @@ pub async fn batch_create(
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("Created {} {} instance(s)", results.len(), stored_name);
+        println!("Created {} {} entity(ies)", results.len(), stored_name);
         for result in &results {
             println!("  {}", result["id"].as_str().unwrap_or("???"));
         }
@@ -159,10 +159,10 @@ pub async fn batch_create(
 // Batch update
 // ---------------------------------------------------------------------------
 
-/// Update multiple instances of a concept in a single atomic commit.
+/// Update multiple entities of a concept in a single atomic commit.
 ///
 /// Input is a JSON array of objects, where each object must include an `"id"`
-/// field (the instance DID) plus the fields to update.
+/// field (the entity DID) plus the fields to update.
 pub async fn batch_update(
     concept_name: String,
     file: Option<String>,
@@ -204,22 +204,22 @@ pub async fn batch_update(
         ))?;
 
         let entity = Entity::from_str(id_str).context(format!(
-            "Item at index {}: invalid instance ID '{}'",
+            "Item at index {}: invalid entity ID '{}'",
             idx, id_str
         ))?;
 
-        // Verify this entity is actually an instance of the expected concept
-        let instance_type = fetch_value(&branch, &entity, ATTR_INSTANCE_TYPE)
+        // Verify this entity is actually an entity of the expected concept
+        let entity_type = fetch_value(&branch, &entity, ATTR_ENTITY_TYPE)
             .await?
             .context(format!(
-                "Item at index {}: instance '{}' not found (no instance/type)",
+                "Item at index {}: entity '{}' not found (no entity/type)",
                 idx, id_str
             ))?;
 
-        match &instance_type {
+        match &entity_type {
             Value::Entity(e) if *e == concept => {}
             _ => anyhow::bail!(
-                "Item at index {}: instance '{}' does not belong to concept '{}'",
+                "Item at index {}: entity '{}' does not belong to concept '{}'",
                 idx,
                 id_str,
                 stored_name
@@ -294,7 +294,7 @@ pub async fn batch_update(
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("Updated {} {} instance(s)", results.len(), stored_name);
+        println!("Updated {} {} entity(ies)", results.len(), stored_name);
         for result in &results {
             if let Some(id) = result["id"].as_str() {
                 println!("  {}", id);
@@ -309,9 +309,9 @@ pub async fn batch_update(
 // Batch delete
 // ---------------------------------------------------------------------------
 
-/// Delete multiple instances of a concept in a single atomic commit.
+/// Delete multiple entities of a concept in a single atomic commit.
 ///
-/// Input is a JSON array of instance ID strings.
+/// Input is a JSON array of entity ID strings.
 pub async fn batch_delete(
     concept_name: String,
     file: Option<String>,
@@ -344,22 +344,22 @@ pub async fn batch_delete(
 
     for (idx, id_str) in ids.iter().enumerate() {
         let entity = Entity::from_str(id_str).context(format!(
-            "Item at index {}: invalid instance ID '{}'",
+            "Item at index {}: invalid entity ID '{}'",
             idx, id_str
         ))?;
 
-        // Verify this entity is actually an instance of the expected concept
-        let instance_type = fetch_value(&branch, &entity, ATTR_INSTANCE_TYPE)
+        // Verify this entity is actually an entity of the expected concept
+        let entity_type = fetch_value(&branch, &entity, ATTR_ENTITY_TYPE)
             .await?
             .context(format!(
-                "Item at index {}: instance '{}' not found (no instance/type)",
+                "Item at index {}: entity '{}' not found (no entity/type)",
                 idx, id_str
             ))?;
 
-        match &instance_type {
+        match &entity_type {
             Value::Entity(e) if *e == concept => {}
             _ => anyhow::bail!(
-                "Item at index {}: instance '{}' does not belong to concept '{}'",
+                "Item at index {}: entity '{}' does not belong to concept '{}'",
                 idx,
                 id_str,
                 stored_name
@@ -378,27 +378,27 @@ pub async fn batch_delete(
             }
         }
 
-        // Retract instance/type
+        // Retract entity/type
         instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_INSTANCE_TYPE)?,
+            the: Attribute::from_str(ATTR_ENTITY_TYPE)?,
             of: entity.clone(),
             is: Value::Entity(concept.clone()),
             cause: None,
         }));
 
-        // Retract instance/created
-        if let Some(ts) = fetch_value(&branch, &entity, ATTR_INSTANCE_CREATED).await? {
+        // Retract entity/created
+        if let Some(ts) = fetch_value(&branch, &entity, ATTR_ENTITY_CREATED).await? {
             instructions.push(Instruction::Retract(Artifact {
-                the: Attribute::from_str(ATTR_INSTANCE_CREATED)?,
+                the: Attribute::from_str(ATTR_ENTITY_CREATED)?,
                 of: entity.clone(),
                 is: ts,
                 cause: None,
             }));
         }
 
-        // Retract concept/instance back-reference
+        // Retract concept/entity back-reference
         instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_INSTANCE)?,
+            the: Attribute::from_str(ATTR_CONCEPT_ENTITY)?,
             of: concept.clone(),
             is: Value::Entity(entity.clone()),
             cause: None,
@@ -420,7 +420,7 @@ pub async fn batch_delete(
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("Deleted {} {} instance(s)", deleted_ids.len(), stored_name);
+        println!("Deleted {} {} entity(ies)", deleted_ids.len(), stored_name);
         for id in &deleted_ids {
             println!("  {}", id);
         }

@@ -1,7 +1,7 @@
 //! Shared helpers for the concepts & facts system.
 //!
 //! Provides deterministic entity derivation, attribute name prefixing,
-//! and common storage access patterns used by both `concept` and `instance` modules.
+//! and common storage access patterns used by both `concept` and `entity` modules.
 
 use crate::authority;
 use crate::crypto::Operator;
@@ -115,14 +115,14 @@ pub const ATTR_CONCEPT_DESCRIPTION: &str = "concept/description";
 /// Concept attribute: one per attribute the concept has (multi-valued).
 pub const ATTR_CONCEPT_ATTRIBUTE: &str = "concept/attribute";
 
-/// Concept attribute: back-reference to instances (multi-valued).
-pub const ATTR_CONCEPT_INSTANCE: &str = "concept/instance";
+/// Concept attribute: back-reference to entities (multi-valued).
+pub const ATTR_CONCEPT_ENTITY: &str = "concept/entity";
 
-/// Instance attribute: type reference back to concept entity.
-pub const ATTR_INSTANCE_TYPE: &str = "instance/type";
+/// Entity attribute: type reference back to concept entity.
+pub const ATTR_ENTITY_TYPE: &str = "entity/type";
 
-/// Instance attribute: creation timestamp.
-pub const ATTR_INSTANCE_CREATED: &str = "instance/created";
+/// Entity attribute: creation timestamp.
+pub const ATTR_ENTITY_CREATED: &str = "entity/created";
 
 /// Attribute metadata: human-readable description of the attribute.
 pub const ATTR_ATTRIBUTE_DESCRIPTION: &str = "attribute/description";
