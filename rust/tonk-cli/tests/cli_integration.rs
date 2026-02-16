@@ -199,9 +199,9 @@ async fn test_space_create_multiple_and_switch() {
     assert_eq!(active, Some(space2.clone()));
 
     // Switch back to space-one by name
-    tonk_cli::space::set("space-one".to_string())
+    tonk_cli::space::load("space-one".to_string())
         .await
-        .expect("Failed to set space");
+        .expect("Failed to load space");
 
     let active =
         tonk_cli::state::get_active_space(&env.authority_did).expect("Failed to get active space");
@@ -240,9 +240,9 @@ async fn test_space_delete() {
         .expect("Failed to create space 2");
 
     // Switch to space 1 so we're deleting a non-active space
-    tonk_cli::space::set("keep-me".to_string())
+    tonk_cli::space::load("keep-me".to_string())
         .await
-        .expect("Failed to switch space");
+        .expect("Failed to load space");
 
     // Delete space 2 with force (skip confirmation)
     tonk_cli::space::delete("delete-me".to_string(), true)
@@ -280,6 +280,127 @@ async fn test_space_delete_active_clears_active() {
     let active =
         tonk_cli::state::get_active_space(&env.authority_did).expect("Failed to get active space");
     assert_eq!(active, None);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_space_create_duplicate_name_fails() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("dup-name")
+        .await
+        .expect("Failed to create first space");
+
+    // Creating a second space with the same name should fail
+    let result = tonk_cli::space::create("dup-name".to_string(), Some(vec![]), None, true).await;
+    assert!(
+        result.is_err(),
+        "creating a space with a duplicate name should fail"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("already exists"),
+        "error should mention 'already exists', got: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_space_load_nonexistent_fails() {
+    let _env = TestEnv::new().await.expect("Failed to create test env");
+
+    let result = tonk_cli::space::load("no-such-space".to_string()).await;
+    assert!(result.is_err(), "loading a nonexistent space should fail");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_space_open_creates_when_missing() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+
+    // open should create the space when it doesn't exist
+    let result = tonk_cli::space::open("fresh-space".to_string(), Some(vec![]), None, true).await;
+    assert!(
+        result.is_ok(),
+        "open should succeed when space doesn't exist: {:?}",
+        result.err()
+    );
+
+    // Verify it was created and set as active
+    let active =
+        tonk_cli::state::get_active_space(&env.authority_did).expect("Failed to get active space");
+    assert!(active.is_some(), "space should be active after open");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_space_open_loads_when_exists() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let original_did = env
+        .create_space("existing-space")
+        .await
+        .expect("Failed to create space");
+
+    // Create a second space so the active one changes
+    let _other = env
+        .create_space("other-space")
+        .await
+        .expect("Failed to create second space");
+    let active =
+        tonk_cli::state::get_active_space(&env.authority_did).expect("Failed to get active space");
+    assert_ne!(
+        active,
+        Some(original_did.clone()),
+        "active space should be the second one now"
+    );
+
+    // open should load the existing space, not create a new one
+    let result =
+        tonk_cli::space::open("existing-space".to_string(), Some(vec![]), None, true).await;
+    assert!(
+        result.is_ok(),
+        "open should succeed for existing space: {:?}",
+        result.err()
+    );
+
+    // Active space should be the original one
+    let active =
+        tonk_cli::state::get_active_space(&env.authority_did).expect("Failed to get active space");
+    assert_eq!(
+        active,
+        Some(original_did),
+        "open should have loaded the original space, not created a new one"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_space_open_is_idempotent() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+
+    // First open creates
+    tonk_cli::space::open("idem-space".to_string(), Some(vec![]), None, true)
+        .await
+        .expect("First open should succeed");
+
+    let first_did = tonk_cli::state::get_active_space(&env.authority_did)
+        .expect("get active")
+        .expect("should be set");
+
+    // Second open loads the same space
+    tonk_cli::space::open("idem-space".to_string(), Some(vec![]), None, true)
+        .await
+        .expect("Second open should succeed");
+
+    let second_did = tonk_cli::state::get_active_space(&env.authority_did)
+        .expect("get active")
+        .expect("should be set");
+
+    assert_eq!(
+        first_did, second_did,
+        "open called twice should yield the same space DID"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

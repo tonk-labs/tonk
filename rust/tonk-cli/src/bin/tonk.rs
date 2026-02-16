@@ -169,13 +169,13 @@ mod inner {
         /// Show the current space DID
         Current,
 
-        /// Switch to a different space
-        Set {
-            /// Space name or DID to switch to
+        /// Load an existing space by name or DID (fails if not found)
+        Load {
+            /// Space name or DID to load
             space: String,
         },
 
-        /// Create a new space
+        /// Create a new space (fails if a space with the same name already exists)
         Create {
             /// Name of the space
             name: String,
@@ -186,6 +186,22 @@ mod inner {
             owners: Option<Vec<String>>,
 
             /// Optional description
+            #[arg(short, long)]
+            description: Option<String>,
+        },
+
+        /// Open a space: load if it exists, otherwise create it
+        Open {
+            /// Name of the space
+            name: String,
+
+            /// Owner DIDs (did:key identifiers). If not provided, will prompt interactively.
+            /// The active authority is always included as an owner.
+            /// Only used when creating a new space.
+            #[arg(short, long)]
+            owners: Option<Vec<String>>,
+
+            /// Optional description (only used when creating a new space)
             #[arg(short, long)]
             description: Option<String>,
         },
@@ -565,8 +581,8 @@ async fn main() -> anyhow::Result<()> {
             Some(SpaceCommands::Current) => {
                 tonk_cli::space::show_current(json).await?;
             }
-            Some(SpaceCommands::Set { space }) => {
-                tonk_cli::space::set(space).await?;
+            Some(SpaceCommands::Load { space }) => {
+                tonk_cli::space::load(space).await?;
             }
             Some(SpaceCommands::Create {
                 name,
@@ -574,6 +590,13 @@ async fn main() -> anyhow::Result<()> {
                 description,
             }) => {
                 tonk_cli::space::create(name, owners, description, json).await?;
+            }
+            Some(SpaceCommands::Open {
+                name,
+                owners,
+                description,
+            }) => {
+                tonk_cli::space::open(name, owners, description, json).await?;
             }
             Some(SpaceCommands::Invite { email, space }) => {
                 tonk_cli::space::invite(email, space).await?;
