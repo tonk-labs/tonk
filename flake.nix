@@ -61,9 +61,6 @@
             dbus
             chromium
             chromedriver
-          ]
-          ++ lib.optionals stdenv.isDarwin [
-            # MacOS-specific inputs
           ];
 
         # Import rust helpers
@@ -226,6 +223,18 @@
           tonk-cli = buildCrate {
             pname = "tonk-cli";
             cargoExtraArgs = "--package tonk-cli";
+            # Rewrite Nix store libiconv to the macOS system equivalent
+            # so the binary works on machines without Nix installed
+            fixupPhase = pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              for bin in $out/bin/*; do
+                if [ -f "$bin" ]; then
+                  NIX_ICONV=$(otool -L "$bin" | grep '/nix/store.*libiconv' | awk '{print $1}' || true)
+                  if [ -n "$NIX_ICONV" ]; then
+                    install_name_tool -change "$NIX_ICONV" /usr/lib/libiconv.2.dylib "$bin"
+                  fi
+                fi
+              done
+            '';
           };
 
           tonk-ui = buildTrunkCrate {
