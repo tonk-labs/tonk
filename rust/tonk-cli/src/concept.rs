@@ -21,10 +21,10 @@ use std::str::FromStr;
 /// List all concepts in the active space.
 pub async fn list(json: bool) -> Result<()> {
     let ctx = get_space_context()?;
-    let branch = open_branch(&ctx).await?;
+    let session = open_session(&ctx).await?;
 
     let registry = registry_entity(&ctx.space_did)?;
-    let concept_entities = fetch_entity_values(&branch, &registry, ATTR_REGISTRY_CONCEPT).await?;
+    let concept_entities = fetch_entity_values(&session, &registry, ATTR_REGISTRY_CONCEPT).await?;
 
     if concept_entities.is_empty() {
         if json {
@@ -37,15 +37,21 @@ pub async fn list(json: bool) -> Result<()> {
 
     let mut concepts: Vec<(String, Option<String>, usize)> = Vec::new();
     for entity in &concept_entities {
-        let name = fetch_string(&branch, entity, ATTR_CONCEPT_NAME)
+        let name = fetch_string(&session, entity, ATTR_CONCEPT_NAME)
             .await?
             .ok_or_else(|| anyhow::anyhow!(
                 "Concept entity '{}' is missing its 'concept/name' attribute — possible data corruption",
                 entity
             ))?;
-        let description = fetch_string(&branch, entity, ATTR_CONCEPT_DESCRIPTION).await?;
-        let entities = fetch_entity_values(&branch, entity, ATTR_CONCEPT_ENTITY).await?;
-        concepts.push((name, description, entities.len()));
+        let description = fetch_string(&session, entity, ATTR_CONCEPT_DESCRIPTION).await?;
+        // Count entities by querying the AEV index on the first schema attribute
+        let attrs = fetch_string_values(&session, entity, ATTR_CONCEPT_ATTRIBUTE).await?;
+        let entity_count = if attrs.is_empty() {
+            0
+        } else {
+            find_entities_by_concept(&session, &attrs).await?.len()
+        };
+        concepts.push((name, description, entity_count));
     }
 
     if json {
@@ -87,6 +93,11 @@ pub async fn list(json: bool) -> Result<()> {
 ///
 /// Attributes are short names (e.g. `"title"`, `"status"`) that will be
 /// auto-prefixed with the concept namespace (e.g. `"task/title"`).
+///
+/// Uses raw Branch + Instruction (not Session/Transaction) because a
+/// concept has multi-valued `concept/attribute` entries and the registry
+/// has multi-valued `registry/concept` entries. Transaction deduplicates
+/// by `(entity, attribute)`, so only the last value per pair would survive.
 pub async fn define(
     name: String,
     attributes: Vec<String>,
@@ -204,25 +215,30 @@ pub async fn define(
 /// Show the schema of a concept.
 pub async fn show(name: String, json: bool) -> Result<()> {
     let ctx = get_space_context()?;
-    let branch = open_branch(&ctx).await?;
+    let session = open_session(&ctx).await?;
 
     let name = ConceptName::new(name)?;
     let concept = concept_entity(&ctx.space_did, &name)?;
 
-    let stored_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
         .await?
         .context(format!("Concept '{}' not found", name))?;
     let stored_name = ConceptName::from_stored(stored_name);
 
-    let description = fetch_string(&branch, &concept, ATTR_CONCEPT_DESCRIPTION).await?;
-    let attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
-    let entities = fetch_entity_values(&branch, &concept, ATTR_CONCEPT_ENTITY).await?;
+    let description = fetch_string(&session, &concept, ATTR_CONCEPT_DESCRIPTION).await?;
+    let attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    // Count entities by querying the AEV index on the first schema attribute
+    let entity_count = if attrs.is_empty() {
+        0
+    } else {
+        find_entities_by_concept(&session, &attrs).await?.len()
+    };
 
     if json {
         let mut output = serde_json::json!({
             "name": stored_name.as_str(),
             "attributes": attrs,
-            "entity_count": entities.len(),
+            "entity_count": entity_count,
             "entity": concept.to_string(),
         });
         if let Some(desc) = &description {
@@ -241,7 +257,7 @@ pub async fn show(name: String, json: bool) -> Result<()> {
         for attr in &attrs {
             println!("    {}", short_attribute(&stored_name, attr));
         }
-        println!("  Entities: {}", entities.len());
+        println!("  Entities: {}", entity_count);
         println!("  Entity: {}", concept);
     }
 
@@ -253,6 +269,10 @@ pub async fn show(name: String, json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Add attributes to an existing concept.
+///
+/// Uses raw Branch + Instruction for the same reason as [`define`]:
+/// multi-valued `concept/attribute` cannot be accumulated in a single
+/// Transaction.
 pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result<()> {
     if attributes.is_empty() {
         anyhow::bail!("No attributes provided to add.");
@@ -338,6 +358,9 @@ pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result
 // ---------------------------------------------------------------------------
 
 /// Delete a concept and optionally its entities.
+///
+/// Uses raw Branch + Instruction for the same reason as [`define`]:
+/// retracting multi-valued attributes requires individual instructions.
 pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
     let ctx = get_space_context()?;
     let mut branch = open_branch(&ctx).await?;
@@ -351,8 +374,14 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
         .await?
         .context(format!("Concept '{}' not found", name))?;
 
-    // Check for entities
-    let entities = fetch_entity_values(&branch, &concept, ATTR_CONCEPT_ENTITY).await?;
+    let attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+
+    // Check for entities by querying the AEV index
+    let entities = if attrs.is_empty() {
+        Vec::new()
+    } else {
+        find_entities_by_concept(&branch, &attrs).await?
+    };
     let entity_count = entities.len();
 
     if entity_count > 0 && !force {
@@ -371,51 +400,20 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
         );
     }
 
-    let attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
-
     let mut instructions = Vec::new();
 
-    // If force-deleting, retract all entity data
+    // If force-deleting, retract all facts about each entity
     if force {
         for entity in &entities {
-            // Retract each attribute value for this entity
-            for attr_name in &attrs {
-                let values = fetch_values(&branch, entity, attr_name).await?;
-                for val in values {
-                    instructions.push(Instruction::Retract(Artifact {
-                        the: Attribute::from_str(attr_name)?,
-                        of: entity.clone(),
-                        is: val,
-                        cause: None,
-                    }));
-                }
-            }
-
-            // Retract entity/type
-            instructions.push(Instruction::Retract(Artifact {
-                the: Attribute::from_str(ATTR_ENTITY_TYPE)?,
-                of: entity.clone(),
-                is: Value::Entity(concept.clone()),
-                cause: None,
-            }));
-
-            // Retract entity/created
-            if let Some(ts) = fetch_value(&branch, entity, ATTR_ENTITY_CREATED).await? {
+            let all_facts = fetch_all_entity_facts(&branch, entity).await?;
+            for artifact in all_facts {
                 instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_ENTITY_CREATED)?,
-                    of: entity.clone(),
-                    is: ts,
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
                     cause: None,
                 }));
             }
-
-            // Retract concept/entity back-reference
-            instructions.push(Instruction::Retract(Artifact {
-                the: Attribute::from_str(ATTR_CONCEPT_ENTITY)?,
-                of: concept.clone(),
-                is: Value::Entity(entity.clone()),
-                cause: None,
-            }));
         }
     }
 

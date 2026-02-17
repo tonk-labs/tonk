@@ -73,7 +73,7 @@ pub(super) struct ParsedRule {
     pub name: String,
     /// Namespace from the top-level key (e.g. "diy.planner").
     pub namespace: String,
-    /// Description from the `description` field.
+    /// Optional human-readable description from the `description` field.
     pub description: Option<String>,
     /// The conclusion: which concept is deduced and its bindings.
     pub conclusion: ParsedRuleConclusion,
@@ -203,6 +203,14 @@ pub(super) fn parse_rule(
     value: &serde_yaml::Value,
 ) -> Result<ParsedRule> {
     let map: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_value(value.clone())
+        .context("Expected a mapping with deduce/when/unless")?;
+
+    // Parse `description` (optional)
+    let description = map
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
         .context("Expected a mapping with deduce/when/unless")?;
 
     // Parse `description` (optional)
@@ -769,34 +777,29 @@ user.rules:
         }
 
         // Check specific premises exist
-        assert!(
-            def.when
-                .iter()
-                .any(|p| p.the == "recipe/title" && p.is == "_")
-        );
-        assert!(
-            def.when
-                .iter()
-                .any(|p| p.the == "recipe/ingredient" && p.is == "?ingredient")
-        );
-        assert!(
-            def.when.iter().any(|p| p.the == "ingredient/name"
-                && p.of == "?ingredient"
-                && p.is == "?substance")
-        );
+        assert!(def
+            .when
+            .iter()
+            .any(|p| p.the == "recipe/title" && p.is == "_"));
+        assert!(def
+            .when
+            .iter()
+            .any(|p| p.the == "recipe/ingredient" && p.is == "?ingredient"));
+        assert!(def
+            .when
+            .iter()
+            .any(|p| p.the == "ingredient/name" && p.of == "?ingredient" && p.is == "?substance"));
 
         // Unless premises
         assert_eq!(def.unless.len(), 2);
-        assert!(
-            def.unless
-                .iter()
-                .any(|p| p.the == "allergy/person" && p.of == "_" && p.is == "?person")
-        );
-        assert!(
-            def.unless
-                .iter()
-                .any(|p| p.the == "allergy/substance" && p.of == "_" && p.is == "?substance")
-        );
+        assert!(def
+            .unless
+            .iter()
+            .any(|p| p.the == "allergy/person" && p.of == "_" && p.is == "?person"));
+        assert!(def
+            .unless
+            .iter()
+            .any(|p| p.the == "allergy/substance" && p.of == "_" && p.is == "?substance"));
     }
 
     #[test]

@@ -856,10 +856,13 @@ async fn test_update_entity() {
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
     let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
-    let entities =
-        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/entity")
+    let attrs =
+        tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
-            .expect("Failed to fetch entities");
+            .expect("Failed to fetch concept attributes");
+    let entities = tonk_cli::schema::find_entities_by_concept(&branch, &attrs)
+        .await
+        .expect("Failed to find entities");
 
     assert_eq!(entities.len(), 1, "Should have exactly 1 entity");
     let entity_id = entities[0].to_string();
@@ -904,10 +907,13 @@ async fn test_delete_entity() {
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
     let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
-    let entities =
-        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/entity")
+    let attrs =
+        tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
-            .expect("Failed to fetch entities");
+            .expect("Failed to fetch concept attributes");
+    let entities = tonk_cli::schema::find_entities_by_concept(&branch, &attrs)
+        .await
+        .expect("Failed to find entities");
     let entity_id = entities[0].to_string();
 
     // Delete it
@@ -1046,10 +1052,13 @@ async fn test_batch_delete() {
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
     let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
-    let entities =
-        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/entity")
+    let attrs =
+        tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
-            .expect("Failed to fetch entities");
+            .expect("Failed to fetch concept attributes");
+    let entities = tonk_cli::schema::find_entities_by_concept(&branch, &attrs)
+        .await
+        .expect("Failed to find entities");
 
     let ids: Vec<String> = entities.iter().map(|e| e.to_string()).collect();
     let ids_json = serde_json::to_string(&ids).unwrap();
@@ -1662,10 +1671,13 @@ async fn test_full_crud_workflow() {
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
     let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
-    let entities =
-        tonk_cli::schema::fetch_entity_values(&branch, &concept_entity, "concept/entity")
+    let attrs =
+        tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
-            .expect("Failed to fetch entities");
+            .expect("Failed to fetch concept attributes");
+    let entities = tonk_cli::schema::find_entities_by_concept(&branch, &attrs)
+        .await
+        .expect("Failed to find entities");
     assert_eq!(entities.len(), 2, "Should have 2 entities");
 
     let entity_id = entities[0].to_string();
@@ -1687,10 +1699,9 @@ async fn test_full_crud_workflow() {
     let branch2 = tonk_cli::schema::open_branch(&ctx)
         .await
         .expect("Failed to re-open branch");
-    let remaining =
-        tonk_cli::schema::fetch_entity_values(&branch2, &concept_entity, "concept/entity")
-            .await
-            .expect("Failed to fetch remaining entities");
+    let remaining = tonk_cli::schema::find_entities_by_concept(&branch2, &attrs)
+        .await
+        .expect("Failed to find remaining entities");
     assert_eq!(remaining.len(), 1, "Should have 1 entity after deletion");
 }
 

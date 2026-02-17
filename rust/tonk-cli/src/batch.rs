@@ -5,12 +5,10 @@
 //! If any item fails validation, the entire batch aborts with no changes
 //! committed.
 
-use crate::entity::derive_entity_from_fields;
 use crate::schema::*;
 use anyhow::{Context, Result};
-use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
-use dialog_query::claim::Attribute;
-use dialog_query::{Entity, Value};
+use dialog_query::Entity;
+use dialog_query::claim::{Attribute, Relation};
 use std::io::Read;
 use std::str::FromStr;
 
@@ -37,12 +35,12 @@ pub async fn batch_create(
     }
 
     let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
     let concept = concept_entity(&ctx.space_did, &concept_name)?;
 
-    let stored_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
         .await?
         .context(format!(
             "Concept '{}' not found. Define it first with 'tonk concept define {}'.",
@@ -50,10 +48,9 @@ pub async fn batch_create(
         ))?;
     let stored_name = ConceptName::from_stored(stored_name);
 
-    let schema_attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
-    let now = chrono::Utc::now().timestamp();
-    let mut instructions = Vec::new();
+    let mut transaction = session.edit();
     let mut results: Vec<serde_json::Value> = Vec::new();
 
     for (idx, item) in items.iter().enumerate() {
@@ -88,14 +85,14 @@ pub async fn batch_create(
 
         let entity = derive_entity_from_fields(&qualified_fields)?;
 
-        // Attribute values
+        // Assert attribute values via Transaction
         for (attr_name, value_str) in &qualified_fields {
-            instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(attr_name)?,
-                of: entity.clone(),
-                is: parse_value(value_str),
-                cause: None,
-            }));
+            let relation = Relation::new(
+                Attribute::from_str(attr_name)?,
+                entity.clone(),
+                parse_value(value_str),
+            );
+            transaction.assert(relation);
         }
 
         // Collect result data
@@ -110,9 +107,7 @@ pub async fn batch_create(
         }));
     }
 
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    session.commit(transaction).await?;
 
     if json {
         let output = serde_json::json!({
@@ -155,19 +150,19 @@ pub async fn batch_update(
     }
 
     let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
     let concept = concept_entity(&ctx.space_did, &concept_name)?;
 
-    let stored_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
     let stored_name = ConceptName::from_stored(stored_name);
 
-    let schema_attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
-    let mut instructions = Vec::new();
+    let mut transaction = session.edit();
     let mut results: Vec<serde_json::Value> = Vec::new();
 
     for (idx, item) in items.iter().enumerate() {
@@ -185,22 +180,21 @@ pub async fn batch_update(
             idx, id_str
         ))?;
 
-        // Verify this entity is actually an entity of the expected concept
-        let entity_type = fetch_value(&branch, &entity, ATTR_ENTITY_TYPE)
-            .await?
-            .context(format!(
-                "Item at index {}: entity '{}' not found (no entity/type)",
-                idx, id_str
-            ))?;
+        // Verify entity exists by checking it has at least one of the concept's
+        // schema attributes (structural typing — no entity/type needed)
+        let has_concept_attr = if let Some(first_attr) = schema_attrs.first() {
+            fetch_value(&session, &entity, first_attr).await?.is_some()
+        } else {
+            false
+        };
 
-        match &entity_type {
-            Value::Entity(e) if *e == concept => {}
-            _ => anyhow::bail!(
-                "Item at index {}: entity '{}' does not belong to concept '{}'",
+        if !has_concept_attr {
+            anyhow::bail!(
+                "Item at index {}: entity '{}' not found or does not belong to concept '{}'",
                 idx,
                 id_str,
                 stored_name
-            ),
+            );
         }
 
         let mut updated_fields: Vec<(String, String)> = Vec::new();
@@ -221,26 +215,20 @@ pub async fn batch_update(
             }
 
             let new_value = parse_value(&value_str);
+            let attr = Attribute::from_str(&qualified)?;
 
-            // Retract old value if it exists and differs
-            if let Some(old_value) = fetch_value(&branch, &entity, &qualified).await?
-                && old_value != new_value
-            {
-                instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(&qualified)?,
-                    of: entity.clone(),
-                    is: old_value,
-                    cause: None,
-                }));
+            // Retract all old values for this attribute (supports multi-valued)
+            let old_values = fetch_values(&session, &entity, &qualified).await?;
+            for old_value in old_values {
+                if old_value != new_value {
+                    let old_relation = Relation::new(attr.clone(), entity.clone(), old_value);
+                    transaction.retract(old_relation);
+                }
             }
 
             // Assert new value
-            instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(&qualified)?,
-                of: entity.clone(),
-                is: new_value,
-                cause: None,
-            }));
+            let new_relation = Relation::new(attr, entity.clone(), new_value);
+            transaction.assert(new_relation);
 
             updated_fields.push((short_attribute(&stored_name, &qualified), value_str));
         }
@@ -258,9 +246,7 @@ pub async fn batch_update(
         }));
     }
 
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    session.commit(transaction).await?;
 
     if json {
         let output = serde_json::json!({
@@ -288,7 +274,8 @@ pub async fn batch_update(
 
 /// Delete multiple entities of a concept in a single atomic commit.
 ///
-/// Input is a JSON array of entity ID strings.
+/// Input is a JSON array of entity ID strings. All facts about each entity
+/// are discovered and retracted.
 pub async fn batch_delete(
     concept_name: String,
     file: Option<String>,
@@ -304,19 +291,17 @@ pub async fn batch_delete(
     }
 
     let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
     let concept = concept_entity(&ctx.space_did, &concept_name)?;
 
-    let stored_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
     let stored_name = ConceptName::from_stored(stored_name);
 
-    let schema_attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
-
-    let mut instructions = Vec::new();
+    let mut transaction = session.edit();
     let mut deleted_ids: Vec<String> = Vec::new();
 
     for (idx, id_str) in ids.iter().enumerate() {
@@ -325,68 +310,30 @@ pub async fn batch_delete(
             idx, id_str
         ))?;
 
-        // Verify this entity is actually an entity of the expected concept
-        let entity_type = fetch_value(&branch, &entity, ATTR_ENTITY_TYPE)
-            .await?
-            .context(format!(
-                "Item at index {}: entity '{}' not found (no entity/type)",
-                idx, id_str
-            ))?;
+        // Fetch all facts about this entity and retract them
+        let all_facts = fetch_all_entity_facts(&session, &entity).await?;
 
-        match &entity_type {
-            Value::Entity(e) if *e == concept => {}
-            _ => anyhow::bail!(
-                "Item at index {}: entity '{}' does not belong to concept '{}'",
+        if all_facts.is_empty() {
+            anyhow::bail!(
+                "Item at index {}: entity '{}' not found (no facts)",
                 idx,
-                id_str,
-                stored_name
-            ),
+                id_str
+            );
         }
 
-        // Retract all attribute values
-        for attr_name in &schema_attrs {
-            if let Some(val) = fetch_value(&branch, &entity, attr_name).await? {
-                instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(attr_name)?,
-                    of: entity.clone(),
-                    is: val,
-                    cause: None,
-                }));
-            }
+        for artifact in &all_facts {
+            let relation = Relation::new(
+                artifact.the.clone(),
+                artifact.of.clone(),
+                artifact.is.clone(),
+            );
+            transaction.retract(relation);
         }
-
-        // Retract entity/type
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_ENTITY_TYPE)?,
-            of: entity.clone(),
-            is: Value::Entity(concept.clone()),
-            cause: None,
-        }));
-
-        // Retract entity/created
-        if let Some(ts) = fetch_value(&branch, &entity, ATTR_ENTITY_CREATED).await? {
-            instructions.push(Instruction::Retract(Artifact {
-                the: Attribute::from_str(ATTR_ENTITY_CREATED)?,
-                of: entity.clone(),
-                is: ts,
-                cause: None,
-            }));
-        }
-
-        // Retract concept/entity back-reference
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_ENTITY)?,
-            of: concept.clone(),
-            is: Value::Entity(entity.clone()),
-            cause: None,
-        }));
 
         deleted_ids.push(id_str.clone());
     }
 
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    session.commit(transaction).await?;
 
     if json {
         let output = serde_json::json!({

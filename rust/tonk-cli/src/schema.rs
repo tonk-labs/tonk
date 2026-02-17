@@ -12,7 +12,7 @@ use base64::Engine as _;
 use dialog_artifacts::repository::{BranchId, Credentials, Repository};
 use dialog_artifacts::{ArtifactSelector, ArtifactStore};
 use dialog_query::claim::Attribute;
-use dialog_query::{Entity, Session, Value};
+use dialog_query::{Cardinality, Entity, Session, Value};
 use futures_util::TryStreamExt;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -151,14 +151,14 @@ pub const ATTR_RULE_DEFINITION: &str = "rule/definition";
 
 /// Derive the concept registry entity for a space.
 ///
-/// `registry_entity = did:key:z{base58(blake3(space_did + "\0concept-registry"))}`
+/// Deterministically derived as an Ed25519 `did:key` from the space DID.
 pub fn registry_entity(space_did: &str) -> Result<Entity> {
     derive_entity(&format!("{}\0concept-registry", space_did))
 }
 
 /// Derive the concept entity for a given concept name within a space.
 ///
-/// `concept_entity = did:key:z{base58(blake3(space_did + "\0concept\0" + lowercase_name))}`
+/// Deterministically derived as an Ed25519 `did:key` from the space DID and concept name.
 pub fn concept_entity(space_did: &str, concept_name: &ConceptName) -> Result<Entity> {
     derive_entity(&format!(
         "{}\0concept\0{}",
@@ -169,7 +169,7 @@ pub fn concept_entity(space_did: &str, concept_name: &ConceptName) -> Result<Ent
 
 /// Derive the rule entity for a given rule name within a space.
 ///
-/// `rule_entity = did:key:z{base58(blake3(space_did + "\0rule\0" + lowercase_name))}`
+/// Deterministically derived as an Ed25519 `did:key` from the space DID and rule name.
 pub fn rule_entity(space_did: &str, rule_name: &str) -> Result<Entity> {
     derive_entity(&format!(
         "{}\0rule\0{}",
@@ -194,12 +194,51 @@ pub fn attribute_meta_entity(
     ))
 }
 
+/// Convert 32 bytes of hash output into a proper Ed25519 `did:key` entity.
+///
+/// Treats the hash as an Ed25519 signing key seed, then formats the
+/// resulting verifying (public) key as a standards-compliant `did:key`
+/// with the Ed25519 multicodec prefix `[0xed, 0x01]`.
+///
+/// This is the canonical implementation — `derive_entity()` and
+/// `derive_entity_from_fields()` both delegate here, as does `fact.rs`.
+pub fn derive_entity_from_hash(hash: &blake3::Hash) -> Result<Entity> {
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(hash.as_bytes());
+    let verifying_key = signing_key.verifying_key();
+    const ED25519_MULTICODEC: [u8; 2] = [0xed, 0x01];
+    let mut multicodec_key = [0u8; 34];
+    multicodec_key[..2].copy_from_slice(&ED25519_MULTICODEC);
+    multicodec_key[2..].copy_from_slice(verifying_key.as_bytes());
+    let encoded = bs58::encode(&multicodec_key).into_string();
+    let uri = format!("did:key:z{}", encoded);
+    Entity::from_str(&uri).context("Failed to derive did:key entity")
+}
+
 /// Low-level: hash input to produce a deterministic `did:key` entity.
+///
+/// Uses blake3 to hash the input, then delegates to [`derive_entity_from_hash`].
 pub fn derive_entity(input: &str) -> Result<Entity> {
-    let hash = blake3::hash(input.as_bytes());
-    let b58 = bs58::encode(hash.as_bytes()).into_string();
-    let uri = format!("did:key:z{}", b58);
-    Entity::from_str(&uri).context("Failed to derive entity")
+    derive_entity_from_hash(&blake3::hash(input.as_bytes()))
+}
+
+/// Derive an entity ID deterministically from field content.
+///
+/// Sorts fields by attribute name, hashes the concatenated key/value pairs
+/// with blake3, then delegates to [`derive_entity_from_hash`] for proper Ed25519
+/// `did:key` formatting.
+pub fn derive_entity_from_fields(fields: &[(String, String)]) -> Result<Entity> {
+    let mut sorted = fields.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut hasher = blake3::Hasher::new();
+    for (attr, value) in &sorted {
+        hasher.update(attr.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(value.as_bytes());
+        hasher.update(b"\0");
+    }
+
+    derive_entity_from_hash(&hasher.finalize())
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +339,15 @@ pub async fn open_session(
     Ok(Session::open(branch))
 }
 
-/// Open a raw Branch for the active space's dialog-db (for lower-level operations).
+/// Open a raw Branch for the active space's dialog-db.
+///
+/// Use `open_session()` for read-only paths and single-valued entity writes
+/// (Session wraps Branch and provides the Transaction API + rule-aware querying).
+///
+/// Use `open_branch()` for write paths involving multi-valued attributes
+/// (e.g. `concept/attribute`, `registry/concept`, `registry/rule`). Transaction
+/// deduplicates by `(entity, attribute)`, so only one value per pair survives —
+/// raw Branch + `Instruction` is required for multi-valued writes.
 pub async fn open_branch(
     ctx: &SpaceContext,
 ) -> Result<dialog_artifacts::repository::Branch<FsBackend>> {
@@ -403,6 +450,184 @@ pub async fn fetch_values<S: ArtifactStore>(
 }
 
 // ---------------------------------------------------------------------------
+// Entity discovery helpers
+// ---------------------------------------------------------------------------
+
+/// Find all entities that have a given attribute (using the AEV index).
+///
+/// This replaces the old `concept/entity` back-reference pattern.
+/// Dialog-db identifies concept membership structurally: an entity belongs
+/// to a concept if it has facts for that concept's attributes.
+pub async fn find_entities_by_attribute<S: ArtifactStore>(
+    store: &S,
+    attr_name: &str,
+) -> Result<Vec<Entity>> {
+    let attr = Attribute::from_str(attr_name).context("Invalid attribute")?;
+    let results: Vec<_> = store
+        .select(ArtifactSelector::new().the(attr))
+        .try_collect()
+        .await?;
+
+    // Deduplicate entities (multiple values for the same entity+attribute
+    // would otherwise produce duplicates).
+    let mut seen = std::collections::HashSet::new();
+    let mut entities = Vec::new();
+    for artifact in results {
+        if seen.insert(artifact.of.to_string()) {
+            entities.push(artifact.of);
+        }
+    }
+    Ok(entities)
+}
+
+/// Find all entities belonging to a concept by checking ALL schema attributes.
+///
+/// Queries the AEV index for each schema attribute and intersects the
+/// entity sets. An entity must have facts for every attribute to be
+/// included — matching dialog-db's structural inner-join semantics.
+pub async fn find_entities_by_concept<S: ArtifactStore>(
+    store: &S,
+    schema_attrs: &[String],
+) -> Result<Vec<Entity>> {
+    if schema_attrs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Start with entities from the first attribute
+    let mut result_set: std::collections::HashSet<String> = find_entities_by_attribute(store, &schema_attrs[0])
+        .await?
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
+
+    // Intersect with entities from each subsequent attribute
+    for attr in &schema_attrs[1..] {
+        let attr_entities: std::collections::HashSet<String> =
+            find_entities_by_attribute(store, attr)
+                .await?
+                .iter()
+                .map(|e| e.to_string())
+                .collect();
+        result_set = result_set.intersection(&attr_entities).cloned().collect();
+        if result_set.is_empty() {
+            return Ok(Vec::new());
+        }
+    }
+
+    // Convert back to Entity values (preserving original Entity objects)
+    let all_entities = find_entities_by_attribute(store, &schema_attrs[0]).await?;
+    Ok(all_entities
+        .into_iter()
+        .filter(|e| result_set.contains(&e.to_string()))
+        .collect())
+}
+
+/// Infer the concept that an entity belongs to by examining its attributes.
+///
+/// Scans all facts for the entity, extracts the namespace prefix from each
+/// attribute (the part before `/`), filters out well-known system namespaces,
+/// and uses the most common namespace as the concept name.
+///
+/// Returns `(concept_name, concept_entity, schema_attrs)` or an error if
+/// the entity has no attributes or the concept cannot be resolved.
+pub async fn infer_concept_from_entity<S: ArtifactStore>(
+    store: &S,
+    entity: &Entity,
+    space_did: &str,
+) -> Result<(ConceptName, Entity, Vec<String>)> {
+    // Well-known system namespaces that are not user concepts
+    const SYSTEM_NAMESPACES: &[&str] = &["entity", "concept", "registry", "attribute", "rule"];
+
+    // Fetch all facts about this entity
+    let results: Vec<_> = store
+        .select(ArtifactSelector::new().of(entity.clone()))
+        .try_collect()
+        .await?;
+
+    if results.is_empty() {
+        anyhow::bail!("Entity '{}' not found (no facts)", entity);
+    }
+
+    // Count namespace occurrences
+    let mut ns_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for artifact in &results {
+        let attr_str = artifact.the.to_string();
+        if let Some((ns, _)) = attr_str.split_once('/') {
+            let ns_lower = ns.to_lowercase();
+            if !SYSTEM_NAMESPACES.contains(&ns_lower.as_str()) {
+                *ns_counts.entry(ns_lower).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let best_ns = ns_counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(ns, _)| ns)
+        .context(format!(
+            "Entity '{}' has no user-concept attributes",
+            entity
+        ))?;
+
+    let concept_name = ConceptName::from_stored(best_ns);
+    let concept_ent = concept_entity(space_did, &concept_name)?;
+
+    // Fetch the stored concept name (may have different casing)
+    let stored_name = fetch_string(store, &concept_ent, ATTR_CONCEPT_NAME)
+        .await?
+        .context(format!(
+            "Could not resolve concept for entity '{}' (inferred namespace '{}' but no concept found)",
+            entity, concept_name
+        ))?;
+    let stored_name = ConceptName::from_stored(stored_name);
+
+    let schema_attrs = fetch_string_values(store, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
+
+    Ok((stored_name, concept_ent, schema_attrs))
+}
+
+/// Fetch all facts (as Artifacts) for an entity.
+///
+/// Used by retract operations to discover and remove all facts about an
+/// entity without needing to know its concept schema in advance.
+pub async fn fetch_all_entity_facts<S: ArtifactStore>(
+    store: &S,
+    entity: &Entity,
+) -> Result<Vec<dialog_artifacts::Artifact>> {
+    let results: Vec<_> = store
+        .select(ArtifactSelector::new().of(entity.clone()))
+        .try_collect()
+        .await?;
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// Cardinality helpers
+// ---------------------------------------------------------------------------
+
+/// Fetch the cardinality for each attribute of a concept from stored metadata.
+///
+/// Returns a map from fully-qualified attribute name to `Cardinality`.
+/// Attributes without stored cardinality metadata default to `Cardinality::One`.
+pub async fn fetch_attribute_cardinalities<S: ArtifactStore>(
+    store: &S,
+    space_did: &str,
+    concept_name: &ConceptName,
+    schema_attrs: &[String],
+) -> Result<std::collections::HashMap<String, Cardinality>> {
+    let mut cardinalities = std::collections::HashMap::new();
+    for attr_name in schema_attrs {
+        let meta_entity = attribute_meta_entity(space_did, concept_name, attr_name)?;
+        if let Some(val) = fetch_string(store, &meta_entity, ATTR_ATTRIBUTE_CARDINALITY).await? {
+            if val.to_lowercase() == "many" {
+                cardinalities.insert(attr_name.clone(), Cardinality::Many);
+            }
+        }
+    }
+    Ok(cardinalities)
+}
+
+// ---------------------------------------------------------------------------
 // Value helpers
 // ---------------------------------------------------------------------------
 
@@ -489,9 +714,26 @@ pub fn leak_str(s: &str) -> &'static str {
 /// fully-qualified attribute names (e.g. `["task/title", "task/status"]`).
 ///
 /// Each attribute is split on `/` to extract namespace and name, then
-/// wrapped in an `AttributeSchema<Value>` with `Type::String` (the
-/// type doesn't affect rule evaluation, only schema validation).
-pub fn build_dynamic_concept(attributes: &[String]) -> Result<dialog_query::predicate::Concept> {
+/// wrapped in an `AttributeSchema<Value>`.
+///
+/// ## Type::String default
+///
+/// `Type::String` is used for all attributes because dialog-db's type
+/// checking at query time is a no-op (`AttributeSchema::check()` always
+/// returns Ok). Type only affects the concept's identity hash (used for
+/// rule resolution), but since both `build_dynamic_concept()` and
+/// `compile_rule()` use the same `Type::String` default, concept URIs
+/// are consistent and rules resolve correctly.
+///
+/// ## Cardinality
+///
+/// If a `cardinalities` map is provided, attributes with
+/// `Cardinality::Many` get correct cost estimates from the query planner.
+/// Attributes not in the map default to `Cardinality::One`.
+pub fn build_dynamic_concept(
+    attributes: &[String],
+    cardinalities: &std::collections::HashMap<String, Cardinality>,
+) -> Result<dialog_query::predicate::Concept> {
     use dialog_query::{AttributeSchema, Type};
 
     let attr_schemas: Vec<(&str, AttributeSchema<Value>)> = attributes
@@ -504,12 +746,15 @@ pub fn build_dynamic_concept(attributes: &[String]) -> Result<dialog_query::pred
                 )
             })?;
             let short_name = leak_str(name);
-            let schema = AttributeSchema::<Value>::new(
+            let mut schema = AttributeSchema::<Value>::new(
                 leak_str(ns),
                 short_name,
                 leak_str(""), // description
-                Type::String, // default type; rule eval doesn't enforce types
+                Type::String, // see doc comment above
             );
+            if let Some(&cardinality) = cardinalities.get(attr) {
+                schema.cardinality = cardinality;
+            }
             Ok((short_name, schema))
         })
         .collect::<Result<Vec<_>>>()?;

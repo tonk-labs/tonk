@@ -1,14 +1,14 @@
 //! Entity CRUD: create, query, show, assert, and retract entities.
 //!
-//! An entity is a data record whose attributes conform to a concept's schema.
-//! Each entity stores its attribute values as EAV triples, plus metadata
-//! (`entity/type` pointing to the concept, `entity/created` timestamp).
+//! An entity is a data record identified by a deterministic `did:key` derived
+//! from its initial field values. Concept membership is structural — an entity
+//! belongs to a concept if it has facts for that concept's attributes, matching
+//! dialog-db's query-time duck typing model.
 
 use crate::schema::*;
 use anyhow::{Context, Result};
-use dialog_artifacts::{Artifact, ArtifactSelector, ArtifactStore, ArtifactStoreMut, Instruction};
-use dialog_query::claim::Attribute;
-use dialog_query::{Entity, Value};
+use dialog_query::claim::{Attribute, Relation};
+use dialog_query::{Entity, Session, Value};
 use futures_util::TryStreamExt;
 use std::io::Read;
 use std::str::FromStr;
@@ -17,8 +17,9 @@ use std::str::FromStr;
 // Create an entity
 // ---------------------------------------------------------------------------
 
-/// Create a new entity
+/// Create a new entity.
 ///
+/// The entity ID is deterministically derived from the field values.
 /// `fields` are `key=value` pairs where keys are short attribute names
 /// (auto-prefixed to the concept namespace).
 pub async fn create(
@@ -29,13 +30,13 @@ pub async fn create(
     json: bool,
 ) -> Result<()> {
     let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
     let concept = concept_entity(&ctx.space_did, &concept_name)?;
 
     // Verify concept exists and get its schema
-    let stored_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
         .await?
         .context(format!(
             "Concept '{}' not found. Define it first with 'tonk concept define {}'.",
@@ -43,7 +44,7 @@ pub async fn create(
         ))?;
     let stored_name = ConceptName::from_stored(stored_name);
 
-    let schema_attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
     // Parse field values from args, file, or stdin
     let field_map = if let Some(path) = &file {
@@ -85,27 +86,20 @@ pub async fn create(
         qualified_fields.push((qualified, value.clone()));
     }
 
-    // Generate a new random entity ID
+    // Derive entity ID deterministically from field content
     let entity = derive_entity_from_fields(&qualified_fields)?;
 
-    let now = chrono::Utc::now().timestamp();
-
-    // Build instructions
-    let mut instructions = Vec::new();
-
-    // Attribute values
+    // Build and commit transaction
+    let mut transaction = session.edit();
     for (attr_name, value_str) in &qualified_fields {
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(attr_name)?,
-            of: entity.clone(),
-            is: parse_value(value_str),
-            cause: None,
-        }));
+        let relation = Relation::new(
+            Attribute::from_str(attr_name)?,
+            entity.clone(),
+            parse_value(value_str),
+        );
+        transaction.assert(relation);
     }
-
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    session.commit(transaction).await?;
 
     if json {
         let mut data = serde_json::Map::new();
@@ -118,7 +112,6 @@ pub async fn create(
             "id": entity.to_string(),
             "concept": stored_name.as_str(),
             "data": data,
-            "created": now,
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
@@ -135,64 +128,28 @@ pub async fn create(
     Ok(())
 }
 
-/// Derive an entity from field content
-///
-/// `fields` are `key=value` pairs where keys are short attribute names
-pub fn derive_entity_from_fields(fields: &[(String, String)]) -> Result<Entity> {
-    // Sort fields by attribute name for deterministic ordering
-    let mut sorted = fields.to_vec();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
-
-    // blake3 hash concantedated key=value pairs
-    let mut hasher = blake3::Hasher::new();
-    for (attr, value) in &sorted {
-        hasher.update(attr.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(value.as_bytes());
-        hasher.update(b"\0");
-    }
-    let hash = hasher.finalize();
-
-    // Use hash as Ed25519 signing key seed
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(hash.as_bytes());
-    let verifying_key = signing_key.verifying_key();
-
-    // Format as did:key
-    const ED25519_MULTICODEC: [u8; 2] = [0xed, 0x01];
-    let mut multicodec_key = [0u8; 34];
-    multicodec_key[..2].copy_from_slice(&ED25519_MULTICODEC);
-    multicodec_key[2..].copy_from_slice(verifying_key.as_bytes());
-    let encoded = bs58::encode(&multicodec_key).into_string();
-    let url = format!("did:key:z{}", encoded);
-
-    Entity::from_str(&url).context("Failed to derive entity from fields")
-}
-
 // ---------------------------------------------------------------------------
 // Query entities
 // ---------------------------------------------------------------------------
 
 /// Query entities of a concept, with optional filters.
 ///
-/// Filters are `key=value` pairs for exact matching.
-///
-/// When rules exist for the concept, uses dialog-db's Session-based
-/// concept querying which automatically merges stored entities with
-/// rule-derived entities. Falls back to direct enumeration when no
-/// rules apply.
+/// Uses dialog-db's Session-based concept querying which performs a
+/// structural join over the concept's attributes. When rules exist,
+/// they are registered with the Session to merge stored and derived entities.
 pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Result<()> {
     let ctx = get_space_context()?;
-    let branch = open_branch(&ctx).await?;
+    let session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
     let concept = concept_entity(&ctx.space_did, &concept_name)?;
 
-    let stored_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
     let stored_name = ConceptName::from_stored(stored_name);
 
-    let schema_attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
     // Parse filters
     let filter_map = parse_kv_fields(&filters)?;
@@ -204,128 +161,69 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
 
     // Load ALL rules in the space (not just rules for the queried concept),
     // because rules can depend on each other.
-    let all_rules = crate::rule::load_all_rules(&branch, &ctx.space_did).await?;
+    let all_rules = crate::rule::load_all_rules(&session, &ctx.space_did).await?;
 
-    // Check if any rule targets the queried concept
-    let has_rules_for_concept = all_rules
-        .iter()
-        .any(|(conclusion, _)| conclusion == stored_name.as_str());
+    // Compile all rules
+    // Fetch cardinalities for the queried concept
+    let cardinalities =
+        fetch_attribute_cardinalities(&session, &ctx.space_did, &stored_name, &schema_attrs)
+            .await?;
 
-    let rows = if has_rules_for_concept {
-        // Rules exist for this concept — compile ALL rules (each against its
-        // own conclusion concept's schema) and register them with the Session.
-        let mut compiled_rules: Vec<dialog_query::DeductiveRule> = Vec::new();
-        for (conclusion_name, def) in &all_rules {
-            let cname = ConceptName::from_stored(conclusion_name.clone());
-            let concept_ent = concept_entity(&ctx.space_did, &cname)?;
-            let concept_attrs =
-                fetch_string_values(&branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
-            let compiled = crate::rule::compile_rule(def, &cname, &concept_attrs)?;
-            compiled_rules.push(compiled);
-        }
+    let mut compiled_rules: Vec<dialog_query::DeductiveRule> = Vec::new();
+    for (conclusion_name, def) in &all_rules {
+        let cname = ConceptName::from_stored(conclusion_name.clone());
+        let concept_ent = concept_entity(&ctx.space_did, &cname)?;
+        let concept_attrs =
+            fetch_string_values(&session, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
+        let rule_cardinalities =
+            fetch_attribute_cardinalities(&session, &ctx.space_did, &cname, &concept_attrs).await?;
+        let compiled = crate::rule::compile_rule(def, &cname, &concept_attrs, &rule_cardinalities)?;
+        compiled_rules.push(compiled);
+    }
 
-        query_with_rules(
-            branch,
-            &schema_attrs,
-            &stored_name,
-            &qualified_filters,
-            &compiled_rules,
-        )
-        .await?
-    } else {
-        // No rules — use direct enumeration (existing fast path)
-        query_direct(
-            &branch,
-            &concept,
-            &schema_attrs,
-            &stored_name,
-            &qualified_filters,
-        )
-        .await?
-    };
+    // Always use Session-based concept query (structural matching via joins)
+    let rows = query_concept(
+        session,
+        &schema_attrs,
+        &stored_name,
+        &qualified_filters,
+        &compiled_rules,
+        &cardinalities,
+    )
+    .await?;
 
     display_rows(&rows, &stored_name, &schema_attrs, json);
     Ok(())
 }
 
-/// Direct enumeration query (no rules). Uses the concept/entity
-/// back-references and hybrid filtering strategy.
-async fn query_direct<S: ArtifactStore>(
-    store: &S,
-    concept: &Entity,
-    schema_attrs: &[String],
-    stored_name: &ConceptName,
-    qualified_filters: &[(String, Value)],
-) -> Result<Vec<(String, serde_json::Map<String, serde_json::Value>)>> {
-    let entities = fetch_entity_values(store, concept, ATTR_CONCEPT_ENTITY).await?;
-
-    if entities.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Hybrid query strategy
-    let matching_entities: Vec<Entity> = if qualified_filters.len() == 1 {
-        let (attr_name, filter_value) = &qualified_filters[0];
-        fast_filter_by_value(store, attr_name, filter_value, &entities).await?
-    } else if qualified_filters.is_empty() {
-        entities.clone()
-    } else {
-        let mut result = Vec::new();
-        for entity in &entities {
-            let mut matches = true;
-            for (attr_name, filter_value) in qualified_filters {
-                let val = fetch_value(store, entity, attr_name).await?;
-                if val.as_ref() != Some(filter_value) {
-                    matches = false;
-                    break;
-                }
-            }
-            if matches {
-                result.push(entity.clone());
-            }
-        }
-        result
-    };
-
-    let mut rows = Vec::new();
-    for entity in &matching_entities {
-        let mut data = serde_json::Map::new();
-        for attr_name in schema_attrs {
-            if let Some(val) = fetch_value(store, entity, attr_name).await? {
-                let short = short_attribute(stored_name, attr_name);
-                data.insert(short, value_to_json(&val));
-            }
-        }
-        rows.push((entity.to_string(), data));
-    }
-
-    Ok(rows)
-}
-
-/// Session-based query with rules. Registers pre-compiled DeductiveRules
-/// with a Session and uses dialog-db's concept application to merge
-/// stored and derived entities.
-async fn query_with_rules(
-    branch: dialog_artifacts::replica::Branch<
-        tonk_space::FsBackend,
-        dialog_artifacts::replica::SigningAuthority,
+/// Session-based concept query. Uses dialog-db's structural matching:
+/// builds a dynamic Concept from the schema attributes and queries via
+/// the Session, which performs a multi-way join over the AEV/EAV indexes.
+///
+/// Any registered DeductiveRules are also evaluated, merging stored and
+/// rule-derived entities with OR semantics.
+async fn query_concept(
+    mut session: Session<
+        dialog_artifacts::replica::Branch<
+            tonk_space::FsBackend,
+            dialog_artifacts::replica::SigningAuthority,
+        >,
     >,
     schema_attrs: &[String],
     stored_name: &ConceptName,
     qualified_filters: &[(String, Value)],
     compiled_rules: &[dialog_query::DeductiveRule],
+    cardinalities: &std::collections::HashMap<String, dialog_query::Cardinality>,
 ) -> Result<Vec<(String, serde_json::Map<String, serde_json::Value>)>> {
-    use dialog_query::{Parameters, Session, Term};
-    use futures_util::TryStreamExt;
+    use dialog_query::{Parameters, Term};
 
-    // Open a Session and register all rules
-    let mut session = Session::open(branch);
+    // Register all rules with the Session
     for rule in compiled_rules {
         session = session.register(rule.clone());
     }
 
-    // Build the dynamic concept
-    let dynamic_concept = build_dynamic_concept(schema_attrs)?;
+    // Build the dynamic concept from schema attributes (with correct cardinality)
+    let dynamic_concept = build_dynamic_concept(schema_attrs, cardinalities)?;
 
     // Build query parameters: named variables for each attribute
     // plus "this" for the entity
@@ -459,69 +357,63 @@ fn display_rows(
 // ---------------------------------------------------------------------------
 
 /// Show full details of an entity by ID.
+///
+/// Infers the entity's concept by examining its attribute namespaces.
 pub async fn show(id: String, json: bool) -> Result<()> {
     let ctx = get_space_context()?;
-    let branch = open_branch(&ctx).await?;
+    let session = open_session(&ctx).await?;
 
     let entity = Entity::from_str(&id).context("Invalid entity ID")?;
 
-    // Get the concept this entity belongs to
-    let concept_val = fetch_value(&branch, &entity, ATTR_ENTITY_TYPE)
-        .await?
-        .context(format!("Entity '{}' not found (no entity/type)", id))?;
+    // Infer concept from the entity's attributes
+    let (concept_name, _concept_ent, schema_attrs) =
+        infer_concept_from_entity(&session, &entity, &ctx.space_did).await?;
 
-    let concept_entity = match concept_val {
-        Value::Entity(e) => e,
-        _ => anyhow::bail!("Entity type is not an entity reference"),
-    };
-
-    let concept_name = fetch_string(&branch, &concept_entity, ATTR_CONCEPT_NAME)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!(
-            "Concept entity '{}' is missing its 'concept/name' attribute — possible data corruption",
-            concept_entity
-        ))?;
-    let concept_name = ConceptName::from_stored(concept_name);
-
-    let schema_attrs =
-        fetch_string_values(&branch, &concept_entity, ATTR_CONCEPT_ATTRIBUTE).await?;
-
-    let created = fetch_value(&branch, &entity, ATTR_ENTITY_CREATED).await?;
-
-    // Fetch all attribute values
+    // Fetch all attribute values (supporting multi-valued attributes)
     let mut data = serde_json::Map::new();
     for attr_name in &schema_attrs {
-        if let Some(val) = fetch_value(&branch, &entity, attr_name).await? {
+        let values = fetch_values(&session, &entity, attr_name).await?;
+        if !values.is_empty() {
             let short = short_attribute(&concept_name, attr_name);
-            data.insert(short, value_to_json(&val));
+            if values.len() == 1 {
+                data.insert(short, value_to_json(&values[0]));
+            } else {
+                let json_arr: Vec<serde_json::Value> =
+                    values.iter().map(value_to_json).collect();
+                data.insert(short, serde_json::Value::Array(json_arr));
+            }
         }
     }
 
     if json {
-        let mut output = serde_json::json!({
+        let output = serde_json::json!({
             "id": id,
             "concept": concept_name.as_str(),
             "data": data,
         });
-        if let Some(ts) = &created {
-            output
-                .as_object_mut()
-                .unwrap()
-                .insert("created".to_string(), value_to_json(ts));
-        }
         println!("{}", serde_json::to_string(&output)?);
     } else {
         println!("{} entity: {}", concept_name, id);
-        if let Some(Value::SignedInt(ts)) = &created {
-            println!("  created: {}", format_ts(*ts as i64));
-        }
         println!();
         for (key, val) in &data {
-            let display = match val {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            println!("  {}: {}", key, display);
+            match val {
+                serde_json::Value::Array(arr) => {
+                    println!("  {}:", key);
+                    for item in arr {
+                        let display = match item {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        println!("    - {}", display);
+                    }
+                }
+                serde_json::Value::String(s) => {
+                    println!("  {}: {}", key, s);
+                }
+                other => {
+                    println!("  {}: {}", key, other);
+                }
+            }
         }
     }
 
@@ -533,36 +425,22 @@ pub async fn show(id: String, json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Assert new attribute values on an existing entity.
+///
+/// Infers the entity's concept by examining its attribute namespaces,
+/// then validates and applies the field updates.
 pub async fn assert(id: String, fields: Vec<String>, json: bool) -> Result<()> {
     if fields.is_empty() {
         anyhow::bail!("No fields to assert. Pass key=value pairs.");
     }
 
     let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut session = open_session(&ctx).await?;
 
     let entity = Entity::from_str(&id).context("Invalid entity ID")?;
 
-    // Get the concept this entity belongs to
-    let concept_val = fetch_value(&branch, &entity, ATTR_ENTITY_TYPE)
-        .await?
-        .context(format!("Entity '{}' not found", id))?;
-
-    let concept_entity_val = match concept_val {
-        Value::Entity(e) => e,
-        _ => anyhow::bail!("Entity type is not an entity reference"),
-    };
-
-    let concept_name = fetch_string(&branch, &concept_entity_val, ATTR_CONCEPT_NAME)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!(
-            "Concept entity '{}' is missing its 'concept/name' attribute — possible data corruption",
-            concept_entity_val
-        ))?;
-    let concept_name = ConceptName::from_stored(concept_name);
-
-    let schema_attrs =
-        fetch_string_values(&branch, &concept_entity_val, ATTR_CONCEPT_ATTRIBUTE).await?;
+    // Infer concept from the entity's attributes
+    let (concept_name, _concept_ent, schema_attrs) =
+        infer_concept_from_entity(&session, &entity, &ctx.space_did).await?;
 
     // Parse and qualify fields
     let field_map = parse_kv_fields(&fields)?;
@@ -579,39 +457,31 @@ pub async fn assert(id: String, fields: Vec<String>, json: bool) -> Result<()> {
         qualified_fields.push((qualified, value.clone()));
     }
 
-    // Build instructions: for each field, retract old value (if any) and assert new
-    let mut instructions = Vec::new();
+    // Build transaction: for each field, retract old value (if any) and assert new
+    let mut transaction = session.edit();
     let mut updated = Vec::new();
 
     for (attr_name, value_str) in &qualified_fields {
         let new_value = parse_value(value_str);
+        let attr = Attribute::from_str(attr_name)?;
 
-        // Retract old value if it exists
-        if let Some(old_value) = fetch_value(&branch, &entity, attr_name).await?
-            && old_value != new_value
-        {
-            instructions.push(Instruction::Retract(Artifact {
-                the: Attribute::from_str(attr_name)?,
-                of: entity.clone(),
-                is: old_value,
-                cause: None,
-            }));
+        // Retract all old values for this attribute (supports multi-valued)
+        let old_values = fetch_values(&session, &entity, attr_name).await?;
+        for old_value in old_values {
+            if old_value != new_value {
+                let old_relation = Relation::new(attr.clone(), entity.clone(), old_value);
+                transaction.retract(old_relation);
+            }
         }
 
         // Assert new value
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(attr_name)?,
-            of: entity.clone(),
-            is: new_value,
-            cause: None,
-        }));
+        let new_relation = Relation::new(attr, entity.clone(), new_value);
+        transaction.assert(new_relation);
 
         updated.push((short_attribute(&concept_name, attr_name), value_str.clone()));
     }
 
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    session.commit(transaction).await?;
 
     if json {
         let output = serde_json::json!({
@@ -635,86 +505,51 @@ pub async fn assert(id: String, fields: Vec<String>, json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Retract an entity by ID.
+///
+/// Discovers all facts about the entity and retracts them, regardless of
+/// which concept they belong to. This is more robust than the old approach
+/// of only retracting known schema attributes.
 pub async fn retract(id: String, json: bool) -> Result<()> {
     let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut session = open_session(&ctx).await?;
 
     let entity = Entity::from_str(&id).context("Invalid entity ID")?;
 
-    // Get the concept this entity belongs to
-    let concept_val = fetch_value(&branch, &entity, ATTR_ENTITY_TYPE)
-        .await?
-        .context(format!("Entity '{}' not found", id))?;
+    // Fetch all facts about this entity
+    let all_facts = fetch_all_entity_facts(&session, &entity).await?;
 
-    let concept_entity_val = match concept_val {
-        Value::Entity(e) => e,
-        _ => anyhow::bail!("Entity type is not an entity reference"),
+    if all_facts.is_empty() {
+        anyhow::bail!("Entity '{}' not found (no facts)", id);
+    }
+
+    // Try to infer the concept name for display purposes
+    let concept_label = match infer_concept_from_entity(&session, &entity, &ctx.space_did).await {
+        Ok((name, _, _)) => name.to_string(),
+        Err(_) => "unknown".to_string(),
     };
 
-    let concept_name = fetch_string(&branch, &concept_entity_val, ATTR_CONCEPT_NAME)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!(
-            "Concept entity '{}' is missing its 'concept/name' attribute — possible data corruption",
-            concept_entity_val
-        ))?;
-    let concept_name = ConceptName::from_stored(concept_name);
-
-    let schema_attrs =
-        fetch_string_values(&branch, &concept_entity_val, ATTR_CONCEPT_ATTRIBUTE).await?;
-
-    let mut instructions = Vec::new();
-
-    // Retract all attribute values
-    for attr_name in &schema_attrs {
-        if let Some(val) = fetch_value(&branch, &entity, attr_name).await? {
-            instructions.push(Instruction::Retract(Artifact {
-                the: Attribute::from_str(attr_name)?,
-                of: entity.clone(),
-                is: val,
-                cause: None,
-            }));
-        }
+    // Build transaction: retract every fact about this entity
+    let mut transaction = session.edit();
+    for artifact in &all_facts {
+        let relation = Relation::new(
+            artifact.the.clone(),
+            artifact.of.clone(),
+            artifact.is.clone(),
+        );
+        transaction.retract(relation);
     }
 
-    // Retract entity/type
-    instructions.push(Instruction::Retract(Artifact {
-        the: Attribute::from_str(ATTR_ENTITY_TYPE)?,
-        of: entity.clone(),
-        is: Value::Entity(concept_entity_val.clone()),
-        cause: None,
-    }));
-
-    // Retract entity/created
-    if let Some(ts) = fetch_value(&branch, &entity, ATTR_ENTITY_CREATED).await? {
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_ENTITY_CREATED)?,
-            of: entity.clone(),
-            is: ts,
-            cause: None,
-        }));
-    }
-
-    // Retract concept/entity back-reference
-    instructions.push(Instruction::Retract(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_ENTITY)?,
-        of: concept_entity_val.clone(),
-        is: Value::Entity(entity.clone()),
-        cause: None,
-    }));
-
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    session.commit(transaction).await?;
 
     if json {
         let output = serde_json::json!({
             "ok": true,
             "id": id,
-            "concept": concept_name.as_str(),
+            "concept": concept_label,
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("Retracted {} entity: {}", concept_name, id);
+        println!("Retracted {} entity: {}", concept_label, id);
     }
 
     Ok(())
@@ -759,35 +594,4 @@ fn parse_json_fields(input: &str) -> Result<Vec<(String, String)>> {
         result.push((key.clone(), value_str));
     }
     Ok(result)
-}
-
-/// Fast path: use dialog's value index to find entities matching a single
-/// attribute+value filter, then intersect with the known entity set.
-async fn fast_filter_by_value<S: ArtifactStore>(
-    store: &S,
-    attr_name: &str,
-    filter_value: &Value,
-    entity_set: &[Entity],
-) -> Result<Vec<Entity>> {
-    let attr = Attribute::from_str(attr_name).context("Invalid attribute")?;
-
-    // Query by attribute + value to get all matching entities
-    let results: Vec<_> = store
-        .select(ArtifactSelector::new().the(attr).is(filter_value.clone()))
-        .try_collect()
-        .await?;
-
-    let matching_entities: Vec<Entity> = results.into_iter().map(|a| a.of).collect();
-
-    // Intersect with entity set
-    Ok(matching_entities
-        .into_iter()
-        .filter(|e| entity_set.contains(e))
-        .collect())
-}
-
-fn format_ts(ts: i64) -> String {
-    chrono::DateTime::from_timestamp(ts, 0)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|| ts.to_string())
 }

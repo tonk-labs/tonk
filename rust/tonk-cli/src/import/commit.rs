@@ -1,8 +1,15 @@
 //! Import orchestration: validation, retraction, assertion, and atomic commit.
 //!
-//! Contains the async functions that take parsed concepts, standalone
-//! attributes, or rules, validate them against the active space, build
-//! retract/assert instruction lists, and commit them atomically.
+//! Contains the async functions that take parsed concepts or rules, validate
+//! them against the active space, build retract/assert instruction lists, and
+//! commit them atomically.
+//!
+//! Uses raw Branch + Instruction (not Session/Transaction) because imports
+//! write multi-valued attributes: multiple `concept/attribute` entries per
+//! concept, multiple `registry/concept` and `registry/rule` entries on the
+//! registry entity, and multiple attribute metadata entries. Transaction's
+//! `HashMap<Entity, HashMap<Attribute, Change>>` deduplicates by
+//! `(entity, attribute)`, so only the last value per pair would survive.
 
 use super::concept_parse::{
     ParsedAttribute, ParsedConcept, ParsedEntry, ParsedStandaloneAttribute,
@@ -339,9 +346,14 @@ pub(super) async fn import_rules(
     } else {
         println!("Imported {} rule(s) from '{}':\n", rules.len(), file);
         for (parsed, definition) in &lowered {
+            let desc_str = parsed
+                .description
+                .as_ref()
+                .map(|d| format!(" - {}", d))
+                .unwrap_or_default();
             println!(
-                "  {} [{}] -> {}",
-                parsed.name, parsed.namespace, definition.conclusion.concept
+                "  {} [{}] -> {}{}",
+                parsed.name, parsed.namespace, definition.conclusion.concept, desc_str
             );
             println!(
                 "    {} when, {} unless",
@@ -480,11 +492,18 @@ pub(super) async fn import_mixed(
 
     // --- Build schema overrides for concepts defined in this file ---
 
-    let mut concept_overrides: std::collections::HashMap<String, (ConceptName, Vec<String>)> =
-        std::collections::HashMap::new();
+    let mut concept_overrides: std::collections::HashMap<
+        String,
+        (
+            ConceptName,
+            Vec<String>,
+            std::collections::HashMap<String, dialog_query::Cardinality>,
+        ),
+    > = std::collections::HashMap::new();
     for (cname, concept) in &validated_concepts {
         let attrs = build_concept_attr_list(cname, concept)?;
-        concept_overrides.insert(cname.to_lowercase(), (cname.clone(), attrs));
+        let cardinalities = build_concept_cardinalities(cname, concept)?;
+        concept_overrides.insert(cname.to_lowercase(), (cname.clone(), attrs, cardinalities));
     }
 
     // --- Validate rules against the effective schema ---
@@ -496,9 +515,9 @@ pub(super) async fn import_mixed(
     for (parsed, definition) in &lowered_rules {
         let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
         let key = conclusion_concept.to_lowercase();
-        let (concept_name, concept_attrs) = if let Some((name, attrs)) = concept_overrides.get(&key)
-        {
-            (name.clone(), attrs.clone())
+        let (concept_name, concept_attrs, cardinalities) =
+            if let Some((name, attrs, cards)) = concept_overrides.get(&key) {
+                (name.clone(), attrs.clone(), cards.clone())
         } else {
             let concept_ent = concept_entity(&ctx.space_did, &conclusion_concept)?;
             let concept_name = fetch_string(&branch, &concept_ent, ATTR_CONCEPT_NAME)
@@ -510,10 +529,23 @@ pub(super) async fn import_mixed(
             let concept_name = ConceptName::from_stored(concept_name);
             let concept_attrs =
                 fetch_string_values(&branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
-            (concept_name, concept_attrs)
+            let cardinalities = fetch_attribute_cardinalities(
+                &branch,
+                &ctx.space_did,
+                &concept_name,
+                &concept_attrs,
+            )
+            .await?;
+            (concept_name, concept_attrs, cardinalities)
         };
 
-        validate_rule_against_schema(parsed, definition, &concept_name, &concept_attrs)?;
+        validate_rule_against_schema(
+            parsed,
+            definition,
+            &concept_name,
+            &concept_attrs,
+            &cardinalities,
+        )?;
     }
 
     // --- Build all instructions and commit atomically ---
@@ -878,6 +910,38 @@ fn build_concept_attr_list(cname: &ConceptName, concept: &ParsedConcept) -> Resu
     Ok(attrs)
 }
 
+/// Build a cardinality map for a concept definition from parsed attributes.
+fn build_concept_cardinalities(
+    cname: &ConceptName,
+    concept: &ParsedConcept,
+) -> Result<std::collections::HashMap<String, dialog_query::Cardinality>> {
+    let mut cardinalities = std::collections::HashMap::new();
+
+    for attr in &concept.attributes {
+        let Some(cardinality) = &attr.cardinality else {
+            continue;
+        };
+        if cardinality.to_lowercase() != "many" {
+            continue;
+        }
+
+        let qualified = if let Some(ref qr) = attr.qualified_ref {
+            if let Some(name) = qr.strip_prefix('.') {
+                let prefix = cname.to_lowercase();
+                format!("{}/{}", prefix, name)
+            } else {
+                qr.clone()
+            }
+        } else {
+            qualify_attribute(cname, &attr.short_name)?
+        };
+
+        cardinalities.insert(qualified, dialog_query::Cardinality::Many);
+    }
+
+    Ok(cardinalities)
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers: standalone attribute assertion
 // ---------------------------------------------------------------------------
@@ -1059,8 +1123,16 @@ async fn validate_rule_against_space<S: dialog_artifacts::ArtifactStore + Artifa
     let concept_name = ConceptName::from_stored(concept_name);
 
     let concept_attrs = fetch_string_values(branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let cardinalities =
+        fetch_attribute_cardinalities(branch, space_did, &concept_name, &concept_attrs).await?;
 
-    validate_rule_against_schema(parsed, definition, &concept_name, &concept_attrs)?;
+    validate_rule_against_schema(
+        parsed,
+        definition,
+        &concept_name,
+        &concept_attrs,
+        &cardinalities,
+    )?;
 
     Ok(())
 }
@@ -1071,19 +1143,21 @@ fn validate_rule_against_schema(
     definition: &RuleDefinition,
     concept_name: &ConceptName,
     concept_attrs: &[String],
+    cardinalities: &std::collections::HashMap<String, dialog_query::Cardinality>,
 ) -> Result<()> {
     // Validate bindings match concept schema
     crate::rule::validate_definition(definition, concept_attrs, concept_name)
         .with_context(|| format!("Rule '{}' validation failed", parsed.name))?;
 
     // Trial-compile
-    crate::rule::compile_rule(definition, concept_name, concept_attrs).with_context(|| {
-        format!(
-            "Rule '{}' failed to compile. Check variable names match between \
-             conclusion bindings and premises.",
-            parsed.name
-        )
-    })?;
+    crate::rule::compile_rule(definition, concept_name, concept_attrs, cardinalities)
+        .with_context(|| {
+            format!(
+                "Rule '{}' failed to compile. Check variable names match between \
+                 conclusion bindings and premises.",
+                parsed.name
+            )
+        })?;
 
     Ok(())
 }
@@ -1142,6 +1216,7 @@ fn build_rule_assertions(
     import_summary.push(serde_json::json!({
         "name": parsed.name,
         "namespace": parsed.namespace,
+        "description": parsed.description,
         "conclusion": concept_name,
         "when_count": definition.when.len(),
         "unless_count": definition.unless.len(),

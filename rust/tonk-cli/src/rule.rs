@@ -348,13 +348,18 @@ fn rename_var(s: &str, rename: &HashMap<String, String>) -> String {
 
 /// Compile a `RuleDefinition` into a `DeductiveRule` using the given
 /// concept attributes for the conclusion.
+///
+/// The `cardinalities` map provides per-attribute cardinality from stored
+/// metadata. It is propagated to `build_dynamic_concept()` so that the
+/// query planner assigns correct costs for `Cardinality::Many` attributes.
 pub fn compile_rule(
     definition: &RuleDefinition,
     concept_name: &ConceptName,
     concept_attrs: &[String],
+    cardinalities: &std::collections::HashMap<String, dialog_query::Cardinality>,
 ) -> Result<DeductiveRule> {
     // 1. Build dynamic Concept from conclusion concept's attributes
-    let concept = build_dynamic_concept(concept_attrs)?;
+    let concept = build_dynamic_concept(concept_attrs, cardinalities)?;
 
     // 2. Build variable renaming map from conclusion bindings
     let rename = build_rename_map(definition, concept_name)?;
@@ -543,10 +548,10 @@ pub fn validate_definition(
 /// List all rules in the active space.
 pub async fn list(json: bool) -> Result<()> {
     let ctx = get_space_context()?;
-    let branch = open_branch(&ctx).await?;
+    let session = open_session(&ctx).await?;
 
     let registry = registry_entity(&ctx.space_did)?;
-    let rule_entities = fetch_entity_values(&branch, &registry, ATTR_REGISTRY_RULE).await?;
+    let rule_entities = fetch_entity_values(&session, &registry, ATTR_REGISTRY_RULE).await?;
 
     if rule_entities.is_empty() {
         if json {
@@ -559,7 +564,7 @@ pub async fn list(json: bool) -> Result<()> {
 
     let mut rules: Vec<(String, Option<String>, String)> = Vec::new();
     for entity in &rule_entities {
-        let name = match fetch_string(&branch, entity, ATTR_RULE_NAME).await? {
+        let name = match fetch_string(&session, entity, ATTR_RULE_NAME).await? {
             Some(n) => n,
             None => {
                 eprintln!(
@@ -569,8 +574,8 @@ pub async fn list(json: bool) -> Result<()> {
                 "???".to_string()
             }
         };
-        let description = fetch_string(&branch, entity, ATTR_RULE_DESCRIPTION).await?;
-        let conclusion = match fetch_string(&branch, entity, ATTR_RULE_CONCLUSION).await? {
+        let description = fetch_string(&session, entity, ATTR_RULE_DESCRIPTION).await?;
+        let conclusion = match fetch_string(&session, entity, ATTR_RULE_CONCLUSION).await? {
             Some(c) => c,
             None => {
                 eprintln!(
@@ -619,6 +624,11 @@ pub async fn list(json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Define a new rule from a JSON definition.
+///
+/// Uses raw Branch + Instruction (not Session/Transaction) because the
+/// registry entity has multi-valued `registry/rule` attributes. Transaction
+/// deduplicates by `(entity, attribute)` — only one value survives per pair —
+/// so it cannot correctly accumulate multiple rule references on the registry.
 pub async fn define(
     name: String,
     file: Option<String>,
@@ -677,12 +687,15 @@ pub async fn define(
     let concept_name = ConceptName::from_stored(concept_name);
 
     let concept_attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let cardinalities =
+        fetch_attribute_cardinalities(&branch, &ctx.space_did, &concept_name, &concept_attrs)
+            .await?;
 
     // Validate the definition
     validate_definition(&definition, &concept_attrs, &concept_name)?;
 
     // Try to compile the rule to catch errors early
-    compile_rule(&definition, &concept_name, &concept_attrs).context(
+    compile_rule(&definition, &concept_name, &concept_attrs, &cardinalities).context(
         "Rule definition is invalid. Check that variable names match between \
          conclusion bindings and premises.",
     )?;
@@ -768,16 +781,16 @@ pub async fn define(
 /// Show the full definition of a rule.
 pub async fn show(name: String, json: bool) -> Result<()> {
     let ctx = get_space_context()?;
-    let branch = open_branch(&ctx).await?;
+    let session = open_session(&ctx).await?;
 
     let rule = rule_entity(&ctx.space_did, &name)?;
 
-    let stored_name = fetch_string(&branch, &rule, ATTR_RULE_NAME)
+    let stored_name = fetch_string(&session, &rule, ATTR_RULE_NAME)
         .await?
         .context(format!("Rule '{}' not found", name))?;
 
-    let description = fetch_string(&branch, &rule, ATTR_RULE_DESCRIPTION).await?;
-    let conclusion = match fetch_string(&branch, &rule, ATTR_RULE_CONCLUSION).await? {
+    let description = fetch_string(&session, &rule, ATTR_RULE_DESCRIPTION).await?;
+    let conclusion = match fetch_string(&session, &rule, ATTR_RULE_CONCLUSION).await? {
         Some(c) => c,
         None => {
             eprintln!(
@@ -787,7 +800,7 @@ pub async fn show(name: String, json: bool) -> Result<()> {
             "???".to_string()
         }
     };
-    let definition_str = fetch_string(&branch, &rule, ATTR_RULE_DEFINITION)
+    let definition_str = fetch_string(&session, &rule, ATTR_RULE_DEFINITION)
         .await?
         .context("Rule definition not found")?;
 
@@ -839,6 +852,10 @@ pub async fn show(name: String, json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Delete a rule.
+///
+/// Uses raw Branch + Instruction (not Session/Transaction) for the same
+/// reason as [`define`]: the registry's multi-valued `registry/rule`
+/// attribute cannot be correctly retracted via Transaction.
 pub async fn delete(name: String, json: bool) -> Result<()> {
     let ctx = get_space_context()?;
     let mut branch = open_branch(&ctx).await?;

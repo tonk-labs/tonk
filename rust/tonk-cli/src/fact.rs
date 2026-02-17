@@ -1,127 +1,46 @@
-use crate::authority;
 use crate::crypto::Operator;
-use crate::keystore::Keystore;
-use crate::schema::value_to_json;
-use crate::state;
+use crate::schema::{derive_entity_from_hash, get_space_context, open_session, parse_value, value_to_json};
 use anyhow::{Context, Result};
-use dialog_artifacts::repository::{BranchId, Credentials, Repository};
+
 use dialog_query::claim::{Attribute, Claim, Relation};
-use dialog_query::{Entity, Session, Value};
+use dialog_query::{Entity, Value};
 use ed25519_dalek::Signer;
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use std::io::BufRead;
-use std::path::PathBuf;
 use std::str::FromStr;
-use tonk_space::FsBackend;
 
 /// Resolve an entity identifier to an Entity.
 ///
 /// Rules:
-/// - If starts with `~/` - derive by signing path with operator key, then blake3 hash, format as did:key
-/// - If parses as a valid URI (Entity) - use as-is
-/// - Otherwise - blake3 hash the input and format as did:key
+/// - If starts with `~/` - derive by signing path with operator key, then
+///   blake3 hash, and format as a proper Ed25519 `did:key`.
+/// - If parses as a valid URI (Entity) - use as-is.
+/// - Otherwise - blake3 hash the input and format as Ed25519 `did:key`.
 fn resolve_entity(input: &str, operator: &Operator) -> Result<Entity> {
     if input.starts_with("~/") {
-        // Sign the path with operator key, then hash
-        let path_bytes = input.as_bytes();
-        let signature = operator.signer().sign(path_bytes);
+        let signature = operator.signer().sign(input.as_bytes());
         let hash = blake3::hash(signature.to_bytes().as_ref());
-        let hash_b58 = bs58::encode(hash.as_bytes()).into_string();
-        let uri = format!("did:key:z{}", hash_b58);
-        Entity::from_str(&uri).context(format!("Failed to create entity from path: {}", input))
+        derive_entity_from_hash(&hash)
+            .context(format!("Failed to create entity from path: {}", input))
     } else if let Ok(entity) = Entity::from_str(input) {
-        // Valid URI, use as-is
         Ok(entity)
     } else {
-        // Hash the input and format as did:key
         let hash = blake3::hash(input.as_bytes());
-        let hash_b58 = bs58::encode(hash.as_bytes()).into_string();
-        let uri = format!("did:key:z{}", hash_b58);
-        Entity::from_str(&uri).context(format!("Failed to create entity from: {}", input))
+        derive_entity_from_hash(&hash).context(format!("Failed to create entity from: {}", input))
     }
-}
-
-/// Parse a value from string input.
-/// Tries to detect type: numbers or strings.
-fn parse_value(input: &str) -> Value {
-    // Try parsing as integer
-    if let Ok(n) = input.parse::<i128>() {
-        if n >= 0 {
-            return Value::UnsignedInt(n as u128);
-        } else {
-            return Value::SignedInt(n);
-        }
-    }
-
-    // Try parsing as float
-    if let Ok(f) = input.parse::<f64>() {
-        return Value::Float(f);
-    }
-
-    // Default to string
-    Value::String(input.to_string())
-}
-
-/// Get the storage path and space DID for the active space's facts database
-fn get_active_space_storage_path() -> Result<(PathBuf, String)> {
-    let keystore = Keystore::new().context("Failed to initialize keystore")?;
-    let operator = keystore
-        .get_or_create_keypair()
-        .context("Failed to get operator keypair")?;
-    let operator_did = operator.did().to_string();
-
-    let authority = authority::get_active_authority()?
-        .context("No active authority. Please run 'tonk login' first")?;
-
-    let space_did = state::get_active_space(&authority.did)?
-        .context("No active space. Please run 'tonk space create' or 'tonk space select' first")?;
-
-    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
-    let path = tonk_dir
-        .join("operator")
-        .join(&operator_did)
-        .join("session")
-        .join(&authority.did)
-        .join("space")
-        .join(&space_did)
-        .join("facts");
-
-    Ok((path, space_did))
 }
 
 /// Assert a fact into the active space
 pub async fn assert(the: String, of: String, is: String, json: bool) -> Result<()> {
-    let keystore = Keystore::new().context("Failed to initialize keystore")?;
-    let operator = keystore
-        .get_or_create_keypair()
-        .context("Failed to get operator keypair")?;
+    let ctx = get_space_context()?;
+    let mut session = open_session(&ctx).await?;
 
-    // Resolve entity
-    let entity = resolve_entity(&of, &operator)?;
-
-    // Parse attribute
+    let entity = resolve_entity(&of, &ctx.operator)?;
     let attribute =
         Attribute::from_str(&the).context(format!("Invalid attribute format: {}", the))?;
-
-    // Parse value
     let value = parse_value(&is);
 
-    // Get storage path and create session
-    let (storage_path, space_did) = get_active_space_storage_path()?;
-    let backend = FsBackend::new(&storage_path).await?;
-    let credentials = Credentials::from(&operator);
-    let space_did_parsed: dialog_varsig::Did = space_did
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
-    let replica = Repository::open(credentials, space_did_parsed, backend)?;
-
-    let branch_id = BranchId::new("main".to_string());
-    let branch = replica.branches.open(&branch_id).await?;
-
-    let mut session = Session::open(branch);
-
-    // Create and commit the fact
     let mut transaction = session.edit();
     let relation = Relation::new(attribute.clone(), entity.clone(), value.clone());
     relation.assert(&mut transaction);
@@ -137,7 +56,7 @@ pub async fn assert(the: String, of: String, is: String, json: bool) -> Result<(
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("✓ Asserted fact:");
+        println!("Asserted fact:");
         println!("  the: {}", the);
         println!("  of:  {} ({})", entity, of);
         println!("  is:  {:?}", value);
@@ -148,36 +67,14 @@ pub async fn assert(the: String, of: String, is: String, json: bool) -> Result<(
 
 /// Retract a fact from the active space
 pub async fn retract(the: String, of: String, is: String, json: bool) -> Result<()> {
-    let keystore = Keystore::new().context("Failed to initialize keystore")?;
-    let operator = keystore
-        .get_or_create_keypair()
-        .context("Failed to get operator keypair")?;
+    let ctx = get_space_context()?;
+    let mut session = open_session(&ctx).await?;
 
-    // Resolve entity
-    let entity = resolve_entity(&of, &operator)?;
-
-    // Parse attribute
+    let entity = resolve_entity(&of, &ctx.operator)?;
     let attribute =
         Attribute::from_str(&the).context(format!("Invalid attribute format: {}", the))?;
-
-    // Parse value
     let value = parse_value(&is);
 
-    // Get storage path and create session
-    let (storage_path, space_did) = get_active_space_storage_path()?;
-    let backend = FsBackend::new(&storage_path).await?;
-    let credentials = Credentials::from(&operator);
-    let space_did_parsed: dialog_varsig::Did = space_did
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
-    let replica = Repository::open(credentials, space_did_parsed, backend)?;
-
-    let branch_id = BranchId::new("main".to_string());
-    let branch = replica.branches.open(&branch_id).await?;
-
-    let mut session = Session::open(branch);
-
-    // Create and commit the retraction
     let mut transaction = session.edit();
     let relation = Relation::new(attribute.clone(), entity.clone(), value.clone());
     relation.retract(&mut transaction);
@@ -193,7 +90,7 @@ pub async fn retract(the: String, of: String, is: String, json: bool) -> Result<
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("✓ Retracted fact:");
+        println!("Retracted fact:");
         println!("  the: {}", the);
         println!("  of:  {} ({})", entity, of);
         println!("  is:  {:?}", value);
@@ -237,10 +134,7 @@ pub async fn find(
     format: Option<String>,
     json: bool,
 ) -> Result<()> {
-    let keystore = Keystore::new().context("Failed to initialize keystore")?;
-    let operator = keystore
-        .get_or_create_keypair()
-        .context("Failed to get operator keypair")?;
+    let ctx = get_space_context()?;
 
     // Parse format option
     let byte_format = format
@@ -251,43 +145,26 @@ pub async fn find(
     // Build the query using Fact::select()
     let mut fact = dialog_query::Fact::<Value>::select();
 
-    // Set attribute constraint if provided
     if let Some(the_str) = &the {
         fact = fact.the(the_str.as_str());
     }
 
-    // Set entity constraint if provided
     if let Some(of_str) = &of {
-        let entity = resolve_entity(of_str, &operator)?;
+        let entity = resolve_entity(of_str, &ctx.operator)?;
         fact = fact.of(entity);
     }
 
-    // Set value constraint if provided
     if let Some(is_str) = &is {
         let value = parse_value(is_str);
         fact = fact.is(value);
     }
 
-    // Compile the query - this will fail if no constraints provided
     let application = fact.compile().context(
         "Failed to compile query. At least one of --the, --of, or --is must be provided",
     )?;
 
-    // Get storage path and create session
-    let (storage_path, space_did) = get_active_space_storage_path()?;
-    let backend = FsBackend::new(&storage_path).await?;
-    let credentials = Credentials::from(&operator);
-    let space_did_parsed: dialog_varsig::Did = space_did
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
-    let replica = Repository::open(credentials, space_did_parsed, backend)?;
+    let session = open_session(&ctx).await?;
 
-    let branch_id = BranchId::new("main".to_string());
-    let branch = replica.branches.open(&branch_id).await?;
-
-    let session = Session::open(branch);
-
-    // Execute the query
     let results: Vec<dialog_query::Fact<Value>> = application.query(&session).try_collect().await?;
 
     if json {
@@ -324,7 +201,6 @@ pub async fn find(
     println!("Found {} fact(s):\n", results.len());
 
     for result in results {
-        // Extract fact fields based on variant
         let (the_val, of_val, is_val) = match &result {
             dialog_query::Fact::Assertion { the, of, is, .. } => (
                 the.to_string(),
@@ -438,24 +314,8 @@ struct BatchResult {
 ///   collected as individual `BatchResult` entries alongside successful
 ///   operations, then the batch is aborted if any errors occurred.
 pub async fn batch(file: Option<String>, json: bool) -> Result<()> {
-    let keystore = Keystore::new().context("Failed to initialize keystore")?;
-    let operator = keystore
-        .get_or_create_keypair()
-        .context("Failed to get operator keypair")?;
-
-    // Get storage path and create session
-    let (storage_path, space_did) = get_active_space_storage_path()?;
-    let backend = FsBackend::new(&storage_path).await?;
-    let credentials = Credentials::from(&operator);
-    let space_did_parsed: dialog_varsig::Did = space_did
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
-    let replica = Repository::open(credentials, space_did_parsed, backend)?;
-
-    let branch_id = BranchId::new("main".to_string());
-    let branch = replica.branches.open(&branch_id).await?;
-
-    let mut session = Session::open(branch);
+    let ctx = get_space_context()?;
+    let mut session = open_session(&ctx).await?;
 
     let mut results: Vec<BatchResult> = Vec::new();
     let mut transaction = session.edit();
@@ -477,7 +337,6 @@ pub async fn batch(file: Option<String>, json: bool) -> Result<()> {
             if line.is_empty() {
                 continue;
             }
-
             match serde_json::from_str::<BatchOp>(line) {
                 Ok(op) => ops.push(op),
                 Err(e) => {
@@ -498,7 +357,7 @@ pub async fn batch(file: Option<String>, json: bool) -> Result<()> {
 
     // Process each batch operation
     for batch_op in batch_ops {
-        let entity = match resolve_entity(&batch_op.of, &operator) {
+        let entity = match resolve_entity(&batch_op.of, &ctx.operator) {
             Ok(e) => e,
             Err(e) => {
                 results.push(BatchResult {
@@ -636,7 +495,6 @@ fn format_bytes(bytes: &[u8], format: ByteFormat) -> String {
         ByteFormat::Json => {
             match String::from_utf8(bytes.to_vec()) {
                 Ok(s) => {
-                    // Try to parse and pretty-print JSON
                     match serde_json::from_str::<serde_json::Value>(&s) {
                         Ok(json) => serde_json::to_string_pretty(&json).unwrap_or(s),
                         Err(_) => format!("<{} bytes, invalid JSON>", bytes.len()),
@@ -646,21 +504,16 @@ fn format_bytes(bytes: &[u8], format: ByteFormat) -> String {
             }
         }
         ByteFormat::Cbor => {
-            // Try to decode CBOR and display as JSON
-            // First try generic serde_json::Value, then fall back to hex
             match serde_ipld_dagcbor::from_slice::<serde_json::Value>(bytes) {
                 Ok(value) => {
                     serde_json::to_string_pretty(&value).unwrap_or_else(|_| format!("{:?}", value))
                 }
                 Err(_) => {
-                    // CBOR with specialized types (like UCANs) can't be decoded to JSON
-                    // Show as hex which can be decoded with external tools
                     format!("0x{}", hex::encode(bytes))
                 }
             }
         }
         ByteFormat::Ucan => {
-            // Try to decode as UCAN delegation
             match crate::delegation::Delegation::from_cbor_bytes(bytes) {
                 Ok(delegation) => {
                     let subject = match delegation.subject() {
