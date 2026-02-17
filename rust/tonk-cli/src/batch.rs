@@ -5,6 +5,7 @@
 //! If any item fails validation, the entire batch aborts with no changes
 //! committed.
 
+use crate::entity::derive_entity_from_fields;
 use crate::schema::*;
 use anyhow::{Context, Result};
 use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
@@ -85,23 +86,7 @@ pub async fn batch_create(
             qualified_fields.push((qualified, value_str));
         }
 
-        let entity = Entity::new().context("Failed to generate entity")?;
-
-        // Entity type reference
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_ENTITY_TYPE)?,
-            of: entity.clone(),
-            is: Value::Entity(concept.clone()),
-            cause: None,
-        }));
-
-        // Entity creation timestamp
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_ENTITY_CREATED)?,
-            of: entity.clone(),
-            is: Value::SignedInt(now as i128),
-            cause: None,
-        }));
+        let entity = derive_entity_from_fields(&qualified_fields)?;
 
         // Attribute values
         for (attr_name, value_str) in &qualified_fields {
@@ -112,14 +97,6 @@ pub async fn batch_create(
                 cause: None,
             }));
         }
-
-        // Back-reference from concept to entity
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_ENTITY)?,
-            of: concept.clone(),
-            is: Value::Entity(entity.clone()),
-            cause: None,
-        }));
 
         // Collect result data
         let mut data = serde_json::Map::new();

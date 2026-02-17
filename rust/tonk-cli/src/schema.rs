@@ -115,15 +115,6 @@ pub const ATTR_CONCEPT_DESCRIPTION: &str = "concept/description";
 /// Concept attribute: one per attribute the concept has (multi-valued).
 pub const ATTR_CONCEPT_ATTRIBUTE: &str = "concept/attribute";
 
-/// Concept attribute: back-reference to entities (multi-valued).
-pub const ATTR_CONCEPT_ENTITY: &str = "concept/entity";
-
-/// Entity attribute: type reference back to concept entity.
-pub const ATTR_ENTITY_TYPE: &str = "entity/type";
-
-/// Entity attribute: creation timestamp.
-pub const ATTR_ENTITY_CREATED: &str = "entity/created";
-
 /// Attribute metadata: human-readable description of the attribute.
 pub const ATTR_ATTRIBUTE_DESCRIPTION: &str = "attribute/description";
 

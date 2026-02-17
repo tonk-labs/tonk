@@ -86,28 +86,12 @@ pub async fn create(
     }
 
     // Generate a new random entity ID
-    let entity = Entity::new().context("Failed to generate entity")?;
+    let entity = derive_entity_from_fields(&qualified_fields)?;
 
     let now = chrono::Utc::now().timestamp();
 
     // Build instructions
     let mut instructions = Vec::new();
-
-    // Entity type reference
-    instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_ENTITY_TYPE)?,
-        of: entity.clone(),
-        is: Value::Entity(concept.clone()),
-        cause: None,
-    }));
-
-    // Entity creation timestamp
-    instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_ENTITY_CREATED)?,
-        of: entity.clone(),
-        is: Value::SignedInt(now as i128),
-        cause: None,
-    }));
 
     // Attribute values
     for (attr_name, value_str) in &qualified_fields {
@@ -118,14 +102,6 @@ pub async fn create(
             cause: None,
         }));
     }
-
-    // Back-reference from concept to entity
-    instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_ENTITY)?,
-        of: concept.clone(),
-        is: Value::Entity(entity.clone()),
-        cause: None,
-    }));
 
     branch
         .commit(futures_util::stream::iter(instructions))
@@ -157,6 +133,39 @@ pub async fn create(
     }
 
     Ok(())
+}
+
+/// Derive an entity from field content
+///
+/// `fields` are `key=value` pairs where keys are short attribute names
+pub fn derive_entity_from_fields(fields: &[(String, String)]) -> Result<Entity> {
+    // Sort fields by attribute name for deterministic ordering
+    let mut sorted = fields.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // blake3 hash concantedated key=value pairs
+    let mut hasher = blake3::Hasher::new();
+    for (attr, value) in &sorted {
+        hasher.update(attr.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(value.as_bytes());
+        hasher.update(b"\0");
+    }
+    let hash = hasher.finalize();
+
+    // Use hash as Ed25519 signing key seed
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(hash.as_bytes());
+    let verifying_key = signing_key.verifying_key();
+
+    // Format as did:key
+    const ED25519_MULTICODEC: [u8; 2] = [0xed, 0x01];
+    let mut multicodec_key = [0u8; 34];
+    multicodec_key[..2].copy_from_slice(&ED25519_MULTICODEC);
+    multicodec_key[2..].copy_from_slice(verifying_key.as_bytes());
+    let encoded = bs58::encode(&multicodec_key).into_string();
+    let url = format!("did:key:z{}", encoded);
+
+    Entity::from_str(&url).context("Failed to derive entity from fields")
 }
 
 // ---------------------------------------------------------------------------
