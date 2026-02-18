@@ -2,9 +2,9 @@ use crate::authority;
 use crate::delegation::Delegation;
 use crate::keystore::Keystore;
 use anyhow::{Context, Result};
+use dialog_ucan::subject::Subject;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use ucan::delegation::subject::DelegatedSubject;
 
 /// Format time remaining until expiration
 fn format_time_remaining(exp: i64) -> String {
@@ -279,7 +279,7 @@ pub async fn list(verbose: bool) -> Result<()> {
 
                             // Add the final subject (space) if different
                             if let Some(last_del) = chain.last()
-                                && let DelegatedSubject::Specific(sub_did) = last_del.subject()
+                                && let Subject::Specific(sub_did) = last_del.subject()
                             {
                                 let sub = sub_did.to_string();
                                 if !shown_dids.contains(&sub) {
@@ -399,13 +399,13 @@ fn trace_to_space(
 
                 // Check if this delegation is relevant
                 let is_relevant = match delegation.subject() {
-                    DelegatedSubject::Specific(sub_did) => {
+                    Subject::Specific(sub_did) => {
                         // Regular delegation - must be for our space and command
                         let sub = sub_did.to_string();
                         sub == space_did
                             && (cmd_str == cmd || cmd_str == "/" || cmd.starts_with(&cmd_str))
                     }
-                    DelegatedSubject::Any => {
+                    Subject::Any => {
                         // Powerline - must be for the right command
                         cmd_str == cmd || cmd_str == "/" || cmd.starts_with(&cmd_str)
                     }
@@ -547,7 +547,7 @@ pub fn collect_spaces_for_authority(
 
                     // Check if this is a powerline delegation
                     match delegation.subject() {
-                        DelegatedSubject::Any => {
+                        Subject::Any => {
                             // Powerline: issuer becomes an authorization space
                             spaces
                                 .entry(issuer_did.clone())
@@ -560,7 +560,7 @@ pub fn collect_spaces_for_authority(
                                 .commands
                                 .push((cmd, exp));
                         }
-                        DelegatedSubject::Specific(subject_did_ref) => {
+                        Subject::Specific(subject_did_ref) => {
                             // Regular delegation to a space
                             let subject_did = subject_did_ref.to_string();
                             let is_auth_space = subject_did == authority_did;
@@ -652,7 +652,7 @@ fn collect_spaces_recursive(
                         spaces,
                         depth + 1,
                     )?;
-                } else if let DelegatedSubject::Specific(subject_did) = delegation.subject() {
+                } else if let Subject::Specific(subject_did) = delegation.subject() {
                     // Regular delegation to a space
                     let subject = subject_did.to_string();
                     if subject.starts_with("did:key:") {

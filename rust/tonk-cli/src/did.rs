@@ -1,18 +1,16 @@
 use anyhow::{Result, anyhow};
+use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
-use ucan::did::{Did, Ed25519Did};
-use varsig::curve::Edwards25519;
-use varsig::hash::Sha2_512;
-use varsig::signature::eddsa::EdDsa;
-use varsig::verify::Verify;
 
-/// A universal DID type that can be either Ed25519 or mailto.
-/// This allows us to use ucan's Delegation<D> with mixed DID types.
+/// A universal DID type that can be either Ed25519 (did:key) or mailto.
+///
+/// With the new dialog-varsig crate, `Did` is a universal string wrapper,
+/// so this type mainly provides parsing validation and convenience constructors.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UniversalDid {
-    Ed25519(Ed25519Did),
+    Ed25519(Did),
     Mailto(String), // Just store the email directly
 }
 
@@ -21,39 +19,16 @@ impl UniversalDid {
         UniversalDid::Mailto(email)
     }
 
-    pub fn ed25519(did: Ed25519Did) -> Self {
+    pub fn ed25519(did: Did) -> Self {
         UniversalDid::Ed25519(did)
     }
-}
 
-impl Did for UniversalDid {
-    type VarsigConfig = EdDsa<Edwards25519, Sha2_512>;
-
-    fn did_method(&self) -> &str {
-        match self {
-            UniversalDid::Ed25519(did) => did.did_method(),
-            UniversalDid::Mailto(_) => "mailto",
-        }
-    }
-
-    fn varsig_config(&self) -> &Self::VarsigConfig {
-        match self {
-            UniversalDid::Ed25519(did) => did.varsig_config(),
-            UniversalDid::Mailto(_) => {
-                // For mailto, we should never actually use varsig operations
-                // But we need to return something, so panic if this is ever called
-                panic!("Cannot perform cryptographic operations on did:mailto")
-            }
-        }
-    }
-
-    fn verifier(&self) -> <Self::VarsigConfig as Verify>::Verifier {
-        match self {
-            UniversalDid::Ed25519(did) => did.verifier(),
-            UniversalDid::Mailto(_) => {
-                panic!("Cannot perform cryptographic operations on did:mailto")
-            }
-        }
+    /// Convert to a `Did` (for use with UCAN builder APIs).
+    /// For mailto DIDs, this creates a Did from the full "did:mailto:..." string.
+    pub fn to_did(&self) -> Did {
+        self.to_string()
+            .parse()
+            .expect("UniversalDid always produces valid Did strings")
     }
 }
 
@@ -82,10 +57,10 @@ impl FromStr for UniversalDid {
 
             Ok(UniversalDid::Mailto(email))
         } else if s.starts_with("did:key:") {
-            let ed25519_did: Ed25519Did = s
+            let did: Did = s
                 .parse()
                 .map_err(|e| anyhow!("Failed to parse did:key: {:?}", e))?;
-            Ok(UniversalDid::Ed25519(ed25519_did))
+            Ok(UniversalDid::Ed25519(did))
         } else {
             Err(anyhow!(
                 "Unsupported DID method, expected did:key or did:mailto"
@@ -114,8 +89,8 @@ impl<'de> Deserialize<'de> for UniversalDid {
     }
 }
 
-impl From<Ed25519Did> for UniversalDid {
-    fn from(did: Ed25519Did) -> Self {
+impl From<Did> for UniversalDid {
+    fn from(did: Did) -> Self {
         UniversalDid::Ed25519(did)
     }
 }
@@ -123,20 +98,17 @@ impl From<Ed25519Did> for UniversalDid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ucan::did::Did;
 
     #[test]
     fn test_universal_did_mailto_creation() {
         let did = UniversalDid::mailto("user@example.com".to_string());
         assert_eq!(did.to_string(), "did:mailto:user@example.com");
-        assert_eq!(did.did_method(), "mailto");
     }
 
     #[test]
     fn test_universal_did_mailto_parsing() {
         let did: UniversalDid = "did:mailto:user@example.com".parse().unwrap();
         assert_eq!(did.to_string(), "did:mailto:user@example.com");
-        assert_eq!(did.did_method(), "mailto");
     }
 
     #[test]
@@ -161,6 +133,5 @@ mod tests {
         let did_str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
         let did: UniversalDid = did_str.parse().unwrap();
         assert_eq!(did.to_string(), did_str);
-        assert_eq!(did.did_method(), "key");
     }
 }

@@ -20,12 +20,11 @@ use tonk_access_service::helpers::{AccessServiceAddress, Operator};
 
 /// Helper to create a test delegation chain from subject to operator.
 async fn create_test_delegation_chain(
-    subject_signer: &ucan::did::Ed25519Signer,
-    operator_did: &ucan::did::Ed25519Did,
+    subject_signer: &Operator,
+    operator: &Operator,
     can: &[&str],
 ) -> DelegationChain {
-    let subject_did = subject_signer.did();
-    let delegation = create_delegation(subject_signer, operator_did, subject_did, can)
+    let delegation = create_delegation(subject_signer, operator, subject_signer, can)
         .await
         .expect("Failed to create test delegation");
     DelegationChain::new(delegation)
@@ -39,7 +38,7 @@ fn create_ucan_bucket(
 ) -> Bucket<Operator> {
     let ucan_credentials = UcanCredentials::new(env.access_service_url.clone(), delegation);
     let s3 = S3::new(Credentials::Ucan(ucan_credentials), operator.clone());
-    Bucket::new(s3, operator.did().to_string(), store)
+    Bucket::new(s3, operator.did(), store)
 }
 
 /// Test storage put and get operations through UCAN authorization.
@@ -52,11 +51,11 @@ fn create_ucan_bucket(
 /// 5. Performs storage get to retrieve and verify the value
 #[dialog_common::test]
 async fn it_performs_storage_get_and_set_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()> {
-    let operator = Operator::generate();
+    let operator = Operator::generate()
+        .await
+        .expect("Failed to generate operator");
 
-    let delegation =
-        create_test_delegation_chain(operator.signer(), operator.signer().did(), &["storage"])
-            .await;
+    let delegation = create_test_delegation_chain(&operator, &operator, &["storage"]).await;
 
     let mut bucket = create_ucan_bucket(&env, operator, delegation, "test-store");
 
@@ -76,11 +75,11 @@ async fn it_performs_storage_get_and_set_via_ucan(env: AccessServiceAddress) -> 
 /// Test that storage operations with different stores are isolated.
 #[dialog_common::test]
 async fn it_isolates_stores_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()> {
-    let operator = Operator::generate();
+    let operator = Operator::generate()
+        .await
+        .expect("Failed to generate operator");
 
-    let delegation =
-        create_test_delegation_chain(operator.signer(), operator.signer().did(), &["storage"])
-            .await;
+    let delegation = create_test_delegation_chain(&operator, &operator, &["storage"]).await;
 
     let mut bucket_a = create_ucan_bucket(&env, operator.clone(), delegation.clone(), "store-a");
     let mut bucket_b = create_ucan_bucket(&env, operator, delegation, "store-b");
@@ -108,11 +107,11 @@ async fn it_isolates_stores_via_ucan(env: AccessServiceAddress) -> anyhow::Resul
 async fn it_returns_none_for_nonexistent_key_via_ucan(
     env: AccessServiceAddress,
 ) -> anyhow::Result<()> {
-    let operator = Operator::generate();
+    let operator = Operator::generate()
+        .await
+        .expect("Failed to generate operator");
 
-    let delegation =
-        create_test_delegation_chain(operator.signer(), operator.signer().did(), &["storage"])
-            .await;
+    let delegation = create_test_delegation_chain(&operator, &operator, &["storage"]).await;
 
     let bucket = create_ucan_bucket(&env, operator, delegation, "test-nonexistent");
 

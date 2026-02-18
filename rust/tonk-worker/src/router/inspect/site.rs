@@ -129,7 +129,7 @@ pub async fn site(
                 credentials,
             }))
         }
-        Err(SpaceError::Replica(_)) => {
+        Err(SpaceError::Repository(_)) => {
             // Site doesn't exist
             Ok(Json(SiteStatusResponse {
                 name: site_name,

@@ -5,10 +5,10 @@
 //! context, enabling operations that require both (like querying delegations
 //! granted to the user).
 
+use dialog_credentials::Ed25519Signer;
+use dialog_ucan::subject::Subject;
 use thiserror::Error;
 use tonk_space::{Delegation, Operator, SpaceError};
-use ucan::delegation::subject::DelegatedSubject;
-use ucan::did::Ed25519Signer;
 
 use crate::ServiceWorkerStorageBackend;
 use crate::account::AccountError;
@@ -72,9 +72,7 @@ impl Session {
         // Open the space database using the user's operator as the replica issuer.
         // This ensures that when making remote requests, the claim.audience() matches
         // the delegation.audience() (which is the user's operator DID).
-        // Prefix with "tonk:" for debug clarity when viewing IndexedDB in devtools
-        let db_name = format!("tonk:{}", space_did);
-        let backend = ServiceWorkerStorageBackend::new(&db_name).await;
+        let backend = ServiceWorkerStorageBackend::new(space_did).await;
         let space = Space::open(space_did.to_string(), identity.operator(), backend).await?;
 
         Ok(Self {
@@ -115,9 +113,7 @@ impl Session {
         // Create the space database using the user's operator as the replica issuer.
         // This ensures that when making remote requests, the claim.audience() matches
         // the delegation.audience() (which is the user's operator DID).
-        // Prefix with "tonk:" for debug clarity when viewing IndexedDB in devtools
-        let db_name = format!("tonk:{}", space_did);
-        let backend = ServiceWorkerStorageBackend::new(&db_name).await;
+        let backend = ServiceWorkerStorageBackend::new(&space_did).await;
         let space =
             Space::create(space_did, identity.operator(), backend, vec![delegation]).await?;
 
@@ -136,8 +132,8 @@ impl Session {
         let signer = Ed25519Signer::from(space_operator);
         let ucan_delegation = Delegation::builder()
             .issuer(signer)
-            .audience(user_operator.did().clone())
-            .subject(DelegatedSubject::Specific(space_operator.did().clone()))
+            .audience(&user_operator.did())
+            .subject(Subject::Specific(space_operator.did()))
             .command(vec![]) // Empty command = "/*" (all commands)
             .try_build()
             .await
@@ -186,7 +182,7 @@ impl Session {
         Ok(self.account_delegations().await?.iter().any(|d| {
             matches!(
                 d.subject(),
-                DelegatedSubject::Specific(did) if did == space_did
+                Subject::Specific(did) if *did == space_did
             )
         }))
     }

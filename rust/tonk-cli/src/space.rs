@@ -4,6 +4,11 @@ use crate::delegation::Delegation;
 use crate::keystore::Keystore;
 use crate::session::collect_spaces_for_authority;
 use anyhow::{Context, Result};
+use dialog_credentials::Ed25519Signer;
+use dialog_ucan::Delegation as UcanDelegation;
+use dialog_ucan::subject::Subject;
+use dialog_varsig::Did;
+use dialog_varsig::eddsa::Ed25519Signature;
 use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 use sha2_0_10::Digest;
@@ -12,8 +17,6 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tonk_space::{Delegation as SpaceDelegation, FsBackend, Space};
-use ucan::did::{Did, Ed25519Did, Ed25519Signer};
-use ucan::{Delegation as UcanDelegation, delegation::subject::DelegatedSubject};
 
 /// Format time remaining until expiration
 fn format_time_remaining(exp: i64) -> String {
@@ -424,22 +427,22 @@ async fn create_owner_delegation(
     owner_did: &str,
 ) -> Result<Delegation> {
     // Parse owner DID
-    let owner_did_parsed: Ed25519Did = owner_did
+    let owner_did_parsed: Did = owner_did
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse owner DID: {:?}", e))?;
 
     // Parse space DID for subject
-    let space_did_parsed: Ed25519Did = space_did
+    let space_did_parsed: Did = space_did
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
 
     // Create delegation using ucan builder: Space → Owner with full access
     let signer = Ed25519Signer::from(space_operator);
 
-    let ucan_delegation: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
+    let ucan_delegation: UcanDelegation<Ed25519Signature> = UcanDelegation::builder()
         .issuer(signer)
-        .audience(owner_did_parsed)
-        .subject(DelegatedSubject::Specific(space_did_parsed))
+        .audience(&owner_did_parsed)
+        .subject(Subject::Specific(space_did_parsed))
         .command(vec![]) // Empty = root access "/"
         .try_build()
         .await
@@ -511,45 +514,20 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     // Step 1: Create invitation delegation (operator → did:mailto)
     println!("1️⃣  Creating invitation delegation...");
 
-    // Parse DIDs as UniversalDid
-    use crate::did::UniversalDid;
-    let operator_did_universal: UniversalDid = operator_did.parse()?;
-    let invitee_did_universal: UniversalDid = invitee_did.parse()?;
-    let space_did_universal: UniversalDid = space_did.parse()?;
-
-    // Create a signer from the operator
-    // We need to create a custom signer that works with UniversalDid
-    use ucan::did::DidSigner;
-
-    #[derive(Clone)]
-    struct UniversalDidSigner {
-        did: UniversalDid,
-        signer: Ed25519Signer,
-    }
-
-    impl DidSigner for UniversalDidSigner {
-        type Did = UniversalDid;
-
-        fn did(&self) -> &Self::Did {
-            &self.did
-        }
-
-        fn signer(&self) -> &<<Self::Did as Did>::VarsigConfig as varsig::signer::Sign>::Signer {
-            self.signer.signer()
-        }
-    }
-
-    let operator_signer_inner = Ed25519Signer::from(&operator);
-    let operator_universal_signer = UniversalDidSigner {
-        did: operator_did_universal.clone(),
-        signer: operator_signer_inner,
-    };
+    // Parse DIDs - Did is now a universal string wrapper
+    let invitee_did_parsed: Did = invitee_did
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse invitee DID: {:?}", e))?;
+    let space_did_parsed: Did = space_did
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
 
     // Build invitation delegation using ucan
-    let invitation_ucan: UcanDelegation<UniversalDid> = UcanDelegation::builder()
-        .issuer(operator_universal_signer)
-        .audience(invitee_did_universal)
-        .subject(DelegatedSubject::Specific(space_did_universal))
+    let operator_signer = Ed25519Signer::from(&operator);
+    let invitation_ucan: UcanDelegation<Ed25519Signature> = UcanDelegation::builder()
+        .issuer(operator_signer)
+        .audience(&invitee_did_parsed)
+        .subject(Subject::Specific(space_did_parsed))
         .command(vec![]) // Empty = root access "/"
         .try_build()
         .await
@@ -616,19 +594,19 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     println!("5️⃣  Creating operator → membership delegation...");
 
     // Parse DIDs
-    let space_did_parsed: Ed25519Did = space_did
+    let space_did_parsed2: Did = space_did
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
-    let membership_did_parsed: Ed25519Did = membership_did
+    let membership_did_parsed: Did = membership_did
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse membership DID: {:?}", e))?;
 
     // Build delegation using ucan
     let operator_signer2 = Ed25519Signer::from(&operator);
-    let membership_ucan: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
+    let membership_ucan: UcanDelegation<Ed25519Signature> = UcanDelegation::builder()
         .issuer(operator_signer2)
-        .audience(membership_did_parsed)
-        .subject(DelegatedSubject::Specific(space_did_parsed))
+        .audience(&membership_did_parsed)
+        .subject(Subject::Specific(space_did_parsed2))
         .command(vec![]) // Empty = root access "/"
         .try_build()
         .await
@@ -707,11 +685,11 @@ pub fn inspect_invite(path: String) -> Result<()> {
         println!(
             "      Subject:  {}",
             match delegation.subject() {
-                DelegatedSubject::Specific(did) => did.to_string(),
-                DelegatedSubject::Any => "*".to_string(),
+                Subject::Specific(did) => did.to_string(),
+                Subject::Any => "*".to_string(),
             }
         );
-        println!("      Command:  {}", delegation.command().join(", "));
+        println!("      Command:  {}", delegation.command_str());
         println!("      Valid:    {}", delegation.is_valid());
 
         if let Some(exp) = delegation.expiration() {
@@ -843,20 +821,20 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
     println!("5️⃣  Creating membership → authority delegation...");
 
     // Parse DIDs
-    let authority_did_parsed: Ed25519Did = authority
+    let authority_did_parsed: Did = authority
         .did
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse authority DID: {:?}", e))?;
-    let space_did_parsed: Ed25519Did = space_did
+    let space_did_parsed: Did = space_did
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
 
     // Build delegation using ucan
     let membership_signer = Ed25519Signer::from(&membership_operator);
-    let membership_to_authority_ucan: UcanDelegation<Ed25519Did> = UcanDelegation::builder()
+    let membership_to_authority_ucan: UcanDelegation<Ed25519Signature> = UcanDelegation::builder()
         .issuer(membership_signer)
-        .audience(authority_did_parsed)
-        .subject(DelegatedSubject::Specific(space_did_parsed))
+        .audience(&authority_did_parsed)
+        .subject(Subject::Specific(space_did_parsed))
         .command(vec![]) // Empty = root access "/"
         .try_build()
         .await

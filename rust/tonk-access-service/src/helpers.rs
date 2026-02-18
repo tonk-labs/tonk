@@ -33,5 +33,7 @@ pub mod server;
 #[cfg(not(target_arch = "wasm32"))]
 pub use server::*;
 
-// Re-export Operator from dialog-storage for convenience in tests
-pub use dialog_storage::s3::helpers::Operator;
+// Re-export Ed25519Signer from dialog-storage for convenience in tests
+// (previously called Operator in older dialog-storage versions)
+#[cfg(not(target_arch = "wasm32"))]
+pub use dialog_storage::s3::helpers::Ed25519Signer as Operator;

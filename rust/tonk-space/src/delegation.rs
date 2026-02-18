@@ -1,26 +1,25 @@
 //! Delegation wrapper for UCAN delegations.
 //!
-//! This module provides a newtype wrapper around `ucan::Delegation<Ed25519Did>`
+//! This module provides a newtype wrapper around `dialog_ucan::Delegation`
 //! that implements the `Claim` trait from dialog-query, allowing delegations
 //! to be stored as facts in a dialog-db space.
 //!
 //! We use a wrapper because Rust's orphan rules prevent implementing external
-//! traits (`Claim`) for external types (`ucan::Delegation`).
+//! traits (`Claim`) for external types (`dialog_ucan::Delegation`).
 
 use crate::schema;
 use dialog_query::claim::{Claim, Transaction};
 use dialog_query::{Entity, With};
+use dialog_ucan::Delegation as UcanDelegation;
+use dialog_ucan::command::Command;
+use dialog_ucan::subject::Subject;
+use dialog_ucan::time::Timestamp;
+use dialog_varsig::Did;
+use dialog_varsig::eddsa::Ed25519Signature;
 pub use ipld_core::cid::Cid;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use thiserror::Error;
-use ucan::Delegation as UcanDelegation;
-use ucan::command::Command;
-use ucan::delegation::builder::DelegationBuilder;
-use ucan::delegation::subject::DelegatedSubject;
-use ucan::did::{DidSigner, Ed25519Did};
-use ucan::time::timestamp::Timestamp;
-use ucan::unset::Unset;
 
 /// Errors that can occur when validating delegations.
 #[derive(Debug, Error)]
@@ -38,7 +37,7 @@ pub enum DelegationError {
     InvalidDelegation(String),
 }
 
-/// A wrapper around `ucan::Delegation<Ed25519Did>` that implements `Claim`.
+/// A wrapper around `dialog_ucan::Delegation<Ed25519Signature>` that implements `Claim`.
 ///
 /// This wrapper exists because we need to implement the `Claim` trait from
 /// dialog-query for UCAN delegations, but Rust's orphan rules prevent
@@ -53,25 +52,24 @@ pub enum DelegationError {
 /// - `ucan/cmd`: The command path being delegated (e.g., "/read/write")
 #[derive(Debug, Clone, Serialize, Deserialize)]
 // Serialization is transparent - Delegation serializes/deserializes identically
-// to the inner UcanDelegation<Ed25519Did>, producing the same bytes.
+// to the inner UcanDelegation, producing the same bytes.
 #[serde(transparent)]
-pub struct Delegation(UcanDelegation<Ed25519Did>);
+pub struct Delegation(UcanDelegation<Ed25519Signature>);
 
-impl From<UcanDelegation<Ed25519Did>> for Delegation {
-    fn from(delegation: UcanDelegation<Ed25519Did>) -> Self {
+impl From<UcanDelegation<Ed25519Signature>> for Delegation {
+    fn from(delegation: UcanDelegation<Ed25519Signature>) -> Self {
         Self(delegation)
     }
 }
 
 impl Delegation {
     /// Returns a builder for creating a new delegation.
-    pub fn builder<S: DidSigner<Did = Ed25519Did>>()
-    -> DelegationBuilder<S, Unset, Unset, Unset, Unset> {
+    pub fn builder() -> dialog_ucan::DelegationBuilder<Ed25519Signature> {
         UcanDelegation::builder()
     }
 
     /// Returns a reference to the inner UCAN delegation.
-    pub fn inner(&self) -> &UcanDelegation<Ed25519Did> {
+    pub fn inner(&self) -> &UcanDelegation<Ed25519Signature> {
         &self.0
     }
 
@@ -107,21 +105,21 @@ impl Delegation {
     }
 
     /// Returns the audience DID (the entity receiving the delegation).
-    pub fn audience(&self) -> &Ed25519Did {
+    pub fn audience(&self) -> &Did {
         self.0.audience()
     }
 
     /// Returns the issuer DID (the entity granting the delegation).
-    pub fn issuer(&self) -> &Ed25519Did {
+    pub fn issuer(&self) -> &Did {
         self.0.issuer()
     }
 
     /// Returns the subject of the delegation.
     ///
     /// The subject specifies what the delegation applies to:
-    /// - `DelegatedSubject::Specific(did)` - applies to a specific DID (e.g., a space)
-    /// - `DelegatedSubject::Any` - a "powerline" delegation that applies to any subject
-    pub fn subject(&self) -> &DelegatedSubject<Ed25519Did> {
+    /// - `Subject::Specific(did)` - applies to a specific DID (e.g., a space)
+    /// - `Subject::Any` - a "powerline" delegation that applies to any subject
+    pub fn subject(&self) -> &Subject {
         self.0.subject()
     }
 
@@ -130,7 +128,7 @@ impl Delegation {
     /// Powerline delegations grant capabilities over any subject, not just
     /// a specific one. They're typically used for broad administrative access.
     pub fn is_powerline(&self) -> bool {
-        matches!(self.0.subject(), DelegatedSubject::Any)
+        matches!(self.0.subject(), Subject::Any)
     }
 
     /// Returns the command being delegated.
@@ -191,8 +189,8 @@ impl Claim for Delegation {
     fn assert(self, transaction: &mut Transaction) {
         let this = self.this();
         let subject = match self.subject() {
-            DelegatedSubject::Specific(did) => did.to_string(),
-            DelegatedSubject::Any => "*".to_string(),
+            Subject::Specific(did) => did.to_string(),
+            Subject::Any => "*".to_string(),
         };
 
         transaction.assert(With {
@@ -221,8 +219,8 @@ impl Claim for Delegation {
     fn retract(self, transaction: &mut Transaction) {
         let this = self.this();
         let subject_str = match self.subject() {
-            DelegatedSubject::Specific(did) => did.to_string(),
-            DelegatedSubject::Any => "*".to_string(),
+            Subject::Specific(did) => did.to_string(),
+            Subject::Any => "*".to_string(),
         };
 
         transaction.retract(With {
@@ -252,7 +250,7 @@ impl Claim for Delegation {
 mod tests {
     use super::*;
     use crate::Operator;
-    use ucan::did::Ed25519Signer;
+    use dialog_credentials::Ed25519Signer;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test;
@@ -269,8 +267,8 @@ mod tests {
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
             .issuer(signer)
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .audience(&audience.did())
+            .subject(Subject::Specific(subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
             .try_build()
             .await
@@ -287,10 +285,10 @@ mod tests {
         assert!(delegation.issuer().to_string().starts_with("did:key:"));
         assert!(delegation.audience().to_string().starts_with("did:key:"));
         match delegation.subject() {
-            DelegatedSubject::Specific(did) => {
+            Subject::Specific(did) => {
                 assert!(did.to_string().starts_with("did:key:"));
             }
-            DelegatedSubject::Any => panic!("Expected specific subject"),
+            Subject::Any => panic!("Expected specific subject"),
         }
         assert_eq!(delegation.command().to_string(), "/read/write");
     }
@@ -327,8 +325,8 @@ mod tests {
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
             .issuer(signer)
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .audience(&audience.did())
+            .subject(Subject::Specific(subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
             .try_build()
             .await
@@ -407,8 +405,8 @@ mod tests {
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
             .issuer(signer)
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Any)
+            .audience(&audience.did())
+            .subject(Subject::Any)
             .command(vec!["read".to_string()])
             .try_build()
             .await
@@ -417,7 +415,7 @@ mod tests {
         let delegation = Delegation::from(ucan_delegation);
 
         assert!(delegation.is_powerline());
-        assert!(matches!(delegation.subject(), DelegatedSubject::Any));
+        assert!(matches!(delegation.subject(), Subject::Any));
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]

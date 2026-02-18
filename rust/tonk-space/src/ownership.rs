@@ -8,9 +8,9 @@ use crate::delegation::Delegation;
 use crate::schema::space;
 use dialog_query::claim::{Claim, Transaction};
 use dialog_query::{Entity, With};
+use dialog_ucan::subject::Subject;
+use dialog_varsig::Did;
 use std::str::FromStr;
-use ucan::delegation::subject::DelegatedSubject;
-use ucan::did::Ed25519Did;
 
 /// Represents space ownership - links a space DID to a delegation.
 ///
@@ -32,9 +32,9 @@ impl Ownership {
     /// Returns the subject of the underlying delegation.
     ///
     /// The subject specifies what the delegation applies to:
-    /// - `DelegatedSubject::Specific(did)` - applies to a specific DID (the space)
-    /// - `DelegatedSubject::Any` - a "powerline" delegation that applies to any subject
-    pub fn subject(&self) -> &DelegatedSubject<Ed25519Did> {
+    /// - `Subject::Specific(did)` - applies to a specific DID (the space)
+    /// - `Subject::Any` - a "powerline" delegation that applies to any subject
+    pub fn subject(&self) -> &Subject {
         self.0.subject()
     }
 
@@ -42,10 +42,10 @@ impl Ownership {
     ///
     /// - If the delegation has a specific subject, returns that subject DID
     /// - If the delegation is a powerline (`*`), falls back to the issuer DID
-    pub fn space(&self) -> &Ed25519Did {
+    pub fn space(&self) -> Did {
         match self.0.subject() {
-            DelegatedSubject::Specific(did) => did,
-            DelegatedSubject::Any => self.0.issuer(),
+            Subject::Specific(did) => did.clone(),
+            Subject::Any => self.0.issuer().clone(),
         }
     }
 
@@ -96,8 +96,8 @@ impl Claim for Ownership {
 mod tests {
     use super::*;
     use crate::Operator;
-    use ucan::Delegation as UcanDelegation;
-    use ucan::did::Ed25519Signer;
+    use dialog_credentials::Ed25519Signer;
+    use dialog_ucan::Delegation as UcanDelegation;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test;
@@ -114,8 +114,8 @@ mod tests {
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
             .issuer(signer)
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .audience(&audience.did())
+            .subject(Subject::Specific(subject.did()))
             .command(vec!["read".to_string(), "write".to_string()])
             .try_build()
             .await
@@ -161,13 +161,13 @@ mod tests {
         let issuer = Operator::generate();
         let audience = Operator::generate();
         let subject = Operator::generate();
-        let expected_space = subject.did().clone();
+        let expected_space = subject.did();
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
             .issuer(signer)
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Specific(subject.did().clone()))
+            .audience(&audience.did())
+            .subject(Subject::Specific(subject.did()))
             .command(vec!["read".to_string()])
             .try_build()
             .await
@@ -175,7 +175,7 @@ mod tests {
 
         let ownership = Ownership::from(Delegation::from(ucan_delegation));
 
-        assert_eq!(ownership.space(), &expected_space);
+        assert_eq!(ownership.space(), expected_space);
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
@@ -183,13 +183,13 @@ mod tests {
     async fn it_returns_issuer_as_space_for_powerline() {
         let issuer = Operator::generate();
         let audience = Operator::generate();
-        let expected_space = issuer.did().clone();
+        let expected_space = issuer.did();
 
         let signer = Ed25519Signer::from(&issuer);
         let ucan_delegation = UcanDelegation::builder()
             .issuer(signer)
-            .audience(audience.did().clone())
-            .subject(DelegatedSubject::Any)
+            .audience(&audience.did())
+            .subject(Subject::Any)
             .command(vec!["read".to_string()])
             .try_build()
             .await
@@ -197,6 +197,6 @@ mod tests {
 
         let ownership = Ownership::from(Delegation::from(ucan_delegation));
 
-        assert_eq!(ownership.space(), &expected_space);
+        assert_eq!(ownership.space(), expected_space);
     }
 }

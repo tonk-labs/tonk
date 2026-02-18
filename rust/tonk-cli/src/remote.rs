@@ -1,11 +1,11 @@
 use anyhow::{Context, Result, bail};
-use dialog_artifacts::replica::RemoteCredentials;
+use dialog_artifacts::repository::RemoteCredentials;
 use dialog_s3_credentials::ucan::{Credentials as UcanCredentials, DelegationChain};
 use dialog_s3_credentials::{Address, s3};
+use dialog_ucan::subject::Subject;
 use dialoguer::{Input, Password};
 use std::path::PathBuf;
 use tonk_space::{FsBackend, Operator, Revision, Space};
-use ucan::delegation::subject::DelegatedSubject;
 
 use crate::authority;
 use crate::keystore::Keystore;
@@ -67,8 +67,8 @@ pub async fn add(
         let delegation = delegations
             .into_iter()
             .find(|d| match d.subject() {
-                DelegatedSubject::Specific(did) => did.to_string() == space_did,
-                DelegatedSubject::Any => true,
+                Subject::Specific(did) => did.to_string() == space_did,
+                Subject::Any => true,
             })
             .context(
                 "No delegation found for this space. \
