@@ -58,6 +58,7 @@ tonk-access-service = { workspace = true, features = ["helpers"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
+getrandom_0_3 = { workspace = true }
 
 [dependencies.web-sys]
 workspace = true
