@@ -6,8 +6,7 @@
 //!
 //! Uses raw Branch + Instruction (not Session/Transaction) because imports
 //! write multi-valued attributes: multiple `concept/attribute` entries per
-//! concept, multiple `registry/concept` and `registry/rule` entries on the
-//! registry entity, and multiple attribute metadata entries. Transaction's
+//! concept and multiple attribute metadata entries. Transaction's
 //! `HashMap<Entity, HashMap<Attribute, Change>>` deduplicates by
 //! `(entity, attribute)`, so only the last value per pair would survive.
 
@@ -118,16 +117,13 @@ pub(super) async fn import_concepts(
 
     let ctx = get_space_context()?;
     let mut branch = open_branch(&ctx).await?;
-    let registry = registry_entity(&ctx.space_did)?;
 
     let mut retract_instructions: Vec<Instruction> = Vec::new();
 
     for (cname, _concept) in &validated {
         retract_concept_if_exists(
             &branch,
-            &ctx.space_did,
             cname,
-            &registry,
             force,
             &mut retract_instructions,
         )
@@ -152,10 +148,8 @@ pub(super) async fn import_concepts(
 
     for (cname, concept) in &validated {
         build_concept_assertions(
-            &ctx.space_did,
             cname,
             concept,
-            &registry,
             &mut assert_instructions,
             &mut import_summary,
         )?;
@@ -209,7 +203,6 @@ pub(super) async fn import_concepts(
     Ok(())
 }
 
-/// Print a single attribute summary line (used in concept import output).
 fn print_attribute_summary(attr: &ParsedAttribute) {
     let mut meta_parts = Vec::new();
     if let Some(t) = &attr.type_str {
@@ -291,22 +284,19 @@ pub(super) async fn import_rules(
 
     let ctx = get_space_context()?;
     let mut branch = open_branch(&ctx).await?;
-    let registry = registry_entity(&ctx.space_did)?;
 
     let mut retract_instructions: Vec<Instruction> = Vec::new();
 
     for (parsed, definition) in &lowered {
         retract_rule_if_exists(
             &branch,
-            &ctx.space_did,
             parsed,
-            &registry,
             force,
             &mut retract_instructions,
         )
         .await?;
 
-        validate_rule_against_space(&branch, &ctx.space_did, parsed, definition).await?;
+        validate_rule_against_space(&branch, parsed, definition).await?;
     }
 
     // --- Build assert instructions ---
@@ -319,7 +309,6 @@ pub(super) async fn import_rules(
             &ctx.space_did,
             parsed,
             definition,
-            &registry,
             &mut assert_instructions,
             &mut import_summary,
         )?;
@@ -514,7 +503,6 @@ pub(super) async fn import_mixed(
 
     let ctx = get_space_context()?;
     let mut branch = open_branch(&ctx).await?;
-    let registry = registry_entity(&ctx.space_did)?;
 
     for (parsed, definition) in &lowered_rules {
         let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
@@ -523,7 +511,7 @@ pub(super) async fn import_mixed(
             if let Some((name, attrs, cards, ns)) = concept_overrides.get(&key) {
                 (name.clone(), attrs.clone(), cards.clone(), ns.clone())
         } else {
-            let concept_ent = lookup_concept_by_name(&branch, &ctx.space_did, &conclusion_concept)
+            let concept_ent = lookup_concept_by_name(&branch, &conclusion_concept)
                 .await?
                 .context(format!(
                     "Conclusion concept '{}' for rule '{}' not found. Define it first.",
@@ -563,9 +551,7 @@ pub(super) async fn import_mixed(
     for (cname, _concept) in &validated_concepts {
         retract_concept_if_exists(
             &branch,
-            &ctx.space_did,
             cname,
-            &registry,
             force,
             &mut retract_instructions,
         )
@@ -586,9 +572,7 @@ pub(super) async fn import_mixed(
     for (parsed, _definition) in &lowered_rules {
         retract_rule_if_exists(
             &branch,
-            &ctx.space_did,
             parsed,
-            &registry,
             force,
             &mut retract_instructions,
         )
@@ -597,10 +581,8 @@ pub(super) async fn import_mixed(
 
     for (cname, concept) in &validated_concepts {
         build_concept_assertions(
-            &ctx.space_did,
             cname,
             concept,
-            &registry,
             &mut assert_instructions,
             &mut import_summary,
         )?;
@@ -615,7 +597,6 @@ pub(super) async fn import_mixed(
             &ctx.space_did,
             parsed,
             definition,
-            &registry,
             &mut assert_instructions,
             &mut import_summary,
         )?;
@@ -687,13 +668,11 @@ pub(super) async fn import_mixed(
 /// Check if a concept already exists and build retract instructions if `force` is true.
 async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + ArtifactStoreMut>(
     branch: &S,
-    space_did: &str,
     cname: &ConceptName,
-    registry: &dialog_query::Entity,
     force: bool,
     retract_instructions: &mut Vec<Instruction>,
 ) -> Result<()> {
-    let existing_entity = lookup_concept_by_name(branch, space_did, cname).await?;
+    let existing_entity = lookup_concept_by_name(branch, cname).await?;
 
     if let Some(entity) = existing_entity {
         if force {
@@ -753,13 +732,6 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
                     cause: None,
                 }));
             }
-
-            retract_instructions.push(Instruction::Retract(Artifact {
-                the: Attribute::from_str(ATTR_REGISTRY_CONCEPT)?,
-                of: registry.clone(),
-                is: Value::Entity(entity.clone()),
-                cause: None,
-            }));
         } else {
             anyhow::bail!(
                 "Concept '{}' already exists. Use --force to overwrite, \
@@ -775,10 +747,8 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
 
 /// Build assert instructions for a single concept.
 fn build_concept_assertions(
-    _space_did: &str,
     cname: &ConceptName,
     concept: &ParsedConcept,
-    registry: &dialog_query::Entity,
     assert_instructions: &mut Vec<Instruction>,
     import_summary: &mut Vec<serde_json::Value>,
 ) -> Result<()> {
@@ -790,13 +760,6 @@ fn build_concept_assertions(
         .collect::<Result<Vec<_>>>()?;
     let empty_cardinalities = std::collections::HashMap::new();
     let entity = concept_entity_from_attrs(&qualified_attrs, &empty_cardinalities)?;
-
-    assert_instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_REGISTRY_CONCEPT)?,
-        of: registry.clone(),
-        is: Value::Entity(entity.clone()),
-        cause: None,
-    }));
 
     assert_instructions.push(Instruction::Assert(Artifact {
         the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
@@ -1055,16 +1018,13 @@ async fn retract_standalone_attr_if_exists<
 /// Check if a rule already exists and build retract instructions if `force` is true.
 async fn retract_rule_if_exists<S: dialog_artifacts::ArtifactStore + ArtifactStoreMut>(
     branch: &S,
-    space_did: &str,
     parsed: &ParsedRule,
-    registry: &dialog_query::Entity,
     force: bool,
     retract_instructions: &mut Vec<Instruction>,
 ) -> Result<()> {
-    let rule_ent = rule_entity(space_did, &parsed.name)?;
-    let existing = fetch_string(branch, &rule_ent, ATTR_RULE_NAME).await?;
+    let existing = lookup_rule_by_name(branch, &parsed.name).await?;
 
-    if existing.is_some() {
+    if let Some(rule_ent) = existing {
         if force {
             if let Some(name) = fetch_string(branch, &rule_ent, ATTR_RULE_NAME).await? {
                 retract_instructions.push(Instruction::Retract(Artifact {
@@ -1098,12 +1058,6 @@ async fn retract_rule_if_exists<S: dialog_artifacts::ArtifactStore + ArtifactSto
                     cause: None,
                 }));
             }
-            retract_instructions.push(Instruction::Retract(Artifact {
-                the: Attribute::from_str(ATTR_REGISTRY_RULE)?,
-                of: registry.clone(),
-                is: Value::Entity(rule_ent.clone()),
-                cause: None,
-            }));
         } else {
             anyhow::bail!(
                 "Rule '{}' already exists. Use --force to overwrite, \
@@ -1120,12 +1074,11 @@ async fn retract_rule_if_exists<S: dialog_artifacts::ArtifactStore + ArtifactSto
 /// Validate a rule against the space's concept schemas.
 async fn validate_rule_against_space<S: dialog_artifacts::ArtifactStore + ArtifactStoreMut>(
     branch: &S,
-    space_did: &str,
     parsed: &ParsedRule,
     definition: &RuleDefinition,
 ) -> Result<()> {
     let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
-    let concept_ent = lookup_concept_by_name(branch, space_did, &conclusion_concept)
+    let concept_ent = lookup_concept_by_name(branch, &conclusion_concept)
         .await?
         .context(format!(
             "Conclusion concept '{}' for rule '{}' not found. Define it first.",
@@ -1182,25 +1135,25 @@ fn validate_rule_against_schema(
     Ok(())
 }
 
-/// Build assert instructions for a single rule.
+// ---------------------------------------------------------------------------
+// Shared helpers: rule assertion building
+// ---------------------------------------------------------------------------
+
+/// Build assert instructions for a rule definition.
+///
+/// Creates triples for the rule's name, conclusion concept, serialised
+/// definition, and (optional) description. Registry assertions are no
+/// longer needed since rules are discovered structurally.
 fn build_rule_assertions(
     space_did: &str,
     parsed: &ParsedRule,
     definition: &RuleDefinition,
-    registry: &dialog_query::Entity,
     assert_instructions: &mut Vec<Instruction>,
     import_summary: &mut Vec<serde_json::Value>,
 ) -> Result<()> {
     let rule_ent = rule_entity(space_did, &parsed.name)?;
     let concept_name = &definition.conclusion.concept;
     let definition_str = serde_json::to_string(definition)?;
-
-    assert_instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_REGISTRY_RULE)?,
-        of: registry.clone(),
-        is: Value::Entity(rule_ent.clone()),
-        cause: None,
-    }));
 
     assert_instructions.push(Instruction::Assert(Artifact {
         the: Attribute::from_str(ATTR_RULE_NAME)?,
@@ -1223,7 +1176,6 @@ fn build_rule_assertions(
         cause: None,
     }));
 
-    // Assert rule description if present
     if let Some(desc) = &parsed.description {
         assert_instructions.push(Instruction::Assert(Artifact {
             the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,

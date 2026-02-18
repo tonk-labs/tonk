@@ -855,11 +855,10 @@ async fn test_update_entity() {
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
-    let concept_entity =
-        tonk_cli::schema::lookup_concept_by_name(&branch, &ctx.space_did, &concept_name)
-            .await
-            .expect("Failed to lookup concept")
-            .expect("Concept 'Task' not found");
+    let concept_entity = tonk_cli::schema::lookup_concept_by_name(&branch, &concept_name)
+        .await
+        .expect("Failed to lookup concept")
+        .expect("Concept 'Task' not found");
     let attrs =
         tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
@@ -910,11 +909,10 @@ async fn test_delete_entity() {
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
-    let concept_entity =
-        tonk_cli::schema::lookup_concept_by_name(&branch, &ctx.space_did, &concept_name)
-            .await
-            .expect("Failed to lookup concept")
-            .expect("Concept 'Task' not found");
+    let concept_entity = tonk_cli::schema::lookup_concept_by_name(&branch, &concept_name)
+        .await
+        .expect("Failed to lookup concept")
+        .expect("Concept 'Task' not found");
     let attrs =
         tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
@@ -1059,11 +1057,10 @@ async fn test_batch_delete() {
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
-    let concept_entity =
-        tonk_cli::schema::lookup_concept_by_name(&branch, &ctx.space_did, &concept_name)
-            .await
-            .expect("Failed to lookup concept")
-            .expect("Concept 'Task' not found");
+    let concept_entity = tonk_cli::schema::lookup_concept_by_name(&branch, &concept_name)
+        .await
+        .expect("Failed to lookup concept")
+        .expect("Concept 'Task' not found");
     let attrs =
         tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
@@ -1684,11 +1681,10 @@ async fn test_full_crud_workflow() {
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
-    let concept_entity =
-        tonk_cli::schema::lookup_concept_by_name(&branch, &ctx.space_did, &concept_name)
-            .await
-            .expect("Failed to lookup concept")
-            .expect("Concept 'Task' not found");
+    let concept_entity = tonk_cli::schema::lookup_concept_by_name(&branch, &concept_name)
+        .await
+        .expect("Failed to lookup concept")
+        .expect("Concept 'Task' not found");
     let attrs =
         tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await

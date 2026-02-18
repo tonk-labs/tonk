@@ -38,7 +38,7 @@ pub async fn batch_create(
     let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
-    let concept = lookup_concept_by_name(&session, &ctx.space_did, &concept_name)
+    let concept = lookup_concept_by_name(&session, &concept_name)
         .await?
         .context(format!(
             "Concept '{}' not found. Define it first with 'tonk concept define {}'.",
@@ -160,7 +160,7 @@ pub async fn batch_update(
     let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
-    let concept = lookup_concept_by_name(&session, &ctx.space_did, &concept_name)
+    let concept = lookup_concept_by_name(&session, &concept_name)
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
 
@@ -313,7 +313,7 @@ pub async fn batch_delete(
     let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
-    let concept = lookup_concept_by_name(&session, &ctx.space_did, &concept_name)
+    let concept = lookup_concept_by_name(&session, &concept_name)
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
 

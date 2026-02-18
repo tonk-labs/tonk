@@ -106,24 +106,17 @@ async fn fetch_attr_meta<S: dialog_artifacts::ArtifactStore>(
 }
 
 /// Load all concepts and their attribute metadata from the space.
+///
+/// Discovers concepts structurally via the AEV index (no registry).
 async fn load_all_concepts<S: dialog_artifacts::ArtifactStore>(
     store: &S,
     space_did: &str,
 ) -> Result<Vec<ConceptAttrs>> {
-    let registry = registry_entity(space_did)?;
-    let concept_entities = fetch_entity_values(store, &registry, ATTR_REGISTRY_CONCEPT).await?;
+    let concept_pairs = find_all_concepts(store).await?;
 
     let mut concepts = Vec::new();
 
-    for entity in &concept_entities {
-        let name = fetch_string(store, entity, ATTR_CONCEPT_NAME)
-            .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Concept entity '{}' is missing its 'concept/name' attribute",
-                    entity
-                )
-            })?;
+    for (entity, name) in &concept_pairs {
         let concept_name = ConceptName::from_stored(name.clone());
         let namespace = fetch_string(store, entity, ATTR_CONCEPT_NAMESPACE).await?;
         let qualified_attrs = fetch_string_values(store, entity, ATTR_CONCEPT_ATTRIBUTE).await?;
@@ -135,7 +128,7 @@ async fn load_all_concepts<S: dialog_artifacts::ArtifactStore>(
         }
 
         concepts.push(ConceptAttrs {
-            name,
+            name: name.clone(),
             namespace,
             attrs,
         });
@@ -319,7 +312,7 @@ pub async fn show(name: String, concept: Option<String>, json: bool) -> Result<(
 /// list contains the given qualified name.
 async fn resolve_qualified<S: dialog_artifacts::ArtifactStore>(
     store: &S,
-    space_did: &str,
+    _space_did: &str,
     qualified_name: &str,
 ) -> Result<(ConceptName, Option<String>, String)> {
     let normalized = if let Some((prefix, attr)) = qualified_name.split_once('/') {
@@ -327,17 +320,13 @@ async fn resolve_qualified<S: dialog_artifacts::ArtifactStore>(
     } else {
         qualified_name.to_string()
     };
-    let registry = registry_entity(space_did)?;
-    let concept_entities = fetch_entity_values(store, &registry, ATTR_REGISTRY_CONCEPT).await?;
+    let concept_pairs = find_all_concepts(store).await?;
 
-    for entity in &concept_entities {
+    for (entity, name) in &concept_pairs {
         let attrs = fetch_string_values(store, entity, ATTR_CONCEPT_ATTRIBUTE).await?;
         if attrs.iter().any(|a| a == &normalized) {
-            let name = fetch_string(store, entity, ATTR_CONCEPT_NAME)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Concept entity missing concept/name"))?;
             let namespace = fetch_string(store, entity, ATTR_CONCEPT_NAMESPACE).await?;
-            return Ok((ConceptName::from_stored(name), namespace, normalized));
+            return Ok((ConceptName::from_stored(name.clone()), namespace, normalized));
         }
     }
 
@@ -350,18 +339,19 @@ async fn resolve_qualified<S: dialog_artifacts::ArtifactStore>(
 /// Resolve a short attribute name given a concept name.
 async fn resolve_short<S: dialog_artifacts::ArtifactStore>(
     store: &S,
-    space_did: &str,
+    _space_did: &str,
     short_name: &str,
     concept_str: &str,
 ) -> Result<(ConceptName, Option<String>, String)> {
     let concept_name = ConceptName::new(concept_str)?;
-    let concept = concept_entity(space_did, &concept_name)?;
-
-    // Verify concept exists
-    let stored_name = fetch_string(store, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(store, &concept_name)
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
-    let stored_name = ConceptName::from_stored(stored_name);
+
+    let stored_name = fetch_string(store, &concept, ATTR_CONCEPT_NAME)
+        .await?
+        .map(ConceptName::from_stored)
+        .unwrap_or_else(|| concept_name.clone());
 
     let namespace = fetch_string(store, &concept, ATTR_CONCEPT_NAMESPACE).await?;
     let qualified = qualify_attribute(&stored_name, short_name)?;
@@ -390,19 +380,15 @@ async fn resolve_short<S: dialog_artifacts::ArtifactStore>(
 /// If multiple concepts have it, bail with a disambiguation message.
 async fn resolve_unqualified<S: dialog_artifacts::ArtifactStore>(
     store: &S,
-    space_did: &str,
+    _space_did: &str,
     short_name: &str,
 ) -> Result<(ConceptName, Option<String>, String)> {
-    let registry = registry_entity(space_did)?;
-    let concept_entities = fetch_entity_values(store, &registry, ATTR_REGISTRY_CONCEPT).await?;
+    let concept_pairs = find_all_concepts(store).await?;
 
     let mut matches: Vec<(ConceptName, Option<String>, String)> = Vec::new();
 
-    for entity in &concept_entities {
-        let name = fetch_string(store, entity, ATTR_CONCEPT_NAME)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Concept entity missing concept/name"))?;
-        let concept_name = ConceptName::from_stored(name);
+    for (entity, name) in &concept_pairs {
+        let concept_name = ConceptName::from_stored(name.clone());
         let namespace = fetch_string(store, entity, ATTR_CONCEPT_NAMESPACE).await?;
         let attrs = fetch_string_values(store, entity, ATTR_CONCEPT_ATTRIBUTE).await?;
 

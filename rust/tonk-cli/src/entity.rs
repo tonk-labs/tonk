@@ -33,7 +33,7 @@ pub async fn create(
     let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
-    let concept = lookup_concept_by_name(&session, &ctx.space_did, &concept_name)
+    let concept = lookup_concept_by_name(&session, &concept_name)
         .await?
         .context(format!(
             "Concept '{}' not found. Define it first with 'tonk concept define {}'.",
@@ -148,7 +148,7 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
     let session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
-    let concept = lookup_concept_by_name(&session, &ctx.space_did, &concept_name)
+    let concept = lookup_concept_by_name(&session, &concept_name)
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
 
@@ -174,7 +174,7 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
 
     // Load ALL rules in the space (not just rules for the queried concept),
     // because rules can depend on each other.
-    let all_rules = crate::rule::load_all_rules(&session, &ctx.space_did).await?;
+    let all_rules = crate::rule::load_all_rules(&session).await?;
 
     // Compile all rules
     // Fetch cardinalities for the queried concept
@@ -183,7 +183,7 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
     let mut compiled_rules: Vec<dialog_query::DeductiveRule> = Vec::new();
     for (conclusion_name, def) in &all_rules {
         let cname = ConceptName::from_stored(conclusion_name.clone());
-        let concept_ent = lookup_concept_by_name(&session, &ctx.space_did, &cname)
+        let concept_ent = lookup_concept_by_name(&session, &cname)
             .await?
             .context(format!("Rule conclusion concept '{}' not found", cname))?;
         let concept_attrs =
@@ -385,7 +385,7 @@ pub async fn show(id: String, json: bool) -> Result<()> {
 
     // Infer concept from the entity's attributes
     let (concept_name, concept_ent, schema_attrs) =
-        infer_concept_from_entity(&session, &entity, &ctx.space_did).await?;
+        infer_concept_from_entity(&session, &entity).await?;
 
     let namespace = fetch_string(&session, &concept_ent, ATTR_CONCEPT_NAMESPACE)
         .await?
@@ -461,7 +461,7 @@ pub async fn assert(id: String, fields: Vec<String>, json: bool) -> Result<()> {
 
     // Infer concept from the entity's attributes
     let (concept_name, concept_ent, schema_attrs) =
-        infer_concept_from_entity(&session, &entity, &ctx.space_did).await?;
+        infer_concept_from_entity(&session, &entity).await?;
 
     let namespace = fetch_string(&session, &concept_ent, ATTR_CONCEPT_NAMESPACE)
         .await?
@@ -548,7 +548,7 @@ pub async fn retract(id: String, json: bool) -> Result<()> {
     }
 
     // Try to infer the concept name for display purposes
-    let concept_label = match infer_concept_from_entity(&session, &entity, &ctx.space_did).await {
+    let concept_label = match infer_concept_from_entity(&session, &entity).await {
         Ok((name, _, _)) => name.to_string(),
         Err(_) => "unknown".to_string(),
     };

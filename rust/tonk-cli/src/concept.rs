@@ -4,8 +4,8 @@
 //! defines a set of attributes (with an auto-prefixed namespace) that entities
 //! conform to.
 //!
-//! The concept registry is a well-known entity per space that indexes all
-//! concepts, enabling enumeration without wildcard queries.
+//! Concepts are discovered structurally: any entity with a `concept/name`
+//! attribute is a concept. No explicit registry entity is needed.
 
 use crate::schema::*;
 use anyhow::{Context, Result};
@@ -23,10 +23,9 @@ pub async fn list(json: bool) -> Result<()> {
     let ctx = get_space_context()?;
     let session = open_session(&ctx).await?;
 
-    let registry = registry_entity(&ctx.space_did)?;
-    let concept_entities = fetch_entity_values(&session, &registry, ATTR_REGISTRY_CONCEPT).await?;
+    let concept_entries = find_all_concepts(&session).await?;
 
-    if concept_entities.is_empty() {
+    if concept_entries.is_empty() {
         if json {
             println!("[]");
         } else {
@@ -36,22 +35,16 @@ pub async fn list(json: bool) -> Result<()> {
     }
 
     let mut concepts: Vec<(String, Option<String>, usize)> = Vec::new();
-    for entity in &concept_entities {
-        let name = fetch_string(&session, entity, ATTR_CONCEPT_NAME)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!(
-                "Concept entity '{}' is missing its 'concept/name' attribute — possible data corruption",
-                entity
-            ))?;
+    for (entity, name) in &concept_entries {
         let description = fetch_string(&session, entity, ATTR_CONCEPT_DESCRIPTION).await?;
-        // Count entities by querying the AEV index on the first schema attribute
+        // Count entities by querying the AEV index on schema attributes
         let attrs = fetch_string_values(&session, entity, ATTR_CONCEPT_ATTRIBUTE).await?;
         let entity_count = if attrs.is_empty() {
             0
         } else {
             find_entities_by_concept(&session, &attrs).await?.len()
         };
-        concepts.push((name, description, entity_count));
+        concepts.push((name.clone(), description, entity_count));
     }
 
     if json {
@@ -95,9 +88,9 @@ pub async fn list(json: bool) -> Result<()> {
 /// auto-prefixed with the space name as namespace (e.g. `"my-space/title"`).
 ///
 /// Uses raw Branch + Instruction (not Session/Transaction) because a
-/// concept has multi-valued `concept/attribute` entries and the registry
-/// has multi-valued `registry/concept` entries. Transaction deduplicates
-/// by `(entity, attribute)`, so only the last value per pair would survive.
+/// concept has multi-valued `concept/attribute` entries. Transaction
+/// deduplicates by `(entity, attribute)`, so only the last value per pair
+/// would survive.
 pub async fn define(
     name: String,
     attributes: Vec<String>,
@@ -110,10 +103,8 @@ pub async fn define(
     let namespace = &ctx.space_name;
     let mut branch = open_branch(&ctx).await?;
 
-    let registry = registry_entity(&ctx.space_did)?;
-
-    // Check if concept with this name already exists (by scanning registry)
-    if let Some(_existing) = lookup_concept_by_name(&branch, &ctx.space_did, &name).await? {
+    // Check if concept with this name already exists
+    if let Some(_existing) = lookup_concept_by_name(&branch, &name).await? {
         anyhow::bail!(
             "Concept '{}' already exists. Use 'tonk concept extend {}' to add attributes.",
             name,
@@ -147,14 +138,6 @@ pub async fn define(
 
     // Build instructions
     let mut instructions = Vec::new();
-
-    // Register concept in registry
-    instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_REGISTRY_CONCEPT)?,
-        of: registry.clone(),
-        is: Value::Entity(concept.clone()),
-        cause: None,
-    }));
 
     // Set concept name
     instructions.push(Instruction::Assert(Artifact {
@@ -231,7 +214,7 @@ pub async fn show(name: String, json: bool) -> Result<()> {
     let session = open_session(&ctx).await?;
 
     let name = ConceptName::new(name)?;
-    let concept = lookup_concept_by_name(&session, &ctx.space_did, &name)
+    let concept = lookup_concept_by_name(&session, &name)
         .await?
         .context(format!("Concept '{}' not found", name))?;
 
@@ -303,7 +286,7 @@ pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result
     let mut branch = open_branch(&ctx).await?;
 
     let name = ConceptName::new(name)?;
-    let concept = lookup_concept_by_name(&branch, &ctx.space_did, &name)
+    let concept = lookup_concept_by_name(&branch, &name)
         .await?
         .context(format!("Concept '{}' not found", name))?;
 
@@ -389,8 +372,7 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
     let mut branch = open_branch(&ctx).await?;
 
     let name = ConceptName::new(name)?;
-    let registry = registry_entity(&ctx.space_did)?;
-    let concept = lookup_concept_by_name(&branch, &ctx.space_did, &name)
+    let concept = lookup_concept_by_name(&branch, &name)
         .await?
         .context(format!("Concept '{}' not found", name))?;
 
@@ -469,13 +451,15 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
         }));
     }
 
-    // Retract registry entry
-    instructions.push(Instruction::Retract(Artifact {
-        the: Attribute::from_str(ATTR_REGISTRY_CONCEPT)?,
-        of: registry.clone(),
-        is: Value::Entity(concept.clone()),
-        cause: None,
-    }));
+    // Retract concept namespace if present
+    if let Some(ns) = fetch_string(&branch, &concept, ATTR_CONCEPT_NAMESPACE).await? {
+        instructions.push(Instruction::Retract(Artifact {
+            the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
+            of: concept.clone(),
+            is: Value::String(ns),
+            cause: None,
+        }));
+    }
 
     branch
         .commit(futures_util::stream::iter(instructions))

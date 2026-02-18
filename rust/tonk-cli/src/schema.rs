@@ -102,9 +102,6 @@ impl AsRef<str> for ConceptName {
 // Well-known attribute constants
 // ---------------------------------------------------------------------------
 
-/// Registry attribute: points from registry entity to concept entities.
-pub const ATTR_REGISTRY_CONCEPT: &str = "registry/concept";
-
 /// Concept attribute: the human-readable name of the concept.
 pub const ATTR_CONCEPT_NAME: &str = "concept/name";
 
@@ -129,9 +126,6 @@ pub const ATTR_ATTRIBUTE_OPTIONAL: &str = "attribute/optional";
 /// Concept attribute: the namespace the concept was imported from (e.g. "diy.cook").
 pub const ATTR_CONCEPT_NAMESPACE: &str = "concept/namespace";
 
-/// Registry attribute: points from registry entity to rule entities.
-pub const ATTR_REGISTRY_RULE: &str = "registry/rule";
-
 /// Rule attribute: the human-readable name of the rule.
 pub const ATTR_RULE_NAME: &str = "rule/name";
 
@@ -147,28 +141,6 @@ pub const ATTR_RULE_DEFINITION: &str = "rule/definition";
 // ---------------------------------------------------------------------------
 // Deterministic entity derivation
 // ---------------------------------------------------------------------------
-
-/// Derive the concept registry entity for a space.
-///
-/// Deterministically derived as an Ed25519 `did:key` from the space DID.
-pub fn registry_entity(space_did: &str) -> Result<Entity> {
-    derive_entity(&format!("{}\0concept-registry", space_did))
-}
-
-/// Derive the concept entity for a given concept name within a space.
-///
-/// Deterministically derived as an Ed25519 `did:key` from the space DID and concept name.
-///
-/// NOTE: This will be replaced in a future phase with structural identity
-/// based on `Concept::operator()`. For now, name-based derivation is kept
-/// for compatibility with the registry lookup pattern.
-pub fn concept_entity(space_did: &str, concept_name: &ConceptName) -> Result<Entity> {
-    derive_entity(&format!(
-        "{}\0concept\0{}",
-        space_did,
-        concept_name.to_lowercase()
-    ))
-}
 
 /// Derive a concept entity from its attribute set using dialog-db's
 /// structural identity.
@@ -188,20 +160,69 @@ pub fn concept_entity_from_attrs(
     derive_entity(&operator_uri)
 }
 
-/// Look up a concept entity by name from the registry.
+/// Look up a concept entity by name.
 ///
-/// Scans all registered concepts and returns the entity that has
-/// a matching `concept/name` attribute.
+/// Discovers concepts structurally by querying the AEV index for all
+/// entities with a `concept/name` attribute, then matches by name
+/// (case-insensitive).
 pub async fn lookup_concept_by_name<S: ArtifactStore>(
     store: &S,
-    space_did: &str,
     name: &ConceptName,
 ) -> Result<Option<Entity>> {
-    let registry = registry_entity(space_did)?;
-    let concept_entities = fetch_entity_values(store, &registry, ATTR_REGISTRY_CONCEPT).await?;
+    let concept_entities = find_entities_by_attribute(store, ATTR_CONCEPT_NAME).await?;
 
     for entity in concept_entities {
         if let Some(stored_name) = fetch_string(store, &entity, ATTR_CONCEPT_NAME).await?
+            && stored_name.to_lowercase() == name.to_lowercase()
+        {
+            return Ok(Some(entity));
+        }
+    }
+    Ok(None)
+}
+
+/// Find all named concept entities in the store.
+///
+/// Discovers concepts structurally by querying the AEV index for all
+/// entities with a `concept/name` attribute. Returns `(entity, name)` pairs.
+pub async fn find_all_concepts<S: ArtifactStore>(store: &S) -> Result<Vec<(Entity, String)>> {
+    let entities = find_entities_by_attribute(store, ATTR_CONCEPT_NAME).await?;
+    let mut result = Vec::new();
+    for entity in entities {
+        if let Some(name) = fetch_string(store, &entity, ATTR_CONCEPT_NAME).await? {
+            result.push((entity, name));
+        }
+    }
+    Ok(result)
+}
+
+/// Find all named rule entities in the store.
+///
+/// Discovers rules structurally by querying the AEV index for all
+/// entities with a `rule/name` attribute. Returns `(entity, name)` pairs.
+pub async fn find_all_rules<S: ArtifactStore>(store: &S) -> Result<Vec<(Entity, String)>> {
+    let entities = find_entities_by_attribute(store, ATTR_RULE_NAME).await?;
+    let mut result = Vec::new();
+    for entity in entities {
+        if let Some(name) = fetch_string(store, &entity, ATTR_RULE_NAME).await? {
+            result.push((entity, name));
+        }
+    }
+    Ok(result)
+}
+
+/// Look up a rule entity by name.
+///
+/// Discovers rules structurally by querying the AEV index for all
+/// entities with a `rule/name` attribute, then matches by name
+/// (case-insensitive).
+pub async fn lookup_rule_by_name<S: ArtifactStore>(
+    store: &S,
+    name: &str,
+) -> Result<Option<Entity>> {
+    let rule_entities = find_entities_by_attribute(store, ATTR_RULE_NAME).await?;
+    for entity in rule_entities {
+        if let Some(stored_name) = fetch_string(store, &entity, ATTR_RULE_NAME).await?
             && stored_name.to_lowercase() == name.to_lowercase()
         {
             return Ok(Some(entity));
@@ -401,9 +422,9 @@ pub async fn open_session(
 /// (Session wraps Branch and provides the Transaction API + rule-aware querying).
 ///
 /// Use `open_branch()` for write paths involving multi-valued attributes
-/// (e.g. `concept/attribute`, `registry/concept`, `registry/rule`). Transaction
-/// deduplicates by `(entity, attribute)`, so only one value per pair survives —
-/// raw Branch + `Instruction` is required for multi-valued writes.
+/// (e.g. `concept/attribute`). Transaction deduplicates by
+/// `(entity, attribute)`, so only one value per pair survives — raw
+/// Branch + `Instruction` is required for multi-valued writes.
 pub async fn open_branch(
     ctx: &SpaceContext,
 ) -> Result<dialog_artifacts::repository::Branch<FsBackend>> {
@@ -590,7 +611,6 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
 pub async fn infer_concept_from_entity<S: ArtifactStore>(
     store: &S,
     entity: &Entity,
-    space_did: &str,
 ) -> Result<(ConceptName, Entity, Vec<String>)> {
     // Fetch all facts about this entity
     let results: Vec<_> = store
@@ -606,9 +626,8 @@ pub async fn infer_concept_from_entity<S: ArtifactStore>(
     let entity_attrs: std::collections::HashSet<String> =
         results.iter().map(|a| a.the.to_string()).collect();
 
-    // Find all registered concepts via the registry
-    let registry = registry_entity(space_did)?;
-    let concept_entities = fetch_entity_values(store, &registry, ATTR_REGISTRY_CONCEPT).await?;
+    // Find all named concepts via structural discovery (AEV index)
+    let concept_entities = find_entities_by_attribute(store, ATTR_CONCEPT_NAME).await?;
 
     let mut best_match: Option<(ConceptName, Entity, Vec<String>, usize)> = None;
 
@@ -636,7 +655,7 @@ pub async fn infer_concept_from_entity<S: ArtifactStore>(
     match best_match {
         Some((name, ent, attrs, _)) => Ok((name, ent, attrs)),
         None => anyhow::bail!(
-            "Could not resolve concept for entity '{}' (no registered concept matches its attributes)",
+            "Could not resolve concept for entity '{}' (no named concept matches its attributes)",
             entity
         ),
     }
