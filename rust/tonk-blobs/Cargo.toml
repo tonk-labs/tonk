@@ -20,7 +20,7 @@ serde_ipld_dagcbor = { workspace = true }
 thiserror = { workspace = true }
 tonk-common = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-ucan = { workspace = true }
+dialog-ucan = { workspace = true }
 bytes = { workspace = true }
 blake3 = { workspace = true }
 base58 = { workspace = true }
