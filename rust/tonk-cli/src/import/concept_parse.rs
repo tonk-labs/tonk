@@ -713,15 +713,14 @@ ns:
                 .filter(|e| !matches!(e, ParsedEntry::Rule { .. }))
                 .collect(),
         );
-        // planner.yaml now has 5 concepts + 2 rules
+        // planner.yaml now has 4 concepts + 2 rules
         // We only look at concepts here
-        assert_eq!(concepts.len(), 5);
+        assert_eq!(concepts.len(), 4);
 
         let names: Vec<&str> = concepts.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"Allergy"));
         assert!(names.contains(&"Event"));
         assert!(names.contains(&"Meal"));
-        assert!(names.contains(&"SafeMeal"));
         assert!(names.contains(&"AllergyConflict"));
 
         // Allergy is under diy.health, others under diy.planner
@@ -733,6 +732,12 @@ ns:
 
         let meal = concepts.iter().find(|c| c.name == "Meal").unwrap();
         assert_eq!(meal.namespace, "diy.planner");
+
+        let conflict = concepts
+            .iter()
+            .find(|c| c.name == "AllergyConflict")
+            .unwrap();
+        assert_eq!(conflict.namespace, "diy.planner");
         assert_eq!(meal.attributes.len(), 3);
     }
 

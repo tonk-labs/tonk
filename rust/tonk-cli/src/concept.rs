@@ -92,7 +92,7 @@ pub async fn list(json: bool) -> Result<()> {
 /// Define a new concept with the given name and attributes.
 ///
 /// Attributes are short names (e.g. `"title"`, `"status"`) that will be
-/// auto-prefixed with the concept namespace (e.g. `"task/title"`).
+/// auto-prefixed with the space name as namespace (e.g. `"my-space/title"`).
 ///
 /// Uses raw Branch + Instruction (not Session/Transaction) because a
 /// concept has multi-valued `concept/attribute` entries and the registry
@@ -107,14 +107,13 @@ pub async fn define(
     let name = ConceptName::new(name)?;
 
     let ctx = get_space_context()?;
+    let namespace = &ctx.space_name;
     let mut branch = open_branch(&ctx).await?;
 
     let registry = registry_entity(&ctx.space_did)?;
-    let concept = concept_entity(&ctx.space_did, &name)?;
 
-    // Check if concept already exists
-    let existing_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME).await?;
-    if existing_name.is_some() {
+    // Check if concept with this name already exists (by scanning registry)
+    if let Some(_existing) = lookup_concept_by_name(&branch, &ctx.space_did, &name).await? {
         anyhow::bail!(
             "Concept '{}' already exists. Use 'tonk concept extend {}' to add attributes.",
             name,
@@ -127,7 +126,7 @@ pub async fn define(
         if json {
             anyhow::bail!("No attributes provided. Pass attribute names as arguments.");
         }
-        prompt_attributes(&name)?
+        prompt_attributes(namespace)?
     } else {
         attributes
     };
@@ -136,11 +135,15 @@ pub async fn define(
         anyhow::bail!("A concept must have at least one attribute.");
     }
 
-    // Qualify attribute names
+    // Qualify attribute names with the space namespace
     let qualified_attrs: Vec<String> = attrs
         .iter()
-        .map(|a| qualify_attribute(&name, a))
+        .map(|a| qualify_attribute(namespace, a))
         .collect::<Result<Vec<_>>>()?;
+
+    // Derive concept entity from attribute set (structural identity)
+    let empty_cardinalities = std::collections::HashMap::new();
+    let concept = concept_entity_from_attrs(&qualified_attrs, &empty_cardinalities)?;
 
     // Build instructions
     let mut instructions = Vec::new();
@@ -171,6 +174,14 @@ pub async fn define(
         }));
     }
 
+    // Store the namespace
+    instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
+        of: concept.clone(),
+        is: Value::String(namespace.to_string()),
+        cause: None,
+    }));
+
     // Add each attribute
     for attr in &qualified_attrs {
         instructions.push(Instruction::Assert(Artifact {
@@ -190,15 +201,17 @@ pub async fn define(
         let output = serde_json::json!({
             "ok": true,
             "name": name.as_str(),
+            "namespace": namespace,
             "attributes": qualified_attrs,
             "description": description,
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
         println!("Defined concept '{}'", name);
+        println!("  Namespace: {}", namespace);
         println!("  Attributes:");
         for attr in &qualified_attrs {
-            println!("    {}", short_attribute(&name, attr));
+            println!("    {}", short_attribute(namespace, attr));
         }
         if let Some(desc) = &description {
             println!("  Description: {}", desc);
@@ -218,14 +231,20 @@ pub async fn show(name: String, json: bool) -> Result<()> {
     let session = open_session(&ctx).await?;
 
     let name = ConceptName::new(name)?;
-    let concept = concept_entity(&ctx.space_did, &name)?;
-
-    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(&session, &ctx.space_did, &name)
         .await?
         .context(format!("Concept '{}' not found", name))?;
-    let stored_name = ConceptName::from_stored(stored_name);
+
+    let stored_name = ConceptName::from_stored(
+        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+            .await?
+            .unwrap_or_else(|| name.to_string()),
+    );
 
     let description = fetch_string(&session, &concept, ATTR_CONCEPT_DESCRIPTION).await?;
+    let namespace = fetch_string(&session, &concept, ATTR_CONCEPT_NAMESPACE)
+        .await?
+        .unwrap_or_else(|| ctx.space_name.clone());
     let attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
     // Count entities by querying the AEV index on the first schema attribute
     let entity_count = if attrs.is_empty() {
@@ -237,6 +256,7 @@ pub async fn show(name: String, json: bool) -> Result<()> {
     if json {
         let mut output = serde_json::json!({
             "name": stored_name.as_str(),
+            "namespace": namespace,
             "attributes": attrs,
             "entity_count": entity_count,
             "entity": concept.to_string(),
@@ -253,9 +273,10 @@ pub async fn show(name: String, json: bool) -> Result<()> {
         if let Some(desc) = &description {
             println!("  Description: {}", desc);
         }
+        println!("  Namespace: {}", namespace);
         println!("  Attributes:");
         for attr in &attrs {
-            println!("    {}", short_attribute(&stored_name, attr));
+            println!("    {}", short_attribute(&namespace, attr));
         }
         println!("  Entities: {}", entity_count);
         println!("  Entity: {}", concept);
@@ -282,20 +303,22 @@ pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result
     let mut branch = open_branch(&ctx).await?;
 
     let name = ConceptName::new(name)?;
-    let concept = concept_entity(&ctx.space_did, &name)?;
-
-    // Verify concept exists
-    fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(&branch, &ctx.space_did, &name)
         .await?
         .context(format!("Concept '{}' not found", name))?;
+
+    // Get the concept's namespace (fall back to space name)
+    let namespace = fetch_string(&branch, &concept, ATTR_CONCEPT_NAMESPACE)
+        .await?
+        .unwrap_or_else(|| ctx.space_name.clone());
 
     // Get existing attributes to check for duplicates
     let existing = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
-    // Qualify new attributes
+    // Qualify new attributes with the concept's namespace
     let qualified_new: Vec<String> = attributes
         .iter()
-        .map(|a| qualify_attribute(&name, a))
+        .map(|a| qualify_attribute(&namespace, a))
         .collect::<Result<Vec<_>>>()?;
 
     // Filter out attributes that already exist
@@ -307,7 +330,7 @@ pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result
             if !json {
                 eprintln!(
                     "  Attribute '{}' already exists, skipping",
-                    short_attribute(&name, attr)
+                    short_attribute(&namespace, attr)
                 );
             }
         } else {
@@ -346,7 +369,7 @@ pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result
     } else {
         println!("Extended concept '{}' with:", name);
         for attr in &added {
-            println!("  + {}", short_attribute(&name, attr));
+            println!("  + {}", short_attribute(&namespace, attr));
         }
     }
 
@@ -367,12 +390,13 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
 
     let name = ConceptName::new(name)?;
     let registry = registry_entity(&ctx.space_did)?;
-    let concept = concept_entity(&ctx.space_did, &name)?;
-
-    // Verify concept exists
-    let stored_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(&branch, &ctx.space_did, &name)
         .await?
         .context(format!("Concept '{}' not found", name))?;
+
+    let stored_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+        .await?
+        .unwrap_or_else(|| name.to_string());
 
     let attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
@@ -388,13 +412,13 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
         if json {
             let output = serde_json::json!({
                 "ok": false,
-                "error": format!("Concept '{}' has {} entity(ies). Use --force to delete.", name, entity_count),
+                "error": format!(            "Concept '{}' has {} entities. Use --force to delete.", name, entity_count),
                 "entity_count": entity_count,
             });
             println!("{}", serde_json::to_string(&output)?);
         }
         anyhow::bail!(
-            "Concept '{}' has {} entity(ies). Use --force to delete concept and all entities.",
+            "Concept '{}' has {} entities. Use --force to delete concept and all entities.",
             name,
             entity_count
         );
@@ -467,7 +491,7 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
     } else {
         println!("Deleted concept '{}'", name);
         if force && entity_count > 0 {
-            println!("  Also deleted {} entity(ies)", entity_count);
+            println!("  Also deleted {} entities", entity_count);
         }
     }
 
@@ -478,18 +502,14 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
 // Interactive attribute prompt
 // ---------------------------------------------------------------------------
 
-fn prompt_attributes(concept_name: &ConceptName) -> Result<Vec<String>> {
-    let prefix = concept_name.to_lowercase();
-    println!(
-        "Define attributes for '{}' (will be stored as '{}/...').",
-        concept_name, prefix
-    );
+fn prompt_attributes(namespace: &str) -> Result<Vec<String>> {
+    println!("Define attributes (will be stored as '{}/...').", namespace);
     println!("Enter attribute names one per line. Empty line to finish.\n");
 
     let mut attrs = Vec::new();
     loop {
         let input: String = dialoguer::Input::new()
-            .with_prompt(format!("  {}/", prefix))
+            .with_prompt(format!("  {}/", namespace))
             .allow_empty(true)
             .interact_text()?;
 

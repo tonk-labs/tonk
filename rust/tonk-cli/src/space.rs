@@ -551,10 +551,10 @@ fn find_existing_space_by_name(
     let spaces = collect_spaces_for_authority(operator_did, authority_did)?;
 
     for space_did in spaces.keys() {
-        if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(space_did) {
-            if metadata.name == name {
-                return Ok(Some(space_did.clone()));
-            }
+        if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(space_did)
+            && metadata.name == name
+        {
+            return Ok(Some(space_did.clone()));
         }
     }
 

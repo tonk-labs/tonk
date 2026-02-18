@@ -498,12 +498,16 @@ pub(super) async fn import_mixed(
             ConceptName,
             Vec<String>,
             std::collections::HashMap<String, dialog_query::Cardinality>,
+            String, // namespace
         ),
     > = std::collections::HashMap::new();
     for (cname, concept) in &validated_concepts {
         let attrs = build_concept_attr_list(cname, concept)?;
         let cardinalities = build_concept_cardinalities(cname, concept)?;
-        concept_overrides.insert(cname.to_lowercase(), (cname.clone(), attrs, cardinalities));
+        concept_overrides.insert(
+            cname.to_lowercase(),
+            (cname.clone(), attrs, cardinalities, concept.namespace.clone()),
+        );
     }
 
     // --- Validate rules against the effective schema ---
@@ -515,28 +519,29 @@ pub(super) async fn import_mixed(
     for (parsed, definition) in &lowered_rules {
         let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
         let key = conclusion_concept.to_lowercase();
-        let (concept_name, concept_attrs, cardinalities) =
-            if let Some((name, attrs, cards)) = concept_overrides.get(&key) {
-                (name.clone(), attrs.clone(), cards.clone())
+        let (concept_name, concept_attrs, cardinalities, concept_ns) =
+            if let Some((name, attrs, cards, ns)) = concept_overrides.get(&key) {
+                (name.clone(), attrs.clone(), cards.clone(), ns.clone())
         } else {
-            let concept_ent = concept_entity(&ctx.space_did, &conclusion_concept)?;
-            let concept_name = fetch_string(&branch, &concept_ent, ATTR_CONCEPT_NAME)
+            let concept_ent = lookup_concept_by_name(&branch, &ctx.space_did, &conclusion_concept)
                 .await?
                 .context(format!(
                     "Conclusion concept '{}' for rule '{}' not found. Define it first.",
                     definition.conclusion.concept, parsed.name
                 ))?;
-            let concept_name = ConceptName::from_stored(concept_name);
+            let concept_name = ConceptName::from_stored(
+                fetch_string(&branch, &concept_ent, ATTR_CONCEPT_NAME)
+                    .await?
+                    .unwrap_or_else(|| conclusion_concept.to_string()),
+            );
             let concept_attrs =
                 fetch_string_values(&branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
-            let cardinalities = fetch_attribute_cardinalities(
-                &branch,
-                &ctx.space_did,
-                &concept_name,
-                &concept_attrs,
-            )
-            .await?;
-            (concept_name, concept_attrs, cardinalities)
+            let concept_ns = fetch_string(&branch, &concept_ent, ATTR_CONCEPT_NAMESPACE)
+                .await?
+                .unwrap_or_else(|| ctx.space_name.clone());
+            let cardinalities =
+                fetch_attribute_cardinalities(&branch, &concept_attrs).await?;
+            (concept_name, concept_attrs, cardinalities, concept_ns)
         };
 
         validate_rule_against_schema(
@@ -545,6 +550,7 @@ pub(super) async fn import_mixed(
             &concept_name,
             &concept_attrs,
             &cardinalities,
+            &concept_ns,
         )?;
     }
 
@@ -687,16 +693,15 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
     force: bool,
     retract_instructions: &mut Vec<Instruction>,
 ) -> Result<()> {
-    let entity = concept_entity(space_did, cname)?;
-    let existing = fetch_string(branch, &entity, ATTR_CONCEPT_NAME).await?;
+    let existing_entity = lookup_concept_by_name(branch, space_did, cname).await?;
 
-    if existing.is_some() {
+    if let Some(entity) = existing_entity {
         if force {
             let existing_attrs =
                 fetch_string_values(branch, &entity, ATTR_CONCEPT_ATTRIBUTE).await?;
 
             for attr_name in &existing_attrs {
-                let meta_entity = attribute_meta_entity(space_did, cname, attr_name)?;
+                let meta_entity = attribute_meta_entity(attr_name)?;
 
                 for meta_attr in &[
                     ATTR_ATTRIBUTE_DESCRIPTION,
@@ -770,14 +775,21 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
 
 /// Build assert instructions for a single concept.
 fn build_concept_assertions(
-    space_did: &str,
+    _space_did: &str,
     cname: &ConceptName,
     concept: &ParsedConcept,
     registry: &dialog_query::Entity,
     assert_instructions: &mut Vec<Instruction>,
     import_summary: &mut Vec<serde_json::Value>,
 ) -> Result<()> {
-    let entity = concept_entity(space_did, cname)?;
+    // Derive concept entity from its attribute set (structural identity)
+    let qualified_attrs: Vec<String> = concept
+        .attributes
+        .iter()
+        .map(|a| qualify_attribute(&concept.namespace, &a.short_name))
+        .collect::<Result<Vec<_>>>()?;
+    let empty_cardinalities = std::collections::HashMap::new();
+    let entity = concept_entity_from_attrs(&qualified_attrs, &empty_cardinalities)?;
 
     assert_instructions.push(Instruction::Assert(Artifact {
         the: Attribute::from_str(ATTR_REGISTRY_CONCEPT)?,
@@ -825,7 +837,7 @@ fn build_concept_assertions(
                 qr.clone()
             }
         } else {
-            qualify_attribute(cname, &attr.short_name)?
+            qualify_attribute(&concept.namespace, &attr.short_name)?
         };
 
         assert_instructions.push(Instruction::Assert(Artifact {
@@ -835,7 +847,7 @@ fn build_concept_assertions(
             cause: None,
         }));
 
-        let meta_entity = attribute_meta_entity(space_did, cname, &qualified)?;
+        let meta_entity = attribute_meta_entity(&qualified)?;
 
         if let Some(desc) = &attr.description {
             assert_instructions.push(Instruction::Assert(Artifact {
@@ -901,7 +913,7 @@ fn build_concept_attr_list(cname: &ConceptName, concept: &ParsedConcept) -> Resu
                 qr.clone()
             }
         } else {
-            qualify_attribute(cname, &attr.short_name)?
+            qualify_attribute(&concept.namespace, &attr.short_name)?
         };
 
         attrs.push(qualified);
@@ -933,7 +945,7 @@ fn build_concept_cardinalities(
                 qr.clone()
             }
         } else {
-            qualify_attribute(cname, &attr.short_name)?
+            qualify_attribute(&concept.namespace, &attr.short_name)?
         };
 
         cardinalities.insert(qualified, dialog_query::Cardinality::Many);
@@ -1113,18 +1125,24 @@ async fn validate_rule_against_space<S: dialog_artifacts::ArtifactStore + Artifa
     definition: &RuleDefinition,
 ) -> Result<()> {
     let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
-    let concept_ent = concept_entity(space_did, &conclusion_concept)?;
-    let concept_name = fetch_string(branch, &concept_ent, ATTR_CONCEPT_NAME)
+    let concept_ent = lookup_concept_by_name(branch, space_did, &conclusion_concept)
         .await?
         .context(format!(
             "Conclusion concept '{}' for rule '{}' not found. Define it first.",
             definition.conclusion.concept, parsed.name
         ))?;
-    let concept_name = ConceptName::from_stored(concept_name);
+    let concept_name = ConceptName::from_stored(
+        fetch_string(branch, &concept_ent, ATTR_CONCEPT_NAME)
+            .await?
+            .unwrap_or_else(|| conclusion_concept.to_string()),
+    );
 
-    let concept_attrs = fetch_string_values(branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
-    let cardinalities =
-        fetch_attribute_cardinalities(branch, space_did, &concept_name, &concept_attrs).await?;
+    let concept_attrs =
+        fetch_string_values(branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let concept_ns = fetch_string(branch, &concept_ent, ATTR_CONCEPT_NAMESPACE)
+        .await?
+        .unwrap_or_default();
+    let cardinalities = fetch_attribute_cardinalities(branch, &concept_attrs).await?;
 
     validate_rule_against_schema(
         parsed,
@@ -1132,6 +1150,7 @@ async fn validate_rule_against_space<S: dialog_artifacts::ArtifactStore + Artifa
         &concept_name,
         &concept_attrs,
         &cardinalities,
+        &concept_ns,
     )?;
 
     Ok(())
@@ -1144,13 +1163,14 @@ fn validate_rule_against_schema(
     concept_name: &ConceptName,
     concept_attrs: &[String],
     cardinalities: &std::collections::HashMap<String, dialog_query::Cardinality>,
+    namespace: &str,
 ) -> Result<()> {
     // Validate bindings match concept schema
-    crate::rule::validate_definition(definition, concept_attrs, concept_name)
+    crate::rule::validate_definition(definition, concept_attrs, concept_name, namespace)
         .with_context(|| format!("Rule '{}' validation failed", parsed.name))?;
 
     // Trial-compile
-    crate::rule::compile_rule(definition, concept_name, concept_attrs, cardinalities)
+    crate::rule::compile_rule(definition, concept_name, concept_attrs, cardinalities, namespace)
         .with_context(|| {
             format!(
                 "Rule '{}' failed to compile. Check variable names match between \

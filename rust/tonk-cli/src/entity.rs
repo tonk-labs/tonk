@@ -33,16 +33,22 @@ pub async fn create(
     let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
-    let concept = concept_entity(&ctx.space_did, &concept_name)?;
-
-    // Verify concept exists and get its schema
-    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(&session, &ctx.space_did, &concept_name)
         .await?
         .context(format!(
             "Concept '{}' not found. Define it first with 'tonk concept define {}'.",
             concept_name, concept_name
         ))?;
-    let stored_name = ConceptName::from_stored(stored_name);
+
+    let stored_name = ConceptName::from_stored(
+        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+            .await?
+            .unwrap_or_else(|| concept_name.to_string()),
+    );
+
+    let namespace = fetch_string(&session, &concept, ATTR_CONCEPT_NAMESPACE)
+        .await?
+        .unwrap_or_else(|| ctx.space_name.clone());
 
     let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
@@ -70,7 +76,7 @@ pub async fn create(
     // Qualify and validate field names against schema
     let mut qualified_fields: Vec<(String, String)> = Vec::new();
     for (key, value) in &field_map {
-        let qualified = qualify_attribute(&stored_name, key)?;
+        let qualified = qualify_attribute(&namespace, key)?;
         if !schema_attrs.contains(&qualified) {
             anyhow::bail!(
                 "Attribute '{}' is not defined in concept '{}'. Known attributes: {}",
@@ -78,7 +84,7 @@ pub async fn create(
                 stored_name,
                 schema_attrs
                     .iter()
-                    .map(|a| short_attribute(&stored_name, a))
+                    .map(|a| short_attribute(&namespace, a))
                     .collect::<Vec<_>>()
                     .join(", ")
             );
@@ -104,7 +110,7 @@ pub async fn create(
     if json {
         let mut data = serde_json::Map::new();
         for (attr_name, value_str) in &qualified_fields {
-            let short = short_attribute(&stored_name, attr_name);
+            let short = short_attribute(&namespace, attr_name);
             data.insert(short, serde_json::json!(value_str));
         }
         let output = serde_json::json!({
@@ -119,7 +125,7 @@ pub async fn create(
         for (attr_name, value_str) in &qualified_fields {
             println!(
                 "  {}: {}",
-                short_attribute(&stored_name, attr_name),
+                short_attribute(&namespace, attr_name),
                 value_str
             );
         }
@@ -142,12 +148,19 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
     let session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
-    let concept = concept_entity(&ctx.space_did, &concept_name)?;
-
-    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(&session, &ctx.space_did, &concept_name)
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
-    let stored_name = ConceptName::from_stored(stored_name);
+
+    let stored_name = ConceptName::from_stored(
+        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+            .await?
+            .unwrap_or_else(|| concept_name.to_string()),
+    );
+
+    let namespace = fetch_string(&session, &concept, ATTR_CONCEPT_NAMESPACE)
+        .await?
+        .unwrap_or_else(|| ctx.space_name.clone());
 
     let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
@@ -155,7 +168,7 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
     let filter_map = parse_kv_fields(&filters)?;
     let mut qualified_filters: Vec<(String, Value)> = Vec::new();
     for (key, value) in &filter_map {
-        let qualified = qualify_attribute(&stored_name, key)?;
+        let qualified = qualify_attribute(&namespace, key)?;
         qualified_filters.push((qualified, parse_value(value)));
     }
 
@@ -165,19 +178,22 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
 
     // Compile all rules
     // Fetch cardinalities for the queried concept
-    let cardinalities =
-        fetch_attribute_cardinalities(&session, &ctx.space_did, &stored_name, &schema_attrs)
-            .await?;
+    let cardinalities = fetch_attribute_cardinalities(&session, &schema_attrs).await?;
 
     let mut compiled_rules: Vec<dialog_query::DeductiveRule> = Vec::new();
     for (conclusion_name, def) in &all_rules {
         let cname = ConceptName::from_stored(conclusion_name.clone());
-        let concept_ent = concept_entity(&ctx.space_did, &cname)?;
+        let concept_ent = lookup_concept_by_name(&session, &ctx.space_did, &cname)
+            .await?
+            .context(format!("Rule conclusion concept '{}' not found", cname))?;
         let concept_attrs =
             fetch_string_values(&session, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
-        let rule_cardinalities =
-            fetch_attribute_cardinalities(&session, &ctx.space_did, &cname, &concept_attrs).await?;
-        let compiled = crate::rule::compile_rule(def, &cname, &concept_attrs, &rule_cardinalities)?;
+        let rule_ns = fetch_string(&session, &concept_ent, ATTR_CONCEPT_NAMESPACE)
+            .await?
+            .unwrap_or_else(|| ctx.space_name.clone());
+        let rule_cardinalities = fetch_attribute_cardinalities(&session, &concept_attrs).await?;
+        let compiled =
+            crate::rule::compile_rule(def, &cname, &concept_attrs, &rule_cardinalities, &rule_ns)?;
         compiled_rules.push(compiled);
     }
 
@@ -185,14 +201,14 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
     let rows = query_concept(
         session,
         &schema_attrs,
-        &stored_name,
+        &namespace,
         &qualified_filters,
         &compiled_rules,
         &cardinalities,
     )
     .await?;
 
-    display_rows(&rows, &stored_name, &schema_attrs, json);
+    display_rows(&rows, &stored_name, &schema_attrs, &namespace, json);
     Ok(())
 }
 
@@ -210,7 +226,7 @@ async fn query_concept(
         >,
     >,
     schema_attrs: &[String],
-    stored_name: &ConceptName,
+    namespace: &str,
     qualified_filters: &[(String, Value)],
     compiled_rules: &[dialog_query::DeductiveRule],
     cardinalities: &std::collections::HashMap<String, dialog_query::Cardinality>,
@@ -234,7 +250,7 @@ async fn query_concept(
     // Create a variable for each attribute
     let mut attr_vars: Vec<(String, String, Term<Value>)> = Vec::new(); // (qualified, short, term)
     for attr in schema_attrs {
-        let short = short_attribute(stored_name, attr);
+        let short = short_attribute(namespace, attr);
         let var: Term<Value> = Term::var(short.as_str());
         params.insert(short.clone(), var.clone());
         attr_vars.push((attr.clone(), short, var));
@@ -242,7 +258,7 @@ async fn query_concept(
 
     // Apply filters as constant terms
     for (attr_name, filter_value) in qualified_filters {
-        let short = short_attribute(stored_name, attr_name);
+        let short = short_attribute(namespace, attr_name);
         params.insert(short, Term::Constant(filter_value.clone()));
     }
 
@@ -304,6 +320,7 @@ fn display_rows(
     rows: &[(String, serde_json::Map<String, serde_json::Value>)],
     stored_name: &ConceptName,
     schema_attrs: &[String],
+    namespace: &str,
     json: bool,
 ) {
     if json {
@@ -331,7 +348,7 @@ fn display_rows(
 
         let short_attrs: Vec<String> = schema_attrs
             .iter()
-            .map(|a| short_attribute(stored_name, a))
+            .map(|a| short_attribute(namespace, a))
             .collect();
 
         println!("{} ({} found)\n", stored_name, rows.len());
@@ -358,7 +375,8 @@ fn display_rows(
 
 /// Show full details of an entity by ID.
 ///
-/// Infers the entity's concept by examining its attribute namespaces.
+/// Infers the entity's concept by examining its attributes against
+/// registered concepts.
 pub async fn show(id: String, json: bool) -> Result<()> {
     let ctx = get_space_context()?;
     let session = open_session(&ctx).await?;
@@ -366,20 +384,23 @@ pub async fn show(id: String, json: bool) -> Result<()> {
     let entity = Entity::from_str(&id).context("Invalid entity ID")?;
 
     // Infer concept from the entity's attributes
-    let (concept_name, _concept_ent, schema_attrs) =
+    let (concept_name, concept_ent, schema_attrs) =
         infer_concept_from_entity(&session, &entity, &ctx.space_did).await?;
+
+    let namespace = fetch_string(&session, &concept_ent, ATTR_CONCEPT_NAMESPACE)
+        .await?
+        .unwrap_or_else(|| ctx.space_name.clone());
 
     // Fetch all attribute values (supporting multi-valued attributes)
     let mut data = serde_json::Map::new();
     for attr_name in &schema_attrs {
         let values = fetch_values(&session, &entity, attr_name).await?;
         if !values.is_empty() {
-            let short = short_attribute(&concept_name, attr_name);
+            let short = short_attribute(&namespace, attr_name);
             if values.len() == 1 {
                 data.insert(short, value_to_json(&values[0]));
             } else {
-                let json_arr: Vec<serde_json::Value> =
-                    values.iter().map(value_to_json).collect();
+                let json_arr: Vec<serde_json::Value> = values.iter().map(value_to_json).collect();
                 data.insert(short, serde_json::Value::Array(json_arr));
             }
         }
@@ -439,14 +460,18 @@ pub async fn assert(id: String, fields: Vec<String>, json: bool) -> Result<()> {
     let entity = Entity::from_str(&id).context("Invalid entity ID")?;
 
     // Infer concept from the entity's attributes
-    let (concept_name, _concept_ent, schema_attrs) =
+    let (concept_name, concept_ent, schema_attrs) =
         infer_concept_from_entity(&session, &entity, &ctx.space_did).await?;
+
+    let namespace = fetch_string(&session, &concept_ent, ATTR_CONCEPT_NAMESPACE)
+        .await?
+        .unwrap_or_else(|| ctx.space_name.clone());
 
     // Parse and qualify fields
     let field_map = parse_kv_fields(&fields)?;
     let mut qualified_fields: Vec<(String, String)> = Vec::new();
     for (key, value) in &field_map {
-        let qualified = qualify_attribute(&concept_name, key)?;
+        let qualified = qualify_attribute(&namespace, key)?;
         if !schema_attrs.contains(&qualified) {
             anyhow::bail!(
                 "Attribute '{}' is not defined in concept '{}'",
@@ -478,7 +503,7 @@ pub async fn assert(id: String, fields: Vec<String>, json: bool) -> Result<()> {
         let new_relation = Relation::new(attr, entity.clone(), new_value);
         transaction.assert(new_relation);
 
-        updated.push((short_attribute(&concept_name, attr_name), value_str.clone()));
+        updated.push((short_attribute(&namespace, attr_name), value_str.clone()));
     }
 
     session.commit(transaction).await?;

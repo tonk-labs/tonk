@@ -38,15 +38,22 @@ pub async fn batch_create(
     let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
-    let concept = concept_entity(&ctx.space_did, &concept_name)?;
-
-    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(&session, &ctx.space_did, &concept_name)
         .await?
         .context(format!(
             "Concept '{}' not found. Define it first with 'tonk concept define {}'.",
             concept_name, concept_name
         ))?;
-    let stored_name = ConceptName::from_stored(stored_name);
+
+    let stored_name = ConceptName::from_stored(
+        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+            .await?
+            .unwrap_or_else(|| concept_name.to_string()),
+    );
+
+    let namespace = fetch_string(&session, &concept, ATTR_CONCEPT_NAMESPACE)
+        .await?
+        .unwrap_or_else(|| ctx.space_name.clone());
 
     let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
@@ -66,7 +73,7 @@ pub async fn batch_create(
         let mut qualified_fields: Vec<(String, String)> = Vec::new();
         for (key, value) in obj {
             let value_str = json_value_to_string(value);
-            let qualified = qualify_attribute(&stored_name, key)?;
+            let qualified = qualify_attribute(&namespace, key)?;
             if !schema_attrs.contains(&qualified) {
                 anyhow::bail!(
                     "Item at index {}: attribute '{}' is not defined in concept '{}'. Known attributes: {}",
@@ -75,7 +82,7 @@ pub async fn batch_create(
                     stored_name,
                     schema_attrs
                         .iter()
-                        .map(|a| short_attribute(&stored_name, a))
+                        .map(|a| short_attribute(&namespace, a))
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
@@ -98,7 +105,7 @@ pub async fn batch_create(
         // Collect result data
         let mut data = serde_json::Map::new();
         for (attr_name, value_str) in &qualified_fields {
-            let short = short_attribute(&stored_name, attr_name);
+            let short = short_attribute(&namespace, attr_name);
             data.insert(short, serde_json::json!(value_str));
         }
         results.push(serde_json::json!({
@@ -118,7 +125,7 @@ pub async fn batch_create(
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("Created {} {} entity(ies)", results.len(), stored_name);
+        println!("Created {} {} entities", results.len(), stored_name);
         for result in &results {
             println!("  {}", result["id"].as_str().unwrap_or("???"));
         }
@@ -153,12 +160,19 @@ pub async fn batch_update(
     let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
-    let concept = concept_entity(&ctx.space_did, &concept_name)?;
-
-    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(&session, &ctx.space_did, &concept_name)
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
-    let stored_name = ConceptName::from_stored(stored_name);
+
+    let stored_name = ConceptName::from_stored(
+        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+            .await?
+            .unwrap_or_else(|| concept_name.to_string()),
+    );
+
+    let namespace = fetch_string(&session, &concept, ATTR_CONCEPT_NAMESPACE)
+        .await?
+        .unwrap_or_else(|| ctx.space_name.clone());
 
     let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
@@ -180,15 +194,20 @@ pub async fn batch_update(
             idx, id_str
         ))?;
 
-        // Verify entity exists by checking it has at least one of the concept's
-        // schema attributes (structural typing — no entity/type needed)
-        let has_concept_attr = if let Some(first_attr) = schema_attrs.first() {
-            fetch_value(&session, &entity, first_attr).await?.is_some()
-        } else {
-            false
+        // Verify entity exists by checking it has ALL of the concept's
+        // schema attributes (structural typing — matches inner-join semantics)
+        let has_all_attrs = {
+            let mut all = true;
+            for attr in &schema_attrs {
+                if fetch_value(&session, &entity, attr).await?.is_none() {
+                    all = false;
+                    break;
+                }
+            }
+            all && !schema_attrs.is_empty()
         };
 
-        if !has_concept_attr {
+        if !has_all_attrs {
             anyhow::bail!(
                 "Item at index {}: entity '{}' not found or does not belong to concept '{}'",
                 idx,
@@ -204,7 +223,7 @@ pub async fn batch_update(
                 continue;
             }
             let value_str = json_value_to_string(value);
-            let qualified = qualify_attribute(&stored_name, key)?;
+            let qualified = qualify_attribute(&namespace, key)?;
             if !schema_attrs.contains(&qualified) {
                 anyhow::bail!(
                     "Item at index {}: attribute '{}' is not defined in concept '{}'",
@@ -230,7 +249,7 @@ pub async fn batch_update(
             let new_relation = Relation::new(attr, entity.clone(), new_value);
             transaction.assert(new_relation);
 
-            updated_fields.push((short_attribute(&stored_name, &qualified), value_str));
+            updated_fields.push((short_attribute(&namespace, &qualified), value_str));
         }
 
         if updated_fields.is_empty() {
@@ -257,7 +276,7 @@ pub async fn batch_update(
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("Updated {} {} entity(ies)", results.len(), stored_name);
+        println!("Updated {} {} entities", results.len(), stored_name);
         for result in &results {
             if let Some(id) = result["id"].as_str() {
                 println!("  {}", id);
@@ -294,12 +313,17 @@ pub async fn batch_delete(
     let mut session = open_session(&ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
-    let concept = concept_entity(&ctx.space_did, &concept_name)?;
-
-    let stored_name = fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(&session, &ctx.space_did, &concept_name)
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
-    let stored_name = ConceptName::from_stored(stored_name);
+
+    let stored_name = ConceptName::from_stored(
+        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+            .await?
+            .unwrap_or_else(|| concept_name.to_string()),
+    );
+
+    let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
     let mut transaction = session.edit();
     let mut deleted_ids: Vec<String> = Vec::new();
@@ -310,16 +334,30 @@ pub async fn batch_delete(
             idx, id_str
         ))?;
 
-        // Fetch all facts about this entity and retract them
-        let all_facts = fetch_all_entity_facts(&session, &entity).await?;
+        // Verify entity belongs to the specified concept by checking
+        // it has ALL schema attributes (structural membership check)
+        let has_all_attrs = {
+            let mut all = true;
+            for attr in &schema_attrs {
+                if fetch_value(&session, &entity, attr).await?.is_none() {
+                    all = false;
+                    break;
+                }
+            }
+            all && !schema_attrs.is_empty()
+        };
 
-        if all_facts.is_empty() {
+        if !has_all_attrs {
             anyhow::bail!(
-                "Item at index {}: entity '{}' not found (no facts)",
+                "Item at index {}: entity '{}' does not belong to concept '{}'",
                 idx,
-                id_str
+                id_str,
+                stored_name
             );
         }
+
+        // Fetch all facts about this entity and retract them
+        let all_facts = fetch_all_entity_facts(&session, &entity).await?;
 
         for artifact in &all_facts {
             let relation = Relation::new(
@@ -344,7 +382,7 @@ pub async fn batch_delete(
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("Deleted {} {} entity(ies)", deleted_ids.len(), stored_name);
+        println!("Deleted {} {} entities", deleted_ids.len(), stored_name);
         for id in &deleted_ids {
             println!("  {}", id);
         }

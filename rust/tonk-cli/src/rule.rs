@@ -67,7 +67,7 @@ impl RuleDefinition {
 /// attributes map to variables.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConclusion {
-    /// Name of the conclusion concept (e.g. "SafeMeal").
+    /// Name of the conclusion concept (e.g. "AllergyConflict").
     pub concept: String,
 
     /// Maps concept attribute short names to variables.
@@ -231,7 +231,7 @@ fn collect_all_premise_vars(definition: &RuleDefinition) -> std::collections::Ha
 /// Returns a map from user variable name (without `?`) to new variable name.
 fn build_rename_map(
     definition: &RuleDefinition,
-    concept_name: &ConceptName,
+    namespace: &str,
 ) -> Result<HashMap<String, String>> {
     let all_vars = collect_all_premise_vars(definition);
     let mut rename: HashMap<String, String> = HashMap::new();
@@ -241,7 +241,7 @@ fn build_rename_map(
     for (attr_short, var_str) in &definition.conclusion.bindings {
         if let PremiseTerm::Variable(var_name) = PremiseTerm::parse(var_str) {
             // Validate the attribute is in the concept
-            let _qualified = qualify_attribute(concept_name, attr_short)?;
+            let _qualified = qualify_attribute(namespace, attr_short)?;
             rename.insert(var_name.clone(), attr_short.clone());
             binding_vars.insert(var_name);
         }
@@ -352,17 +352,21 @@ fn rename_var(s: &str, rename: &HashMap<String, String>) -> String {
 /// The `cardinalities` map provides per-attribute cardinality from stored
 /// metadata. It is propagated to `build_dynamic_concept()` so that the
 /// query planner assigns correct costs for `Cardinality::Many` attributes.
+///
+/// The `namespace` is the attribute namespace for the conclusion concept
+/// (used to qualify short attribute names in conclusion bindings).
 pub fn compile_rule(
     definition: &RuleDefinition,
-    concept_name: &ConceptName,
+    _concept_name: &ConceptName,
     concept_attrs: &[String],
     cardinalities: &std::collections::HashMap<String, dialog_query::Cardinality>,
+    namespace: &str,
 ) -> Result<DeductiveRule> {
     // 1. Build dynamic Concept from conclusion concept's attributes
     let concept = build_dynamic_concept(concept_attrs, cardinalities)?;
 
     // 2. Build variable renaming map from conclusion bindings
-    let rename = build_rename_map(definition, concept_name)?;
+    let rename = build_rename_map(definition, namespace)?;
 
     // 3. Build positive premises (with renamed variables)
     let mut premises: Vec<Premise> = Vec::new();
@@ -482,6 +486,7 @@ pub fn validate_definition(
     definition: &RuleDefinition,
     conclusion_attrs: &[String],
     conclusion_name: &ConceptName,
+    namespace: &str,
 ) -> Result<()> {
     // Check that all binding keys are valid concept attributes.
     // A binding key like "comment" matches either the concept-derived path
@@ -491,7 +496,7 @@ pub fn validate_definition(
         if short_name == "this" {
             continue; // `this` is the entity binding, not an attribute
         }
-        let concept_qualified = qualify_attribute(conclusion_name, short_name)?;
+        let concept_qualified = qualify_attribute(namespace, short_name)?;
         let matches = conclusion_attrs.iter().any(|a| {
             *a == concept_qualified || a.rsplit_once('/').is_some_and(|(_, n)| n == short_name)
         });
@@ -501,7 +506,11 @@ pub fn validate_definition(
                  Known attributes: {}",
                 short_name,
                 conclusion_name,
-                conclusion_attrs.join(", ")
+                conclusion_attrs
+                    .iter()
+                    .map(|a| short_attribute(namespace, a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
     }
@@ -677,25 +686,36 @@ pub async fn define(
 
     // Verify the conclusion concept exists and get its attributes
     let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
-    let concept = concept_entity(&ctx.space_did, &conclusion_concept)?;
-    let concept_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(&branch, &ctx.space_did, &conclusion_concept)
         .await?
         .context(format!(
             "Conclusion concept '{}' not found. Define it first.",
             definition.conclusion.concept
         ))?;
-    let concept_name = ConceptName::from_stored(concept_name);
+    let concept_name = ConceptName::from_stored(
+        fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+            .await?
+            .unwrap_or_else(|| conclusion_concept.to_string()),
+    );
 
     let concept_attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
-    let cardinalities =
-        fetch_attribute_cardinalities(&branch, &ctx.space_did, &concept_name, &concept_attrs)
-            .await?;
+    let concept_ns = fetch_string(&branch, &concept, ATTR_CONCEPT_NAMESPACE)
+        .await?
+        .unwrap_or_else(|| ctx.space_name.clone());
+    let cardinalities = fetch_attribute_cardinalities(&branch, &concept_attrs).await?;
 
     // Validate the definition
-    validate_definition(&definition, &concept_attrs, &concept_name)?;
+    validate_definition(&definition, &concept_attrs, &concept_name, &concept_ns)?;
 
     // Try to compile the rule to catch errors early
-    compile_rule(&definition, &concept_name, &concept_attrs, &cardinalities).context(
+    compile_rule(
+        &definition,
+        &concept_name,
+        &concept_attrs,
+        &cardinalities,
+        &concept_ns,
+    )
+    .context(
         "Rule definition is invalid. Check that variable names match between \
          conclusion bindings and premises.",
     )?;

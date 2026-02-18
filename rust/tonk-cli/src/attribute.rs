@@ -83,11 +83,11 @@ struct ConceptAttrs {
 /// Fetch attribute metadata for a single qualified attribute name.
 async fn fetch_attr_meta<S: dialog_artifacts::ArtifactStore>(
     store: &S,
-    space_did: &str,
+    _space_did: &str,
     concept_name: &ConceptName,
     qualified_name: &str,
 ) -> Result<AttrMeta> {
-    let meta_entity = attribute_meta_entity(space_did, concept_name, qualified_name)?;
+    let meta_entity = attribute_meta_entity(qualified_name)?;
 
     let description = fetch_string(store, &meta_entity, ATTR_ATTRIBUTE_DESCRIPTION).await?;
     let type_str = fetch_string(store, &meta_entity, ATTR_ATTRIBUTE_TYPE).await?;

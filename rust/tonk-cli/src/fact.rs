@@ -1,5 +1,7 @@
 use crate::crypto::Operator;
-use crate::schema::{derive_entity_from_hash, get_space_context, open_session, parse_value, value_to_json};
+use crate::schema::{
+    derive_entity_from_hash, get_space_context, open_session, parse_value, value_to_json,
+};
 use anyhow::{Context, Result};
 
 use dialog_query::claim::{Attribute, Claim, Relation};
@@ -492,25 +494,19 @@ fn format_bytes(bytes: &[u8], format: ByteFormat) -> String {
             Ok(s) => format!("\"{}\"", s),
             Err(_) => format!("<{} bytes, invalid UTF-8>", bytes.len()),
         },
-        ByteFormat::Json => {
-            match String::from_utf8(bytes.to_vec()) {
-                Ok(s) => {
-                    match serde_json::from_str::<serde_json::Value>(&s) {
-                        Ok(json) => serde_json::to_string_pretty(&json).unwrap_or(s),
-                        Err(_) => format!("<{} bytes, invalid JSON>", bytes.len()),
-                    }
-                }
-                Err(_) => format!("<{} bytes, invalid UTF-8>", bytes.len()),
+        ByteFormat::Json => match String::from_utf8(bytes.to_vec()) {
+            Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+                Ok(json) => serde_json::to_string_pretty(&json).unwrap_or(s),
+                Err(_) => format!("<{} bytes, invalid JSON>", bytes.len()),
+            },
+            Err(_) => format!("<{} bytes, invalid UTF-8>", bytes.len()),
+        },
+        ByteFormat::Cbor => match serde_ipld_dagcbor::from_slice::<serde_json::Value>(bytes) {
+            Ok(value) => {
+                serde_json::to_string_pretty(&value).unwrap_or_else(|_| format!("{:?}", value))
             }
-        }
-        ByteFormat::Cbor => {
-            match serde_ipld_dagcbor::from_slice::<serde_json::Value>(bytes) {
-                Ok(value) => {
-                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| format!("{:?}", value))
-                }
-                Err(_) => {
-                    format!("0x{}", hex::encode(bytes))
-                }
+            Err(_) => {
+                format!("0x{}", hex::encode(bytes))
             }
         }
         ByteFormat::Ucan => {

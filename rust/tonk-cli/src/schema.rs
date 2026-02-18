@@ -47,9 +47,8 @@ pub fn validate_safe_name(name: &str, kind: &str) -> Result<()> {
 
 /// A validated concept name (alphanumeric, hyphens, underscores only).
 ///
-/// Concept names are used as attribute namespace prefixes (e.g. `"task/title"`),
-/// so they must only contain safe characters. This type guarantees that
-/// invariant at construction time.
+/// Concept names are labels for concepts — they are decoupled from attribute
+/// namespaces. This type guarantees the name contains only safe characters.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConceptName(String);
 
@@ -159,12 +158,56 @@ pub fn registry_entity(space_did: &str) -> Result<Entity> {
 /// Derive the concept entity for a given concept name within a space.
 ///
 /// Deterministically derived as an Ed25519 `did:key` from the space DID and concept name.
+///
+/// NOTE: This will be replaced in a future phase with structural identity
+/// based on `Concept::operator()`. For now, name-based derivation is kept
+/// for compatibility with the registry lookup pattern.
 pub fn concept_entity(space_did: &str, concept_name: &ConceptName) -> Result<Entity> {
     derive_entity(&format!(
         "{}\0concept\0{}",
         space_did,
         concept_name.to_lowercase()
     ))
+}
+
+/// Derive a concept entity from its attribute set using dialog-db's
+/// structural identity.
+///
+/// Builds a dynamic `Concept` from the attribute list, computes its
+/// `operator()` URI (a blake3 hash of the CBOR-encoded attribute set),
+/// then derives a deterministic `did:key` entity from that URI.
+///
+/// Two concepts with the same attributes (same namespace/name/cardinality/type
+/// per attribute) produce the same entity ID, regardless of concept name.
+pub fn concept_entity_from_attrs(
+    attributes: &[String],
+    cardinalities: &std::collections::HashMap<String, Cardinality>,
+) -> Result<Entity> {
+    let concept = build_dynamic_concept(attributes, cardinalities)?;
+    let operator_uri = concept.operator();
+    derive_entity(&operator_uri)
+}
+
+/// Look up a concept entity by name from the registry.
+///
+/// Scans all registered concepts and returns the entity that has
+/// a matching `concept/name` attribute.
+pub async fn lookup_concept_by_name<S: ArtifactStore>(
+    store: &S,
+    space_did: &str,
+    name: &ConceptName,
+) -> Result<Option<Entity>> {
+    let registry = registry_entity(space_did)?;
+    let concept_entities = fetch_entity_values(store, &registry, ATTR_REGISTRY_CONCEPT).await?;
+
+    for entity in concept_entities {
+        if let Some(stored_name) = fetch_string(store, &entity, ATTR_CONCEPT_NAME).await?
+            && stored_name.to_lowercase() == name.to_lowercase()
+        {
+            return Ok(Some(entity));
+        }
+    }
+    Ok(None)
 }
 
 /// Derive the rule entity for a given rule name within a space.
@@ -178,20 +221,26 @@ pub fn rule_entity(space_did: &str, rule_name: &str) -> Result<Entity> {
     ))
 }
 
-/// Derive an attribute metadata entity for a concept + attribute pair.
+/// Derive an attribute metadata entity from its structural identity.
 ///
-/// Reserved for future use (attribute descriptions, types, cardinality).
-pub fn attribute_meta_entity(
-    space_did: &str,
-    concept_name: &ConceptName,
-    attr_name: &str,
-) -> Result<Entity> {
-    derive_entity(&format!(
-        "{}\0attr-meta\0{}\0{}",
-        space_did,
-        concept_name.to_lowercase(),
-        attr_name
-    ))
+/// Uses dialog-db's `AttributeSchema::to_uri()` to derive a deterministic
+/// entity ID from the attribute's namespace/name. This is concept-independent —
+/// the same attribute used in multiple concepts shares one metadata entity.
+pub fn attribute_meta_entity(attr_name: &str) -> Result<Entity> {
+    let (ns, name) = attr_name.split_once('/').ok_or_else(|| {
+        anyhow::anyhow!(
+            "Malformed attribute '{}': expected 'namespace/name' format",
+            attr_name
+        )
+    })?;
+    let schema = dialog_query::AttributeSchema::<Value>::new(
+        leak_str(ns),
+        leak_str(name),
+        leak_str(""),
+        dialog_query::Type::String,
+    );
+    let uri = schema.to_uri();
+    derive_entity(&uri)
 }
 
 /// Convert 32 bytes of hash output into a proper Ed25519 `did:key` entity.
@@ -245,40 +294,41 @@ pub fn derive_entity_from_fields(fields: &[(String, String)]) -> Result<Entity> 
 // Attribute name helpers
 // ---------------------------------------------------------------------------
 
-/// Given a concept name and user-supplied attribute key, produce the fully
-/// qualified attribute name `{concept_lower}/{key}`.
+/// Given a namespace and user-supplied attribute key, produce the fully
+/// qualified attribute name `{namespace}/{key}`.
 ///
-/// If the key already contains a `/` and the prefix matches the concept
-/// namespace, it is returned as-is. If the prefix doesn't match, an error
-/// is returned.
-pub fn qualify_attribute(concept_name: &ConceptName, key: &str) -> Result<String> {
-    let prefix = concept_name.to_lowercase();
-    if let Some((_ns, _name)) = key.split_once('/') {
-        let ns = _ns.to_lowercase();
-        if ns == prefix {
-            Ok(key.to_string())
-        } else {
-            anyhow::bail!(
-                "Attribute '{}' has namespace '{}' but concept expects '{}'",
-                key,
-                ns,
-                prefix
-            );
-        }
+/// If the key already contains a `/`, it is returned as-is (the user
+/// provided a fully qualified attribute name).
+pub fn qualify_attribute(namespace: &str, key: &str) -> Result<String> {
+    if key.contains('/') {
+        Ok(key.to_string())
     } else {
-        Ok(format!("{}/{}", prefix, key))
+        Ok(format!("{}/{}", namespace, key))
     }
 }
 
-/// Strip the concept namespace prefix from an attribute name, returning
-/// just the short key (e.g. `"task/title"` -> `"title"`).
-pub fn short_attribute(concept_name: &ConceptName, attr: &str) -> String {
-    let prefix = format!("{}/", concept_name.to_lowercase());
+/// Strip the namespace prefix from an attribute name, returning just the
+/// short key (e.g. `"my-space/title"` -> `"title"`).
+///
+/// If the attribute doesn't match the provided namespace, the full
+/// attribute name is returned as-is.
+pub fn short_attribute(namespace: &str, attr: &str) -> String {
+    let prefix = format!("{}/", namespace);
     if let Some(short) = attr.strip_prefix(&prefix) {
         short.to_string()
     } else {
-        attr.to_string()
+        // Fall back to stripping any namespace prefix
+        if let Some((_ns, name)) = attr.split_once('/') {
+            name.to_string()
+        } else {
+            attr.to_string()
+        }
     }
+}
+
+/// Extract the namespace from a fully-qualified attribute name.
+pub fn attribute_namespace(attr: &str) -> &str {
+    attr.split_once('/').map(|(ns, _)| ns).unwrap_or("")
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +339,7 @@ pub fn short_attribute(concept_name: &ConceptName, attr: &str) -> String {
 pub struct SpaceContext {
     pub storage_path: PathBuf,
     pub space_did: String,
+    pub space_name: String,
     pub operator: Operator,
 }
 
@@ -306,6 +357,10 @@ pub fn get_space_context() -> Result<SpaceContext> {
     let space_did = state::get_active_space(&authority.did)?
         .context("No active space. Run 'tonk space create' first")?;
 
+    let space_name = crate::metadata::SpaceMetadata::load(&space_did)?
+        .map(|m| m.name)
+        .unwrap_or_else(|| "local".to_string());
+
     let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
     let storage_path = tonk_dir
         .join("operator")
@@ -319,6 +374,7 @@ pub fn get_space_context() -> Result<SpaceContext> {
     Ok(SpaceContext {
         storage_path,
         space_did,
+        space_name,
         operator,
     })
 }
@@ -494,11 +550,12 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
     }
 
     // Start with entities from the first attribute
-    let mut result_set: std::collections::HashSet<String> = find_entities_by_attribute(store, &schema_attrs[0])
-        .await?
-        .iter()
-        .map(|e| e.to_string())
-        .collect();
+    let mut result_set: std::collections::HashSet<String> =
+        find_entities_by_attribute(store, &schema_attrs[0])
+            .await?
+            .iter()
+            .map(|e| e.to_string())
+            .collect();
 
     // Intersect with entities from each subsequent attribute
     for attr in &schema_attrs[1..] {
@@ -524,9 +581,9 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
 
 /// Infer the concept that an entity belongs to by examining its attributes.
 ///
-/// Scans all facts for the entity, extracts the namespace prefix from each
-/// attribute (the part before `/`), filters out well-known system namespaces,
-/// and uses the most common namespace as the concept name.
+/// Fetches all facts about the entity, then checks each registered concept
+/// to see if the entity has facts for ALL of that concept's attributes.
+/// Returns the best-matching concept (the one with the most attributes).
 ///
 /// Returns `(concept_name, concept_entity, schema_attrs)` or an error if
 /// the entity has no attributes or the concept cannot be resolved.
@@ -535,9 +592,6 @@ pub async fn infer_concept_from_entity<S: ArtifactStore>(
     entity: &Entity,
     space_did: &str,
 ) -> Result<(ConceptName, Entity, Vec<String>)> {
-    // Well-known system namespaces that are not user concepts
-    const SYSTEM_NAMESPACES: &[&str] = &["entity", "concept", "registry", "attribute", "rule"];
-
     // Fetch all facts about this entity
     let results: Vec<_> = store
         .select(ArtifactSelector::new().of(entity.clone()))
@@ -548,42 +602,44 @@ pub async fn infer_concept_from_entity<S: ArtifactStore>(
         anyhow::bail!("Entity '{}' not found (no facts)", entity);
     }
 
-    // Count namespace occurrences
-    let mut ns_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for artifact in &results {
-        let attr_str = artifact.the.to_string();
-        if let Some((ns, _)) = attr_str.split_once('/') {
-            let ns_lower = ns.to_lowercase();
-            if !SYSTEM_NAMESPACES.contains(&ns_lower.as_str()) {
-                *ns_counts.entry(ns_lower).or_insert(0) += 1;
+    // Collect the entity's attribute names
+    let entity_attrs: std::collections::HashSet<String> =
+        results.iter().map(|a| a.the.to_string()).collect();
+
+    // Find all registered concepts via the registry
+    let registry = registry_entity(space_did)?;
+    let concept_entities = fetch_entity_values(store, &registry, ATTR_REGISTRY_CONCEPT).await?;
+
+    let mut best_match: Option<(ConceptName, Entity, Vec<String>, usize)> = None;
+
+    for concept_ent in &concept_entities {
+        let name = match fetch_string(store, concept_ent, ATTR_CONCEPT_NAME).await? {
+            Some(n) => ConceptName::from_stored(n),
+            None => continue,
+        };
+        let schema_attrs = fetch_string_values(store, concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
+
+        if schema_attrs.is_empty() {
+            continue;
+        }
+
+        // Check if the entity has ALL of this concept's attributes
+        let has_all = schema_attrs.iter().all(|a| entity_attrs.contains(a));
+        if has_all {
+            let score = schema_attrs.len();
+            if best_match.as_ref().is_none_or(|(_, _, _, s)| score > *s) {
+                best_match = Some((name, concept_ent.clone(), schema_attrs, score));
             }
         }
     }
 
-    let best_ns = ns_counts
-        .into_iter()
-        .max_by_key(|(_, count)| *count)
-        .map(|(ns, _)| ns)
-        .context(format!(
-            "Entity '{}' has no user-concept attributes",
+    match best_match {
+        Some((name, ent, attrs, _)) => Ok((name, ent, attrs)),
+        None => anyhow::bail!(
+            "Could not resolve concept for entity '{}' (no registered concept matches its attributes)",
             entity
-        ))?;
-
-    let concept_name = ConceptName::from_stored(best_ns);
-    let concept_ent = concept_entity(space_did, &concept_name)?;
-
-    // Fetch the stored concept name (may have different casing)
-    let stored_name = fetch_string(store, &concept_ent, ATTR_CONCEPT_NAME)
-        .await?
-        .context(format!(
-            "Could not resolve concept for entity '{}' (inferred namespace '{}' but no concept found)",
-            entity, concept_name
-        ))?;
-    let stored_name = ConceptName::from_stored(stored_name);
-
-    let schema_attrs = fetch_string_values(store, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
-
-    Ok((stored_name, concept_ent, schema_attrs))
+        ),
+    }
 }
 
 /// Fetch all facts (as Artifacts) for an entity.
@@ -605,23 +661,21 @@ pub async fn fetch_all_entity_facts<S: ArtifactStore>(
 // Cardinality helpers
 // ---------------------------------------------------------------------------
 
-/// Fetch the cardinality for each attribute of a concept from stored metadata.
+/// Fetch the cardinality for each attribute from stored metadata.
 ///
 /// Returns a map from fully-qualified attribute name to `Cardinality`.
 /// Attributes without stored cardinality metadata default to `Cardinality::One`.
 pub async fn fetch_attribute_cardinalities<S: ArtifactStore>(
     store: &S,
-    space_did: &str,
-    concept_name: &ConceptName,
     schema_attrs: &[String],
 ) -> Result<std::collections::HashMap<String, Cardinality>> {
     let mut cardinalities = std::collections::HashMap::new();
     for attr_name in schema_attrs {
-        let meta_entity = attribute_meta_entity(space_did, concept_name, attr_name)?;
-        if let Some(val) = fetch_string(store, &meta_entity, ATTR_ATTRIBUTE_CARDINALITY).await? {
-            if val.to_lowercase() == "many" {
-                cardinalities.insert(attr_name.clone(), Cardinality::Many);
-            }
+        let meta_entity = attribute_meta_entity(attr_name)?;
+        if let Some(val) = fetch_string(store, &meta_entity, ATTR_ATTRIBUTE_CARDINALITY).await?
+            && val.to_lowercase() == "many"
+        {
+            cardinalities.insert(attr_name.clone(), Cardinality::Many);
         }
     }
     Ok(cardinalities)

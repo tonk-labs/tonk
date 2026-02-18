@@ -621,7 +621,7 @@ async fn test_import_planner_yaml() {
         .expect("Failed to import planner.yaml");
 
     // Verify concepts across both namespaces
-    for name in &["Allergy", "Event", "Meal", "SafeMeal", "AllergyConflict"] {
+    for name in &["Allergy", "Event", "Meal", "AllergyConflict"] {
         let result = tonk_cli::concept::show(name.to_string(), true).await;
         assert!(result.is_ok(), "{} concept should exist after import", name);
     }
@@ -855,7 +855,11 @@ async fn test_update_entity() {
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
-    let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
+    let concept_entity =
+        tonk_cli::schema::lookup_concept_by_name(&branch, &ctx.space_did, &concept_name)
+            .await
+            .expect("Failed to lookup concept")
+            .expect("Concept 'Task' not found");
     let attrs =
         tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
@@ -906,7 +910,11 @@ async fn test_delete_entity() {
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
-    let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
+    let concept_entity =
+        tonk_cli::schema::lookup_concept_by_name(&branch, &ctx.space_did, &concept_name)
+            .await
+            .expect("Failed to lookup concept")
+            .expect("Concept 'Task' not found");
     let attrs =
         tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
@@ -1051,7 +1059,11 @@ async fn test_batch_delete() {
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
-    let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
+    let concept_entity =
+        tonk_cli::schema::lookup_concept_by_name(&branch, &ctx.space_did, &concept_name)
+            .await
+            .expect("Failed to lookup concept")
+            .expect("Concept 'Task' not found");
     let attrs =
         tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
@@ -1170,13 +1182,14 @@ async fn test_rule_show() {
     tonk_cli::concept::define("A".to_string(), vec!["x".to_string()], None, true)
         .await
         .unwrap();
-    tonk_cli::concept::define("B".to_string(), vec!["x".to_string()], None, true)
+    // B must have a different attribute set than A to be structurally distinct
+    tonk_cli::concept::define("B".to_string(), vec!["y".to_string()], None, true)
         .await
         .unwrap();
 
     let rule_json = serde_json::json!({
-        "conclusion": { "concept": "B", "bindings": { "x": "?x" } },
-        "when": [{ "the": "a/x", "of": "?entity", "is": "?x" }]
+        "conclusion": { "concept": "B", "bindings": { "y": "?x" } },
+        "when": [{ "the": "rule-show-space/x", "of": "?entity", "is": "?x" }]
     });
 
     let rule_path = env.home_path.join("rule.json");
@@ -1212,13 +1225,14 @@ async fn test_rule_delete() {
     tonk_cli::concept::define("X".to_string(), vec!["v".to_string()], None, true)
         .await
         .unwrap();
-    tonk_cli::concept::define("Y".to_string(), vec!["v".to_string()], None, true)
+    // Y must have a different attribute set than X to be structurally distinct
+    tonk_cli::concept::define("Y".to_string(), vec!["w".to_string()], None, true)
         .await
         .unwrap();
 
     let rule_json = serde_json::json!({
-        "conclusion": { "concept": "Y", "bindings": { "v": "?v" } },
-        "when": [{ "the": "x/v", "of": "?entity", "is": "?v" }]
+        "conclusion": { "concept": "Y", "bindings": { "w": "?v" } },
+        "when": [{ "the": "rule-del-space/v", "of": "?entity", "is": "?v" }]
     });
 
     let rule_path = env.home_path.join("rule.json");
@@ -1670,7 +1684,11 @@ async fn test_full_crud_workflow() {
         .await
         .expect("Failed to open branch");
     let concept_name = tonk_cli::schema::ConceptName::new("Task").unwrap();
-    let concept_entity = tonk_cli::schema::concept_entity(&ctx.space_did, &concept_name).unwrap();
+    let concept_entity =
+        tonk_cli::schema::lookup_concept_by_name(&branch, &ctx.space_did, &concept_name)
+            .await
+            .expect("Failed to lookup concept")
+            .expect("Concept 'Task' not found");
     let attrs =
         tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
             .await
@@ -1720,18 +1738,17 @@ async fn test_import_concepts_and_rules_full_workflow() {
         .await
         .expect("Failed to import cook concepts");
 
-    // 2. Import planner (mixed: 5 concepts + 2 rules across 2 namespaces)
+    // 2. Import planner (mixed: 4 concepts + 2 rules across 2 namespaces)
     let planner = TestEnv::example_file("planner.yaml");
     tonk_cli::import::import(planner, false, true)
         .await
         .expect("Failed to import planner");
 
-    // 3. Verify all 8 concepts exist
+    // 3. Verify all 7 concepts exist (4 planner + 3 cook)
     for name in &[
         "Allergy",
         "Event",
         "Meal",
-        "SafeMeal",
         "AllergyConflict",
         "Recipe",
         "Ingredient",

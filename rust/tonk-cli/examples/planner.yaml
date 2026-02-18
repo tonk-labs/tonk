@@ -29,15 +29,6 @@ diy.planner:
       occasion:
         description: The occasion for the meal
 
-  SafeMeal:
-    description: A meal that respects dietary restrictions
-    with:
-      attendee:
-        description: The meal attendee
-      recipe:
-        description: The meal recipe
-      occasion:
-        description: The occasion for the meal
 
   AllergyConflict:
     description: A conflict between a recipe ingredient and an allergy
