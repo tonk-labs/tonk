@@ -29,6 +29,7 @@ let
   rustSource = filter {
     root = workspaceRoot;
     include = [
+      ".cargo"
       "Cargo.lock"
       "Cargo.toml"
       "rust-toolchain.toml"
