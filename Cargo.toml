@@ -65,6 +65,7 @@ port_check = "0.3"
 rand = "0.9"
 rand_0_8 = { package = "rand", version = "0.8" }
 rand_core = "0.9"
+ratatui = "0.30"
 reqwest = "0.13"
 serde = "1"
 serde_bytes = "0.11"

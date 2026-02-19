@@ -337,7 +337,7 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::space::inspect_invite(path)?;
             }
             InspectCommands::Cbor { input } => {
-                tonk_cli::inspect::cbor(input)?;
+                tonk_cli::cbor::cbor(input)?;
             }
         },
         Commands::Fact { command } => match command {
