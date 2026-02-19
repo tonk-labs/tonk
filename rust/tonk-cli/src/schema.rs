@@ -138,6 +138,10 @@ pub const ATTR_RULE_CONCLUSION: &str = "rule/conclusion";
 /// Rule attribute: JSON-serialized rule definition.
 pub const ATTR_RULE_DEFINITION: &str = "rule/definition";
 
+/// Concept attribute: entity ID of the prior concept this one evolved from.
+/// Asserted when `extend()` changes the concept's structural identity.
+pub const ATTR_CONCEPT_PRIOR: &str = "concept/prior";
+
 // ---------------------------------------------------------------------------
 // Deterministic entity derivation
 // ---------------------------------------------------------------------------

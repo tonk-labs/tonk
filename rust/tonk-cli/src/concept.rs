@@ -19,9 +19,8 @@ use std::str::FromStr;
 // ---------------------------------------------------------------------------
 
 /// List all concepts in the active space.
-pub async fn list(json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let session = open_session(&ctx).await?;
+pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
+    let session = open_session(ctx).await?;
 
     let concept_entries = find_all_concepts(&session).await?;
 
@@ -92,16 +91,16 @@ pub async fn list(json: bool) -> Result<()> {
 /// deduplicates by `(entity, attribute)`, so only the last value per pair
 /// would survive.
 pub async fn define(
+    ctx: &SpaceContext,
     name: String,
     attributes: Vec<String>,
-    description: Option<String>,
+    description: String,
     json: bool,
 ) -> Result<()> {
     let name = ConceptName::new(name)?;
 
-    let ctx = get_space_context()?;
     let namespace = &ctx.space_name;
-    let mut branch = open_branch(&ctx).await?;
+    let mut branch = open_branch(ctx).await?;
 
     // Check if concept with this name already exists
     if let Some(_existing) = lookup_concept_by_name(&branch, &name).await? {
@@ -147,15 +146,13 @@ pub async fn define(
         cause: None,
     }));
 
-    // Set description if provided
-    if let Some(desc) = &description {
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
-            of: concept.clone(),
-            is: Value::String(desc.clone()),
-            cause: None,
-        }));
-    }
+    // Set description
+    instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
+        of: concept.clone(),
+        is: Value::String(description.clone()),
+        cause: None,
+    }));
 
     // Store the namespace
     instructions.push(Instruction::Assert(Artifact {
@@ -196,9 +193,7 @@ pub async fn define(
         for attr in &qualified_attrs {
             println!("    {}", short_attribute(namespace, attr));
         }
-        if let Some(desc) = &description {
-            println!("  Description: {}", desc);
-        }
+        println!("  Description: {}", description);
     }
 
     Ok(())
@@ -209,9 +204,8 @@ pub async fn define(
 // ---------------------------------------------------------------------------
 
 /// Show the schema of a concept.
-pub async fn show(name: String, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let session = open_session(&ctx).await?;
+pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
+    let session = open_session(ctx).await?;
 
     let name = ConceptName::new(name)?;
     let concept = lookup_concept_by_name(&session, &name)
@@ -277,26 +271,34 @@ pub async fn show(name: String, json: bool) -> Result<()> {
 /// Uses raw Branch + Instruction for the same reason as [`define`]:
 /// multi-valued `concept/attribute` cannot be accumulated in a single
 /// Transaction.
-pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result<()> {
+pub async fn extend(
+    ctx: &SpaceContext,
+    name: String,
+    attributes: Vec<String>,
+    json: bool,
+) -> Result<()> {
     if attributes.is_empty() {
         anyhow::bail!("No attributes provided to add.");
     }
 
-    let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut branch = open_branch(ctx).await?;
 
     let name = ConceptName::new(name)?;
-    let concept = lookup_concept_by_name(&branch, &name)
+    let old_entity = lookup_concept_by_name(&branch, &name)
         .await?
         .context(format!("Concept '{}' not found", name))?;
 
     // Get the concept's namespace (fall back to space name)
-    let namespace = fetch_string(&branch, &concept, ATTR_CONCEPT_NAMESPACE)
+    let namespace = fetch_string(&branch, &old_entity, ATTR_CONCEPT_NAMESPACE)
         .await?
         .unwrap_or_else(|| ctx.space_name.clone());
 
-    // Get existing attributes to check for duplicates
-    let existing = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    // Get existing metadata
+    let existing_attrs = fetch_string_values(&branch, &old_entity, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let stored_name = fetch_string(&branch, &old_entity, ATTR_CONCEPT_NAME)
+        .await?
+        .unwrap_or_else(|| name.to_string());
+    let description = fetch_string(&branch, &old_entity, ATTR_CONCEPT_DESCRIPTION).await?;
 
     // Qualify new attributes with the concept's namespace
     let qualified_new: Vec<String> = attributes
@@ -306,10 +308,8 @@ pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result
 
     // Filter out attributes that already exist
     let mut added = Vec::new();
-    let mut instructions = Vec::new();
-
     for attr in &qualified_new {
-        if existing.contains(attr) {
+        if existing_attrs.contains(attr) {
             if !json {
                 eprintln!(
                     "  Attribute '{}' already exists, skipping",
@@ -317,17 +317,11 @@ pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result
                 );
             }
         } else {
-            instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
-                of: concept.clone(),
-                is: Value::String(attr.clone()),
-                cause: None,
-            }));
             added.push(attr.clone());
         }
     }
 
-    if instructions.is_empty() {
+    if added.is_empty() {
         if json {
             println!(
                 "{}",
@@ -339,20 +333,115 @@ pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result
         return Ok(());
     }
 
+    // Compute the full attribute set and derive the new entity
+    let mut full_attrs: Vec<String> = existing_attrs.clone();
+    full_attrs.extend(added.iter().cloned());
+    full_attrs.sort();
+
+    let empty_cardinalities = std::collections::HashMap::new();
+    let new_entity = concept_entity_from_attrs(&full_attrs, &empty_cardinalities)?;
+
+    let mut instructions = Vec::new();
+
+    if new_entity != old_entity {
+        // Entity identity changed: create a new concept entity with all metadata
+        // and provenance link, then soft-delete the old one.
+
+        // Assert name on new entity
+        instructions.push(Instruction::Assert(Artifact {
+            the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+            of: new_entity.clone(),
+            is: Value::String(stored_name.clone()),
+            cause: None,
+        }));
+
+        // Assert namespace on new entity
+        instructions.push(Instruction::Assert(Artifact {
+            the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
+            of: new_entity.clone(),
+            is: Value::String(namespace.clone()),
+            cause: None,
+        }));
+
+        // Assert description on new entity (if present)
+        if let Some(ref desc) = description {
+            instructions.push(Instruction::Assert(Artifact {
+                the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
+                of: new_entity.clone(),
+                is: Value::String(desc.clone()),
+                cause: None,
+            }));
+        }
+
+        // Assert all attributes (existing + new) on new entity
+        for attr in &full_attrs {
+            instructions.push(Instruction::Assert(Artifact {
+                the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
+                of: new_entity.clone(),
+                is: Value::String(attr.clone()),
+                cause: None,
+            }));
+        }
+
+        // Assert provenance link: new entity's prior is the old entity
+        instructions.push(Instruction::Assert(Artifact {
+            the: Attribute::from_str(ATTR_CONCEPT_PRIOR)?,
+            of: new_entity.clone(),
+            is: Value::String(old_entity.to_string()),
+            cause: None,
+        }));
+
+        // Soft-delete old entity: retract its name so it's no longer discoverable
+        instructions.push(Instruction::Retract(Artifact {
+            the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+            of: old_entity.clone(),
+            is: Value::String(stored_name),
+            cause: None,
+        }));
+    } else {
+        // Entity identity unchanged (shouldn't normally happen when adding attrs,
+        // but handle gracefully): just assert the new attributes
+        for attr in &added {
+            instructions.push(Instruction::Assert(Artifact {
+                the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
+                of: old_entity.clone(),
+                is: Value::String(attr.clone()),
+                cause: None,
+            }));
+        }
+    }
+
     branch
         .commit(futures_util::stream::iter(instructions))
         .await?;
 
     if json {
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "ok": true,
             "added": added,
         });
+        if new_entity != old_entity {
+            output.as_object_mut().unwrap().insert(
+                "prior".to_string(),
+                serde_json::json!(old_entity.to_string()),
+            );
+            output.as_object_mut().unwrap().insert(
+                "entity".to_string(),
+                serde_json::json!(new_entity.to_string()),
+            );
+        }
         println!("{}", serde_json::to_string(&output)?);
     } else {
         println!("Extended concept '{}' with:", name);
         for attr in &added {
             println!("  + {}", short_attribute(&namespace, attr));
+        }
+        if new_entity != old_entity {
+            println!(
+                "  Entity identity changed: {} -> {}",
+                old_entity, new_entity
+            );
+            println!("  Prior concept entity: {}", old_entity);
         }
     }
 
@@ -367,9 +456,8 @@ pub async fn extend(name: String, attributes: Vec<String>, json: bool) -> Result
 ///
 /// Uses raw Branch + Instruction for the same reason as [`define`]:
 /// retracting multi-valued attributes requires individual instructions.
-pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+pub async fn delete(ctx: &SpaceContext, name: String, force: bool, json: bool) -> Result<()> {
+    let mut branch = open_branch(ctx).await?;
 
     let name = ConceptName::new(name)?;
     let concept = lookup_concept_by_name(&branch, &name)
@@ -423,43 +511,15 @@ pub async fn delete(name: String, force: bool, json: bool) -> Result<()> {
         }
     }
 
-    // Retract concept attributes
-    for attr_name in &attrs {
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
-            of: concept.clone(),
-            is: Value::String(attr_name.clone()),
-            cause: None,
-        }));
-    }
-
-    // Retract concept name
+    // Soft delete: only retract the concept name.
+    // The entity keeps its attributes, description, and namespace data intact.
+    // This makes the concept undiscoverable by name but preserves its data.
     instructions.push(Instruction::Retract(Artifact {
         the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
         of: concept.clone(),
         is: Value::String(stored_name),
         cause: None,
     }));
-
-    // Retract concept description if present
-    if let Some(desc) = fetch_string(&branch, &concept, ATTR_CONCEPT_DESCRIPTION).await? {
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
-            of: concept.clone(),
-            is: Value::String(desc),
-            cause: None,
-        }));
-    }
-
-    // Retract concept namespace if present
-    if let Some(ns) = fetch_string(&branch, &concept, ATTR_CONCEPT_NAMESPACE).await? {
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
-            of: concept.clone(),
-            is: Value::String(ns),
-            cause: None,
-        }));
-    }
 
     branch
         .commit(futures_util::stream::iter(instructions))

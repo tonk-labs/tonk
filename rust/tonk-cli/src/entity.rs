@@ -23,14 +23,14 @@ use std::str::FromStr;
 /// `fields` are `key=value` pairs where keys are short attribute names
 /// (auto-prefixed to the concept namespace).
 pub async fn create(
+    ctx: &SpaceContext,
     concept_name: String,
     fields: Vec<String>,
     file: Option<String>,
     stdin: bool,
     json: bool,
 ) -> Result<()> {
-    let ctx = get_space_context()?;
-    let mut session = open_session(&ctx).await?;
+    let mut session = open_session(ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
     let concept = lookup_concept_by_name(&session, &concept_name)
@@ -143,9 +143,13 @@ pub async fn create(
 /// Uses dialog-db's Session-based concept querying which performs a
 /// structural join over the concept's attributes. When rules exist,
 /// they are registered with the Session to merge stored and derived entities.
-pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let session = open_session(&ctx).await?;
+pub async fn query(
+    ctx: &SpaceContext,
+    concept_name: String,
+    filters: Vec<String>,
+    json: bool,
+) -> Result<()> {
+    let session = open_session(ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
     let concept = lookup_concept_by_name(&session, &concept_name)
@@ -377,9 +381,8 @@ fn display_rows(
 ///
 /// Infers the entity's concept by examining its attributes against
 /// registered concepts.
-pub async fn show(id: String, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let session = open_session(&ctx).await?;
+pub async fn show(ctx: &SpaceContext, id: String, json: bool) -> Result<()> {
+    let session = open_session(ctx).await?;
 
     let entity = Entity::from_str(&id).context("Invalid entity ID")?;
 
@@ -449,13 +452,12 @@ pub async fn show(id: String, json: bool) -> Result<()> {
 ///
 /// Infers the entity's concept by examining its attribute namespaces,
 /// then validates and applies the field updates.
-pub async fn assert(id: String, fields: Vec<String>, json: bool) -> Result<()> {
+pub async fn assert(ctx: &SpaceContext, id: String, fields: Vec<String>, json: bool) -> Result<()> {
     if fields.is_empty() {
         anyhow::bail!("No fields to assert. Pass key=value pairs.");
     }
 
-    let ctx = get_space_context()?;
-    let mut session = open_session(&ctx).await?;
+    let mut session = open_session(ctx).await?;
 
     let entity = Entity::from_str(&id).context("Invalid entity ID")?;
 
@@ -534,9 +536,8 @@ pub async fn assert(id: String, fields: Vec<String>, json: bool) -> Result<()> {
 /// Discovers all facts about the entity and retracts them, regardless of
 /// which concept they belong to. This is more robust than the old approach
 /// of only retracting known schema attributes.
-pub async fn retract(id: String, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let mut session = open_session(&ctx).await?;
+pub async fn retract(ctx: &SpaceContext, id: String, json: bool) -> Result<()> {
+    let mut session = open_session(ctx).await?;
 
     let entity = Entity::from_str(&id).context("Invalid entity ID")?;
 

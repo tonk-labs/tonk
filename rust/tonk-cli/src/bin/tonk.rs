@@ -268,9 +268,9 @@ mod inner {
             #[arg(trailing_var_arg = true)]
             attributes: Vec<String>,
 
-            /// Optional description of the concept
+            /// Description of the concept (required for discoverability)
             #[arg(short, long)]
-            description: Option<String>,
+            description: String,
         },
 
         /// Show details of a concept
@@ -328,9 +328,9 @@ mod inner {
             #[arg(long)]
             stdin: bool,
 
-            /// Optional description of the rule
+            /// Description of the rule (required for discoverability)
             #[arg(short, long)]
-            description: Option<String>,
+            description: String,
         },
 
         /// Show details of a rule
@@ -616,28 +616,31 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::space::delegate(to, space, read_only, output).await?;
             }
         },
-        Commands::Concept { command } => match command {
-            None => {
-                // `tonk concept` with no subcommand lists all concepts
-                tonk_cli::concept::list(json).await?;
+        Commands::Concept { command } => {
+            let ctx = tonk_cli::schema::get_space_context()?;
+            match command {
+                None => {
+                    // `tonk concept` with no subcommand lists all concepts
+                    tonk_cli::concept::list(&ctx, json).await?;
+                }
+                Some(ConceptCommands::Define {
+                    name,
+                    attributes,
+                    description,
+                }) => {
+                    tonk_cli::concept::define(&ctx, name, attributes, description, json).await?;
+                }
+                Some(ConceptCommands::Show { name }) => {
+                    tonk_cli::concept::show(&ctx, name, json).await?;
+                }
+                Some(ConceptCommands::Extend { name, attributes }) => {
+                    tonk_cli::concept::extend(&ctx, name, attributes, json).await?;
+                }
+                Some(ConceptCommands::Delete { name, force }) => {
+                    tonk_cli::concept::delete(&ctx, name, force, json).await?;
+                }
             }
-            Some(ConceptCommands::Define {
-                name,
-                attributes,
-                description,
-            }) => {
-                tonk_cli::concept::define(name, attributes, description, json).await?;
-            }
-            Some(ConceptCommands::Show { name }) => {
-                tonk_cli::concept::show(name, json).await?;
-            }
-            Some(ConceptCommands::Extend { name, attributes }) => {
-                tonk_cli::concept::extend(name, attributes, json).await?;
-            }
-            Some(ConceptCommands::Delete { name, force }) => {
-                tonk_cli::concept::delete(name, force, json).await?;
-            }
-        },
+        }
         Commands::Attribute { command } => match command {
             None => {
                 tonk_cli::attribute::list(json).await?;
@@ -646,28 +649,32 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::attribute::show(name, concept, json).await?;
             }
         },
-        Commands::Rule { command } => match command {
-            None => {
-                // `tonk rule` with no subcommand lists all rules
-                tonk_cli::rule::list(json).await?;
+        Commands::Rule { command } => {
+            let ctx = tonk_cli::schema::get_space_context()?;
+            match command {
+                None => {
+                    // `tonk rule` with no subcommand lists all rules
+                    tonk_cli::rule::list(&ctx, json).await?;
+                }
+                Some(RuleCommands::Define {
+                    name,
+                    file,
+                    stdin,
+                    description,
+                }) => {
+                    tonk_cli::rule::define(&ctx, name, file, stdin, description, json).await?;
+                }
+                Some(RuleCommands::Show { name }) => {
+                    tonk_cli::rule::show(&ctx, name, json).await?;
+                }
+                Some(RuleCommands::Delete { name }) => {
+                    tonk_cli::rule::delete(&ctx, name, json).await?;
+                }
             }
-            Some(RuleCommands::Define {
-                name,
-                file,
-                stdin,
-                description,
-            }) => {
-                tonk_cli::rule::define(name, file, stdin, description, json).await?;
-            }
-            Some(RuleCommands::Show { name }) => {
-                tonk_cli::rule::show(name, json).await?;
-            }
-            Some(RuleCommands::Delete { name }) => {
-                tonk_cli::rule::delete(name, json).await?;
-            }
-        },
+        }
         Commands::Import { file, force } => {
-            tonk_cli::import::import(file, force, json).await?;
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::import::import(&ctx, file, force, json).await?;
         }
         Commands::Create {
             concept,
@@ -675,65 +682,76 @@ async fn main() -> anyhow::Result<()> {
             file,
             stdin,
         } => {
-            tonk_cli::entity::create(concept, fields, file, stdin, json).await?;
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::entity::create(&ctx, concept, fields, file, stdin, json).await?;
         }
         Commands::Query { concept, selectors } => {
-            tonk_cli::entity::query(concept, selectors, json).await?;
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::entity::query(&ctx, concept, selectors, json).await?;
         }
         Commands::Show { id } => {
-            tonk_cli::entity::show(id, json).await?;
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::entity::show(&ctx, id, json).await?;
         }
         Commands::Assert { id, fields } => {
-            tonk_cli::entity::assert(id, fields, json).await?;
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::entity::assert(&ctx, id, fields, json).await?;
         }
         Commands::Retract { id } => {
-            tonk_cli::entity::retract(id, json).await?;
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::entity::retract(&ctx, id, json).await?;
         }
-        Commands::Batch { command } => match command {
-            BatchCommands::Create {
-                concept,
-                file,
-                stdin,
-            } => {
-                tonk_cli::batch::batch_create(concept, file, stdin, json).await?;
-            }
-            BatchCommands::Update {
-                concept,
-                file,
-                stdin,
-            } => {
-                tonk_cli::batch::batch_update(concept, file, stdin, json).await?;
-            }
-            BatchCommands::Delete {
-                concept,
-                file,
-                stdin,
-            } => {
-                tonk_cli::batch::batch_delete(concept, file, stdin, json).await?;
-            }
-        },
-        Commands::Dev { command } => match command {
-            DevCommands::Fact { command } => match command {
-                FactCommands::Assert { the, of, is } => {
-                    let is_value = is.join(" ").trim().to_string();
-                    tonk_cli::fact::assert(the, of, is_value, json).await?;
-                }
-                FactCommands::Retract { the, of, is } => {
-                    let is_value = is.join(" ").trim().to_string();
-                    tonk_cli::fact::retract(the, of, is_value, json).await?;
-                }
-                FactCommands::Find {
-                    the,
-                    of,
-                    is,
-                    format,
+        Commands::Batch { command } => {
+            let ctx = tonk_cli::schema::get_space_context()?;
+            match command {
+                BatchCommands::Create {
+                    concept,
+                    file,
+                    stdin,
                 } => {
-                    tonk_cli::fact::find(the, of, is, format, json).await?;
+                    tonk_cli::batch::batch_create(&ctx, concept, file, stdin, json).await?;
                 }
-                FactCommands::Batch { file } => {
-                    tonk_cli::fact::batch(file, json).await?;
+                BatchCommands::Update {
+                    concept,
+                    file,
+                    stdin,
+                } => {
+                    tonk_cli::batch::batch_update(&ctx, concept, file, stdin, json).await?;
                 }
-            },
+                BatchCommands::Delete {
+                    concept,
+                    file,
+                    stdin,
+                } => {
+                    tonk_cli::batch::batch_delete(&ctx, concept, file, stdin, json).await?;
+                }
+            }
+        }
+        Commands::Dev { command } => match command {
+            DevCommands::Fact { command } => {
+                let ctx = tonk_cli::schema::get_space_context()?;
+                match command {
+                    FactCommands::Assert { the, of, is } => {
+                        let is_value = is.join(" ").trim().to_string();
+                        tonk_cli::fact::assert(&ctx, the, of, is_value, json).await?;
+                    }
+                    FactCommands::Retract { the, of, is } => {
+                        let is_value = is.join(" ").trim().to_string();
+                        tonk_cli::fact::retract(&ctx, the, of, is_value, json).await?;
+                    }
+                    FactCommands::Find {
+                        the,
+                        of,
+                        is,
+                        format,
+                    } => {
+                        tonk_cli::fact::find(&ctx, the, of, is, format, json).await?;
+                    }
+                    FactCommands::Batch { file } => {
+                        tonk_cli::fact::batch(&ctx, file, json).await?;
+                    }
+                }
+            }
             DevCommands::Operator { command } => match command {
                 OperatorCommands::Generate => {
                     tonk_cli::operator::generate()?;

@@ -18,9 +18,9 @@ use crate::rule::RuleDefinition;
 use crate::schema::*;
 use anyhow::{Context, Result};
 use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
-use dialog_query::Value;
 use dialog_query::claim::Attribute;
-use std::collections::HashSet;
+use dialog_query::{Entity, Value};
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
@@ -31,6 +31,7 @@ use std::str::FromStr;
 ///
 /// All concepts are validated first, then committed atomically.
 pub(super) async fn import_concepts(
+    ctx: &SpaceContext,
     yaml_str: &str,
     file: &str,
     force: bool,
@@ -88,6 +89,14 @@ pub(super) async fn import_concepts(
             );
         }
 
+        if concept.description.is_none() {
+            anyhow::bail!(
+                "Concept '{}' is missing a description. Add a 'this' section with \
+                 'the: <description>' to the concept definition.",
+                concept.name
+            );
+        }
+
         if concept.attributes.is_empty() {
             anyhow::bail!(
                 "Concept '{}' has no attributes. A concept must have at least one attribute.",
@@ -115,19 +124,24 @@ pub(super) async fn import_concepts(
         validate_safe_name(&attr.short_name, "Attribute")?;
     }
 
-    let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut branch = open_branch(ctx).await?;
 
     let mut retract_instructions: Vec<Instruction> = Vec::new();
 
+    // Track old entity IDs for provenance linking on force-reimport
+    let mut old_entities: HashMap<String, Entity> = HashMap::new();
+
     for (cname, _concept) in &validated {
-        retract_concept_if_exists(
+        if let Some(old_entity) = retract_concept_if_exists(
             &branch,
             cname,
             force,
             &mut retract_instructions,
         )
-        .await?;
+        .await? {
+            // Remember the old entity for provenance linking
+            old_entities.insert(cname.to_string(), old_entity);
+        }
     }
 
     for attr in &standalone_attrs {
@@ -153,6 +167,25 @@ pub(super) async fn import_concepts(
             &mut assert_instructions,
             &mut import_summary,
         )?;
+
+        // If force-reimporting and entity identity changed, assert provenance link
+        let qualified_attrs: Vec<String> = concept
+            .attributes
+            .iter()
+            .map(|a| qualify_attribute(&concept.namespace, &a.short_name))
+            .collect::<Result<Vec<_>>>()?;
+        let empty_cardinalities = std::collections::HashMap::new();
+        let entity = concept_entity_from_attrs(&qualified_attrs, &empty_cardinalities)?;
+        if let Some(old_entity) = old_entities.get(&cname.to_string())
+            && *old_entity != entity
+        {
+            assert_instructions.push(Instruction::Assert(Artifact {
+                the: Attribute::from_str(ATTR_CONCEPT_PRIOR)?,
+                of: entity.clone(),
+                is: Value::String(old_entity.to_string()),
+                cause: None,
+            }));
+        }
     }
 
     // Build standalone attribute assertions
@@ -236,6 +269,7 @@ fn print_attribute_summary(attr: &ParsedAttribute) {
 /// All rules are parsed, lowered to `RuleDefinition`, validated against
 /// the existing concept schemas, trial-compiled, then committed atomically.
 pub(super) async fn import_rules(
+    ctx: &SpaceContext,
     yaml_str: &str,
     file: &str,
     force: bool,
@@ -265,6 +299,14 @@ pub(super) async fn import_rules(
     for rule in &rules {
         validate_safe_name(&rule.name, "Rule")?;
 
+        if rule.description.is_none() {
+            anyhow::bail!(
+                "Rule '{}' is missing a description. Add a 'description' field \
+                 to the rule definition.",
+                rule.name
+            );
+        }
+
         let lower = rule.name.to_lowercase();
         if !seen_names.insert(lower) {
             anyhow::bail!(
@@ -282,8 +324,7 @@ pub(super) async fn import_rules(
 
     // --- Validate against the space ---
 
-    let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut branch = open_branch(ctx).await?;
 
     let mut retract_instructions: Vec<Instruction> = Vec::new();
 
@@ -366,6 +407,7 @@ pub(super) async fn import_rules(
 /// committed together atomically. Rules are validated against the effective
 /// schema (including concepts defined in the same file).
 pub(super) async fn import_mixed(
+    ctx: &SpaceContext,
     yaml_str: &str,
     file: &str,
     force: bool,
@@ -501,8 +543,7 @@ pub(super) async fn import_mixed(
 
     // --- Validate rules against the effective schema ---
 
-    let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut branch = open_branch(ctx).await?;
 
     for (parsed, definition) in &lowered_rules {
         let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
@@ -671,7 +712,7 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
     cname: &ConceptName,
     force: bool,
     retract_instructions: &mut Vec<Instruction>,
-) -> Result<()> {
+) -> Result<Option<Entity>> {
     let existing_entity = lookup_concept_by_name(branch, cname).await?;
 
     if let Some(entity) = existing_entity {
@@ -732,6 +773,8 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
                     cause: None,
                 }));
             }
+
+            return Ok(Some(entity));
         } else {
             anyhow::bail!(
                 "Concept '{}' already exists. Use --force to overwrite, \
@@ -742,7 +785,7 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 /// Build assert instructions for a single concept.

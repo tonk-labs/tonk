@@ -20,7 +20,7 @@ Always run `tonk --json status` first to orient before creating new sessions/spa
 
 ## Concepts — defining schemas
 
-A concept is a named schema that defines what attributes entities can have. Attribute names are auto-prefixed with the concept's lowercase namespace (e.g. concept "Task" → attributes stored as `task/title`, `task/status`).
+A concept is a named schema that defines what attributes entities can have. Attribute names are auto-prefixed with the space name (for CLI-defined concepts) or the YAML-declared namespace (for imported concepts). For example, in a space named "my-space", concept "Task" → attributes stored as `my-space/title`, `my-space/status`. Description is required (`--description` flag).
 
 ```bash
 # List all concepts in the active space
@@ -28,14 +28,11 @@ tonk --json concept
 # → [{"name":"Task","entities":12},{"name":"Contact","entities":5,"description":"People and orgs"}]
 
 # Define a new concept (attributes are short names, auto-prefixed)
-tonk --json concept define Task title status priority
-# → {"ok":true,"name":"Task","attributes":["task/title","task/status","task/priority"]}
-
-# With a description
-tonk --json concept define Contact name email role --description "People and organizations"
+tonk --json concept define Task title status priority --description "A task to track"
+# → {"ok":true,"name":"Task","attributes":["task/title","task/status","task/priority"],"description":"A task to track"}
 
 # Interactive mode (prompts for attributes one by one)
-tonk concept define Task
+tonk concept define Task --description "A task to track"
 
 # Show concept schema
 tonk --json concept show Task
@@ -64,7 +61,7 @@ echo '{"title":"Fix login bug","status":"todo"}' | tonk --json create Task --std
 tonk --json create Task --file task.json
 ```
 
-The entity ID (`did:key:z...`) is randomly generated and returned in the response. Store it to reference the entity later.
+The entity ID (`did:key:z...`) is deterministically derived from the entity's field content and returned in the response. Store it to reference the entity later.
 
 ## Querying entities — `tonk query`
 
@@ -80,21 +77,23 @@ tonk --json query Task status=todo
 tonk --json query Task status=todo priority=high
 ```
 
-## Entity operations — `tonk show`, `tonk update`, `tonk retract`
+## Entity operations — `tonk show`, `tonk assert`, `tonk retract`
 
 ```bash
 # Show full details of an entity
 tonk --json show "did:key:z..."
 # → {"id":"did:key:z...","concept":"Task","data":{"title":"Fix login bug","status":"todo","priority":"high"},"created":1739012345}
 
-# Update specific fields (keys auto-prefixed)
-tonk --json update "did:key:z..." status=done
+# Assert (update) specific fields (keys auto-prefixed)
+tonk --json assert "did:key:z..." status=done
 # → {"ok":true,"id":"did:key:z...","updated":[{"status":"done"}]}
 
-# Retract an entity
+# Retract an entity (soft retraction — marks facts as retracted)
 tonk --json retract "did:key:z..."
 # → {"ok":true,"id":"did:key:z...","concept":"Task"}
 ```
+
+Note: Entity-to-concept inference is best-effort. An entity may have attributes spanning multiple concepts, so `show` reports the best matching concept based on attribute overlap.
 
 ## Batch operations — `tonk batch`
 
@@ -153,10 +152,10 @@ tonk --json rule
 # → [{"name":"safe-meals","conclusion":"SafeMeal"},...]
 
 # Define a rule from JSON (via file)
-tonk --json rule define safe-meals --file rule.json
+tonk --json rule define safe-meals --file rule.json --description "Meals safe for all attendees"
 
 # Define a rule from JSON (via stdin)
-cat <<'EOF' | tonk --json rule define safe-meals --stdin
+cat <<'EOF' | tonk --json rule define safe-meals --stdin --description "Meals safe for all attendees"
 {
   "conclusion": {
     "concept": "SafeMeal",
@@ -234,7 +233,7 @@ tonk --json status
 tonk --json concept
 
 # 2. Define a schema (if needed)
-tonk --json concept define Task title status priority
+tonk --json concept define Task title status priority --description "A task to track"
 
 # 3. Create entities
 tonk --json create Task title="Fix login bug" status=todo priority=high
@@ -243,8 +242,8 @@ tonk --json create Task title="Write tests" status=todo priority=medium
 # 4. Query and filter
 tonk --json query Task status=todo
 
-# 5. Update as work progresses
-tonk --json update "did:key:z..." status=done
+# 5. Assert updates as work progresses
+tonk --json assert "did:key:z..." status=done
 
 # 6. Sync with remote
 tonk sync
@@ -256,19 +255,19 @@ tonk sync
 |---------|---------|
 | `tonk --json status` | Current context (operator, session, space) |
 | `tonk --json concept` | List all concepts in the active space |
-| `tonk --json concept define <name> [attrs...]` | Define a new concept |
+| `tonk --json concept define <name> [attrs...] --description "..."` | Define a new concept |
 | `tonk --json concept show <name>` | Show concept schema |
 | `tonk --json concept extend <name> <attrs...>` | Add attributes to a concept |
 | `tonk --json concept delete <name> [--force]` | Delete a concept |
 | `tonk --json rule` | List all rules in the active space |
-| `tonk --json rule define <name> --file <json>` | Define a rule from JSON file |
-| `tonk --json rule define <name> --stdin` | Define a rule from stdin JSON |
+| `tonk --json rule define <name> --file <json> --description "..."` | Define a rule from JSON file |
+| `tonk --json rule define <name> --stdin --description "..."` | Define a rule from stdin JSON |
 | `tonk --json rule show <name>` | Show rule definition |
 | `tonk --json rule delete <name>` | Delete a rule |
 | `tonk --json create <concept> [key=val...]` | Create an entity |
 | `tonk --json query <concept> [key=val...]` | Query/filter entities |
 | `tonk --json show <id>` | Show entity details |
-| `tonk --json update <id> [key=val...]` | Update entity fields |
+| `tonk --json assert <id> [key=val...]` | Assert (update) entity fields |
 | `tonk --json retract <id>` | Retract an entity |
 | `tonk --json batch create <concept> --file/--stdin` | Batch create entities from JSON array |
 | `tonk --json batch update <concept> --file/--stdin` | Batch update entities (objects with "id") |

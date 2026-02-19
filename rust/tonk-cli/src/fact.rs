@@ -1,6 +1,6 @@
 use crate::crypto::Operator;
 use crate::schema::{
-    derive_entity_from_hash, get_space_context, open_session, parse_value, value_to_json,
+    SpaceContext, derive_entity_from_hash, open_session, parse_value, value_to_json,
 };
 use anyhow::{Context, Result};
 
@@ -34,9 +34,14 @@ fn resolve_entity(input: &str, operator: &Operator) -> Result<Entity> {
 }
 
 /// Assert a fact into the active space
-pub async fn assert(the: String, of: String, is: String, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let mut session = open_session(&ctx).await?;
+pub async fn assert(
+    ctx: &SpaceContext,
+    the: String,
+    of: String,
+    is: String,
+    json: bool,
+) -> Result<()> {
+    let mut session = open_session(ctx).await?;
 
     let entity = resolve_entity(&of, &ctx.operator)?;
     let attribute =
@@ -68,9 +73,14 @@ pub async fn assert(the: String, of: String, is: String, json: bool) -> Result<(
 }
 
 /// Retract a fact from the active space
-pub async fn retract(the: String, of: String, is: String, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let mut session = open_session(&ctx).await?;
+pub async fn retract(
+    ctx: &SpaceContext,
+    the: String,
+    of: String,
+    is: String,
+    json: bool,
+) -> Result<()> {
+    let mut session = open_session(ctx).await?;
 
     let entity = resolve_entity(&of, &ctx.operator)?;
     let attribute =
@@ -130,14 +140,13 @@ impl ByteFormat {
 
 /// Find facts in the active space matching the given criteria
 pub async fn find(
+    ctx: &SpaceContext,
     the: Option<String>,
     of: Option<String>,
     is: Option<String>,
     format: Option<String>,
     json: bool,
 ) -> Result<()> {
-    let ctx = get_space_context()?;
-
     // Parse format option
     let byte_format = format
         .as_ref()
@@ -165,7 +174,7 @@ pub async fn find(
         "Failed to compile query. At least one of --the, --of, or --is must be provided",
     )?;
 
-    let session = open_session(&ctx).await?;
+    let session = open_session(ctx).await?;
 
     let results: Vec<dialog_query::Fact<Value>> = application.query(&session).try_collect().await?;
 
@@ -315,9 +324,8 @@ struct BatchResult {
 /// - **JSON Lines**: Each line is parsed independently. Parse errors are
 ///   collected as individual `BatchResult` entries alongside successful
 ///   operations, then the batch is aborted if any errors occurred.
-pub async fn batch(file: Option<String>, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let mut session = open_session(&ctx).await?;
+pub async fn batch(ctx: &SpaceContext, file: Option<String>, json: bool) -> Result<()> {
+    let mut session = open_session(ctx).await?;
 
     let mut results: Vec<BatchResult> = Vec::new();
     let mut transaction = session.edit();
@@ -508,30 +516,28 @@ fn format_bytes(bytes: &[u8], format: ByteFormat) -> String {
             Err(_) => {
                 format!("0x{}", hex::encode(bytes))
             }
-        }
-        ByteFormat::Ucan => {
-            match crate::delegation::Delegation::from_cbor_bytes(bytes) {
-                Ok(delegation) => {
-                    let subject = match delegation.subject() {
-                        dialog_ucan::subject::Subject::Specific(did) => did.to_string(),
-                        dialog_ucan::subject::Subject::Any => "*".to_string(),
-                    };
-                    let exp = delegation
-                        .expiration()
-                        .map(|e| e.to_string())
-                        .unwrap_or_else(|| "never".to_string());
-                    let cmd_display = delegation.command_str();
-                    format!(
-                        "UCAN {{\n  iss: {},\n  aud: {},\n  sub: {},\n  cmd: {},\n  exp: {}\n}}",
-                        delegation.issuer(),
-                        delegation.audience(),
-                        subject,
-                        cmd_display,
-                        exp
-                    )
-                }
-                Err(_) => format!("<{} bytes, invalid UCAN>", bytes.len()),
+        },
+        ByteFormat::Ucan => match crate::delegation::Delegation::from_cbor_bytes(bytes) {
+            Ok(delegation) => {
+                let subject = match delegation.subject() {
+                    dialog_ucan::subject::Subject::Specific(did) => did.to_string(),
+                    dialog_ucan::subject::Subject::Any => "*".to_string(),
+                };
+                let exp = delegation
+                    .expiration()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "never".to_string());
+                let cmd_display = delegation.command_str();
+                format!(
+                    "UCAN {{\n  iss: {},\n  aud: {},\n  sub: {},\n  cmd: {},\n  exp: {}\n}}",
+                    delegation.issuer(),
+                    delegation.audience(),
+                    subject,
+                    cmd_display,
+                    exp
+                )
             }
-        }
+            Err(_) => format!("<{} bytes, invalid UCAN>", bytes.len()),
+        },
     }
 }

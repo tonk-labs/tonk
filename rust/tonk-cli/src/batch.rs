@@ -21,6 +21,7 @@ use std::str::FromStr;
 /// Input is a JSON array of objects, where each object maps short attribute
 /// names to values.
 pub async fn batch_create(
+    ctx: &SpaceContext,
     concept_name: String,
     file: Option<String>,
     stdin: bool,
@@ -33,9 +34,7 @@ pub async fn batch_create(
     if items.is_empty() {
         anyhow::bail!("Empty array — nothing to create.");
     }
-
-    let ctx = get_space_context()?;
-    let mut session = open_session(&ctx).await?;
+    let mut session = open_session(ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
     let concept = lookup_concept_by_name(&session, &concept_name)
@@ -143,6 +142,7 @@ pub async fn batch_create(
 /// Input is a JSON array of objects, where each object must include an `"id"`
 /// field (the entity DID) plus the fields to update.
 pub async fn batch_update(
+    ctx: &SpaceContext,
     concept_name: String,
     file: Option<String>,
     stdin: bool,
@@ -156,8 +156,7 @@ pub async fn batch_update(
         anyhow::bail!("Empty array — nothing to update.");
     }
 
-    let ctx = get_space_context()?;
-    let mut session = open_session(&ctx).await?;
+    let mut session = open_session(ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
     let concept = lookup_concept_by_name(&session, &concept_name)
@@ -296,6 +295,7 @@ pub async fn batch_update(
 /// Input is a JSON array of entity ID strings. All facts about each entity
 /// are discovered and retracted.
 pub async fn batch_delete(
+    ctx: &SpaceContext,
     concept_name: String,
     file: Option<String>,
     stdin: bool,
@@ -309,8 +309,7 @@ pub async fn batch_delete(
         anyhow::bail!("Empty array — nothing to delete.");
     }
 
-    let ctx = get_space_context()?;
-    let mut session = open_session(&ctx).await?;
+    let mut session = open_session(ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
     let concept = lookup_concept_by_name(&session, &concept_name)

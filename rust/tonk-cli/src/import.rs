@@ -63,6 +63,7 @@ mod commit;
 mod concept_parse;
 mod rule_parse;
 
+use crate::schema::SpaceContext;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 
@@ -139,14 +140,14 @@ fn detect_yaml_type(yaml_str: &str) -> Result<YamlFileType> {
 /// All entries in the file are validated first, then committed atomically.
 /// If `force` is true, existing concepts/rules are overwritten (retracted
 /// then re-created); otherwise any collision fails the entire import.
-pub async fn import(file: String, force: bool, json: bool) -> Result<()> {
+pub async fn import(ctx: &SpaceContext, file: String, force: bool, json: bool) -> Result<()> {
     let yaml_str =
         std::fs::read_to_string(&file).context(format!("Failed to read file: {}", file))?;
 
     match detect_yaml_type(&yaml_str)? {
-        YamlFileType::Concepts => commit::import_concepts(&yaml_str, &file, force, json).await,
-        YamlFileType::Rules => commit::import_rules(&yaml_str, &file, force, json).await,
-        YamlFileType::Mixed => commit::import_mixed(&yaml_str, &file, force, json).await,
+        YamlFileType::Concepts => commit::import_concepts(ctx, &yaml_str, &file, force, json).await,
+        YamlFileType::Rules => commit::import_rules(ctx, &yaml_str, &file, force, json).await,
+        YamlFileType::Mixed => commit::import_mixed(ctx, &yaml_str, &file, force, json).await,
     }
 }
 

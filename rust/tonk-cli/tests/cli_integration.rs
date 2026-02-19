@@ -416,18 +416,21 @@ async fn test_concept_define_and_list() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Define a concept
     tonk_cli::concept::define(
+        &ctx,
         "Task".to_string(),
         vec!["title".to_string(), "status".to_string()],
-        Some("A task to track".to_string()),
+        "A task to track".to_string(),
         true,
     )
     .await
     .expect("Failed to define concept");
 
     // List concepts — should not error and should find our concept
-    let result = tonk_cli::concept::list(true).await;
+    let result = tonk_cli::concept::list(&ctx, true).await;
     assert!(
         result.is_ok(),
         "concept list should succeed: {:?}",
@@ -444,17 +447,20 @@ async fn test_concept_show() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     tonk_cli::concept::define(
+        &ctx,
         "Contact".to_string(),
         vec!["name".to_string(), "email".to_string(), "phone".to_string()],
-        Some("A contact entry".to_string()),
+        "A contact entry".to_string(),
         true,
     )
     .await
     .expect("Failed to define concept");
 
     // Show the concept
-    let result = tonk_cli::concept::show("Contact".to_string(), true).await;
+    let result = tonk_cli::concept::show(&ctx, "Contact".to_string(), true).await;
     assert!(
         result.is_ok(),
         "concept show should succeed: {:?}",
@@ -471,12 +477,21 @@ async fn test_concept_extend() {
         .await
         .expect("Failed to create space");
 
-    tonk_cli::concept::define("Note".to_string(), vec!["title".to_string()], None, true)
-        .await
-        .expect("Failed to define concept");
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
+    tonk_cli::concept::define(
+        &ctx,
+        "Note".to_string(),
+        vec!["title".to_string()],
+        "A simple note".to_string(),
+        true,
+    )
+    .await
+    .expect("Failed to define concept");
 
     // Extend with new attributes
     tonk_cli::concept::extend(
+        &ctx,
         "Note".to_string(),
         vec!["body".to_string(), "tags".to_string()],
         true,
@@ -485,7 +500,7 @@ async fn test_concept_extend() {
     .expect("Failed to extend concept");
 
     // Show should succeed and include new attributes
-    let result = tonk_cli::concept::show("Note".to_string(), true).await;
+    let result = tonk_cli::concept::show(&ctx, "Note".to_string(), true).await;
     assert!(result.is_ok(), "concept show after extend should succeed");
 }
 
@@ -498,22 +513,25 @@ async fn test_concept_delete() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     tonk_cli::concept::define(
+        &ctx,
         "Temporary".to_string(),
         vec!["data".to_string()],
-        None,
+        "A temporary concept".to_string(),
         true,
     )
     .await
     .expect("Failed to define concept");
 
     // Delete it
-    tonk_cli::concept::delete("Temporary".to_string(), false, true)
+    tonk_cli::concept::delete(&ctx, "Temporary".to_string(), false, true)
         .await
         .expect("Failed to delete concept");
 
     // Show should fail (concept no longer exists)
-    let result = tonk_cli::concept::show("Temporary".to_string(), true).await;
+    let result = tonk_cli::concept::show(&ctx, "Temporary".to_string(), true).await;
     assert!(result.is_err(), "concept show after delete should fail");
 }
 
@@ -526,13 +544,28 @@ async fn test_concept_name_validation() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Invalid name with special characters
-    let result =
-        tonk_cli::concept::define("bad name!".to_string(), vec!["x".to_string()], None, true).await;
+    let result = tonk_cli::concept::define(
+        &ctx,
+        "bad name!".to_string(),
+        vec!["x".to_string()],
+        "Test concept".to_string(),
+        true,
+    )
+    .await;
     assert!(result.is_err(), "concept with special chars should fail");
 
     // Empty name
-    let result = tonk_cli::concept::define("".to_string(), vec!["x".to_string()], None, true).await;
+    let result = tonk_cli::concept::define(
+        &ctx,
+        "".to_string(),
+        vec!["x".to_string()],
+        "Test concept".to_string(),
+        true,
+    )
+    .await;
     assert!(result.is_err(), "concept with empty name should fail");
 }
 
@@ -545,13 +578,27 @@ async fn test_concept_duplicate_rejected() {
         .await
         .expect("Failed to create space");
 
-    tonk_cli::concept::define("Unique".to_string(), vec!["a".to_string()], None, true)
-        .await
-        .expect("Failed to define first concept");
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
+    tonk_cli::concept::define(
+        &ctx,
+        "Unique".to_string(),
+        vec!["a".to_string()],
+        "A unique concept".to_string(),
+        true,
+    )
+    .await
+    .expect("Failed to define first concept");
 
     // Defining same concept again should fail
-    let result =
-        tonk_cli::concept::define("Unique".to_string(), vec!["b".to_string()], None, true).await;
+    let result = tonk_cli::concept::define(
+        &ctx,
+        "Unique".to_string(),
+        vec!["b".to_string()],
+        "Another unique concept".to_string(),
+        true,
+    )
+    .await;
     assert!(result.is_err(), "duplicate concept definition should fail");
 }
 
@@ -568,13 +615,15 @@ async fn test_import_minimal_yaml() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     let file = TestEnv::example_file("minimal.yaml");
-    tonk_cli::import::import(file, false, true)
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import minimal.yaml");
 
     // Verify Task concept was created
-    let result = tonk_cli::concept::show("Task".to_string(), true).await;
+    let result = tonk_cli::concept::show(&ctx, "Task".to_string(), true).await;
     assert!(result.is_ok(), "Task concept should exist after import");
 }
 
@@ -587,14 +636,16 @@ async fn test_import_cook_yaml() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
     // Verify all 3 concepts were created
     for name in &["Recipe", "Ingredient", "RecipeStep"] {
-        let result = tonk_cli::concept::show(name.to_string(), true).await;
+        let result = tonk_cli::concept::show(&ctx, name.to_string(), true).await;
         assert!(result.is_ok(), "{} concept should exist after import", name);
     }
 }
@@ -608,21 +659,23 @@ async fn test_import_planner_yaml() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Import cook.yaml first (planner rules reference cook concepts)
     let cook_file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(cook_file, false, true)
+    tonk_cli::import::import(&ctx, cook_file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
     // planner.yaml is a mixed file: concepts + rules
     let file = TestEnv::example_file("planner.yaml");
-    tonk_cli::import::import(file, false, true)
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import planner.yaml");
 
     // Verify concepts across both namespaces
     for name in &["Allergy", "Event", "Meal", "AllergyConflict"] {
-        let result = tonk_cli::concept::show(name.to_string(), true).await;
+        let result = tonk_cli::concept::show(&ctx, name.to_string(), true).await;
         assert!(result.is_ok(), "{} concept should exist after import", name);
     }
 }
@@ -636,26 +689,28 @@ async fn test_import_rules_yaml() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Import prerequisite concepts first (cook before planner, since
     // planner's rules reference cook concepts)
     let cook_file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(cook_file, false, true)
+    tonk_cli::import::import(&ctx, cook_file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
     let planner_file = TestEnv::example_file("planner.yaml");
-    tonk_cli::import::import(planner_file, false, true)
+    tonk_cli::import::import(&ctx, planner_file, false, true)
         .await
         .expect("Failed to import planner.yaml");
 
     // Now import rules (standalone rules file)
     let rules_file = TestEnv::example_file("rules.yaml");
-    tonk_cli::import::import(rules_file, false, true)
+    tonk_cli::import::import(&ctx, rules_file, false, true)
         .await
         .expect("Failed to import rules.yaml");
 
     // Verify rules were created
-    let result = tonk_cli::rule::list(true).await;
+    let result = tonk_cli::rule::list(&ctx, true).await;
     assert!(result.is_ok(), "rule list should succeed after import");
 }
 
@@ -668,19 +723,21 @@ async fn test_import_force_overwrite() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     let file = TestEnv::example_file("minimal.yaml");
 
     // First import
-    tonk_cli::import::import(file.clone(), false, true)
+    tonk_cli::import::import(&ctx, file.clone(), false, true)
         .await
         .expect("Failed to first import");
 
     // Second import without force should fail
-    let result = tonk_cli::import::import(file.clone(), false, true).await;
+    let result = tonk_cli::import::import(&ctx, file.clone(), false, true).await;
     assert!(result.is_err(), "re-import without --force should fail");
 
     // Second import with force should succeed
-    tonk_cli::import::import(file, true, true)
+    tonk_cli::import::import(&ctx, file, true, true)
         .await
         .expect("Failed to force re-import");
 }
@@ -694,7 +751,10 @@ async fn test_import_nonexistent_file_errors() {
         .await
         .expect("Failed to create space");
 
-    let result = tonk_cli::import::import("/nonexistent/path.yaml".to_string(), false, true).await;
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
+    let result =
+        tonk_cli::import::import(&ctx, "/nonexistent/path.yaml".to_string(), false, true).await;
     assert!(result.is_err(), "importing nonexistent file should fail");
 }
 
@@ -711,11 +771,14 @@ async fn test_create_entity() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Define a concept first
     tonk_cli::concept::define(
+        &ctx,
         "Task".to_string(),
         vec!["title".to_string(), "status".to_string()],
-        None,
+        "A task to complete".to_string(),
         true,
     )
     .await
@@ -723,6 +786,7 @@ async fn test_create_entity() {
 
     // Create an entity
     let result = tonk_cli::entity::create(
+        &ctx,
         "Task".to_string(),
         vec!["title=Fix bug".to_string(), "status=todo".to_string()],
         None,
@@ -746,13 +810,22 @@ async fn test_query_entities() {
         .await
         .expect("Failed to create space");
 
-    tonk_cli::concept::define("Item".to_string(), vec!["name".to_string()], None, true)
-        .await
-        .expect("Failed to define concept");
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
+    tonk_cli::concept::define(
+        &ctx,
+        "Item".to_string(),
+        vec!["name".to_string()],
+        "A named item".to_string(),
+        true,
+    )
+    .await
+    .expect("Failed to define concept");
 
     // Create 3 entities
     for name in &["Apple", "Banana", "Cherry"] {
         tonk_cli::entity::create(
+            &ctx,
             "Item".to_string(),
             vec![format!("name={}", name)],
             None,
@@ -764,7 +837,7 @@ async fn test_query_entities() {
     }
 
     // Query all entities
-    let result = tonk_cli::entity::query("Item".to_string(), vec![], true).await;
+    let result = tonk_cli::entity::query(&ctx, "Item".to_string(), vec![], true).await;
     assert!(result.is_ok(), "query should succeed: {:?}", result.err());
 }
 
@@ -777,10 +850,13 @@ async fn test_query_with_filter() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     tonk_cli::concept::define(
+        &ctx,
         "Task".to_string(),
         vec!["title".to_string(), "status".to_string()],
-        None,
+        "A task to complete".to_string(),
         true,
     )
     .await
@@ -788,6 +864,7 @@ async fn test_query_with_filter() {
 
     // Create tasks with different statuses
     tonk_cli::entity::create(
+        &ctx,
         "Task".to_string(),
         vec!["title=Task A".to_string(), "status=todo".to_string()],
         None,
@@ -798,6 +875,7 @@ async fn test_query_with_filter() {
     .expect("Failed to create task A");
 
     tonk_cli::entity::create(
+        &ctx,
         "Task".to_string(),
         vec!["title=Task B".to_string(), "status=done".to_string()],
         None,
@@ -808,8 +886,13 @@ async fn test_query_with_filter() {
     .expect("Failed to create task B");
 
     // Query with filter
-    let result =
-        tonk_cli::entity::query("Task".to_string(), vec!["status=todo".to_string()], true).await;
+    let result = tonk_cli::entity::query(
+        &ctx,
+        "Task".to_string(),
+        vec!["status=todo".to_string()],
+        true,
+    )
+    .await;
     assert!(
         result.is_ok(),
         "filtered query should succeed: {:?}",
@@ -826,10 +909,13 @@ async fn test_update_entity() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     tonk_cli::concept::define(
+        &ctx,
         "Task".to_string(),
         vec!["title".to_string(), "status".to_string()],
-        None,
+        "A task to complete".to_string(),
         true,
     )
     .await
@@ -839,6 +925,7 @@ async fn test_update_entity() {
     // entity::create in JSON mode prints JSON with the ID to stdout.
     // We'll use the fact layer to find it after creation.
     tonk_cli::entity::create(
+        &ctx,
         "Task".to_string(),
         vec!["title=Update me".to_string(), "status=todo".to_string()],
         None,
@@ -850,7 +937,6 @@ async fn test_update_entity() {
 
     // Find the entity via query (we know there's exactly one)
     // Use the schema module to query the entity
-    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
     let branch = tonk_cli::schema::open_branch(&ctx)
         .await
         .expect("Failed to open branch");
@@ -871,12 +957,17 @@ async fn test_update_entity() {
     let entity_id = entities[0].to_string();
 
     // Update the entity
-    let result =
-        tonk_cli::entity::assert(entity_id.clone(), vec!["status=done".to_string()], true).await;
+    let result = tonk_cli::entity::assert(
+        &ctx,
+        entity_id.clone(),
+        vec!["status=done".to_string()],
+        true,
+    )
+    .await;
     assert!(result.is_ok(), "update should succeed: {:?}", result.err());
 
     // Show should reflect the update
-    let result = tonk_cli::entity::show(entity_id, true).await;
+    let result = tonk_cli::entity::show(&ctx, entity_id, true).await;
     assert!(result.is_ok(), "show after update should succeed");
 }
 
@@ -889,11 +980,20 @@ async fn test_delete_entity() {
         .await
         .expect("Failed to create space");
 
-    tonk_cli::concept::define("Task".to_string(), vec!["title".to_string()], None, true)
-        .await
-        .expect("Failed to define concept");
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
+    tonk_cli::concept::define(
+        &ctx,
+        "Task".to_string(),
+        vec!["title".to_string()],
+        "A task to complete".to_string(),
+        true,
+    )
+    .await
+    .expect("Failed to define concept");
 
     tonk_cli::entity::create(
+        &ctx,
         "Task".to_string(),
         vec!["title=Delete me".to_string()],
         None,
@@ -904,7 +1004,6 @@ async fn test_delete_entity() {
     .expect("Failed to create task");
 
     // Find the entity ID
-    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
     let branch = tonk_cli::schema::open_branch(&ctx)
         .await
         .expect("Failed to open branch");
@@ -923,12 +1022,12 @@ async fn test_delete_entity() {
     let entity_id = entities[0].to_string();
 
     // Delete it
-    tonk_cli::entity::retract(entity_id, true)
+    tonk_cli::entity::retract(&ctx, entity_id, true)
         .await
         .expect("Failed to delete entity");
 
     // Query should return no entities
-    let result = tonk_cli::entity::query("Task".to_string(), vec![], true).await;
+    let result = tonk_cli::entity::query(&ctx, "Task".to_string(), vec![], true).await;
     assert!(result.is_ok(), "query after delete should succeed");
 }
 
@@ -941,10 +1040,13 @@ async fn test_create_entity_from_json_file() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     tonk_cli::concept::define(
+        &ctx,
         "Task".to_string(),
         vec!["title".to_string(), "status".to_string()],
-        None,
+        "A task to complete".to_string(),
         true,
     )
     .await
@@ -956,6 +1058,7 @@ async fn test_create_entity_from_json_file() {
         .expect("Failed to write JSON file");
 
     let result = tonk_cli::entity::create(
+        &ctx,
         "Task".to_string(),
         vec![],
         Some(json_path.to_string_lossy().into_owned()),
@@ -983,10 +1086,13 @@ async fn test_batch_create() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     tonk_cli::concept::define(
+        &ctx,
         "Task".to_string(),
         vec!["title".to_string(), "status".to_string()],
-        None,
+        "A task to complete".to_string(),
         true,
     )
     .await
@@ -1005,6 +1111,7 @@ async fn test_batch_create() {
     .expect("Failed to write batch JSON");
 
     let result = tonk_cli::batch::batch_create(
+        &ctx,
         "Task".to_string(),
         Some(json_path.to_string_lossy().into_owned()),
         false,
@@ -1027,9 +1134,17 @@ async fn test_batch_delete() {
         .await
         .expect("Failed to create space");
 
-    tonk_cli::concept::define("Task".to_string(), vec!["title".to_string()], None, true)
-        .await
-        .expect("Failed to define concept");
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
+    tonk_cli::concept::define(
+        &ctx,
+        "Task".to_string(),
+        vec!["title".to_string()],
+        "A task to complete".to_string(),
+        true,
+    )
+    .await
+    .expect("Failed to define concept");
 
     // Create some entities first
     let json_path = env.home_path.join("batch_create.json");
@@ -1043,6 +1158,7 @@ async fn test_batch_delete() {
     .expect("Failed to write batch JSON");
 
     tonk_cli::batch::batch_create(
+        &ctx,
         "Task".to_string(),
         Some(json_path.to_string_lossy().into_owned()),
         false,
@@ -1052,7 +1168,6 @@ async fn test_batch_delete() {
     .expect("Failed to batch create");
 
     // Get entity IDs
-    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get context");
     let branch = tonk_cli::schema::open_branch(&ctx)
         .await
         .expect("Failed to open branch");
@@ -1076,6 +1191,7 @@ async fn test_batch_delete() {
     std::fs::write(&del_path, &ids_json).expect("Failed to write delete JSON");
 
     let result = tonk_cli::batch::batch_delete(
+        &ctx,
         "Task".to_string(),
         Some(del_path.to_string_lossy().into_owned()),
         false,
@@ -1102,24 +1218,28 @@ async fn test_rule_define_and_list() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Define prerequisite concepts
     tonk_cli::concept::define(
+        &ctx,
         "Task".to_string(),
         vec![
             "title".to_string(),
             "status".to_string(),
             "priority".to_string(),
         ],
-        None,
+        "A task with priority".to_string(),
         true,
     )
     .await
     .expect("Failed to define Task");
 
     tonk_cli::concept::define(
+        &ctx,
         "HighPriority".to_string(),
         vec!["title".to_string(), "status".to_string()],
-        None,
+        "A high priority task".to_string(),
         true,
     )
     .await
@@ -1149,17 +1269,18 @@ async fn test_rule_define_and_list() {
     .expect("Failed to write rule JSON");
 
     tonk_cli::rule::define(
+        &ctx,
         "high-priority-tasks".to_string(),
         Some(rule_path.to_string_lossy().into_owned()),
         false,
-        Some("Find high priority tasks".to_string()),
+        "Find high priority tasks".to_string(),
         true,
     )
     .await
     .expect("Failed to define rule");
 
     // List rules
-    let result = tonk_cli::rule::list(true).await;
+    let result = tonk_cli::rule::list(&ctx, true).await;
     assert!(
         result.is_ok(),
         "rule list should succeed: {:?}",
@@ -1176,13 +1297,27 @@ async fn test_rule_show() {
         .await
         .expect("Failed to create space");
 
-    tonk_cli::concept::define("A".to_string(), vec!["x".to_string()], None, true)
-        .await
-        .unwrap();
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
+    tonk_cli::concept::define(
+        &ctx,
+        "A".to_string(),
+        vec!["x".to_string()],
+        "Concept A".to_string(),
+        true,
+    )
+    .await
+    .unwrap();
     // B must have a different attribute set than A to be structurally distinct
-    tonk_cli::concept::define("B".to_string(), vec!["y".to_string()], None, true)
-        .await
-        .unwrap();
+    tonk_cli::concept::define(
+        &ctx,
+        "B".to_string(),
+        vec!["y".to_string()],
+        "Concept B".to_string(),
+        true,
+    )
+    .await
+    .unwrap();
 
     let rule_json = serde_json::json!({
         "conclusion": { "concept": "B", "bindings": { "y": "?x" } },
@@ -1193,16 +1328,17 @@ async fn test_rule_show() {
     std::fs::write(&rule_path, serde_json::to_string(&rule_json).unwrap()).unwrap();
 
     tonk_cli::rule::define(
+        &ctx,
         "a-to-b".to_string(),
         Some(rule_path.to_string_lossy().into_owned()),
         false,
-        None,
+        "Maps A to B".to_string(),
         true,
     )
     .await
     .expect("Failed to define rule");
 
-    let result = tonk_cli::rule::show("a-to-b".to_string(), true).await;
+    let result = tonk_cli::rule::show(&ctx, "a-to-b".to_string(), true).await;
     assert!(
         result.is_ok(),
         "rule show should succeed: {:?}",
@@ -1219,13 +1355,27 @@ async fn test_rule_delete() {
         .await
         .expect("Failed to create space");
 
-    tonk_cli::concept::define("X".to_string(), vec!["v".to_string()], None, true)
-        .await
-        .unwrap();
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
+    tonk_cli::concept::define(
+        &ctx,
+        "X".to_string(),
+        vec!["v".to_string()],
+        "Concept X".to_string(),
+        true,
+    )
+    .await
+    .unwrap();
     // Y must have a different attribute set than X to be structurally distinct
-    tonk_cli::concept::define("Y".to_string(), vec!["w".to_string()], None, true)
-        .await
-        .unwrap();
+    tonk_cli::concept::define(
+        &ctx,
+        "Y".to_string(),
+        vec!["w".to_string()],
+        "Concept Y".to_string(),
+        true,
+    )
+    .await
+    .unwrap();
 
     let rule_json = serde_json::json!({
         "conclusion": { "concept": "Y", "bindings": { "w": "?v" } },
@@ -1236,22 +1386,23 @@ async fn test_rule_delete() {
     std::fs::write(&rule_path, serde_json::to_string(&rule_json).unwrap()).unwrap();
 
     tonk_cli::rule::define(
+        &ctx,
         "temp-rule".to_string(),
         Some(rule_path.to_string_lossy().into_owned()),
         false,
-        None,
+        "Maps X to Y".to_string(),
         true,
     )
     .await
     .unwrap();
 
     // Delete the rule
-    tonk_cli::rule::delete("temp-rule".to_string(), true)
+    tonk_cli::rule::delete(&ctx, "temp-rule".to_string(), true)
         .await
         .expect("Failed to delete rule");
 
     // Show should fail
-    let result = tonk_cli::rule::show("temp-rule".to_string(), true).await;
+    let result = tonk_cli::rule::show(&ctx, "temp-rule".to_string(), true).await;
     assert!(result.is_err(), "rule show after delete should fail");
 }
 
@@ -1264,10 +1415,18 @@ async fn test_rule_validates_concept_exists() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Define only one concept, not both
-    tonk_cli::concept::define("Exists".to_string(), vec!["v".to_string()], None, true)
-        .await
-        .unwrap();
+    tonk_cli::concept::define(
+        &ctx,
+        "Exists".to_string(),
+        vec!["v".to_string()],
+        "A concept that exists".to_string(),
+        true,
+    )
+    .await
+    .unwrap();
 
     let rule_json = serde_json::json!({
         "conclusion": { "concept": "DoesNotExist", "bindings": { "v": "?v" } },
@@ -1278,10 +1437,11 @@ async fn test_rule_validates_concept_exists() {
     std::fs::write(&rule_path, serde_json::to_string(&rule_json).unwrap()).unwrap();
 
     let result = tonk_cli::rule::define(
+        &ctx,
         "bad-rule".to_string(),
         Some(rule_path.to_string_lossy().into_owned()),
         false,
-        None,
+        "Bad rule test".to_string(),
         true,
     )
     .await;
@@ -1304,8 +1464,11 @@ async fn test_fact_assert_and_find() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Assert a fact
     tonk_cli::fact::assert(
+        &ctx,
         "user/name".to_string(),
         "alice".to_string(),
         "Alice Smith".to_string(),
@@ -1315,7 +1478,8 @@ async fn test_fact_assert_and_find() {
     .expect("Failed to assert fact");
 
     // Find it
-    let result = tonk_cli::fact::find(Some("user/name".to_string()), None, None, None, true).await;
+    let result =
+        tonk_cli::fact::find(&ctx, Some("user/name".to_string()), None, None, None, true).await;
     assert!(
         result.is_ok(),
         "fact find should succeed: {:?}",
@@ -1332,7 +1496,10 @@ async fn test_fact_retract() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     tonk_cli::fact::assert(
+        &ctx,
         "user/name".to_string(),
         "bob".to_string(),
         "Bob Jones".to_string(),
@@ -1343,6 +1510,7 @@ async fn test_fact_retract() {
 
     // Retract it
     let result = tonk_cli::fact::retract(
+        &ctx,
         "user/name".to_string(),
         "bob".to_string(),
         "Bob Jones".to_string(),
@@ -1365,8 +1533,11 @@ async fn test_fact_find_with_entity_filter() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Assert multiple facts
     tonk_cli::fact::assert(
+        &ctx,
         "user/name".to_string(),
         "alice".to_string(),
         "Alice".to_string(),
@@ -1376,6 +1547,7 @@ async fn test_fact_find_with_entity_filter() {
     .expect("Failed to assert fact 1");
 
     tonk_cli::fact::assert(
+        &ctx,
         "user/email".to_string(),
         "alice".to_string(),
         "alice@example.com".to_string(),
@@ -1385,6 +1557,7 @@ async fn test_fact_find_with_entity_filter() {
     .expect("Failed to assert fact 2");
 
     tonk_cli::fact::assert(
+        &ctx,
         "user/name".to_string(),
         "bob".to_string(),
         "Bob".to_string(),
@@ -1394,11 +1567,13 @@ async fn test_fact_find_with_entity_filter() {
     .expect("Failed to assert fact 3");
 
     // Find by entity
-    let result = tonk_cli::fact::find(None, Some("alice".to_string()), None, None, true).await;
+    let result =
+        tonk_cli::fact::find(&ctx, None, Some("alice".to_string()), None, None, true).await;
     assert!(result.is_ok(), "fact find by entity should succeed");
 
     // Find by attribute
-    let result = tonk_cli::fact::find(Some("user/name".to_string()), None, None, None, true).await;
+    let result =
+        tonk_cli::fact::find(&ctx, Some("user/name".to_string()), None, None, None, true).await;
     assert!(result.is_ok(), "fact find by attribute should succeed");
 }
 
@@ -1578,10 +1753,13 @@ async fn test_session_current() {
 #[serial]
 async fn test_no_space_errors_gracefully() {
     let _env = TestEnv::new().await.expect("Failed to create test env");
-    // No space created — commands requiring a space should fail gracefully
+    // No space created — get_space_context should fail gracefully
 
-    let result = tonk_cli::concept::list(true).await;
-    assert!(result.is_err(), "concept list without space should fail");
+    let result = tonk_cli::schema::get_space_context();
+    assert!(
+        result.is_err(),
+        "get_space_context without space should fail"
+    );
 }
 
 #[tokio::test]
@@ -1589,8 +1767,7 @@ async fn test_no_space_errors_gracefully() {
 async fn test_concept_operations_require_space() {
     let _env = TestEnv::new().await.expect("Failed to create test env");
 
-    let result =
-        tonk_cli::concept::define("Task".to_string(), vec!["title".to_string()], None, true).await;
+    let result = tonk_cli::schema::get_space_context();
     assert!(result.is_err(), "concept define without space should fail");
 }
 
@@ -1603,8 +1780,11 @@ async fn test_entity_create_requires_concept() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Try to create an entity of a concept that doesn't exist
     let result = tonk_cli::entity::create(
+        &ctx,
         "NonExistent".to_string(),
         vec!["title=Foo".to_string()],
         None,
@@ -1631,14 +1811,17 @@ async fn test_full_crud_workflow() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get context");
+
     // 1. Import concepts from YAML
     let file = TestEnv::example_file("minimal.yaml");
-    tonk_cli::import::import(file, false, true)
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import concepts");
 
     // 2. Create entities
     tonk_cli::entity::create(
+        &ctx,
         "Task".to_string(),
         vec![
             "title=Write tests".to_string(),
@@ -1653,6 +1836,7 @@ async fn test_full_crud_workflow() {
     .expect("Failed to create task 1");
 
     tonk_cli::entity::create(
+        &ctx,
         "Task".to_string(),
         vec![
             "title=Review PR".to_string(),
@@ -1667,16 +1851,20 @@ async fn test_full_crud_workflow() {
     .expect("Failed to create task 2");
 
     // 3. Query all tasks
-    let result = tonk_cli::entity::query("Task".to_string(), vec![], true).await;
+    let result = tonk_cli::entity::query(&ctx, "Task".to_string(), vec![], true).await;
     assert!(result.is_ok(), "query all tasks should succeed");
 
     // 4. Query with filter
-    let result =
-        tonk_cli::entity::query("Task".to_string(), vec!["status=todo".to_string()], true).await;
+    let result = tonk_cli::entity::query(
+        &ctx,
+        "Task".to_string(),
+        vec!["status=todo".to_string()],
+        true,
+    )
+    .await;
     assert!(result.is_ok(), "filtered query should succeed");
 
     // 5. Find an entity and update it
-    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get context");
     let branch = tonk_cli::schema::open_branch(&ctx)
         .await
         .expect("Failed to open branch");
@@ -1695,17 +1883,22 @@ async fn test_full_crud_workflow() {
     assert_eq!(entities.len(), 2, "Should have 2 entities");
 
     let entity_id = entities[0].to_string();
-    tonk_cli::entity::assert(entity_id.clone(), vec!["status=done".to_string()], true)
-        .await
-        .expect("Failed to update entity");
+    tonk_cli::entity::assert(
+        &ctx,
+        entity_id.clone(),
+        vec!["status=done".to_string()],
+        true,
+    )
+    .await
+    .expect("Failed to update entity");
 
     // 6. Show the updated entity
-    tonk_cli::entity::show(entity_id.clone(), true)
+    tonk_cli::entity::show(&ctx, entity_id.clone(), true)
         .await
         .expect("Failed to show entity");
 
     // 7. Delete the entity
-    tonk_cli::entity::retract(entity_id, true)
+    tonk_cli::entity::retract(&ctx, entity_id, true)
         .await
         .expect("Failed to delete entity");
 
@@ -1728,15 +1921,17 @@ async fn test_import_concepts_and_rules_full_workflow() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // 1. Import cook concepts first (planner rules reference cook concepts)
     let cook = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(cook, false, true)
+    tonk_cli::import::import(&ctx, cook, false, true)
         .await
         .expect("Failed to import cook concepts");
 
     // 2. Import planner (mixed: 4 concepts + 2 rules across 2 namespaces)
     let planner = TestEnv::example_file("planner.yaml");
-    tonk_cli::import::import(planner, false, true)
+    tonk_cli::import::import(&ctx, planner, false, true)
         .await
         .expect("Failed to import planner");
 
@@ -1750,22 +1945,23 @@ async fn test_import_concepts_and_rules_full_workflow() {
         "Ingredient",
         "RecipeStep",
     ] {
-        let result = tonk_cli::concept::show(name.to_string(), true).await;
+        let result = tonk_cli::concept::show(&ctx, name.to_string(), true).await;
         assert!(result.is_ok(), "{} should exist after import", name);
     }
 
     // 4. Import standalone rules file (rules referencing existing concepts)
     let rules = TestEnv::example_file("rules.yaml");
-    tonk_cli::import::import(rules, false, true)
+    tonk_cli::import::import(&ctx, rules, false, true)
         .await
         .expect("Failed to import rules");
 
     // 5. Verify rules exist
-    let result = tonk_cli::rule::list(true).await;
+    let result = tonk_cli::rule::list(&ctx, true).await;
     assert!(result.is_ok(), "rule list should succeed after import");
 
     // 6. Create some data
     tonk_cli::entity::create(
+        &ctx,
         "Recipe".to_string(),
         vec!["title=Pasta".to_string()],
         None,
@@ -1776,6 +1972,7 @@ async fn test_import_concepts_and_rules_full_workflow() {
     .expect("Failed to create recipe");
 
     tonk_cli::entity::create(
+        &ctx,
         "Ingredient".to_string(),
         vec!["name=Peanuts".to_string(), "quantity=100".to_string()],
         None,
@@ -1786,10 +1983,10 @@ async fn test_import_concepts_and_rules_full_workflow() {
     .expect("Failed to create ingredient");
 
     // 7. Query entities
-    let result = tonk_cli::entity::query("Recipe".to_string(), vec![], true).await;
+    let result = tonk_cli::entity::query(&ctx, "Recipe".to_string(), vec![], true).await;
     assert!(result.is_ok(), "recipe query should succeed");
 
-    let result = tonk_cli::entity::query("Ingredient".to_string(), vec![], true).await;
+    let result = tonk_cli::entity::query(&ctx, "Ingredient".to_string(), vec![], true).await;
     assert!(result.is_ok(), "ingredient query should succeed");
 }
 
@@ -1802,8 +1999,11 @@ async fn test_concept_define_with_many_attributes() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Define a concept with many attributes
     tonk_cli::concept::define(
+        &ctx,
         "Person".to_string(),
         vec![
             "first-name".to_string(),
@@ -1815,14 +2015,14 @@ async fn test_concept_define_with_many_attributes() {
             "country".to_string(),
             "age".to_string(),
         ],
-        Some("A person record".to_string()),
+        "A person record".to_string(),
         true,
     )
     .await
     .expect("Failed to define Person concept");
 
     // Show should display all attributes
-    let result = tonk_cli::concept::show("Person".to_string(), true).await;
+    let result = tonk_cli::concept::show(&ctx, "Person".to_string(), true).await;
     assert!(result.is_ok(), "show Person should succeed");
 }
 
@@ -1835,33 +2035,44 @@ async fn test_multiple_concepts_same_space() {
         .await
         .expect("Failed to create space");
 
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
     // Define multiple concepts
     tonk_cli::concept::define(
+        &ctx,
         "User".to_string(),
         vec!["name".to_string(), "email".to_string()],
-        None,
+        "A user account".to_string(),
         true,
     )
     .await
     .expect("Failed to define User");
     tonk_cli::concept::define(
+        &ctx,
         "Post".to_string(),
         vec!["title".to_string(), "body".to_string()],
-        None,
+        "A blog post".to_string(),
         true,
     )
     .await
     .expect("Failed to define Post");
-    tonk_cli::concept::define("Comment".to_string(), vec!["text".to_string()], None, true)
-        .await
-        .expect("Failed to define Comment");
+    tonk_cli::concept::define(
+        &ctx,
+        "Comment".to_string(),
+        vec!["text".to_string()],
+        "A comment on a post".to_string(),
+        true,
+    )
+    .await
+    .expect("Failed to define Comment");
 
     // List should show all 3
-    let result = tonk_cli::concept::list(true).await;
+    let result = tonk_cli::concept::list(&ctx, true).await;
     assert!(result.is_ok(), "concept list should succeed");
 
     // Create entities of each
     tonk_cli::entity::create(
+        &ctx,
         "User".to_string(),
         vec!["name=Alice".to_string(), "email=a@b.com".to_string()],
         None,
@@ -1871,6 +2082,7 @@ async fn test_multiple_concepts_same_space() {
     .await
     .expect("Failed to create user");
     tonk_cli::entity::create(
+        &ctx,
         "Post".to_string(),
         vec!["title=Hello".to_string(), "body=World".to_string()],
         None,
@@ -1880,6 +2092,7 @@ async fn test_multiple_concepts_same_space() {
     .await
     .expect("Failed to create post");
     tonk_cli::entity::create(
+        &ctx,
         "Comment".to_string(),
         vec!["text=Nice post".to_string()],
         None,
@@ -1891,7 +2104,7 @@ async fn test_multiple_concepts_same_space() {
 
     // Query each concept independently
     for concept in &["User", "Post", "Comment"] {
-        let result = tonk_cli::entity::query(concept.to_string(), vec![], true).await;
+        let result = tonk_cli::entity::query(&ctx, concept.to_string(), vec![], true).await;
         assert!(result.is_ok(), "{} query should succeed", concept);
     }
 }

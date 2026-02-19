@@ -555,9 +555,8 @@ pub fn validate_definition(
 // ---------------------------------------------------------------------------
 
 /// List all rules in the active space.
-pub async fn list(json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let session = open_session(&ctx).await?;
+pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
+    let session = open_session(ctx).await?;
 
     let rule_entries = find_all_rules(&session).await?;
 
@@ -627,10 +626,11 @@ pub async fn list(json: bool) -> Result<()> {
 /// Transaction deduplicates by `(entity, attribute)` — only one value
 /// survives per pair.
 pub async fn define(
+    ctx: &SpaceContext,
     name: String,
     file: Option<String>,
     stdin: bool,
-    description: Option<String>,
+    description: String,
     json: bool,
 ) -> Result<()> {
     validate_safe_name(&name, "Rule")?;
@@ -656,8 +656,7 @@ pub async fn define(
 
     let definition = RuleDefinition::from_json(definition_json.trim())?;
 
-    let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut branch = open_branch(ctx).await?;
 
     let rule = rule_entity(&ctx.space_did, &name)?;
 
@@ -734,15 +733,13 @@ pub async fn define(
         }),
     ];
 
-    // Description (optional)
-    if let Some(desc) = &description {
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
-            of: rule.clone(),
-            is: Value::String(desc.clone()),
-            cause: None,
-        }));
-    }
+    // Description
+    instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
+        of: rule.clone(),
+        is: Value::String(description.clone()),
+        cause: None,
+    }));
 
     branch
         .commit(futures_util::stream::iter(instructions))
@@ -765,9 +762,7 @@ pub async fn define(
             definition.when.len(),
             definition.unless.len()
         );
-        if let Some(desc) = &description {
-            println!("  Description: {}", desc);
-        }
+        println!("  Description: {}", description);
     }
 
     Ok(())
@@ -778,9 +773,8 @@ pub async fn define(
 // ---------------------------------------------------------------------------
 
 /// Show the full definition of a rule.
-pub async fn show(name: String, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let session = open_session(&ctx).await?;
+pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
+    let session = open_session(ctx).await?;
 
     let rule = lookup_rule_by_name(&session, &name)
         .await?
@@ -856,9 +850,8 @@ pub async fn show(name: String, json: bool) -> Result<()> {
 ///
 /// Uses raw Branch + Instruction (not Session/Transaction) because
 /// Transaction deduplicates by `(entity, attribute)`.
-pub async fn delete(name: String, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+pub async fn delete(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
+    let mut branch = open_branch(ctx).await?;
 
     let rule = lookup_rule_by_name(&branch, &name)
         .await?
@@ -868,45 +861,15 @@ pub async fn delete(name: String, json: bool) -> Result<()> {
         .await?
         .unwrap_or_else(|| name.clone());
 
-    let mut instructions = Vec::new();
-
-    // Retract rule name
-    instructions.push(Instruction::Retract(Artifact {
+    // Soft delete: only retract the rule name.
+    // The entity keeps its conclusion, definition, and description data intact.
+    // This makes the rule undiscoverable by name but preserves its data.
+    let instructions = vec![Instruction::Retract(Artifact {
         the: Attribute::from_str(ATTR_RULE_NAME)?,
         of: rule.clone(),
         is: Value::String(stored_name),
         cause: None,
-    }));
-
-    // Retract conclusion
-    if let Some(conclusion) = fetch_string(&branch, &rule, ATTR_RULE_CONCLUSION).await? {
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
-            of: rule.clone(),
-            is: Value::String(conclusion),
-            cause: None,
-        }));
-    }
-
-    // Retract definition
-    if let Some(def) = fetch_string(&branch, &rule, ATTR_RULE_DEFINITION).await? {
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_RULE_DEFINITION)?,
-            of: rule.clone(),
-            is: Value::String(def),
-            cause: None,
-        }));
-    }
-
-    // Retract description
-    if let Some(desc) = fetch_string(&branch, &rule, ATTR_RULE_DESCRIPTION).await? {
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
-            of: rule.clone(),
-            is: Value::String(desc),
-            cause: None,
-        }));
-    }
+    })];
 
     branch
         .commit(futures_util::stream::iter(instructions))
