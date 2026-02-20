@@ -571,8 +571,19 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
 
     let mut rules: Vec<(String, Option<String>, String)> = Vec::new();
     for (entity, name) in &rule_entries {
-        let description = fetch_string(&session, entity, ATTR_RULE_DESCRIPTION).await?;
-        let conclusion = match fetch_string(&session, entity, ATTR_RULE_CONCLUSION).await? {
+        let description = fetch_string(
+            &session,
+            entity,
+            parse_claim_attribute(ATTR_RULE_DESCRIPTION)?,
+        )
+        .await?;
+        let conclusion = match fetch_string(
+            &session,
+            entity,
+            parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
+        )
+        .await?
+        {
             Some(c) => c,
             None => {
                 eprintln!(
@@ -678,13 +689,14 @@ pub async fn define(
             definition.conclusion.concept
         ))?;
     let concept_name = ConceptName::from_stored(
-        fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+        fetch_string(&branch, &concept, concept_name_selector())
             .await?
             .unwrap_or_else(|| conclusion_concept.to_string()),
     );
 
-    let concept_attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
-    let concept_ns = fetch_string(&branch, &concept, ATTR_CONCEPT_NAMESPACE)
+    let concept_attrs =
+        fetch_string_values(&branch, &concept, concept_attribute_selector()).await?;
+    let concept_ns = fetch_string(&branch, &concept, concept_namespace_selector())
         .await?
         .unwrap_or_else(|| ctx.space_name.clone());
     let cardinalities = fetch_attribute_cardinalities(&branch, &concept_attrs).await?;
@@ -780,12 +792,23 @@ pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
         .await?
         .context(format!("Rule '{}' not found", name))?;
 
-    let stored_name = fetch_string(&session, &rule, ATTR_RULE_NAME)
+    let stored_name = fetch_string(&session, &rule, parse_claim_attribute(ATTR_RULE_NAME)?)
         .await?
         .unwrap_or_else(|| name.clone());
 
-    let description = fetch_string(&session, &rule, ATTR_RULE_DESCRIPTION).await?;
-    let conclusion = match fetch_string(&session, &rule, ATTR_RULE_CONCLUSION).await? {
+    let description = fetch_string(
+        &session,
+        &rule,
+        parse_claim_attribute(ATTR_RULE_DESCRIPTION)?,
+    )
+    .await?;
+    let conclusion = match fetch_string(
+        &session,
+        &rule,
+        parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
+    )
+    .await?
+    {
         Some(c) => c,
         None => {
             eprintln!(
@@ -795,9 +818,13 @@ pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
             "???".to_string()
         }
     };
-    let definition_str = fetch_string(&session, &rule, ATTR_RULE_DEFINITION)
-        .await?
-        .context("Rule definition not found")?;
+    let definition_str = fetch_string(
+        &session,
+        &rule,
+        parse_claim_attribute(ATTR_RULE_DEFINITION)?,
+    )
+    .await?
+    .context("Rule definition not found")?;
 
     let definition: RuleDefinition =
         serde_json::from_str(&definition_str).context("Failed to parse stored rule definition")?;
@@ -857,7 +884,7 @@ pub async fn delete(ctx: &SpaceContext, name: String, json: bool) -> Result<()> 
         .await?
         .context(format!("Rule '{}' not found", name))?;
 
-    let stored_name = fetch_string(&branch, &rule, ATTR_RULE_NAME)
+    let stored_name = fetch_string(&branch, &rule, parse_claim_attribute(ATTR_RULE_NAME)?)
         .await?
         .unwrap_or_else(|| name.clone());
 
@@ -903,11 +930,22 @@ pub async fn load_rules_for_concept<S: ArtifactStore>(
 
     let mut rules = Vec::new();
     for (rule_ent, _name) in &rule_entries {
-        let conclusion = fetch_string(store, rule_ent, ATTR_RULE_CONCLUSION).await?;
+        let conclusion = fetch_string(
+            store,
+            rule_ent,
+            parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
+        )
+        .await?;
         if conclusion.as_deref() != Some(concept_name.as_str()) {
             continue;
         }
-        if let Some(def_str) = fetch_string(store, rule_ent, ATTR_RULE_DEFINITION).await? {
+        if let Some(def_str) = fetch_string(
+            store,
+            rule_ent,
+            parse_claim_attribute(ATTR_RULE_DEFINITION)?,
+        )
+        .await?
+        {
             match serde_json::from_str::<RuleDefinition>(&def_str) {
                 Ok(def) => rules.push(def),
                 Err(e) => {
@@ -936,11 +974,23 @@ pub async fn load_all_rules<S: ArtifactStore>(store: &S) -> Result<Vec<(String, 
 
     let mut rules = Vec::new();
     for (rule_ent, _name) in &rule_entries {
-        let conclusion = match fetch_string(store, rule_ent, ATTR_RULE_CONCLUSION).await? {
+        let conclusion = match fetch_string(
+            store,
+            rule_ent,
+            parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
+        )
+        .await?
+        {
             Some(c) => c,
             None => continue,
         };
-        if let Some(def_str) = fetch_string(store, rule_ent, ATTR_RULE_DEFINITION).await? {
+        if let Some(def_str) = fetch_string(
+            store,
+            rule_ent,
+            parse_claim_attribute(ATTR_RULE_DEFINITION)?,
+        )
+        .await?
+        {
             match serde_json::from_str::<RuleDefinition>(&def_str) {
                 Ok(def) => rules.push((conclusion, def)),
                 Err(e) => {

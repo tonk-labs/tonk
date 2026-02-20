@@ -4,15 +4,14 @@
 //! defines a set of attributes (with an auto-prefixed namespace) that entities
 //! conform to.
 //!
-//! Concepts are discovered structurally: any entity with a `concept/name`
-//! attribute is a concept. No explicit registry entity is needed.
+//! Concepts are modeled using a typed meta-schema: the `RegisteredConcept`
+//! struct and its `concept::*` attribute newtypes define "the concept of a
+//! concept" as a first-class concept in dialog-query.
 
 use crate::schema::*;
 use anyhow::{Context, Result};
 use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
-use dialog_query::claim::Attribute;
 use dialog_query::{Entity, Value};
-use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
 // List all concepts
@@ -35,9 +34,8 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
 
     let mut concepts: Vec<(String, Option<String>, usize)> = Vec::new();
     for (entity, name) in &concept_entries {
-        let description = fetch_string(&session, entity, ATTR_CONCEPT_DESCRIPTION).await?;
-        // Count entities by querying the AEV index on schema attributes
-        let attrs = fetch_string_values(&session, entity, ATTR_CONCEPT_ATTRIBUTE).await?;
+        let description = fetch_string(&session, entity, concept_description_selector()).await?;
+        let attrs = fetch_string_values(&session, entity, concept_attribute_selector()).await?;
         let entity_count = if attrs.is_empty() {
             0
         } else {
@@ -84,6 +82,8 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
 /// Build instructions to assert a concept's core metadata: name, description,
 /// namespace, and all attributes.
 ///
+/// Uses the typed `concept::*` selectors from the meta-schema.
+///
 /// This is the shared instruction set for both fresh defines and concept
 /// replacements. It does NOT include provenance or soft-delete instructions.
 fn build_concept_instructions(
@@ -92,25 +92,25 @@ fn build_concept_instructions(
     description: &str,
     namespace: &str,
     attributes: &[String],
-) -> Result<Vec<Instruction>> {
+) -> Vec<Instruction> {
     let mut instructions = Vec::new();
 
     instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+        the: concept_name_selector(),
         of: entity.clone(),
         is: Value::String(name.to_string()),
         cause: None,
     }));
 
     instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
+        the: concept_description_selector(),
         of: entity.clone(),
         is: Value::String(description.to_string()),
         cause: None,
     }));
 
     instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
+        the: concept_namespace_selector(),
         of: entity.clone(),
         is: Value::String(namespace.to_string()),
         cause: None,
@@ -118,14 +118,14 @@ fn build_concept_instructions(
 
     for attr in attributes {
         instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
+            the: concept_attribute_selector(),
             of: entity.clone(),
             is: Value::String(attr.clone()),
             cause: None,
         }));
     }
 
-    Ok(instructions)
+    instructions
 }
 
 /// Build instructions to replace one concept entity with another.
@@ -146,13 +146,13 @@ fn build_replace_concept_instructions(
     attributes: &[String],
     old_stored_name: &str,
     rationale: Option<&str>,
-) -> Result<Vec<Instruction>> {
+) -> Vec<Instruction> {
     let mut instructions =
-        build_concept_instructions(new_entity, name, description, namespace, attributes)?;
+        build_concept_instructions(new_entity, name, description, namespace, attributes);
 
-    // Provenance: link new → old
+    // Provenance: link new -> old
     instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_PRIOR)?,
+        the: concept_prior_selector(),
         of: new_entity.clone(),
         is: Value::String(old_entity.to_string()),
         cause: None,
@@ -163,7 +163,7 @@ fn build_replace_concept_instructions(
         let r = r.trim();
         if !r.is_empty() {
             instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_CONCEPT_UPDATE_RATIONALE)?,
+                the: concept_update_rationale_selector(),
                 of: new_entity.clone(),
                 is: Value::String(r.to_string()),
                 cause: None,
@@ -173,13 +173,13 @@ fn build_replace_concept_instructions(
 
     // Soft-delete old: retract its name so it's no longer discoverable
     instructions.push(Instruction::Retract(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+        the: concept_name_selector(),
         of: old_entity.clone(),
         is: Value::String(old_stored_name.to_string()),
         cause: None,
     }));
 
-    Ok(instructions)
+    instructions
 }
 
 // ---------------------------------------------------------------------------
@@ -193,8 +193,8 @@ fn build_replace_concept_instructions(
 ///
 /// Uses convergent semantics: the concept entity is derived deterministically
 /// from its attribute set. If a concept with the same name already exists:
-///   - **Same attributes** → noop (idempotent, the assertions converge).
-///   - **Different attributes** → in interactive mode, prompt the user to
+///   - **Same attributes** -> noop (idempotent, the assertions converge).
+///   - **Different attributes** -> in interactive mode, prompt the user to
 ///     update (creating a provenance chain via `concept/prior`) or choose a
 ///     different name. In `--json` mode, return a structured conflict response
 ///     so programmatic callers can decide.
@@ -255,7 +255,7 @@ pub async fn define(
         }
 
         let existing_attrs =
-            fetch_string_values(&branch, &existing_entity, ATTR_CONCEPT_ATTRIBUTE).await?;
+            fetch_string_values(&branch, &existing_entity, concept_attribute_selector()).await?;
 
         return handle_conflict_define(
             &mut branch,
@@ -271,14 +271,14 @@ pub async fn define(
         .await;
     }
 
-    // No existing concept with this name — fresh define.
+    // No existing concept with this name -- fresh define.
     let instructions = build_concept_instructions(
         &new_entity,
         name.as_str(),
         &description,
         namespace,
         &qualified_attrs,
-    )?;
+    );
 
     branch
         .commit(futures_util::stream::iter(instructions))
@@ -321,7 +321,7 @@ async fn handle_converged_define(
 ) -> Result<()> {
     // Re-assert description in case it changed; harmless if identical.
     let instructions = vec![Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
+        the: concept_description_selector(),
         of: entity.clone(),
         is: Value::String(description.to_string()),
         cause: None,
@@ -342,7 +342,7 @@ async fn handle_converged_define(
         println!("{}", serde_json::to_string(&output)?);
     } else {
         println!(
-            "Concept '{}' already exists with identical schema — no changes needed.",
+            "Concept '{}' already exists with identical schema -- no changes needed.",
             name
         );
     }
@@ -407,8 +407,8 @@ async fn handle_conflict_define(
     println!();
 
     let choices = &[
-        "Update — replace with the new definition (provenance link preserved)",
-        "Cancel — keep the existing concept unchanged",
+        "Update -- replace with the new definition (provenance link preserved)",
+        "Cancel -- keep the existing concept unchanged",
     ];
     let selection = dialoguer::Select::new()
         .with_prompt("How would you like to proceed?")
@@ -427,7 +427,7 @@ async fn handle_conflict_define(
         .allow_empty(true)
         .interact_text()?;
 
-    let stored_name = fetch_string(branch, existing_entity, ATTR_CONCEPT_NAME)
+    let stored_name = fetch_string(branch, existing_entity, concept_name_selector())
         .await?
         .unwrap_or_else(|| name.to_string());
 
@@ -440,7 +440,7 @@ async fn handle_conflict_define(
         proposed_attrs,
         &stored_name,
         Some(&rationale),
-    )?;
+    );
 
     branch
         .commit(futures_util::stream::iter(instructions))
@@ -472,16 +472,16 @@ pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
         .context(format!("Concept '{}' not found", name))?;
 
     let stored_name = ConceptName::from_stored(
-        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+        fetch_string(&session, &concept, concept_name_selector())
             .await?
             .unwrap_or_else(|| name.to_string()),
     );
 
-    let description = fetch_string(&session, &concept, ATTR_CONCEPT_DESCRIPTION).await?;
-    let namespace = fetch_string(&session, &concept, ATTR_CONCEPT_NAMESPACE)
+    let description = fetch_string(&session, &concept, concept_description_selector()).await?;
+    let namespace = fetch_string(&session, &concept, concept_namespace_selector())
         .await?
         .unwrap_or_else(|| ctx.space_name.clone());
-    let attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let attrs = fetch_string_values(&session, &concept, concept_attribute_selector()).await?;
     // Count entities by querying the AEV index on the first schema attribute
     let entity_count = if attrs.is_empty() {
         0
@@ -548,16 +548,17 @@ pub async fn extend(
         .context(format!("Concept '{}' not found", name))?;
 
     // Get the concept's namespace (fall back to space name)
-    let namespace = fetch_string(&branch, &old_entity, ATTR_CONCEPT_NAMESPACE)
+    let namespace = fetch_string(&branch, &old_entity, concept_namespace_selector())
         .await?
         .unwrap_or_else(|| ctx.space_name.clone());
 
     // Get existing metadata
-    let existing_attrs = fetch_string_values(&branch, &old_entity, ATTR_CONCEPT_ATTRIBUTE).await?;
-    let stored_name = fetch_string(&branch, &old_entity, ATTR_CONCEPT_NAME)
+    let existing_attrs =
+        fetch_string_values(&branch, &old_entity, concept_attribute_selector()).await?;
+    let stored_name = fetch_string(&branch, &old_entity, concept_name_selector())
         .await?
         .unwrap_or_else(|| name.to_string());
-    let description = fetch_string(&branch, &old_entity, ATTR_CONCEPT_DESCRIPTION).await?;
+    let description = fetch_string(&branch, &old_entity, concept_description_selector()).await?;
 
     // Qualify new attributes with the concept's namespace
     let qualified_new: Vec<String> = attributes
@@ -612,14 +613,14 @@ pub async fn extend(
             &full_attrs,
             &stored_name,
             None,
-        )?
+        )
     } else {
         // Entity identity unchanged (shouldn't normally happen when adding attrs,
         // but handle gracefully): just assert the new attributes
         let mut instr = Vec::new();
         for attr in &added {
             instr.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
+                the: concept_attribute_selector(),
                 of: old_entity.clone(),
                 is: Value::String(attr.clone()),
                 cause: None,
@@ -681,11 +682,11 @@ pub async fn delete(ctx: &SpaceContext, name: String, force: bool, json: bool) -
         .await?
         .context(format!("Concept '{}' not found", name))?;
 
-    let stored_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let stored_name = fetch_string(&branch, &concept, concept_name_selector())
         .await?
         .unwrap_or_else(|| name.to_string());
 
-    let attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let attrs = fetch_string_values(&branch, &concept, concept_attribute_selector()).await?;
 
     // Check for entities by querying the AEV index
     let entities = if attrs.is_empty() {
@@ -732,7 +733,7 @@ pub async fn delete(ctx: &SpaceContext, name: String, force: bool, json: bool) -
     // The entity keeps its attributes, description, and namespace data intact.
     // This makes the concept undiscoverable by name but preserves its data.
     instructions.push(Instruction::Retract(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+        the: concept_name_selector(),
         of: concept.clone(),
         is: Value::String(stored_name),
         cause: None,

@@ -89,10 +89,30 @@ async fn fetch_attr_meta<S: dialog_artifacts::ArtifactStore>(
 ) -> Result<AttrMeta> {
     let meta_entity = attribute_meta_entity(qualified_name)?;
 
-    let description = fetch_string(store, &meta_entity, ATTR_ATTRIBUTE_DESCRIPTION).await?;
-    let type_str = fetch_string(store, &meta_entity, ATTR_ATTRIBUTE_TYPE).await?;
-    let cardinality = fetch_string(store, &meta_entity, ATTR_ATTRIBUTE_CARDINALITY).await?;
-    let optional_str = fetch_string(store, &meta_entity, ATTR_ATTRIBUTE_OPTIONAL).await?;
+    let description = fetch_string(
+        store,
+        &meta_entity,
+        parse_claim_attribute(ATTR_ATTRIBUTE_DESCRIPTION)?,
+    )
+    .await?;
+    let type_str = fetch_string(
+        store,
+        &meta_entity,
+        parse_claim_attribute(ATTR_ATTRIBUTE_TYPE)?,
+    )
+    .await?;
+    let cardinality = fetch_string(
+        store,
+        &meta_entity,
+        parse_claim_attribute(ATTR_ATTRIBUTE_CARDINALITY)?,
+    )
+    .await?;
+    let optional_str = fetch_string(
+        store,
+        &meta_entity,
+        parse_claim_attribute(ATTR_ATTRIBUTE_OPTIONAL)?,
+    )
+    .await?;
     let optional = optional_str.as_deref() == Some("true");
 
     Ok(AttrMeta {
@@ -118,8 +138,9 @@ async fn load_all_concepts<S: dialog_artifacts::ArtifactStore>(
 
     for (entity, name) in &concept_pairs {
         let concept_name = ConceptName::from_stored(name.clone());
-        let namespace = fetch_string(store, entity, ATTR_CONCEPT_NAMESPACE).await?;
-        let qualified_attrs = fetch_string_values(store, entity, ATTR_CONCEPT_ATTRIBUTE).await?;
+        let namespace = fetch_string(store, entity, concept_namespace_selector()).await?;
+        let qualified_attrs =
+            fetch_string_values(store, entity, concept_attribute_selector()).await?;
 
         let mut attrs = Vec::new();
         for qname in &qualified_attrs {
@@ -315,18 +336,28 @@ async fn resolve_qualified<S: dialog_artifacts::ArtifactStore>(
     _space_did: &str,
     qualified_name: &str,
 ) -> Result<(ConceptName, Option<String>, String)> {
-    let normalized = if let Some((prefix, attr)) = qualified_name.split_once('/') {
-        format!("{}/{}", prefix.to_lowercase(), attr)
-    } else {
-        qualified_name.to_string()
-    };
+    let (prefix, attr) = qualified_name
+        .split_once('/')
+        .context("Qualified attribute name must include '/'")?;
+    let normalized_prefix = prefix.to_lowercase();
+    let normalized = format!("{}/{}", normalized_prefix, attr);
     let concept_pairs = find_all_concepts(store).await?;
 
     for (entity, name) in &concept_pairs {
-        let attrs = fetch_string_values(store, entity, ATTR_CONCEPT_ATTRIBUTE).await?;
+        let concept_name = ConceptName::from_stored(name.clone());
+        let attrs = fetch_string_values(store, entity, concept_attribute_selector()).await?;
         if attrs.iter().any(|a| a == &normalized) {
-            let namespace = fetch_string(store, entity, ATTR_CONCEPT_NAMESPACE).await?;
-            return Ok((ConceptName::from_stored(name.clone()), namespace, normalized));
+            let namespace = fetch_string(store, entity, concept_namespace_selector()).await?;
+            return Ok((concept_name, namespace, normalized));
+        }
+
+        if normalized_prefix == concept_name.as_str().to_lowercase() {
+            let namespace = fetch_string(store, entity, concept_namespace_selector()).await?;
+            let qualifier = namespace.as_deref().unwrap_or(concept_name.as_str());
+            let aliased = format!("{}/{}", qualifier, attr);
+            if attrs.iter().any(|a| a == &aliased) {
+                return Ok((concept_name, namespace, aliased));
+            }
         }
     }
 
@@ -348,16 +379,17 @@ async fn resolve_short<S: dialog_artifacts::ArtifactStore>(
         .await?
         .context(format!("Concept '{}' not found", concept_name))?;
 
-    let stored_name = fetch_string(store, &concept, ATTR_CONCEPT_NAME)
+    let stored_name = fetch_string(store, &concept, concept_name_selector())
         .await?
         .map(ConceptName::from_stored)
         .unwrap_or_else(|| concept_name.clone());
 
-    let namespace = fetch_string(store, &concept, ATTR_CONCEPT_NAMESPACE).await?;
-    let qualified = qualify_attribute(&stored_name, short_name)?;
+    let namespace = fetch_string(store, &concept, concept_namespace_selector()).await?;
+    let qualifier = namespace.as_deref().unwrap_or(stored_name.as_str());
+    let qualified = qualify_attribute(qualifier, short_name)?;
 
     // Verify the attribute actually exists on this concept
-    let attrs = fetch_string_values(store, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let attrs = fetch_string_values(store, &concept, concept_attribute_selector()).await?;
     if !attrs.contains(&qualified) {
         anyhow::bail!(
             "Attribute '{}' not found on concept '{}'. Available attributes: {}",
@@ -389,8 +421,8 @@ async fn resolve_unqualified<S: dialog_artifacts::ArtifactStore>(
 
     for (entity, name) in &concept_pairs {
         let concept_name = ConceptName::from_stored(name.clone());
-        let namespace = fetch_string(store, entity, ATTR_CONCEPT_NAMESPACE).await?;
-        let attrs = fetch_string_values(store, entity, ATTR_CONCEPT_ATTRIBUTE).await?;
+        let namespace = fetch_string(store, entity, concept_namespace_selector()).await?;
+        let attrs = fetch_string_values(store, entity, concept_attribute_selector()).await?;
 
         for qname in &attrs {
             if short_attribute(&concept_name, qname) == short_name {

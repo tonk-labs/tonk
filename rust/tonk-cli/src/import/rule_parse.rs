@@ -7,7 +7,7 @@
 //!   safe-meal:
 //!     description: A meal that respects dietary restrictions
 //!     deduce:
-//!       SafeMeal:
+//!       Meal:
 //!         attendee: ?person
 //!         recipe: ?recipe
 //!     when:
@@ -86,7 +86,7 @@ pub(super) struct ParsedRule {
 /// The conclusion of a parsed rule.
 #[derive(Debug)]
 pub(super) struct ParsedRuleConclusion {
-    /// Concept name extracted from the reference (e.g. "SafeMeal" from "diy.planner/SafeMeal").
+    /// Concept name extracted from the reference (e.g. "Meal" from "diy.planner/Meal").
     pub concept_name: String,
     /// Bindings: attribute short names to variables/wildcards/constants.
     /// The `this` key, if present, is stored separately.
@@ -254,7 +254,7 @@ pub(super) fn parse_rule(
 ///
 /// ```yaml
 /// deduce:
-///   SafeMeal:
+///   Meal:
 ///     attendee: ?person
 ///     recipe: ?recipe
 /// ```
@@ -484,7 +484,7 @@ mod tests {
             PremiseKind::Concept
         );
         assert_eq!(
-            classify_premise_ref("diy.planner/SafeMeal"),
+            classify_premise_ref("diy.planner/Meal"),
             PremiseKind::Concept
         );
     }
@@ -999,15 +999,15 @@ ns:
         assert!(!def1.when.is_empty());
         assert!(def1.unless.is_empty());
 
-        // Second rule: infer-safe-event-meal -> SafeMeal
+        // Second rule: infer-safe-event-meal -> Meal
         let rule2 = rules
             .iter()
             .find(|r| r.name == "infer-safe-event-meal")
             .unwrap();
-        assert_eq!(rule2.conclusion.concept_name, "SafeMeal");
+        assert_eq!(rule2.conclusion.concept_name, "Meal");
         assert!(rule2.description.is_some());
         let def2 = lower_rule(rule2).unwrap();
-        assert_eq!(def2.conclusion.concept, "SafeMeal");
+        assert_eq!(def2.conclusion.concept, "Meal");
         assert!(!def2.when.is_empty());
         assert!(def2.unless.is_empty());
     }

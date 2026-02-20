@@ -28,7 +28,7 @@
 //!   safe-meal:
 //!     description: A meal that respects dietary restrictions
 //!     deduce:
-//!       SafeMeal:
+//!       Meal:
 //!         attendee: ?person
 //!     when:
 //!       - diy.planner/Meal:

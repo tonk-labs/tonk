@@ -40,7 +40,7 @@
 //!   safe-meal:
 //!     description: A meal that respects dietary restrictions
 //!     deduce:
-//!       SafeMeal:
+//!       Meal:
 //!         attendee: ?person
 //!         recipe: ?recipe
 //!     when:

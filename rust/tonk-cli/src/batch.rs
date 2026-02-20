@@ -45,16 +45,17 @@ pub async fn batch_create(
         ))?;
 
     let stored_name = ConceptName::from_stored(
-        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+        fetch_string(&session, &concept, concept_name_selector())
             .await?
             .unwrap_or_else(|| concept_name.to_string()),
     );
 
-    let namespace = fetch_string(&session, &concept, ATTR_CONCEPT_NAMESPACE)
+    let namespace = fetch_string(&session, &concept, concept_namespace_selector())
         .await?
         .unwrap_or_else(|| ctx.space_name.clone());
 
-    let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let schema_attrs =
+        fetch_string_values(&session, &concept, concept_attribute_selector()).await?;
 
     let mut transaction = session.edit();
     let mut results: Vec<serde_json::Value> = Vec::new();
@@ -164,16 +165,17 @@ pub async fn batch_update(
         .context(format!("Concept '{}' not found", concept_name))?;
 
     let stored_name = ConceptName::from_stored(
-        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+        fetch_string(&session, &concept, concept_name_selector())
             .await?
             .unwrap_or_else(|| concept_name.to_string()),
     );
 
-    let namespace = fetch_string(&session, &concept, ATTR_CONCEPT_NAMESPACE)
+    let namespace = fetch_string(&session, &concept, concept_namespace_selector())
         .await?
         .unwrap_or_else(|| ctx.space_name.clone());
 
-    let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let schema_attrs =
+        fetch_string_values(&session, &concept, concept_attribute_selector()).await?;
 
     let mut transaction = session.edit();
     let mut results: Vec<serde_json::Value> = Vec::new();
@@ -198,7 +200,10 @@ pub async fn batch_update(
         let has_all_attrs = {
             let mut all = true;
             for attr in &schema_attrs {
-                if fetch_value(&session, &entity, attr).await?.is_none() {
+                if fetch_value(&session, &entity, Attribute::from_str(attr)?)
+                    .await?
+                    .is_none()
+                {
                     all = false;
                     break;
                 }
@@ -236,7 +241,8 @@ pub async fn batch_update(
             let attr = Attribute::from_str(&qualified)?;
 
             // Retract all old values for this attribute (supports multi-valued)
-            let old_values = fetch_values(&session, &entity, &qualified).await?;
+            let old_values =
+                fetch_values(&session, &entity, Attribute::from_str(&qualified)?).await?;
             for old_value in old_values {
                 if old_value != new_value {
                     let old_relation = Relation::new(attr.clone(), entity.clone(), old_value);
@@ -317,12 +323,13 @@ pub async fn batch_delete(
         .context(format!("Concept '{}' not found", concept_name))?;
 
     let stored_name = ConceptName::from_stored(
-        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+        fetch_string(&session, &concept, concept_name_selector())
             .await?
             .unwrap_or_else(|| concept_name.to_string()),
     );
 
-    let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let schema_attrs =
+        fetch_string_values(&session, &concept, concept_attribute_selector()).await?;
 
     let mut transaction = session.edit();
     let mut deleted_ids: Vec<String> = Vec::new();
@@ -338,7 +345,10 @@ pub async fn batch_delete(
         let has_all_attrs = {
             let mut all = true;
             for attr in &schema_attrs {
-                if fetch_value(&session, &entity, attr).await?.is_none() {
+                if fetch_value(&session, &entity, Attribute::from_str(attr)?)
+                    .await?
+                    .is_none()
+                {
                     all = false;
                     break;
                 }

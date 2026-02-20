@@ -41,16 +41,17 @@ pub async fn create(
         ))?;
 
     let stored_name = ConceptName::from_stored(
-        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+        fetch_string(&session, &concept, concept_name_selector())
             .await?
             .unwrap_or_else(|| concept_name.to_string()),
     );
 
-    let namespace = fetch_string(&session, &concept, ATTR_CONCEPT_NAMESPACE)
+    let namespace = fetch_string(&session, &concept, concept_namespace_selector())
         .await?
         .unwrap_or_else(|| ctx.space_name.clone());
 
-    let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let schema_attrs =
+        fetch_string_values(&session, &concept, concept_attribute_selector()).await?;
 
     // Parse field values from args, file, or stdin
     let field_map = if let Some(path) = &file {
@@ -157,16 +158,17 @@ pub async fn query(
         .context(format!("Concept '{}' not found", concept_name))?;
 
     let stored_name = ConceptName::from_stored(
-        fetch_string(&session, &concept, ATTR_CONCEPT_NAME)
+        fetch_string(&session, &concept, concept_name_selector())
             .await?
             .unwrap_or_else(|| concept_name.to_string()),
     );
 
-    let namespace = fetch_string(&session, &concept, ATTR_CONCEPT_NAMESPACE)
+    let namespace = fetch_string(&session, &concept, concept_namespace_selector())
         .await?
         .unwrap_or_else(|| ctx.space_name.clone());
 
-    let schema_attrs = fetch_string_values(&session, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let schema_attrs =
+        fetch_string_values(&session, &concept, concept_attribute_selector()).await?;
 
     // Parse filters
     let filter_map = parse_kv_fields(&filters)?;
@@ -191,8 +193,8 @@ pub async fn query(
             .await?
             .context(format!("Rule conclusion concept '{}' not found", cname))?;
         let concept_attrs =
-            fetch_string_values(&session, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
-        let rule_ns = fetch_string(&session, &concept_ent, ATTR_CONCEPT_NAMESPACE)
+            fetch_string_values(&session, &concept_ent, concept_attribute_selector()).await?;
+        let rule_ns = fetch_string(&session, &concept_ent, concept_namespace_selector())
             .await?
             .unwrap_or_else(|| ctx.space_name.clone());
         let rule_cardinalities = fetch_attribute_cardinalities(&session, &concept_attrs).await?;
@@ -223,12 +225,7 @@ pub async fn query(
 /// Any registered DeductiveRules are also evaluated, merging stored and
 /// rule-derived entities with OR semantics.
 async fn query_concept(
-    mut session: Session<
-        dialog_artifacts::replica::Branch<
-            tonk_space::FsBackend,
-            dialog_artifacts::replica::SigningAuthority,
-        >,
-    >,
+    mut session: Session<dialog_artifacts::repository::Branch<tonk_space::FsBackend>>,
     schema_attrs: &[String],
     namespace: &str,
     qualified_filters: &[(String, Value)],
@@ -390,14 +387,14 @@ pub async fn show(ctx: &SpaceContext, id: String, json: bool) -> Result<()> {
     let (concept_name, concept_ent, schema_attrs) =
         infer_concept_from_entity(&session, &entity).await?;
 
-    let namespace = fetch_string(&session, &concept_ent, ATTR_CONCEPT_NAMESPACE)
+    let namespace = fetch_string(&session, &concept_ent, concept_namespace_selector())
         .await?
         .unwrap_or_else(|| ctx.space_name.clone());
 
     // Fetch all attribute values (supporting multi-valued attributes)
     let mut data = serde_json::Map::new();
     for attr_name in &schema_attrs {
-        let values = fetch_values(&session, &entity, attr_name).await?;
+        let values = fetch_values(&session, &entity, parse_claim_attribute(attr_name)?).await?;
         if !values.is_empty() {
             let short = short_attribute(&namespace, attr_name);
             if values.len() == 1 {
@@ -465,7 +462,7 @@ pub async fn assert(ctx: &SpaceContext, id: String, fields: Vec<String>, json: b
     let (concept_name, concept_ent, schema_attrs) =
         infer_concept_from_entity(&session, &entity).await?;
 
-    let namespace = fetch_string(&session, &concept_ent, ATTR_CONCEPT_NAMESPACE)
+    let namespace = fetch_string(&session, &concept_ent, concept_namespace_selector())
         .await?
         .unwrap_or_else(|| ctx.space_name.clone());
 
@@ -493,7 +490,7 @@ pub async fn assert(ctx: &SpaceContext, id: String, fields: Vec<String>, json: b
         let attr = Attribute::from_str(attr_name)?;
 
         // Retract all old values for this attribute (supports multi-valued)
-        let old_values = fetch_values(&session, &entity, attr_name).await?;
+        let old_values = fetch_values(&session, &entity, parse_claim_attribute(attr_name)?).await?;
         for old_value in old_values {
             if old_value != new_value {
                 let old_relation = Relation::new(attr.clone(), entity.clone(), old_value);

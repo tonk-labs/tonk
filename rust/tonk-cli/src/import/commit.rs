@@ -18,10 +18,8 @@ use crate::rule::RuleDefinition;
 use crate::schema::*;
 use anyhow::{Context, Result};
 use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
-use dialog_query::claim::Attribute;
 use dialog_query::{Entity, Value};
 use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
 // Concept import
@@ -132,13 +130,9 @@ pub(super) async fn import_concepts(
     let mut old_entities: HashMap<String, Entity> = HashMap::new();
 
     for (cname, _concept) in &validated {
-        if let Some(old_entity) = retract_concept_if_exists(
-            &branch,
-            cname,
-            force,
-            &mut retract_instructions,
-        )
-        .await? {
+        if let Some(old_entity) =
+            retract_concept_if_exists(&branch, cname, force, &mut retract_instructions).await?
+        {
             // Remember the old entity for provenance linking
             old_entities.insert(cname.to_string(), old_entity);
         }
@@ -180,7 +174,7 @@ pub(super) async fn import_concepts(
             && *old_entity != entity
         {
             assert_instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_CONCEPT_PRIOR)?,
+                the: concept_prior_selector(),
                 of: entity.clone(),
                 is: Value::String(old_entity.to_string()),
                 cause: None,
@@ -329,13 +323,7 @@ pub(super) async fn import_rules(
     let mut retract_instructions: Vec<Instruction> = Vec::new();
 
     for (parsed, definition) in &lowered {
-        retract_rule_if_exists(
-            &branch,
-            parsed,
-            force,
-            &mut retract_instructions,
-        )
-        .await?;
+        retract_rule_if_exists(&branch, parsed, force, &mut retract_instructions).await?;
 
         validate_rule_against_space(&branch, parsed, definition).await?;
     }
@@ -523,6 +511,7 @@ pub(super) async fn import_mixed(
 
     // --- Build schema overrides for concepts defined in this file ---
 
+    #[allow(clippy::type_complexity)]
     let mut concept_overrides: std::collections::HashMap<
         String,
         (
@@ -537,7 +526,12 @@ pub(super) async fn import_mixed(
         let cardinalities = build_concept_cardinalities(cname, concept)?;
         concept_overrides.insert(
             cname.to_lowercase(),
-            (cname.clone(), attrs, cardinalities, concept.namespace.clone()),
+            (
+                cname.clone(),
+                attrs,
+                cardinalities,
+                concept.namespace.clone(),
+            ),
         );
     }
 
@@ -551,27 +545,27 @@ pub(super) async fn import_mixed(
         let (concept_name, concept_attrs, cardinalities, concept_ns) =
             if let Some((name, attrs, cards, ns)) = concept_overrides.get(&key) {
                 (name.clone(), attrs.clone(), cards.clone(), ns.clone())
-        } else {
-            let concept_ent = lookup_concept_by_name(&branch, &conclusion_concept)
-                .await?
-                .context(format!(
-                    "Conclusion concept '{}' for rule '{}' not found. Define it first.",
-                    definition.conclusion.concept, parsed.name
-                ))?;
-            let concept_name = ConceptName::from_stored(
-                fetch_string(&branch, &concept_ent, ATTR_CONCEPT_NAME)
+            } else {
+                let concept_ent = lookup_concept_by_name(&branch, &conclusion_concept)
                     .await?
-                    .unwrap_or_else(|| conclusion_concept.to_string()),
-            );
-            let concept_attrs =
-                fetch_string_values(&branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
-            let concept_ns = fetch_string(&branch, &concept_ent, ATTR_CONCEPT_NAMESPACE)
-                .await?
-                .unwrap_or_else(|| ctx.space_name.clone());
-            let cardinalities =
-                fetch_attribute_cardinalities(&branch, &concept_attrs).await?;
-            (concept_name, concept_attrs, cardinalities, concept_ns)
-        };
+                    .context(format!(
+                        "Conclusion concept '{}' for rule '{}' not found. Define it first.",
+                        definition.conclusion.concept, parsed.name
+                    ))?;
+                let concept_name = ConceptName::from_stored(
+                    fetch_string(&branch, &concept_ent, concept_name_selector())
+                        .await?
+                        .unwrap_or_else(|| conclusion_concept.to_string()),
+                );
+                let concept_attrs =
+                    fetch_string_values(&branch, &concept_ent, concept_attribute_selector())
+                        .await?;
+                let concept_ns = fetch_string(&branch, &concept_ent, concept_namespace_selector())
+                    .await?
+                    .unwrap_or_else(|| ctx.space_name.clone());
+                let cardinalities = fetch_attribute_cardinalities(&branch, &concept_attrs).await?;
+                (concept_name, concept_attrs, cardinalities, concept_ns)
+            };
 
         validate_rule_against_schema(
             parsed,
@@ -590,13 +584,7 @@ pub(super) async fn import_mixed(
     let mut import_summary: Vec<serde_json::Value> = Vec::new();
 
     for (cname, _concept) in &validated_concepts {
-        retract_concept_if_exists(
-            &branch,
-            cname,
-            force,
-            &mut retract_instructions,
-        )
-        .await?;
+        retract_concept_if_exists(&branch, cname, force, &mut retract_instructions).await?;
     }
 
     for attr in &standalone_attrs {
@@ -611,13 +599,7 @@ pub(super) async fn import_mixed(
     }
 
     for (parsed, _definition) in &lowered_rules {
-        retract_rule_if_exists(
-            &branch,
-            parsed,
-            force,
-            &mut retract_instructions,
-        )
-        .await?;
+        retract_rule_if_exists(&branch, parsed, force, &mut retract_instructions).await?;
     }
 
     for (cname, concept) in &validated_concepts {
@@ -718,7 +700,7 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
     if let Some(entity) = existing_entity {
         if force {
             let existing_attrs =
-                fetch_string_values(branch, &entity, ATTR_CONCEPT_ATTRIBUTE).await?;
+                fetch_string_values(branch, &entity, concept_attribute_selector()).await?;
 
             for attr_name in &existing_attrs {
                 let meta_entity = attribute_meta_entity(attr_name)?;
@@ -729,9 +711,12 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
                     ATTR_ATTRIBUTE_CARDINALITY,
                     ATTR_ATTRIBUTE_OPTIONAL,
                 ] {
-                    if let Some(val) = fetch_string(branch, &meta_entity, meta_attr).await? {
+                    let claim_attr = parse_claim_attribute(meta_attr)?;
+                    if let Some(val) =
+                        fetch_string(branch, &meta_entity, claim_attr.clone()).await?
+                    {
                         retract_instructions.push(Instruction::Retract(Artifact {
-                            the: Attribute::from_str(meta_attr)?,
+                            the: claim_attr,
                             of: meta_entity.clone(),
                             is: Value::String(val),
                             cause: None,
@@ -740,34 +725,36 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
                 }
 
                 retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
+                    the: concept_attribute_selector(),
                     of: entity.clone(),
                     is: Value::String(attr_name.clone()),
                     cause: None,
                 }));
             }
 
-            if let Some(name) = fetch_string(branch, &entity, ATTR_CONCEPT_NAME).await? {
+            if let Some(name) = fetch_string(branch, &entity, concept_name_selector()).await? {
                 retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+                    the: concept_name_selector(),
                     of: entity.clone(),
                     is: Value::String(name),
                     cause: None,
                 }));
             }
 
-            if let Some(desc) = fetch_string(branch, &entity, ATTR_CONCEPT_DESCRIPTION).await? {
+            if let Some(desc) =
+                fetch_string(branch, &entity, concept_description_selector()).await?
+            {
                 retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
+                    the: concept_description_selector(),
                     of: entity.clone(),
                     is: Value::String(desc),
                     cause: None,
                 }));
             }
 
-            if let Some(ns) = fetch_string(branch, &entity, ATTR_CONCEPT_NAMESPACE).await? {
+            if let Some(ns) = fetch_string(branch, &entity, concept_namespace_selector()).await? {
                 retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
+                    the: concept_namespace_selector(),
                     of: entity.clone(),
                     is: Value::String(ns),
                     cause: None,
@@ -805,7 +792,7 @@ fn build_concept_assertions(
     let entity = concept_entity_from_attrs(&qualified_attrs, &empty_cardinalities)?;
 
     assert_instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+        the: concept_name_selector(),
         of: entity.clone(),
         is: Value::String(cname.to_string()),
         cause: None,
@@ -813,7 +800,7 @@ fn build_concept_assertions(
 
     if let Some(desc) = &concept.description {
         assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
+            the: concept_description_selector(),
             of: entity.clone(),
             is: Value::String(desc.clone()),
             cause: None,
@@ -821,7 +808,7 @@ fn build_concept_assertions(
     }
 
     assert_instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
+        the: concept_namespace_selector(),
         of: entity.clone(),
         is: Value::String(concept.namespace.clone()),
         cause: None,
@@ -847,7 +834,7 @@ fn build_concept_assertions(
         };
 
         assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
+            the: concept_attribute_selector(),
             of: entity.clone(),
             is: Value::String(qualified.clone()),
             cause: None,
@@ -857,7 +844,7 @@ fn build_concept_assertions(
 
         if let Some(desc) = &attr.description {
             assert_instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_ATTRIBUTE_DESCRIPTION)?,
+                the: parse_claim_attribute(ATTR_ATTRIBUTE_DESCRIPTION)?,
                 of: meta_entity.clone(),
                 is: Value::String(desc.clone()),
                 cause: None,
@@ -866,7 +853,7 @@ fn build_concept_assertions(
 
         if let Some(type_str) = &attr.type_str {
             assert_instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_ATTRIBUTE_TYPE)?,
+                the: parse_claim_attribute(ATTR_ATTRIBUTE_TYPE)?,
                 of: meta_entity.clone(),
                 is: Value::String(type_str.clone()),
                 cause: None,
@@ -875,7 +862,7 @@ fn build_concept_assertions(
 
         if let Some(cardinality) = &attr.cardinality {
             assert_instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_ATTRIBUTE_CARDINALITY)?,
+                the: parse_claim_attribute(ATTR_ATTRIBUTE_CARDINALITY)?,
                 of: meta_entity.clone(),
                 is: Value::String(cardinality.clone()),
                 cause: None,
@@ -884,7 +871,7 @@ fn build_concept_assertions(
 
         if attr.optional {
             assert_instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_ATTRIBUTE_OPTIONAL)?,
+                the: parse_claim_attribute(ATTR_ATTRIBUTE_OPTIONAL)?,
                 of: meta_entity.clone(),
                 is: Value::String("true".to_string()),
                 cause: None,
@@ -981,7 +968,7 @@ fn build_standalone_attr_assertions(
 
     if let Some(desc) = &attr.description {
         assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_ATTRIBUTE_DESCRIPTION)?,
+            the: parse_claim_attribute(ATTR_ATTRIBUTE_DESCRIPTION)?,
             of: meta_entity.clone(),
             is: Value::String(desc.clone()),
             cause: None,
@@ -990,7 +977,7 @@ fn build_standalone_attr_assertions(
 
     if let Some(type_str) = &attr.type_str {
         assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_ATTRIBUTE_TYPE)?,
+            the: parse_claim_attribute(ATTR_ATTRIBUTE_TYPE)?,
             of: meta_entity.clone(),
             is: Value::String(type_str.clone()),
             cause: None,
@@ -999,7 +986,7 @@ fn build_standalone_attr_assertions(
 
     if let Some(cardinality) = &attr.cardinality {
         assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_ATTRIBUTE_CARDINALITY)?,
+            the: parse_claim_attribute(ATTR_ATTRIBUTE_CARDINALITY)?,
             of: meta_entity.clone(),
             is: Value::String(cardinality.clone()),
             cause: None,
@@ -1030,11 +1017,12 @@ async fn retract_standalone_attr_if_exists<
         ATTR_ATTRIBUTE_CARDINALITY,
         ATTR_ATTRIBUTE_OPTIONAL,
     ] {
-        if let Some(val) = fetch_string(branch, &meta_entity, meta_attr).await? {
+        let claim_attr = parse_claim_attribute(meta_attr)?;
+        if let Some(val) = fetch_string(branch, &meta_entity, claim_attr.clone()).await? {
             found_any = true;
             if force {
                 retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(meta_attr)?,
+                    the: claim_attr,
                     of: meta_entity.clone(),
                     is: Value::String(val),
                     cause: None,
@@ -1069,33 +1057,39 @@ async fn retract_rule_if_exists<S: dialog_artifacts::ArtifactStore + ArtifactSto
 
     if let Some(rule_ent) = existing {
         if force {
-            if let Some(name) = fetch_string(branch, &rule_ent, ATTR_RULE_NAME).await? {
+            let rule_name_attr = parse_claim_attribute(ATTR_RULE_NAME)?;
+            if let Some(name) = fetch_string(branch, &rule_ent, rule_name_attr.clone()).await? {
                 retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_RULE_NAME)?,
+                    the: rule_name_attr,
                     of: rule_ent.clone(),
                     is: Value::String(name),
                     cause: None,
                 }));
             }
-            if let Some(conclusion) = fetch_string(branch, &rule_ent, ATTR_RULE_CONCLUSION).await? {
+            let rule_conclusion_attr = parse_claim_attribute(ATTR_RULE_CONCLUSION)?;
+            if let Some(conclusion) =
+                fetch_string(branch, &rule_ent, rule_conclusion_attr.clone()).await?
+            {
                 retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
+                    the: rule_conclusion_attr,
                     of: rule_ent.clone(),
                     is: Value::String(conclusion),
                     cause: None,
                 }));
             }
-            if let Some(def) = fetch_string(branch, &rule_ent, ATTR_RULE_DEFINITION).await? {
+            let rule_def_attr = parse_claim_attribute(ATTR_RULE_DEFINITION)?;
+            if let Some(def) = fetch_string(branch, &rule_ent, rule_def_attr.clone()).await? {
                 retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_RULE_DEFINITION)?,
+                    the: rule_def_attr,
                     of: rule_ent.clone(),
                     is: Value::String(def),
                     cause: None,
                 }));
             }
-            if let Some(desc) = fetch_string(branch, &rule_ent, ATTR_RULE_DESCRIPTION).await? {
+            let rule_desc_attr = parse_claim_attribute(ATTR_RULE_DESCRIPTION)?;
+            if let Some(desc) = fetch_string(branch, &rule_ent, rule_desc_attr.clone()).await? {
                 retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
+                    the: rule_desc_attr,
                     of: rule_ent.clone(),
                     is: Value::String(desc),
                     cause: None,
@@ -1128,14 +1122,14 @@ async fn validate_rule_against_space<S: dialog_artifacts::ArtifactStore + Artifa
             definition.conclusion.concept, parsed.name
         ))?;
     let concept_name = ConceptName::from_stored(
-        fetch_string(branch, &concept_ent, ATTR_CONCEPT_NAME)
+        fetch_string(branch, &concept_ent, concept_name_selector())
             .await?
             .unwrap_or_else(|| conclusion_concept.to_string()),
     );
 
     let concept_attrs =
-        fetch_string_values(branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
-    let concept_ns = fetch_string(branch, &concept_ent, ATTR_CONCEPT_NAMESPACE)
+        fetch_string_values(branch, &concept_ent, concept_attribute_selector()).await?;
+    let concept_ns = fetch_string(branch, &concept_ent, concept_namespace_selector())
         .await?
         .unwrap_or_default();
     let cardinalities = fetch_attribute_cardinalities(branch, &concept_attrs).await?;
@@ -1166,14 +1160,20 @@ fn validate_rule_against_schema(
         .with_context(|| format!("Rule '{}' validation failed", parsed.name))?;
 
     // Trial-compile
-    crate::rule::compile_rule(definition, concept_name, concept_attrs, cardinalities, namespace)
-        .with_context(|| {
-            format!(
-                "Rule '{}' failed to compile. Check variable names match between \
+    crate::rule::compile_rule(
+        definition,
+        concept_name,
+        concept_attrs,
+        cardinalities,
+        namespace,
+    )
+    .with_context(|| {
+        format!(
+            "Rule '{}' failed to compile. Check variable names match between \
                  conclusion bindings and premises.",
-                parsed.name
-            )
-        })?;
+            parsed.name
+        )
+    })?;
 
     Ok(())
 }
@@ -1199,21 +1199,21 @@ fn build_rule_assertions(
     let definition_str = serde_json::to_string(definition)?;
 
     assert_instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_RULE_NAME)?,
+        the: parse_claim_attribute(ATTR_RULE_NAME)?,
         of: rule_ent.clone(),
         is: Value::String(parsed.name.clone()),
         cause: None,
     }));
 
     assert_instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
+        the: parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
         of: rule_ent.clone(),
         is: Value::String(concept_name.clone()),
         cause: None,
     }));
 
     assert_instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_RULE_DEFINITION)?,
+        the: parse_claim_attribute(ATTR_RULE_DEFINITION)?,
         of: rule_ent.clone(),
         is: Value::String(definition_str),
         cause: None,
@@ -1221,7 +1221,7 @@ fn build_rule_assertions(
 
     if let Some(desc) = &parsed.description {
         assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
+            the: parse_claim_attribute(ATTR_RULE_DESCRIPTION)?,
             of: rule_ent.clone(),
             is: Value::String(desc.clone()),
             cause: None,

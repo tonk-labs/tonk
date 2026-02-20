@@ -20,7 +20,7 @@ user.rules:
   infer-safe-event-meal:
     description: A safe meal for an event — combines event context with dietary safety
     deduce:
-      diy.planner/SafeMeal:
+      diy.planner/Meal:
         attendee: ?person
         recipe: ?recipe
         occasion: ?event
@@ -28,7 +28,7 @@ user.rules:
       - diy.planner/Event:
           this: ?event
           title: ?title
-      - diy.planner/SafeMeal:
+      - diy.planner/Meal:
           this: ?safe
           attendee: ?person
           recipe: ?recipe

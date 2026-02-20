@@ -11,12 +11,65 @@ use anyhow::{Context, Result};
 use base64::Engine as _;
 use dialog_artifacts::repository::{BranchId, Credentials, Repository};
 use dialog_artifacts::{ArtifactSelector, ArtifactStore};
-use dialog_query::claim::Attribute;
+pub use dialog_query::claim::Attribute as ClaimAttribute;
+use dialog_query::concept::Concept as _;
 use dialog_query::{Cardinality, Entity, Session, Value};
 use futures_util::TryStreamExt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tonk_space::FsBackend;
+
+// ---------------------------------------------------------------------------
+// Typed meta-schema for registered concepts
+// ---------------------------------------------------------------------------
+
+/// Meta-schema attributes for registered concepts.
+///
+/// These model "the concept of a concept" as a typed schema using
+/// dialog-query's `#[derive(Attribute)]` system. The module name
+/// `concept` becomes the attribute namespace, producing selectors
+/// like `concept/name`, `concept/attribute`, etc.
+pub mod concept {
+    /// The human-readable name of the concept.
+    #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    pub struct Name(pub String);
+
+    /// Description of the concept.
+    #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    pub struct Description(pub String);
+
+    /// A fully-qualified attribute belonging to the concept (multi-valued).
+    #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    #[cardinality(many)]
+    pub struct Attribute(pub String);
+
+    /// The namespace the concept belongs to.
+    #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    pub struct Namespace(pub String);
+
+    /// Entity ID of the prior concept (for schema evolution tracking).
+    #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    pub struct Prior(pub String);
+
+    /// Rationale for updating a concept.
+    #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    pub struct UpdateRationale(pub String);
+}
+
+/// A registered concept in the space, modeled as a typed concept.
+///
+/// Because the `attribute` field has `Cardinality::Many`, querying
+/// `Match::<RegisteredConcept>` returns one row per attribute value
+/// (join semantics). Callers should deduplicate by entity.
+#[derive(dialog_query::Concept, Debug, Clone)]
+#[allow(dead_code)]
+pub struct RegisteredConcept {
+    pub this: Entity,
+    pub name: concept::Name,
+    pub description: concept::Description,
+    pub namespace: concept::Namespace,
+    pub attribute: concept::Attribute,
+}
 
 // ---------------------------------------------------------------------------
 // Name validation
@@ -54,10 +107,14 @@ pub struct ConceptName(String);
 
 impl ConceptName {
     /// Create a new `ConceptName`, validating that it contains only safe characters.
+    ///
+    /// The name is normalized to lowercase for consistent storage and
+    /// exact-match lookups. Use [`ConceptName::from_stored`] to load
+    /// names read back from the database without re-normalizing.
     pub fn new(s: impl Into<String>) -> Result<Self> {
         let s = s.into();
         validate_safe_name(&s, "Concept")?;
-        Ok(Self(s))
+        Ok(Self(s.to_lowercase()))
     }
 
     /// Create from a name already stored in the database (skips validation).
@@ -99,17 +156,43 @@ impl AsRef<str> for ConceptName {
 }
 
 // ---------------------------------------------------------------------------
-// Well-known attribute constants
+// Well-known attribute selectors
 // ---------------------------------------------------------------------------
 
-/// Concept attribute: the human-readable name of the concept.
-pub const ATTR_CONCEPT_NAME: &str = "concept/name";
+// Concept meta-schema attributes are defined as typed newtypes in the
+// `concept` module above. These selector functions and string constants
+// provide access for low-level Instruction building and fetch_string
+// queries respectively.
 
-/// Concept attribute: optional description.
-pub const ATTR_CONCEPT_DESCRIPTION: &str = "concept/description";
+/// Get the artifact-level selector for `concept/name`.
+pub fn concept_name_selector() -> ClaimAttribute {
+    <concept::Name as dialog_query::Attribute>::selector()
+}
 
-/// Concept attribute: one per attribute the concept has (multi-valued).
-pub const ATTR_CONCEPT_ATTRIBUTE: &str = "concept/attribute";
+/// Get the artifact-level selector for `concept/description`.
+pub fn concept_description_selector() -> ClaimAttribute {
+    <concept::Description as dialog_query::Attribute>::selector()
+}
+
+/// Get the artifact-level selector for `concept/attribute`.
+pub fn concept_attribute_selector() -> ClaimAttribute {
+    <concept::Attribute as dialog_query::Attribute>::selector()
+}
+
+/// Get the artifact-level selector for `concept/namespace`.
+pub fn concept_namespace_selector() -> ClaimAttribute {
+    <concept::Namespace as dialog_query::Attribute>::selector()
+}
+
+/// Get the artifact-level selector for `concept/prior`.
+pub fn concept_prior_selector() -> ClaimAttribute {
+    <concept::Prior as dialog_query::Attribute>::selector()
+}
+
+/// Get the artifact-level selector for `concept/update-rationale`.
+pub fn concept_update_rationale_selector() -> ClaimAttribute {
+    <concept::UpdateRationale as dialog_query::Attribute>::selector()
+}
 
 /// Attribute metadata: human-readable description of the attribute.
 pub const ATTR_ATTRIBUTE_DESCRIPTION: &str = "attribute/description";
@@ -123,9 +206,6 @@ pub const ATTR_ATTRIBUTE_CARDINALITY: &str = "attribute/cardinality";
 /// Attribute metadata: whether the attribute is optional.
 pub const ATTR_ATTRIBUTE_OPTIONAL: &str = "attribute/optional";
 
-/// Concept attribute: the namespace the concept was imported from (e.g. "diy.cook").
-pub const ATTR_CONCEPT_NAMESPACE: &str = "concept/namespace";
-
 /// Rule attribute: the human-readable name of the rule.
 pub const ATTR_RULE_NAME: &str = "rule/name";
 
@@ -137,15 +217,6 @@ pub const ATTR_RULE_CONCLUSION: &str = "rule/conclusion";
 
 /// Rule attribute: JSON-serialized rule definition.
 pub const ATTR_RULE_DEFINITION: &str = "rule/definition";
-
-/// Concept attribute: entity ID of the prior concept this one evolved from.
-/// Asserted when `extend()` changes the concept's structural identity.
-pub const ATTR_CONCEPT_PRIOR: &str = "concept/prior";
-
-/// Concept attribute: rationale for updating (replacing) a prior concept.
-/// Stored on the new concept entity when a `define` converges with a name
-/// collision and the user chooses to update.
-pub const ATTR_CONCEPT_UPDATE_RATIONALE: &str = "concept/update-rationale";
 
 // ---------------------------------------------------------------------------
 // Deterministic entity derivation
@@ -171,17 +242,17 @@ pub fn concept_entity_from_attrs(
 
 /// Look up a concept entity by name.
 ///
-/// Discovers concepts structurally by querying the AEV index for all
-/// entities with a `concept/name` attribute, then matches by name
-/// (case-insensitive).
+/// Queries the AEV index using the typed `concept::Name` selector,
+/// with case-insensitive matching (for backward compatibility with
+/// legacy mixed-case names).
 pub async fn lookup_concept_by_name<S: ArtifactStore>(
     store: &S,
     name: &ConceptName,
 ) -> Result<Option<Entity>> {
-    let concept_entities = find_entities_by_attribute(store, ATTR_CONCEPT_NAME).await?;
+    let concept_entities = find_entities_by_attribute(store, concept_name_selector()).await?;
 
     for entity in concept_entities {
-        if let Some(stored_name) = fetch_string(store, &entity, ATTR_CONCEPT_NAME).await?
+        if let Some(stored_name) = fetch_string(store, &entity, concept_name_selector()).await?
             && stored_name.to_lowercase() == name.to_lowercase()
         {
             return Ok(Some(entity));
@@ -192,13 +263,13 @@ pub async fn lookup_concept_by_name<S: ArtifactStore>(
 
 /// Find all named concept entities in the store.
 ///
-/// Discovers concepts structurally by querying the AEV index for all
-/// entities with a `concept/name` attribute. Returns `(entity, name)` pairs.
+/// Discovers concepts by querying the AEV index for entities with the
+/// typed `concept::Name` attribute. Returns `(entity, name)` pairs.
 pub async fn find_all_concepts<S: ArtifactStore>(store: &S) -> Result<Vec<(Entity, String)>> {
-    let entities = find_entities_by_attribute(store, ATTR_CONCEPT_NAME).await?;
+    let entities = find_entities_by_attribute(store, concept_name_selector()).await?;
     let mut result = Vec::new();
     for entity in entities {
-        if let Some(name) = fetch_string(store, &entity, ATTR_CONCEPT_NAME).await? {
+        if let Some(name) = fetch_string(store, &entity, concept_name_selector()).await? {
             result.push((entity, name));
         }
     }
@@ -210,10 +281,11 @@ pub async fn find_all_concepts<S: ArtifactStore>(store: &S) -> Result<Vec<(Entit
 /// Discovers rules structurally by querying the AEV index for all
 /// entities with a `rule/name` attribute. Returns `(entity, name)` pairs.
 pub async fn find_all_rules<S: ArtifactStore>(store: &S) -> Result<Vec<(Entity, String)>> {
-    let entities = find_entities_by_attribute(store, ATTR_RULE_NAME).await?;
+    let rule_name_attr = parse_claim_attribute(ATTR_RULE_NAME)?;
+    let entities = find_entities_by_attribute(store, rule_name_attr.clone()).await?;
     let mut result = Vec::new();
     for entity in entities {
-        if let Some(name) = fetch_string(store, &entity, ATTR_RULE_NAME).await? {
+        if let Some(name) = fetch_string(store, &entity, rule_name_attr.clone()).await? {
             result.push((entity, name));
         }
     }
@@ -229,9 +301,10 @@ pub async fn lookup_rule_by_name<S: ArtifactStore>(
     store: &S,
     name: &str,
 ) -> Result<Option<Entity>> {
-    let rule_entities = find_entities_by_attribute(store, ATTR_RULE_NAME).await?;
+    let rule_name_attr = parse_claim_attribute(ATTR_RULE_NAME)?;
+    let rule_entities = find_entities_by_attribute(store, rule_name_attr.clone()).await?;
     for entity in rule_entities {
-        if let Some(stored_name) = fetch_string(store, &entity, ATTR_RULE_NAME).await?
+        if let Some(stored_name) = fetch_string(store, &entity, rule_name_attr.clone()).await?
             && stored_name.to_lowercase() == name.to_lowercase()
         {
             return Ok(Some(entity));
@@ -457,9 +530,8 @@ pub async fn open_branch(
 pub async fn fetch_string_values<S: ArtifactStore>(
     store: &S,
     entity: &Entity,
-    attr_name: &str,
+    attr: ClaimAttribute,
 ) -> Result<Vec<String>> {
-    let attr = Attribute::from_str(attr_name).context("Invalid attribute")?;
     let results: Vec<_> = store
         .select(ArtifactSelector::new().of(entity.clone()).the(attr))
         .try_collect()
@@ -478,9 +550,9 @@ pub async fn fetch_string_values<S: ArtifactStore>(
 pub async fn fetch_string<S: ArtifactStore>(
     store: &S,
     entity: &Entity,
-    attr_name: &str,
+    attr: ClaimAttribute,
 ) -> Result<Option<String>> {
-    let values = fetch_string_values(store, entity, attr_name).await?;
+    let values = fetch_string_values(store, entity, attr).await?;
     Ok(values.into_iter().next())
 }
 
@@ -488,9 +560,8 @@ pub async fn fetch_string<S: ArtifactStore>(
 pub async fn fetch_entity_values<S: ArtifactStore>(
     store: &S,
     entity: &Entity,
-    attr_name: &str,
+    attr: ClaimAttribute,
 ) -> Result<Vec<Entity>> {
-    let attr = Attribute::from_str(attr_name).context("Invalid attribute")?;
     let results: Vec<_> = store
         .select(ArtifactSelector::new().of(entity.clone()).the(attr))
         .try_collect()
@@ -509,9 +580,8 @@ pub async fn fetch_entity_values<S: ArtifactStore>(
 pub async fn fetch_value<S: ArtifactStore>(
     store: &S,
     entity: &Entity,
-    attr_name: &str,
+    attr: ClaimAttribute,
 ) -> Result<Option<Value>> {
-    let attr = Attribute::from_str(attr_name).context("Invalid attribute")?;
     let results: Vec<_> = store
         .select(ArtifactSelector::new().of(entity.clone()).the(attr))
         .try_collect()
@@ -524,9 +594,8 @@ pub async fn fetch_value<S: ArtifactStore>(
 pub async fn fetch_values<S: ArtifactStore>(
     store: &S,
     entity: &Entity,
-    attr_name: &str,
+    attr: ClaimAttribute,
 ) -> Result<Vec<Value>> {
-    let attr = Attribute::from_str(attr_name).context("Invalid attribute")?;
     let results: Vec<_> = store
         .select(ArtifactSelector::new().of(entity.clone()).the(attr))
         .try_collect()
@@ -546,9 +615,8 @@ pub async fn fetch_values<S: ArtifactStore>(
 /// to a concept if it has facts for that concept's attributes.
 pub async fn find_entities_by_attribute<S: ArtifactStore>(
     store: &S,
-    attr_name: &str,
+    attr: ClaimAttribute,
 ) -> Result<Vec<Entity>> {
-    let attr = Attribute::from_str(attr_name).context("Invalid attribute")?;
     let results: Vec<_> = store
         .select(ArtifactSelector::new().the(attr))
         .try_collect()
@@ -580,8 +648,9 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
     }
 
     // Start with entities from the first attribute
+    let first_attr = parse_claim_attribute(&schema_attrs[0])?;
     let mut result_set: std::collections::HashSet<String> =
-        find_entities_by_attribute(store, &schema_attrs[0])
+        find_entities_by_attribute(store, first_attr)
             .await?
             .iter()
             .map(|e| e.to_string())
@@ -589,8 +658,9 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
 
     // Intersect with entities from each subsequent attribute
     for attr in &schema_attrs[1..] {
+        let claim_attr = parse_claim_attribute(attr)?;
         let attr_entities: std::collections::HashSet<String> =
-            find_entities_by_attribute(store, attr)
+            find_entities_by_attribute(store, claim_attr)
                 .await?
                 .iter()
                 .map(|e| e.to_string())
@@ -602,11 +672,17 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
     }
 
     // Convert back to Entity values (preserving original Entity objects)
-    let all_entities = find_entities_by_attribute(store, &schema_attrs[0]).await?;
+    let first_attr = parse_claim_attribute(&schema_attrs[0])?;
+    let all_entities = find_entities_by_attribute(store, first_attr).await?;
     Ok(all_entities
         .into_iter()
         .filter(|e| result_set.contains(&e.to_string()))
         .collect())
+}
+
+/// Parse a string attribute name into a `ClaimAttribute`.
+pub fn parse_claim_attribute(attr_name: &str) -> Result<ClaimAttribute> {
+    ClaimAttribute::from_str(attr_name).context(format!("Invalid attribute: {}", attr_name))
 }
 
 /// Infer the concept that an entity belongs to by examining its attributes.
@@ -636,16 +712,17 @@ pub async fn infer_concept_from_entity<S: ArtifactStore>(
         results.iter().map(|a| a.the.to_string()).collect();
 
     // Find all named concepts via structural discovery (AEV index)
-    let concept_entities = find_entities_by_attribute(store, ATTR_CONCEPT_NAME).await?;
+    let concept_entities = find_entities_by_attribute(store, concept_name_selector()).await?;
 
     let mut best_match: Option<(ConceptName, Entity, Vec<String>, usize)> = None;
 
     for concept_ent in &concept_entities {
-        let name = match fetch_string(store, concept_ent, ATTR_CONCEPT_NAME).await? {
+        let name = match fetch_string(store, concept_ent, concept_name_selector()).await? {
             Some(n) => ConceptName::from_stored(n),
             None => continue,
         };
-        let schema_attrs = fetch_string_values(store, concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
+        let schema_attrs =
+            fetch_string_values(store, concept_ent, concept_attribute_selector()).await?;
 
         if schema_attrs.is_empty() {
             continue;
@@ -697,10 +774,11 @@ pub async fn fetch_attribute_cardinalities<S: ArtifactStore>(
     store: &S,
     schema_attrs: &[String],
 ) -> Result<std::collections::HashMap<String, Cardinality>> {
+    let cardinality_attr = parse_claim_attribute(ATTR_ATTRIBUTE_CARDINALITY)?;
     let mut cardinalities = std::collections::HashMap::new();
     for attr_name in schema_attrs {
         let meta_entity = attribute_meta_entity(attr_name)?;
-        if let Some(val) = fetch_string(store, &meta_entity, ATTR_ATTRIBUTE_CARDINALITY).await?
+        if let Some(val) = fetch_string(store, &meta_entity, cardinality_attr.clone()).await?
             && val.to_lowercase() == "many"
         {
             cardinalities.insert(attr_name.clone(), Cardinality::Many);

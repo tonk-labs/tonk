@@ -620,11 +620,15 @@ async fn test_concept_duplicate_rejected() {
     let attrs = tonk_cli::schema::fetch_string_values(
         &session,
         &entity.unwrap(),
-        tonk_cli::schema::ATTR_CONCEPT_ATTRIBUTE,
+        tonk_cli::schema::concept_attribute_selector(),
     )
     .await
     .expect("Failed to fetch attributes");
-    assert_eq!(attrs.len(), 1, "original concept should still have 1 attribute");
+    assert_eq!(
+        attrs.len(),
+        1,
+        "original concept should still have 1 attribute"
+    );
     assert!(
         attrs[0].ends_with("/a"),
         "original attribute should be unchanged"
@@ -674,12 +678,15 @@ async fn test_concept_define_converges() {
     )
     .await
     .expect("Failed to lookup concept");
-    assert!(entity.is_some(), "concept should still exist after convergent define");
+    assert!(
+        entity.is_some(),
+        "concept should still exist after convergent define"
+    );
 
     let attrs = tonk_cli::schema::fetch_string_values(
         &session,
         &entity.unwrap(),
-        tonk_cli::schema::ATTR_CONCEPT_ATTRIBUTE,
+        tonk_cli::schema::concept_attribute_selector(),
     )
     .await
     .expect("Failed to fetch attributes");
@@ -1029,10 +1036,13 @@ async fn test_update_entity() {
         .await
         .expect("Failed to lookup concept")
         .expect("Concept 'Task' not found");
-    let attrs =
-        tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
-            .await
-            .expect("Failed to fetch concept attributes");
+    let attrs = tonk_cli::schema::fetch_string_values(
+        &branch,
+        &concept_entity,
+        tonk_cli::schema::concept_attribute_selector(),
+    )
+    .await
+    .expect("Failed to fetch concept attributes");
     let entities = tonk_cli::schema::find_entities_by_concept(&branch, &attrs)
         .await
         .expect("Failed to find entities");
@@ -1096,10 +1106,13 @@ async fn test_delete_entity() {
         .await
         .expect("Failed to lookup concept")
         .expect("Concept 'Task' not found");
-    let attrs =
-        tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
-            .await
-            .expect("Failed to fetch concept attributes");
+    let attrs = tonk_cli::schema::fetch_string_values(
+        &branch,
+        &concept_entity,
+        tonk_cli::schema::concept_attribute_selector(),
+    )
+    .await
+    .expect("Failed to fetch concept attributes");
     let entities = tonk_cli::schema::find_entities_by_concept(&branch, &attrs)
         .await
         .expect("Failed to find entities");
@@ -1260,10 +1273,13 @@ async fn test_batch_delete() {
         .await
         .expect("Failed to lookup concept")
         .expect("Concept 'Task' not found");
-    let attrs =
-        tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
-            .await
-            .expect("Failed to fetch concept attributes");
+    let attrs = tonk_cli::schema::fetch_string_values(
+        &branch,
+        &concept_entity,
+        tonk_cli::schema::concept_attribute_selector(),
+    )
+    .await
+    .expect("Failed to fetch concept attributes");
     let entities = tonk_cli::schema::find_entities_by_concept(&branch, &attrs)
         .await
         .expect("Failed to find entities");
@@ -1677,7 +1693,8 @@ async fn test_fact_batch_from_yaml_file() {
     // Use the example YAML file (user-profile-data.yaml)
     let yaml_path = TestEnv::example_file("user-profile-data.yaml");
 
-    let result = tonk_cli::fact::batch(Some(yaml_path), true).await;
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    let result = tonk_cli::fact::batch(&ctx, Some(yaml_path), true).await;
     assert!(
         result.is_ok(),
         "fact batch from YAML file should succeed: {:?}",
@@ -1686,6 +1703,7 @@ async fn test_fact_batch_from_yaml_file() {
 
     // Verify a fact was asserted by querying for it
     let find_result = tonk_cli::fact::find(
+        &ctx,
         Some("carry.profile/name".to_string()),
         Some("keri-vasquez".to_string()),
         None,
@@ -1724,7 +1742,9 @@ async fn test_fact_batch_yaml_with_explicit_op() {
     )
     .expect("Failed to write test YAML");
 
-    let result = tonk_cli::fact::batch(Some(yaml_path.to_string_lossy().into_owned()), true).await;
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    let result =
+        tonk_cli::fact::batch(&ctx, Some(yaml_path.to_string_lossy().into_owned()), true).await;
     assert!(
         result.is_ok(),
         "fact batch with explicit ops should succeed: {:?}",
@@ -1733,7 +1753,7 @@ async fn test_fact_batch_yaml_with_explicit_op() {
 
     // Verify both facts were asserted
     let find_result =
-        tonk_cli::fact::find(Some("test/color".to_string()), None, None, None, true).await;
+        tonk_cli::fact::find(&ctx, Some("test/color".to_string()), None, None, None, true).await;
     assert!(
         find_result.is_ok(),
         "should find color fact: {:?}",
@@ -1741,7 +1761,7 @@ async fn test_fact_batch_yaml_with_explicit_op() {
     );
 
     let find_result =
-        tonk_cli::fact::find(Some("test/size".to_string()), None, None, None, true).await;
+        tonk_cli::fact::find(&ctx, Some("test/size".to_string()), None, None, None, true).await;
     assert!(
         find_result.is_ok(),
         "should find size fact (op defaulted to assert): {:?}",
@@ -1758,7 +1778,9 @@ async fn test_fact_batch_yaml_file_not_found() {
         .await
         .expect("Failed to create space");
 
-    let result = tonk_cli::fact::batch(Some("/nonexistent/path.yaml".to_string()), true).await;
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    let result =
+        tonk_cli::fact::batch(&ctx, Some("/nonexistent/path.yaml".to_string()), true).await;
     assert!(
         result.is_err(),
         "fact batch with nonexistent file should fail"
@@ -1779,7 +1801,9 @@ async fn test_fact_batch_yaml_invalid_content() {
     std::fs::write(&yaml_path, "this is not valid yaml: [[[")
         .expect("Failed to write invalid YAML");
 
-    let result = tonk_cli::fact::batch(Some(yaml_path.to_string_lossy().into_owned()), true).await;
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    let result =
+        tonk_cli::fact::batch(&ctx, Some(yaml_path.to_string_lossy().into_owned()), true).await;
     assert!(result.is_err(), "fact batch with invalid YAML should fail");
 }
 
@@ -1788,15 +1812,17 @@ async fn test_fact_batch_yaml_invalid_content() {
 #[allow(clippy::type_complexity)]
 async fn test_fact_batch_function_signature() {
     // Compile-time check that `fact::batch` has the expected signature:
-    //   (Option<String>, bool) -> impl Future<Output = Result<()>>
+    //   (&SpaceContext, Option<String>, bool) -> impl Future<Output = Result<()>>
     //
     // This does not exercise runtime behavior. The actual stdin path
     // is verified by manual testing documented in the requirements.
     let _: fn(
+        &tonk_cli::schema::SpaceContext,
         Option<String>,
         bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>>>> =
-        |file, json| Box::pin(tonk_cli::fact::batch(file, json));
+    )
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + '_>> =
+        |ctx, file, json| Box::pin(tonk_cli::fact::batch(ctx, file, json));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1957,10 +1983,13 @@ async fn test_full_crud_workflow() {
         .await
         .expect("Failed to lookup concept")
         .expect("Concept 'Task' not found");
-    let attrs =
-        tonk_cli::schema::fetch_string_values(&branch, &concept_entity, "concept/attribute")
-            .await
-            .expect("Failed to fetch concept attributes");
+    let attrs = tonk_cli::schema::fetch_string_values(
+        &branch,
+        &concept_entity,
+        tonk_cli::schema::concept_attribute_selector(),
+    )
+    .await
+    .expect("Failed to fetch concept attributes");
     let entities = tonk_cli::schema::find_entities_by_concept(&branch, &attrs)
         .await
         .expect("Failed to find entities");
@@ -2233,10 +2262,12 @@ async fn test_attribute_list_after_concept_define() {
         .expect("Failed to create space");
 
     // Define a concept (no metadata — just attribute names)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
     tonk_cli::concept::define(
+        &ctx,
         "Task".to_string(),
         vec!["title".to_string(), "status".to_string()],
-        None,
+        String::new(),
         true,
     )
     .await
@@ -2270,7 +2301,8 @@ async fn test_attribute_list_after_import_with_metadata() {
 
     // Import cook.yaml which has full attribute metadata
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2301,7 +2333,8 @@ async fn test_attribute_show_qualified_name() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2332,7 +2365,8 @@ async fn test_attribute_show_short_name_with_concept() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2365,7 +2399,8 @@ async fn test_attribute_show_unambiguous_short_name() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2388,7 +2423,8 @@ async fn test_attribute_show_ambiguous_short_name_errors() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2397,9 +2433,10 @@ async fn test_attribute_show_ambiguous_short_name_errors() {
     // Let's use a concept where we know there's overlap. Define a second concept
     // with a "name" attribute to create ambiguity.
     tonk_cli::concept::define(
+        &ctx,
         "Person".to_string(),
         vec!["name".to_string(), "age".to_string()],
-        None,
+        String::new(),
         true,
     )
     .await
@@ -2423,7 +2460,8 @@ async fn test_attribute_show_nonexistent_qualified() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2445,7 +2483,8 @@ async fn test_attribute_show_nonexistent_short() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2467,7 +2506,8 @@ async fn test_attribute_show_wrong_concept() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2490,7 +2530,8 @@ async fn test_attribute_show_nonexistent_concept() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2514,7 +2555,8 @@ async fn test_attribute_show_enum_type() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2547,7 +2589,8 @@ async fn test_attribute_show_many_cardinality() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2572,7 +2615,8 @@ async fn test_attribute_show_optional_attribute() {
         .expect("Failed to create space");
 
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
@@ -2623,15 +2667,17 @@ async fn test_attribute_list_after_import_and_define_mixed() {
 
     // Import cook.yaml (has metadata)
     let file = TestEnv::example_file("cook.yaml");
-    tonk_cli::import::import(file, false, true)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
+    tonk_cli::import::import(&ctx, file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
     // Also define a concept manually (no metadata)
     tonk_cli::concept::define(
+        &ctx,
         "Task".to_string(),
         vec!["title".to_string(), "status".to_string()],
-        Some("A task".to_string()),
+        "A task".to_string(),
         true,
     )
     .await
@@ -2664,10 +2710,12 @@ async fn test_attribute_show_defined_concept_no_metadata() {
         .expect("Failed to create space");
 
     // Define a concept without importing (no metadata)
+    let ctx = tonk_cli::schema::get_space_context().unwrap();
     tonk_cli::concept::define(
+        &ctx,
         "Note".to_string(),
         vec!["body".to_string(), "tags".to_string()],
-        None,
+        String::new(),
         true,
     )
     .await
