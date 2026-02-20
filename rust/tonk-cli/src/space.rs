@@ -47,7 +47,7 @@ fn format_time_remaining(exp: i64) -> String {
 }
 
 /// List all spaces accessible by the active authority
-pub async fn list() -> Result<()> {
+pub async fn list(json: bool) -> Result<()> {
     // Get operator DID
     let keystore = Keystore::new().context("Failed to initialize keystore")?;
     let operator = keystore
@@ -58,8 +58,12 @@ pub async fn list() -> Result<()> {
     // Get active authority
     let authorities = authority::get_authorities()?;
     if authorities.is_empty() {
-        println!("⚠  No active session");
-        println!("   Run 'tonk login' to authenticate\n");
+        if json {
+            println!("[]");
+        } else {
+            println!("⚠  No active session");
+            println!("   Run 'tonk login' to authenticate\n");
+        }
         return Ok(());
     }
 
@@ -73,7 +77,32 @@ pub async fn list() -> Result<()> {
         crate::session::collect_spaces_for_authority(&operator_did, &active_authority.did)?;
 
     if spaces.is_empty() {
-        println!("⚠  No accessible spaces\n");
+        if json {
+            println!("[]");
+        } else {
+            println!("⚠  No accessible spaces\n");
+        }
+        return Ok(());
+    }
+
+    if json {
+        let json_spaces: Vec<serde_json::Value> = spaces
+            .values()
+            .map(|space| {
+                let name = crate::metadata::SpaceMetadata::load(&space.space_did)
+                    .ok()
+                    .flatten()
+                    .map(|m| m.name);
+                let is_active = active_space_did.as_ref() == Some(&space.space_did);
+                serde_json::json!({
+                    "did": space.space_did,
+                    "name": name,
+                    "active": is_active,
+                    "is_auth_space": space.is_auth_space,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&json_spaces)?);
         return Ok(());
     }
 
@@ -183,7 +212,7 @@ pub async fn list() -> Result<()> {
 }
 
 /// Show the current space DID
-pub async fn show_current() -> Result<()> {
+pub async fn show_current(json: bool) -> Result<()> {
     // Get active authority
     let authority = crate::authority::get_active_authority()?
         .context("No active session. Please run `tonk login` first.")?;
@@ -193,16 +222,30 @@ pub async fn show_current() -> Result<()> {
 
     match active_space {
         Some(space_did) => {
-            // Try to load space metadata to show name
-            if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(&space_did) {
-                println!("🏠 {} ({})", metadata.name, space_did);
+            let metadata = crate::metadata::SpaceMetadata::load(&space_did)
+                .ok()
+                .flatten();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "did": space_did,
+                        "name": metadata.as_ref().map(|m| &m.name),
+                    })
+                );
+            } else if let Some(meta) = metadata {
+                println!("🏠 {} ({})", meta.name, space_did);
             } else {
                 println!("🏠 {}", space_did);
             }
         }
         None => {
-            println!("No active space set for current session.");
-            println!("Use `tonk space set <name-or-did>` to select a space.");
+            if json {
+                println!("{}", serde_json::json!({"did": null, "name": null}));
+            } else {
+                println!("No active space set for current session.");
+                println!("Use `tonk space set <name-or-did>` to select a space.");
+            }
         }
     }
 
@@ -276,8 +319,11 @@ pub async fn create(
     name: String,
     owners: Option<Vec<String>>,
     _description: Option<String>,
+    json: bool,
 ) -> Result<()> {
-    println!("🚀 Creating space: {}\n", name);
+    if !json {
+        println!("🚀 Creating space: {}\n", name);
+    }
 
     // Get operator
     let keystore = Keystore::new().context("Failed to initialize keystore")?;
@@ -290,10 +336,12 @@ pub async fn create(
     let authority = authority::get_active_authority()?
         .context("No active authority. Please run 'tonk login' first")?;
 
-    println!(
-        "👤 Authority: {}\n",
-        authority::format_authority_did(&authority.did)
-    );
+    if !json {
+        println!(
+            "👤 Authority: {}\n",
+            authority::format_authority_did(&authority.did)
+        );
+    }
 
     // Collect owner DIDs
     let mut owner_dids = Vec::new();
@@ -312,8 +360,8 @@ pub async fn create(
                 owner_dids.push(owner.clone());
             }
         }
-    } else {
-        // Interactive mode: ask for additional owners
+    } else if !json {
+        // Interactive mode: ask for additional owners (only in non-JSON mode)
         println!("Additional owners (did:key identifiers, one per line, empty line to finish):");
         loop {
             print!("> ");
@@ -348,20 +396,26 @@ pub async fn create(
         println!();
     }
 
-    println!("👥 Owners ({}):", owner_dids.len());
-    for owner in &owner_dids {
-        println!("   • {}", authority::format_authority_did(owner));
+    if !json {
+        println!("👥 Owners ({}):", owner_dids.len());
+        for owner in &owner_dids {
+            println!("   • {}", authority::format_authority_did(owner));
+        }
+        println!();
     }
-    println!();
 
     // Generate space operator (temporary - used only for signing owner delegations)
     let space_operator = Operator::generate();
     let space_did = space_operator.did().to_string();
 
-    println!("🏠 Space DID: {}\n", space_did);
+    if !json {
+        println!("🏠 Space DID: {}\n", space_did);
+    }
 
     // Create delegations from space to each owner and collect for storage
-    println!("📜 Creating owner delegations...");
+    if !json {
+        println!("📜 Creating owner delegations...");
+    }
     let mut delegations: Vec<SpaceDelegation> = Vec::new();
     for owner_did in &owner_dids {
         let delegation = create_owner_delegation(&space_operator, &space_did, owner_did).await?;
@@ -372,7 +426,9 @@ pub async fn create(
 
         // Also save to filesystem (existing behavior)
         delegation.save()?;
-        println!("   ✓ {}", authority::format_authority_did(owner_did));
+        if !json {
+            println!("   ✓ {}", authority::format_authority_did(owner_did));
+        }
     }
 
     // Save space metadata
@@ -383,20 +439,34 @@ pub async fn create(
     crate::state::add_space_to_session(&authority.did, &space_did)?;
 
     // Create Space with dialog-db storage
-    println!("📦 Storing delegations in space database...");
+    if !json {
+        println!("📦 Storing delegations in space database...");
+    }
     let storage_path = get_space_storage_path(&operator_did, &authority.did, &space_did)?;
     let backend = FsBackend::new(&storage_path).await?;
 
     Space::create(space_did.clone(), &operator, backend, delegations)
         .await
         .context("Failed to create space database")?;
-    println!("   ✓ Delegations stored in main branch");
 
     // Set this as the active space for the current session
     crate::state::set_active_space(&authority.did, &space_did)?;
 
-    println!("✅ Space created and set as active!");
-    println!("   Operators under these authorities now have access to the space.\n");
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "name": name,
+                "did": space_did,
+                "owners": owner_dids,
+            })
+        );
+    } else {
+        println!("   ✓ Delegations stored in main branch");
+        println!("✅ Space created and set as active!");
+        println!("   Operators under these authorities now have access to the space.\n");
+    }
 
     Ok(())
 }
@@ -915,6 +985,104 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
         println!("   Membership: {}", reconstructed_membership_did);
         println!("   Authority: {}\n", authority.did);
     }
+
+    Ok(())
+}
+
+/// Delegate access to a space for another operator.
+/// Creates a delegation CBOR file or outputs base64 to stdout.
+pub async fn delegate(
+    to: String,
+    space_name: Option<String>,
+    read_only: bool,
+    output: Option<String>,
+) -> Result<()> {
+    // Validate target DID
+    if !to.starts_with("did:key:") {
+        anyhow::bail!("Target DID must be a did:key identifier, got: {}", to);
+    }
+
+    // Get operator
+    let keystore = Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore
+        .get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+    let operator_did = operator.did().to_string();
+
+    // Get active authority
+    let auth = authority::get_active_authority()?
+        .context("No active authority. Please run 'tonk login' first")?;
+
+    // Resolve space
+    let space_did = if let Some(name) = &space_name {
+        let spaces = crate::state::list_spaces_for_session(&auth.did)?;
+        let mut found_did = None;
+        for sid in &spaces {
+            if let Ok(Some(meta)) = crate::metadata::SpaceMetadata::load(sid)
+                && &meta.name == name
+            {
+                found_did = Some(sid.clone());
+                break;
+            }
+        }
+        found_did.context(format!("Space '{}' not found", name))?
+    } else if let Some(active_id) = crate::state::get_active_space(&auth.did)? {
+        active_id
+    } else {
+        anyhow::bail!("No active space. Create one with 'tonk space create' or specify --space");
+    };
+
+    // Parse target DID
+    let target_did: Did = to
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse target DID: {:?}", e))?;
+
+    // Parse space DID for subject
+    let space_did_parsed: Did = space_did
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
+
+    // Build the delegation
+    let signer = Ed25519Signer::from(&operator);
+    let capabilities: Vec<String> = if read_only {
+        vec!["read".to_string()]
+    } else {
+        vec!["read".to_string(), "write".to_string()]
+    };
+
+    let ucan_delegation: UcanDelegation<Ed25519Signature> = UcanDelegation::builder()
+        .issuer(signer)
+        .audience(&target_did)
+        .subject(Subject::Specific(space_did_parsed))
+        .command(capabilities)
+        .try_build()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to build delegation: {}", e))?;
+
+    let delegation = Delegation::from_ucan(ucan_delegation);
+    let cbor_bytes = delegation
+        .to_cbor_bytes()
+        .context("Failed to serialize delegation")?;
+
+    // Output
+    if let Some(path) = &output {
+        fs::write(path, &cbor_bytes).context("Failed to write delegation file")?;
+        eprintln!("📜 Delegation written to: {}", path);
+    } else {
+        // Output base64 to stdout for piping
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&cbor_bytes);
+        println!("{}", b64);
+    }
+
+    let access_type = if read_only { "read-only" } else { "read-write" };
+    eprintln!("✅ Delegated {} access to space {}", access_type, space_did);
+    eprintln!("   From: {} (operator)", operator_did);
+    eprintln!("   To:   {}", to);
+    eprintln!(
+        "\n   Recipient can import with: tonk login --delegation {}",
+        output.as_deref().unwrap_or("<base64>")
+    );
 
     Ok(())
 }

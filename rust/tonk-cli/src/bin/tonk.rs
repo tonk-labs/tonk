@@ -11,6 +11,10 @@ mod inner {
     pub struct Cli {
         #[command(subcommand)]
         pub command: Commands,
+
+        /// Output results as JSON (for machine/agent consumption)
+        #[arg(long, global = true)]
+        pub json: bool,
     }
 
     #[derive(Subcommand)]
@@ -39,22 +43,60 @@ mod inner {
             command: Option<SpaceCommands>,
         },
 
-        /// Operator commands
-        Operator {
+        /// Manage concept definitions (schemas for structured data)
+        Concept {
             #[command(subcommand)]
-            command: OperatorCommands,
+            command: Option<ConceptCommands>,
         },
 
-        /// Inspect delegations and invites
-        Inspect {
-            #[command(subcommand)]
-            command: InspectCommands,
+        /// Create a new instance of a concept
+        Create {
+            /// Concept name (e.g., "Task")
+            concept: String,
+
+            /// Field values as key=value pairs (e.g., title="Fix bug" status=todo)
+            #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+            fields: Vec<String>,
+
+            /// Read field values from a JSON file
+            #[arg(long, short)]
+            file: Option<String>,
+
+            /// Read field values from stdin as JSON
+            #[arg(long)]
+            stdin: bool,
         },
 
-        /// Manage facts in the active space
-        Fact {
-            #[command(subcommand)]
-            command: FactCommands,
+        /// Query instances of a concept with optional filters
+        Query {
+            /// Concept name (e.g., "Task")
+            concept: String,
+
+            /// Filters as key=value pairs (e.g., status=todo priority=high)
+            #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+            filters: Vec<String>,
+        },
+
+        /// Show details of an instance by ID
+        Show {
+            /// Instance ID (did:key:...)
+            id: String,
+        },
+
+        /// Update an existing instance
+        Update {
+            /// Instance ID (did:key:...)
+            id: String,
+
+            /// Field values to update as key=value pairs
+            #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+            fields: Vec<String>,
+        },
+
+        /// Delete an instance by ID
+        Delete {
+            /// Instance ID (did:key:...)
+            id: String,
         },
 
         /// Manage remotes for syncing spaces
@@ -71,6 +113,15 @@ mod inner {
 
         /// Sync with upstream (pull then push)
         Sync,
+
+        /// Show current context (operator, session, space, remote)
+        Status,
+
+        /// Developer tools (raw fact operations, inspection, operator keys)
+        Dev {
+            #[command(subcommand)]
+            command: DevCommands,
+        },
     }
 
     #[derive(Subcommand)]
@@ -141,6 +192,89 @@ mod inner {
             #[arg(short, long)]
             force: bool,
         },
+
+        /// Delegate access to a space for another operator
+        Delegate {
+            /// DID of the operator to delegate to (did:key:...)
+            #[arg(long)]
+            to: String,
+
+            /// Space name or DID (defaults to active space)
+            #[arg(long)]
+            space: Option<String>,
+
+            /// Grant read-only access (default is read-write)
+            #[arg(long)]
+            read_only: bool,
+
+            /// Output file path (defaults to stdout as base64)
+            #[arg(short, long)]
+            output: Option<String>,
+        },
+    }
+
+    #[derive(Subcommand)]
+    pub enum ConceptCommands {
+        /// Define a new concept (schema)
+        Define {
+            /// Concept name (e.g., "Task", "Contact")
+            name: String,
+
+            /// Attribute names (auto-prefixed with concept namespace)
+            #[arg(trailing_var_arg = true)]
+            attributes: Vec<String>,
+
+            /// Optional description of the concept
+            #[arg(short, long)]
+            description: Option<String>,
+        },
+
+        /// Show details of a concept
+        Show {
+            /// Concept name
+            name: String,
+        },
+
+        /// Add attributes to an existing concept
+        Extend {
+            /// Concept name
+            name: String,
+
+            /// New attribute names to add
+            #[arg(trailing_var_arg = true, required = true)]
+            attributes: Vec<String>,
+        },
+
+        /// Delete a concept
+        Delete {
+            /// Concept name
+            name: String,
+
+            /// Also delete all instances of this concept
+            #[arg(short, long)]
+            force: bool,
+        },
+    }
+
+    #[derive(Subcommand)]
+    pub enum DevCommands {
+        /// Raw fact operations on the active space
+        Fact {
+            #[command(subcommand)]
+            command: FactCommands,
+        },
+
+        /// Operator key management
+        Operator {
+            #[command(subcommand)]
+            command: OperatorCommands,
+        },
+
+        /// Inspect delegations, invites, and CBOR data
+        Inspect {
+            #[command(subcommand)]
+            command: InspectCommands,
+        },
     }
 
     #[derive(Subcommand)]
@@ -204,6 +338,9 @@ mod inner {
             #[arg(long, required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
             is: Vec<String>,
         },
+
+        /// Batch assert/retract facts from stdin (JSON lines)
+        Batch,
 
         /// Find facts in the active space
         Find {
@@ -281,6 +418,7 @@ use clap::Parser;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let json = cli.json;
 
     match cli.command {
         Commands::Login { via } => {
@@ -288,10 +426,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Session { command, verbose } => match command {
             None => {
-                tonk_cli::session::list(verbose).await?;
+                tonk_cli::session::list(verbose, json).await?;
             }
             Some(SessionCommands::Current) => {
-                tonk_cli::session::show_current().await?;
+                tonk_cli::session::show_current(json).await?;
             }
             Some(SessionCommands::Set { authority_did }) => {
                 tonk_cli::session::set(authority_did).await?;
@@ -299,10 +437,10 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Space { command } => match command {
             None => {
-                tonk_cli::space::list().await?;
+                tonk_cli::space::list(json).await?;
             }
             Some(SpaceCommands::Current) => {
-                tonk_cli::space::show_current().await?;
+                tonk_cli::space::show_current(json).await?;
             }
             Some(SpaceCommands::Set { space }) => {
                 tonk_cli::space::set(space).await?;
@@ -312,7 +450,7 @@ async fn main() -> anyhow::Result<()> {
                 owners,
                 description,
             }) => {
-                tonk_cli::space::create(name, owners, description).await?;
+                tonk_cli::space::create(name, owners, description, json).await?;
             }
             Some(SpaceCommands::Invite { email, space }) => {
                 tonk_cli::space::invite(email, space).await?;
@@ -323,40 +461,95 @@ async fn main() -> anyhow::Result<()> {
             Some(SpaceCommands::Delete { space, force }) => {
                 tonk_cli::space::delete(space, force).await?;
             }
-        },
-        Commands::Operator { command } => match command {
-            OperatorCommands::Generate => {
-                tonk_cli::operator::generate()?;
+            Some(SpaceCommands::Delegate {
+                to,
+                space,
+                read_only,
+                output,
+            }) => {
+                tonk_cli::space::delegate(to, space, read_only, output).await?;
             }
         },
-        Commands::Inspect { command } => match command {
-            InspectCommands::Delegation { input } => {
-                tonk_cli::delegation::inspect(input)?;
+        Commands::Concept { command } => match command {
+            None => {
+                // `tonk concept` with no subcommand lists all concepts
+                tonk_cli::concept::list(json).await?;
             }
-            InspectCommands::Invite { path } => {
-                tonk_cli::space::inspect_invite(path)?;
+            Some(ConceptCommands::Define {
+                name,
+                attributes,
+                description,
+            }) => {
+                tonk_cli::concept::define(name, attributes, description, json).await?;
             }
-            InspectCommands::Cbor { input } => {
-                tonk_cli::inspect::cbor(input)?;
+            Some(ConceptCommands::Show { name }) => {
+                tonk_cli::concept::show(name, json).await?;
+            }
+            Some(ConceptCommands::Extend { name, attributes }) => {
+                tonk_cli::concept::extend(name, attributes, json).await?;
+            }
+            Some(ConceptCommands::Delete { name, force }) => {
+                tonk_cli::concept::delete(name, force, json).await?;
             }
         },
-        Commands::Fact { command } => match command {
-            FactCommands::Assert { the, of, is } => {
-                let is_value = is.join(" ").trim().to_string();
-                tonk_cli::fact::assert(the, of, is_value).await?;
-            }
-            FactCommands::Retract { the, of, is } => {
-                let is_value = is.join(" ").trim().to_string();
-                tonk_cli::fact::retract(the, of, is_value).await?;
-            }
-            FactCommands::Find {
-                the,
-                of,
-                is,
-                format,
-            } => {
-                tonk_cli::fact::find(the, of, is, format).await?;
-            }
+        Commands::Create {
+            concept,
+            fields,
+            file,
+            stdin,
+        } => {
+            tonk_cli::instance::create(concept, fields, file, stdin, json).await?;
+        }
+        Commands::Query { concept, filters } => {
+            tonk_cli::instance::query(concept, filters, json).await?;
+        }
+        Commands::Show { id } => {
+            tonk_cli::instance::show(id, json).await?;
+        }
+        Commands::Update { id, fields } => {
+            tonk_cli::instance::update(id, fields, json).await?;
+        }
+        Commands::Delete { id } => {
+            tonk_cli::instance::delete(id, json).await?;
+        }
+        Commands::Dev { command } => match command {
+            DevCommands::Fact { command } => match command {
+                FactCommands::Assert { the, of, is } => {
+                    let is_value = is.join(" ").trim().to_string();
+                    tonk_cli::fact::assert(the, of, is_value, json).await?;
+                }
+                FactCommands::Retract { the, of, is } => {
+                    let is_value = is.join(" ").trim().to_string();
+                    tonk_cli::fact::retract(the, of, is_value, json).await?;
+                }
+                FactCommands::Find {
+                    the,
+                    of,
+                    is,
+                    format,
+                } => {
+                    tonk_cli::fact::find(the, of, is, format, json).await?;
+                }
+                FactCommands::Batch => {
+                    tonk_cli::fact::batch(json).await?;
+                }
+            },
+            DevCommands::Operator { command } => match command {
+                OperatorCommands::Generate => {
+                    tonk_cli::operator::generate()?;
+                }
+            },
+            DevCommands::Inspect { command } => match command {
+                InspectCommands::Delegation { input } => {
+                    tonk_cli::delegation::inspect(input)?;
+                }
+                InspectCommands::Invite { path } => {
+                    tonk_cli::space::inspect_invite(path)?;
+                }
+                InspectCommands::Cbor { input } => {
+                    tonk_cli::inspect::cbor(input)?;
+                }
+            },
         },
         Commands::Remote { command } => match command {
             RemoteCommands::Add {
@@ -397,6 +590,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Sync => {
             tonk_cli::remote::sync().await?;
+        }
+        Commands::Status => {
+            tonk_cli::status::execute(json).await?;
         }
     }
 
