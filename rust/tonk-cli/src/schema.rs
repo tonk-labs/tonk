@@ -142,6 +142,11 @@ pub const ATTR_RULE_DEFINITION: &str = "rule/definition";
 /// Asserted when `extend()` changes the concept's structural identity.
 pub const ATTR_CONCEPT_PRIOR: &str = "concept/prior";
 
+/// Concept attribute: rationale for updating (replacing) a prior concept.
+/// Stored on the new concept entity when a `define` converges with a name
+/// collision and the user chooses to update.
+pub const ATTR_CONCEPT_UPDATE_RATIONALE: &str = "concept/update-rationale";
+
 // ---------------------------------------------------------------------------
 // Deterministic entity derivation
 // ---------------------------------------------------------------------------

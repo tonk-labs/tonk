@@ -10,8 +10,8 @@
 use crate::schema::*;
 use anyhow::{Context, Result};
 use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
-use dialog_query::Value;
 use dialog_query::claim::Attribute;
+use dialog_query::{Entity, Value};
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
@@ -78,6 +78,111 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Instruction builders
+// ---------------------------------------------------------------------------
+
+/// Build instructions to assert a concept's core metadata: name, description,
+/// namespace, and all attributes.
+///
+/// This is the shared instruction set for both fresh defines and concept
+/// replacements. It does NOT include provenance or soft-delete instructions.
+fn build_concept_instructions(
+    entity: &Entity,
+    name: &str,
+    description: &str,
+    namespace: &str,
+    attributes: &[String],
+) -> Result<Vec<Instruction>> {
+    let mut instructions = Vec::new();
+
+    instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+        of: entity.clone(),
+        is: Value::String(name.to_string()),
+        cause: None,
+    }));
+
+    instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
+        of: entity.clone(),
+        is: Value::String(description.to_string()),
+        cause: None,
+    }));
+
+    instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
+        of: entity.clone(),
+        is: Value::String(namespace.to_string()),
+        cause: None,
+    }));
+
+    for attr in attributes {
+        instructions.push(Instruction::Assert(Artifact {
+            the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
+            of: entity.clone(),
+            is: Value::String(attr.clone()),
+            cause: None,
+        }));
+    }
+
+    Ok(instructions)
+}
+
+/// Build instructions to replace one concept entity with another.
+///
+/// Asserts all core metadata on `new_entity`, links it to `old_entity` via
+/// `concept/prior`, optionally records an update rationale, and soft-deletes
+/// the old entity by retracting its name.
+///
+/// Used by both `define` (convergent conflict update) and `extend` (identity
+/// change on attribute addition).
+#[allow(clippy::too_many_arguments)]
+fn build_replace_concept_instructions(
+    new_entity: &Entity,
+    old_entity: &Entity,
+    name: &str,
+    description: &str,
+    namespace: &str,
+    attributes: &[String],
+    old_stored_name: &str,
+    rationale: Option<&str>,
+) -> Result<Vec<Instruction>> {
+    let mut instructions =
+        build_concept_instructions(new_entity, name, description, namespace, attributes)?;
+
+    // Provenance: link new → old
+    instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_CONCEPT_PRIOR)?,
+        of: new_entity.clone(),
+        is: Value::String(old_entity.to_string()),
+        cause: None,
+    }));
+
+    // Store rationale if provided
+    if let Some(r) = rationale {
+        let r = r.trim();
+        if !r.is_empty() {
+            instructions.push(Instruction::Assert(Artifact {
+                the: Attribute::from_str(ATTR_CONCEPT_UPDATE_RATIONALE)?,
+                of: new_entity.clone(),
+                is: Value::String(r.to_string()),
+                cause: None,
+            }));
+        }
+    }
+
+    // Soft-delete old: retract its name so it's no longer discoverable
+    instructions.push(Instruction::Retract(Artifact {
+        the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+        of: old_entity.clone(),
+        is: Value::String(old_stored_name.to_string()),
+        cause: None,
+    }));
+
+    Ok(instructions)
+}
+
+// ---------------------------------------------------------------------------
 // Define a new concept
 // ---------------------------------------------------------------------------
 
@@ -85,6 +190,14 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
 ///
 /// Attributes are short names (e.g. `"title"`, `"status"`) that will be
 /// auto-prefixed with the space name as namespace (e.g. `"my-space/title"`).
+///
+/// Uses convergent semantics: the concept entity is derived deterministically
+/// from its attribute set. If a concept with the same name already exists:
+///   - **Same attributes** → noop (idempotent, the assertions converge).
+///   - **Different attributes** → in interactive mode, prompt the user to
+///     update (creating a provenance chain via `concept/prior`) or choose a
+///     different name. In `--json` mode, return a structured conflict response
+///     so programmatic callers can decide.
 ///
 /// Uses raw Branch + Instruction (not Session/Transaction) because a
 /// concept has multi-valued `concept/attribute` entries. Transaction
@@ -101,15 +214,6 @@ pub async fn define(
 
     let namespace = &ctx.space_name;
     let mut branch = open_branch(ctx).await?;
-
-    // Check if concept with this name already exists
-    if let Some(_existing) = lookup_concept_by_name(&branch, &name).await? {
-        anyhow::bail!(
-            "Concept '{}' already exists. Use 'tonk concept extend {}' to add attributes.",
-            name,
-            name
-        );
-    }
 
     // If no attributes provided, prompt interactively (unless --json mode)
     let attrs = if attributes.is_empty() {
@@ -133,46 +237,49 @@ pub async fn define(
 
     // Derive concept entity from attribute set (structural identity)
     let empty_cardinalities = std::collections::HashMap::new();
-    let concept = concept_entity_from_attrs(&qualified_attrs, &empty_cardinalities)?;
+    let new_entity = concept_entity_from_attrs(&qualified_attrs, &empty_cardinalities)?;
 
-    // Build instructions
-    let mut instructions = Vec::new();
+    // Check if a concept with this name already exists
+    if let Some(existing_entity) = lookup_concept_by_name(&branch, &name).await? {
+        if existing_entity == new_entity {
+            return handle_converged_define(
+                &mut branch,
+                &name,
+                namespace,
+                &qualified_attrs,
+                &description,
+                &new_entity,
+                json,
+            )
+            .await;
+        }
 
-    // Set concept name
-    instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
-        of: concept.clone(),
-        is: Value::String(name.to_string()),
-        cause: None,
-    }));
+        let existing_attrs =
+            fetch_string_values(&branch, &existing_entity, ATTR_CONCEPT_ATTRIBUTE).await?;
 
-    // Set description
-    instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
-        of: concept.clone(),
-        is: Value::String(description.clone()),
-        cause: None,
-    }));
-
-    // Store the namespace
-    instructions.push(Instruction::Assert(Artifact {
-        the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
-        of: concept.clone(),
-        is: Value::String(namespace.to_string()),
-        cause: None,
-    }));
-
-    // Add each attribute
-    for attr in &qualified_attrs {
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
-            of: concept.clone(),
-            is: Value::String(attr.clone()),
-            cause: None,
-        }));
+        return handle_conflict_define(
+            &mut branch,
+            &name,
+            namespace,
+            &qualified_attrs,
+            &description,
+            &new_entity,
+            &existing_entity,
+            &existing_attrs,
+            json,
+        )
+        .await;
     }
 
-    // Commit all
+    // No existing concept with this name — fresh define.
+    let instructions = build_concept_instructions(
+        &new_entity,
+        name.as_str(),
+        &description,
+        namespace,
+        &qualified_attrs,
+    )?;
+
     branch
         .commit(futures_util::stream::iter(instructions))
         .await?;
@@ -195,6 +302,158 @@ pub async fn define(
         }
         println!("  Description: {}", description);
     }
+
+    Ok(())
+}
+
+/// Handle the convergent case: same name and same structural identity.
+///
+/// Re-asserts the description (in case it changed) and reports success.
+/// This is effectively a noop for identical definitions.
+async fn handle_converged_define(
+    branch: &mut impl ArtifactStoreMut,
+    name: &ConceptName,
+    namespace: &str,
+    qualified_attrs: &[String],
+    description: &str,
+    entity: &Entity,
+    json: bool,
+) -> Result<()> {
+    // Re-assert description in case it changed; harmless if identical.
+    let instructions = vec![Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
+        of: entity.clone(),
+        is: Value::String(description.to_string()),
+        cause: None,
+    })];
+    branch
+        .commit(futures_util::stream::iter(instructions))
+        .await?;
+
+    if json {
+        let output = serde_json::json!({
+            "ok": true,
+            "converged": true,
+            "name": name.as_str(),
+            "namespace": namespace,
+            "attributes": qualified_attrs,
+            "description": description,
+        });
+        println!("{}", serde_json::to_string(&output)?);
+    } else {
+        println!(
+            "Concept '{}' already exists with identical schema — no changes needed.",
+            name
+        );
+    }
+
+    Ok(())
+}
+
+/// Handle the conflict case: same name but different structural identity.
+///
+/// In `--json` mode, returns structured conflict info for the caller to decide.
+/// In interactive mode, prompts the user to update (with provenance chain and
+/// optional rationale) or cancel.
+#[allow(clippy::too_many_arguments)]
+async fn handle_conflict_define(
+    branch: &mut impl ArtifactStoreMut,
+    name: &ConceptName,
+    namespace: &str,
+    proposed_attrs: &[String],
+    description: &str,
+    new_entity: &Entity,
+    existing_entity: &Entity,
+    existing_attrs: &[String],
+    json: bool,
+) -> Result<()> {
+    if json {
+        let output = serde_json::json!({
+            "ok": false,
+            "conflict": true,
+            "name": name.as_str(),
+            "existing_entity": existing_entity.to_string(),
+            "existing_attributes": existing_attrs.iter()
+                .map(|a| short_attribute(namespace, a))
+                .collect::<Vec<_>>(),
+            "proposed_entity": new_entity.to_string(),
+            "proposed_attributes": proposed_attrs.iter()
+                .map(|a| short_attribute(namespace, a))
+                .collect::<Vec<_>>(),
+            "message": format!(
+                "A different concept already exists under the name '{}'. \
+                 Re-run with --update to replace it (a provenance link will be created), \
+                 or choose a different name.",
+                name
+            ),
+        });
+        println!("{}", serde_json::to_string(&output)?);
+        return Ok(());
+    }
+
+    // Interactive conflict resolution
+    println!(
+        "A concept named '{}' already exists with a different attribute set.\n",
+        name
+    );
+    println!("  Existing attributes:");
+    for attr in existing_attrs {
+        println!("    {}", short_attribute(namespace, attr));
+    }
+    println!("  Proposed attributes:");
+    for attr in proposed_attrs {
+        println!("    {}", short_attribute(namespace, attr));
+    }
+    println!();
+
+    let choices = &[
+        "Update — replace with the new definition (provenance link preserved)",
+        "Cancel — keep the existing concept unchanged",
+    ];
+    let selection = dialoguer::Select::new()
+        .with_prompt("How would you like to proceed?")
+        .items(choices)
+        .default(0)
+        .interact()?;
+
+    if selection == 1 {
+        println!("Cancelled. Existing concept '{}' is unchanged.", name);
+        return Ok(());
+    }
+
+    // Prompt for optional rationale
+    let rationale: String = dialoguer::Input::new()
+        .with_prompt("Rationale for this update (optional, enter to skip)")
+        .allow_empty(true)
+        .interact_text()?;
+
+    let stored_name = fetch_string(branch, existing_entity, ATTR_CONCEPT_NAME)
+        .await?
+        .unwrap_or_else(|| name.to_string());
+
+    let instructions = build_replace_concept_instructions(
+        new_entity,
+        existing_entity,
+        name.as_str(),
+        description,
+        namespace,
+        proposed_attrs,
+        &stored_name,
+        Some(&rationale),
+    )?;
+
+    branch
+        .commit(futures_util::stream::iter(instructions))
+        .await?;
+
+    println!("Updated concept '{}'", name);
+    println!("  Namespace: {}", namespace);
+    println!("  Attributes:");
+    for attr in proposed_attrs {
+        println!("    {}", short_attribute(namespace, attr));
+    }
+    println!("  Description: {}", description);
+    println!("  Prior concept entity: {}", existing_entity);
 
     Ok(())
 }
@@ -341,75 +600,33 @@ pub async fn extend(
     let empty_cardinalities = std::collections::HashMap::new();
     let new_entity = concept_entity_from_attrs(&full_attrs, &empty_cardinalities)?;
 
-    let mut instructions = Vec::new();
-
-    if new_entity != old_entity {
+    let instructions = if new_entity != old_entity {
         // Entity identity changed: create a new concept entity with all metadata
         // and provenance link, then soft-delete the old one.
-
-        // Assert name on new entity
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
-            of: new_entity.clone(),
-            is: Value::String(stored_name.clone()),
-            cause: None,
-        }));
-
-        // Assert namespace on new entity
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
-            of: new_entity.clone(),
-            is: Value::String(namespace.clone()),
-            cause: None,
-        }));
-
-        // Assert description on new entity (if present)
-        if let Some(ref desc) = description {
-            instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
-                of: new_entity.clone(),
-                is: Value::String(desc.clone()),
-                cause: None,
-            }));
-        }
-
-        // Assert all attributes (existing + new) on new entity
-        for attr in &full_attrs {
-            instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
-                of: new_entity.clone(),
-                is: Value::String(attr.clone()),
-                cause: None,
-            }));
-        }
-
-        // Assert provenance link: new entity's prior is the old entity
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_PRIOR)?,
-            of: new_entity.clone(),
-            is: Value::String(old_entity.to_string()),
-            cause: None,
-        }));
-
-        // Soft-delete old entity: retract its name so it's no longer discoverable
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
-            of: old_entity.clone(),
-            is: Value::String(stored_name),
-            cause: None,
-        }));
+        build_replace_concept_instructions(
+            &new_entity,
+            &old_entity,
+            &stored_name,
+            description.as_deref().unwrap_or(""),
+            &namespace,
+            &full_attrs,
+            &stored_name,
+            None,
+        )?
     } else {
         // Entity identity unchanged (shouldn't normally happen when adding attrs,
         // but handle gracefully): just assert the new attributes
+        let mut instr = Vec::new();
         for attr in &added {
-            instructions.push(Instruction::Assert(Artifact {
+            instr.push(Instruction::Assert(Artifact {
                 the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
                 of: old_entity.clone(),
                 is: Value::String(attr.clone()),
                 cause: None,
             }));
         }
-    }
+        instr
+    };
 
     branch
         .commit(futures_util::stream::iter(instructions))

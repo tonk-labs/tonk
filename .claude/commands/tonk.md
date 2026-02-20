@@ -47,6 +47,31 @@ tonk --json concept delete Task --force
 # → {"ok":true,"deleted":"Task","entities_deleted":12}
 ```
 
+### Convergent define (idempotency & conflict handling)
+
+`concept define` uses convergent semantics. The concept entity is derived deterministically from its attribute set, so defining the same concept twice is a noop:
+
+```bash
+# Re-defining with identical attributes converges (noop)
+tonk --json concept define Task title status priority --description "A task to track"
+# → {"ok":true,"converged":true,"name":"Task","attributes":["task/title","task/status","task/priority"],"description":"A task to track"}
+```
+
+If a concept with the same name but **different attributes** already exists, the JSON response returns a conflict with full details instead of an error:
+
+```bash
+# Defining with different attributes produces a conflict response
+tonk --json concept define Task title status priority due_date --description "Updated task schema"
+# → {"ok":false,"conflict":true,"name":"Task",
+#    "existing_entity":"did:key:z...",
+#    "existing_attributes":["title","status","priority"],
+#    "proposed_entity":"did:key:z...",
+#    "proposed_attributes":["title","status","priority","due_date"],
+#    "message":"A different concept already exists under the name 'Task'. Re-run with --update to replace it (a provenance link will be created), or choose a different name."}
+```
+
+When a conflict is detected in JSON mode, the caller should inspect `existing_attributes` vs `proposed_attributes` and decide whether to update or rename. In interactive mode (without `--json`), the user is prompted to choose and can provide a rationale for the update, which is stored as `concept/update-rationale` on the new concept entity. Updated concepts link to their predecessor via `concept/prior` for provenance tracking.
+
 ## Creating entities — `tonk create`
 
 ```bash

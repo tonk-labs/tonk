@@ -590,7 +590,8 @@ async fn test_concept_duplicate_rejected() {
     .await
     .expect("Failed to define first concept");
 
-    // Defining same concept again should fail
+    // Defining same name with different attributes returns a conflict (not an error)
+    // in JSON mode — the caller decides how to resolve it.
     let result = tonk_cli::concept::define(
         &ctx,
         "Unique".to_string(),
@@ -599,7 +600,90 @@ async fn test_concept_duplicate_rejected() {
         true,
     )
     .await;
-    assert!(result.is_err(), "duplicate concept definition should fail");
+    assert!(
+        result.is_ok(),
+        "conflict define should succeed (prints conflict JSON)"
+    );
+
+    // The original concept should still be intact (conflict doesn't modify it)
+    let session = tonk_cli::schema::open_session(&ctx)
+        .await
+        .expect("Failed to open session");
+    let entity = tonk_cli::schema::lookup_concept_by_name(
+        &session,
+        &tonk_cli::schema::ConceptName::new("Unique".to_string()).unwrap(),
+    )
+    .await
+    .expect("Failed to lookup concept");
+    assert!(entity.is_some(), "original concept should still exist");
+
+    let attrs = tonk_cli::schema::fetch_string_values(
+        &session,
+        &entity.unwrap(),
+        tonk_cli::schema::ATTR_CONCEPT_ATTRIBUTE,
+    )
+    .await
+    .expect("Failed to fetch attributes");
+    assert_eq!(attrs.len(), 1, "original concept should still have 1 attribute");
+    assert!(
+        attrs[0].ends_with("/a"),
+        "original attribute should be unchanged"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_concept_define_converges() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("converge-space")
+        .await
+        .expect("Failed to create space");
+
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
+    // Define a concept
+    tonk_cli::concept::define(
+        &ctx,
+        "Task".to_string(),
+        vec!["title".to_string(), "status".to_string()],
+        "A task".to_string(),
+        true,
+    )
+    .await
+    .expect("Failed to define concept");
+
+    // Re-defining with identical attributes should converge (noop)
+    tonk_cli::concept::define(
+        &ctx,
+        "Task".to_string(),
+        vec!["title".to_string(), "status".to_string()],
+        "A task".to_string(),
+        true,
+    )
+    .await
+    .expect("Convergent re-define should succeed");
+
+    // Concept should still exist with the same attributes
+    let session = tonk_cli::schema::open_session(&ctx)
+        .await
+        .expect("Failed to open session");
+    let entity = tonk_cli::schema::lookup_concept_by_name(
+        &session,
+        &tonk_cli::schema::ConceptName::new("Task".to_string()).unwrap(),
+    )
+    .await
+    .expect("Failed to lookup concept");
+    assert!(entity.is_some(), "concept should still exist after convergent define");
+
+    let attrs = tonk_cli::schema::fetch_string_values(
+        &session,
+        &entity.unwrap(),
+        tonk_cli::schema::ATTR_CONCEPT_ATTRIBUTE,
+    )
+    .await
+    .expect("Failed to fetch attributes");
+    assert_eq!(attrs.len(), 2, "concept should still have 2 attributes");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
