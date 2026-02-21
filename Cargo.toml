@@ -6,6 +6,7 @@ members = [
     "rust/tonk-cli",
     "rust/tonk-core",
     "rust/tonk-common",
+    "rust/tonk-assess",
     "rust/tonk-space",
     "rust/tonk-ui",
     "rust/tonk-worker",
@@ -77,6 +78,7 @@ thirtyfour = "0.36"
 thiserror = "2"
 tokio = "1"
 tokio-stream = "0.1"
+walkdir = "2"
 tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.5"
 tower-service = "0.3"

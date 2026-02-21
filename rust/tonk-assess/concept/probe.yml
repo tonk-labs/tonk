@@ -1,0 +1,41 @@
+tonk.assess:
+  Probe:
+    the: A test question for benchmarking agent knowledge retrieval
+    where:
+      persona:
+        the: The persona whose knowledge is being tested
+        assert: Text
+      tag:
+        the: Arbitrary tags for filtering (e.g. lookup, synthesis, inference)
+        assert: Text
+        cardinality: many
+      prompt:
+        the: The question sent to the agent
+        assert: Text
+      judge:
+        the: The judge used to score the agent's answer
+        assert: .Judge
+    option:
+      name:
+        the: Optional human-readable name for this probe
+        assert: Text
+      source-file:
+        the: Path relative to persona artifacts where the answer can be found
+        assert: Text
+        cardinality: many
+      corpus:
+        the: Relative path from probe directory to the corpus of files the agent can access
+        assert: Text
+      allowed-tool:
+        the: Tools the agent may use (e.g. Read, Glob, Grep, "Bash(git:*)")
+        assert: Text
+        cardinality: many
+      system-prompt:
+        the: Relative path to a markdown file whose contents are appended as system prompt
+        assert: Text
+      max-turns:
+        the: Maximum number of agent turns
+        assert: Integer
+      mcp-config:
+        the: Path to an MCP server config JSON file
+        assert: Text

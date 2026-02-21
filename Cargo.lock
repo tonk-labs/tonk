@@ -4663,6 +4663,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-assess"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tokio-util",
+ "walkdir",
+]
+
+[[package]]
 name = "tonk-blobs"
 version = "0.1.0"
 dependencies = [
