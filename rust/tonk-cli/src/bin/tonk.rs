@@ -55,6 +55,16 @@ mod inner {
             command: Option<RuleCommands>,
         },
 
+        /// Import concepts from a YAML file
+        Import {
+            /// Path to a YAML file containing concept definitions
+            file: String,
+
+            /// Overwrite existing concepts instead of failing
+            #[arg(long)]
+            force: bool,
+        },
+
         /// Create a new instance of a concept
         Create {
             /// Concept name (e.g., "Task")
@@ -103,6 +113,12 @@ mod inner {
         Delete {
             /// Instance ID (did:key:...)
             id: String,
+        },
+
+        /// Batch operations on instances (create, update, delete multiple at once)
+        Batch {
+            #[command(subcommand)]
+            command: BatchCommands,
         },
 
         /// Manage remotes for syncing spaces
@@ -402,6 +418,51 @@ mod inner {
     }
 
     #[derive(Subcommand)]
+    pub enum BatchCommands {
+        /// Create multiple instances of a concept from a JSON array
+        Create {
+            /// Concept name (e.g., "Task")
+            concept: String,
+
+            /// Read instance data from a JSON file (array of objects)
+            #[arg(long, short)]
+            file: Option<String>,
+
+            /// Read instance data from stdin as JSON array
+            #[arg(long)]
+            stdin: bool,
+        },
+
+        /// Update multiple instances from a JSON array (each object must include "id")
+        Update {
+            /// Concept name (e.g., "Task")
+            concept: String,
+
+            /// Read update data from a JSON file (array of objects with "id" field)
+            #[arg(long, short)]
+            file: Option<String>,
+
+            /// Read update data from stdin as JSON array
+            #[arg(long)]
+            stdin: bool,
+        },
+
+        /// Delete multiple instances from a JSON array of IDs
+        Delete {
+            /// Concept name (e.g., "Task")
+            concept: String,
+
+            /// Read instance IDs from a JSON file (array of ID strings)
+            #[arg(long, short)]
+            file: Option<String>,
+
+            /// Read instance IDs from stdin as JSON array
+            #[arg(long)]
+            stdin: bool,
+        },
+    }
+
+    #[derive(Subcommand)]
     pub enum RemoteCommands {
         /// Add a remote for syncing the active space
         Add {
@@ -551,6 +612,9 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::rule::delete(name, json).await?;
             }
         },
+        Commands::Import { file, force } => {
+            tonk_cli::import::import(file, force, json).await?;
+        }
         Commands::Create {
             concept,
             fields,
@@ -571,6 +635,29 @@ async fn main() -> anyhow::Result<()> {
         Commands::Delete { id } => {
             tonk_cli::instance::delete(id, json).await?;
         }
+        Commands::Batch { command } => match command {
+            BatchCommands::Create {
+                concept,
+                file,
+                stdin,
+            } => {
+                tonk_cli::batch::batch_create(concept, file, stdin, json).await?;
+            }
+            BatchCommands::Update {
+                concept,
+                file,
+                stdin,
+            } => {
+                tonk_cli::batch::batch_update(concept, file, stdin, json).await?;
+            }
+            BatchCommands::Delete {
+                concept,
+                file,
+                stdin,
+            } => {
+                tonk_cli::batch::batch_delete(concept, file, stdin, json).await?;
+            }
+        },
         Commands::Dev { command } => match command {
             DevCommands::Fact { command } => match command {
                 FactCommands::Assert { the, of, is } => {
