@@ -139,16 +139,16 @@ impl Delegation {
 
     /// Get the delegation storage path based on delegation fields
     fn storage_path(&self) -> Result<PathBuf, DelegationError> {
-        let home: PathBuf = crate::util::home_dir().ok_or_else(|| {
+        let access_dir: PathBuf = crate::util::access_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Could not determine home directory",
+                "Could not determine tonk directory",
             ))
         })?;
 
         // Build path: ~/.tonk/access/{aud}/{sub or iss}/{exp}-{hash}.cbor
         let audience = self.audience();
-        let access_dir = home.join(".tonk").join("access").join(&audience);
+        let access_dir = access_dir.join(&audience);
 
         let sub_dir = match self.subject() {
             Subject::Specific(did) => {
@@ -201,15 +201,15 @@ impl Delegation {
         self.save()?;
 
         // Save metadata
-        let home: PathBuf = crate::util::home_dir().ok_or_else(|| {
+        let tonk_dir: PathBuf = crate::util::tonk_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Could not determine home directory",
+                "Could not determine tonk directory",
             ))
         })?;
 
         let hash: String = self.hash()?;
-        let meta_dir = home.join(".tonk").join("meta").join(&hash);
+        let meta_dir = tonk_dir.join("meta").join(&hash);
         fs::create_dir_all(&meta_dir)?;
 
         let meta_path = meta_dir.join("site.json");
@@ -231,15 +231,15 @@ impl Delegation {
         self.save_raw(raw_cbor)?;
 
         // Save metadata
-        let home: PathBuf = crate::util::home_dir().ok_or_else(|| {
+        let tonk_dir: PathBuf = crate::util::tonk_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Could not determine home directory",
+                "Could not determine tonk directory",
             ))
         })?;
 
         let hash: String = self.hash()?;
-        let meta_dir = home.join(".tonk").join("meta").join(&hash);
+        let meta_dir = tonk_dir.join("meta").join(&hash);
         fs::create_dir_all(&meta_dir)?;
 
         let meta_path = meta_dir.join("site.json");
@@ -252,19 +252,15 @@ impl Delegation {
 
     /// Load metadata for this delegation
     pub fn load_metadata(&self) -> Result<Option<DelegationMetadata>, DelegationError> {
-        let home: PathBuf = crate::util::home_dir().ok_or_else(|| {
+        let tonk_dir: PathBuf = crate::util::tonk_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Could not determine home directory",
+                "Could not determine tonk directory",
             ))
         })?;
 
         let hash = self.hash()?;
-        let meta_path = home
-            .join(".tonk")
-            .join("meta")
-            .join(&hash)
-            .join("site.json");
+        let meta_path = tonk_dir.join("meta").join(&hash).join("site.json");
 
         if !meta_path.exists() {
             return Ok(None);
@@ -283,14 +279,14 @@ impl Delegation {
         exp: i64,
         hash: &str,
     ) -> Result<Self, DelegationError> {
-        let home: PathBuf = crate::util::home_dir().ok_or_else(|| {
+        let access_dir: PathBuf = crate::util::access_dir().ok_or_else(|| {
             DelegationError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Could not determine home directory",
+                "Could not determine tonk directory",
             ))
         })?;
 
-        let access_dir = home.join(".tonk").join("access").join(aud);
+        let access_dir = access_dir.join(aud);
         let sub_dir = if let Some(sub) = sub {
             access_dir.join(sub)
         } else {

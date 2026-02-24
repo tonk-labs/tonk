@@ -71,6 +71,14 @@ dirs = { workspace = true }
 webbrowser = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
+serial_test = { workspace = true }
+bs58 = { workspace = true }
+dialog-ucan = { workspace = true }
+dialog-varsig = { workspace = true }
+dialog-credentials = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
 # Platform-specific keyring backends
 [target.'cfg(all(not(target_arch = "wasm32"), target_os = "macos"))'.dependencies]

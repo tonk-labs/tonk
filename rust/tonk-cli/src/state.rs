@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 /// Get the .tonk directory path
 fn tonk_dir() -> Result<PathBuf> {
-    let home = crate::util::home_dir().context("Could not determine home directory")?;
-    Ok(home.join(".tonk"))
+    crate::util::tonk_dir().context("Could not determine tonk directory")
 }
 
 /// Get the operator DID

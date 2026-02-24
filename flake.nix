@@ -194,12 +194,12 @@
         packages = rec {
           tests-native-debug = buildTestArchive {
             name = "native-debug";
-            args = "--features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
           };
 
           tests-native-release = buildTestArchive {
             name = "native-release";
-            args = "--features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests --release";
           };
 
           tests-web-debug = buildTestArchive {
@@ -210,6 +210,12 @@
           tests-web-release = buildTestArchive {
             name = "web-release";
             target = "wasm32-unknown-unknown";
+            args = "--release";
+          };
+
+          tests-cli-integration = buildTestArchive {
+            name = "cli-integration";
+            args = "--package tonk-cli --test cli_integration";
           };
 
           tests = pkgs.runCommand "tests-all" { } ''
