@@ -1,0 +1,17 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [synthesis, base]
+  prompt: "How does Marcus's approach to task scoping connect to his mental model of agents?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Marcus's mental model is that an agent is like a very fast but sometimes-overconfident junior engineer that needs clear scope, relevant context, explicit success criteria, and a way to ask questions. This directly drives his scoping approach: the narrower the task the better, tasks should be expressible in one sentence, and breaking down tasks before handing them off saves cleanup time — exactly what a good manager does with a junior engineer."
+          key-fact:
+            - Agent as junior engineer who needs clear scope
+            - Narrower task = better output
+            - Task expressible in one sentence or it is too big
+            - Connection between mental model and scoping discipline
+  source-file:
+    - agent-orchestration.md

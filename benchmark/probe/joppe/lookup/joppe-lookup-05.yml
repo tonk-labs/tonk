@@ -1,0 +1,21 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [lookup, base]
+  prompt: "Which Discord channels does the bot monitor in Local-First Haus?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: "#links"
+              score: 1
+            - term: "#papers"
+              score: 1
+            - term: "#show-and-tell"
+              score: 1
+            - term: "#general"
+              score: 1
+          max-score: 4
+  source-file:
+    - local-first-haus.md

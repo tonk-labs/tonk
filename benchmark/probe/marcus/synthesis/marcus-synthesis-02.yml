@@ -1,0 +1,18 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [synthesis, base]
+  prompt: "When would Marcus use a subagent vs. keep work in the main session? What does he use each for?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Marcus uses subagents for research (finding things) and keeps the main session for writing (changing files). Subagents are useful when tasks are genuinely independent, when you want to protect the main context from exploratory noise, or for repetitive checks across many files. He avoids subagents when tasks depend on each other's output, when the task is simple, or when tight feedback loops are needed."
+          key-fact:
+            - Subagents for research, main session for writing
+            - Useful when tasks are genuinely independent and parallel
+            - Useful to protect main context from exploratory noise
+            - Not useful when tasks depend on each other's output
+            - Not useful when task is simple (adds latency)
+  source-file:
+    - agent-orchestration.md

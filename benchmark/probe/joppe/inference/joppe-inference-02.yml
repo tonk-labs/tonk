@@ -1,0 +1,16 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [inference, base]
+  prompt: "Which community member seems most focused on peer-to-peer and decentralisation specifically, based on their link-sharing patterns?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Two members stand out for different reasons. @tennyson_w shared the UCAN spec ('user-controlled authorization networks, relevant for local-first auth') and OrbitDB (a peer-to-peer database). @ruxandra shared Byzantine fault tolerance papers and BFT-CRDTs, which address untrusted peers in decentralised systems. @marten_b shared the Cambridge Loco project (peer-to-peer collaboration at department scale). If distinguishing between practical P2P tooling vs. theoretical P2P security, tennyson_w leans practical and ruxandra leans academic/security-focused."
+          key-fact:
+            - tennyson_w — UCAN spec, OrbitDB (practical P2P)
+            - ruxandra — Byzantine fault tolerance, BFT-CRDTs (P2P security)
+            - marten_b — Cambridge Loco project
+  source-file:
+    - local-first-haus.md

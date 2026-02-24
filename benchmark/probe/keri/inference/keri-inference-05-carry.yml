@@ -1,0 +1,23 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [inference, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "According to the information hierarchy in Keri's profile, which would take precedence: something she stated in this profile file, or something she said to you in the current session?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: session
+              score: 2
+            - term: takes precedence
+              score: 3
+            - term: overrides
+              score: 2
+            - term: level 4
+              score: 2
+  source-file:
+    - semantic-profile.md

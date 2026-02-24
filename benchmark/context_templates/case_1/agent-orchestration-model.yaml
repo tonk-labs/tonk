@@ -1,0 +1,121 @@
+carry.orchestration:
+  # ─── Attributes ──────────────────────────────────────────────────────────
+
+  name:
+    the: Human-readable name for this orchestration item
+    assert: Text
+
+  description:
+    the: Detailed description or rationale
+    assert: Text
+
+  example:
+    the: A concrete example illustrating this item
+    assert: Text
+
+  fix:
+    the: The recommended remedy for a failure mode
+    assert: Text
+
+  use_when:
+    the: A condition under which this approach is recommended
+    assert: Text
+    cardinality: many
+
+  avoid_when:
+    the: A condition under which this approach should be avoided
+    assert: Text
+    cardinality: many
+
+  stopping_condition:
+    the: The well-defined condition under which an automated workflow halts
+    assert: Text
+
+  allowed_action:
+    the: An action explicitly permitted within an automated workflow
+    assert: Text
+    cardinality: many
+
+  requires_human_review:
+    the: Whether a human review gate is required before this workflow reaches production
+    assert: [:yes, :no]
+
+  # ─── Concepts ────────────────────────────────────────────────────────────
+
+  ContextPrinciple:
+    the: A principle governing what to load (and what to omit) from the agent context window
+    where:
+      name: .
+      description: .
+
+  TaskRule:
+    the: A rule for scoping or framing a task before handing it to an agent
+    where:
+      name: .
+      description: .
+    option:
+      example: .
+
+  PromptingPattern:
+    the: A named prompting strategy known to improve agent output quality
+    where:
+      name: .
+      description: .
+    option:
+      example: .
+
+  FailureMode:
+    the: A documented failure pattern and its recommended corrective fix
+    where:
+      name: .
+      description: .
+      fix: .
+
+  SubagentPolicy:
+    the: A policy describing when subagents should or should not be used
+    where:
+      name: .
+      description: .
+    option:
+      use_when: .
+      avoid_when: .
+
+  AutomatedWorkflowConfig:
+    the: Requirements and constraints for a long-running autonomous agent workflow
+    where:
+      name: .
+      stopping_condition: .
+      requires_human_review: .
+    option:
+      allowed_action: .
+
+  SafeAutomatedWorkflow:
+    the: An automated workflow config verified to meet minimum safety requirements
+    where:
+      name: .
+      stopping_condition: .
+    option:
+      allowed_action: .
+
+  # ─── Derived Rules ───────────────────────────────────────────────────────
+
+  safe-automated-workflow:
+    the: >
+      Derives SafeAutomatedWorkflow from any AutomatedWorkflowConfig that
+      requires human review before production and has at least one explicitly
+      permitted action — the minimum bar for a trustworthy autonomous loop.
+    assert:
+      .SafeAutomatedWorkflow:
+        this: ?config
+        name: ?name
+        stopping_condition: ?stop
+        allowed_action: ?action
+    when:
+      - .AutomatedWorkflowConfig:
+          this: ?config
+          name: ?name
+          stopping_condition: ?stop
+          requires_human_review: carry.orchestration/yes
+      - .allowed_action:
+          of: ?config
+          is: ?action

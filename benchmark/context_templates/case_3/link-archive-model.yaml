@@ -1,0 +1,147 @@
+carry.links:
+  # ─── Attributes ──────────────────────────────────────────────────────────
+
+  url:
+    the: The URL of the shared resource
+    assert: Text
+
+  posted_date:
+    the: ISO 8601 date the link was posted (YYYY-MM-DD)
+    assert: Text
+
+  comment:
+    the: Optional comment left by the person who shared the link
+    assert: Text
+
+  handle:
+    the: Username of a community member, without the @ prefix
+    assert: Text
+
+  resource_type:
+    the: Classification of the type of resource this link points to
+    assert: [:paper, :repository, :blog_post, :tool, :documentation, :hn_thread, :conference, :course, :website]
+
+  channel:
+    the: The community channel where the link was posted
+    assert: [:links, :papers, :show_and_tell, :general]
+
+  platform:
+    the: The platform this community operates on
+    assert: [:discord, :slack, :matrix]
+
+  name:
+    the: Human-readable display name
+    assert: Text
+
+  description:
+    the: Optional description or additional context
+    assert: Text
+
+  # ─── Reference Attributes ────────────────────────────────────────────────
+
+  community:
+    the: The community this member belongs to
+    assert: .Community
+
+  posted_by:
+    the: The community member who shared this link
+    assert: .Member
+
+  tag:
+    the: A topic tag applied to this link
+    assert: .Tag
+    cardinality: many
+
+  # ─── Concepts ────────────────────────────────────────────────────────────
+
+  Community:
+    the: A chat community from which links are archived
+    where:
+      name: .
+      platform: .
+    option:
+      description: .
+
+  Member:
+    the: A member of a community who shares links
+    where:
+      handle: .
+      community: .
+
+  Tag:
+    the: A topic label that can be applied to links for classification and filtering
+    where:
+      name: .
+    option:
+      description: .
+
+  Link:
+    the: A URL shared in a community channel, with metadata about who shared it and when
+    where:
+      url: .
+      posted_date: .
+      posted_by: .
+      resource_type: .
+    option:
+      comment: .
+      channel: .
+      tag: .
+
+  # ─── Derived Concepts ────────────────────────────────────────────────────
+
+  AnnotatedLink:
+    the: A link shared with a comment — tends to indicate the poster considered it worth explaining
+    where:
+      url: .
+      posted_date: .
+      posted_by: .
+      comment: .
+
+  PaperLink:
+    the: A link to an academic paper
+    where:
+      url: .
+      posted_date: .
+      posted_by: .
+
+  # ─── Derived Rules ───────────────────────────────────────────────────────
+
+  annotated-link:
+    the: >
+      Derives AnnotatedLink from any Link that has a comment attached.
+      Useful for filtering to links with context, which tend to be higher signal.
+    assert:
+      .AnnotatedLink:
+        this: ?link
+        url: ?url
+        posted_date: ?date
+        posted_by: ?poster
+        comment: ?comment
+    when:
+      - .Link:
+          this: ?link
+          url: ?url
+          posted_date: ?date
+          posted_by: ?poster
+          resource_type: ?rt
+      - .comment:
+          of: ?link
+          is: ?comment
+
+  paper-link:
+    the: >
+      Derives PaperLink from any Link classified as a paper.
+      Useful for surfacing the academic reading list independently of other resource types.
+    assert:
+      .PaperLink:
+        this: ?link
+        url: ?url
+        posted_date: ?date
+        posted_by: ?poster
+    when:
+      - .Link:
+          this: ?link
+          url: ?url
+          posted_date: ?date
+          posted_by: ?poster
+          resource_type: carry.links/paper

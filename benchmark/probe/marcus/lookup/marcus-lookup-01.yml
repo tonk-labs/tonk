@@ -1,0 +1,14 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [lookup, base]
+  prompt: "What file does Marcus keep tight and up to date for the agent to load every session?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: CLAUDE.md
+              score: 3
+  source-file:
+    - agent-orchestration.md

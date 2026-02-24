@@ -1,0 +1,18 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [lookup, base]
+  prompt: "What did @joppevos say was 'probably the most important thing to read' in January 2026?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: Riffle
+              score: 3
+            - term: riffle.systems
+              score: 3
+            - term: Riffle essay
+              score: 3
+  source-file:
+    - local-first-haus.md

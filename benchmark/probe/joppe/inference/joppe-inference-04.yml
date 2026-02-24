@@ -1,0 +1,17 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [inference, base]
+  prompt: "Does this community skew more academic or practitioner-focused? What evidence supports your answer?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "The community skews academic more than most, by joppevos's own annotation. Evidence: a heavy volume of arxiv papers (CRDT theory, Byzantine fault tolerance, causal trees, Verifiable Delay Functions, Mergeable Replicated Data Types); a Cornell distributed systems course; foundational CS content like category theory. However, practical tooling is well-represented too: yjs, automerge, their.dev, electric-sql, replicache, tinybase, evolu. The academic lean comes particularly from @ruxandra; the practical lean from @joppevos and @sigrid. The community holds both in tension rather than choosing."
+          key-fact:
+            - Joppevos's own annotation — skews academic more than most
+            - Heavy arxiv paper volume supports academic lean
+            - Practical tools also well-represented (yjs, automerge, electric-sql)
+            - ruxandra drives academic content, joppevos/sigrid drive practical
+  source-file:
+    - local-first-haus.md

@@ -1,0 +1,622 @@
+# User Profile — Data Assertions
+# Semantic-layer EAV triples derived from semantic-profile.md (Keri Vasquez).
+# Entities are prefixed with the person's slug to support multiple profiles in future.
+
+# ─── Person ──────────────────────────────────────────────────────────────────
+
+- the: carry.profile/name
+  of: keri-vasquez
+  is: "Keri Vasquez"
+- the: carry.profile/role_title
+  of: keri-vasquez
+  is: "Independent consultant"
+- the: carry.profile/role_description
+  of: keri-vasquez
+  is: "Organisational knowledge management and data strategy. Helps mid-size companies understand how their knowledge flows, where it gets stuck, and how to build systems that make institutional knowledge legible and searchable rather than siloed in people's heads."
+- the: carry.profile/location
+  of: keri-vasquez
+  is: "Amsterdam, NL"
+- the: carry.profile/timezone
+  of: keri-vasquez
+  is: "CET"
+- the: carry.profile/pronouns
+  of: keri-vasquez
+  is: "she/her"
+- the: carry.profile/english_variant
+  of: keri-vasquez
+  is: carry.profile/british
+- the: carry.profile/default_context
+  of: keri-vasquez
+  is: carry.profile/work
+
+# Preferred output formats (cardinality: many)
+- the: carry.profile/preferred_format
+  of: keri-vasquez
+  is: "Structured documents with headers"
+- the: carry.profile/preferred_format
+  of: keri-vasquez
+  is: "Tables for comparisons"
+- the: carry.profile/preferred_format
+  of: keri-vasquez
+  is: "Bullet lists for options or criteria"
+- the: carry.profile/preferred_format
+  of: keri-vasquez
+  is: "Short paragraphs over long ones"
+- the: carry.profile/preferred_format
+  of: keri-vasquez
+  is: "Diagrams described in text (Mermaid or ASCII) when relevant"
+
+# Global output antipreferences — apply to all task types (cardinality: many)
+- the: carry.profile/global_antipreference
+  of: keri-vasquez
+  is: "Unsolicited encouragement ('Great question!', 'Absolutely!')"
+- the: carry.profile/global_antipreference
+  of: keri-vasquez
+  is: "Moralising or caveating obvious things"
+- the: carry.profile/global_antipreference
+  of: keri-vasquez
+  is: "Long preambles before the actual answer"
+- the: carry.profile/global_antipreference
+  of: keri-vasquez
+  is: "Bullet points that could have been a sentence"
+
+# ─── Languages ───────────────────────────────────────────────────────────────
+
+- the: carry.profile/person
+  of: keri-lang-english
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-lang-english
+  is: "English"
+- the: carry.profile/proficiency
+  of: keri-lang-english
+  is: carry.profile/native
+
+- the: carry.profile/person
+  of: keri-lang-spanish
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-lang-spanish
+  is: "Spanish"
+- the: carry.profile/proficiency
+  of: keri-lang-spanish
+  is: carry.profile/conversational
+
+- the: carry.profile/person
+  of: keri-lang-dutch
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-lang-dutch
+  is: "Dutch"
+- the: carry.profile/proficiency
+  of: keri-lang-dutch
+  is: carry.profile/basic
+
+# ─── Expertise ───────────────────────────────────────────────────────────────
+
+# Deep expertise
+- the: carry.profile/person
+  of: keri-exp-knowledge-mgmt
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-knowledge-mgmt
+  is: "Knowledge management theory"
+- the: carry.profile/expertise_level
+  of: keri-exp-knowledge-mgmt
+  is: carry.profile/deep
+- the: carry.profile/description
+  of: keri-exp-knowledge-mgmt
+  is: "PKM, organisational KM, SECI model, Communities of Practice"
+
+- the: carry.profile/person
+  of: keri-exp-graph-modeling
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-graph-modeling
+  is: "Graph data modeling"
+- the: carry.profile/expertise_level
+  of: keri-exp-graph-modeling
+  is: carry.profile/deep
+- the: carry.profile/description
+  of: keri-exp-graph-modeling
+  is: "Entity-relationship thinking, property graphs, RDF basics, ontology design"
+
+- the: carry.profile/person
+  of: keri-exp-facilitation
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-facilitation
+  is: "Facilitation"
+- the: carry.profile/expertise_level
+  of: keri-exp-facilitation
+  is: carry.profile/deep
+- the: carry.profile/description
+  of: keri-exp-facilitation
+  is: "Structured workshops, retrospectives, sense-making sessions"
+
+- the: carry.profile/person
+  of: keri-exp-consulting-craft
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-consulting-craft
+  is: "Consulting craft"
+- the: carry.profile/expertise_level
+  of: keri-exp-consulting-craft
+  is: carry.profile/deep
+- the: carry.profile/description
+  of: keri-exp-consulting-craft
+  is: "Scoping, stakeholder management, deliverable design, client relationships"
+
+# Working knowledge
+- the: carry.profile/person
+  of: keri-exp-graph-databases
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-graph-databases
+  is: "Graph databases"
+- the: carry.profile/expertise_level
+  of: keri-exp-graph-databases
+  is: carry.profile/working
+- the: carry.profile/description
+  of: keri-exp-graph-databases
+  is: "Neo4j (Cypher), some ArangoDB; can write queries, cannot optimise at scale"
+
+- the: carry.profile/person
+  of: keri-exp-data-governance
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-data-governance
+  is: "Data governance"
+- the: carry.profile/expertise_level
+  of: keri-exp-data-governance
+  is: carry.profile/working
+- the: carry.profile/description
+  of: keri-exp-data-governance
+  is: "Policies, data dictionaries, lineage — enough to advise, not enough to implement"
+
+- the: carry.profile/person
+  of: keri-exp-ai-llm-tooling
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-ai-llm-tooling
+  is: "AI/LLM tooling"
+- the: carry.profile/expertise_level
+  of: keri-exp-ai-llm-tooling
+  is: carry.profile/working
+- the: carry.profile/description
+  of: keri-exp-ai-llm-tooling
+  is: "Intermediate user; comfortable with Claude, Notion AI, Perplexity; not a prompt engineer"
+
+- the: carry.profile/person
+  of: keri-exp-info-architecture
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-info-architecture
+  is: "Information architecture"
+- the: carry.profile/expertise_level
+  of: keri-exp-info-architecture
+  is: carry.profile/working
+- the: carry.profile/description
+  of: keri-exp-info-architecture
+  is: "Taxonomy design, metadata schemas, controlled vocabularies"
+
+# Adjacent / learning
+- the: carry.profile/person
+  of: keri-exp-vector-databases
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-vector-databases
+  is: "Vector databases and semantic search"
+- the: carry.profile/expertise_level
+  of: keri-exp-vector-databases
+  is: carry.profile/adjacent
+- the: carry.profile/description
+  of: keri-exp-vector-databases
+  is: "Actively curious, not yet skilled"
+
+- the: carry.profile/person
+  of: keri-exp-pkm-tools
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-pkm-tools
+  is: "Personal knowledge management tools"
+- the: carry.profile/expertise_level
+  of: keri-exp-pkm-tools
+  is: carry.profile/adjacent
+- the: carry.profile/description
+  of: keri-exp-pkm-tools
+  is: "Obsidian, Roam, Logseq — have tried all of them"
+
+- the: carry.profile/person
+  of: keri-exp-graph-personal-data
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-graph-personal-data
+  is: "Graph-based personal data"
+- the: carry.profile/expertise_level
+  of: keri-exp-graph-personal-data
+  is: carry.profile/adjacent
+- the: carry.profile/description
+  of: keri-exp-graph-personal-data
+  is: "Current side obsession"
+
+# Out of scope
+- the: carry.profile/person
+  of: keri-exp-accounting-legal
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-accounting-legal
+  is: "Accounting, legal, and HR"
+- the: carry.profile/expertise_level
+  of: keri-exp-accounting-legal
+  is: carry.profile/out_of_scope
+
+- the: carry.profile/person
+  of: keri-exp-production-code
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-production-code
+  is: "Production code authorship"
+- the: carry.profile/expertise_level
+  of: keri-exp-production-code
+  is: carry.profile/out_of_scope
+
+- the: carry.profile/person
+  of: keri-exp-marketing-strategy
+  is: keri-vasquez
+- the: carry.profile/topic
+  of: keri-exp-marketing-strategy
+  is: "Marketing strategy"
+- the: carry.profile/expertise_level
+  of: keri-exp-marketing-strategy
+  is: carry.profile/out_of_scope
+
+# ─── Professional Services ───────────────────────────────────────────────────
+
+# Offered
+- the: carry.profile/person
+  of: keri-svc-knowledge-audits
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-svc-knowledge-audits
+  is: "Knowledge audits"
+- the: carry.profile/offered
+  of: keri-svc-knowledge-audits
+  is: carry.profile/yes
+- the: carry.profile/description
+  of: keri-svc-knowledge-audits
+  is: "Map where knowledge lives in an organisation, who holds it, and how it moves"
+
+- the: carry.profile/person
+  of: keri-svc-knowledge-graph-design
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-svc-knowledge-graph-design
+  is: "Knowledge graph design"
+- the: carry.profile/offered
+  of: keri-svc-knowledge-graph-design
+  is: carry.profile/yes
+- the: carry.profile/description
+  of: keri-svc-knowledge-graph-design
+  is: "Model organisational data as a graph — entities, relationships, traversal patterns"
+
+- the: carry.profile/person
+  of: keri-svc-data-strategy
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-svc-data-strategy
+  is: "Data strategy"
+- the: carry.profile/offered
+  of: keri-svc-data-strategy
+  is: carry.profile/yes
+- the: carry.profile/description
+  of: keri-svc-data-strategy
+  is: "Help companies decide what data to collect, how to store it, and who should own it"
+
+- the: carry.profile/person
+  of: keri-svc-workshop-facilitation
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-svc-workshop-facilitation
+  is: "Workshop facilitation"
+- the: carry.profile/offered
+  of: keri-svc-workshop-facilitation
+  is: carry.profile/yes
+- the: carry.profile/description
+  of: keri-svc-workshop-facilitation
+  is: "Structured sessions to surface tacit knowledge and make it explicit"
+
+- the: carry.profile/person
+  of: keri-svc-fractional-cdo
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-svc-fractional-cdo
+  is: "Fractional CDO/CKO work"
+- the: carry.profile/offered
+  of: keri-svc-fractional-cdo
+  is: carry.profile/yes
+- the: carry.profile/description
+  of: keri-svc-fractional-cdo
+  is: "1–2 days per week embedded in client teams"
+
+# Not offered
+- the: carry.profile/person
+  of: keri-svc-software-dev
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-svc-software-dev
+  is: "Software development"
+- the: carry.profile/offered
+  of: keri-svc-software-dev
+  is: carry.profile/no
+
+- the: carry.profile/person
+  of: keri-svc-data-engineering
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-svc-data-engineering
+  is: "Data engineering and pipeline work"
+- the: carry.profile/offered
+  of: keri-svc-data-engineering
+  is: carry.profile/no
+- the: carry.profile/description
+  of: keri-svc-data-engineering
+  is: "Can define requirements; does not build pipelines"
+
+- the: carry.profile/person
+  of: keri-svc-bi-dashboarding
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-svc-bi-dashboarding
+  is: "BI and dashboarding"
+- the: carry.profile/offered
+  of: keri-svc-bi-dashboarding
+  is: carry.profile/no
+- the: carry.profile/description
+  of: keri-svc-bi-dashboarding
+  is: "Refers this out"
+
+- the: carry.profile/person
+  of: keri-svc-enterprise-sales
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-svc-enterprise-sales
+  is: "Enterprise sales and procurement advice"
+- the: carry.profile/offered
+  of: keri-svc-enterprise-sales
+  is: carry.profile/no
+
+# ─── Communication Preferences ───────────────────────────────────────────────
+
+# Outbound — how Keri communicates
+- the: carry.profile/person
+  of: keri-comm-direct-structured
+  is: keri-vasquez
+- the: carry.profile/description
+  of: keri-comm-direct-structured
+  is: "Direct and structured; likes clear scaffolding — headers, bullets, numbered steps"
+- the: carry.profile/direction
+  of: keri-comm-direct-structured
+  is: carry.profile/outbound
+
+- the: carry.profile/person
+  of: keri-comm-asks-why
+  is: keri-vasquez
+- the: carry.profile/description
+  of: keri-comm-asks-why
+  is: "Asks many 'why' and 'what would change your mind' questions — not as a challenge, but to probe"
+- the: carry.profile/direction
+  of: keri-comm-asks-why
+  is: carry.profile/outbound
+
+- the: carry.profile/person
+  of: keri-comm-warm-efficient
+  is: keri-vasquez
+- the: carry.profile/description
+  of: keri-comm-warm-efficient
+  is: "Warm but efficient; does not enjoy small talk in work contexts"
+- the: carry.profile/direction
+  of: keri-comm-warm-efficient
+  is: carry.profile/outbound
+
+- the: carry.profile/person
+  of: keri-comm-precise-language
+  is: keri-vasquez
+- the: carry.profile/description
+  of: keri-comm-precise-language
+  is: "Uses precise language — 'might' means might; 'should' signals stronger conviction"
+- the: carry.profile/direction
+  of: keri-comm-precise-language
+  is: carry.profile/outbound
+
+# Inbound — how Keri likes to receive information
+- the: carry.profile/person
+  of: keri-comm-conclusion-first
+  is: keri-vasquez
+- the: carry.profile/description
+  of: keri-comm-conclusion-first
+  is: "Lead with the conclusion, then the reasoning — don't make me wait for the punchline"
+- the: carry.profile/direction
+  of: keri-comm-conclusion-first
+  is: carry.profile/inbound
+
+- the: carry.profile/person
+  of: keri-comm-concrete-examples
+  is: keri-vasquez
+- the: carry.profile/description
+  of: keri-comm-concrete-examples
+  is: "Prefer concrete examples over abstract principles where possible"
+- the: carry.profile/direction
+  of: keri-comm-concrete-examples
+  is: carry.profile/inbound
+
+- the: carry.profile/person
+  of: keri-comm-flag-uncertainty
+  is: keri-vasquez
+- the: carry.profile/description
+  of: keri-comm-flag-uncertainty
+  is: "Flag uncertainty explicitly — 'I'm not sure, but...' is preferred over false confidence"
+- the: carry.profile/direction
+  of: keri-comm-flag-uncertainty
+  is: carry.profile/inbound
+
+- the: carry.profile/person
+  of: keri-comm-show-trade-offs
+  is: keri-vasquez
+- the: carry.profile/description
+  of: keri-comm-show-trade-offs
+  is: "When something has trade-offs, show them — don't pre-decide on my behalf"
+- the: carry.profile/direction
+  of: keri-comm-show-trade-offs
+  is: carry.profile/inbound
+
+# ─── Output Preferences ──────────────────────────────────────────────────────
+
+# Writing tasks
+- the: carry.profile/person
+  of: keri-out-writing
+  is: keri-vasquez
+- the: carry.profile/task_type
+  of: keri-out-writing
+  is: carry.profile/writing
+- the: carry.profile/preference
+  of: keri-out-writing
+  is: "Match voice: clear, structured, slightly formal but not stiff; no jargon unless field-specific"
+- the: carry.profile/preference
+  of: keri-out-writing
+  is: "Write in British English"
+- the: carry.profile/preference
+  of: keri-out-writing
+  is: "No em dashes; use commas and semicolons instead"
+- the: carry.profile/preference
+  of: keri-out-writing
+  is: "Don't pad — if the answer is 100 words, write 100 words"
+- the: carry.profile/preference
+  of: keri-out-writing
+  is: "For client deliverables: more formal, third-person where appropriate, executive summary first"
+- the: carry.profile/preference
+  of: keri-out-writing
+  is: "For personal notes: informal is fine"
+
+# Analysis tasks
+- the: carry.profile/person
+  of: keri-out-analysis
+  is: keri-vasquez
+- the: carry.profile/task_type
+  of: keri-out-analysis
+  is: carry.profile/analysis
+- the: carry.profile/preference
+  of: keri-out-analysis
+  is: "Show your reasoning — I want to see how you got there"
+- the: carry.profile/preference
+  of: keri-out-analysis
+  is: "Separate facts from interpretation clearly"
+- the: carry.profile/preference
+  of: keri-out-analysis
+  is: "If pattern-matching from training data, say so — I will weight it accordingly"
+
+# Research tasks
+- the: carry.profile/person
+  of: keri-out-research
+  is: keri-vasquez
+- the: carry.profile/task_type
+  of: keri-out-research
+  is: carry.profile/research
+- the: carry.profile/preference
+  of: keri-out-research
+  is: "Give the 3–5 most important things, not a comprehensive list"
+- the: carry.profile/preference
+  of: keri-out-research
+  is: "Synthesise, don't just summarise"
+- the: carry.profile/preference
+  of: keri-out-research
+  is: "Tell me what is contested or uncertain in the field"
+
+# ─── Active Contexts ─────────────────────────────────────────────────────────
+
+- the: carry.profile/person
+  of: keri-ctx-work
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-ctx-work
+  is: "Work"
+- the: carry.profile/context_tag
+  of: keri-ctx-work
+  is: carry.profile/work
+- the: carry.profile/description
+  of: keri-ctx-work
+  is: "Consulting engagements, client deliverables, proposals, research"
+- the: carry.profile/is_default
+  of: keri-ctx-work
+  is: carry.profile/yes
+
+- the: carry.profile/person
+  of: keri-ctx-writing
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-ctx-writing
+  is: "Writing"
+- the: carry.profile/context_tag
+  of: keri-ctx-writing
+  is: carry.profile/writing
+- the: carry.profile/description
+  of: keri-ctx-writing
+  is: "Substack newsletter, talks, occasional essays"
+
+- the: carry.profile/person
+  of: keri-ctx-research
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-ctx-research
+  is: "Personal research"
+- the: carry.profile/context_tag
+  of: keri-ctx-research
+  is: carry.profile/research
+- the: carry.profile/description
+  of: keri-ctx-research
+  is: "Graph-based personal data, AI tooling for consultants"
+
+- the: carry.profile/person
+  of: keri-ctx-personal
+  is: keri-vasquez
+- the: carry.profile/name
+  of: keri-ctx-personal
+  is: "Life"
+- the: carry.profile/context_tag
+  of: keri-ctx-personal
+  is: carry.profile/personal
+- the: carry.profile/description
+  of: keri-ctx-personal
+  is: "Travel, books, cooking, hobby projects"
+
+# ─── Context Behaviours ───────────────────────────────────────────────────────
+
+- the: carry.profile/person
+  of: keri-behavior-work
+  is: keri-vasquez
+- the: carry.profile/context_tag
+  of: keri-behavior-work
+  is: carry.profile/work
+- the: carry.profile/tone
+  of: keri-behavior-work
+  is: "Professional, client-ready, careful with claims"
+
+- the: carry.profile/person
+  of: keri-behavior-research
+  is: keri-vasquez
+- the: carry.profile/context_tag
+  of: keri-behavior-research
+  is: carry.profile/research
+- the: carry.profile/tone
+  of: keri-behavior-research
+  is: "Exploratory; speculative is fine, but flag uncertainty explicitly"
+
+- the: carry.profile/person
+  of: keri-behavior-personal
+  is: keri-vasquez
+- the: carry.profile/context_tag
+  of: keri-behavior-personal
+  is: carry.profile/personal
+- the: carry.profile/tone
+  of: keri-behavior-personal
+  is: "Informal and relaxed; does not need to be comprehensive"

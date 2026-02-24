@@ -1,0 +1,17 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [synthesis, base]
+  prompt: "What are Keri's areas of deep expertise, and how do they connect to her consulting services?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Keri's four deep expertise areas are: knowledge management theory (PKM, organisational KM, SECI model, Communities of Practice), graph data modeling (entity-relationship thinking, property graphs, RDF, ontology design), facilitation (structured workshops, retrospectives, sense-making), and consulting craft (scoping, stakeholder management, deliverable design). These map directly to her services: knowledge audits draw on KM theory; knowledge graph design draws on graph modeling; workshop facilitation draws on facilitation expertise; and all consulting work draws on consulting craft."
+          key-fact:
+            - Four deep areas — knowledge management theory, graph data modeling, facilitation, consulting craft
+            - Knowledge audits connected to KM theory
+            - Knowledge graph design connected to graph modeling expertise
+            - Workshop facilitation as both expertise and service
+  source-file:
+    - semantic-profile.md

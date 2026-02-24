@@ -1,0 +1,23 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [lookup, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "What English variant does Keri write in, and why?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: British English
+              score: 3
+            - term: British
+              score: 2
+            - term: Europe
+              score: 1
+            - term: California
+              score: 1
+  source-file:
+    - semantic-profile.md

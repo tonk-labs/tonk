@@ -1,0 +1,18 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [inference, base]
+  prompt: "Based on the links @joppevos personally shared, what can you infer about what he is currently building or exploring technically?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Based on joppevos's personal shares: he is currently building with Rust-based CRDTs (loro.dev — 'been playing with it', described as Rust, really fast); has been working through synchronisation and timing concepts (HLC post — 'finally understood HLCs from this post'); interested in trustless sync mechanisms (Verifiable Delay Functions — 'relevant for trustless sync'); exploring SQLite in the browser (sqlocal — 'impressive'); and building or evaluating local-first database tooling (evolu — 'still early'). He shares things he is 'currently building with' by his own description."
+          key-fact:
+            - Building with loro.dev (Rust CRDT library)
+            - Working through HLCs (sync/timing)
+            - Interested in trustless sync (VDF)
+            - Exploring SQLite in browser (sqlocal)
+            - Evaluating local-first DB tools (evolu)
+  source-file:
+    - local-first-haus.md

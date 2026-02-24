@@ -1,0 +1,25 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [lookup, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "Does Keri offer software development as a service?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: "no"
+              score: 1
+            - term: does not
+              score: 2
+            - term: doesn't
+              score: 2
+            - term: not offered
+              score: 2
+            - term: production code
+              score: 1
+  source-file:
+    - semantic-profile.md

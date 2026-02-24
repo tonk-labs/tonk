@@ -1,0 +1,16 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [inference, base]
+  prompt: "If a client asked Keri to build a data pipeline for their company, what would she say?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Keri would decline to build it herself. Data engineering and pipeline work is explicitly listed as something she does not offer — she can define requirements but does not build pipelines. She would likely help the client define requirements and scope clearly, then refer the actual implementation to a specialist data engineer."
+          key-fact:
+            - Data engineering is not offered
+            - Can define requirements but does not build pipelines
+            - Would likely refer implementation to a specialist
+  source-file:
+    - semantic-profile.md

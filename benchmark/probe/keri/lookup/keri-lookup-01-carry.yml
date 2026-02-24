@@ -1,0 +1,19 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [lookup, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "What is Keri's location and timezone?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: Amsterdam
+              score: 2
+            - term: CET
+              score: 2
+  source-file:
+    - semantic-profile.md

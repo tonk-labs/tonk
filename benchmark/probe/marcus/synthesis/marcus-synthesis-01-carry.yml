@@ -1,0 +1,21 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [synthesis, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "What is Marcus's overall approach to keeping the context window healthy across a long session?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Treat context like debt: summarize long explorations before continuing, remove completed sub-tasks, don't re-explain things the agent already knows, and start fresh if you can't trust the context. Load only what's needed, put the most important things first, and keep CLAUDE.md tight."
+          key-fact:
+            - Summarize long explorations before continuing
+            - Remove completed sub-tasks from active context
+            - Don't re-explain things the agent already knows
+            - Keep CLAUDE.md tight and up to date
+            - Context management as debt analogy
+  source-file:
+    - agent-orchestration.md

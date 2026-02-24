@@ -1,0 +1,17 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [inference, base]
+  prompt: "Based on Marcus's notes, what would his reaction be if a developer said 'I gave the agent the full codebase and told it to improve things'?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Marcus would be strongly critical. This violates multiple principles he holds: (1) large paste-entire-codebase approaches are almost always worse than targeted queryable context, (2) 'improve the code' is the canonical example of the infinite refactor failure mode — vague improvement prompts lead to changes everywhere, (3) there are no explicit success criteria defining what 'improved' means, and (4) there is no scope constraint. He would say the developer set the agent up to fail."
+          key-fact:
+            - Violates no-large-pastes principle
+            - Vague 'improve' prompt triggers infinite refactor failure mode
+            - No explicit success criteria
+            - Multiple principles violated simultaneously
+  source-file:
+    - agent-orchestration.md

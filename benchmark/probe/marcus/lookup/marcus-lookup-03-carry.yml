@@ -1,0 +1,21 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [lookup, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "What is Marcus's fix for the 'hallucinated API' failure mode?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: library source
+              score: 2
+            - term: docs first
+              score: 2
+            - term: training data
+              score: 1
+  source-file:
+    - agent-orchestration.md

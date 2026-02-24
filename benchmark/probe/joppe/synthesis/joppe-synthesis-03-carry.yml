@@ -1,0 +1,22 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [synthesis, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "What SQLite-related resources have been shared in the archive, and what is the community's overall view of SQLite?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "SQLite-related links include: vlcn.io / cr-sqlite (SQLite with CRDTs built in, shared by sigrid), scattered-thoughts post on why SQLite is small (tennyson_w, 'relevant to why sqlite is the right default'), tantaman post on SQLite as application database (sigrid, 'the SQLite-as-application-database case'), sqlocal (joppevos, SQLite in browser via OPFS), electric-sql (marten_b, 'moving fast, worth tracking'), evolu (joppevos, 'local-first with SQLite and CRDT sync'). The community's view: SQLite is becoming the default assumption for local-first apps."
+          key-fact:
+            - vlcn.io — cr-sqlite, CRDTs built into SQLite
+            - tantaman — SQLite as application database case
+            - sqlocal — SQLite in browser via OPFS
+            - electric-sql — moving fast
+            - evolu — local-first with SQLite and CRDT sync
+            - "Community view: becoming default assumption"
+  source-file:
+    - local-first-haus.md

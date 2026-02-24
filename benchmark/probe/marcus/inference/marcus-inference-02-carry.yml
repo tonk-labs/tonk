@@ -1,0 +1,20 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [inference, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "What problem is Marcus describing when he talks about 'context debt', and what does it have in common with technical debt?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Context debt refers to the accumulation of lazy 'paste the whole file' decisions that degrade context quality over time — the context fills up, quality degrades, and you have to start over. Marcus explicitly draws the analogy to technical debt: both are manageable if you're intentional about them, but ruinous if you're not. The parallel is that short-term shortcuts create long-term costs in both cases."
+          key-fact:
+            - Context debt = accumulated paste-everything decisions
+            - Context fills up, quality degrades, forces restart
+            - Explicit analogy to technical debt
+            - Both manageable if intentional, ruinous if not
+  source-file:
+    - agent-orchestration.md

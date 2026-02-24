@@ -1,0 +1,17 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [synthesis, base]
+  prompt: "What are the recurring themes in the Local-First Haus link archive, and what do they reveal about the community's interests?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Four recurring themes are identified: (1) Ink & Switch papers get reshared constantly — treated as required reading. (2) Arxiv papers on CRDTs are heavy — the community skews academic more than most. (3) SQLite as foundation — a clear cluster of sqlite-as-local-database links, becoming the default assumption. (4) Old classics (Bret Victor, worrydream, old hypertext) get periodically rediscovered. Together these reveal a community that values foundational theory, has strong canonical texts, and is converging on SQLite as a practical substrate."
+          key-fact:
+            - Ink & Switch papers reshared constantly as required reading
+            - Heavy arxiv CRDT papers, community skews academic
+            - SQLite cluster becoming default assumption
+            - Old classics periodically rediscovered
+  source-file:
+    - local-first-haus.md

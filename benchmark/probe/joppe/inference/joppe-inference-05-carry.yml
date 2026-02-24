@@ -1,0 +1,20 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [inference, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "Based on the community's link patterns, what kind of architecture or technology approach would this community likely be most sceptical of?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "The community would be most sceptical of centralised, server-dependent architectures. The cloudflare durable objects post was noted as 'centralised but interesting model' — the 'but' signals acknowledgment of centrality as a caveat. Multiple HN threads debate local-first vs server-first. The foundational Ink & Switch essay argues against server dependency. The community's default assumption is that data should be local, offline-capable, and user-owned. A purely server-dependent SaaS architecture with no offline capability would likely receive sceptical reception."
+          key-fact:
+            - Centralised architectures noted with scepticism ("centralised but interesting")
+            - Multiple debates about local-first vs server-first
+            - Community default is local, offline-capable, user-owned data
+            - Ink & Switch essay argues against server dependency as foundational text
+  source-file:
+    - local-first-haus.md

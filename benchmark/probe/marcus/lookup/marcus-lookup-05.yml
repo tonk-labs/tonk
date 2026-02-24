@@ -1,0 +1,16 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [lookup, base]
+  prompt: "How does Marcus describe his mental model for an agent?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: junior engineer
+              score: 3
+            - term: junior
+              score: 1
+  source-file:
+    - agent-orchestration.md

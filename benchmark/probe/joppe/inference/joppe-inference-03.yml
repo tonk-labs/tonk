@@ -1,0 +1,16 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [inference, base]
+  prompt: "Based on patterns in the archive, what question or tension seems most active in this community?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Two tensions appear most active: (1) Local-first vs. server-first — there are multiple HN threads on this debate (one in February 2026 on 'offline sync edge cases', one in November 2025 on 'local-first vs server-first'), plus links like the server-informed UI post as an 'interesting alternative to full offline-first'. The Ink & Switch local-first essay gets constantly reshared, suggesting it's both foundational and contested. (2) OT vs. CRDT — Figma's OT post was reshared 'because someone asked', and CRDTs dominate the archive, suggesting this debate occasionally resurfaces."
+          key-fact:
+            - Local-first vs server-first debate — multiple HN threads
+            - Server-informed UI as alternative framing
+            - OT vs CRDT debate surfaces occasionally (Figma post)
+  source-file:
+    - local-first-haus.md

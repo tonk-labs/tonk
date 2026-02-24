@@ -1,0 +1,17 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [synthesis, base]
+  prompt: "What does the archive reveal about how the community onboards new members to its core ideas?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "The archive shows a pattern of resharing canonical resources when new people join. The Ink & Switch local-first essay was reshared in November 2025 explicitly because 'new people keep joining'. The local-first essay at inkandswitch.com/local-first/ gets reshared constantly with the annotation that this 'gets reshared constantly'. The josephg CRDT post is described as 'still the best accessible intro to why CRDTs matter'. The Riffle essay was called the most important thing to read that month. Together this suggests the community has an informal canon of onboarding texts that circulate continuously."
+          key-fact:
+            - Resharing of canonical resources for new members
+            - Ink & Switch essay reshared explicitly because new people keep joining
+            - josephg CRDT post described as best accessible intro
+            - Community has an informal onboarding canon
+  source-file:
+    - local-first-haus.md

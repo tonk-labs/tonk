@@ -1,0 +1,20 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [inference, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "Based on Marcus's notes, is he likely to trust a fully autonomous AI agent to deploy code to production without human review? What evidence supports your answer?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "No. Marcus explicitly requires a human review gate before anything hits production in automated workflows. He is skeptical of long autonomous loops without checkpoints, preferring human-in-the-loop at each meaningful step. He also requires a well-defined stopping condition, an explicit allowed-actions list, and logging of every action — all of which indicate deep distrust of fully autonomous deployment."
+          key-fact:
+            - Human review gate required before production
+            - Skeptical of long autonomous loops without checkpoints
+            - Prefers human-in-the-loop at each meaningful step
+            - Evidence drawn from agentic loops section
+  source-file:
+    - agent-orchestration.md

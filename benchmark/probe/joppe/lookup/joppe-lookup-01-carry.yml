@@ -1,0 +1,19 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [lookup, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "Who posted the most links in the Local-First Haus archive?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: ruxandra
+              score: 3
+            - term: "@ruxandra"
+              score: 3
+  source-file:
+    - local-first-haus.md

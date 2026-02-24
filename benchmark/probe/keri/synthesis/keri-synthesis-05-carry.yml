@@ -1,0 +1,21 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [synthesis, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "What are Keri's global output anti-preferences, and which of her other stated preferences do they reinforce?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Keri's global anti-preferences are: no unsolicited encouragement ('Great question!', 'Absolutely!'); no moralising or caveating obvious things; no long preambles before the actual answer; no bullet points that could have been a sentence. These reinforce: her inbound preference for conclusion-first (no preambles), her outbound style of being direct and efficient (no padding), her preference for precise language (no hollow affirmations), and her general dislike of performative helpfulness."
+          key-fact:
+            - No unsolicited encouragement
+            - No moralising or caveating obvious things
+            - No long preambles
+            - No unnecessary bullet points
+            - Anti-preferences reinforce conclusion-first and directness preferences
+  source-file:
+    - semantic-profile.md

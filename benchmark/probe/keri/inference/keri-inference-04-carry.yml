@@ -1,0 +1,20 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [inference, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  prompt: "What is the difference between Keri's 'working knowledge' and 'deep' expertise in the graph domain, and what does it imply for how an agent should engage with her on Neo4j optimisation problems?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Deep expertise means she can teach it and has strong opinions — this applies to graph data modeling (entity-relationship thinking, property graphs, ontology design). Working knowledge means she can do it but would defer to a specialist on hard problems — this applies to graph databases like Neo4j and ArangoDB: she can write queries but cannot optimise at scale. On Neo4j optimisation specifically, an agent should engage at an intermediate level, not oversimplify, but should acknowledge when a problem requires specialist-level knowledge and not pretend she would handle it independently."
+          key-fact:
+            - Deep in graph data modeling theory
+            - Working knowledge in graph databases (Neo4j, ArangoDB)
+            - Can write queries, cannot optimise at scale
+            - Agent should engage at intermediate level, flag complexity
+  source-file:
+    - semantic-profile.md

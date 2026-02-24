@@ -1,0 +1,228 @@
+carry.profile:
+  # ─── Attributes ──────────────────────────────────────────────────────────
+
+  name:
+    the: Full name of this person
+    assert: Text
+
+  location:
+    the: Primary location
+    assert: Text
+
+  timezone:
+    the: Primary timezone
+    assert: Text
+
+  pronouns:
+    the: Preferred pronouns
+    assert: Text
+
+  role_title:
+    the: Professional role or title
+    assert: Text
+
+  role_description:
+    the: Extended description of professional role and focus
+    assert: Text
+
+  english_variant:
+    the: Preferred variant of written English
+    assert: [:british, :american]
+
+  preferred_format:
+    the: A preferred output format for receiving information from an agent
+    assert: Text
+    cardinality: many
+
+  global_antipreference:
+    the: An output behaviour this person never wants from an agent, regardless of task type
+    assert: Text
+    cardinality: many
+
+  default_context:
+    the: The context to assume when none is explicitly stated
+    assert: [:work, :writing, :research, :personal]
+
+  person:
+    the: The person this record belongs to
+    assert: .Person
+
+  topic:
+    the: The subject matter of a language or expertise record
+    assert: Text
+
+  proficiency:
+    the: Language proficiency level
+    assert: [:native, :conversational, :basic]
+
+  expertise_level:
+    the: Depth of expertise in this area
+    assert: [:deep, :working, :adjacent, :out_of_scope]
+
+  description:
+    the: A descriptive note providing additional detail
+    assert: Text
+
+  offered:
+    the: Whether this service is offered by the person
+    assert: [:yes, :no]
+
+  direction:
+    the: Whether this is about how the person communicates outbound or receives information inbound
+    assert: [:outbound, :inbound]
+
+  task_type:
+    the: The type of task this output preference applies to
+    assert: [:writing, :analysis, :research]
+
+  preference:
+    the: A specific output behaviour to apply for this task type
+    assert: Text
+    cardinality: many
+
+  antipreference:
+    the: A specific output behaviour to avoid for this task type
+    assert: Text
+    cardinality: many
+
+  context_tag:
+    the: The named context this record belongs to
+    assert: [:work, :writing, :research, :personal]
+
+  is_default:
+    the: Whether this is the default context when none is explicitly specified
+    assert: [:yes, :no]
+
+  tone:
+    the: The expected tone of agent responses in this context
+    assert: Text
+
+  behavior_note:
+    the: A specific behavioural guideline for agent responses in this context
+    assert: Text
+    cardinality: many
+
+  # ─── Concepts ────────────────────────────────────────────────────────────
+
+  Person:
+    the: A person whose profile is stored in this system
+    where:
+      name: .
+      role_title: .
+      role_description: .
+      location: .
+      timezone: .
+      pronouns: .
+    option:
+      english_variant: .
+      preferred_format: .
+      global_antipreference: .
+      default_context: .
+
+  Language:
+    the: A language spoken by a person, with its proficiency level
+    where:
+      person: .
+      topic: .
+      proficiency: .
+
+  Expertise:
+    the: A domain of knowledge or skill and how deeply the person holds it
+    where:
+      person: .
+      topic: .
+      expertise_level: .
+    option:
+      description: .
+
+  ProfessionalService:
+    the: A service the person explicitly offers or declines to offer
+    where:
+      person: .
+      name: .
+      offered: .
+    option:
+      description: .
+
+  CommunicationPreference:
+    the: A single preference about communication style, either outbound (how the person communicates) or inbound (how they like to receive information)
+    where:
+      person: .
+      description: .
+      direction: .
+
+  OutputPreference:
+    the: Output preferences for a specific task type
+    where:
+      person: .
+      task_type: .
+    option:
+      preference: .
+      antipreference: .
+
+  ActiveContext:
+    the: A domain of activity the person operates in, with an optional default flag
+    where:
+      person: .
+      name: .
+      context_tag: .
+    option:
+      description: .
+      is_default: .
+
+  ContextBehavior:
+    the: How an agent should behave when operating in a given context for this person
+    where:
+      person: .
+      context_tag: .
+      tone: .
+    option:
+      behavior_note: .
+
+  # ─── Derived Concepts ────────────────────────────────────────────────────
+
+  DeclinedService:
+    the: A service the person explicitly does not offer
+    where:
+      person: .
+      name: .
+
+  OutOfScopeExpertise:
+    the: A topic the person explicitly does not work in and should not be assumed to handle
+    where:
+      person: .
+      topic: .
+
+  # ─── Derived Rules ───────────────────────────────────────────────────────
+
+  declined-service:
+    the: >
+      Derives DeclinedService from any ProfessionalService where offered is no
+      — useful for guarding against suggesting or assuming out-of-scope work.
+    assert:
+      .DeclinedService:
+        this: ?service
+        person: ?person
+        name: ?name
+    when:
+      - .ProfessionalService:
+          this: ?service
+          person: ?person
+          name: ?name
+          offered: carry.profile/no
+
+  out-of-scope-expertise:
+    the: >
+      Derives OutOfScopeExpertise from any Expertise with level out_of_scope
+      — topics the person cannot handle and an agent should not assume they can.
+    assert:
+      .OutOfScopeExpertise:
+        this: ?expertise
+        person: ?person
+        topic: ?topic
+    when:
+      - .Expertise:
+          this: ?expertise
+          person: ?person
+          topic: ?topic
+          expertise_level: carry.profile/out_of_scope

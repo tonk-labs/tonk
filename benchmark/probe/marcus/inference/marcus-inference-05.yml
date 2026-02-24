@@ -1,0 +1,20 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [inference, base]
+  prompt: "What failure mode from Marcus's notes would best describe an agent that rewrites an entire authentication module when asked to 'fix the login bug'?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: infinite refactor
+              score: 3
+            - term: over-architecter
+              score: 2
+            - term: over-architect
+              score: 2
+            - term: vague
+              score: 1
+  source-file:
+    - agent-orchestration.md

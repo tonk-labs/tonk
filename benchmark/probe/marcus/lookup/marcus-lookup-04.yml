@@ -1,0 +1,18 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [lookup, base]
+  prompt: "What does Marcus require before anything hits production in an automated workflow?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: human review gate
+              score: 3
+            - term: human review
+              score: 2
+            - term: review gate
+              score: 2
+  source-file:
+    - agent-orchestration.md
