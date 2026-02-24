@@ -96,6 +96,38 @@ tonk --json delete "did:key:z..."
 # → {"ok":true,"id":"did:key:z...","concept":"Task"}
 ```
 
+## Batch operations — `tonk batch`
+
+Create, update, or delete multiple instances atomically in a single commit. Input is a JSON array via `--file` or `--stdin`. If any item fails validation, the entire batch aborts with no changes committed.
+
+```bash
+# Batch create — array of attribute objects
+echo '[{"title":"Fix bug","status":"todo"},{"title":"Write docs","status":"todo"}]' \
+  | tonk --json batch create Task --stdin
+# → {"ok":true,"concept":"Task","count":2,"created":[{"id":"did:key:z...","data":{...}},...]}}
+
+# From a file
+tonk --json batch create Task --file tasks.json
+
+# Batch update — each object must include "id" plus fields to change
+echo '[{"id":"did:key:z...","status":"done"},{"id":"did:key:z...","priority":"high"}]' \
+  | tonk --json batch update Task --stdin
+# → {"ok":true,"concept":"Task","count":2,"updated":[{"id":"did:key:z...","updated":[{"status":"done"}]},...]}}
+
+# Batch delete — array of instance ID strings
+echo '["did:key:z...","did:key:z..."]' \
+  | tonk --json batch delete Task --stdin
+# → {"ok":true,"concept":"Task","count":2,"deleted":["did:key:z...","did:key:z..."]}
+```
+
+### Input formats
+
+| Operation | Input shape | Required fields |
+|-----------|------------|-----------------|
+| `batch create` | `[{...}, ...]` | Attribute key-value objects |
+| `batch update` | `[{...}, ...]` | Each object must have `"id"` plus fields to change |
+| `batch delete` | `["id", ...]` | Array of instance ID strings |
+
 ## Spaces
 
 ```bash
@@ -238,6 +270,9 @@ tonk sync
 | `tonk --json show <id>` | Show instance details |
 | `tonk --json update <id> [key=val...]` | Update instance fields |
 | `tonk --json delete <id>` | Delete an instance |
+| `tonk --json batch create <concept> --file/--stdin` | Batch create instances from JSON array |
+| `tonk --json batch update <concept> --file/--stdin` | Batch update instances (objects with "id") |
+| `tonk --json batch delete <concept> --file/--stdin` | Batch delete instances (array of IDs) |
 | `tonk login` | Authenticate via browser |
 | `tonk login --delegation <file>` | Import delegation from file/base64 |
 | `tonk --json space create <name>` | Create a new space |
