@@ -127,6 +127,21 @@ pub const ATTR_INSTANCE_CREATED: &str = "instance/created";
 /// Attribute metadata: human-readable description of the attribute.
 pub const ATTR_ATTRIBUTE_DESCRIPTION: &str = "attribute/description";
 
+/// Registry attribute: points from registry entity to rule entities.
+pub const ATTR_REGISTRY_RULE: &str = "registry/rule";
+
+/// Rule attribute: the human-readable name of the rule.
+pub const ATTR_RULE_NAME: &str = "rule/name";
+
+/// Rule attribute: optional description.
+pub const ATTR_RULE_DESCRIPTION: &str = "rule/description";
+
+/// Rule attribute: name of the conclusion concept.
+pub const ATTR_RULE_CONCLUSION: &str = "rule/conclusion";
+
+/// Rule attribute: JSON-serialized rule definition.
+pub const ATTR_RULE_DEFINITION: &str = "rule/definition";
+
 // ---------------------------------------------------------------------------
 // Deterministic entity derivation
 // ---------------------------------------------------------------------------
@@ -146,6 +161,17 @@ pub fn concept_entity(space_did: &str, concept_name: &ConceptName) -> Result<Ent
         "{}\0concept\0{}",
         space_did,
         concept_name.to_lowercase()
+    ))
+}
+
+/// Derive the rule entity for a given rule name within a space.
+///
+/// `rule_entity = did:key:z{base58(blake3(space_did + "\0rule\0" + lowercase_name))}`
+pub fn rule_entity(space_did: &str, rule_name: &str) -> Result<Entity> {
+    derive_entity(&format!(
+        "{}\0rule\0{}",
+        space_did,
+        rule_name.to_lowercase()
     ))
 }
 

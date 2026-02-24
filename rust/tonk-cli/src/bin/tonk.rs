@@ -49,6 +49,12 @@ mod inner {
             command: Option<ConceptCommands>,
         },
 
+        /// Manage deductive rules between concepts
+        Rule {
+            #[command(subcommand)]
+            command: Option<RuleCommands>,
+        },
+
         /// Create a new instance of a concept
         Create {
             /// Concept name (e.g., "Task")
@@ -67,14 +73,14 @@ mod inner {
             stdin: bool,
         },
 
-        /// Query instances of a concept with optional filters
+        /// Query instances of a concept with optional selectors
         Query {
             /// Concept name (e.g., "Task")
             concept: String,
 
-            /// Filters as key=value pairs (e.g., status=todo priority=high)
+            /// Selectors as key=value pairs (e.g., status=todo priority=high)
             #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-            filters: Vec<String>,
+            selectors: Vec<String>,
         },
 
         /// Show details of an instance by ID
@@ -253,6 +259,39 @@ mod inner {
             /// Also delete all instances of this concept
             #[arg(short, long)]
             force: bool,
+        },
+    }
+
+    #[derive(Subcommand)]
+    pub enum RuleCommands {
+        /// Define a new deductive rule
+        Define {
+            /// Rule name (e.g., "safe-meals", "high-priority-tasks")
+            name: String,
+
+            /// Read rule definition from a JSON file
+            #[arg(long, short)]
+            file: Option<String>,
+
+            /// Read rule definition from stdin as JSON
+            #[arg(long)]
+            stdin: bool,
+
+            /// Optional description of the rule
+            #[arg(short, long)]
+            description: Option<String>,
+        },
+
+        /// Show details of a rule
+        Show {
+            /// Rule name
+            name: String,
+        },
+
+        /// Delete a rule
+        Delete {
+            /// Rule name
+            name: String,
         },
     }
 
@@ -492,6 +531,26 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::concept::delete(name, force, json).await?;
             }
         },
+        Commands::Rule { command } => match command {
+            None => {
+                // `tonk rule` with no subcommand lists all rules
+                tonk_cli::rule::list(json).await?;
+            }
+            Some(RuleCommands::Define {
+                name,
+                file,
+                stdin,
+                description,
+            }) => {
+                tonk_cli::rule::define(name, file, stdin, description, json).await?;
+            }
+            Some(RuleCommands::Show { name }) => {
+                tonk_cli::rule::show(name, json).await?;
+            }
+            Some(RuleCommands::Delete { name }) => {
+                tonk_cli::rule::delete(name, json).await?;
+            }
+        },
         Commands::Create {
             concept,
             fields,
@@ -500,8 +559,8 @@ async fn main() -> anyhow::Result<()> {
         } => {
             tonk_cli::instance::create(concept, fields, file, stdin, json).await?;
         }
-        Commands::Query { concept, filters } => {
-            tonk_cli::instance::query(concept, filters, json).await?;
+        Commands::Query { concept, selectors } => {
+            tonk_cli::instance::query(concept, selectors, json).await?;
         }
         Commands::Show { id } => {
             tonk_cli::instance::show(id, json).await?;

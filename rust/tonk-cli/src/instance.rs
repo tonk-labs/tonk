@@ -6,12 +6,22 @@
 
 use crate::schema::*;
 use anyhow::{Context, Result};
-use dialog_artifacts::{Artifact, ArtifactSelector, ArtifactStore, ArtifactStoreMut, Instruction};
+use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
 use dialog_query::claim::Attribute;
-use dialog_query::{Entity, Value};
-use futures_util::TryStreamExt;
+use dialog_query::{Entity, Term, Value};
 use std::io::Read;
 use std::str::FromStr;
+
+/// A schema attribute variable used during concept querying.
+struct AttrVar {
+    /// Fully qualified attribute name (e.g., `"person/name"`).
+    #[allow(dead_code)]
+    attribute_name: String,
+    /// Short/unqualified name used as the query parameter key (e.g., `"name"`).
+    param_name: String,
+    /// The query term variable bound to this attribute.
+    term: Term<Value>,
+}
 
 // ---------------------------------------------------------------------------
 // Create an instance
@@ -163,10 +173,13 @@ pub async fn create(
 // Query instances
 // ---------------------------------------------------------------------------
 
-/// Query instances of a concept, with optional filters.
+/// Query instances of a concept, with optional selectors.
 ///
-/// Filters are `key=value` pairs for exact matching.
-pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Result<()> {
+/// Selectors are `key=value` pairs for exact matching.
+///
+/// Uses dialog-db's Session-based concept querying which automatically
+/// merges stored instances with rule-derived instances.
+pub async fn query(concept_name: String, selectors: Vec<String>, json: bool) -> Result<()> {
     let ctx = get_space_context()?;
     let branch = open_branch(&ctx).await?;
 
@@ -180,68 +193,141 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
 
     let schema_attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
 
-    // Parse filters
-    let filter_map = parse_kv_fields(&filters)?;
-    let mut qualified_filters: Vec<(String, Value)> = Vec::new();
-    for (key, value) in &filter_map {
+    // Parse selectors
+    let selector_map = parse_kv_fields(&selectors)?;
+    let mut qualified_selectors: Vec<(String, Value)> = Vec::new();
+    for (key, value) in &selector_map {
         let qualified = qualify_attribute(&stored_name, key)?;
-        qualified_filters.push((qualified, parse_value(value)));
+        qualified_selectors.push((qualified, parse_value(value)));
     }
 
-    // Get all instance entities for this concept
-    let instance_entities = fetch_entity_values(&branch, &concept, ATTR_CONCEPT_INSTANCE).await?;
+    // Load any rules targeting this concept (may be empty)
+    let rule_defs =
+        crate::rule::load_rules_for_concept(&branch, &ctx.space_did, &stored_name).await?;
 
-    if instance_entities.is_empty() {
-        if json {
-            println!("[]");
-        } else {
-            println!("No {} instances found.", stored_name);
-        }
-        return Ok(());
+    // Use Session-based querying which handles both stored instances
+    // and rule-derived instances in a single code path.
+    let rows = query_with_rules(
+        branch,
+        &schema_attrs,
+        &stored_name,
+        &qualified_selectors,
+        &rule_defs,
+    )
+    .await?;
+
+    display_rows(&rows, &stored_name, &schema_attrs, json);
+    Ok(())
+}
+
+/// Session-based query with rules. Compiles rules into DeductiveRules,
+/// registers them with a Session, and uses dialog-db's concept application
+/// to merge stored and derived instances.
+async fn query_with_rules(
+    branch: dialog_artifacts::repository::Branch<tonk_space::FsBackend>,
+    schema_attrs: &[String],
+    stored_name: &ConceptName,
+    qualified_selectors: &[(String, Value)],
+    rule_defs: &[crate::rule::RuleDefinition],
+) -> Result<Vec<(String, serde_json::Map<String, serde_json::Value>)>> {
+    use dialog_query::{Parameters, Session};
+    use futures_util::TryStreamExt;
+
+    // Compile rules
+    let compiled_rules: Vec<dialog_query::DeductiveRule> = rule_defs
+        .iter()
+        .map(|def| crate::rule::compile_rule(def, stored_name, schema_attrs))
+        .collect::<Result<Vec<_>>>()?;
+
+    // Open a Session and register rules
+    let mut session = Session::open(branch);
+    for rule in compiled_rules {
+        session = session.register(rule);
     }
 
-    // Hybrid query strategy:
-    // If exactly one filter, use dialog's value index for fast lookup,
-    // then intersect with concept instances.
-    // Otherwise, enumerate all instances and filter client-side.
-    let matching_entities: Vec<Entity> = if qualified_filters.len() == 1 {
-        let (attr_name, filter_value) = &qualified_filters[0];
-        fast_filter_by_value(&branch, attr_name, filter_value, &instance_entities).await?
-    } else if qualified_filters.is_empty() {
-        instance_entities.clone()
-    } else {
-        // Multi-filter: fetch all, then filter client-side
-        let mut result = Vec::new();
-        for entity in &instance_entities {
-            let mut matches = true;
-            for (attr_name, filter_value) in &qualified_filters {
-                let val = fetch_value(&branch, entity, attr_name).await?;
-                if val.as_ref() != Some(filter_value) {
-                    matches = false;
-                    break;
+    // Build the dynamic concept
+    let dynamic_concept = build_dynamic_concept(schema_attrs)?;
+
+    // Build query parameters: named variables for each attribute
+    // plus "this" for the entity
+    let mut params = Parameters::new();
+    let this_var: Term<Value> = Term::var("this");
+    params.insert("this".to_string(), this_var.clone());
+
+    // Create a variable for each attribute
+    let mut attr_vars: Vec<AttrVar> = Vec::new();
+    for attr in schema_attrs {
+        let param_name = short_attribute(stored_name, attr);
+        let term: Term<Value> = Term::var(param_name.as_str());
+        params.insert(param_name.clone(), term.clone());
+        attr_vars.push(AttrVar {
+            attribute_name: attr.clone(),
+            param_name,
+            term,
+        });
+    }
+
+    // Apply selectors as constant terms
+    for (attr_name, selector_value) in qualified_selectors {
+        let short = short_attribute(stored_name, attr_name);
+        params.insert(short, Term::Constant(selector_value.clone()));
+    }
+
+    // Execute the concept query
+    let application = dynamic_concept
+        .apply(params)
+        .map_err(|e| anyhow::anyhow!("Failed to apply concept query: {}", e))?;
+
+    let answers: Vec<dialog_query::Answer> = application
+        .query(&session)
+        .try_collect()
+        .await
+        .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
+
+    // Convert answers to rows
+    let mut rows = Vec::new();
+    for answer in &answers {
+        let mut data = serde_json::Map::new();
+
+        // Resolve the entity (this)
+        let entity_str = match answer.resolve(&this_var) {
+            Ok(Value::Entity(e)) => e.to_string(),
+            Ok(v) => format_value(&v),
+            Err(e) => {
+                eprintln!("Warning: could not resolve entity for query answer: {}", e);
+                "???".to_string()
+            }
+        };
+
+        // Resolve each attribute value
+        for attr_var in &attr_vars {
+            match answer.resolve(&attr_var.term) {
+                Ok(val) => {
+                    data.insert(attr_var.param_name.clone(), value_to_json(&val));
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: could not resolve attribute '{}': {}",
+                        attr_var.param_name, e
+                    );
+                    data.insert(attr_var.param_name.clone(), serde_json::Value::Null);
                 }
             }
-            if matches {
-                result.push(entity.clone());
-            }
         }
-        result
-    };
 
-    // Fetch full data for matching instances
-    let mut rows: Vec<(String, serde_json::Map<String, serde_json::Value>)> = Vec::new();
-
-    for entity in &matching_entities {
-        let mut data = serde_json::Map::new();
-        for attr_name in &schema_attrs {
-            if let Some(val) = fetch_value(&branch, entity, attr_name).await? {
-                let short = short_attribute(&stored_name, attr_name);
-                data.insert(short, value_to_json(&val));
-            }
-        }
-        rows.push((entity.to_string(), data));
+        rows.push((entity_str, data));
     }
 
+    Ok(rows)
+}
+
+/// Display query result rows.
+fn display_rows(
+    rows: &[(String, serde_json::Map<String, serde_json::Value>)],
+    stored_name: &ConceptName,
+    schema_attrs: &[String],
+    json: bool,
+) {
     if json {
         let items: Vec<serde_json::Value> = rows
             .iter()
@@ -252,23 +338,27 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string(&items)?);
+        match serde_json::to_string(&items) {
+            Ok(s) => println!("{}", s),
+            Err(e) => {
+                eprintln!("Error: failed to serialize query results: {}", e);
+                println!("[]");
+            }
+        }
     } else {
         if rows.is_empty() {
             println!("No matching {} instances found.", stored_name);
-            return Ok(());
+            return;
         }
 
-        // Collect all attribute short names for column headers
         let short_attrs: Vec<String> = schema_attrs
             .iter()
-            .map(|a| short_attribute(&stored_name, a))
+            .map(|a| short_attribute(stored_name, a))
             .collect();
 
-        // Print as table
         println!("{} ({} found)\n", stored_name, rows.len());
 
-        for (id, data) in &rows {
+        for (id, data) in rows {
             println!("  id: {}", id);
             for attr in &short_attrs {
                 if let Some(val) = data.get(attr) {
@@ -282,8 +372,6 @@ pub async fn query(concept_name: String, filters: Vec<String>, json: bool) -> Re
             println!();
         }
     }
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -591,31 +679,6 @@ fn parse_json_fields(input: &str) -> Result<Vec<(String, String)>> {
         result.push((key.clone(), value_str));
     }
     Ok(result)
-}
-
-/// Fast path: use dialog's value index to find entities matching a single
-/// attribute+value filter, then intersect with the known instance set.
-async fn fast_filter_by_value<S: ArtifactStore>(
-    store: &S,
-    attr_name: &str,
-    filter_value: &Value,
-    instance_set: &[Entity],
-) -> Result<Vec<Entity>> {
-    let attr = Attribute::from_str(attr_name).context("Invalid attribute")?;
-
-    // Query by attribute + value to get all matching entities
-    let results: Vec<_> = store
-        .select(ArtifactSelector::new().the(attr).is(filter_value.clone()))
-        .try_collect()
-        .await?;
-
-    let matching_entities: Vec<Entity> = results.into_iter().map(|a| a.of).collect();
-
-    // Intersect with instance set
-    Ok(matching_entities
-        .into_iter()
-        .filter(|e| instance_set.contains(e))
-        .collect())
 }
 
 fn format_ts(ts: i64) -> String {

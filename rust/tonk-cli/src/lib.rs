@@ -13,6 +13,7 @@ pub mod login;
 pub mod metadata;
 pub mod operator;
 pub mod remote;
+pub mod rule;
 pub mod schema;
 pub mod session;
 pub mod space;
