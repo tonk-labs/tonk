@@ -278,18 +278,19 @@ pub async fn find_all_concepts<S: ArtifactStore>(store: &S) -> Result<Vec<(Entit
     Ok(result)
 }
 
-/// Find all named rule entities in the store.
+/// Find all rule entities in the store (both named and unnamed).
 ///
-/// Discovers rules structurally by querying the AEV index for all
-/// entities with a `rule/name` attribute. Returns `(entity, name)` pairs.
-pub async fn find_all_rules<S: ArtifactStore>(store: &S) -> Result<Vec<(Entity, String)>> {
+/// Discovers rules by querying the AEV index for entities with a
+/// `rule/conclusion` attribute (which all rules have). Returns
+/// `(entity, Option<name>)` pairs.
+pub async fn find_all_rules<S: ArtifactStore>(store: &S) -> Result<Vec<(Entity, Option<String>)>> {
+    let conclusion_attr = parse_claim_attribute(ATTR_RULE_CONCLUSION)?;
     let rule_name_attr = parse_claim_attribute(ATTR_RULE_NAME)?;
-    let entities = find_entities_by_attribute(store, rule_name_attr.clone()).await?;
+    let entities = find_entities_by_attribute(store, conclusion_attr).await?;
     let mut result = Vec::new();
     for entity in entities {
-        if let Some(name) = fetch_string(store, &entity, rule_name_attr.clone()).await? {
-            result.push((entity, name));
-        }
+        let name = fetch_string(store, &entity, rule_name_attr.clone()).await?;
+        result.push((entity, name));
     }
     Ok(result)
 }
@@ -324,6 +325,16 @@ pub fn rule_entity(space_did: &str, rule_name: &str) -> Result<Entity> {
         space_did,
         rule_name.to_lowercase()
     ))
+}
+
+/// Derive the rule entity from its definition content (for unnamed rules).
+///
+/// Deterministically derived as an Ed25519 `did:key` from the space DID and
+/// the blake3 hash of the canonical definition JSON. Same definition in the
+/// same space always produces the same entity, making unnamed defines idempotent.
+pub fn rule_entity_from_definition(space_did: &str, definition_json: &str) -> Result<Entity> {
+    let def_hash = blake3::hash(definition_json.as_bytes());
+    derive_entity(&format!("{}\0rule\0def:{}", space_did, def_hash.to_hex()))
 }
 
 /// Derive an attribute metadata entity from its structural identity.

@@ -1350,6 +1350,7 @@ async fn test_rule_define_and_list() {
         "conclusion": {
             "concept": "HighPriority",
             "bindings": {
+                "this": "?task",
                 "title": "?title",
                 "status": "?status"
             }
@@ -1370,7 +1371,7 @@ async fn test_rule_define_and_list() {
 
     tonk_cli::rule::define(
         &ctx,
-        "high-priority-tasks".to_string(),
+        Some("high-priority-tasks".to_string()),
         Some(rule_path.to_string_lossy().into_owned()),
         false,
         "Find high priority tasks".to_string(),
@@ -1420,7 +1421,7 @@ async fn test_rule_show() {
     .unwrap();
 
     let rule_json = serde_json::json!({
-        "conclusion": { "concept": "B", "bindings": { "y": "?x" } },
+        "conclusion": { "concept": "B", "bindings": { "this": "?entity", "y": "?x" } },
         "when": [{ "the": "rule-show-space/x", "of": "?entity", "is": "?x" }]
     });
 
@@ -1429,7 +1430,7 @@ async fn test_rule_show() {
 
     tonk_cli::rule::define(
         &ctx,
-        "a-to-b".to_string(),
+        Some("a-to-b".to_string()),
         Some(rule_path.to_string_lossy().into_owned()),
         false,
         "Maps A to B".to_string(),
@@ -1478,7 +1479,7 @@ async fn test_rule_delete() {
     .unwrap();
 
     let rule_json = serde_json::json!({
-        "conclusion": { "concept": "Y", "bindings": { "w": "?v" } },
+        "conclusion": { "concept": "Y", "bindings": { "this": "?entity", "w": "?v" } },
         "when": [{ "the": "rule-del-space/v", "of": "?entity", "is": "?v" }]
     });
 
@@ -1487,7 +1488,7 @@ async fn test_rule_delete() {
 
     tonk_cli::rule::define(
         &ctx,
-        "temp-rule".to_string(),
+        Some("temp-rule".to_string()),
         Some(rule_path.to_string_lossy().into_owned()),
         false,
         "Maps X to Y".to_string(),
@@ -1529,7 +1530,7 @@ async fn test_rule_validates_concept_exists() {
     .unwrap();
 
     let rule_json = serde_json::json!({
-        "conclusion": { "concept": "DoesNotExist", "bindings": { "v": "?v" } },
+        "conclusion": { "concept": "DoesNotExist", "bindings": { "this": "?entity", "v": "?v" } },
         "when": [{ "the": "exists/v", "of": "?entity", "is": "?v" }]
     });
 
@@ -1538,7 +1539,7 @@ async fn test_rule_validates_concept_exists() {
 
     let result = tonk_cli::rule::define(
         &ctx,
-        "bad-rule".to_string(),
+        Some("bad-rule".to_string()),
         Some(rule_path.to_string_lossy().into_owned()),
         false,
         "Bad rule test".to_string(),

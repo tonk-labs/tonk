@@ -3,6 +3,7 @@ user.rules:
     description: Suggest a meal for an event attendee using an available recipe
     deduce:
       diy.planner/Meal:
+        this: ?existing
         attendee: ?person
         recipe: ?recipe
         occasion: ?event
