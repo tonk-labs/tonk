@@ -347,13 +347,67 @@ pub async fn find(
     Ok(())
 }
 
-/// A batch operation from JSON input
+/// Default operation for batch ops (used when `op` is absent in YAML input)
+fn default_op() -> String {
+    "assert".to_string()
+}
+
+/// Deserialize the `is` field directly into a `dialog_query::Value`.
+///
+/// Maps serde scalars to `Value` variants without an intermediate string
+/// representation, so `is: 42` becomes `Value::UnsignedInt(42)` and
+/// `is: "hello"` becomes `Value::String("hello")`. Works with both
+/// serde_yaml and serde_json.
+fn deserialize_is_as_value<'de, D>(deserializer: D) -> std::result::Result<Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct ValueVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for ValueVisitor {
+        type Value = dialog_query::Value;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string, number, or boolean")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<Self::Value, E> {
+            Ok(Value::String(v.to_string()))
+        }
+
+        fn visit_bool<E: serde::de::Error>(self, v: bool) -> std::result::Result<Self::Value, E> {
+            Ok(Value::Boolean(v))
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<Self::Value, E> {
+            if v >= 0 {
+                Ok(Value::UnsignedInt(v as u128))
+            } else {
+                Ok(Value::SignedInt(v as i128))
+            }
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<Self::Value, E> {
+            Ok(Value::UnsignedInt(v as u128))
+        }
+
+        fn visit_f64<E: serde::de::Error>(self, v: f64) -> std::result::Result<Self::Value, E> {
+            Ok(Value::Float(v))
+        }
+    }
+
+    deserializer.deserialize_any(ValueVisitor)
+}
+
+/// A batch operation from JSON or YAML input
 #[derive(Debug, Deserialize)]
 struct BatchOp {
+    #[serde(default = "default_op")]
     op: String,
     the: String,
     of: String,
-    is: String,
+    #[serde(deserialize_with = "deserialize_is_as_value")]
+    is: Value,
 }
 
 /// Result of a single batch operation
@@ -368,9 +422,22 @@ struct BatchResult {
     error: Option<String>,
 }
 
-/// Batch assert/retract facts from stdin (JSON lines).
-/// Each line: {"op": "assert"|"retract", "the": "...", "of": "...", "is": "..."}
-pub async fn batch(json: bool) -> Result<()> {
+/// Batch assert/retract facts from a YAML file or stdin (JSON lines).
+///
+/// When `file` is `Some(path)`, reads and parses the file as a YAML array of
+/// `{the, of, is, op?}` objects. When `file` is `None`, reads JSON Lines from
+/// stdin where each line is `{op, the, of, is}`.
+///
+/// All operations are committed atomically — if any operation fails, the
+/// entire batch is aborted with no changes committed.
+///
+/// Error reporting differs by input mode:
+/// - **YAML**: The file is parsed as a single unit. If parsing fails, the
+///   function returns an error immediately with no per-operation results.
+/// - **JSON Lines**: Each line is parsed independently. Parse errors are
+///   collected as individual `BatchResult` entries alongside successful
+///   operations, then the batch is aborted if any errors occurred.
+pub async fn batch(file: Option<String>, json: bool) -> Result<()> {
     let keystore = Keystore::new().context("Failed to initialize keystore")?;
     let operator = keystore
         .get_or_create_keypair()
@@ -390,34 +457,47 @@ pub async fn batch(json: bool) -> Result<()> {
 
     let mut session = Session::open(branch);
 
-    // Read lines from stdin
-    let stdin = std::io::stdin();
-    let lines: Vec<String> = stdin.lock().lines().collect::<Result<Vec<_>, _>>()?;
-
     let mut results: Vec<BatchResult> = Vec::new();
     let mut transaction = session.edit();
 
-    for line in &lines {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
+    // Parse batch operations from either a YAML file or stdin JSON Lines
+    let batch_ops: Vec<BatchOp> = if let Some(ref path) = file {
+        // --file path: read and parse as YAML array
+        let content =
+            std::fs::read_to_string(path).context(format!("Failed to read file: {}", path))?;
+        serde_yaml::from_str(&content).context(format!("Failed to parse YAML from: {}", path))?
+    } else {
+        // stdin: read JSON Lines, collecting parse errors into results
+        let stdin = std::io::stdin();
+        let lines: Vec<String> = stdin.lock().lines().collect::<Result<Vec<_>, _>>()?;
+        let mut ops = Vec::new();
 
-        let batch_op: BatchOp = match serde_json::from_str(line) {
-            Ok(op) => op,
-            Err(e) => {
-                results.push(BatchResult {
-                    ok: false,
-                    op: "unknown".to_string(),
-                    the: String::new(),
-                    of: String::new(),
-                    is: serde_json::Value::Null,
-                    error: Some(format!("Parse error: {}", e)),
-                });
+        for line in &lines {
+            let line = line.trim();
+            if line.is_empty() {
                 continue;
             }
-        };
 
+            match serde_json::from_str::<BatchOp>(line) {
+                Ok(op) => ops.push(op),
+                Err(e) => {
+                    results.push(BatchResult {
+                        ok: false,
+                        op: "unknown".to_string(),
+                        the: String::new(),
+                        of: String::new(),
+                        is: serde_json::Value::Null,
+                        error: Some(format!("Parse error: {}", e)),
+                    });
+                }
+            }
+        }
+
+        ops
+    };
+
+    // Process each batch operation
+    for batch_op in batch_ops {
         let entity = match resolve_entity(&batch_op.of, &operator) {
             Ok(e) => e,
             Err(e) => {
@@ -426,7 +506,7 @@ pub async fn batch(json: bool) -> Result<()> {
                     op: batch_op.op.clone(),
                     the: batch_op.the.clone(),
                     of: batch_op.of.clone(),
-                    is: serde_json::Value::String(batch_op.is.clone()),
+                    is: value_to_json(&batch_op.is),
                     error: Some(format!("Entity error: {}", e)),
                 });
                 continue;
@@ -441,14 +521,14 @@ pub async fn batch(json: bool) -> Result<()> {
                     op: batch_op.op.clone(),
                     the: batch_op.the.clone(),
                     of: batch_op.of.clone(),
-                    is: serde_json::Value::String(batch_op.is.clone()),
+                    is: value_to_json(&batch_op.is),
                     error: Some(format!("Attribute error: {}", e)),
                 });
                 continue;
             }
         };
 
-        let value = parse_value(&batch_op.is);
+        let value = &batch_op.is;
         let relation = Relation::new(attribute, entity.clone(), value.clone());
 
         match batch_op.op.as_str() {
@@ -459,7 +539,7 @@ pub async fn batch(json: bool) -> Result<()> {
                     op: "assert".to_string(),
                     the: batch_op.the,
                     of: entity.to_string(),
-                    is: value_to_json(&value),
+                    is: value_to_json(value),
                     error: None,
                 });
             }
@@ -470,7 +550,7 @@ pub async fn batch(json: bool) -> Result<()> {
                     op: "retract".to_string(),
                     the: batch_op.the,
                     of: entity.to_string(),
-                    is: value_to_json(&value),
+                    is: value_to_json(value),
                     error: None,
                 });
             }
@@ -480,7 +560,7 @@ pub async fn batch(json: bool) -> Result<()> {
                     op: other.to_string(),
                     the: batch_op.the,
                     of: batch_op.of,
-                    is: serde_json::Value::String(batch_op.is),
+                    is: value_to_json(&batch_op.is),
                     error: Some(format!(
                         "Unknown operation: {}. Use 'assert' or 'retract'",
                         other

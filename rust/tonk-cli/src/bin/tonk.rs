@@ -394,8 +394,12 @@ mod inner {
             is: Vec<String>,
         },
 
-        /// Batch assert/retract facts from stdin (JSON lines)
-        Batch,
+        /// Batch assert/retract facts from a YAML file or stdin (JSON lines)
+        Batch {
+            /// Path to a YAML file of {the, of, is} triples (reads JSON Lines from stdin if omitted)
+            #[arg(short = 'f', long)]
+            file: Option<String>,
+        },
 
         /// Find facts in the active space
         Find {
@@ -676,8 +680,8 @@ async fn main() -> anyhow::Result<()> {
                 } => {
                     tonk_cli::fact::find(the, of, is, format, json).await?;
                 }
-                FactCommands::Batch => {
-                    tonk_cli::fact::batch(json).await?;
+                FactCommands::Batch { file } => {
+                    tonk_cli::fact::batch(file, json).await?;
                 }
             },
             DevCommands::Operator { command } => match command {
