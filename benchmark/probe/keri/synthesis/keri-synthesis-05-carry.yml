@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_2/user-profile-data.yaml
+  carry-model: ../context_templates/case_2/user-profile-model.yaml
   prompt: "What are Keri's global output anti-preferences, and which of her other stated preferences do they reinforce?"
   judge:
     tonk.assess/Judge:

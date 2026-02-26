@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_3/link-archive-data.yaml
+  carry-model: ../context_templates/case_3/link-archive-model.yaml
   prompt: "Does this community skew more academic or practitioner-focused? What evidence supports your answer?"
   judge:
     tonk.assess/Judge:

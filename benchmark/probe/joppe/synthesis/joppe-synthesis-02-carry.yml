@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_3/link-archive-data.yaml
+  carry-model: ../context_templates/case_3/link-archive-model.yaml
   prompt: "Who are the most active members in the Local-First Haus archive and what kinds of content does each tend to share?"
   judge:
     tonk.assess/Judge:

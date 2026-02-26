@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_1/agent-orchestration-data.yaml
+  carry-model: ../context_templates/case_1/agent-orchestration-model.yaml
   prompt: "What problem is Marcus describing when he talks about 'context debt', and what does it have in common with technical debt?"
   judge:
     tonk.assess/Judge:

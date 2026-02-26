@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_3/link-archive-data.yaml
+  carry-model: ../context_templates/case_3/link-archive-model.yaml
   prompt: "What are the recurring themes in the Local-First Haus link archive, and what do they reveal about the community's interests?"
   judge:
     tonk.assess/Judge:

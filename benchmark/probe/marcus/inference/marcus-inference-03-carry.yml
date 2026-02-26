@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_1/agent-orchestration-data.yaml
+  carry-model: ../context_templates/case_1/agent-orchestration-model.yaml
   prompt: "Based on Marcus's notes, what would his reaction be if a developer said 'I gave the agent the full codebase and told it to improve things'?"
   judge:
     tonk.assess/Judge:

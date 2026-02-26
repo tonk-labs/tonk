@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_2/user-profile-data.yaml
+  carry-model: ../context_templates/case_2/user-profile-model.yaml
   prompt: "What is the difference between Keri's 'working knowledge' and 'deep' expertise in the graph domain, and what does it imply for how an agent should engage with her on Neo4j optimisation problems?"
   judge:
     tonk.assess/Judge:

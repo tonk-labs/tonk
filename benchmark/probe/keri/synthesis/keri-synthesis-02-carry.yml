@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_2/user-profile-data.yaml
+  carry-model: ../context_templates/case_2/user-profile-model.yaml
   prompt: "What are Keri's areas of deep expertise, and how do they connect to her consulting services?"
   judge:
     tonk.assess/Judge:

@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_2/user-profile-data.yaml
+  carry-model: ../context_templates/case_2/user-profile-model.yaml
   prompt: "Summarise Keri's communication preferences — both how she communicates and how she wants to receive information."
   judge:
     tonk.assess/Judge:

@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_1/agent-orchestration-data.yaml
+  carry-model: ../context_templates/case_1/agent-orchestration-model.yaml
   prompt: "When would Marcus use a subagent vs. keep work in the main session? What does he use each for?"
   judge:
     tonk.assess/Judge:

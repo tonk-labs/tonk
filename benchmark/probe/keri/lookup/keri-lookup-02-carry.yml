@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_2/user-profile-data.yaml
+  carry-model: ../context_templates/case_2/user-profile-model.yaml
   prompt: "Does Keri offer software development as a service?"
   judge:
     tonk.assess/Judge:

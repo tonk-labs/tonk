@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_3/link-archive-data.yaml
+  carry-model: ../context_templates/case_3/link-archive-model.yaml
   prompt: "What SQLite-related resources have been shared in the archive, and what is the community's overall view of SQLite?"
   judge:
     tonk.assess/Judge:

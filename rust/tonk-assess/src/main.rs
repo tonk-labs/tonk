@@ -5,7 +5,7 @@ use tokio::signal;
 use tokio_util::sync::CancellationToken;
 
 use tonk_assess::types::{Probe, ProbeResult, ScoredRun};
-use tonk_assess::{agent, judge, probe, report};
+use tonk_assess::{agent, carry, judge, probe, report};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -178,6 +178,22 @@ async fn main() -> Result<()> {
     }
 
     println!("Found {} probe(s) to evaluate", matched.len());
+
+    // ── Carry space provisioning ────────────────────────────────────
+    // If any matched probes have carry-data, provision spaces before running.
+    let has_carry_probes = matched.iter().any(|p| p.carry_data.is_some());
+    if has_carry_probes {
+        carry::ensure_available(verbose).await?;
+        let provisioned = carry::provision_all(&matched, probe_dir, verbose).await?;
+        if !provisioned.is_empty() {
+            println!(
+                "Provisioned {} Carry space(s): {}\n",
+                provisioned.len(),
+                provisioned.iter().cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
+
     println!("Press Ctrl-C to stop after the current probe.\n");
 
     let cancel = CancellationToken::new();
@@ -188,12 +204,25 @@ async fn main() -> Result<()> {
         cancel_clone.cancel();
     });
 
+    // Track which persona's space is currently active
+    let mut active_persona: Option<String> = None;
+
     let mut results: Vec<ProbeResult> = Vec::new();
 
     for probe in &matched {
         if cancel.is_cancelled() {
             println!("\nStopped early due to Ctrl-C.");
             break;
+        }
+
+        // Switch active Carry space if this probe uses carry-data and
+        // the persona differs from the currently active one.
+        if probe.carry_data.is_some() {
+            let need_switch = active_persona.as_ref() != Some(&probe.persona);
+            if need_switch {
+                carry::set_active_space(&probe.persona, verbose).await?;
+                active_persona = Some(probe.persona.clone());
+            }
         }
 
         let label = probe.name.as_deref().unwrap_or(&probe.id);
@@ -314,6 +343,12 @@ fn list_probes(
             }
             if let Some(turns) = p.max_turns {
                 println!("    max-turns: {turns}");
+            }
+            if let Some(ref cd) = p.carry_data {
+                println!("    carry-data: {cd}");
+            }
+            if let Some(ref cm) = p.carry_model {
+                println!("    carry-model: {cm}");
             }
             println!();
         }

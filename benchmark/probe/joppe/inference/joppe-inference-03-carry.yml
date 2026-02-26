@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_3/link-archive-data.yaml
+  carry-model: ../context_templates/case_3/link-archive-model.yaml
   prompt: "Based on patterns in the archive, what question or tension seems most active in this community?"
   judge:
     tonk.assess/Judge:

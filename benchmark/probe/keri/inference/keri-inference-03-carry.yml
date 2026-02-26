@@ -5,6 +5,8 @@ tonk.assess/Probe:
   allowed-tool:
     - Bash
   system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_2/user-profile-data.yaml
+  carry-model: ../context_templates/case_2/user-profile-model.yaml
   prompt: "Based on Keri's profile, what kinds of AI assistant behaviour would erode her trust in a tool over time?"
   judge:
     tonk.assess/Judge:

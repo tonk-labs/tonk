@@ -77,6 +77,8 @@ pub struct ProbeBody {
     pub system_prompt: Option<String>,
     pub max_turns: Option<u32>,
     pub mcp_config: Option<String>,
+    pub carry_data: Option<String>,
+    pub carry_model: Option<String>,
 }
 
 // ── Probe (internal) ────────────────────────────────────────────────
@@ -95,6 +97,8 @@ pub struct Probe {
     pub system_prompt: Option<String>,
     pub max_turns: Option<u32>,
     pub mcp_config: Option<String>,
+    pub carry_data: Option<String>,
+    pub carry_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +176,8 @@ impl ProbeBody {
             system_prompt: self.system_prompt,
             max_turns: self.max_turns,
             mcp_config: self.mcp_config,
+            carry_data: self.carry_data,
+            carry_model: self.carry_model,
         }
     }
 }
