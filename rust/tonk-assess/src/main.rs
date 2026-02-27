@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 
-use tonk_assess::types::{Probe, ProbeResult, ScoredRun};
+use tonk_assess::types::{Probe, ProbeResult, Score, ScoredRun};
 use tonk_assess::{agent, carry, judge, probe, report};
 
 #[derive(Parser, Debug)]
@@ -181,10 +181,24 @@ async fn main() -> Result<()> {
 
     // ── Carry space provisioning ────────────────────────────────────
     // If any matched probes have carry-data, provision spaces before running.
+    // Provisioning is resilient: failures for one persona don't block others.
     let has_carry_probes = matched.iter().any(|p| p.carry_data.is_some());
+    let mut failed_personas: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     if has_carry_probes {
         carry::ensure_available(verbose).await?;
-        let provisioned = carry::provision_all(&matched, probe_dir, verbose).await?;
+        let (provisioned, failures) = carry::provision_all(&matched, probe_dir, verbose).await;
+        if !failures.is_empty() {
+            println!(
+                "WARNING: Provisioning failed for {} persona(s):",
+                failures.len()
+            );
+            for (persona, err) in &failures {
+                println!("  {persona}: {err:#}");
+                failed_personas.insert(persona.clone());
+            }
+            println!("  Carry probes for these personas will be skipped.\n");
+        }
         if !provisioned.is_empty() {
             println!(
                 "Provisioned {} Carry space(s): {}\n",
@@ -209,10 +223,23 @@ async fn main() -> Result<()> {
 
     let mut results: Vec<ProbeResult> = Vec::new();
 
+    // Determine output path early so we can write partial results
+    let results_timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+
     for probe in &matched {
         if cancel.is_cancelled() {
             println!("\nStopped early due to Ctrl-C.");
             break;
+        }
+
+        // Skip carry probes whose persona failed provisioning
+        if probe.carry_data.is_some() && failed_personas.contains(&probe.persona) {
+            println!(
+                "--- {} --- SKIPPED (provisioning failed for '{}')\n",
+                probe.name.as_deref().unwrap_or(&probe.id),
+                probe.persona
+            );
+            continue;
         }
 
         // Switch active Carry space if this probe uses carry-data and
@@ -220,8 +247,18 @@ async fn main() -> Result<()> {
         if probe.carry_data.is_some() {
             let need_switch = active_persona.as_ref() != Some(&probe.persona);
             if need_switch {
-                carry::set_active_space(&probe.persona, verbose).await?;
-                active_persona = Some(probe.persona.clone());
+                match carry::set_active_space(&probe.persona, verbose).await {
+                    Ok(()) => {
+                        active_persona = Some(probe.persona.clone());
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "--- {} --- SKIPPED (failed to switch Carry space: {e:#})\n",
+                            probe.name.as_deref().unwrap_or(&probe.id),
+                        );
+                        continue;
+                    }
+                }
             }
         }
 
@@ -253,25 +290,44 @@ async fn main() -> Result<()> {
             Some(Ok(metrics)) => {
                 println!("  Answer: {}", truncate_answer(&metrics.answer, 120));
                 println!("  Judging...");
-                let score = judge::judge_answer(
+                match judge::judge_answer(
                     &probe.prompt,
                     &metrics.answer,
                     &probe.judge,
                     &cli.judge_model,
                     verbose,
                 )
-                .await?;
-                let in_tok = metrics.input_tokens.map_or("-".into(), |n| n.to_string());
-                let out_tok = metrics.output_tokens.map_or("-".into(), |n| n.to_string());
-                println!("  Score: {}/10 — {}", score.score, score.rationale);
-                println!("  Tokens: {in_tok} in / {out_tok} out");
-                results.push(ProbeResult {
-                    probe_id: probe.id.clone(),
-                    persona: probe.persona.clone(),
-                    tag: probe.tag.clone(),
-                    prompt: probe.prompt.clone(),
-                    run: ScoredRun { metrics, score },
-                });
+                .await
+                {
+                    Ok(score) => {
+                        let in_tok = metrics.input_tokens.map_or("-".into(), |n| n.to_string());
+                        let out_tok = metrics.output_tokens.map_or("-".into(), |n| n.to_string());
+                        println!("  Score: {}/10 — {}", score.score, score.rationale);
+                        println!("  Tokens: {in_tok} in / {out_tok} out");
+                        results.push(ProbeResult {
+                            probe_id: probe.id.clone(),
+                            persona: probe.persona.clone(),
+                            tag: probe.tag.clone(),
+                            prompt: probe.prompt.clone(),
+                            run: ScoredRun { metrics, score },
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("  Judge error (skipping): {e:#}");
+                        // Record with score 0 so the probe appears in results
+                        let score = Score {
+                            score: 0,
+                            rationale: format!("JUDGE ERROR: {e:#}"),
+                        };
+                        results.push(ProbeResult {
+                            probe_id: probe.id.clone(),
+                            persona: probe.persona.clone(),
+                            tag: probe.tag.clone(),
+                            prompt: probe.prompt.clone(),
+                            run: ScoredRun { metrics, score },
+                        });
+                    }
+                }
             }
             Some(Err(e)) => {
                 eprintln!("  Error: {e:#}");
@@ -283,12 +339,22 @@ async fn main() -> Result<()> {
         }
 
         println!();
+
+        // Write partial results after each probe so progress is never lost
+        if !results.is_empty()
+            && let Err(e) = report::write_results_to(&results, &output_dir, &results_timestamp)
+            && verbose
+        {
+            eprintln!("[main] Failed to write partial results: {e:#}");
+        }
     }
 
     if !results.is_empty() {
         report::print_summary(&results);
-        let path = report::write_results(&results, &output_dir)?;
-        println!("Results written to {path}");
+        match report::write_results_to(&results, &output_dir, &results_timestamp) {
+            Ok(path) => println!("Results written to {path}"),
+            Err(e) => eprintln!("WARNING: Failed to write results: {e:#}"),
+        }
     }
 
     Ok(())

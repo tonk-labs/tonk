@@ -29,7 +29,12 @@ async fn run_tonk(args: &[impl AsRef<OsStr>], description: &str) -> Result<std::
         .args(args)
         .output()
         .await
-        .with_context(|| format!("Failed to run '{bin} {}' — {description}", args_display(args)))
+        .with_context(|| {
+            format!(
+                "Failed to run '{bin} {}' — {description}",
+                args_display(args)
+            )
+        })
 }
 
 /// Format args for error messages.
@@ -100,11 +105,8 @@ pub async fn provision_space(
     if verbose {
         eprintln!("[carry] Creating space '{space_name}'...");
     }
-    let create_output = run_tonk(
-        &["space", "create", &space_name, "--json"],
-        "create space",
-    )
-    .await?;
+    let create_output =
+        run_tonk(&["space", "create", &space_name, "--json"], "create space").await?;
 
     if !create_output.status.success() {
         let stderr = String::from_utf8_lossy(&create_output.stderr);
@@ -185,63 +187,80 @@ pub async fn provision_space(
 /// Provision all unique Carry spaces needed by the matched probes.
 ///
 /// Iterates over probes, collects unique `(persona, carry_data, carry_model)` tuples,
-/// and provisions a space for each. Returns the set of personas that
-/// were successfully provisioned.
+/// and provisions a space for each. Returns a tuple of:
+/// - The set of personas that were successfully provisioned
+/// - A list of `(persona, error)` for personas that failed
+///
+/// Provisioning is resilient: a failure for one persona does not prevent
+/// other personas from being provisioned.
 pub async fn provision_all(
     probes: &[crate::types::Probe],
     probe_dir: &Path,
     verbose: bool,
-) -> Result<HashSet<String>> {
+) -> (HashSet<String>, Vec<(String, anyhow::Error)>) {
     let mut provisioned: HashSet<String> = HashSet::new();
+    let mut failures: Vec<(String, anyhow::Error)> = Vec::new();
+    let mut attempted: HashSet<String> = HashSet::new();
 
     for probe in probes {
         if let Some(ref carry_data) = probe.carry_data {
-            if provisioned.contains(&probe.persona) {
+            if provisioned.contains(&probe.persona) || attempted.contains(&probe.persona) {
                 continue;
             }
+            attempted.insert(probe.persona.clone());
 
-            let data_path = probe_dir.join(carry_data);
-            if !data_path.exists() {
-                anyhow::bail!(
-                    "Carry data file not found for probe '{}': {}\n\
-                     (resolved from carry-data: '{}')",
-                    probe.id,
-                    data_path.display(),
-                    carry_data,
-                );
-            }
-
-            let model_path = probe.carry_model.as_ref().map(|m| probe_dir.join(m));
-            if let Some(ref mp) = model_path {
-                if !mp.exists() {
-                    anyhow::bail!(
-                        "Carry model file not found for probe '{}': {}\n\
-                         (resolved from carry-model: '{}')",
-                        probe.id,
-                        mp.display(),
-                        probe.carry_model.as_deref().unwrap_or(""),
-                    );
+            match provision_one_persona(probe, carry_data, probe_dir, verbose).await {
+                Ok(space_name) => {
+                    println!("  Space '{}' ready.", space_name);
+                    provisioned.insert(probe.persona.clone());
+                }
+                Err(e) => {
+                    failures.push((probe.persona.clone(), e));
                 }
             }
-
-            println!(
-                "Provisioning Carry space for persona '{}'...",
-                probe.persona
-            );
-            let space_name = provision_space(
-                &probe.persona,
-                model_path.as_deref(),
-                &data_path,
-                verbose,
-            )
-            .await?;
-            println!("  Space '{}' ready.", space_name);
-
-            provisioned.insert(probe.persona.clone());
         }
     }
 
-    Ok(provisioned)
+    (provisioned, failures)
+}
+
+/// Provision a single persona's Carry space, resolving paths and calling
+/// `provision_space`. Extracted so `provision_all` can catch errors per-persona.
+async fn provision_one_persona(
+    probe: &crate::types::Probe,
+    carry_data: &str,
+    probe_dir: &Path,
+    verbose: bool,
+) -> Result<String> {
+    let data_path = probe_dir.join(carry_data);
+    if !data_path.exists() {
+        anyhow::bail!(
+            "Carry data file not found for probe '{}': {}\n\
+             (resolved from carry-data: '{}')",
+            probe.id,
+            data_path.display(),
+            carry_data,
+        );
+    }
+
+    let model_path = probe.carry_model.as_ref().map(|m| probe_dir.join(m));
+    if let Some(ref mp) = model_path
+        && !mp.exists()
+    {
+        anyhow::bail!(
+            "Carry model file not found for probe '{}': {}\n\
+             (resolved from carry-model: '{}')",
+            probe.id,
+            mp.display(),
+            probe.carry_model.as_deref().unwrap_or(""),
+        );
+    }
+
+    println!(
+        "Provisioning Carry space for persona '{}'...",
+        probe.persona
+    );
+    provision_space(&probe.persona, model_path.as_deref(), &data_path, verbose).await
 }
 
 /// Set the active Carry space for a persona.

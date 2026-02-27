@@ -4,10 +4,22 @@ use std::path::Path;
 use crate::types::ProbeResult;
 
 pub fn write_results(results: &[ProbeResult], output_dir: &Path) -> Result<String> {
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    write_results_to(results, output_dir, &timestamp)
+}
+
+/// Write results to a file with a specific timestamp suffix.
+///
+/// Using a fixed timestamp means repeated calls (for partial results)
+/// overwrite the same file rather than creating many files.
+pub fn write_results_to(
+    results: &[ProbeResult],
+    output_dir: &Path,
+    timestamp: &str,
+) -> Result<String> {
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create output dir: {}", output_dir.display()))?;
 
-    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     let filename = format!("results-{timestamp}.json");
     let filepath = output_dir.join(&filename);
 
