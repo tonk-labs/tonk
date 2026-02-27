@@ -49,6 +49,12 @@ mod inner {
             command: Option<ConceptCommands>,
         },
 
+        /// Inspect attribute definitions
+        Attribute {
+            #[command(subcommand)]
+            command: Option<AttributeCommands>,
+        },
+
         /// Manage deductive rules between concepts
         Rule {
             #[command(subcommand)]
@@ -275,6 +281,19 @@ mod inner {
             /// Also delete all instances of this concept
             #[arg(short, long)]
             force: bool,
+        },
+    }
+
+    #[derive(Subcommand)]
+    pub enum AttributeCommands {
+        /// Show details of a specific attribute
+        Show {
+            /// Attribute name (qualified like "recipe/title", or short like "title" with --concept)
+            name: String,
+
+            /// Concept name (required when using short attribute names)
+            #[arg(long, short)]
+            concept: Option<String>,
         },
     }
 
@@ -594,6 +613,14 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(ConceptCommands::Delete { name, force }) => {
                 tonk_cli::concept::delete(name, force, json).await?;
+            }
+        },
+        Commands::Attribute { command } => match command {
+            None => {
+                tonk_cli::attribute::list(json).await?;
+            }
+            Some(AttributeCommands::Show { name, concept }) => {
+                tonk_cli::attribute::show(name, concept, json).await?;
             }
         },
         Commands::Rule { command } => match command {
