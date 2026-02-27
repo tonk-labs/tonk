@@ -2,226 +2,226 @@ carry.profile:
   # ─── Attributes ──────────────────────────────────────────────────────────
 
   name:
-    the: Full name of this person
-    assert: Text
+    description: Full name of this person
+    as: Text
 
   location:
-    the: Primary location
-    assert: Text
+    description: Primary location
+    as: Text
 
   timezone:
-    the: Primary timezone
-    assert: Text
+    description: Primary timezone
+    as: Text
 
   pronouns:
-    the: Preferred pronouns
-    assert: Text
+    description: Preferred pronouns
+    as: Text
 
   role_title:
-    the: Professional role or title
-    assert: Text
+    description: Professional role or title
+    as: Text
 
   role_description:
-    the: Extended description of professional role and focus
-    assert: Text
+    description: Extended description of professional role and focus
+    as: Text
 
   english_variant:
-    the: Preferred variant of written English
-    assert: [:british, :american]
+    description: Preferred variant of written English
+    as: [":british", ":american"]
 
   preferred_format:
-    the: A preferred output format for receiving information from an agent
-    assert: Text
+    description: A preferred output format for receiving information from an agent
+    as: Text
     cardinality: many
 
   global_antipreference:
-    the: An output behaviour this person never wants from an agent, regardless of task type
-    assert: Text
+    description: An output behaviour this person never wants from an agent, regardless of task type
+    as: Text
     cardinality: many
 
   default_context:
-    the: The context to assume when none is explicitly stated
-    assert: [:work, :writing, :research, :personal]
+    description: The context to assume when none is explicitly stated
+    as: [":work", ":writing", ":research", ":personal"]
 
   person:
-    the: The person this record belongs to
-    assert: .Person
+    description: The person this record belongs to
+    as: .Person
 
   topic:
-    the: The subject matter of a language or expertise record
-    assert: Text
+    description: The subject matter of a language or expertise record
+    as: Text
 
   proficiency:
-    the: Language proficiency level
-    assert: [:native, :conversational, :basic]
+    description: Language proficiency level
+    as: [":native", ":conversational", ":basic"]
 
   expertise_level:
-    the: Depth of expertise in this area
-    assert: [:deep, :working, :adjacent, :out_of_scope]
+    description: Depth of expertise in this area
+    as: [":deep", ":working", ":adjacent", ":out_of_scope"]
 
   description:
-    the: A descriptive note providing additional detail
-    assert: Text
+    description: A descriptive note providing additional detail
+    as: Text
 
   offered:
-    the: Whether this service is offered by the person
-    assert: [:yes, :no]
+    description: Whether this service is offered by the person
+    as: [":yes", ":no"]
 
   direction:
-    the: Whether this is about how the person communicates outbound or receives information inbound
-    assert: [:outbound, :inbound]
+    description: Whether this is about how the person communicates outbound or receives information inbound
+    as: [":outbound", ":inbound"]
 
   task_type:
-    the: The type of task this output preference applies to
-    assert: [:writing, :analysis, :research]
+    description: The type of task this output preference applies to
+    as: [":writing", ":analysis", ":research"]
 
   preference:
-    the: A specific output behaviour to apply for this task type
-    assert: Text
+    description: A specific output behaviour to apply for this task type
+    as: Text
     cardinality: many
 
   antipreference:
-    the: A specific output behaviour to avoid for this task type
-    assert: Text
+    description: A specific output behaviour to avoid for this task type
+    as: Text
     cardinality: many
 
   context_tag:
-    the: The named context this record belongs to
-    assert: [:work, :writing, :research, :personal]
+    description: The named context this record belongs to
+    as: [":work", ":writing", ":research", ":personal"]
 
   is_default:
-    the: Whether this is the default context when none is explicitly specified
-    assert: [:yes, :no]
+    description: Whether this is the default context when none is explicitly specified
+    as: [":yes", ":no"]
 
   tone:
-    the: The expected tone of agent responses in this context
-    assert: Text
+    description: The expected tone of agent responses in this context
+    as: Text
 
   behavior_note:
-    the: A specific behavioural guideline for agent responses in this context
-    assert: Text
+    description: A specific behavioural guideline for agent responses in this context
+    as: Text
     cardinality: many
 
   # ─── Concepts ────────────────────────────────────────────────────────────
 
   Person:
-    the: A person whose profile is stored in this system
-    where:
-      name: .
-      role_title: .
-      role_description: .
-      location: .
-      timezone: .
-      pronouns: .
-    option:
-      english_variant: .
-      preferred_format: .
-      global_antipreference: .
-      default_context: .
+    description: A person whose profile is stored in this system
+    with:
+      name: carry.profile/name
+      role_title: carry.profile/role_title
+      role_description: carry.profile/role_description
+      location: carry.profile/location
+      timezone: carry.profile/timezone
+      pronouns: carry.profile/pronouns
+    maybe:
+      english_variant: carry.profile/english_variant
+      preferred_format: carry.profile/preferred_format
+      global_antipreference: carry.profile/global_antipreference
+      default_context: carry.profile/default_context
 
   Language:
-    the: A language spoken by a person, with its proficiency level
-    where:
-      person: .
-      topic: .
-      proficiency: .
+    description: A language spoken by a person, with its proficiency level
+    with:
+      person: carry.profile/person
+      topic: carry.profile/topic
+      proficiency: carry.profile/proficiency
 
   Expertise:
-    the: A domain of knowledge or skill and how deeply the person holds it
-    where:
-      person: .
-      topic: .
-      expertise_level: .
-    option:
-      description: .
+    description: A domain of knowledge or skill and how deeply the person holds it
+    with:
+      person: carry.profile/person
+      topic: carry.profile/topic
+      expertise_level: carry.profile/expertise_level
+    maybe:
+      description: carry.profile/description
 
   ProfessionalService:
-    the: A service the person explicitly offers or declines to offer
-    where:
-      person: .
-      name: .
-      offered: .
-    option:
-      description: .
+    description: A service the person explicitly offers or declines to offer
+    with:
+      person: carry.profile/person
+      name: carry.profile/name
+      offered: carry.profile/offered
+    maybe:
+      description: carry.profile/description
 
   CommunicationPreference:
-    the: A single preference about communication style, either outbound (how the person communicates) or inbound (how they like to receive information)
-    where:
-      person: .
-      description: .
-      direction: .
+    description: A single preference about communication style, either outbound (how the person communicates) or inbound (how they like to receive information)
+    with:
+      person: carry.profile/person
+      description: carry.profile/description
+      direction: carry.profile/direction
 
   OutputPreference:
-    the: Output preferences for a specific task type
-    where:
-      person: .
-      task_type: .
-    option:
-      preference: .
-      antipreference: .
+    description: Output preferences for a specific task type
+    with:
+      person: carry.profile/person
+      task_type: carry.profile/task_type
+    maybe:
+      preference: carry.profile/preference
+      antipreference: carry.profile/antipreference
 
   ActiveContext:
-    the: A domain of activity the person operates in, with an optional default flag
-    where:
-      person: .
-      name: .
-      context_tag: .
-    option:
-      description: .
-      is_default: .
+    description: A domain of activity the person operates in, with an optional default flag
+    with:
+      person: carry.profile/person
+      name: carry.profile/name
+      context_tag: carry.profile/context_tag
+    maybe:
+      description: carry.profile/description
+      is_default: carry.profile/is_default
 
   ContextBehavior:
-    the: How an agent should behave when operating in a given context for this person
-    where:
-      person: .
-      context_tag: .
-      tone: .
-    option:
-      behavior_note: .
+    description: How an agent should behave when operating in a given context for this person
+    with:
+      person: carry.profile/person
+      context_tag: carry.profile/context_tag
+      tone: carry.profile/tone
+    maybe:
+      behavior_note: carry.profile/behavior_note
 
   # ─── Derived Concepts ────────────────────────────────────────────────────
 
   DeclinedService:
-    the: A service the person explicitly does not offer
-    where:
-      person: .
-      name: .
+    description: A service the person explicitly does not offer
+    with:
+      person: carry.profile/person
+      name: carry.profile/name
 
   OutOfScopeExpertise:
-    the: A topic the person explicitly does not work in and should not be assumed to handle
-    where:
-      person: .
-      topic: .
+    description: A topic the person explicitly does not work in and should not be assumed to handle
+    with:
+      person: carry.profile/person
+      topic: carry.profile/topic
 
   # ─── Derived Rules ───────────────────────────────────────────────────────
 
   declined-service:
-    the: >
+    description: >
       Derives DeclinedService from any ProfessionalService where offered is no
       — useful for guarding against suggesting or assuming out-of-scope work.
-    assert:
-      .DeclinedService:
+    deduce:
+      DeclinedService:
         this: ?service
         person: ?person
         name: ?name
     when:
-      - .ProfessionalService:
+      - carry.profile/ProfessionalService:
           this: ?service
           person: ?person
           name: ?name
           offered: carry.profile/no
 
   out-of-scope-expertise:
-    the: >
+    description: >
       Derives OutOfScopeExpertise from any Expertise with level out_of_scope
       — topics the person cannot handle and an agent should not assume they can.
-    assert:
-      .OutOfScopeExpertise:
+    deduce:
+      OutOfScopeExpertise:
         this: ?expertise
         person: ?person
         topic: ?topic
     when:
-      - .Expertise:
+      - carry.profile/Expertise:
           this: ?expertise
           person: ?person
           topic: ?topic

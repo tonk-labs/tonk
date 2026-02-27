@@ -1,41 +1,47 @@
 tonk.assess:
   Probe:
-    the: A test question for benchmarking agent knowledge retrieval
-    where:
+    description: A test question for benchmarking agent knowledge retrieval
+    with:
       persona:
-        the: The persona whose knowledge is being tested
-        assert: Text
+        description: The persona whose knowledge is being tested
+        as: Text
       tag:
-        the: Arbitrary tags for filtering (e.g. lookup, synthesis, inference)
-        assert: Text
+        description: Arbitrary tags for filtering (e.g. lookup, synthesis, inference)
+        as: Text
         cardinality: many
       prompt:
-        the: The question sent to the agent
-        assert: Text
+        description: The question sent to the agent
+        as: Text
       judge:
-        the: The judge used to score the agent's answer
-        assert: .Judge
-    option:
+        description: The judge used to score the agent's answer
+        as: .Judge
+    maybe:
       name:
-        the: Optional human-readable name for this probe
-        assert: Text
+        description: Optional human-readable name for this probe
+        as: Text
       source-file:
-        the: Path relative to persona artifacts where the answer can be found
-        assert: Text
+        description: Path relative to persona artifacts where the answer can be found
+        as: Text
         cardinality: many
       corpus:
-        the: Relative path from probe directory to the corpus of files the agent can access
-        assert: Text
+        description: Relative path from probe directory to the corpus of files the agent can access
+        as: Text
       allowed-tool:
-        the: Tools the agent may use (e.g. Read, Glob, Grep, "Bash(git:*)")
-        assert: Text
+        description: Tools the agent may use (e.g. Read, Glob, Grep, "Bash(git:*)")
+        as: Text
         cardinality: many
       system-prompt:
-        the: Relative path to a markdown file whose contents are appended as system prompt
-        assert: Text
+        description: Relative path to a markdown file whose contents are appended as system prompt
+        as: Text
       max-turns:
-        the: Maximum number of agent turns
-        assert: Integer
+        description: Maximum number of agent turns
+        as: Integer
       mcp-config:
-        the: Path to an MCP server config JSON file
-        assert: Text
+        description: Path to an MCP server config JSON file
+        as: Text
+      carry-data:
+        description: Relative path to a Carry data YAML file for EAV provisioning
+        as: Text
+      carry-model:
+        description: Relative path to a Carry model YAML file for schema import
+        as: Text
