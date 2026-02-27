@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: joppe
   corpus: ../personas/joppe/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "Based on the links @joppevos personally shared, what can you infer about what he is currently building or exploring technically?"
   judge:
     tonk.assess/Judge:

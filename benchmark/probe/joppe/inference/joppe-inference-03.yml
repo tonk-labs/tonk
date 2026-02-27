@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: joppe
   corpus: ../personas/joppe/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "Based on patterns in the archive, what question or tension seems most active in this community?"
   judge:
     tonk.assess/Judge:

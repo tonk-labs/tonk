@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [lookup, base]
+  system-prompt: ../prompts/base.md
   prompt: "What is Marcus's fix for the 'hallucinated API' failure mode?"
   judge:
     tonk.assess/Judge:

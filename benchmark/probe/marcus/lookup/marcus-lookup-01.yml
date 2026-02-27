@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [lookup, base]
+  system-prompt: ../prompts/base.md
   prompt: "What file does Marcus keep tight and up to date for the agent to load every session?"
   judge:
     tonk.assess/Judge:

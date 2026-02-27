@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: keri
   corpus: ../personas/keri/artifacts
   tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
   prompt: "How should an AI assistant behave differently when Keri is doing personal research vs. when she's working on a client deliverable?"
   judge:
     tonk.assess/Judge:

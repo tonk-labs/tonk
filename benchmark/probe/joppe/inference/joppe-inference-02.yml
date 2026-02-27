@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: joppe
   corpus: ../personas/joppe/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "Which community member seems most focused on peer-to-peer and decentralisation specifically, based on their link-sharing patterns?"
   judge:
     tonk.assess/Judge:

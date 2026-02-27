@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: keri
   corpus: ../personas/keri/artifacts
   tag: [lookup, base]
+  system-prompt: ../prompts/base.md
   prompt: "Does Keri offer software development as a service?"
   judge:
     tonk.assess/Judge:

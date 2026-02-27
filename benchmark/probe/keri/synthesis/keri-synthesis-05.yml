@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: keri
   corpus: ../personas/keri/artifacts
   tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
   prompt: "What are Keri's global output anti-preferences, and which of her other stated preferences do they reinforce?"
   judge:
     tonk.assess/Judge:

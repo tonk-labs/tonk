@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
   prompt: "What open questions does Marcus still have about managing agent configs and knowledge across projects?"
   judge:
     tonk.assess/Judge:

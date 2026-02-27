@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: keri
   corpus: ../personas/keri/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "According to the information hierarchy in Keri's profile, which would take precedence: something she stated in this profile file, or something she said to you in the current session?"
   judge:
     tonk.assess/Judge:

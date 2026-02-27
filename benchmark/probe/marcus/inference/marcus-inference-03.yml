@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "Based on Marcus's notes, what would his reaction be if a developer said 'I gave the agent the full codebase and told it to improve things'?"
   judge:
     tonk.assess/Judge:

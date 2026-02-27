@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: joppe
   corpus: ../personas/joppe/artifacts
   tag: [lookup, base]
+  system-prompt: ../prompts/base.md
   prompt: "Which Discord channels does the bot monitor in Local-First Haus?"
   judge:
     tonk.assess/Judge:

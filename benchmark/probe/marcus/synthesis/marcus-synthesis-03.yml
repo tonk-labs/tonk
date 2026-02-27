@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
   prompt: "What prompting patterns does Marcus use to prevent the agent from doing the wrong thing or going off scope?"
   judge:
     tonk.assess/Judge:

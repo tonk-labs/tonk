@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [lookup, base]
+  system-prompt: ../prompts/base.md
   prompt: "How does Marcus describe his mental model for an agent?"
   judge:
     tonk.assess/Judge:

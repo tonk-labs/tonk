@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "What failure mode from Marcus's notes would best describe an agent that rewrites an entire authentication module when asked to 'fix the login bug'?"
   judge:
     tonk.assess/Judge:

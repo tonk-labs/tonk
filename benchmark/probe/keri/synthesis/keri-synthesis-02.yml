@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: keri
   corpus: ../personas/keri/artifacts
   tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
   prompt: "What are Keri's areas of deep expertise, and how do they connect to her consulting services?"
   judge:
     tonk.assess/Judge:

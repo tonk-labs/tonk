@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: keri
   corpus: ../personas/keri/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "If a client asked Keri to build a data pipeline for their company, what would she say?"
   judge:
     tonk.assess/Judge:

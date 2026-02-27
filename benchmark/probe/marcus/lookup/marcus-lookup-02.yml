@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [lookup, base]
+  system-prompt: ../prompts/base.md
   prompt: "What tool or method does Marcus use to reference external documentation instead of pasting it into context?"
   judge:
     tonk.assess/Judge:

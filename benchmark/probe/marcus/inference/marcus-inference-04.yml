@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "Does Marcus think a queryable knowledge base like Carry will fully replace CLAUDE.md for him? What evidence from his notes supports your answer?"
   judge:
     tonk.assess/Judge:

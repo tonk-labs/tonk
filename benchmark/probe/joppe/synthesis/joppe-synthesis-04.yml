@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: joppe
   corpus: ../personas/joppe/artifacts
   tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
   prompt: "What resources related to clocks and time in distributed systems have been shared in the archive?"
   judge:
     tonk.assess/Judge:

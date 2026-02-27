@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: joppe
   corpus: ../personas/joppe/artifacts
   tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
   prompt: "What are the recurring themes in the Local-First Haus link archive, and what do they reveal about the community's interests?"
   judge:
     tonk.assess/Judge:

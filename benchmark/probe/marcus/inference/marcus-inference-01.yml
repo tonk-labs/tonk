@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "Based on Marcus's notes, is he likely to trust a fully autonomous AI agent to deploy code to production without human review? What evidence supports your answer?"
   judge:
     tonk.assess/Judge:

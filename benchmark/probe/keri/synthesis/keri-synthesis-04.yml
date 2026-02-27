@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: keri
   corpus: ../personas/keri/artifacts
   tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
   prompt: "Summarise Keri's communication preferences — both how she communicates and how she wants to receive information."
   judge:
     tonk.assess/Judge:

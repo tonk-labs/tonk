@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: keri
   corpus: ../personas/keri/artifacts
   tag: [lookup, base]
+  system-prompt: ../prompts/base.md
   prompt: "What English variant does Keri write in, and why?"
   judge:
     tonk.assess/Judge:

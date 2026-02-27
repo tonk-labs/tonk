@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: joppe
   corpus: ../personas/joppe/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "Does this community skew more academic or practitioner-focused? What evidence supports your answer?"
   judge:
     tonk.assess/Judge:

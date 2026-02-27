@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: marcus
   corpus: ../personas/marcus/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "What problem is Marcus describing when he talks about 'context debt', and what does it have in common with technical debt?"
   judge:
     tonk.assess/Judge:

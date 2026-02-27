@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: joppe
   corpus: ../personas/joppe/artifacts
   tag: [lookup, base]
+  system-prompt: ../prompts/base.md
   prompt: "What CRDT library written in Rust did @joppevos share in February 2026?"
   judge:
     tonk.assess/Judge:

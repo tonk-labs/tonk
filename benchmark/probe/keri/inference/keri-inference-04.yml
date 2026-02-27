@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: keri
   corpus: ../personas/keri/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "What is the difference between Keri's 'working knowledge' and 'deep' expertise in the graph domain, and what does it imply for how an agent should engage with her on Neo4j optimisation problems?"
   judge:
     tonk.assess/Judge:

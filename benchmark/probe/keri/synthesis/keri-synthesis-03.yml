@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: keri
   corpus: ../personas/keri/artifacts
   tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
   prompt: "What hierarchy of information sources does Keri use when giving context to an AI, and what does each level represent?"
   judge:
     tonk.assess/Judge:

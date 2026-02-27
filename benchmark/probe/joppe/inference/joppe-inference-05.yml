@@ -2,6 +2,7 @@ tonk.assess/Probe:
   persona: joppe
   corpus: ../personas/joppe/artifacts
   tag: [inference, base]
+  system-prompt: ../prompts/base.md
   prompt: "Based on the community's link patterns, what kind of architecture or technology approach would this community likely be most sceptical of?"
   judge:
     tonk.assess/Judge:
