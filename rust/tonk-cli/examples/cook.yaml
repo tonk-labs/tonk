@@ -1,38 +1,38 @@
 diy.cook:
   Recipe:
-    this:
-      the: Meal recipe
-    title:
-      the: The name of this recipe
-      as: Text
-    ingredient:
-      the: Ingredients of the recipe
-      cardinality: many
-    steps:
-      the: Steps of the cooking process
-      cardinality: many
-      as: RecipeStep
+    description: Meal recipe
+    with:
+      title:
+        description: The name of this recipe
+        as: Text
+      ingredient:
+        description: Ingredients of the recipe
+        cardinality: many
+      steps:
+        description: Steps of the cooking process
+        cardinality: many
+        as: .RecipeStep
 
   Ingredient:
-    this:
-      the: The meal ingredient
-    name:
-      the: Name of this ingredient
-      as: Text
-    quantity:
-      the: Quantity of the ingredient
-      as: Integer
-    unit:
-      the: The unit of measurement for the ingredient
-      as: [tsp, mls]
+    description: The meal ingredient
+    with:
+      name:
+        description: Name of this ingredient
+        as: Text
+      quantity:
+        description: Quantity of the ingredient
+        as: Integer
+      unit:
+        description: The unit of measurement for the ingredient
+        as: [":tsp", ":mls"]
 
   RecipeStep:
-    this:
-      the: The cooking step
-    after:
-      the: Step to perform this after
-      as: RecipeStep
-      optional:
-    instruction:
-      the: Instructions for this step
-      as: Text
+    description: The cooking step
+    with:
+      instruction:
+        description: Instructions for this step
+        as: Text
+    maybe:
+      after:
+        description: Step to perform this after
+        as: .RecipeStep

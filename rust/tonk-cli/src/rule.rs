@@ -478,20 +478,25 @@ pub fn validate_definition(
     conclusion_attrs: &[String],
     conclusion_name: &ConceptName,
 ) -> Result<()> {
-    // Check that all binding keys are valid concept attributes
+    // Check that all binding keys are valid concept attributes.
+    // A binding key like "comment" matches either the concept-derived path
+    // (e.g. "annotatedlink/comment") or any attribute whose short name
+    // matches (e.g. "carry.links/comment" where the part after "/" is "comment").
     for short_name in definition.conclusion.bindings.keys() {
-        let qualified = qualify_attribute(conclusion_name, short_name)?;
-        if !conclusion_attrs.contains(&qualified) {
+        if short_name == "this" {
+            continue; // `this` is the entity binding, not an attribute
+        }
+        let concept_qualified = qualify_attribute(conclusion_name, short_name)?;
+        let matches = conclusion_attrs.iter().any(|a| {
+            *a == concept_qualified || a.rsplit_once('/').is_some_and(|(_, n)| n == short_name)
+        });
+        if !matches {
             anyhow::bail!(
                 "Conclusion binding '{}' is not an attribute of concept '{}'. \
                  Known attributes: {}",
                 short_name,
                 conclusion_name,
-                conclusion_attrs
-                    .iter()
-                    .map(|a| short_attribute(conclusion_name, a))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                conclusion_attrs.join(", ")
             );
         }
     }

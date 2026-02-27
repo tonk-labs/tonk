@@ -1,10 +1,12 @@
 //! Import orchestration: validation, retraction, assertion, and atomic commit.
 //!
-//! Contains the async functions that take parsed concepts or rules, validate
-//! them against the active space, build retract/assert instruction lists, and
-//! commit them atomically.
+//! Contains the async functions that take parsed concepts, standalone
+//! attributes, or rules, validate them against the active space, build
+//! retract/assert instruction lists, and commit them atomically.
 
-use super::concept_parse::{ParsedAttribute, ParsedConcept};
+use super::concept_parse::{
+    ParsedAttribute, ParsedConcept, ParsedEntry, ParsedStandaloneAttribute,
+};
 use super::rule_parse::{ParsedRule, lower_rule};
 use crate::rule::RuleDefinition;
 use crate::schema::*;
@@ -28,9 +30,30 @@ pub(super) async fn import_concepts(
     force: bool,
     json: bool,
 ) -> Result<()> {
-    let concepts = super::concept_parse::parse_yaml(yaml_str)?;
+    let entries = super::concept_parse::parse_yaml(yaml_str)?;
 
-    if concepts.is_empty() {
+    // Separate concepts and standalone attributes
+    let mut concepts = Vec::new();
+    let mut standalone_attrs = Vec::new();
+
+    for entry in entries {
+        match entry {
+            ParsedEntry::Concept(c) => concepts.push(c),
+            ParsedEntry::Attribute(a) => standalone_attrs.push(a),
+            ParsedEntry::Rule {
+                name, namespace, ..
+            } => {
+                anyhow::bail!(
+                    "Unexpected rule '{}' in namespace '{}'. \
+                     Use a mixed-format file or a separate rules file.",
+                    name,
+                    namespace
+                );
+            }
+        }
+    }
+
+    if concepts.is_empty() && standalone_attrs.is_empty() {
         if json {
             println!(
                 "{}",
@@ -81,6 +104,11 @@ pub(super) async fn import_concepts(
         validated.push((cname, concept));
     }
 
+    // Validate standalone attributes
+    for attr in &standalone_attrs {
+        validate_safe_name(&attr.short_name, "Attribute")?;
+    }
+
     let ctx = get_space_context()?;
     let mut branch = open_branch(&ctx).await?;
     let registry = registry_entity(&ctx.space_did)?;
@@ -88,84 +116,26 @@ pub(super) async fn import_concepts(
     let mut retract_instructions: Vec<Instruction> = Vec::new();
 
     for (cname, _concept) in &validated {
-        let entity = concept_entity(&ctx.space_did, cname)?;
-        let existing = fetch_string(&branch, &entity, ATTR_CONCEPT_NAME).await?;
+        retract_concept_if_exists(
+            &branch,
+            &ctx.space_did,
+            cname,
+            &registry,
+            force,
+            &mut retract_instructions,
+        )
+        .await?;
+    }
 
-        if existing.is_some() {
-            if force {
-                let existing_attrs =
-                    fetch_string_values(&branch, &entity, ATTR_CONCEPT_ATTRIBUTE).await?;
-
-                for attr_name in &existing_attrs {
-                    let meta_entity = attribute_meta_entity(&ctx.space_did, cname, attr_name)?;
-
-                    for meta_attr in &[
-                        ATTR_ATTRIBUTE_DESCRIPTION,
-                        ATTR_ATTRIBUTE_TYPE,
-                        ATTR_ATTRIBUTE_CARDINALITY,
-                        ATTR_ATTRIBUTE_OPTIONAL,
-                    ] {
-                        if let Some(val) = fetch_string(&branch, &meta_entity, meta_attr).await? {
-                            retract_instructions.push(Instruction::Retract(Artifact {
-                                the: Attribute::from_str(meta_attr)?,
-                                of: meta_entity.clone(),
-                                is: Value::String(val),
-                                cause: None,
-                            }));
-                        }
-                    }
-
-                    retract_instructions.push(Instruction::Retract(Artifact {
-                        the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
-                        of: entity.clone(),
-                        is: Value::String(attr_name.clone()),
-                        cause: None,
-                    }));
-                }
-
-                if let Some(name) = fetch_string(&branch, &entity, ATTR_CONCEPT_NAME).await? {
-                    retract_instructions.push(Instruction::Retract(Artifact {
-                        the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
-                        of: entity.clone(),
-                        is: Value::String(name),
-                        cause: None,
-                    }));
-                }
-
-                if let Some(desc) = fetch_string(&branch, &entity, ATTR_CONCEPT_DESCRIPTION).await?
-                {
-                    retract_instructions.push(Instruction::Retract(Artifact {
-                        the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
-                        of: entity.clone(),
-                        is: Value::String(desc),
-                        cause: None,
-                    }));
-                }
-
-                if let Some(ns) = fetch_string(&branch, &entity, ATTR_CONCEPT_NAMESPACE).await? {
-                    retract_instructions.push(Instruction::Retract(Artifact {
-                        the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
-                        of: entity.clone(),
-                        is: Value::String(ns),
-                        cause: None,
-                    }));
-                }
-
-                retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_REGISTRY_CONCEPT)?,
-                    of: registry.clone(),
-                    is: Value::Entity(entity.clone()),
-                    cause: None,
-                }));
-            } else {
-                anyhow::bail!(
-                    "Concept '{}' already exists. Use --force to overwrite, \
-                     or delete it first with 'tonk concept delete {}'.",
-                    cname,
-                    cname
-                );
-            }
-        }
+    for attr in &standalone_attrs {
+        retract_standalone_attr_if_exists(
+            &branch,
+            &ctx.space_did,
+            attr,
+            force,
+            &mut retract_instructions,
+        )
+        .await?;
     }
 
     // --- Build assert instructions ---
@@ -174,97 +144,19 @@ pub(super) async fn import_concepts(
     let mut import_summary: Vec<serde_json::Value> = Vec::new();
 
     for (cname, concept) in &validated {
-        let entity = concept_entity(&ctx.space_did, cname)?;
+        build_concept_assertions(
+            &ctx.space_did,
+            cname,
+            concept,
+            &registry,
+            &mut assert_instructions,
+            &mut import_summary,
+        )?;
+    }
 
-        assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_REGISTRY_CONCEPT)?,
-            of: registry.clone(),
-            is: Value::Entity(entity.clone()),
-            cause: None,
-        }));
-
-        assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
-            of: entity.clone(),
-            is: Value::String(cname.to_string()),
-            cause: None,
-        }));
-
-        if let Some(desc) = &concept.description {
-            assert_instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
-                of: entity.clone(),
-                is: Value::String(desc.clone()),
-                cause: None,
-            }));
-        }
-
-        assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
-            of: entity.clone(),
-            is: Value::String(concept.namespace.clone()),
-            cause: None,
-        }));
-
-        let mut attr_summaries: Vec<String> = Vec::new();
-
-        for attr in &concept.attributes {
-            let qualified = qualify_attribute(cname, &attr.short_name)?;
-
-            assert_instructions.push(Instruction::Assert(Artifact {
-                the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
-                of: entity.clone(),
-                is: Value::String(qualified.clone()),
-                cause: None,
-            }));
-
-            let meta_entity = attribute_meta_entity(&ctx.space_did, cname, &qualified)?;
-
-            if let Some(desc) = &attr.description {
-                assert_instructions.push(Instruction::Assert(Artifact {
-                    the: Attribute::from_str(ATTR_ATTRIBUTE_DESCRIPTION)?,
-                    of: meta_entity.clone(),
-                    is: Value::String(desc.clone()),
-                    cause: None,
-                }));
-            }
-
-            if let Some(type_str) = &attr.type_str {
-                assert_instructions.push(Instruction::Assert(Artifact {
-                    the: Attribute::from_str(ATTR_ATTRIBUTE_TYPE)?,
-                    of: meta_entity.clone(),
-                    is: Value::String(type_str.clone()),
-                    cause: None,
-                }));
-            }
-
-            if let Some(cardinality) = &attr.cardinality {
-                assert_instructions.push(Instruction::Assert(Artifact {
-                    the: Attribute::from_str(ATTR_ATTRIBUTE_CARDINALITY)?,
-                    of: meta_entity.clone(),
-                    is: Value::String(cardinality.clone()),
-                    cause: None,
-                }));
-            }
-
-            if attr.optional {
-                assert_instructions.push(Instruction::Assert(Artifact {
-                    the: Attribute::from_str(ATTR_ATTRIBUTE_OPTIONAL)?,
-                    of: meta_entity.clone(),
-                    is: Value::String("true".to_string()),
-                    cause: None,
-                }));
-            }
-
-            attr_summaries.push(attr.short_name.clone());
-        }
-
-        import_summary.push(serde_json::json!({
-            "name": cname.as_str(),
-            "namespace": concept.namespace,
-            "attributes": attr_summaries,
-            "description": concept.description,
-        }));
+    // Build standalone attribute assertions
+    for attr in &standalone_attrs {
+        build_standalone_attr_assertions(&ctx.space_did, attr, &mut assert_instructions)?;
     }
 
     // --- Atomic commit ---
@@ -286,7 +178,8 @@ pub(super) async fn import_concepts(
         });
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("Imported {} concept(s) from '{}':\n", concepts.len(), file);
+        let total = concepts.len() + standalone_attrs.len();
+        println!("Imported {} item(s) from '{}':\n", total, file);
         for (cname, concept) in &validated {
             let desc_str = concept
                 .description
@@ -297,6 +190,12 @@ pub(super) async fn import_concepts(
             for attr in &concept.attributes {
                 print_attribute_summary(attr);
             }
+        }
+        for attr in &standalone_attrs {
+            println!(
+                "  {}/{} (standalone attribute)",
+                attr.namespace, attr.short_name
+            );
         }
     }
 
@@ -390,91 +289,17 @@ pub(super) async fn import_rules(
     let mut retract_instructions: Vec<Instruction> = Vec::new();
 
     for (parsed, definition) in &lowered {
-        // Check if rule already exists
-        let rule_ent = rule_entity(&ctx.space_did, &parsed.name)?;
-        let existing = fetch_string(&branch, &rule_ent, ATTR_RULE_NAME).await?;
+        retract_rule_if_exists(
+            &branch,
+            &ctx.space_did,
+            parsed,
+            &registry,
+            force,
+            &mut retract_instructions,
+        )
+        .await?;
 
-        if existing.is_some() {
-            if force {
-                // Retract existing rule
-                if let Some(name) = fetch_string(&branch, &rule_ent, ATTR_RULE_NAME).await? {
-                    retract_instructions.push(Instruction::Retract(Artifact {
-                        the: Attribute::from_str(ATTR_RULE_NAME)?,
-                        of: rule_ent.clone(),
-                        is: Value::String(name),
-                        cause: None,
-                    }));
-                }
-                if let Some(conclusion) =
-                    fetch_string(&branch, &rule_ent, ATTR_RULE_CONCLUSION).await?
-                {
-                    retract_instructions.push(Instruction::Retract(Artifact {
-                        the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
-                        of: rule_ent.clone(),
-                        is: Value::String(conclusion),
-                        cause: None,
-                    }));
-                }
-                if let Some(def) = fetch_string(&branch, &rule_ent, ATTR_RULE_DEFINITION).await? {
-                    retract_instructions.push(Instruction::Retract(Artifact {
-                        the: Attribute::from_str(ATTR_RULE_DEFINITION)?,
-                        of: rule_ent.clone(),
-                        is: Value::String(def),
-                        cause: None,
-                    }));
-                }
-                if let Some(desc) = fetch_string(&branch, &rule_ent, ATTR_RULE_DESCRIPTION).await? {
-                    retract_instructions.push(Instruction::Retract(Artifact {
-                        the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
-                        of: rule_ent.clone(),
-                        is: Value::String(desc),
-                        cause: None,
-                    }));
-                }
-                retract_instructions.push(Instruction::Retract(Artifact {
-                    the: Attribute::from_str(ATTR_REGISTRY_RULE)?,
-                    of: registry.clone(),
-                    is: Value::Entity(rule_ent.clone()),
-                    cause: None,
-                }));
-            } else {
-                anyhow::bail!(
-                    "Rule '{}' already exists. Use --force to overwrite, \
-                     or delete it first with 'tonk rule delete {}'.",
-                    parsed.name,
-                    parsed.name
-                );
-            }
-        }
-
-        // Validate the conclusion concept exists
-        let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
-        let concept_ent = concept_entity(&ctx.space_did, &conclusion_concept)?;
-        let concept_name = fetch_string(&branch, &concept_ent, ATTR_CONCEPT_NAME)
-            .await?
-            .context(format!(
-                "Conclusion concept '{}' for rule '{}' not found. Define it first.",
-                definition.conclusion.concept, parsed.name
-            ))?;
-        let concept_name = ConceptName::from_stored(concept_name);
-
-        let concept_attrs =
-            fetch_string_values(&branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
-
-        // Validate bindings match concept schema
-        crate::rule::validate_definition(definition, &concept_attrs, &concept_name)
-            .with_context(|| format!("Rule '{}' validation failed", parsed.name))?;
-
-        // Trial-compile
-        crate::rule::compile_rule(definition, &concept_name, &concept_attrs).with_context(
-            || {
-                format!(
-                    "Rule '{}' failed to compile. Check variable names match between \
-                     conclusion bindings and premises.",
-                    parsed.name
-                )
-            },
-        )?;
+        validate_rule_against_space(&branch, &ctx.space_did, parsed, definition).await?;
     }
 
     // --- Build assert instructions ---
@@ -483,45 +308,14 @@ pub(super) async fn import_rules(
     let mut import_summary: Vec<serde_json::Value> = Vec::new();
 
     for (parsed, definition) in &lowered {
-        let rule_ent = rule_entity(&ctx.space_did, &parsed.name)?;
-        let concept_name = &definition.conclusion.concept;
-        let definition_str = serde_json::to_string(definition)?;
-
-        assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_REGISTRY_RULE)?,
-            of: registry.clone(),
-            is: Value::Entity(rule_ent.clone()),
-            cause: None,
-        }));
-
-        assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_RULE_NAME)?,
-            of: rule_ent.clone(),
-            is: Value::String(parsed.name.clone()),
-            cause: None,
-        }));
-
-        assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
-            of: rule_ent.clone(),
-            is: Value::String(concept_name.clone()),
-            cause: None,
-        }));
-
-        assert_instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_RULE_DEFINITION)?,
-            of: rule_ent.clone(),
-            is: Value::String(definition_str),
-            cause: None,
-        }));
-
-        import_summary.push(serde_json::json!({
-            "name": parsed.name,
-            "namespace": parsed.namespace,
-            "conclusion": concept_name,
-            "when_count": definition.when.len(),
-            "unless_count": definition.unless.len(),
-        }));
+        build_rule_assertions(
+            &ctx.space_did,
+            parsed,
+            definition,
+            &registry,
+            &mut assert_instructions,
+            &mut import_summary,
+        )?;
     }
 
     // --- Atomic commit ---
@@ -556,6 +350,802 @@ pub(super) async fn import_rules(
             );
         }
     }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Mixed import (concepts + rules + standalone attributes in one file)
+// ---------------------------------------------------------------------------
+
+/// Import a mixed YAML file containing concepts, standalone attributes,
+/// and rules into the active space.
+///
+/// Concepts, standalone attributes, and rules are validated first, then
+/// committed together atomically. Rules are validated against the effective
+/// schema (including concepts defined in the same file).
+pub(super) async fn import_mixed(
+    yaml_str: &str,
+    file: &str,
+    force: bool,
+    json: bool,
+) -> Result<()> {
+    let entries = super::concept_parse::parse_yaml(yaml_str)?;
+
+    // Separate into concepts, standalone attributes, and rules
+    let mut concepts = Vec::new();
+    let mut standalone_attrs = Vec::new();
+    let mut rule_entries: Vec<(String, String, serde_yaml::Value)> = Vec::new();
+
+    for entry in entries {
+        match entry {
+            ParsedEntry::Concept(c) => concepts.push(c),
+            ParsedEntry::Attribute(a) => standalone_attrs.push(a),
+            ParsedEntry::Rule {
+                name,
+                namespace,
+                value,
+            } => {
+                rule_entries.push((name, namespace, value));
+            }
+        }
+    }
+
+    // Parse the raw rule YAML values into ParsedRules
+    let mut parsed_rules = Vec::new();
+    for (name, namespace, value) in &rule_entries {
+        let parsed = super::rule_parse::parse_rule(namespace, name, value)
+            .with_context(|| format!("In rule '{}/{}'", namespace, name))?;
+        parsed_rules.push(parsed);
+    }
+
+    if concepts.is_empty() && standalone_attrs.is_empty() && parsed_rules.is_empty() {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({"ok": true, "imported": []}))?
+            );
+        } else {
+            println!("No entries found in YAML file.");
+        }
+        return Ok(());
+    }
+
+    // --- Validate concepts ---
+
+    let mut validated_concepts: Vec<(ConceptName, &ParsedConcept)> = Vec::new();
+    let mut seen_concept_names: HashSet<String> = HashSet::new();
+
+    for concept in &concepts {
+        let cname = ConceptName::new(&concept.name)?;
+
+        let lower = cname.to_lowercase();
+        if !seen_concept_names.insert(lower.clone()) {
+            anyhow::bail!(
+                "Duplicate concept name '{}' in YAML file. \
+                 Concept names must be unique (case-insensitive).",
+                concept.name
+            );
+        }
+
+        if concept.attributes.is_empty() {
+            anyhow::bail!(
+                "Concept '{}' has no attributes. A concept must have at least one attribute.",
+                concept.name
+            );
+        }
+
+        for attr in &concept.attributes {
+            if attr.short_name.contains('/') {
+                anyhow::bail!(
+                    "Attribute name '{}' in concept '{}' must not contain '/'. \
+                     Use short names only (e.g. 'title', not 'recipe/title').",
+                    attr.short_name,
+                    concept.name,
+                );
+            }
+            validate_safe_name(&attr.short_name, "Attribute")?;
+        }
+
+        validated_concepts.push((cname, concept));
+    }
+
+    // Validate standalone attributes
+    for attr in &standalone_attrs {
+        validate_safe_name(&attr.short_name, "Attribute")?;
+    }
+
+    // --- Lower rules (structural validation only, no space validation yet) ---
+
+    let mut lowered_rules: Vec<(&ParsedRule, RuleDefinition)> = Vec::new();
+    let mut seen_rule_names: HashSet<String> = HashSet::new();
+
+    for rule in &parsed_rules {
+        validate_safe_name(&rule.name, "Rule")?;
+
+        let lower = rule.name.to_lowercase();
+        if !seen_rule_names.insert(lower) {
+            anyhow::bail!(
+                "Duplicate rule name '{}' in YAML file. \
+                 Rule names must be unique (case-insensitive).",
+                rule.name
+            );
+        }
+
+        let definition =
+            lower_rule(rule).with_context(|| format!("Failed to lower rule '{}'", rule.name))?;
+
+        lowered_rules.push((rule, definition));
+    }
+
+    // --- Build schema overrides for concepts defined in this file ---
+
+    let mut concept_overrides: std::collections::HashMap<String, (ConceptName, Vec<String>)> =
+        std::collections::HashMap::new();
+    for (cname, concept) in &validated_concepts {
+        let attrs = build_concept_attr_list(cname, concept)?;
+        concept_overrides.insert(cname.to_lowercase(), (cname.clone(), attrs));
+    }
+
+    // --- Validate rules against the effective schema ---
+
+    let ctx = get_space_context()?;
+    let mut branch = open_branch(&ctx).await?;
+    let registry = registry_entity(&ctx.space_did)?;
+
+    for (parsed, definition) in &lowered_rules {
+        let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
+        let key = conclusion_concept.to_lowercase();
+        let (concept_name, concept_attrs) = if let Some((name, attrs)) = concept_overrides.get(&key)
+        {
+            (name.clone(), attrs.clone())
+        } else {
+            let concept_ent = concept_entity(&ctx.space_did, &conclusion_concept)?;
+            let concept_name = fetch_string(&branch, &concept_ent, ATTR_CONCEPT_NAME)
+                .await?
+                .context(format!(
+                    "Conclusion concept '{}' for rule '{}' not found. Define it first.",
+                    definition.conclusion.concept, parsed.name
+                ))?;
+            let concept_name = ConceptName::from_stored(concept_name);
+            let concept_attrs =
+                fetch_string_values(&branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
+            (concept_name, concept_attrs)
+        };
+
+        validate_rule_against_schema(parsed, definition, &concept_name, &concept_attrs)?;
+    }
+
+    // --- Build all instructions and commit atomically ---
+
+    let mut retract_instructions: Vec<Instruction> = Vec::new();
+    let mut assert_instructions: Vec<Instruction> = Vec::new();
+    let mut import_summary: Vec<serde_json::Value> = Vec::new();
+
+    for (cname, _concept) in &validated_concepts {
+        retract_concept_if_exists(
+            &branch,
+            &ctx.space_did,
+            cname,
+            &registry,
+            force,
+            &mut retract_instructions,
+        )
+        .await?;
+    }
+
+    for attr in &standalone_attrs {
+        retract_standalone_attr_if_exists(
+            &branch,
+            &ctx.space_did,
+            attr,
+            force,
+            &mut retract_instructions,
+        )
+        .await?;
+    }
+
+    for (parsed, _definition) in &lowered_rules {
+        retract_rule_if_exists(
+            &branch,
+            &ctx.space_did,
+            parsed,
+            &registry,
+            force,
+            &mut retract_instructions,
+        )
+        .await?;
+    }
+
+    for (cname, concept) in &validated_concepts {
+        build_concept_assertions(
+            &ctx.space_did,
+            cname,
+            concept,
+            &registry,
+            &mut assert_instructions,
+            &mut import_summary,
+        )?;
+    }
+
+    for attr in &standalone_attrs {
+        build_standalone_attr_assertions(&ctx.space_did, attr, &mut assert_instructions)?;
+    }
+
+    for (parsed, definition) in &lowered_rules {
+        build_rule_assertions(
+            &ctx.space_did,
+            parsed,
+            definition,
+            &registry,
+            &mut assert_instructions,
+            &mut import_summary,
+        )?;
+    }
+
+    let mut all_instructions = retract_instructions;
+    all_instructions.extend(assert_instructions);
+
+    branch
+        .commit(futures_util::stream::iter(all_instructions))
+        .await?;
+
+    // --- Output ---
+
+    if json {
+        let output = serde_json::json!({
+            "ok": true,
+            "type": "mixed",
+            "imported": import_summary,
+        });
+        println!("{}", serde_json::to_string(&output)?);
+    } else {
+        let total = concepts.len() + standalone_attrs.len() + parsed_rules.len();
+        println!(
+            "Imported {} item(s) from '{}' ({} concept(s), {} attribute(s), {} rule(s)):\n",
+            total,
+            file,
+            concepts.len(),
+            standalone_attrs.len(),
+            parsed_rules.len()
+        );
+        for (cname, concept) in &validated_concepts {
+            let desc_str = concept
+                .description
+                .as_ref()
+                .map(|d| format!(" - {}", d))
+                .unwrap_or_default();
+            println!("  {} [{}]{}", cname, concept.namespace, desc_str);
+            for attr in &concept.attributes {
+                print_attribute_summary(attr);
+            }
+        }
+        for attr in &standalone_attrs {
+            println!(
+                "  {}/{} (standalone attribute)",
+                attr.namespace, attr.short_name
+            );
+        }
+        for (parsed, definition) in &lowered_rules {
+            println!(
+                "  {} [{}] -> {}",
+                parsed.name, parsed.namespace, definition.conclusion.concept
+            );
+            println!(
+                "    {} when, {} unless",
+                definition.when.len(),
+                definition.unless.len()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers: concept retraction and assertion
+// ---------------------------------------------------------------------------
+
+/// Check if a concept already exists and build retract instructions if `force` is true.
+async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + ArtifactStoreMut>(
+    branch: &S,
+    space_did: &str,
+    cname: &ConceptName,
+    registry: &dialog_query::Entity,
+    force: bool,
+    retract_instructions: &mut Vec<Instruction>,
+) -> Result<()> {
+    let entity = concept_entity(space_did, cname)?;
+    let existing = fetch_string(branch, &entity, ATTR_CONCEPT_NAME).await?;
+
+    if existing.is_some() {
+        if force {
+            let existing_attrs =
+                fetch_string_values(branch, &entity, ATTR_CONCEPT_ATTRIBUTE).await?;
+
+            for attr_name in &existing_attrs {
+                let meta_entity = attribute_meta_entity(space_did, cname, attr_name)?;
+
+                for meta_attr in &[
+                    ATTR_ATTRIBUTE_DESCRIPTION,
+                    ATTR_ATTRIBUTE_TYPE,
+                    ATTR_ATTRIBUTE_CARDINALITY,
+                    ATTR_ATTRIBUTE_OPTIONAL,
+                ] {
+                    if let Some(val) = fetch_string(branch, &meta_entity, meta_attr).await? {
+                        retract_instructions.push(Instruction::Retract(Artifact {
+                            the: Attribute::from_str(meta_attr)?,
+                            of: meta_entity.clone(),
+                            is: Value::String(val),
+                            cause: None,
+                        }));
+                    }
+                }
+
+                retract_instructions.push(Instruction::Retract(Artifact {
+                    the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
+                    of: entity.clone(),
+                    is: Value::String(attr_name.clone()),
+                    cause: None,
+                }));
+            }
+
+            if let Some(name) = fetch_string(branch, &entity, ATTR_CONCEPT_NAME).await? {
+                retract_instructions.push(Instruction::Retract(Artifact {
+                    the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+                    of: entity.clone(),
+                    is: Value::String(name),
+                    cause: None,
+                }));
+            }
+
+            if let Some(desc) = fetch_string(branch, &entity, ATTR_CONCEPT_DESCRIPTION).await? {
+                retract_instructions.push(Instruction::Retract(Artifact {
+                    the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
+                    of: entity.clone(),
+                    is: Value::String(desc),
+                    cause: None,
+                }));
+            }
+
+            if let Some(ns) = fetch_string(branch, &entity, ATTR_CONCEPT_NAMESPACE).await? {
+                retract_instructions.push(Instruction::Retract(Artifact {
+                    the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
+                    of: entity.clone(),
+                    is: Value::String(ns),
+                    cause: None,
+                }));
+            }
+
+            retract_instructions.push(Instruction::Retract(Artifact {
+                the: Attribute::from_str(ATTR_REGISTRY_CONCEPT)?,
+                of: registry.clone(),
+                is: Value::Entity(entity.clone()),
+                cause: None,
+            }));
+        } else {
+            anyhow::bail!(
+                "Concept '{}' already exists. Use --force to overwrite, \
+                 or delete it first with 'tonk concept delete {}'.",
+                cname,
+                cname
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Build assert instructions for a single concept.
+fn build_concept_assertions(
+    space_did: &str,
+    cname: &ConceptName,
+    concept: &ParsedConcept,
+    registry: &dialog_query::Entity,
+    assert_instructions: &mut Vec<Instruction>,
+    import_summary: &mut Vec<serde_json::Value>,
+) -> Result<()> {
+    let entity = concept_entity(space_did, cname)?;
+
+    assert_instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_REGISTRY_CONCEPT)?,
+        of: registry.clone(),
+        is: Value::Entity(entity.clone()),
+        cause: None,
+    }));
+
+    assert_instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_CONCEPT_NAME)?,
+        of: entity.clone(),
+        is: Value::String(cname.to_string()),
+        cause: None,
+    }));
+
+    if let Some(desc) = &concept.description {
+        assert_instructions.push(Instruction::Assert(Artifact {
+            the: Attribute::from_str(ATTR_CONCEPT_DESCRIPTION)?,
+            of: entity.clone(),
+            is: Value::String(desc.clone()),
+            cause: None,
+        }));
+    }
+
+    assert_instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_CONCEPT_NAMESPACE)?,
+        of: entity.clone(),
+        is: Value::String(concept.namespace.clone()),
+        cause: None,
+    }));
+
+    let mut attr_summaries: Vec<String> = Vec::new();
+
+    for attr in &concept.attributes {
+        // Use the explicit qualified reference if one was provided in the YAML
+        // (e.g., `handle: carry.links/handle`). Otherwise fall back to
+        // generating the path from the concept name (e.g., `member/handle`).
+        let qualified = if let Some(ref qr) = attr.qualified_ref {
+            if let Some(name) = qr.strip_prefix('.') {
+                // `.name` — concept-relative, resolve now
+                let prefix = cname.to_lowercase();
+                format!("{}/{}", prefix, name)
+            } else {
+                // Fully qualified — use as-is
+                qr.clone()
+            }
+        } else {
+            qualify_attribute(cname, &attr.short_name)?
+        };
+
+        assert_instructions.push(Instruction::Assert(Artifact {
+            the: Attribute::from_str(ATTR_CONCEPT_ATTRIBUTE)?,
+            of: entity.clone(),
+            is: Value::String(qualified.clone()),
+            cause: None,
+        }));
+
+        let meta_entity = attribute_meta_entity(space_did, cname, &qualified)?;
+
+        if let Some(desc) = &attr.description {
+            assert_instructions.push(Instruction::Assert(Artifact {
+                the: Attribute::from_str(ATTR_ATTRIBUTE_DESCRIPTION)?,
+                of: meta_entity.clone(),
+                is: Value::String(desc.clone()),
+                cause: None,
+            }));
+        }
+
+        if let Some(type_str) = &attr.type_str {
+            assert_instructions.push(Instruction::Assert(Artifact {
+                the: Attribute::from_str(ATTR_ATTRIBUTE_TYPE)?,
+                of: meta_entity.clone(),
+                is: Value::String(type_str.clone()),
+                cause: None,
+            }));
+        }
+
+        if let Some(cardinality) = &attr.cardinality {
+            assert_instructions.push(Instruction::Assert(Artifact {
+                the: Attribute::from_str(ATTR_ATTRIBUTE_CARDINALITY)?,
+                of: meta_entity.clone(),
+                is: Value::String(cardinality.clone()),
+                cause: None,
+            }));
+        }
+
+        if attr.optional {
+            assert_instructions.push(Instruction::Assert(Artifact {
+                the: Attribute::from_str(ATTR_ATTRIBUTE_OPTIONAL)?,
+                of: meta_entity.clone(),
+                is: Value::String("true".to_string()),
+                cause: None,
+            }));
+        }
+
+        attr_summaries.push(attr.short_name.clone());
+    }
+
+    import_summary.push(serde_json::json!({
+        "name": cname.as_str(),
+        "namespace": concept.namespace,
+        "attributes": attr_summaries,
+        "description": concept.description,
+    }));
+
+    Ok(())
+}
+
+/// Build a list of fully-qualified attribute names for a concept definition.
+fn build_concept_attr_list(cname: &ConceptName, concept: &ParsedConcept) -> Result<Vec<String>> {
+    let mut attrs = Vec::new();
+
+    for attr in &concept.attributes {
+        let qualified = if let Some(ref qr) = attr.qualified_ref {
+            if let Some(name) = qr.strip_prefix('.') {
+                // `.name` — concept-relative, resolve now
+                let prefix = cname.to_lowercase();
+                format!("{}/{}", prefix, name)
+            } else {
+                // Fully qualified — use as-is
+                qr.clone()
+            }
+        } else {
+            qualify_attribute(cname, &attr.short_name)?
+        };
+
+        attrs.push(qualified);
+    }
+
+    Ok(attrs)
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers: standalone attribute assertion
+// ---------------------------------------------------------------------------
+
+/// Build assert instructions for a standalone attribute.
+///
+/// Standalone attributes are stored as attribute metadata triples
+/// without a parent concept, using a deterministic entity derived
+/// from the namespace and attribute name.
+fn build_standalone_attr_assertions(
+    space_did: &str,
+    attr: &ParsedStandaloneAttribute,
+    assert_instructions: &mut Vec<Instruction>,
+) -> Result<()> {
+    // Use a deterministic entity for standalone attributes
+    let qualified = format!("{}/{}", attr.namespace, attr.short_name);
+    let entity_input = format!("{}\0standalone-attr\0{}", space_did, qualified);
+    let meta_entity = derive_entity(&entity_input)?;
+
+    if let Some(desc) = &attr.description {
+        assert_instructions.push(Instruction::Assert(Artifact {
+            the: Attribute::from_str(ATTR_ATTRIBUTE_DESCRIPTION)?,
+            of: meta_entity.clone(),
+            is: Value::String(desc.clone()),
+            cause: None,
+        }));
+    }
+
+    if let Some(type_str) = &attr.type_str {
+        assert_instructions.push(Instruction::Assert(Artifact {
+            the: Attribute::from_str(ATTR_ATTRIBUTE_TYPE)?,
+            of: meta_entity.clone(),
+            is: Value::String(type_str.clone()),
+            cause: None,
+        }));
+    }
+
+    if let Some(cardinality) = &attr.cardinality {
+        assert_instructions.push(Instruction::Assert(Artifact {
+            the: Attribute::from_str(ATTR_ATTRIBUTE_CARDINALITY)?,
+            of: meta_entity.clone(),
+            is: Value::String(cardinality.clone()),
+            cause: None,
+        }));
+    }
+
+    Ok(())
+}
+
+/// Check if a standalone attribute already exists and build retract instructions if `force` is true.
+async fn retract_standalone_attr_if_exists<
+    S: dialog_artifacts::ArtifactStore + ArtifactStoreMut,
+>(
+    branch: &S,
+    space_did: &str,
+    attr: &ParsedStandaloneAttribute,
+    force: bool,
+    retract_instructions: &mut Vec<Instruction>,
+) -> Result<()> {
+    let qualified = format!("{}/{}", attr.namespace, attr.short_name);
+    let entity_input = format!("{}\0standalone-attr\0{}", space_did, qualified);
+    let meta_entity = derive_entity(&entity_input)?;
+
+    let mut found_any = false;
+    for meta_attr in [
+        ATTR_ATTRIBUTE_DESCRIPTION,
+        ATTR_ATTRIBUTE_TYPE,
+        ATTR_ATTRIBUTE_CARDINALITY,
+        ATTR_ATTRIBUTE_OPTIONAL,
+    ] {
+        if let Some(val) = fetch_string(branch, &meta_entity, meta_attr).await? {
+            found_any = true;
+            if force {
+                retract_instructions.push(Instruction::Retract(Artifact {
+                    the: Attribute::from_str(meta_attr)?,
+                    of: meta_entity.clone(),
+                    is: Value::String(val),
+                    cause: None,
+                }));
+            }
+        }
+    }
+
+    if found_any && !force {
+        anyhow::bail!(
+            "Standalone attribute '{}/{}' already exists. Use --force to overwrite.",
+            attr.namespace,
+            attr.short_name
+        );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers: rule retraction, validation, and assertion
+// ---------------------------------------------------------------------------
+
+/// Check if a rule already exists and build retract instructions if `force` is true.
+async fn retract_rule_if_exists<S: dialog_artifacts::ArtifactStore + ArtifactStoreMut>(
+    branch: &S,
+    space_did: &str,
+    parsed: &ParsedRule,
+    registry: &dialog_query::Entity,
+    force: bool,
+    retract_instructions: &mut Vec<Instruction>,
+) -> Result<()> {
+    let rule_ent = rule_entity(space_did, &parsed.name)?;
+    let existing = fetch_string(branch, &rule_ent, ATTR_RULE_NAME).await?;
+
+    if existing.is_some() {
+        if force {
+            if let Some(name) = fetch_string(branch, &rule_ent, ATTR_RULE_NAME).await? {
+                retract_instructions.push(Instruction::Retract(Artifact {
+                    the: Attribute::from_str(ATTR_RULE_NAME)?,
+                    of: rule_ent.clone(),
+                    is: Value::String(name),
+                    cause: None,
+                }));
+            }
+            if let Some(conclusion) = fetch_string(branch, &rule_ent, ATTR_RULE_CONCLUSION).await? {
+                retract_instructions.push(Instruction::Retract(Artifact {
+                    the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
+                    of: rule_ent.clone(),
+                    is: Value::String(conclusion),
+                    cause: None,
+                }));
+            }
+            if let Some(def) = fetch_string(branch, &rule_ent, ATTR_RULE_DEFINITION).await? {
+                retract_instructions.push(Instruction::Retract(Artifact {
+                    the: Attribute::from_str(ATTR_RULE_DEFINITION)?,
+                    of: rule_ent.clone(),
+                    is: Value::String(def),
+                    cause: None,
+                }));
+            }
+            if let Some(desc) = fetch_string(branch, &rule_ent, ATTR_RULE_DESCRIPTION).await? {
+                retract_instructions.push(Instruction::Retract(Artifact {
+                    the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
+                    of: rule_ent.clone(),
+                    is: Value::String(desc),
+                    cause: None,
+                }));
+            }
+            retract_instructions.push(Instruction::Retract(Artifact {
+                the: Attribute::from_str(ATTR_REGISTRY_RULE)?,
+                of: registry.clone(),
+                is: Value::Entity(rule_ent.clone()),
+                cause: None,
+            }));
+        } else {
+            anyhow::bail!(
+                "Rule '{}' already exists. Use --force to overwrite, \
+                 or delete it first with 'tonk rule delete {}'.",
+                parsed.name,
+                parsed.name
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a rule against the space's concept schemas.
+async fn validate_rule_against_space<S: dialog_artifacts::ArtifactStore + ArtifactStoreMut>(
+    branch: &S,
+    space_did: &str,
+    parsed: &ParsedRule,
+    definition: &RuleDefinition,
+) -> Result<()> {
+    let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
+    let concept_ent = concept_entity(space_did, &conclusion_concept)?;
+    let concept_name = fetch_string(branch, &concept_ent, ATTR_CONCEPT_NAME)
+        .await?
+        .context(format!(
+            "Conclusion concept '{}' for rule '{}' not found. Define it first.",
+            definition.conclusion.concept, parsed.name
+        ))?;
+    let concept_name = ConceptName::from_stored(concept_name);
+
+    let concept_attrs = fetch_string_values(branch, &concept_ent, ATTR_CONCEPT_ATTRIBUTE).await?;
+
+    validate_rule_against_schema(parsed, definition, &concept_name, &concept_attrs)?;
+
+    Ok(())
+}
+
+/// Validate a rule against a provided concept schema.
+fn validate_rule_against_schema(
+    parsed: &ParsedRule,
+    definition: &RuleDefinition,
+    concept_name: &ConceptName,
+    concept_attrs: &[String],
+) -> Result<()> {
+    // Validate bindings match concept schema
+    crate::rule::validate_definition(definition, concept_attrs, concept_name)
+        .with_context(|| format!("Rule '{}' validation failed", parsed.name))?;
+
+    // Trial-compile
+    crate::rule::compile_rule(definition, concept_name, concept_attrs).with_context(|| {
+        format!(
+            "Rule '{}' failed to compile. Check variable names match between \
+             conclusion bindings and premises.",
+            parsed.name
+        )
+    })?;
+
+    Ok(())
+}
+
+/// Build assert instructions for a single rule.
+fn build_rule_assertions(
+    space_did: &str,
+    parsed: &ParsedRule,
+    definition: &RuleDefinition,
+    registry: &dialog_query::Entity,
+    assert_instructions: &mut Vec<Instruction>,
+    import_summary: &mut Vec<serde_json::Value>,
+) -> Result<()> {
+    let rule_ent = rule_entity(space_did, &parsed.name)?;
+    let concept_name = &definition.conclusion.concept;
+    let definition_str = serde_json::to_string(definition)?;
+
+    assert_instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_REGISTRY_RULE)?,
+        of: registry.clone(),
+        is: Value::Entity(rule_ent.clone()),
+        cause: None,
+    }));
+
+    assert_instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_RULE_NAME)?,
+        of: rule_ent.clone(),
+        is: Value::String(parsed.name.clone()),
+        cause: None,
+    }));
+
+    assert_instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
+        of: rule_ent.clone(),
+        is: Value::String(concept_name.clone()),
+        cause: None,
+    }));
+
+    assert_instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_RULE_DEFINITION)?,
+        of: rule_ent.clone(),
+        is: Value::String(definition_str),
+        cause: None,
+    }));
+
+    // Assert rule description if present
+    if let Some(desc) = &parsed.description {
+        assert_instructions.push(Instruction::Assert(Artifact {
+            the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
+            of: rule_ent.clone(),
+            is: Value::String(desc.clone()),
+            cause: None,
+        }));
+    }
+
+    import_summary.push(serde_json::json!({
+        "name": parsed.name,
+        "namespace": parsed.namespace,
+        "conclusion": concept_name,
+        "when_count": definition.when.len(),
+        "unless_count": definition.unless.len(),
+    }));
 
     Ok(())
 }

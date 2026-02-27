@@ -1,14 +1,14 @@
 app:
   Task:
-    this:
-      the: A task to be completed
-    title:
-      the: Title of the task
-      as: Text
-    status:
-      the: Current status
-      as: [todo, in-progress, done]
-    priority:
-      the: Priority level
-      as: [low, medium, high]
-      optional:
+    description: A task to be completed
+    with:
+      title:
+        description: Title of the task
+        as: Text
+      status:
+        description: Current status
+        as: [":todo", ":in-progress", ":done"]
+    maybe:
+      priority:
+        description: Priority level
+        as: [":low", ":medium", ":high"]

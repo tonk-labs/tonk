@@ -204,7 +204,7 @@ pub fn attribute_meta_entity(
 }
 
 /// Low-level: hash input to produce a deterministic `did:key` entity.
-fn derive_entity(input: &str) -> Result<Entity> {
+pub fn derive_entity(input: &str) -> Result<Entity> {
     let hash = blake3::hash(input.as_bytes());
     let b58 = bs58::encode(hash.as_bytes()).into_string();
     let uri = format!("did:key:z{}", b58);
