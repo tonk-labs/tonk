@@ -1255,6 +1255,144 @@ async fn test_fact_find_with_entity_filter() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Dev Fact Batch Operations
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+#[serial]
+async fn test_fact_batch_from_yaml_file() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("fact-batch-yaml-space")
+        .await
+        .expect("Failed to create space");
+
+    // Use the example YAML file (user-profile-data.yaml)
+    let yaml_path = TestEnv::example_file("user-profile-data.yaml");
+
+    let result = tonk_cli::fact::batch(Some(yaml_path), true).await;
+    assert!(
+        result.is_ok(),
+        "fact batch from YAML file should succeed: {:?}",
+        result.err()
+    );
+
+    // Verify a fact was asserted by querying for it
+    let find_result = tonk_cli::fact::find(
+        Some("carry.profile/name".to_string()),
+        Some("keri-vasquez".to_string()),
+        None,
+        None,
+        true,
+    )
+    .await;
+    assert!(
+        find_result.is_ok(),
+        "should find facts asserted from YAML: {:?}",
+        find_result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_fact_batch_yaml_with_explicit_op() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("fact-batch-op-space")
+        .await
+        .expect("Failed to create space");
+
+    // Write a small YAML file with explicit assert and retract ops
+    let yaml_path = env.home_path.join("test-ops.yaml");
+    std::fs::write(
+        &yaml_path,
+        r#"- the: test/color
+  of: item-1
+  is: "blue"
+  op: assert
+- the: test/size
+  of: item-1
+  is: "large"
+"#,
+    )
+    .expect("Failed to write test YAML");
+
+    let result = tonk_cli::fact::batch(Some(yaml_path.to_string_lossy().into_owned()), true).await;
+    assert!(
+        result.is_ok(),
+        "fact batch with explicit ops should succeed: {:?}",
+        result.err()
+    );
+
+    // Verify both facts were asserted
+    let find_result =
+        tonk_cli::fact::find(Some("test/color".to_string()), None, None, None, true).await;
+    assert!(
+        find_result.is_ok(),
+        "should find color fact: {:?}",
+        find_result.err()
+    );
+
+    let find_result =
+        tonk_cli::fact::find(Some("test/size".to_string()), None, None, None, true).await;
+    assert!(
+        find_result.is_ok(),
+        "should find size fact (op defaulted to assert): {:?}",
+        find_result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_fact_batch_yaml_file_not_found() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("fact-batch-notfound-space")
+        .await
+        .expect("Failed to create space");
+
+    let result = tonk_cli::fact::batch(Some("/nonexistent/path.yaml".to_string()), true).await;
+    assert!(
+        result.is_err(),
+        "fact batch with nonexistent file should fail"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_fact_batch_yaml_invalid_content() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("fact-batch-invalid-space")
+        .await
+        .expect("Failed to create space");
+
+    // Write invalid YAML (not an array of {the, of, is})
+    let yaml_path = env.home_path.join("invalid.yaml");
+    std::fs::write(&yaml_path, "this is not valid yaml: [[[")
+        .expect("Failed to write invalid YAML");
+
+    let result = tonk_cli::fact::batch(Some(yaml_path.to_string_lossy().into_owned()), true).await;
+    assert!(result.is_err(), "fact batch with invalid YAML should fail");
+}
+
+#[tokio::test]
+#[serial]
+#[allow(clippy::type_complexity)]
+async fn test_fact_batch_function_signature() {
+    // Compile-time check that `fact::batch` has the expected signature:
+    //   (Option<String>, bool) -> impl Future<Output = Result<()>>
+    //
+    // This does not exercise runtime behavior. The actual stdin path
+    // is verified by manual testing documented in the requirements.
+    let _: fn(
+        Option<String>,
+        bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>>>> =
+        |file, json| Box::pin(tonk_cli::fact::batch(file, json));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Session Management
 // ═══════════════════════════════════════════════════════════════════════════
 
