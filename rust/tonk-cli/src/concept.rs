@@ -211,6 +211,12 @@ pub async fn define(
     json: bool,
 ) -> Result<()> {
     let name = ConceptName::new(name)?;
+    let description = description.trim().to_string();
+    if description.is_empty() {
+        anyhow::bail!(
+            "Description cannot be empty. Concepts require descriptions for discoverability."
+        );
+    }
 
     let namespace = &ctx.space_name;
     let mut branch = open_branch(ctx).await?;
@@ -600,6 +606,114 @@ pub async fn extend(
 
     let empty_cardinalities = std::collections::HashMap::new();
     let new_entity = concept_entity_from_attrs(&full_attrs, &empty_cardinalities)?;
+
+    // If the entity identity is changing, check whether another concept already
+    // has the same structural identity (i.e. the same attribute set under a
+    // different name). Two concepts with identical schemas is invalid.
+    if new_entity != old_entity {
+        let all_concepts = find_all_concepts(&branch).await?;
+        if let Some((colliding_entity, colliding_name)) = all_concepts
+            .iter()
+            .find(|(ent, n)| *ent == new_entity && n.to_lowercase() != name.to_lowercase())
+        {
+            let colliding_attrs =
+                fetch_string_values(&branch, colliding_entity, concept_attribute_selector())
+                    .await?;
+
+            if json {
+                let output = serde_json::json!({
+                    "ok": false,
+                    "conflict": true,
+                    "name": name.as_str(),
+                    "colliding_concept": colliding_name,
+                    "colliding_entity": colliding_entity.to_string(),
+                    "colliding_attributes": colliding_attrs.iter()
+                        .map(|a| short_attribute(&namespace, a))
+                        .collect::<Vec<_>>(),
+                    "proposed_attributes": full_attrs.iter()
+                        .map(|a| short_attribute(&namespace, a))
+                        .collect::<Vec<_>>(),
+                    "message": format!(
+                        "Extending '{}' would create the same schema as existing concept '{}'. \
+                         Use 'tonk concept define' to resolve the conflict, or choose different attributes.",
+                        name, colliding_name
+                    ),
+                });
+                println!("{}", serde_json::to_string(&output)?);
+                return Ok(());
+            }
+
+            // Interactive conflict resolution
+            println!(
+                "Extending '{}' would produce the same attribute set as existing concept '{}'.\n",
+                name, colliding_name
+            );
+            println!("  Resulting attributes:");
+            for attr in &full_attrs {
+                println!("    {}", short_attribute(&namespace, attr));
+            }
+            println!(
+                "\n  Existing concept '{}' already has this exact schema.\n",
+                colliding_name
+            );
+
+            let choices = &[
+                "Merge -- retract the other concept's name and keep this one",
+                "Cancel -- leave both concepts unchanged",
+            ];
+            let selection = dialoguer::Select::new()
+                .with_prompt("How would you like to proceed?")
+                .items(choices)
+                .default(0)
+                .interact()?;
+
+            if selection == 1 {
+                println!("Cancelled. Concept '{}' is unchanged.", name);
+                return Ok(());
+            }
+
+            // Merge: replace current concept with new identity, and retract
+            // the colliding concept's name so it becomes undiscoverable.
+            let mut instructions = build_replace_concept_instructions(
+                &new_entity,
+                &old_entity,
+                &stored_name,
+                description.as_deref().unwrap_or(""),
+                &namespace,
+                &full_attrs,
+                &stored_name,
+                None,
+            );
+
+            // Retract the colliding concept's name (soft-delete)
+            instructions.push(Instruction::Retract(Artifact {
+                the: concept_name_selector(),
+                of: colliding_entity.clone(),
+                is: Value::String(colliding_name.clone()),
+                cause: None,
+            }));
+
+            branch
+                .commit(futures_util::stream::iter(instructions))
+                .await?;
+
+            println!("Extended concept '{}' with:", name);
+            for attr in &added {
+                println!("  + {}", short_attribute(&namespace, attr));
+            }
+            println!(
+                "  Entity identity changed: {} -> {}",
+                old_entity, new_entity
+            );
+            println!("  Prior concept entity: {}", old_entity);
+            println!(
+                "  Merged with concept '{}' (its name has been retracted)",
+                colliding_name
+            );
+
+            return Ok(());
+        }
+    }
 
     let instructions = if new_entity != old_entity {
         // Entity identity changed: create a new concept entity with all metadata

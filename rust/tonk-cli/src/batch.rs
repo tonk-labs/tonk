@@ -57,6 +57,13 @@ pub async fn batch_create(
     let schema_attrs =
         fetch_string_values(&session, &concept, concept_attribute_selector()).await?;
 
+    if schema_attrs.is_empty() {
+        anyhow::bail!(
+            "Concept '{}' has no schema attributes (invalid concept definition)",
+            stored_name
+        );
+    }
+
     let mut transaction = session.edit();
     let mut results: Vec<serde_json::Value> = Vec::new();
 
@@ -177,6 +184,13 @@ pub async fn batch_update(
     let schema_attrs =
         fetch_string_values(&session, &concept, concept_attribute_selector()).await?;
 
+    if schema_attrs.is_empty() {
+        anyhow::bail!(
+            "Concept '{}' has no schema attributes (invalid concept definition)",
+            stored_name
+        );
+    }
+
     let mut transaction = session.edit();
     let mut results: Vec<serde_json::Value> = Vec::new();
 
@@ -208,7 +222,7 @@ pub async fn batch_update(
                     break;
                 }
             }
-            all && !schema_attrs.is_empty()
+            all
         };
 
         if !has_all_attrs {
@@ -331,6 +345,13 @@ pub async fn batch_delete(
     let schema_attrs =
         fetch_string_values(&session, &concept, concept_attribute_selector()).await?;
 
+    if schema_attrs.is_empty() {
+        anyhow::bail!(
+            "Concept '{}' has no schema attributes (invalid concept definition)",
+            stored_name
+        );
+    }
+
     let mut transaction = session.edit();
     let mut deleted_ids: Vec<String> = Vec::new();
 
@@ -353,7 +374,7 @@ pub async fn batch_delete(
                     break;
                 }
             }
-            all && !schema_attrs.is_empty()
+            all
         };
 
         if !has_all_attrs {

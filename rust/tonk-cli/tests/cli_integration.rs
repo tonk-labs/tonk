@@ -2267,7 +2267,7 @@ async fn test_attribute_list_after_concept_define() {
         &ctx,
         "Task".to_string(),
         vec!["title".to_string(), "status".to_string()],
-        String::new(),
+        "A task with title and status".to_string(),
         true,
     )
     .await
@@ -2436,7 +2436,7 @@ async fn test_attribute_show_ambiguous_short_name_errors() {
         &ctx,
         "Person".to_string(),
         vec!["name".to_string(), "age".to_string()],
-        String::new(),
+        "A person with name and age".to_string(),
         true,
     )
     .await
@@ -2715,7 +2715,7 @@ async fn test_attribute_show_defined_concept_no_metadata() {
         &ctx,
         "Note".to_string(),
         vec!["body".to_string(), "tags".to_string()],
-        String::new(),
+        "A note with body and tags".to_string(),
         true,
     )
     .await

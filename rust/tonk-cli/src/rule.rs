@@ -302,6 +302,7 @@ fn build_rename_map(
     let renamed_sources: std::collections::HashSet<String> = rename.keys().cloned().collect();
 
     let mut collision_renames: Vec<(String, String)> = Vec::new();
+    let mut generated_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for target_name in &rename_targets {
         // Is there a variable with the same name as a rename target,
         // that is NOT itself being renamed?
@@ -312,9 +313,10 @@ fn build_rename_map(
                 let candidate = format!("{}_{}", target_name, suffix);
                 if !all_vars.contains(&candidate)
                     && !rename_targets.contains(&candidate)
-                    && !collision_renames.iter().any(|(_, t)| t == &candidate)
+                    && !generated_names.contains(&candidate)
                 {
-                    collision_renames.push((target_name.clone(), candidate));
+                    collision_renames.push((target_name.clone(), candidate.clone()));
+                    generated_names.insert(candidate);
                     break;
                 }
                 suffix += 1;
