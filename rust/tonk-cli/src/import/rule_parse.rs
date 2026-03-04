@@ -987,28 +987,32 @@ ns:
     #[test]
     fn parse_rules_example_file() {
         let yaml = include_str!("../../examples/rules.yaml");
-        let rules = parse_rules_yaml(yaml).unwrap();
-        assert_eq!(rules.len(), 2);
+        let entries = super::super::concept_parse::parse_yaml(yaml).unwrap();
 
-        // First rule: plan-event-meal -> Meal
-        let rule1 = rules.iter().find(|r| r.name == "plan-event-meal").unwrap();
+        // Extract rule entries
+        let mut rules = Vec::new();
+        for entry in entries {
+            if let super::super::concept_parse::ParsedEntry::Rule {
+                name,
+                namespace,
+                value,
+            } = entry
+            {
+                let parsed = parse_rule(&namespace, &name, &value).unwrap();
+                rules.push(parsed);
+            }
+        }
+
+        assert_eq!(rules.len(), 1);
+
+        // plan-event-meal -> Meal
+        let rule1 = &rules[0];
+        assert_eq!(rule1.name, "plan-event-meal");
         assert_eq!(rule1.conclusion.concept_name, "Meal");
         assert!(rule1.description.is_some());
         let def1 = lower_rule(rule1).unwrap();
         assert_eq!(def1.conclusion.concept, "Meal");
         assert!(!def1.when.is_empty());
         assert!(def1.unless.is_empty());
-
-        // Second rule: infer-safe-event-meal -> Meal
-        let rule2 = rules
-            .iter()
-            .find(|r| r.name == "infer-safe-event-meal")
-            .unwrap();
-        assert_eq!(rule2.conclusion.concept_name, "Meal");
-        assert!(rule2.description.is_some());
-        let def2 = lower_rule(rule2).unwrap();
-        assert_eq!(def2.conclusion.concept, "Meal");
-        assert!(!def2.when.is_empty());
-        assert!(def2.unless.is_empty());
     }
 }

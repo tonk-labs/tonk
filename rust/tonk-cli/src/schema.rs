@@ -243,8 +243,7 @@ pub fn concept_entity_from_attrs(
 /// Look up a concept entity by name.
 ///
 /// Queries the AEV index using the typed `concept::Name` selector,
-/// with case-insensitive matching (for backward compatibility with
-/// legacy mixed-case names).
+/// with case-insensitive matching.
 pub async fn lookup_concept_by_name<S: ArtifactStore>(
     store: &S,
     name: &ConceptName,
@@ -252,8 +251,10 @@ pub async fn lookup_concept_by_name<S: ArtifactStore>(
     let concept_entities = find_entities_by_attribute(store, concept_name_selector()).await?;
 
     for entity in concept_entities {
-        if let Some(stored_name) = fetch_string(store, &entity, concept_name_selector()).await?
-            && stored_name.to_lowercase() == name.to_lowercase()
+        let stored_names = fetch_string_values(store, &entity, concept_name_selector()).await?;
+        if stored_names
+            .iter()
+            .any(|n| n.to_lowercase() == name.to_lowercase())
         {
             return Ok(Some(entity));
         }
@@ -269,8 +270,9 @@ pub async fn find_all_concepts<S: ArtifactStore>(store: &S) -> Result<Vec<(Entit
     let entities = find_entities_by_attribute(store, concept_name_selector()).await?;
     let mut result = Vec::new();
     for entity in entities {
-        if let Some(name) = fetch_string(store, &entity, concept_name_selector()).await? {
-            result.push((entity, name));
+        let names = fetch_string_values(store, &entity, concept_name_selector()).await?;
+        for name in names {
+            result.push((entity.clone(), name));
         }
     }
     Ok(result)

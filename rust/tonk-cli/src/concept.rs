@@ -50,7 +50,7 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
             .map(|(name, desc, entity_count)| {
                 let mut obj = serde_json::json!({
                     "name": name,
-                    "entities": entity_count,
+                    "count": entity_count,
                 });
                 if let Some(d) = desc {
                     obj.as_object_mut()
@@ -218,7 +218,8 @@ pub async fn define(
         );
     }
 
-    let namespace = &ctx.space_name;
+    // Use lowercase concept name as namespace (e.g., Task -> task/title)
+    let namespace = name.as_str().to_lowercase();
     let mut branch = open_branch(ctx).await?;
 
     // If no attributes provided, prompt interactively (unless --json mode)
@@ -226,7 +227,7 @@ pub async fn define(
         if json {
             anyhow::bail!("No attributes provided. Pass attribute names as arguments.");
         }
-        prompt_attributes(namespace)?
+        prompt_attributes(&namespace)?
     } else {
         attributes
     };
@@ -235,10 +236,10 @@ pub async fn define(
         anyhow::bail!("A concept must have at least one attribute.");
     }
 
-    // Qualify attribute names with the space namespace
+    // Qualify attribute names with the concept namespace
     let qualified_attrs: Vec<String> = attrs
         .iter()
-        .map(|a| qualify_attribute(namespace, a))
+        .map(|a| qualify_attribute(&namespace, a))
         .collect::<Result<Vec<_>>>()?;
 
     // Derive concept entity from attribute set (structural identity)
@@ -251,7 +252,7 @@ pub async fn define(
             return handle_converged_define(
                 &mut branch,
                 &name,
-                namespace,
+                &namespace,
                 &qualified_attrs,
                 &description,
                 &new_entity,
@@ -266,7 +267,7 @@ pub async fn define(
         return handle_conflict_define(
             &mut branch,
             &name,
-            namespace,
+            &namespace,
             &qualified_attrs,
             &description,
             &new_entity,
@@ -282,7 +283,7 @@ pub async fn define(
         &new_entity,
         name.as_str(),
         &description,
-        namespace,
+        &namespace,
         &qualified_attrs,
     );
 
@@ -294,7 +295,7 @@ pub async fn define(
         let output = serde_json::json!({
             "ok": true,
             "name": name.as_str(),
-            "namespace": namespace,
+            "namespace": &namespace,
             "attributes": qualified_attrs,
             "description": description,
         });
@@ -304,7 +305,7 @@ pub async fn define(
         println!("  Namespace: {}", namespace);
         println!("  Attributes:");
         for attr in &qualified_attrs {
-            println!("    {}", short_attribute(namespace, attr));
+            println!("    {}", short_attribute(&namespace, attr));
         }
         println!("  Description: {}", description);
     }

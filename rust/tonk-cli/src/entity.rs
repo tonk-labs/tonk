@@ -1,9 +1,13 @@
-//! Entity CRUD: create, query, show, assert, and retract entities.
+//! Entity CRUD: create, query, show, assert, and retract concept matches.
 //!
-//! An entity is a data record identified by a deterministic `did:key` derived
-//! from its initial field values. Concept membership is structural — an entity
-//! belongs to a concept if it has facts for that concept's attributes, matching
-//! dialog-db's query-time duck typing model.
+//! This module provides operations for working with entities through the lens
+//! of concepts. When you query a concept, the system returns "conclusions" —
+//! entities that match the conceptual model along with their supporting claims.
+//!
+//! An entity is an identifier (a deterministic `did:key` derived from initial
+//! field content). Concept membership is structural — an entity matches a
+//! concept if it has claims for that concept's attributes, following dialog-db's
+//! query-time duck typing model.
 
 use crate::schema::*;
 use anyhow::{Context, Result};

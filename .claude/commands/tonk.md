@@ -20,31 +20,31 @@ Always run `tonk --json status` first to orient before creating new sessions/spa
 
 ## Concepts — defining schemas
 
-A concept is a named schema that defines what attributes entities can have. Attribute names are auto-prefixed with the space name (for CLI-defined concepts) or the YAML-declared namespace (for imported concepts). For example, in a space named "my-space", concept "Task" → attributes stored as `my-space/title`, `my-space/status`. Description is required (`--description` flag).
+A concept is a named schema that defines what attributes can be associated with entities. Attribute names are auto-prefixed with the lowercase concept name (for CLI-defined concepts) or the YAML-declared namespace (for imported concepts). For example, concept "Task" → attributes stored as `task/title`, `task/status`. Description is required (`--description` flag).
 
 ```bash
 # List all concepts in the active space
 tonk --json concept
-# → [{"name":"Task","entities":12},{"name":"Contact","entities":5,"description":"People and orgs"}]
+# → [{"name":"Task","count":12},{"name":"Contact","count":5,"description":"People and orgs"}]
 
-# Define a new concept (attributes are short names, auto-prefixed)
+# Define a new concept (attributes are short names, auto-prefixed with concept name)
 tonk --json concept define Task title status priority --description "A task to track"
-# → {"ok":true,"name":"Task","attributes":["task/title","task/status","task/priority"],"description":"A task to track"}
+# → {"ok":true,"name":"Task","namespace":"task","attributes":["task/title","task/status","task/priority"],"description":"A task to track"}
 
 # Interactive mode (prompts for attributes one by one)
 tonk concept define Task --description "A task to track"
 
 # Show concept schema
 tonk --json concept show Task
-# → {"name":"Task","attributes":["task/title","task/status","task/priority"],"entity_count":12,"entity":"did:key:z..."}
+# → {"name":"Task","namespace":"task","attributes":["task/title","task/status","task/priority"],"count":12,"entity":"did:key:z..."}
 
 # Add attributes to an existing concept
 tonk --json concept extend Task due_date assignee
 # → {"ok":true,"added":["task/due_date","task/assignee"]}
 
-# Delete a concept (fails if it has entities unless --force)
+# Delete a concept (fails if matches exist unless --force)
 tonk --json concept delete Task --force
-# → {"ok":true,"deleted":"Task","entities_deleted":12}
+# → {"ok":true,"deleted":"Task","count_deleted":12}
 ```
 
 ### Convergent define (idempotency & conflict handling)
@@ -167,9 +167,9 @@ Concepts and entities are scoped to the active space. Switching spaces gives you
 
 A rule defines how entities of a concept can be **derived** from patterns across existing facts. Rules use Datalog-style deduction: positive premises (`when`) that must hold, and negative premises (`unless`) that must NOT hold. Variables (prefixed with `?`) bind values and create implicit joins across premises.
 
-Multiple rules can derive the same concept — they act as **OR branches**. Each rule independently produces derived entities, and results are merged. This lets you evolve rules independently rather than maintaining one giant rule with many branches.
+Multiple rules can derive the same concept — they act as **OR branches**. Each rule independently produces conclusions that match the conceptual model, and all conclusions are combined forming a unified set. This lets you evolve rules independently rather than maintaining one giant rule with many branches.
 
-When you query a concept that has rules, derived entities are transparently merged with stored entities.
+When you query a concept that has rules, conclusions from all applicable rules are transparently merged with directly asserted data.
 
 ```bash
 # List all rules
