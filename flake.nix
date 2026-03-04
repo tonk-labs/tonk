@@ -238,6 +238,7 @@
                   if [ -n "$NIX_ICONV" ]; then
                     install_name_tool -change "$NIX_ICONV" /usr/lib/libiconv.2.dylib "$bin"
                   fi
+                  /usr/bin/codesign --force --sign - "$bin"
                 fi
               done
             '';
