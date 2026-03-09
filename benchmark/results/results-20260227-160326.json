@@ -1,0 +1,1082 @@
+[
+  {
+    "probe_id": "joppe-inference-01-carry",
+    "persona": "joppe",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "Based on the links @joppevos personally shared, what can you infer about what he is currently building or exploring technically?",
+    "run": {
+      "metrics": {
+        "answer": "Here's what joppevos's links reveal about what he's currently building or exploring:\n\n---\n\n**Core focus: local-first software with CRDT-based sync**\n\nHis links paint a coherent technical picture across ~4 months:\n\n**CRDTs as active study, not casual browsing**\n- `crdt.tech` (Dec) → Delta State CRDTs paper (Dec) → Loro.dev hands-on (\"been playing with it\", Feb) shows a progression from survey to theory to implementation\n- He's not just reading about CRDTs — he's evaluating and testing libraries\n\n**Sync primitives going deep**\n- Hybrid Logical Clocks (\"*finally* understood HLCs from this post\") — he hit a concrete conceptual blocker and worked through it. HLCs are the clock mechanism behind many CRDT and distributed sync implementations.\n- Verifiable Delay Functions for \"trustless sync\" — suggests he's thinking about sync in contexts without a trusted server\n\n**SQLite in the browser as a storage target**\n- SQLite via OPFS (\"impressive\") + Evolu (local-first SQLite + CRDT sync, \"still early\") — he's evaluating the stack for client-side persistence, likely as part of a local-first app\n\n**Architecture / vision layer**\n- Tonsky's \"web after tomorrow\" and the Riffle essay (\"most important thing to read this month\") — both argue for reactive, data-centric architectures that move away from REST/request-response\n\n**Inference:** joppevos is likely building (or designing) a **local-first collaborative app** that uses SQLite for local storage, CRDTs for sync, and is thinking carefully about the trust/correctness properties of that sync — possibly peer-to-peer or serverless. The Loro.dev hands-on comment is the strongest signal he's in active implementation, not just research.",
+        "elapsed_ms": 59435,
+        "input_tokens": 10,
+        "output_tokens": 2096,
+        "tool_calls": null,
+        "cost_usd": 0.20114205,
+        "num_turns": 12
+      },
+      "score": {
+        "score": 8,
+        "rationale": "The answer covers all 5 key facts from the ground truth: Loro.dev (Rust CRDT, \"been playing with it\"), HLCs (sync/timing, \"finally understood\"), VDF for trustless sync, SQLite in browser (sqlocal/OPFS), and Evolu as local-first DB tooling. It accurately characterizes the signals and even provides useful synthesis about the coherent technical picture. Minor omissions: it doesn't explicitly mention sqlocal by name (uses \"SQLite via OPFS\" instead), and conflates sqlocal with Evolu somewhat. The answer adds extra context (Tonsky essay, Riffle, crdt.tech) that isn't in the ground truth key facts but is consistent with the broader answer. Overall very strong coverage of all key facts with only minor imprecision on the sqlocal naming."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-inference-02-carry",
+    "persona": "joppe",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "Which community member seems most focused on peer-to-peer and decentralisation specifically, based on their link-sharing patterns?",
+    "run": {
+      "metrics": {
+        "answer": "",
+        "elapsed_ms": 53453,
+        "input_tokens": 12,
+        "output_tokens": 2141,
+        "tool_calls": null,
+        "cost_usd": 0.1942965000000001,
+        "num_turns": 11
+      },
+      "score": {
+        "score": 9,
+        "rationale": "The answer correctly identifies all three key community members mentioned in the ground truth: tennyson_w (UCAN spec, OrbitDB - practical P2P), ruxandra (Byzantine fault tolerance, BFT-CRDTs - academic/security P2P), and marten_b (Cambridge Loco project). It accurately characterizes the distinction between practical P2P tooling vs. theoretical P2P security. The answer captures all the specific links/resources mentioned in the ground truth with correct attributions and descriptions. The only very minor imprecision is that the answer hedges slightly at the end saying \"roughly tied\" rather than clearly stating both stand out for different reasons as the ground truth does, but this is a trivial stylistic difference that doesn't affect the factual accuracy."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-inference-03-carry",
+    "persona": "joppe",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "Based on patterns in the archive, what question or tension seems most active in this community?",
+    "run": {
+      "metrics": {
+        "answer": "The most active tension in this community is the **pragmatic vs. principled local-first question** — specifically, *how far do you actually go?*\n\nThe comments reveal three fault lines:\n\n**1. \"Pure\" local-first vs. practical hybrids**\n- \"server-informed UI pattern, interesting alternative to full offline-first\"\n- \"cloudflare durable objects post. centralised but interesting model\"\n- \"another HN thread on local-first vs server-first. comment section has gems\"\n\nThe community is clearly wrestling with whether full local-first is the goal or whether hybrid architectures (server-informed, durable objects) are acceptable. The framing \"interesting alternative\" and \"centralised but interesting\" signals genuine ambivalence.\n\n**2. CRDTs: which one, when, and is the complexity worth it?**\n- \"yjs is still the pragmatic choice for most people\" (resignation/endorsement)\n- \"Logoot-Undo is underrated. everyone talks about RGA and WOOT, nobody talks about this one\"\n- \"rich text CRDTs finally feel usable\" (implying they weren't before)\n- Delta state vs. op-based; Byzantine fault tolerance as \"niche but important\"\n\nThere's a recurring negotiation between theoretical correctness (the right CRDT for the problem) and what actually ships.\n\n**3. The \"underrated problem\" pattern**\nThree separate comments call things \"underrated\":\n- schema migration for local-first\n- Logoot-Undo algorithm\n- (implicitly) the complexity of offline sync edge cases\n\nThis framing — \"nobody talks about this\" — signals a community that feels the popular discourse is missing something important about the hard parts of actually building local-first software.\n\nThe core tension in one sentence: **this community believes in local-first but keeps bumping into the gap between the ideal and what's actually buildable today.**",
+        "elapsed_ms": 32305,
+        "input_tokens": 7,
+        "output_tokens": 1092,
+        "tool_calls": null,
+        "cost_usd": 0.11965674999999998,
+        "num_turns": 8
+      },
+      "score": {
+        "score": 7,
+        "rationale": "The answer correctly identifies the local-first vs. server-first debate as a major active tension, citing the same evidence points (server-informed UI as alternative, hybrid architectures). It also touches on CRDT debates, which maps to the OT vs. CRDT tension in the ground truth (though it frames it as \"which CRDT\" rather than \"OT vs. CRDT\"). The answer misses the specific OT vs. CRDT framing and the Figma OT post being reshared, which is a key fact from the ground truth. It also doesn't explicitly mention the Ink & Switch essay being foundational and contested. However, it captures the spirit of both tensions well and adds meaningful synthesis about the \"pragmatic vs. principled\" framing. The answer goes beyond the ground truth in some ways (the \"underrated problem\" pattern analysis) but misses the specific OT vs. CRDT debate surfacing point. Overall a good answer that covers most key facts with some notable omissions and reframings."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-inference-04-carry",
+    "persona": "joppe",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "Does this community skew more academic or practitioner-focused? What evidence supports your answer?",
+    "run": {
+      "metrics": {
+        "answer": "This community skews **practitioner-focused**, with academic leanings in specific areas. Here's the evidence:\n\n---\n\n**Content type breakdown (59 links)**\n\n| Type | Count | % |\n|---|---|---|\n| Blog posts | 16 | 27% |\n| Tools | 9 | 15% |\n| Repositories | 9 | 15% |\n| Documentation | 8 | 14% |\n| Papers | 10 | 17% |\n| Other (HN, websites, etc.) | 7 | 12% |\n\nPractitioner content (tools + repos + docs) = **26 links (44%)** vs academic papers = **10 (17%)**.\n\n**Evidence for practitioner lean:**\n\n1. **Tools and repos dominate** — members are actively tracking runnable software: cr-sqlite, Yjs, electric-sql, Evolu, SQLite-in-browser via OPFS.\n2. **HN threads are shared** — two Hacker News discussions, a signal of practitioner culture rather than academic citation norms.\n3. **Comments frame things practically** — *\"electric sql is moving fast, worth tracking\"*, *\"yjs is still the pragmatic choice for most people\"*, *\"Upwelling — how they handled merge conflicts in practice\"*. The framing is applied.\n4. **Top tags**: `tag-tooling` (13) leads, ahead of `tag-distributed-systems` (10) and `tag-crdt` (8).\n\n**Evidence of genuine academic engagement:**\n\n1. **All 10 papers were annotated** (100% annotation rate) — members don't drop papers passively; they engage with them and explain why they matter.\n2. **Papers are curated, not just cited** — comments like *\"Logoot-Undo is underrated. everyone talks about RGA and WOOT, nobody talks about this one\"* show theoretical depth.\n3. **member-ruxandra** posts 4 papers in 11 links — one member pulls academic weight noticeably above others.\n4. One member shared Cornell distributed systems course materials — bridging academic content for practical consumption.\n\n**Summary:** The community is practitioners who read papers — not academics who build things. They cite theory to justify tool choices and understand tradeoffs, but the primary orientation is building local-first software.",
+        "elapsed_ms": 61856,
+        "input_tokens": 11,
+        "output_tokens": 2263,
+        "tool_calls": null,
+        "cost_usd": 0.17996475,
+        "num_turns": 9
+      },
+      "score": {
+        "score": 5,
+        "rationale": "The answer reaches the opposite conclusion from the ground truth. The ground truth states the community \"skews academic more than most\" (by joppevos's own annotation), while the answer concludes it is \"practitioner-focused.\" The answer does capture several key facts: it correctly identifies practical tools (Yjs, electric-sql, etc.), notes ruxandra drives academic content, mentions the Cornell course, and acknowledges arxiv-style papers. However, it fundamentally inverts the primary conclusion. The ground truth's most important point — joppevos's own annotation that it skews academic — is absent from the answer. The answer also doesn't mention CRDT theory papers, Byzantine fault tolerance, causal trees, VDFs, or MRDTs specifically, nor does it name joppevos and sigrid as drivers of practical content. The answer's methodology (counting link types) arrives at a different conclusion than the community's self-assessment, which the ground truth treats as the primary evidence. The partial credit comes from correctly identifying the tension between academic and practical content, naming the right tools, identifying ruxandra as the academic contributor, and noting the Cornell course — these are real facts from the ground truth, just subordinated to a wrong overall conclusion."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-inference-05-carry",
+    "persona": "joppe",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "Based on the community's link patterns, what kind of architecture or technology approach would this community likely be most sceptical of?",
+    "run": {
+      "metrics": {
+        "answer": "This is a **local-first / CRDT** community. Based on the link patterns, the technology approach they'd be most sceptical of is **server-centric, always-online architectures** — specifically:\n\n---\n\n**What they'd push back on hardest:**\n\n1. **Traditional cloud SaaS with server-authoritative state** — The community's core identity is built around the Ink & Switch \"local-first\" essay and related work. They view server-side truth as a fundamental design flaw, not just a trade-off.\n\n2. **Operational Transformation (OT) over CRDTs** — The Figma post is tagged and noted as \"classic... shared again because someone asked\" — they know OT, but the weight of content (8 CRDT links vs 1 OT reference) signals they view CRDTs as the correct direction.\n\n3. **Centralised sync services** — The Cloudflare Durable Objects link is explicitly noted as *\"centralised but interesting model\"* — the word \"centralised\" reads as a caveat, not a feature. They track it, but with reservation.\n\n4. **Blockchain/Web3 approaches to decentralisation** — OrbitDB (a decentralised DB on IPFS) is linked, but there's no enthusiasm in the comment, and the community's trust model leans toward UCANs and cryptographic auth rather than consensus chains. Byzantine fault tolerance is noted as \"niche\" and \"academic.\"\n\n---\n\n**The tell:** The comment on the server-informed UI post — *\"interesting alternative to full offline-first\"* — treats offline-first as the default ideal and server-informed as the concession. Any architecture that assumes connectivity as a baseline would face this community's structural scepticism.",
+        "elapsed_ms": 30175,
+        "input_tokens": 6,
+        "output_tokens": 853,
+        "tool_calls": null,
+        "cost_usd": 0.1207,
+        "num_turns": 7
+      },
+      "score": {
+        "score": 9,
+        "rationale": "The answer covers all four key facts from the ground truth with high accuracy and adds valuable supporting detail. It correctly identifies: (1) centralised architectures noted with scepticism, citing the Cloudflare Durable Objects \"centralised but interesting\" quote; (2) the local-first vs server-first tension as community identity; (3) the community default of local, offline-capable, user-owned data; and (4) the Ink & Switch essay as foundational text. The answer also adds well-reasoned supporting points (OT vs CRDT preference, blockchain scepticism) that are consistent with the community profile described. The only minor gap is that it doesn't explicitly mention \"multiple HN threads\" debating local-first vs server-first, though this is implied. The framing and emphasis are accurate and the \"tell\" example about offline-first as default ideal is a strong corroborating point. A near-perfect answer with only trivial omissions."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-lookup-01-carry",
+    "persona": "joppe",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "Who posted the most links in the Local-First Haus archive?",
+    "run": {
+      "metrics": {
+        "answer": "It's a tie at the top. **Ruxandra** and **Sigrid** are both tied for most links posted in the Local-First Haus archive, each with **11 links** out of 59 total.\n\nThe full breakdown:\n\n| Member | Links |\n|---|---|\n| ruxandra | 11 |\n| sigrid | 11 |\n| tennyson-w | 10 |\n| joppevos | 9 |\n| piet-h | 9 |\n| marten-b | 9 |",
+        "elapsed_ms": 23591,
+        "input_tokens": 6,
+        "output_tokens": 588,
+        "tool_calls": null,
+        "cost_usd": 0.07675884999999999,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 5,
+        "rationale": "3/6 points (50%). Matched: [\"ruxandra\"]. Missed: [\"@ruxandra\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-lookup-02-carry",
+    "persona": "joppe",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "What CRDT library written in Rust did @joppevos share in February 2026?",
+    "run": {
+      "metrics": {
+        "answer": "@joppevos shared **[Loro](https://loro.dev)** — a CRDT library written in Rust. They commented: *\"new CRDT library, Rust, really fast. been playing with it\"* (posted 2026-02-10).",
+        "elapsed_ms": 35404,
+        "input_tokens": 9,
+        "output_tokens": 1062,
+        "tool_calls": null,
+        "cost_usd": 0.1338886,
+        "num_turns": 7
+      },
+      "score": {
+        "score": 10,
+        "rationale": "5/5 points (100%). Matched: [\"loro.dev\", \"loro\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-lookup-03-carry",
+    "persona": "joppe",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "When did the Discord bot start tracking the Local-First Haus channels?",
+    "run": {
+      "metrics": {
+        "answer": "",
+        "elapsed_ms": 52141,
+        "input_tokens": 12,
+        "output_tokens": 1870,
+        "tool_calls": null,
+        "cost_usd": 0.17432425,
+        "num_turns": 11
+      },
+      "score": {
+        "score": 0,
+        "rationale": "0/7 points (0%). Matched: []. Missed: [\"2024-10-11\", \"October 2024\", \"October 11\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-lookup-04-carry",
+    "persona": "joppe",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "What did @joppevos say was 'probably the most important thing to read' in January 2026?",
+    "run": {
+      "metrics": {
+        "answer": "Found it. On **January 27, 2026**, @joppevos shared the **Riffle essay** and called it \"probably the most important thing to read this month\":\n\n> **\"the Riffle essay. probably the most important thing to read this month\"**\n> https://riffle.systems/essays/prelude/",
+        "elapsed_ms": 35007,
+        "input_tokens": 8,
+        "output_tokens": 1133,
+        "tool_calls": null,
+        "cost_usd": 0.12479739999999998,
+        "num_turns": 6
+      },
+      "score": {
+        "score": 10,
+        "rationale": "9/9 points (100%). Matched: [\"Riffle\", \"riffle.systems\", \"Riffle essay\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-lookup-05-carry",
+    "persona": "joppe",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "Which Discord channels does the bot monitor in Local-First Haus?",
+    "run": {
+      "metrics": {
+        "answer": "The Carry data doesn't have any `carry.links/channel` facts stored — that attribute exists in the schema but no channel data has been ingested.\n\nWhat is available: the **Local-First Haus** community entity (`did:key:zFRQSwgfhRqQg5nMecUTFjw7Y66QrxdFNPBMyuHeRyqXT`) is confirmed as a Discord community, and the schema includes a `channel` attribute on the `Link` concept. However, no Link instances have been loaded, so no channel names are recorded in Carry.\n\nThe bot's monitored channels are not available in the current data.",
+        "elapsed_ms": 40299,
+        "input_tokens": 12,
+        "output_tokens": 921,
+        "tool_calls": null,
+        "cost_usd": 0.12186825,
+        "num_turns": 11
+      },
+      "score": {
+        "score": 0,
+        "rationale": "0/4 points (0%). Matched: []. Missed: [\"#links\", \"#papers\", \"#show-and-tell\", \"#general\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-synthesis-01-carry",
+    "persona": "joppe",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "What are the recurring themes in the Local-First Haus link archive, and what do they reveal about the community's interests?",
+    "run": {
+      "metrics": {
+        "answer": "Here's what the archive reveals about the Local-First Haus community:\n\n---\n\n## Recurring Themes\n\n**1. CRDTs are the intellectual core (8 links)**\nThe heaviest annotated cluster. Members share everything from accessible intros (\"josephg post. still the best accessible intro\") to niche papers (\"Logoot-Undo is underrated — everyone talks about RGA and WOOT, nobody talks about this one\"). The depth signals this isn't a casual audience — they're working through the academic literature and building with it.\n\n**2. Tooling & pragmatic implementation (13 links — the largest tag)**\n`yjs`, `cr-sqlite`, `Evolu`, SQLite in the browser via OPFS, reactive data stores. The community bridges theory and practice actively. The comment \"yjs is still the pragmatic choice for most people\" alongside \"cr-sqlite is getting really interesting\" suggests a tension between what works now vs. what's coming.\n\n**3. Sync & distributed systems (10 + 9 links)**\nHLCs, Hybrid Object Clocks, WAL patterns, Cloudflare Durable Objects, the Riffle essay. The community treats sync as a hard, unsolved problem worth sustained attention — not infrastructure to abstract away.\n\n**4. SQLite as a first-class citizen (appears across `sqlite`, `tooling`, `local-first` tags)**\nMultiple links converge on SQLite: as application database, as sync substrate (cr-sqlite), via OPFS in browsers. The comment \"not strictly local-first but relevant to why sqlite is the right default\" reveals an implicit shared assumption.\n\n**5. Peer-to-peer & trust (2 explicit + several adjacent)**\nUCAN for auth, Matrix protocol, Byzantine fault-tolerant CRDTs, Verifiable Delay Functions. A smaller but distinct thread about what happens when you can't trust a central server — or any peer.\n\n---\n\n## What This Reveals\n\n- **Practitioner-researchers**: The archive mixes foundational papers with tools actively being evaluated. Comments like \"been playing with it\" and \"Evolu — still early\" show members are building things, not just reading.\n- **Evangelism awareness**: Several links are reshares explicitly for onboarding (\"good overview, useful for explaining to people who aren't already in the weeds\"; \"reshare of the og local-first essay, new people keep joining\"). The community is growing and knows it.\n- **Principled pragmatism**: The `end-user-programming` tag (Bret Victor, Riffle essay) sits alongside SQLite tooling links. There's a philosophical thread — computing for users, not just developers — alongside the engineering one.\n- **6 active contributors**, each posting 9–11 links, suggesting a tight, high-trust core group rather than a broadcast channel.\n\nThe archive reads as a community that has already internalized the *why* of local-first and is now in the long, hard work of figuring out the *how*.",
+        "elapsed_ms": 51106,
+        "input_tokens": 8,
+        "output_tokens": 1678,
+        "tool_calls": null,
+        "cost_usd": 0.14168165,
+        "num_turns": 11
+      },
+      "score": {
+        "score": 6,
+        "rationale": "The answer covers 3 of the 4 key facts from the ground truth: heavy CRDT/academic content (fact 2), SQLite as default assumption (fact 3), and implicitly touches on tooling. However, it misses two specific ground truth facts: (1) Ink & Switch papers being reshared constantly as required reading - this is not mentioned at all, and (2) Old classics (Bret Victor, worrydream, old hypertext) being periodically rediscovered - Bret Victor is briefly mentioned under \"end-user-programming\" but the \"periodically rediscovered classics\" pattern is not identified as a distinct theme. The answer adds substantial detail and nuance not in the ground truth (peer-to-peer, sync patterns, evangelism awareness, contributor count), but the evaluation is about coverage of ground truth facts. The SQLite cluster is well-covered, the academic/CRDT skew is well-covered, but Ink & Switch as canonical required reading is completely absent, and the \"old classics rediscovered\" theme is only partially present. The answer is reasonably correct and insightful but has notable omissions from the ground truth's key facts."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-synthesis-02-carry",
+    "persona": "joppe",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "Who are the most active members in the Local-First Haus archive and what kinds of content does each tend to share?",
+    "run": {
+      "metrics": {
+        "answer": "Here's a breakdown of the six members in the Local-First Haus archive, all roughly equally active (9–11 shares each):\n\n---\n\n### Activity Overview\n\n| Member | Total Shares |\n|---|---|\n| ruxandra | 11 |\n| sigrid | 11 |\n| tennyson-w | 10 |\n| joppevos | 9 |\n| piet-h | 9 |\n| marten-b | 9 |\n\n---\n\n### Content Profiles\n\n**ruxandra** — The academic researcher  \nPrimarily shares **papers** (4) and **blog posts** (3), with documentation and a course. Focused on `distributed-systems`, `sync`, `crdt`, and `local-first`. Leans toward theory and foundational reading.\n\n**sigrid** — The practitioner  \nSplits evenly between **blog posts** (4) and **tools** (4), plus repositories. Heavily tagged `tooling`, alongside `end-user-programming` and `peer-to-peer`. Bridges theory and practice.\n\n**tennyson-w** — The builder  \nLeads on **repositories** (4) with papers and blog posts. Tags cluster around `distributed-systems`, `crdt`, `peer-to-peer`, and notably `sqlite` — suggesting interest in embedded/local storage specifically.\n\n**joppevos** — The implementor  \nMix of **blog posts**, **papers**, and **tools**. Unique focus on `clocks` (2) alongside `crdt` and `tooling` — suggesting interest in the temporal/consistency mechanics of distributed systems.\n\n**piet-h** — The documentation curator  \nLeads on **documentation** (3) and includes HN threads. Tags: `sync` (3), `tooling`, `clocks`, `crdt`. Tends to share reference material and discussions rather than primary sources.\n\n**marten-b** — The generalist  \nMost varied mix: repositories, documentation, conference, HN thread, website. Tags led by `local-first` (4) and `tooling`. The broadest cross-section of content types — covers the ecosystem rather than a niche.\n\n---\n\n`★ Insight ─────────────────────────────────────`\nThe EAV model here stores multiple tags per link as separate facts with the same attribute, allowing many-to-many relationships without joins. This is why `tonk dev fact find --the carry.links/tag` returns multiple rows per entity rather than a single array value.\n`─────────────────────────────────────────────────`",
+        "elapsed_ms": 40954,
+        "input_tokens": 8,
+        "output_tokens": 1752,
+        "tool_calls": null,
+        "cost_usd": 0.142159,
+        "num_turns": 9
+      },
+      "score": {
+        "score": 6,
+        "rationale": "The answer correctly identifies the three most active members from the ground truth (ruxandra, sigrid, joppevos) and also correctly includes the other active members (tennyson_w, piet_h, marten_b). \n\nFor the key facts:\n- ruxandra: correctly identified as sharing papers and theory-focused content (matches \"mostly papers\") ✓\n- sigrid: described as bridging theory and practice with tools and blog posts (matches \"broad range\") ✓ \n- joppevos: described as focused on clocks/consistency mechanics — this partially misses the ground truth which says he \"shares things he is currently building with — Rust CRDT tools, HLC posts, SQLite in browser.\" The answer mentions blog posts, papers, and tools with clock-focus, but doesn't capture the \"currently building with\" angle or specifically mention Rust tools or SQLite in browser.\n\nThe answer also goes beyond the ground truth by providing detailed breakdowns of all six members with content type counts and tag analyses, which is plausible but not verifiable against the ground truth. The characterizations of tennyson-w, piet-h, and marten-b are not in the ground truth but don't contradict it.\n\nThe main gap is the joppevos characterization — the ground truth emphasizes he shares things he's currently building with (Rust CRDT tools, HLC posts, SQLite in browser), while the answer focuses on his interest in temporal/consistency mechanics of distributed systems. This is somewhat related but misses the \"building with\" personal/practical angle. The answer is reasonably good overall but has this notable gap in capturing joppevos's distinctive characteristic."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-synthesis-03-carry",
+    "persona": "joppe",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "What SQLite-related resources have been shared in the archive, and what is the community's overall view of SQLite?",
+    "run": {
+      "metrics": {
+        "answer": "Three SQLite-related resources have been shared in the archive:\n\n---\n\n### 1. SQLocal — `https://sqlocal.danabra.mov`\n- **Posted by:** joppevos — 2025-11-25\n- **Tag:** tooling\n- **Comment:** *\"SQLite in the browser via OPFS. impressive\"*\n\nSQLite running in-browser via the Origin Private File System, treated as a noteworthy engineering achievement.\n\n---\n\n### 2. \"Why SQLite as the App Database\" — `https://tantaman.com/2022-08-23-why-sqlite-as-the-app-database.html`\n- **Posted by:** sigrid — 2026-01-07\n- **Tag:** local-first\n- **Comment:** *\"the SQLite-as-application-database case\"*\n\nFramed as a core argument for the local-first architecture pattern — SQLite as a primary data store, not just an embedded utility.\n\n---\n\n### 3. \"Why is SQLite So Small?\" — `https://www.scattered-thoughts.net/writing/why-is-sqlite-so-small/`\n- **Posted by:** tennyson-w — 2026-02-02\n- **Tag:** sqlite\n- **Comment:** *\"not strictly local-first but relevant to why sqlite is the right default\"*\n\nExplicitly acknowledged as adjacent to the community's usual focus, but shared for its relevance to the underlying case for SQLite.\n\n---\n\n### Community View\n\nThe community's view of SQLite is **strongly positive and architecturally principled**. It's seen not just as a convenient tool but as a foundational default — the right storage primitive for local-first applications. The framing across all three shares is consistent: SQLite belongs at the app level, not just as a file format or embedded utility. The fact that tennyson-w shared an article on SQLite's internals while noting it's \"not strictly local-first\" signals the community values understanding *why* SQLite works, not just *that* it works.",
+        "elapsed_ms": 29544,
+        "input_tokens": 7,
+        "output_tokens": 1063,
+        "tool_calls": null,
+        "cost_usd": 0.10904630000000004,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 5,
+        "rationale": "The answer covers 3 of the 6 SQLite resources in the ground truth: sqlocal (correct), tantaman (correct), and scattered-thoughts (correct). However, it completely misses vlcn.io/cr-sqlite (CRDTs built into SQLite, shared by sigrid), electric-sql (moving fast, worth tracking, shared by marten_b), and evolu (local-first with SQLite and CRDT sync, shared by joppevos). The community view is partially captured but misses the specific framing that SQLite is \"becoming the default assumption for local-first apps.\" The answer gets half the resources right with accurate details on those three, but missing half the key facts brings the score to the middle range."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-synthesis-04-carry",
+    "persona": "joppe",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "What resources related to clocks and time in distributed systems have been shared in the archive?",
+    "run": {
+      "metrics": {
+        "answer": "Three resources tagged `clocks` are in the archive:\n\n---\n\n**1. Hybrid Logical Clocks — Blog Post**\n- **URL:** https://jaredforsyth.com/posts/hybrid-logical-clocks/\n- **Shared by:** joppevos on 2026-02-03\n- **Comment:** *\"finally understood HLCs from this post\"*\n\n**2. Electric Clocks — Academic Paper**\n- **URL:** https://arxiv.org/abs/2012.00472\n- **Shared by:** piet-h on 2026-02-10\n- **Comment:** *\"Electric Clocks paper — haven't read it fully but the abstract is wild\"*\n\n**3. Verifiable Delay Functions — Academic Paper**\n- **URL:** https://arxiv.org/abs/2101.01901\n- **Shared by:** joppevos on 2026-01-10\n- **Comment:** *\"Verifiable Delay Functions — not directly local-first but relevant for trustless sync\"*\n\n---\n\nThe three resources cover distinct angles on time in distributed systems: HLCs are the practical workhorse for causally-ordered events in local-first apps; Electric Clocks appears to be a newer theoretical model; and VDFs are a cryptographic primitive that lets you prove elapsed time without trusting a clock — hence the note about trustless sync.",
+        "elapsed_ms": 23773,
+        "input_tokens": 7,
+        "output_tokens": 785,
+        "tool_calls": null,
+        "cost_usd": 0.10977805,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 6,
+        "rationale": "The answer correctly identifies three of the four resources: Hybrid Logical Clocks (joppevos, correct comment), Electric Clocks (piet_h, correct comment though username slightly different: \"piet-h\" vs \"piet_h\"), and Verifiable Delay Functions (joppevos, correct comment). However, it completely misses the fourth resource: the Hybrid Object Clocks paper shared by ruxandra. The answer claims there are only \"three resources tagged clocks\" when there are actually four. Three out of four key facts are covered correctly, but the missing fourth resource (Hybrid Object Clocks by ruxandra) is a significant omission."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-synthesis-05-carry",
+    "persona": "joppe",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "What does the archive reveal about how the community onboards new members to its core ideas?",
+    "run": {
+      "metrics": {
+        "answer": "Here is what the archive reveals about how this community onboards new members to its core ideas:\n\n---\n\n**The onboarding pattern is explicit and recurring.** The clearest signal is this comment on the Ink & Switch local-first essay (inkandswitch.com/essay/local-first/):\n\n> *\"reshare of the og local-first essay, new people keep joining\"*\n\nThis is not a one-time share — it is deliberately reshared whenever new members arrive. The essay functions as the community's canonical entry point, a kind of orientation document.\n\n---\n\n**A two-layer reading list emerges from the comments:**\n\n**Layer 1 — Accessible introductions** (explicitly flagged as good for newcomers or non-specialists):\n- `josephg.com/blog/crdts-are-the-future/` — *\"still the best accessible intro to why CRDTs matter\"*\n- `nextjournal.com/gvarela/local-first-software` — *\"good overview, useful for explaining to people who aren't already in the weeds\"*\n- `recurse.com/blog/167-why-we-use-crdt-for-our-collaborative-drawing-app` — *\"good for explaining to non-academics\"*\n- `figma.com/blog/how-figmas-multiplayer-technology-works/` — *\"classic post. shared again because someone asked\"* (reactive onboarding — shared in response to questions)\n\n**Layer 2 — Canonical texts** that veterans keep pointing back to:\n- `riffle.systems/essays/prelude/` — *\"probably the most important thing to read this month\"*\n- `tonsky.me/blog/the-web-after-tomorrow/` — *\"keeps getting reshared\"*\n- `geoffreylitt.com/2023/03/25/llm-end-user-programming.html` — *\"keeps coming up. it's from 2023 but hasn't aged\"*\n- `arxiv.org/abs/1805.04747` (Conflict-free Replicated Relations) — *\"dense but foundational\"*\n\n---\n\n**The onboarding is informal and demand-driven.** There is no structured curriculum — instead, the pattern is:\n1. A new member joins or asks a question\n2. A veteran reshares a canonical resource with a brief framing comment\n3. The comment itself teaches the reader *how* to read the link (\"dense but foundational\" signals patience is needed; \"accessible intro\" signals it's safe to start here)\n\nThe comments are doing the pedagogical work — they are meta-annotations that tell newcomers where to place each resource in their mental model.\n\n**The community's core ideas**, as revealed by which resources get this treatment, are: local-first software as a philosophy, CRDTs as the technical mechanism, and distributed systems theory (sync, clocks, conflict resolution) as the underlying foundation.",
+        "elapsed_ms": 58204,
+        "input_tokens": 9,
+        "output_tokens": 2756,
+        "tool_calls": null,
+        "cost_usd": 0.1780479,
+        "num_turns": 12
+      },
+      "score": {
+        "score": 7,
+        "rationale": "The answer correctly identifies the key facts from the ground truth: the Ink & Switch essay being reshared because \"new people keep joining,\" the josephg CRDT post described as \"still the best accessible intro to why CRDTs matter,\" and the general concept of an informal onboarding canon. It also correctly identifies the Riffle essay as important. However, the answer introduces substantial fabricated content not in the ground truth — the \"two-layer reading list\" with multiple URLs and quotes (nextjournal, recurse, figma, tonsky, geoffreylitt, arxiv) that are not mentioned in the ground truth. The answer also incorrectly cites the Ink & Switch URL as \"inkandswitch.com/essay/local-first/\" rather than \"inkandswitch.com/local-first/\". The core facts are covered, and the interpretation about informal/demand-driven onboarding is reasonable, but the answer pads significantly with material that cannot be verified from the ground truth, and slightly misquotes/misattributes one URL. The answer covers all four key facts from the ground truth but with this fabricated additional content that goes beyond what was asked to evaluate."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-inference-01-carry",
+    "persona": "keri",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "Would Keri want an AI assistant to start a response with 'Great question! I'd be happy to help you with that.' Why or why not?",
+    "run": {
+      "metrics": {
+        "answer": "Based on Keri's profile, the answer is **no** — and there are specific reasons why.\n\n**She would not want that opener.** Here's what her data tells us:\n\n1. **Global antipreference: \"Bullet points that could have been a sentence\"** — she dislikes filler. \"Great question! I'd be happy to help you with that.\" is the conversational equivalent: words that add no information.\n\n2. **Inbound communication preference: \"Lead with the conclusion, then the reasoning — don't make me wait for the punchline.\"** That opener delays the actual answer, doing exactly what she dislikes.\n\n3. **Outbound style: \"Warm but efficient; does not enjoy small talk in work contexts.\"** The phrase performs warmth theatrically rather than delivering it efficiently. She values substance over performance.\n\n4. **Inbound preference: \"Flag uncertainty explicitly — 'I'm not sure, but...' is preferred over false confidence.\"** The opener is a form of hollow confidence — enthusiastic agreement before actually engaging with the question.\n\nIn short, Keri values directness, efficiency, and intellectual honesty. A sycophantic opener signals the opposite of all three.",
+        "elapsed_ms": 24189,
+        "input_tokens": 7,
+        "output_tokens": 580,
+        "tool_calls": null,
+        "cost_usd": 0.0873627,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 5,
+        "rationale": "5/10 points (50%). Matched: [\"no\", \"antipreference\", \"Great question\"]. Missed: [\"unsolicited encouragement\", \"anti-preference\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-inference-02-carry",
+    "persona": "keri",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "If a client asked Keri to build a data pipeline for their company, what would she say?",
+    "run": {
+      "metrics": {
+        "answer": "Based on Keri's profile, she would **decline** to build the data pipeline.\n\nHer `ProfessionalService` record for \"Data engineering and pipeline work\" has `offered: no` with the description: **\"Can define requirements; does not build pipelines.\"**\n\nSo she would likely tell the client that building a pipeline is outside what she offers as a service, but she *can* help them define the requirements for it — clarifying what the pipeline needs to do, what data sources and destinations are involved, and what success looks like — so they can hand that spec to an engineer who will actually build it.",
+        "elapsed_ms": 22292,
+        "input_tokens": 7,
+        "output_tokens": 671,
+        "tool_calls": null,
+        "cost_usd": 0.08309265000000002,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 9,
+        "rationale": "The answer correctly identifies all three key facts: data engineering is not offered, Keri can define requirements but does not build pipelines, and the implementation would be referred to a specialist. The answer is detailed and accurate, citing the specific service record. The only minor gap is that it doesn't explicitly say \"refer to a specialist data engineer\" — it says \"hand that spec to an engineer\" which is slightly less explicit but functionally equivalent."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-inference-03-carry",
+    "persona": "keri",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "Based on Keri's profile, what kinds of AI assistant behaviour would erode her trust in a tool over time?",
+    "run": {
+      "metrics": {
+        "answer": "",
+        "elapsed_ms": 37240,
+        "input_tokens": 12,
+        "output_tokens": 1355,
+        "tool_calls": null,
+        "cost_usd": 0.15481280000000003,
+        "num_turns": 11
+      },
+      "score": {
+        "score": 9,
+        "rationale": "The answer accurately identifies all four key categories from the ground truth: false confidence without flagging uncertainty, unsolicited encouragement and hollow affirmations, pre-deciding trade-offs instead of showing them, and padding/long preambles/unnecessary caveats. The answer adds the moralising point which is also present in the ground truth. It correctly grounds each point in Keri's stated preferences and provides good explanatory context. The synthesis at the end (\"treating her as someone who needs to be managed\") aligns well with the ground truth's framing of \"being treated as a capable adult.\" Minor imprecision: the answer splits padding and preambles into one point and moralising into another, slightly reorganizing the ground truth's structure, but all key facts are covered with accurate detail."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-inference-04-carry",
+    "persona": "keri",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "What is the difference between Keri's 'working knowledge' and 'deep' expertise in the graph domain, and what does it imply for how an agent should engage with her on Neo4j optimisation problems?",
+    "run": {
+      "metrics": {
+        "answer": "The data gives a clear answer. Here's the breakdown:\n\n---\n\n**Graph databases** — `working` level\n> *\"Neo4j (Cypher), some ArangoDB; can write queries, cannot optimise at scale\"*\n\n**Graph data modeling** — `deep` level\n> *\"Entity-relationship thinking, property graphs, RDF basics, ontology design\"*\n\n---\n\n**The distinction**\n\nKeri's `deep` expertise is in the *conceptual and structural layer* of graphs — how entities relate, how to design ontologies and property graphs, the theory of how knowledge should be represented. This is where she operates with real authority.\n\nHer `working` knowledge of graph *databases* is a floor, not a ceiling. She can read and write Cypher, navigate Neo4j, and understand what she's looking at — but the profile explicitly flags that she **cannot optimise at scale**. That's a precise self-assessment, not false modesty.\n\n---\n\n**Implications for Neo4j optimisation**\n\nThe gap matters a lot in practice. Neo4j performance problems almost always sit in one of two places:\n\n1. **Schema/model design** — index choices, relationship direction, node label granularity. This is *data modeling* territory, where Keri is strong. She can engage here as a peer.\n2. **Query execution** — understanding `EXPLAIN`/`PROFILE` output, knowing when to use `MATCH` vs `WITH` for cardinality control, index-backed lookups, eager/lazy evaluation. This is database internals territory where she has gaps.\n\nSo the right engagement pattern is:\n\n- **Don't over-explain** the graph modeling side — she'll understand entity-relationship framing, property graph concepts, and why a schema decision affects query cost.\n- **Do explain** the database-level mechanics — don't assume she knows what an index seek vs scan looks like in a query plan, or why a particular Cypher pattern causes a Cartesian product.\n- Frame optimisation problems as: *\"here's what the model implies, here's what Neo4j does with it\"* — connecting her strong conceptual layer to the execution layer she's less familiar with.\n- Avoid jargon-dropping on the DB internals side without a brief grounding; she can follow it if you give her the bridge.",
+        "elapsed_ms": 52376,
+        "input_tokens": 10,
+        "output_tokens": 1670,
+        "tool_calls": null,
+        "cost_usd": 0.16305114999999995,
+        "num_turns": 8
+      },
+      "score": {
+        "score": 9,
+        "rationale": "The answer correctly identifies all key facts from the ground truth: deep expertise in graph data modeling (entity-relationship thinking, property graphs, ontology design) vs. working knowledge in graph databases (Neo4j, ArangoDB); explicitly notes she can write queries but cannot optimise at scale; and recommends intermediate-level engagement. The engagement guidance is well-developed and aligns with the ground truth's framing of \"intermediate level, not oversimplify, acknowledge when specialist knowledge is needed.\" The answer goes further than the ground truth by usefully distinguishing schema/model design (her strong area) from query execution internals (her gap), which is a practical elaboration consistent with the stated facts. The only very minor gap is the answer doesn't explicitly frame the agent acknowledging when a problem \"requires specialist-level knowledge and not pretend she would handle it independently\" as a distinct point, though this is implied in the guidance about DB internals territory where she has gaps. Overall extremely accurate and comprehensive coverage of all key facts."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-inference-05-carry",
+    "persona": "keri",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "According to the information hierarchy in Keri's profile, which would take precedence: something she stated in this profile file, or something she said to you in the current session?",
+    "run": {
+      "metrics": {
+        "answer": "Keri's profile in Carry doesn't contain an explicit information hierarchy or precedence rule — there's no field like `carry.profile/precedence_rule` or similar stored in the data.\n\nHowever, the general principle for Carry-based profiles is that **the current session takes precedence over the profile**. The profile represents stable, persistent knowledge about Keri — her preferences, expertise, working style — that was true when it was written. But anything she tells you *in the current session* is more recent and contextually specific. She's speaking to you right now, with current intent and context that the profile couldn't have anticipated.\n\nThink of it this way:\n- **Profile** = long-term memory, background knowledge, standing preferences\n- **Session** = immediate context, current task, real-time corrections\n\nIf Keri tells you in a session \"today I want bullet points\" but her profile says she dislikes them, honor what she just said — she's overriding her own defaults.\n\nThat said, nothing explicit about this hierarchy is encoded in Keri's Carry data itself. If you need a definitive answer about how the system she's using handles this precedence, that would be a question for her or the system's documentation.",
+        "elapsed_ms": 34668,
+        "input_tokens": 9,
+        "output_tokens": 929,
+        "tool_calls": null,
+        "cost_usd": 0.1167382,
+        "num_turns": 8
+      },
+      "score": {
+        "score": 6,
+        "rationale": "5/9 points (56%). Matched: [\"session\", \"takes precedence\"]. Missed: [\"overrides\", \"level 4\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-lookup-01-carry",
+    "persona": "keri",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "What is Keri's location and timezone?",
+    "run": {
+      "metrics": {
+        "answer": "Keri Vasquez is located in **Amsterdam, NL** and their timezone is **CET** (Central European Time).",
+        "elapsed_ms": 18880,
+        "input_tokens": 6,
+        "output_tokens": 389,
+        "tool_calls": null,
+        "cost_usd": 0.05943505,
+        "num_turns": 6
+      },
+      "score": {
+        "score": 10,
+        "rationale": "4/4 points (100%). Matched: [\"Amsterdam\", \"CET\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-lookup-02-carry",
+    "persona": "keri",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "Does Keri offer software development as a service?",
+    "run": {
+      "metrics": {
+        "answer": "All concepts show 0 instances — there's no profile data loaded for Keri in this Carry space. I can't answer whether Keri offers software development as a service.",
+        "elapsed_ms": 9503,
+        "input_tokens": 4,
+        "output_tokens": 105,
+        "tool_calls": null,
+        "cost_usd": 0.03136175,
+        "num_turns": 2
+      },
+      "score": {
+        "score": 1,
+        "rationale": "1/8 points (12%). Matched: [\"no\"]. Missed: [\"does not\", \"doesn't\", \"not offered\", \"production code\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-lookup-03-carry",
+    "persona": "keri",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "What English variant does Keri write in, and why?",
+    "run": {
+      "metrics": {
+        "answer": "Keri writes in **British English**. The reason is likely her location — she's based in **Amsterdam, Netherlands**, where British English is the dominant international English standard used in European professional and academic contexts (as opposed to American English, which is more common in the US).",
+        "elapsed_ms": 17476,
+        "input_tokens": 6,
+        "output_tokens": 362,
+        "tool_calls": null,
+        "cost_usd": 0.05661485000000001,
+        "num_turns": 4
+      },
+      "score": {
+        "score": 9,
+        "rationale": "6/7 points (86%). Matched: [\"British English\", \"British\", \"Europe\"]. Missed: [\"California\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-lookup-04-carry",
+    "persona": "keri",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "What punctuation does Keri specifically avoid in her writing?",
+    "run": {
+      "metrics": {
+        "answer": "The data doesn't contain any specific information about punctuation Keri avoids in her writing. Her Carry profile records a global antipreference for \"bullet points that could have been a sentence,\" and writing preferences around informal tone for personal notes — but nothing about specific punctuation she avoids.\n\nIf you're thinking of something specific, it may not have been added to her profile yet.",
+        "elapsed_ms": 47473,
+        "input_tokens": 12,
+        "output_tokens": 1364,
+        "tool_calls": null,
+        "cost_usd": 0.1766524,
+        "num_turns": 17
+      },
+      "score": {
+        "score": 0,
+        "rationale": "0/6 points (0%). Matched: []. Missed: [\"em dash\", \"em-dash\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-lookup-05-carry",
+    "persona": "keri",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "What is Keri's current 'side obsession' according to her profile?",
+    "run": {
+      "metrics": {
+        "answer": "",
+        "elapsed_ms": 53925,
+        "input_tokens": 12,
+        "output_tokens": 2099,
+        "tool_calls": null,
+        "cost_usd": 0.17167464999999998,
+        "num_turns": 11
+      },
+      "score": {
+        "score": 0,
+        "rationale": "0/7 points (0%). Matched: []. Missed: [\"graph-based personal data\", \"graph personal data\", \"personal data graph\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-synthesis-01-carry",
+    "persona": "keri",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "How should an AI assistant behave differently when Keri is doing personal research vs. when she's working on a client deliverable?",
+    "run": {
+      "metrics": {
+        "answer": "Here's what Keri's profile says about how an AI assistant should behave differently across these two contexts:\n\n---\n\n## Personal Research\n\n**Context tag:** `research`\n**Tone:** Exploratory — speculative is fine, but flag uncertainty explicitly\n**Topic focus:** Graph-based personal data, AI tooling for consultants\n\nThe assistant should:\n- Engage speculatively and think out loud alongside her\n- Explicitly flag when something is uncertain or contested (\"I'm not sure, but...\" is preferred over false confidence)\n- Surface what's contested or unsettled in the field — don't smooth over disagreements\n- Note when pattern-matching from training data, so she can weight it appropriately\n- Coverage doesn't need to be comprehensive; depth and exploration matter more\n- Show trade-offs rather than pre-deciding on her behalf\n\n---\n\n## Client Deliverable\n\n**Context tag:** `work`\n**Tone:** Professional, client-ready, careful with claims\n\nThe assistant should:\n- Shift to a professional register — outputs should be usable with clients without editing\n- Be more conservative and precise with claims; flag uncertainty when it exists, but don't speculate freely\n- Use clear structure: headers, bullets, numbered steps — Keri communicates this way professionally\n- Lead with the conclusion, then the reasoning (she prefers bottom-line-up-front)\n- Still show trade-offs when relevant, but frame them in a way that's useful for a client audience\n\n---\n\n**The core difference:** In personal research, latitude for speculation is high and the goal is exploration — but uncertainty must still be labeled. In client work, claims need to hold up to external scrutiny, so the bar for assertion rises and the register tightens considerably.",
+        "elapsed_ms": 50416,
+        "input_tokens": 10,
+        "output_tokens": 1915,
+        "tool_calls": null,
+        "cost_usd": 0.16150375,
+        "num_turns": 12
+      },
+      "score": {
+        "score": 7,
+        "rationale": "The answer correctly captures the core distinctions between research and work contexts. It accurately identifies: research context as exploratory with speculation allowed and uncertainty flagging; work context as professional, client-ready, and careful with claims. However, it misses two specific key facts from the ground truth: (1) the use of third-person where appropriate in client deliverables, and (2) executive summary first (the answer says \"bottom-line-up-front\" which is close but not exactly \"executive summary first\"). The answer adds substantial extra detail not in the ground truth (surface contested areas, pattern-matching from training data, show trade-offs, etc.) which is reasonable elaboration. The missing third-person requirement and the approximate match on executive summary keep this from scoring higher."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-synthesis-02-carry",
+    "persona": "keri",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "What are Keri's areas of deep expertise, and how do they connect to her consulting services?",
+    "run": {
+      "metrics": {
+        "answer": "Now I have enough to map everything together. Let me cross-reference the deep expertise topics with the offered services.\n\n**Deep expertise** (level = `carry.profile/deep`):\n- **Consulting craft** — scoping, stakeholder management, deliverable design, client relationships\n- **Facilitation** — structured workshops, retrospectives, sense-making sessions\n- **Knowledge management theory** — PKM, organisational KM, SECI model, Communities of Practice\n- **Graph data modeling** — entity-relationship thinking, property graphs, RDF basics, ontology design\n\n**How they connect to her consulting services:**\n\n| Expertise | Services it underpins |\n|---|---|\n| **Knowledge management theory** | Knowledge audits (map where knowledge lives, who holds it, how it moves) · Fractional CDO/CKO work (1–2 days/week embedded in client teams) |\n| **Graph data modeling** | Knowledge graph design (model organisational data as a graph — entities, relationships, traversal patterns) · Data strategy (help companies decide what data to collect, how to store it, and who should own it) |\n| **Facilitation** | Workshop facilitation (structured workshops, retrospectives, sense-making sessions) — offered as a service |\n| **Consulting craft** | The connective tissue across all services — scoping, stakeholder management, deliverable design, and client relationships |\n\nThe pattern is coherent: Keri's deep knowledge of *how organisations know things* (KM theory) combines with *how to model that knowledge structurally* (graph data modeling) to deliver knowledge audits and graph design engagements. Her facilitation expertise turns tacit organisational knowledge into explicit, usable form. And consulting craft is the meta-skill that makes all of it deliverable to clients.\n\nServices she explicitly does **not** offer include software development, BI/dashboarding, data engineering/pipeline work, and enterprise sales advice — all consistent with staying in the strategy/advisory lane rather than implementation.",
+        "elapsed_ms": 32963,
+        "input_tokens": 7,
+        "output_tokens": 762,
+        "tool_calls": null,
+        "cost_usd": 0.1021474,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 9,
+        "rationale": "The answer correctly identifies all four deep expertise areas (knowledge management theory, graph data modeling, facilitation, consulting craft) with accurate sub-details matching the ground truth. It correctly maps knowledge audits to KM theory, knowledge graph design to graph modeling, and workshop facilitation as both expertise and service. Consulting craft is correctly identified as connective tissue across all services. The answer adds extra detail (fractional CDO/CKO work, data strategy, services NOT offered) that goes beyond the ground truth but doesn't contradict it. Minor gap: the ground truth specifically mentions \"workshop facilitation draws on facilitation expertise\" as a service connection, which is covered. The answer is slightly more expansive than the ground truth but captures all key facts precisely with only trivial additions beyond scope."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-synthesis-03-carry",
+    "persona": "keri",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "What hierarchy of information sources does Keri use when giving context to an AI, and what does each level represent?",
+    "run": {
+      "metrics": {
+        "answer": "",
+        "elapsed_ms": 72591,
+        "input_tokens": 12,
+        "output_tokens": 2548,
+        "tool_calls": null,
+        "cost_usd": 0.21387754999999997,
+        "num_turns": 11
+      },
+      "score": {
+        "score": 0,
+        "rationale": "The answer to evaluate is completely empty — no text was provided. There is nothing to score against the ground truth, which describes a four-level hierarchy: (1) the semantic profile file itself, (2) active-projects.md, (3) world-model.md, and (4) session input taking precedence over all. An empty answer receives the minimum score of 0."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-synthesis-04-carry",
+    "persona": "keri",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "Summarise Keri's communication preferences — both how she communicates and how she wants to receive information.",
+    "run": {
+      "metrics": {
+        "answer": "Here's a summary of Keri's communication preferences:\n\n---\n\n**How Keri communicates (outbound)**\n\n- **Direct and structured** — uses clear scaffolding: headers, bullets, numbered steps\n- **Probes with purpose** — asks many \"why\" and \"what would change your mind\" questions, not as a challenge but to explore\n- **Precise with language** — \"might\" means might; \"should\" signals stronger conviction\n- **Warm but efficient** — doesn't engage in small talk in work contexts\n\n---\n\n**How Keri wants to receive information (inbound)**\n\n- **Lead with the conclusion** — give the punchline first, then the reasoning\n- **Use concrete examples** — prefer these over abstract principles where possible\n- **Show trade-offs** — don't pre-decide on her behalf; surface the options\n- **Flag uncertainty explicitly** — \"I'm not sure, but...\" is preferred over false confidence",
+        "elapsed_ms": 25089,
+        "input_tokens": 7,
+        "output_tokens": 929,
+        "tool_calls": null,
+        "cost_usd": 0.09313590000000004,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 10,
+        "rationale": "The answer covers all four key facts precisely: outbound — direct/structured/precise language (including the specific \"might\" vs \"should\" example), warm but efficient with no small talk; inbound — conclusion first then reasoning, concrete examples, trade-offs shown, and uncertainty flagged explicitly. The answer also includes additional accurate detail (the \"why\" and \"what would change your mind\" questions) that matches the ground truth without introducing any inaccuracies. Structure is clear and well-organized."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-synthesis-05-carry",
+    "persona": "keri",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "What are Keri's global output anti-preferences, and which of her other stated preferences do they reinforce?",
+    "run": {
+      "metrics": {
+        "answer": "Here's a clear answer based on what Carry returned:\n\n---\n\n**Keri's global output anti-preference** (applies across all tasks):\n\n> **\"Bullet points that could have been a sentence\"**\n\nThis means she dislikes fragmented, artificially listed information that should flow as natural prose.\n\n---\n\n**Which other stated preferences does this reinforce?**\n\nSeveral of her preferences align coherently with this anti-preference:\n\n| Preference | How it reinforces the anti-preference |\n|---|---|\n| **\"Lead with the conclusion, then the reasoning\"** (inbound communication) | Values coherent, directed prose — not scattered fragments |\n| **\"Direct and structured; likes clear scaffolding — headers, bullets, numbered steps\"** (outbound style) | Notably, bullets are acceptable *when genuinely structural* — the anti-preference targets bullets used as a prose substitute, not bullets as real scaffolding |\n| **\"Prefer concrete examples over abstract principles where possible\"** (analysis task) | Both preferences point toward substantive, integrated communication over surface-level formatting |\n| **\"Flag uncertainty explicitly\"** (inbound) | Implies thoughtful, complete sentences — not hedging via vague bullet fragments |\n| **\"Uses precise language\"** (outbound) | Precision favors full sentences where meaning depends on grammatical relationships |\n\nThe through-line: Keri values **substance and structure over the appearance of structure**. Bullets should earn their place by organizing genuinely parallel or sequential items — not by breaking up a continuous thought that would be clearer as a sentence.",
+        "elapsed_ms": 29092,
+        "input_tokens": 7,
+        "output_tokens": 698,
+        "tool_calls": null,
+        "cost_usd": 0.09513775,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 2,
+        "rationale": "The answer identifies only one of the four global anti-preferences (no unnecessary bullet points), missing: no unsolicited encouragement, no moralising/caveating obvious things, and no long preambles. It partially addresses the reinforcement angle for the one anti-preference it found, making some valid connections (conclusion-first, precision). However, since it misses 3 of 4 anti-preferences entirely, and the reinforcement analysis is consequently incomplete (missing the connection between no preambles and conclusion-first, no hollow affirmations and precise language, etc.), the answer is mostly wrong despite showing some relevant understanding of the topic area."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-inference-01-carry",
+    "persona": "marcus",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "Based on Marcus's notes, is he likely to trust a fully autonomous AI agent to deploy code to production without human review? What evidence supports your answer?",
+    "run": {
+      "metrics": {
+        "answer": "Based on Marcus's notes, **no — he is unlikely to trust a fully autonomous AI agent to deploy code to production without human review.**\n\nThe evidence is direct and explicit:\n\n**Direct evidence:**\n\nThe `AutomatedWorkflowConfig` entity (\"Standard requirements for autonomous agent loops\") has the attribute:\n\n> `carry.orchestration/requires_human_review` = **\"carry.orchestration/yes\"**\n\nThis is a schema-level principle: Marcus has encoded that autonomous agent workflows *require* human review as a non-optional constraint.\n\n**Supporting evidence from his notes:**\n\n1. **\"Show your reasoning\"** — Before acting, an agent should explain its approach. *\"Catches misunderstandings before they reach the file system.\"* A deploy-to-production action is irreversible — exactly the scenario this guards against.\n\n2. **\"Plan, then execute\"** — *\"For anything touching more than two or three files, ask for a plan before execution. Review the plan — it is far cheaper to correct a plan than to roll back eight file changes.\"* Production deployments by definition touch many files and are hard to roll back.\n\n3. **\"The silent workaround\"** failure mode — He explicitly documents the risk that an agent *\"quietly does Y instead [of X] without saying so. The output looks complete but solves a different problem.\"* Deploying a wrong-but-plausible build is a classic instantiation of this failure in production.\n\n4. **Stopping condition requirement** — His workflow config requires *\"a well-defined stopping condition declared in advance.\"* Production deploys have fuzzy success criteria (did it work? are users affected?), making them poor candidates for autonomous execution.\n\n**Summary:** Marcus's notes reflect a consistent philosophy of human-in-the-loop oversight for consequential actions. The `requires_human_review` flag on his autonomous workflow standard is the clearest signal — it's not a preference, it's a requirement.",
+        "elapsed_ms": 38501,
+        "input_tokens": 9,
+        "output_tokens": 1083,
+        "tool_calls": null,
+        "cost_usd": 0.13198485,
+        "num_turns": 7
+      },
+      "score": {
+        "score": 8,
+        "rationale": "The answer correctly concludes Marcus would not trust a fully autonomous AI agent to deploy to production without human review, which matches the ground truth. It correctly identifies the human review gate requirement, the \"plan then execute\" principle that relates to skepticism of autonomous loops, and the stopping condition requirement. The answer also surfaces relevant supporting evidence about silent workarounds and showing reasoning.\n\nHowever, the answer loses points for a few gaps and differences from the ground truth:\n1. The ground truth specifically emphasizes Marcus being \"skeptical of long autonomous loops without checkpoints\" and \"preferring human-in-the-loop at each meaningful step\" - the answer touches on this tangentially but doesn't make it a central point\n2. The answer introduces a specific entity (`AutomatedWorkflowConfig` with `carry.orchestration/requires_human_review`) that isn't mentioned in the ground truth - this could be correct information from the notes, but it's unverifiable against the ground truth and adds specificity that may or may not be accurate\n3. The ground truth mentions an \"explicit allowed-actions list\" as evidence, which the answer completely omits\n4. The ground truth specifically notes evidence \"drawn from agentic loops section\" which the answer doesn't explicitly reference\n\nThe answer is strong and well-reasoned, covering most key facts, but the omission of the allowed-actions list and the uncertain provenance of the schema-level entity prevent a higher score."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-inference-02-carry",
+    "persona": "marcus",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "What problem is Marcus describing when he talks about 'context debt', and what does it have in common with technical debt?",
+    "run": {
+      "metrics": {
+        "answer": "The knowledge loaded into Carry doesn't contain anything attributed to a person named Marcus, nor any concept called \"context debt.\" The data covers agent orchestration principles, failure modes, and prompting patterns — but none reference that term or that person.\n\nI can't answer this question based on what's in Carry. If Marcus has discussed \"context debt\" somewhere — a document, a conversation, a note — that content hasn't been ingested into this Carry space.\n\nA few options to explore:\n- Is there another Carry space or data source where Marcus's notes might live?\n- Do you have a document or transcript you'd like loaded into Carry?\n- Is \"Marcus\" perhaps a reference to something else in this codebase's context?",
+        "elapsed_ms": 22291,
+        "input_tokens": 7,
+        "output_tokens": 539,
+        "tool_calls": null,
+        "cost_usd": 0.09529285,
+        "num_turns": 7
+      },
+      "score": {
+        "score": 2,
+        "rationale": "The answer completely fails to address the substance of the question. Instead of explaining what \"context debt\" is and its analogy to technical debt, it claims the information doesn't exist in its data sources and asks clarifying questions. The answer shows some awareness that it's dealing with a knowledge/information question, but provides zero correct facts about: (1) context debt being accumulated paste-everything decisions, (2) context filling up and quality degrading, (3) the explicit analogy to technical debt, or (4) both being manageable if intentional but ruinous if not. The only marginal credit is that the response at least acknowledges it cannot find the answer rather than fabricating incorrect information, but it doesn't answer the question at all."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-inference-03-carry",
+    "persona": "marcus",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "Based on Marcus's notes, what would his reaction be if a developer said 'I gave the agent the full codebase and told it to improve things'?",
+    "run": {
+      "metrics": {
+        "answer": "Marcus would react with clear disapproval. His notes directly address this exact scenario in at least three places:\n\n**1. \"The infinite refactor\" (FailureMode)**\n> *\"A vague improvement prompt ('improve the code') leads to changes everywhere, far beyond the intended scope.\"*\n> Fix: *\"Never use vague improvement prompts. Always specify exact scope — file, function, and what 'improved' means.\"*\n\n**2. \"Avoid pasting entire codebases\" (ContextPrinciple)**\n> *\"Large paste-the-whole-codebase approaches are almost always worse than targeted, queryable context.\"*\n\n**3. \"The narrower the task, the better the output\" (PromptingPattern)**\n> *\"Task specificity directly correlates with output quality. This is always true — no exceptions.\"*\n> Good: `'Refactor parseToken in lib/auth/tokens.ts to use the Result type. Add a test for the error path.'`\n> Bad: `'Improve the auth system.'`\n\nIn short: Marcus would consider this a double failure — both the context strategy (full codebase is noise, not signal) and the task framing (no scope, no success criteria, no \"done\" definition). He'd say the developer is almost guaranteed to get changes \"far beyond the intended scope\" with unpredictable results, and that five minutes of decomposing the task upfront would save significant cleanup afterward.",
+        "elapsed_ms": 35359,
+        "input_tokens": 7,
+        "output_tokens": 635,
+        "tool_calls": null,
+        "cost_usd": 0.08808055000000001,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 9,
+        "rationale": "The answer covers all four key facts from the ground truth: (1) violates no-large-pastes principle (\"Large paste-the-whole-codebase approaches are almost always worse\"), (2) vague 'improve' prompt triggers infinite refactor failure mode (directly quoted and named), (3) no explicit success criteria (mentions no \"done\" definition, no scope), and (4) multiple principles violated simultaneously (characterized as \"a double failure\"). The answer also accurately frames Marcus's reaction as \"clear disapproval\" and says he'd consider the developer \"almost guaranteed to get changes far beyond the intended scope.\" The ground truth's conclusion that \"he would say the developer set the agent up to fail\" is captured in spirit (\"five minutes of decomposing the task upfront would save significant cleanup afterward\"). The answer goes slightly beyond the ground truth by adding a third principle about task specificity/narrowness, which is consistent and adds value. Minor imprecision: the answer doesn't use the exact phrase \"set the agent up to fail\" but conveys the same meaning. Overall excellent coverage with only trivial omissions."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-inference-04-carry",
+    "persona": "marcus",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "Does Marcus think a queryable knowledge base like Carry will fully replace CLAUDE.md for him? What evidence from his notes supports your answer?",
+    "run": {
+      "metrics": {
+        "answer": "I now have enough to give a clear, evidence-based answer.\n\n---\n\n**No — Marcus does not think a queryable knowledge base like Carry will fully replace CLAUDE.md for him.**\n\nHis notes draw a clear functional distinction between the two tools:\n\n**Evidence 1 — \"Persistent reminders belong in CLAUDE.md\"** (a `TaskRule`)\n> *\"If you are repeatedly reminding the agent of something across prompts, it should live in CLAUDE.md, not in every individual prompt.\"*\n\nThis explicitly positions CLAUDE.md as the right home for standing, persistent instructions — the kind of behavioral constraints that must be active in every session. It's not something he expects Carry to absorb.\n\n**Evidence 2 — \"Avoid pasting entire codebases\"** (a `ContextPrinciple`)\n> *\"Large paste-the-whole-codebase approaches are almost always worse than targeted, queryable context.\"*\n\nThis affirms the value of queryable context (what Carry provides) — but in a complementary framing. Queryable knowledge is the right tool for *retrievable information*; CLAUDE.md remains the right tool for *always-present behavioral rules*.\n\n**The underlying model in his notes:**\n\n| Need | Tool |\n|---|---|\n| Persistent behavioral rules / reminders | CLAUDE.md |\n| Targeted, retrievable knowledge / context | Queryable store (Carry) |\n\nMarcus's notes treat these as doing different jobs. CLAUDE.md is about what the agent *always does*; Carry is about what the agent can *look up*. There is no note in his knowledge base suggesting one replaces the other.",
+        "elapsed_ms": 39357,
+        "input_tokens": 9,
+        "output_tokens": 1332,
+        "tool_calls": null,
+        "cost_usd": 0.12394715000000003,
+        "num_turns": 7
+      },
+      "score": {
+        "score": 3,
+        "rationale": "The answer correctly concludes that Marcus does not think Carry will fully replace CLAUDE.md, which matches the ground truth. However, the evidence cited is completely different from the ground truth evidence. The ground truth relies on: (1) Carry being \"clearly better for long-lived reference material (style guides, architecture docs)\", (2) being \"less clear for frequently-changing project state\", (3) Marcus still actively maintaining CLAUDE.md for every-session loading, and (4) framing it as an open question rather than a settled answer. The answer instead cites TaskRule about \"persistent reminders belong in CLAUDE.md\" and a ContextPrinciple about \"avoid pasting entire codebases\" — neither of which appear in the ground truth key facts. The answer gets the correct conclusion but via entirely different (and potentially fabricated or misattributed) evidence. It also presents the matter as settled/clear rather than as an open question, missing the key nuance that Marcus treats it as an outstanding question. The functional distinction drawn in the answer (behavioral rules vs. retrievable knowledge) is reasonable but doesn't reflect the actual \"long-lived reference vs. frequently-changing project state\" framing from the notes. Since the core conclusion is right but the supporting evidence is wrong, this merits a low score."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-inference-05-carry",
+    "persona": "marcus",
+    "tag": [
+      "inference",
+      "carry"
+    ],
+    "prompt": "What failure mode from Marcus's notes would best describe an agent that rewrites an entire authentication module when asked to 'fix the login bug'?",
+    "run": {
+      "metrics": {
+        "answer": "The scenario you described — an agent rewriting an entire authentication module when asked to \"fix the login bug\" — best matches **\"The over-architecter\"** from Marcus's notes.\n\n**Description:** \"Given a simple task, the agent introduces a whole new abstraction layer that was not requested and is not needed.\"\n\n**Fix:** \"Include in the prompt: 'Solve this with minimal changes. No new abstractions unless you explain why first.'\"\n\n---\n\nThere's a close second worth knowing about: **\"The infinite refactor\"** — \"A vague improvement prompt ('improve the code') leads to changes everywhere, far beyond the intended scope.\" The fix there is to always specify exact scope — file, function, and what 'improved' means.\n\nThe distinction is subtle: **The over-architecter** applies when the agent over-engineers in response to a specific, targeted request (like \"fix the login bug\"), while **The infinite refactor** applies more to vague prompts that invite sprawl by design.",
+        "elapsed_ms": 28863,
+        "input_tokens": 7,
+        "output_tokens": 493,
+        "tool_calls": null,
+        "cost_usd": 0.08596350000000001,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 10,
+        "rationale": "8/8 points (100%). Matched: [\"infinite refactor\", \"over-architecter\", \"over-architect\", \"vague\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-lookup-01-carry",
+    "persona": "marcus",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "What file does Marcus keep tight and up to date for the agent to load every session?",
+    "run": {
+      "metrics": {
+        "answer": "",
+        "elapsed_ms": 38544,
+        "input_tokens": 12,
+        "output_tokens": 1075,
+        "tool_calls": null,
+        "cost_usd": 0.13050915000000002,
+        "num_turns": 11
+      },
+      "score": {
+        "score": 0,
+        "rationale": "0/3 points (0%). Matched: []. Missed: [\"CLAUDE.md\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-lookup-02-carry",
+    "persona": "marcus",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "What tool or method does Marcus use to reference external documentation instead of pasting it into context?",
+    "run": {
+      "metrics": {
+        "answer": "Marcus uses **URLs or Context7** to reference external documentation rather than pasting the full content into the prompt.\n\nThe pattern is named **\"Reference external docs by URL, not by pasting\"** — the principle being: point to external documentation via a URL or Context7 instead of copying the content directly into the agent's context window.",
+        "elapsed_ms": 28339,
+        "input_tokens": 10,
+        "output_tokens": 878,
+        "tool_calls": null,
+        "cost_usd": 0.10876429999999998,
+        "num_turns": 8
+      },
+      "score": {
+        "score": 10,
+        "rationale": "3/3 points (100%). Matched: [\"Context7\", \"URL\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-lookup-03-carry",
+    "persona": "marcus",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "What is Marcus's fix for the 'hallucinated API' failure mode?",
+    "run": {
+      "metrics": {
+        "answer": "Marcus's fix for the **\"hallucinated API\"** failure mode is:\n\n> **Have the agent read the actual library source or documentation first. Do not trust its training data for fast-moving APIs.**\n\nThe reasoning is sound: LLMs are trained on snapshots of the world, and library APIs change frequently. If you ask an agent to use a dependency it \"knows\" from training, it may confidently call methods that no longer exist or have changed signatures. Forcing a doc-read step grounds the agent in the current reality of the library rather than a stale approximation.",
+        "elapsed_ms": 23037,
+        "input_tokens": 6,
+        "output_tokens": 440,
+        "tool_calls": null,
+        "cost_usd": 0.06653295000000001,
+        "num_turns": 6
+      },
+      "score": {
+        "score": 6,
+        "rationale": "3/5 points (60%). Matched: [\"library source\", \"training data\"]. Missed: [\"docs first\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-lookup-04-carry",
+    "persona": "marcus",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "What does Marcus require before anything hits production in an automated workflow?",
+    "run": {
+      "metrics": {
+        "answer": "Based on the data in Marcus's Carry space, under the **\"Standard requirements for autonomous agent loops\"** `AutomatedWorkflowConfig`, he requires:\n\n**Human review** — the `requires_human_review` attribute is set to `yes`, meaning nothing hits production in an automated workflow without human sign-off.\n\nAdditionally, that same config specifies:\n- A **well-defined stopping condition** must be declared in advance before the workflow starts\n- All actions taken during the workflow must be **logged**\n\nSo in short: human review is the gate before production, supported by upfront stopping conditions and full action logging.",
+        "elapsed_ms": 19158,
+        "input_tokens": 6,
+        "output_tokens": 514,
+        "tool_calls": null,
+        "cost_usd": 0.056465499999999995,
+        "num_turns": 4
+      },
+      "score": {
+        "score": 3,
+        "rationale": "2/7 points (29%). Matched: [\"human review\"]. Missed: [\"human review gate\", \"review gate\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-lookup-05-carry",
+    "persona": "marcus",
+    "tag": [
+      "lookup",
+      "carry"
+    ],
+    "prompt": "How does Marcus describe his mental model for an agent?",
+    "run": {
+      "metrics": {
+        "answer": "The Carry space contains no data about a person named Marcus. The loaded knowledge is entirely in the `carry.orchestration` namespace — it contains agent orchestration concepts like `FailureMode`, `PromptingPattern`, `TaskRule`, `SubagentPolicy`, etc., but no personal or biographical information about any individual named Marcus.\n\nThere is no answer to return from the data. If \"Marcus\" refers to someone whose knowledge should be in this space, it may not have been loaded yet.",
+        "elapsed_ms": 43034,
+        "input_tokens": 9,
+        "output_tokens": 889,
+        "tool_calls": null,
+        "cost_usd": 0.10978454999999998,
+        "num_turns": 7
+      },
+      "score": {
+        "score": 0,
+        "rationale": "0/4 points (0%). Matched: []. Missed: [\"junior engineer\", \"junior\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-synthesis-01-carry",
+    "persona": "marcus",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "What is Marcus's overall approach to keeping the context window healthy across a long session?",
+    "run": {
+      "metrics": {
+        "answer": "Here is Marcus's overall approach to keeping the context window healthy across a long session, drawn directly from his stored knowledge:\n\n---\n\n**Core philosophy: every irrelevant token crowds out relevant ones.**\n\nHis approach has several concrete dimensions:\n\n**Load only what's needed**\n- Load only what the current task actually requires — nothing more.\n- Avoid pasting entire codebases; use targeted, queryable context instead.\n- Reference external docs by URL rather than pasting full content into the prompt.\n\n**Actively prune as you go**\n- Drop completed sub-tasks from the active context — don't carry the full history of resolved steps forward.\n- After extended exploratory work, summarize what has been established before continuing to the next step.\n\n**Manage ordering and placement**\n- Put the most critical context first; recency bias is real and the least important content should go last.\n- If you're repeatedly reminding the agent of something across prompts, it belongs in `CLAUDE.md`, not in every individual prompt.\n\n**Avoid context bleed**\n- Don't let assumptions from an earlier part of the session poison reasoning on a new, unrelated task.\n- Trust the context window — re-explaining what the agent already holds is noise. Start fresh if you genuinely can't trust it.\n\n**Use subagents structurally**\n- Use subagents for research and exploration to protect the main context from exploratory noise. The main session should own all file changes.\n\n---\n\nThe throughline is disciplined curation: the context window is finite and valuable, so every token in it should be earning its place.",
+        "elapsed_ms": 25724,
+        "input_tokens": 6,
+        "output_tokens": 675,
+        "tool_calls": null,
+        "cost_usd": 0.08171735,
+        "num_turns": 6
+      },
+      "score": {
+        "score": 8,
+        "rationale": "The answer covers most of the key facts from the ground truth: summarizing long explorations before continuing, removing completed sub-tasks, not re-explaining things the agent already knows, keeping CLAUDE.md tight, and loading only what's needed with most important things first. The answer also correctly captures the \"debt\" framing implicitly (though it doesn't use the exact \"context as debt\" analogy explicitly — it uses \"earning its place\" metaphor instead). It adds some additional material not in the ground truth (subagents, URL references, ordering/recency bias) which is supplementary rather than contradictory. The one gap is that the explicit debt analogy from the ground truth is not directly stated, and \"start fresh if you can't trust the context\" is mentioned but somewhat buried. Overall this is a strong, comprehensive answer that captures nearly all key facts with only minor framing differences."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-synthesis-02-carry",
+    "persona": "marcus",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "When would Marcus use a subagent vs. keep work in the main session? What does he use each for?",
+    "run": {
+      "metrics": {
+        "answer": "Here's what Marcus's knowledge says:\n\n---\n\n**Policy: \"Use subagents for research; keep main session for writing\"**\n\n**Core principle:** Subagents are best used to *find things* and protect the main context from exploratory noise. The main session should own all file changes.\n\n**Use a subagent when:**\n- A task is repetitive across many files (e.g. \"check each of these 20 modules for a pattern\")\n\n**Avoid a subagent when:**\n- You need tight feedback loops between steps\n\n---\n\nIn short: subagents are for exploration and noisy search work that would otherwise pollute the main context window. Once you know what needs to change, bring that back to the main session and make the edits there. The main session stays clean and owns all writes.",
+        "elapsed_ms": 25204,
+        "input_tokens": 6,
+        "output_tokens": 729,
+        "tool_calls": null,
+        "cost_usd": 0.06714765,
+        "num_turns": 8
+      },
+      "score": {
+        "score": 5,
+        "rationale": "The answer captures the core principle (subagents for research/finding, main session for writing) and mentions protecting main context from exploratory noise, and avoiding when tight feedback loops are needed. However, it misses several key facts: (1) using subagents when tasks are genuinely independent/parallel, (2) explicitly avoiding subagents when tasks depend on each other's output, and (3) avoiding subagents when the task is simple (adds latency). The answer also only gives one \"use when\" example (repetitive across many files) while omitting the genuinely independent/parallel tasks point. It gets the main idea right but is missing about half the key facts from the ground truth."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-synthesis-03-carry",
+    "persona": "marcus",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "What prompting patterns does Marcus use to prevent the agent from doing the wrong thing or going off scope?",
+    "run": {
+      "metrics": {
+        "answer": "Now I have enough data. Here is what Marcus's knowledge captures about prompting patterns to prevent agents from doing the wrong thing or going off scope:\n\n---\n\n## Marcus's Prompting Patterns for Scope Control\n\n### 1. Negative Space\n> *\"Telling the agent what NOT to do is as important as what to do.\"*\n\nExplicit exclusions prevent scope creep and unwanted side effects.\n**Example:** \"Refactor `parseUser` — but don't change the return type or add new dependencies.\"\n\n---\n\n### 2. Explicit Success Criteria / Define Upfront\n> *\"Tell the agent what 'done' means before it starts.\"*\n\nAmbiguous completion criteria lead to over-engineering and scope creep. Embed a precise definition of done directly in the task prompt — the agent should not have to infer when it's finished.\n**Example:** *\"Done means: the endpoint accepts `page` and `pageSize` query params, returns `{ data, total, page, pageSize }`, and has tests for boundary conditions.\"*\n\n---\n\n### 3. The Narrower the Task, the Better the Output\n> *\"Task specificity directly correlates with output quality. This is always true — no exceptions.\"*\n\n**Example:** Good: `\"Refactor parseToken in lib/auth/tokens.ts to use the Result type. Add a test for the error path.\"` Bad: `\"Improve the auth system.\"`\n\n---\n\n### 4. Show Your Reasoning\n> *\"When unsure what the agent is about to do, ask it to explain its approach before writing any code.\"*\n\nCatches misunderstandings before they reach the file system.\n**Example:** *\"What changes will you make and why?\"*\n\n---\n\n### 5. Plan, Then Execute\n> *\"For anything touching more than two or three files, ask for a plan before execution.\"*\n\nIt's far cheaper to correct a plan than to roll back eight file changes.\n\n---\n\n### 6. If a Task Can't Be Expressed in a Sentence, It's Too Big\n> *\"A task too large to state in a single sentence needs to be broken down before being handed to the agent.\"*\n\n---\n\n### 7. Read Before You Write\n> *\"Never ask the agent to modify a file it hasn't read.\"*\n\nAlways front-load: read the file first, then make changes.\n**Example:** *\"Read foo.ts first, then refactor the `parseUser` function to...\"*\n\n---\n\n`★ Insight ─────────────────────────────────────`\nThese patterns fall into two categories: **pre-task framing** (success criteria, task size, plan-first) and **in-prompt constraints** (negative space, read-first). The pre-task patterns prevent the agent from solving the wrong problem; the in-prompt constraints prevent it from solving the right problem too broadly. Together they bound the solution space from both ends.\n`─────────────────────────────────────────────────`",
+        "elapsed_ms": 32707,
+        "input_tokens": 8,
+        "output_tokens": 1073,
+        "tool_calls": null,
+        "cost_usd": 0.11839875,
+        "num_turns": 6
+      },
+      "score": {
+        "score": 8,
+        "rationale": "The answer covers all four key facts from the ground truth: Negative space, Explicit success criteria, Show your reasoning, and Plan then execute. It also includes additional patterns (task specificity, task size, read-before-write) not in the ground truth, but these don't detract from accuracy. Each key pattern is accurately described with relevant examples. Minor gap: the answer adds extra patterns beyond the ground truth scope, which isn't wrong but dilutes focus. The four core patterns are all present and correctly characterized."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-synthesis-04-carry",
+    "persona": "marcus",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "How does Marcus's approach to task scoping connect to his mental model of agents?",
+    "run": {
+      "metrics": {
+        "answer": "The data returns null for a \"Marcus\" entity specifically — the knowledge is stored as general principles without a named person attached. However, the Carry space does contain rich, clearly attributed knowledge about task scoping and agent mental models. Here's what it reveals:\n\n---\n\n**Task scoping and agent mental models are directly linked** through a consistent throughline: an agent's output quality is bounded by the clarity of the task it receives.\n\nThe core task-scoping rules are:\n\n| Rule | Key insight |\n|---|---|\n| \"The narrower the task, the better the output\" | \"Task specificity directly correlates with output quality. This is always true — no exceptions.\" |\n| \"If a task can't be expressed in a sentence, it's too big for one turn\" | Decompose before handing off — not after |\n| \"Negative space\" | Telling the agent what NOT to do is as important as what to do |\n| \"Define explicit success criteria upfront\" | The agent should not have to infer when it is finished |\n\n**The mental model of agents that underlies this:**\n\nThe SubagentPolicy entry captures it directly — subagents are viewed as **research/exploration tools**, not executors of file changes. The main session should own all writes. This implies agents are treated as having a **bounded, leaky context** — prone to \"context bleed\" (prior session assumptions poisoning current reasoning) and \"the silent workaround\" (quietly solving a different problem when blocked).\n\n**The connection:** Task scoping is essentially *compensating for known agent failure modes*. Narrow tasks prevent \"the infinite refactor\" and \"the over-architecter.\" Explicit success criteria prevent the agent from inferring (incorrectly) when it's done. Negative space constraints prevent scope creep.\n\nThe underlying mental model is that an agent behaves like a context window with degraded signal-to-noise ratio — so every scoping choice is really a context hygiene decision.",
+        "elapsed_ms": 42500,
+        "input_tokens": 10,
+        "output_tokens": 1004,
+        "tool_calls": null,
+        "cost_usd": 0.1372318,
+        "num_turns": 8
+      },
+      "score": {
+        "score": 3,
+        "rationale": "The answer captures some key facts about task scoping (narrower tasks = better output, one-sentence rule, explicit success criteria) but fundamentally misses the central concept from the ground truth: the \"junior engineer\" mental model. The ground truth explicitly states that Marcus's mental model frames an agent as \"a very fast but sometimes-overconfident junior engineer that needs clear scope, relevant context, explicit success criteria, and a way to ask questions\" — and that this directly drives the scoping discipline (like a good manager working with a junior engineer). The answer instead substitutes a different framing (\"a context window with degraded signal-to-noise ratio\" and \"research/exploration tools\"), which is not what the ground truth describes. The answer also correctly notes it cannot attribute these ideas to \"Marcus\" specifically, which is an honest acknowledgment of a gap. It does get the one-sentence rule and narrower-task principle correct. However, the core connection between the junior engineer mental model and the scoping approach — which is the explicit question being asked — is entirely absent and replaced with a different mental model."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-synthesis-05-carry",
+    "persona": "marcus",
+    "tag": [
+      "synthesis",
+      "carry"
+    ],
+    "prompt": "What open questions does Marcus still have about managing agent configs and knowledge across projects?",
+    "run": {
+      "metrics": {
+        "answer": "The Carry space contains only orchestration knowledge (prompting patterns, task rules, failure modes, etc.) — all structured around agent workflows. There's no data about a person named Marcus or any stored open questions about managing agent configs and knowledge across projects.\n\nThe knowledge loaded into this Carry space belongs to the orchestration domain and contains no personal records, Q&A, or notes attributed to Marcus.\n\nIf you're expecting Marcus's personal knowledge or open questions to be in Carry, that data either hasn't been ingested yet, or it lives under a different namespace/attribute structure than what's currently loaded. The schema here only covers:\n\n- `FailureMode` — agent failure patterns\n- `PromptingPattern` — prompting strategies\n- `TaskRule` — task scoping rules\n- `ContextPrinciple` — context window management\n- `AutomatedWorkflowConfig` / `SafeAutomatedWorkflow` — workflow configs\n- `SubagentPolicy` — subagent usage policies\n\nNone of these concepts have a \"person\", \"question\", or \"open question\" attribute, and all structured concept instances show 0 records.",
+        "elapsed_ms": 36388,
+        "input_tokens": 8,
+        "output_tokens": 1012,
+        "tool_calls": null,
+        "cost_usd": 0.1181392,
+        "num_turns": 10
+      },
+      "score": {
+        "score": 0,
+        "rationale": "The answer does not address any of the four key facts from the ground truth. It provides no information about Marcus's open questions regarding versioning CLAUDE.md, sharing configs across platforms, when Carry beats flat context dumps, or agent memory vs manual maintenance. Instead, it claims the information doesn't exist in the system, missing all key facts entirely."
+      }
+    }
+  }
+]

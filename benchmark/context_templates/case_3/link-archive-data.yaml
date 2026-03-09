@@ -1,0 +1,1349 @@
+# Link Archive — Data Assertions
+# Source: Local-First Haus Discord, bot-tracked since 2024-10-11
+# Covers: all 2026 entries + selected 2025 entries from localfirst-haus.md
+
+# ─── Community ───────────────────────────────────────────────────────────────
+
+- the: carry.links/name
+  of: community-local-first-haus
+  is: "Local-First Haus"
+- the: carry.links/platform
+  of: community-local-first-haus
+  is: carry.links/discord
+- the: carry.links/description
+  of: community-local-first-haus
+  is: "Discord community focused on local-first software, CRDTs, and distributed systems. Bot tracking since 2024-10-11."
+
+# ─── Members ─────────────────────────────────────────────────────────────────
+
+- the: carry.links/handle
+  of: member-ruxandra
+  is: "ruxandra"
+- the: carry.links/community
+  of: member-ruxandra
+  is: community-local-first-haus
+
+- the: carry.links/handle
+  of: member-tennyson-w
+  is: "tennyson_w"
+- the: carry.links/community
+  of: member-tennyson-w
+  is: community-local-first-haus
+
+- the: carry.links/handle
+  of: member-sigrid
+  is: "sigrid"
+- the: carry.links/community
+  of: member-sigrid
+  is: community-local-first-haus
+
+- the: carry.links/handle
+  of: member-joppevos
+  is: "joppevos"
+- the: carry.links/community
+  of: member-joppevos
+  is: community-local-first-haus
+
+- the: carry.links/handle
+  of: member-piet-h
+  is: "piet_h"
+- the: carry.links/community
+  of: member-piet-h
+  is: community-local-first-haus
+
+- the: carry.links/handle
+  of: member-marten-b
+  is: "marten_b"
+- the: carry.links/community
+  of: member-marten-b
+  is: community-local-first-haus
+
+# ─── Tags ────────────────────────────────────────────────────────────────────
+
+- the: carry.links/name
+  of: tag-crdt
+  is: "crdt"
+- the: carry.links/description
+  of: tag-crdt
+  is: "Conflict-free Replicated Data Types — algorithms, papers, and implementations for merge-safe distributed state"
+
+- the: carry.links/name
+  of: tag-local-first
+  is: "local-first"
+- the: carry.links/description
+  of: tag-local-first
+  is: "Local-first software — the overarching community theme; offline capability, user ownership, sync as a feature"
+
+- the: carry.links/name
+  of: tag-sqlite
+  is: "sqlite"
+- the: carry.links/description
+  of: tag-sqlite
+  is: "SQLite as application database, in-browser SQLite, SQLite-based sync"
+
+- the: carry.links/name
+  of: tag-clocks
+  is: "clocks"
+- the: carry.links/description
+  of: tag-clocks
+  is: "Logical clocks, hybrid logical clocks, vector clocks — time and causality in distributed systems"
+
+- the: carry.links/name
+  of: tag-sync
+  is: "sync"
+- the: carry.links/description
+  of: tag-sync
+  is: "Data synchronisation patterns, protocols, and edge cases"
+
+- the: carry.links/name
+  of: tag-distributed-systems
+  is: "distributed-systems"
+- the: carry.links/description
+  of: tag-distributed-systems
+  is: "Distributed systems theory, fault tolerance, consensus, and foundational CS"
+
+- the: carry.links/name
+  of: tag-peer-to-peer
+  is: "peer-to-peer"
+- the: carry.links/description
+  of: tag-peer-to-peer
+  is: "Peer-to-peer networking, decentralised architectures, trustless protocols"
+
+- the: carry.links/name
+  of: tag-auth
+  is: "auth"
+- the: carry.links/description
+  of: tag-auth
+  is: "Authorisation and authentication in decentralised and local-first contexts"
+
+- the: carry.links/name
+  of: tag-tooling
+  is: "tooling"
+- the: carry.links/description
+  of: tag-tooling
+  is: "Practical libraries, frameworks, and developer tools"
+
+- the: carry.links/name
+  of: tag-end-user-programming
+  is: "end-user-programming"
+- the: carry.links/description
+  of: tag-end-user-programming
+  is: "End-user programming, malleable software, Bret Victor tradition, LLM-assisted programming"
+
+- the: carry.links/name
+  of: tag-data-model
+  is: "data-model"
+- the: carry.links/description
+  of: tag-data-model
+  is: "Data modelling, schemas, graph data, content-addressed storage"
+
+- the: carry.links/name
+  of: tag-theory
+  is: "theory"
+- the: carry.links/description
+  of: tag-theory
+  is: "Foundational theory — category theory, type theory, formal methods; tangentially related to the main themes"
+
+# ─── Links: February 2026 ────────────────────────────────────────────────────
+
+- the: carry.links/url
+  of: link-mirkokiefer-git-for-data
+  is: "https://mirkokiefer.com/blog/2013/03/git-for-data/"
+- the: carry.links/posted_date
+  of: link-mirkokiefer-git-for-data
+  is: "2026-02-12"
+- the: carry.links/posted_by
+  of: link-mirkokiefer-git-for-data
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-mirkokiefer-git-for-data
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-mirkokiefer-git-for-data
+  is: "old post but still the clearest explanation of why git's data model is interesting for non-code data"
+- the: carry.links/tag
+  of: link-mirkokiefer-git-for-data
+  is: tag-data-model
+- the: carry.links/tag
+  of: link-mirkokiefer-git-for-data
+  is: tag-local-first
+
+- the: carry.links/url
+  of: link-arxiv-2311-12678
+  is: "https://arxiv.org/abs/2311.12678"
+- the: carry.links/posted_date
+  of: link-arxiv-2311-12678
+  is: "2026-02-12"
+- the: carry.links/posted_by
+  of: link-arxiv-2311-12678
+  is: member-tennyson-w
+- the: carry.links/resource_type
+  of: link-arxiv-2311-12678
+  is: carry.links/paper
+- the: carry.links/comment
+  of: link-arxiv-2311-12678
+  is: "causal trees revisited, worth reading alongside the AT paper"
+- the: carry.links/tag
+  of: link-arxiv-2311-12678
+  is: tag-crdt
+
+- the: carry.links/url
+  of: link-braid-org
+  is: "https://braid.org"
+- the: carry.links/posted_date
+  of: link-braid-org
+  is: "2026-02-11"
+- the: carry.links/posted_by
+  of: link-braid-org
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-braid-org
+  is: carry.links/tool
+- the: carry.links/tag
+  of: link-braid-org
+  is: tag-sync
+
+- the: carry.links/url
+  of: link-inkandswitch-peritext
+  is: "https://www.inkandswitch.com/peritext/"
+- the: carry.links/posted_date
+  of: link-inkandswitch-peritext
+  is: "2026-02-11"
+- the: carry.links/posted_by
+  of: link-inkandswitch-peritext
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-inkandswitch-peritext
+  is: carry.links/documentation
+- the: carry.links/comment
+  of: link-inkandswitch-peritext
+  is: "rich text CRDTs finally feel usable"
+- the: carry.links/tag
+  of: link-inkandswitch-peritext
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-inkandswitch-peritext
+  is: tag-local-first
+
+- the: carry.links/url
+  of: link-loro-dev
+  is: "https://loro.dev"
+- the: carry.links/posted_date
+  of: link-loro-dev
+  is: "2026-02-10"
+- the: carry.links/posted_by
+  of: link-loro-dev
+  is: member-joppevos
+- the: carry.links/resource_type
+  of: link-loro-dev
+  is: carry.links/tool
+- the: carry.links/comment
+  of: link-loro-dev
+  is: "new CRDT library, Rust, really fast. been playing with it"
+- the: carry.links/tag
+  of: link-loro-dev
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-loro-dev
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-arxiv-2012-00472
+  is: "https://arxiv.org/abs/2012.00472"
+- the: carry.links/posted_date
+  of: link-arxiv-2012-00472
+  is: "2026-02-10"
+- the: carry.links/posted_by
+  of: link-arxiv-2012-00472
+  is: member-piet-h
+- the: carry.links/resource_type
+  of: link-arxiv-2012-00472
+  is: carry.links/paper
+- the: carry.links/comment
+  of: link-arxiv-2012-00472
+  is: "Electric Clocks paper — haven't read it fully but the abstract is wild"
+- the: carry.links/tag
+  of: link-arxiv-2012-00472
+  is: tag-clocks
+
+- the: carry.links/url
+  of: link-vlcn-io
+  is: "https://vlcn.io"
+- the: carry.links/posted_date
+  of: link-vlcn-io
+  is: "2026-02-09"
+- the: carry.links/posted_by
+  of: link-vlcn-io
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-vlcn-io
+  is: carry.links/tool
+- the: carry.links/comment
+  of: link-vlcn-io
+  is: "cr-sqlite is getting really interesting. sqlite with CRDTs built in"
+- the: carry.links/tag
+  of: link-vlcn-io
+  is: tag-sqlite
+- the: carry.links/tag
+  of: link-vlcn-io
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-vlcn-io
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-gh-orbitdb
+  is: "https://github.com/orbitdb/orbitdb"
+- the: carry.links/posted_date
+  of: link-gh-orbitdb
+  is: "2026-02-09"
+- the: carry.links/posted_by
+  of: link-gh-orbitdb
+  is: member-tennyson-w
+- the: carry.links/resource_type
+  of: link-gh-orbitdb
+  is: carry.links/repository
+- the: carry.links/tag
+  of: link-gh-orbitdb
+  is: tag-peer-to-peer
+- the: carry.links/tag
+  of: link-gh-orbitdb
+  is: tag-distributed-systems
+
+- the: carry.links/url
+  of: link-geoffreylitt-llm-eup
+  is: "https://www.geoffreylitt.com/2023/03/25/llm-end-user-programming.html"
+- the: carry.links/posted_date
+  of: link-geoffreylitt-llm-eup
+  is: "2026-02-07"
+- the: carry.links/posted_by
+  of: link-geoffreylitt-llm-eup
+  is: member-marten-b
+- the: carry.links/resource_type
+  of: link-geoffreylitt-llm-eup
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-geoffreylitt-llm-eup
+  is: "this piece keeps coming up. it's from 2023 but hasn't aged"
+- the: carry.links/tag
+  of: link-geoffreylitt-llm-eup
+  is: tag-end-user-programming
+
+- the: carry.links/url
+  of: link-arxiv-2109-14673
+  is: "https://arxiv.org/abs/2109.14673"
+- the: carry.links/posted_date
+  of: link-arxiv-2109-14673
+  is: "2026-02-06"
+- the: carry.links/posted_by
+  of: link-arxiv-2109-14673
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-arxiv-2109-14673
+  is: carry.links/paper
+- the: carry.links/comment
+  of: link-arxiv-2109-14673
+  is: "Logoot-Undo is underrated. everyone talks about RGA and WOOT, nobody talks about this one"
+- the: carry.links/tag
+  of: link-arxiv-2109-14673
+  is: tag-crdt
+
+- the: carry.links/url
+  of: link-hn-38741632
+  is: "https://news.ycombinator.com/item?id=38741632"
+- the: carry.links/posted_date
+  of: link-hn-38741632
+  is: "2026-02-05"
+- the: carry.links/posted_by
+  of: link-hn-38741632
+  is: member-piet-h
+- the: carry.links/resource_type
+  of: link-hn-38741632
+  is: carry.links/hn_thread
+- the: carry.links/comment
+  of: link-hn-38741632
+  is: "good HN thread on local-first and offline sync edge cases"
+- the: carry.links/tag
+  of: link-hn-38741632
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-hn-38741632
+  is: tag-sync
+
+- the: carry.links/url
+  of: link-gh-driftdb
+  is: "https://github.com/drifting-in-space/driftdb"
+- the: carry.links/posted_date
+  of: link-gh-driftdb
+  is: "2026-02-04"
+- the: carry.links/posted_by
+  of: link-gh-driftdb
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-gh-driftdb
+  is: carry.links/repository
+- the: carry.links/tag
+  of: link-gh-driftdb
+  is: tag-sync
+
+- the: carry.links/url
+  of: link-jaredforsyth-hlc
+  is: "https://jaredforsyth.com/posts/hybrid-logical-clocks/"
+- the: carry.links/posted_date
+  of: link-jaredforsyth-hlc
+  is: "2026-02-03"
+- the: carry.links/posted_by
+  of: link-jaredforsyth-hlc
+  is: member-joppevos
+- the: carry.links/resource_type
+  of: link-jaredforsyth-hlc
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-jaredforsyth-hlc
+  is: "finally understood HLCs from this post"
+- the: carry.links/tag
+  of: link-jaredforsyth-hlc
+  is: tag-clocks
+
+- the: carry.links/url
+  of: link-scattered-thoughts-sqlite
+  is: "https://www.scattered-thoughts.net/writing/why-is-sqlite-so-small/"
+- the: carry.links/posted_date
+  of: link-scattered-thoughts-sqlite
+  is: "2026-02-02"
+- the: carry.links/posted_by
+  of: link-scattered-thoughts-sqlite
+  is: member-tennyson-w
+- the: carry.links/resource_type
+  of: link-scattered-thoughts-sqlite
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-scattered-thoughts-sqlite
+  is: "not strictly local-first but relevant to why sqlite is the right default"
+- the: carry.links/tag
+  of: link-scattered-thoughts-sqlite
+  is: tag-sqlite
+
+- the: carry.links/url
+  of: link-electric-sql
+  is: "https://electric-sql.com"
+- the: carry.links/posted_date
+  of: link-electric-sql
+  is: "2026-02-01"
+- the: carry.links/posted_by
+  of: link-electric-sql
+  is: member-marten-b
+- the: carry.links/resource_type
+  of: link-electric-sql
+  is: carry.links/tool
+- the: carry.links/comment
+  of: link-electric-sql
+  is: "electric sql is moving fast, worth tracking"
+- the: carry.links/tag
+  of: link-electric-sql
+  is: tag-sqlite
+- the: carry.links/tag
+  of: link-electric-sql
+  is: tag-sync
+- the: carry.links/tag
+  of: link-electric-sql
+  is: tag-local-first
+
+# ─── Links: January 2026 ─────────────────────────────────────────────────────
+
+- the: carry.links/url
+  of: link-arxiv-2302-03543
+  is: "https://arxiv.org/abs/2302.03543"
+- the: carry.links/posted_date
+  of: link-arxiv-2302-03543
+  is: "2026-01-30"
+- the: carry.links/posted_by
+  of: link-arxiv-2302-03543
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-arxiv-2302-03543
+  is: carry.links/paper
+- the: carry.links/comment
+  of: link-arxiv-2302-03543
+  is: "Byzantine fault tolerance for collaborative editing. niche but important if you're thinking about untrusted peers"
+- the: carry.links/tag
+  of: link-arxiv-2302-03543
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-arxiv-2302-03543
+  is: tag-distributed-systems
+
+- the: carry.links/url
+  of: link-tinybase
+  is: "https://tinybase.org"
+- the: carry.links/posted_date
+  of: link-tinybase
+  is: "2026-01-29"
+- the: carry.links/posted_by
+  of: link-tinybase
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-tinybase
+  is: carry.links/tool
+- the: carry.links/comment
+  of: link-tinybase
+  is: "reactive data store for local apps. nice API"
+- the: carry.links/tag
+  of: link-tinybase
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-tinybase
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-inkandswitch-local-first
+  is: "https://www.inkandswitch.com/local-first/"
+- the: carry.links/posted_date
+  of: link-inkandswitch-local-first
+  is: "2026-01-28"
+- the: carry.links/posted_by
+  of: link-inkandswitch-local-first
+  is: member-piet-h
+- the: carry.links/resource_type
+  of: link-inkandswitch-local-first
+  is: carry.links/documentation
+- the: carry.links/tag
+  of: link-inkandswitch-local-first
+  is: tag-local-first
+
+- the: carry.links/url
+  of: link-riffle-prelude
+  is: "https://riffle.systems/essays/prelude/"
+- the: carry.links/posted_date
+  of: link-riffle-prelude
+  is: "2026-01-27"
+- the: carry.links/posted_by
+  of: link-riffle-prelude
+  is: member-joppevos
+- the: carry.links/resource_type
+  of: link-riffle-prelude
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-riffle-prelude
+  is: "the Riffle essay. probably the most important thing to read this month"
+- the: carry.links/tag
+  of: link-riffle-prelude
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-riffle-prelude
+  is: tag-distributed-systems
+
+- the: carry.links/url
+  of: link-arxiv-1805-04747
+  is: "https://arxiv.org/abs/1805.04747"
+- the: carry.links/posted_date
+  of: link-arxiv-1805-04747
+  is: "2026-01-26"
+- the: carry.links/posted_by
+  of: link-arxiv-1805-04747
+  is: member-tennyson-w
+- the: carry.links/resource_type
+  of: link-arxiv-1805-04747
+  is: carry.links/paper
+- the: carry.links/comment
+  of: link-arxiv-1805-04747
+  is: "Conflict-free Replicated Relations paper. dense but foundational"
+- the: carry.links/tag
+  of: link-arxiv-1805-04747
+  is: tag-crdt
+
+- the: carry.links/url
+  of: link-gh-automerge
+  is: "https://github.com/automerge/automerge"
+- the: carry.links/posted_date
+  of: link-gh-automerge
+  is: "2026-01-25"
+- the: carry.links/posted_by
+  of: link-gh-automerge
+  is: member-marten-b
+- the: carry.links/resource_type
+  of: link-gh-automerge
+  is: carry.links/repository
+- the: carry.links/tag
+  of: link-gh-automerge
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-gh-automerge
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-josephg-crdts-future
+  is: "https://josephg.com/blog/crdts-are-the-future/"
+- the: carry.links/posted_date
+  of: link-josephg-crdts-future
+  is: "2026-01-24"
+- the: carry.links/posted_by
+  of: link-josephg-crdts-future
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-josephg-crdts-future
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-josephg-crdts-future
+  is: "josephg post. still the best accessible intro to why CRDTs matter"
+- the: carry.links/tag
+  of: link-josephg-crdts-future
+  is: tag-crdt
+
+- the: carry.links/url
+  of: link-bartoszmilewski-cat-theory
+  is: "https://www.bartoszmilewski.com/2014/10/28/category-theory-for-programmers-the-preface/"
+- the: carry.links/posted_date
+  of: link-bartoszmilewski-cat-theory
+  is: "2026-01-23"
+- the: carry.links/posted_by
+  of: link-bartoszmilewski-cat-theory
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-bartoszmilewski-cat-theory
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-bartoszmilewski-cat-theory
+  is: "tangential but someone mentioned monoids and now here we are"
+- the: carry.links/tag
+  of: link-bartoszmilewski-cat-theory
+  is: tag-theory
+
+- the: carry.links/url
+  of: link-max-engineer-server-informed-ui
+  is: "https://max.engineer/server-informed-ui"
+- the: carry.links/posted_date
+  of: link-max-engineer-server-informed-ui
+  is: "2026-01-22"
+- the: carry.links/posted_by
+  of: link-max-engineer-server-informed-ui
+  is: member-piet-h
+- the: carry.links/resource_type
+  of: link-max-engineer-server-informed-ui
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-max-engineer-server-informed-ui
+  is: "server-informed UI pattern, interesting alternative to full offline-first"
+- the: carry.links/tag
+  of: link-max-engineer-server-informed-ui
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-max-engineer-server-informed-ui
+  is: tag-sync
+
+- the: carry.links/url
+  of: link-gh-ucan-wg
+  is: "https://github.com/ucan-wg/spec"
+- the: carry.links/posted_date
+  of: link-gh-ucan-wg
+  is: "2026-01-21"
+- the: carry.links/posted_by
+  of: link-gh-ucan-wg
+  is: member-tennyson-w
+- the: carry.links/resource_type
+  of: link-gh-ucan-wg
+  is: carry.links/repository
+- the: carry.links/comment
+  of: link-gh-ucan-wg
+  is: "UCAN — user-controlled authorization networks. relevant for local-first auth"
+- the: carry.links/tag
+  of: link-gh-ucan-wg
+  is: tag-auth
+- the: carry.links/tag
+  of: link-gh-ucan-wg
+  is: tag-peer-to-peer
+
+- the: carry.links/url
+  of: link-inkandswitch-pushpin
+  is: "https://www.inkandswitch.com/pushpin/"
+- the: carry.links/posted_date
+  of: link-inkandswitch-pushpin
+  is: "2026-01-20"
+- the: carry.links/posted_by
+  of: link-inkandswitch-pushpin
+  is: member-marten-b
+- the: carry.links/resource_type
+  of: link-inkandswitch-pushpin
+  is: carry.links/documentation
+- the: carry.links/tag
+  of: link-inkandswitch-pushpin
+  is: tag-local-first
+
+- the: carry.links/url
+  of: link-tonsky-web-after-tomorrow
+  is: "https://tonsky.me/blog/the-web-after-tomorrow/"
+- the: carry.links/posted_date
+  of: link-tonsky-web-after-tomorrow
+  is: "2026-01-18"
+- the: carry.links/posted_by
+  of: link-tonsky-web-after-tomorrow
+  is: member-joppevos
+- the: carry.links/resource_type
+  of: link-tonsky-web-after-tomorrow
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-tonsky-web-after-tomorrow
+  is: "tonsky piece. the case for a different web architecture. keeps getting reshared"
+- the: carry.links/tag
+  of: link-tonsky-web-after-tomorrow
+  is: tag-local-first
+
+- the: carry.links/url
+  of: link-arxiv-2006-12167
+  is: "https://arxiv.org/abs/2006.12167"
+- the: carry.links/posted_date
+  of: link-arxiv-2006-12167
+  is: "2026-01-17"
+- the: carry.links/posted_by
+  of: link-arxiv-2006-12167
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-arxiv-2006-12167
+  is: carry.links/paper
+- the: carry.links/comment
+  of: link-arxiv-2006-12167
+  is: "Hybrid Object Clocks paper, relates to the sync problem we were discussing"
+- the: carry.links/tag
+  of: link-arxiv-2006-12167
+  is: tag-clocks
+- the: carry.links/tag
+  of: link-arxiv-2006-12167
+  is: tag-sync
+
+- the: carry.links/url
+  of: link-nextjournal-local-first
+  is: "https://nextjournal.com/gvarela/local-first-software"
+- the: carry.links/posted_date
+  of: link-nextjournal-local-first
+  is: "2026-01-15"
+- the: carry.links/posted_by
+  of: link-nextjournal-local-first
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-nextjournal-local-first
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-nextjournal-local-first
+  is: "good overview, useful for explaining to people who aren't already in the weeds"
+- the: carry.links/tag
+  of: link-nextjournal-local-first
+  is: tag-local-first
+
+- the: carry.links/url
+  of: link-replicache
+  is: "https://replicache.dev"
+- the: carry.links/posted_date
+  of: link-replicache
+  is: "2026-01-14"
+- the: carry.links/posted_by
+  of: link-replicache
+  is: member-piet-h
+- the: carry.links/resource_type
+  of: link-replicache
+  is: carry.links/tool
+- the: carry.links/tag
+  of: link-replicache
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-replicache
+  is: tag-sync
+- the: carry.links/tag
+  of: link-replicache
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-gh-yjs
+  is: "https://github.com/yjs/yjs"
+- the: carry.links/posted_date
+  of: link-gh-yjs
+  is: "2026-01-13"
+- the: carry.links/posted_by
+  of: link-gh-yjs
+  is: member-tennyson-w
+- the: carry.links/resource_type
+  of: link-gh-yjs
+  is: carry.links/repository
+- the: carry.links/comment
+  of: link-gh-yjs
+  is: "yjs is still the pragmatic choice for most people"
+- the: carry.links/tag
+  of: link-gh-yjs
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-gh-yjs
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-hytradboi-2022
+  is: "https://www.hytradboi.com/2022"
+- the: carry.links/posted_date
+  of: link-hytradboi-2022
+  is: "2026-01-12"
+- the: carry.links/posted_by
+  of: link-hytradboi-2022
+  is: member-marten-b
+- the: carry.links/resource_type
+  of: link-hytradboi-2022
+  is: carry.links/conference
+- the: carry.links/comment
+  of: link-hytradboi-2022
+  is: "had/will have talks on local-first. whole conference worth watching"
+- the: carry.links/tag
+  of: link-hytradboi-2022
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-hytradboi-2022
+  is: tag-distributed-systems
+
+- the: carry.links/url
+  of: link-arxiv-2101-01901
+  is: "https://arxiv.org/abs/2101.01901"
+- the: carry.links/posted_date
+  of: link-arxiv-2101-01901
+  is: "2026-01-10"
+- the: carry.links/posted_by
+  of: link-arxiv-2101-01901
+  is: member-joppevos
+- the: carry.links/resource_type
+  of: link-arxiv-2101-01901
+  is: carry.links/paper
+- the: carry.links/comment
+  of: link-arxiv-2101-01901
+  is: "Verifiable Delay Functions — not directly local-first but relevant for trustless sync"
+- the: carry.links/tag
+  of: link-arxiv-2101-01901
+  is: tag-distributed-systems
+- the: carry.links/tag
+  of: link-arxiv-2101-01901
+  is: tag-clocks
+
+- the: carry.links/url
+  of: link-inkandswitch-cambria
+  is: "https://www.inkandswitch.com/cambria/"
+- the: carry.links/posted_date
+  of: link-inkandswitch-cambria
+  is: "2026-01-09"
+- the: carry.links/posted_by
+  of: link-inkandswitch-cambria
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-inkandswitch-cambria
+  is: carry.links/documentation
+- the: carry.links/comment
+  of: link-inkandswitch-cambria
+  is: "schema migration for local-first. underrated problem"
+- the: carry.links/tag
+  of: link-inkandswitch-cambria
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-inkandswitch-cambria
+  is: tag-sync
+
+- the: carry.links/url
+  of: link-tantaman-sqlite-app-db
+  is: "https://tantaman.com/2022-08-23-why-sqlite-as-the-app-database.html"
+- the: carry.links/posted_date
+  of: link-tantaman-sqlite-app-db
+  is: "2026-01-07"
+- the: carry.links/posted_by
+  of: link-tantaman-sqlite-app-db
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-tantaman-sqlite-app-db
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-tantaman-sqlite-app-db
+  is: "the SQLite-as-application-database case"
+- the: carry.links/tag
+  of: link-tantaman-sqlite-app-db
+  is: tag-sqlite
+- the: carry.links/tag
+  of: link-tantaman-sqlite-app-db
+  is: tag-local-first
+
+- the: carry.links/url
+  of: link-gh-rocksdb-wiki
+  is: "https://github.com/facebook/rocksdb/wiki"
+- the: carry.links/posted_date
+  of: link-gh-rocksdb-wiki
+  is: "2026-01-05"
+- the: carry.links/posted_by
+  of: link-gh-rocksdb-wiki
+  is: member-piet-h
+- the: carry.links/resource_type
+  of: link-gh-rocksdb-wiki
+  is: carry.links/documentation
+- the: carry.links/tag
+  of: link-gh-rocksdb-wiki
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-martinfowler-wal
+  is: "https://martinfowler.com/articles/patterns-of-distributed-systems/wal.html"
+- the: carry.links/posted_date
+  of: link-martinfowler-wal
+  is: "2026-01-03"
+- the: carry.links/posted_by
+  of: link-martinfowler-wal
+  is: member-tennyson-w
+- the: carry.links/resource_type
+  of: link-martinfowler-wal
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-martinfowler-wal
+  is: "write-ahead log pattern. fundamental but easy to forget"
+- the: carry.links/tag
+  of: link-martinfowler-wal
+  is: tag-distributed-systems
+
+# ─── Links: December 2025 ────────────────────────────────────────────────────
+
+- the: carry.links/url
+  of: link-cambridge-loco
+  is: "https://www.cl.cam.ac.uk/research/dtg/loco/"
+- the: carry.links/posted_date
+  of: link-cambridge-loco
+  is: "2025-12-28"
+- the: carry.links/posted_by
+  of: link-cambridge-loco
+  is: member-marten-b
+- the: carry.links/resource_type
+  of: link-cambridge-loco
+  is: carry.links/website
+- the: carry.links/comment
+  of: link-cambridge-loco
+  is: "Loco project from Cambridge. peer-to-peer collaboration at department scale"
+- the: carry.links/tag
+  of: link-cambridge-loco
+  is: tag-peer-to-peer
+- the: carry.links/tag
+  of: link-cambridge-loco
+  is: tag-local-first
+
+- the: carry.links/url
+  of: link-arxiv-1608-01041
+  is: "https://arxiv.org/abs/1608.01041"
+- the: carry.links/posted_date
+  of: link-arxiv-1608-01041
+  is: "2025-12-26"
+- the: carry.links/posted_by
+  of: link-arxiv-1608-01041
+  is: member-joppevos
+- the: carry.links/resource_type
+  of: link-arxiv-1608-01041
+  is: carry.links/paper
+- the: carry.links/comment
+  of: link-arxiv-1608-01041
+  is: "Delta State CRDTs — more efficient than op-based in some scenarios"
+- the: carry.links/tag
+  of: link-arxiv-1608-01041
+  is: tag-crdt
+
+- the: carry.links/url
+  of: link-ceramic-network
+  is: "https://ceramic.network"
+- the: carry.links/posted_date
+  of: link-ceramic-network
+  is: "2025-12-24"
+- the: carry.links/posted_by
+  of: link-ceramic-network
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-ceramic-network
+  is: carry.links/tool
+- the: carry.links/tag
+  of: link-ceramic-network
+  is: tag-peer-to-peer
+- the: carry.links/tag
+  of: link-ceramic-network
+  is: tag-distributed-systems
+
+- the: carry.links/url
+  of: link-matrix-spec
+  is: "https://matrix.org/docs/spec/"
+- the: carry.links/posted_date
+  of: link-matrix-spec
+  is: "2025-12-21"
+- the: carry.links/posted_by
+  of: link-matrix-spec
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-matrix-spec
+  is: carry.links/documentation
+- the: carry.links/comment
+  of: link-matrix-spec
+  is: "Matrix protocol spec. if you want to understand decentralized messaging properly"
+- the: carry.links/tag
+  of: link-matrix-spec
+  is: tag-distributed-systems
+- the: carry.links/tag
+  of: link-matrix-spec
+  is: tag-peer-to-peer
+
+- the: carry.links/url
+  of: link-inkandswitch-upwelling
+  is: "https://www.inkandswitch.com/upwelling/"
+- the: carry.links/posted_date
+  of: link-inkandswitch-upwelling
+  is: "2025-12-19"
+- the: carry.links/posted_by
+  of: link-inkandswitch-upwelling
+  is: member-piet-h
+- the: carry.links/resource_type
+  of: link-inkandswitch-upwelling
+  is: carry.links/documentation
+- the: carry.links/comment
+  of: link-inkandswitch-upwelling
+  is: "Upwelling — the word processor experiment. how they handled merge conflicts in practice"
+- the: carry.links/tag
+  of: link-inkandswitch-upwelling
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-inkandswitch-upwelling
+  is: tag-crdt
+
+- the: carry.links/url
+  of: link-ponylang
+  is: "https://www.ponylang.io"
+- the: carry.links/posted_date
+  of: link-ponylang
+  is: "2025-12-17"
+- the: carry.links/posted_by
+  of: link-ponylang
+  is: member-tennyson-w
+- the: carry.links/resource_type
+  of: link-ponylang
+  is: carry.links/website
+- the: carry.links/comment
+  of: link-ponylang
+  is: "Pony language — actor model, capabilities for safe concurrency. tangential but interesting"
+- the: carry.links/tag
+  of: link-ponylang
+  is: tag-distributed-systems
+
+- the: carry.links/url
+  of: link-gh-liveblocks
+  is: "https://github.com/liveblocks/liveblocks"
+- the: carry.links/posted_date
+  of: link-gh-liveblocks
+  is: "2025-12-15"
+- the: carry.links/posted_by
+  of: link-gh-liveblocks
+  is: member-marten-b
+- the: carry.links/resource_type
+  of: link-gh-liveblocks
+  is: carry.links/repository
+- the: carry.links/tag
+  of: link-gh-liveblocks
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-gh-liveblocks
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-crdt-tech
+  is: "https://crdt.tech"
+- the: carry.links/posted_date
+  of: link-crdt-tech
+  is: "2025-12-12"
+- the: carry.links/posted_by
+  of: link-crdt-tech
+  is: member-joppevos
+- the: carry.links/resource_type
+  of: link-crdt-tech
+  is: carry.links/website
+- the: carry.links/comment
+  of: link-crdt-tech
+  is: "nice overview site for CRDTs"
+- the: carry.links/tag
+  of: link-crdt-tech
+  is: tag-crdt
+
+- the: carry.links/url
+  of: link-arxiv-2205-03521
+  is: "https://arxiv.org/abs/2205.03521"
+- the: carry.links/posted_date
+  of: link-arxiv-2205-03521
+  is: "2025-12-10"
+- the: carry.links/posted_by
+  of: link-arxiv-2205-03521
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-arxiv-2205-03521
+  is: carry.links/paper
+- the: carry.links/comment
+  of: link-arxiv-2205-03521
+  is: "Bft-CRDTs. byzantine fault tolerant CRDTs. academic but important direction"
+- the: carry.links/tag
+  of: link-arxiv-2205-03521
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-arxiv-2205-03521
+  is: tag-distributed-systems
+
+- the: carry.links/url
+  of: link-serverlesscrm
+  is: "https://serverlesscrm.io"
+- the: carry.links/posted_date
+  of: link-serverlesscrm
+  is: "2025-12-08"
+- the: carry.links/posted_by
+  of: link-serverlesscrm
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-serverlesscrm
+  is: carry.links/tool
+- the: carry.links/tag
+  of: link-serverlesscrm
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-figma-multiplayer
+  is: "https://www.figma.com/blog/how-figmas-multiplayer-technology-works/"
+- the: carry.links/posted_date
+  of: link-figma-multiplayer
+  is: "2025-12-05"
+- the: carry.links/posted_by
+  of: link-figma-multiplayer
+  is: member-piet-h
+- the: carry.links/resource_type
+  of: link-figma-multiplayer
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-figma-multiplayer
+  is: "figma's OT approach. classic post. shared again because someone asked"
+- the: carry.links/tag
+  of: link-figma-multiplayer
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-figma-multiplayer
+  is: tag-sync
+
+- the: carry.links/url
+  of: link-gh-sharedb
+  is: "https://github.com/share/sharedb"
+- the: carry.links/posted_date
+  of: link-gh-sharedb
+  is: "2025-12-03"
+- the: carry.links/posted_by
+  of: link-gh-sharedb
+  is: member-tennyson-w
+- the: carry.links/resource_type
+  of: link-gh-sharedb
+  is: carry.links/repository
+- the: carry.links/tag
+  of: link-gh-sharedb
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-gh-sharedb
+  is: tag-tooling
+
+# ─── Links: November 2025 ────────────────────────────────────────────────────
+
+- the: carry.links/url
+  of: link-inkandswitch-essay-local-first
+  is: "https://www.inkandswitch.com/essay/local-first/"
+- the: carry.links/posted_date
+  of: link-inkandswitch-essay-local-first
+  is: "2025-11-28"
+- the: carry.links/posted_by
+  of: link-inkandswitch-essay-local-first
+  is: member-marten-b
+- the: carry.links/resource_type
+  of: link-inkandswitch-essay-local-first
+  is: carry.links/documentation
+- the: carry.links/comment
+  of: link-inkandswitch-essay-local-first
+  is: "reshare of the og local-first essay, new people keep joining"
+- the: carry.links/tag
+  of: link-inkandswitch-essay-local-first
+  is: tag-local-first
+
+- the: carry.links/url
+  of: link-sqlocal
+  is: "https://sqlocal.danabra.mov"
+- the: carry.links/posted_date
+  of: link-sqlocal
+  is: "2025-11-25"
+- the: carry.links/posted_by
+  of: link-sqlocal
+  is: member-joppevos
+- the: carry.links/resource_type
+  of: link-sqlocal
+  is: carry.links/tool
+- the: carry.links/comment
+  of: link-sqlocal
+  is: "SQLite in the browser via OPFS. impressive"
+- the: carry.links/tag
+  of: link-sqlocal
+  is: tag-sqlite
+- the: carry.links/tag
+  of: link-sqlocal
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-cloudflare-durable-objects
+  is: "https://blog.cloudflare.com/durable-objects-easy-fast-correct-choose-three/"
+- the: carry.links/posted_date
+  of: link-cloudflare-durable-objects
+  is: "2025-11-22"
+- the: carry.links/posted_by
+  of: link-cloudflare-durable-objects
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-cloudflare-durable-objects
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-cloudflare-durable-objects
+  is: "cloudflare durable objects post. centralised but interesting model"
+- the: carry.links/tag
+  of: link-cloudflare-durable-objects
+  is: tag-distributed-systems
+- the: carry.links/tag
+  of: link-cloudflare-durable-objects
+  is: tag-sync
+
+- the: carry.links/url
+  of: link-gh-ra-data
+  is: "https://github.com/ra-data/ra"
+- the: carry.links/posted_date
+  of: link-gh-ra-data
+  is: "2025-11-19"
+- the: carry.links/posted_by
+  of: link-gh-ra-data
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-gh-ra-data
+  is: carry.links/repository
+- the: carry.links/tag
+  of: link-gh-ra-data
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-arxiv-2012-10670
+  is: "https://arxiv.org/abs/2012.10670"
+- the: carry.links/posted_date
+  of: link-arxiv-2012-10670
+  is: "2025-11-16"
+- the: carry.links/posted_by
+  of: link-arxiv-2012-10670
+  is: member-piet-h
+- the: carry.links/resource_type
+  of: link-arxiv-2012-10670
+  is: carry.links/paper
+- the: carry.links/comment
+  of: link-arxiv-2012-10670
+  is: "Mergeable Replicated Data Types. different framing than CRDT, worth knowing"
+- the: carry.links/tag
+  of: link-arxiv-2012-10670
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-arxiv-2012-10670
+  is: tag-distributed-systems
+
+- the: carry.links/url
+  of: link-recurse-crdt
+  is: "https://www.recurse.com/blog/167-why-we-use-crdt-for-our-collaborative-drawing-app"
+- the: carry.links/posted_date
+  of: link-recurse-crdt
+  is: "2025-11-13"
+- the: carry.links/posted_by
+  of: link-recurse-crdt
+  is: member-tennyson-w
+- the: carry.links/resource_type
+  of: link-recurse-crdt
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-recurse-crdt
+  is: "Recurse Center's approach. good for explaining to non-academics"
+- the: carry.links/tag
+  of: link-recurse-crdt
+  is: tag-crdt
+
+- the: carry.links/url
+  of: link-hn-34744676
+  is: "https://news.ycombinator.com/item?id=34744676"
+- the: carry.links/posted_date
+  of: link-hn-34744676
+  is: "2025-11-10"
+- the: carry.links/posted_by
+  of: link-hn-34744676
+  is: member-marten-b
+- the: carry.links/resource_type
+  of: link-hn-34744676
+  is: carry.links/hn_thread
+- the: carry.links/comment
+  of: link-hn-34744676
+  is: "another HN thread on local-first vs server-first. comment section has gems"
+- the: carry.links/tag
+  of: link-hn-34744676
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-hn-34744676
+  is: tag-sync
+
+- the: carry.links/url
+  of: link-gh-evolu
+  is: "https://github.com/evoluhq/evolu"
+- the: carry.links/posted_date
+  of: link-gh-evolu
+  is: "2025-11-07"
+- the: carry.links/posted_by
+  of: link-gh-evolu
+  is: member-joppevos
+- the: carry.links/resource_type
+  of: link-gh-evolu
+  is: carry.links/repository
+- the: carry.links/comment
+  of: link-gh-evolu
+  is: "Evolu — local-first with SQLite and CRDT sync. still early"
+- the: carry.links/tag
+  of: link-gh-evolu
+  is: tag-sqlite
+- the: carry.links/tag
+  of: link-gh-evolu
+  is: tag-crdt
+- the: carry.links/tag
+  of: link-gh-evolu
+  is: tag-local-first
+- the: carry.links/tag
+  of: link-gh-evolu
+  is: tag-tooling
+
+- the: carry.links/url
+  of: link-cornell-cs5412
+  is: "https://www.cs.cornell.edu/courses/cs5412/2020sp/"
+- the: carry.links/posted_date
+  of: link-cornell-cs5412
+  is: "2025-11-04"
+- the: carry.links/posted_by
+  of: link-cornell-cs5412
+  is: member-ruxandra
+- the: carry.links/resource_type
+  of: link-cornell-cs5412
+  is: carry.links/course
+- the: carry.links/comment
+  of: link-cornell-cs5412
+  is: "Cornell distributed systems course materials. free"
+- the: carry.links/tag
+  of: link-cornell-cs5412
+  is: tag-distributed-systems
+
+- the: carry.links/url
+  of: link-worrydream-learnable-programming
+  is: "https://worrydream.com/LearnableProgramming/"
+- the: carry.links/posted_date
+  of: link-worrydream-learnable-programming
+  is: "2025-11-01"
+- the: carry.links/posted_by
+  of: link-worrydream-learnable-programming
+  is: member-sigrid
+- the: carry.links/resource_type
+  of: link-worrydream-learnable-programming
+  is: carry.links/blog_post
+- the: carry.links/comment
+  of: link-worrydream-learnable-programming
+  is: "Bret Victor. tangential but keeps coming up in #philosophy channel"
+- the: carry.links/tag
+  of: link-worrydream-learnable-programming
+  is: tag-end-user-programming

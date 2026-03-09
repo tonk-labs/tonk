@@ -1,0 +1,228 @@
+carry.profile:
+  # ─── Attributes ──────────────────────────────────────────────────────────
+
+  name:
+    description: Full name of this person
+    as: Text
+
+  location:
+    description: Primary location
+    as: Text
+
+  timezone:
+    description: Primary timezone
+    as: Text
+
+  pronouns:
+    description: Preferred pronouns
+    as: Text
+
+  role_title:
+    description: Professional role or title
+    as: Text
+
+  role_description:
+    description: Extended description of professional role and focus
+    as: Text
+
+  english_variant:
+    description: Preferred variant of written English
+    as: [":british", ":american"]
+
+  preferred_format:
+    description: A preferred output format for receiving information from an agent
+    as: Text
+    cardinality: many
+
+  global_antipreference:
+    description: An output behaviour this person never wants from an agent, regardless of task type
+    as: Text
+    cardinality: many
+
+  default_context:
+    description: The context to assume when none is explicitly stated
+    as: [":work", ":writing", ":research", ":personal"]
+
+  person:
+    description: The person this record belongs to
+    as: .Person
+
+  topic:
+    description: The subject matter of a language or expertise record
+    as: Text
+
+  proficiency:
+    description: Language proficiency level
+    as: [":native", ":conversational", ":basic"]
+
+  expertise_level:
+    description: Depth of expertise in this area
+    as: [":deep", ":working", ":adjacent", ":out_of_scope"]
+
+  description:
+    description: A descriptive note providing additional detail
+    as: Text
+
+  offered:
+    description: Whether this service is offered by the person
+    as: [":yes", ":no"]
+
+  direction:
+    description: Whether this is about how the person communicates outbound or receives information inbound
+    as: [":outbound", ":inbound"]
+
+  task_type:
+    description: The type of task this output preference applies to
+    as: [":writing", ":analysis", ":research"]
+
+  preference:
+    description: A specific output behaviour to apply for this task type
+    as: Text
+    cardinality: many
+
+  antipreference:
+    description: A specific output behaviour to avoid for this task type
+    as: Text
+    cardinality: many
+
+  context_tag:
+    description: The named context this record belongs to
+    as: [":work", ":writing", ":research", ":personal"]
+
+  is_default:
+    description: Whether this is the default context when none is explicitly specified
+    as: [":yes", ":no"]
+
+  tone:
+    description: The expected tone of agent responses in this context
+    as: Text
+
+  behavior_note:
+    description: A specific behavioural guideline for agent responses in this context
+    as: Text
+    cardinality: many
+
+  # ─── Concepts ────────────────────────────────────────────────────────────
+
+  Person:
+    description: A person whose profile is stored in this system
+    with:
+      name: carry.profile/name
+      role_title: carry.profile/role_title
+      role_description: carry.profile/role_description
+      location: carry.profile/location
+      timezone: carry.profile/timezone
+      pronouns: carry.profile/pronouns
+    maybe:
+      english_variant: carry.profile/english_variant
+      preferred_format: carry.profile/preferred_format
+      global_antipreference: carry.profile/global_antipreference
+      default_context: carry.profile/default_context
+
+  Language:
+    description: A language spoken by a person, with its proficiency level
+    with:
+      person: carry.profile/person
+      topic: carry.profile/topic
+      proficiency: carry.profile/proficiency
+
+  Expertise:
+    description: A domain of knowledge or skill and how deeply the person holds it
+    with:
+      person: carry.profile/person
+      topic: carry.profile/topic
+      expertise_level: carry.profile/expertise_level
+    maybe:
+      description: carry.profile/description
+
+  ProfessionalService:
+    description: A service the person explicitly offers or declines to offer
+    with:
+      person: carry.profile/person
+      name: carry.profile/name
+      offered: carry.profile/offered
+    maybe:
+      description: carry.profile/description
+
+  CommunicationPreference:
+    description: A single preference about communication style, either outbound (how the person communicates) or inbound (how they like to receive information)
+    with:
+      person: carry.profile/person
+      description: carry.profile/description
+      direction: carry.profile/direction
+
+  OutputPreference:
+    description: Output preferences for a specific task type
+    with:
+      person: carry.profile/person
+      task_type: carry.profile/task_type
+    maybe:
+      preference: carry.profile/preference
+      antipreference: carry.profile/antipreference
+
+  ActiveContext:
+    description: A domain of activity the person operates in, with an optional default flag
+    with:
+      person: carry.profile/person
+      name: carry.profile/name
+      context_tag: carry.profile/context_tag
+    maybe:
+      description: carry.profile/description
+      is_default: carry.profile/is_default
+
+  ContextBehavior:
+    description: How an agent should behave when operating in a given context for this person
+    with:
+      person: carry.profile/person
+      context_tag: carry.profile/context_tag
+      tone: carry.profile/tone
+    maybe:
+      behavior_note: carry.profile/behavior_note
+
+  # ─── Derived Concepts ────────────────────────────────────────────────────
+
+  DeclinedService:
+    description: A service the person explicitly does not offer
+    with:
+      person: carry.profile/person
+      name: carry.profile/name
+
+  OutOfScopeExpertise:
+    description: A topic the person explicitly does not work in and should not be assumed to handle
+    with:
+      person: carry.profile/person
+      topic: carry.profile/topic
+
+  # ─── Derived Rules ───────────────────────────────────────────────────────
+
+  declined-service:
+    description: >
+      Derives DeclinedService from any ProfessionalService where offered is no
+      — useful for guarding against suggesting or assuming out-of-scope work.
+    deduce:
+      DeclinedService:
+        this: ?service
+        person: ?person
+        name: ?name
+    when:
+      - carry.profile/ProfessionalService:
+          this: ?service
+          person: ?person
+          name: ?name
+          offered: carry.profile/no
+
+  out-of-scope-expertise:
+    description: >
+      Derives OutOfScopeExpertise from any Expertise with level out_of_scope
+      — topics the person cannot handle and an agent should not assume they can.
+    deduce:
+      OutOfScopeExpertise:
+        this: ?expertise
+        person: ?person
+        topic: ?topic
+    when:
+      - carry.profile/Expertise:
+          this: ?expertise
+          person: ?person
+          topic: ?topic
+          expertise_level: carry.profile/out_of_scope

@@ -1,0 +1,18 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
+  prompt: "What hierarchy of information sources does Keri use when giving context to an AI, and what does each level represent?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Keri defines four levels: (1) The semantic profile file itself — foundational identity, stable and changes rarely. (2) active-projects.md — current work context, changes monthly. (3) world-model.md — her frameworks and views, changes slowly. (4) Anything said in session — takes precedence over all of the above. Later and more specific sources override earlier and more general ones."
+          key-fact:
+            - Level 1 — this profile file, stable foundational identity
+            - Level 2 — active-projects.md, current work context
+            - Level 3 — world-model.md, frameworks and views
+            - Level 4 — session input takes precedence over all
+  source-file:
+    - semantic-profile.md

@@ -1,0 +1,10 @@
+[book]
+authors = ["Tonk Labs"]
+language = "en"
+src = "src"
+title = "Carry"
+description = "Persistent, local-first memory for LLMs and humans"
+
+[output.html]
+git-repository-url = "https://github.com/tonk-labs/carry"
+edit-url-template = "https://github.com/tonk-labs/carry/edit/main/docs/{path}"

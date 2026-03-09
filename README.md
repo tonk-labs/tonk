@@ -59,13 +59,10 @@ This is a Rust workspace where we are implementing our early experimentations on
 
 | Crate                   | Purpose                                                                                             |
 | ----------------------- | --------------------------------------------------------------------------------------------------- |
-| **tonk-space**          | Core space primitives: operators, delegation, ownership, storage                                    |
 | **tonk-common**         | Cross-platform utilities (logging, etc.)                                                            |
-| **tonk-blobs**          | Content-addressed blob storage (filesystem + IndexedDB)                                             |
 | **tonk-access-service** | Cloudflare Worker that authorizes S3/R2 access via UCAN                                             |
 | **tonk-ui**             | Leptos-based web frontend                                                                           |
 | **tonk-worker**         | Browser service worker (WASM) for offline web support                                               |
-| **tonk-core**           | Core library (in progress)                                                                          |
 
 # Released Experiments
 
