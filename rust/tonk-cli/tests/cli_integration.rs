@@ -1350,15 +1350,14 @@ async fn test_rule_define_and_list() {
         "conclusion": {
             "concept": "HighPriority",
             "bindings": {
-                "this": "?task",
                 "title": "?title",
                 "status": "?status"
             }
         },
         "when": [
-            {"the": "task/title", "of": "?task", "is": "?title"},
-            {"the": "task/status", "of": "?task", "is": "?status"},
-            {"the": "task/priority", "of": "?task", "is": "high"}
+            {"the": "task/title", "of": "?this", "is": "?title"},
+            {"the": "task/status", "of": "?this", "is": "?status"},
+            {"the": "task/priority", "of": "?this", "is": "high"}
         ]
     });
 
@@ -1421,8 +1420,8 @@ async fn test_rule_show() {
     .unwrap();
 
     let rule_json = serde_json::json!({
-        "conclusion": { "concept": "B", "bindings": { "this": "?entity", "y": "?x" } },
-        "when": [{ "the": "rule-show-space/x", "of": "?entity", "is": "?x" }]
+        "conclusion": { "concept": "B", "bindings": { "y": "?x" } },
+        "when": [{ "the": "rule-show-space/x", "of": "?this", "is": "?x" }]
     });
 
     let rule_path = env.home_path.join("rule.json");
@@ -1479,8 +1478,8 @@ async fn test_rule_delete() {
     .unwrap();
 
     let rule_json = serde_json::json!({
-        "conclusion": { "concept": "Y", "bindings": { "this": "?entity", "w": "?v" } },
-        "when": [{ "the": "rule-del-space/v", "of": "?entity", "is": "?v" }]
+        "conclusion": { "concept": "Y", "bindings": { "w": "?v" } },
+        "when": [{ "the": "rule-del-space/v", "of": "?this", "is": "?v" }]
     });
 
     let rule_path = env.home_path.join("rule.json");
@@ -1530,8 +1529,8 @@ async fn test_rule_validates_concept_exists() {
     .unwrap();
 
     let rule_json = serde_json::json!({
-        "conclusion": { "concept": "DoesNotExist", "bindings": { "this": "?entity", "v": "?v" } },
-        "when": [{ "the": "exists/v", "of": "?entity", "is": "?v" }]
+        "conclusion": { "concept": "DoesNotExist", "bindings": { "v": "?v" } },
+        "when": [{ "the": "exists/v", "of": "?this", "is": "?v" }]
     });
 
     let rule_path = env.home_path.join("rule.json");

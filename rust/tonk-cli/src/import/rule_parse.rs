@@ -89,8 +89,7 @@ pub(super) struct ParsedRule {
 pub(super) struct ParsedRuleConclusion {
     /// Concept name extracted from the reference (e.g. "Meal" from "diy.planner/Meal").
     pub concept_name: String,
-    /// Bindings: attribute short names (and `"this"`) to variables/wildcards/constants.
-    /// The `"this"` key is required and designates the entity identity variable.
+    /// Bindings: attribute short names to variables/wildcards/constants.
     pub bindings: HashMap<String, String>,
 }
 
@@ -272,18 +271,18 @@ fn parse_rule_conclusion(value: &serde_yaml::Value) -> Result<ParsedRuleConclusi
     let concept_name = extract_concept_name(&concept_ref);
 
     let bindings_map: BTreeMap<String, String> = serde_yaml::from_value(bindings_value).context(
-        "Expected a mapping of attribute bindings (e.g. this: ?entity, attendee: ?person)",
+        "Expected a mapping of attribute bindings (e.g. attendee: ?person, recipe: ?recipe)",
     )?;
 
     let bindings: HashMap<String, String> = bindings_map.into_iter().collect();
 
-    if !bindings.contains_key("this") {
+    if bindings.contains_key("this") {
         anyhow::bail!(
-            "The 'assert' section for concept '{}' must include a 'this' key that specifies \
-             which entity variable provides the derived entity's identity. \
-             For example:\n  assert:\n    {}:\n      this: ?entity\n      ...",
+            "The 'this' key must not appear in the deduce bindings for concept '{}'. \
+             The variable ?this is implicit and always refers to the derived entity's \
+             identity. Use ?this directly in your 'when' premises instead.\n\
+             Remove 'this:' from the deduce section.",
             concept_name,
-            concept_ref
         );
     }
 
@@ -365,7 +364,7 @@ fn parse_rule_premises(value: &serde_yaml::Value) -> Result<Vec<ParsedRulePremis
 /// premises. Equality constraints and formulas are lowered to EAV premises
 /// using the reference as the `the` field.
 pub(super) fn lower_rule(parsed: &ParsedRule) -> Result<RuleDefinition> {
-    // Lower the conclusion — `this` is now inside `bindings`
+    // Lower the conclusion
     let conclusion = RuleConclusion {
         concept: parsed.conclusion.concept_name.clone(),
         bindings: parsed.conclusion.bindings.clone(),
@@ -523,12 +522,11 @@ user.rules:
     description: Test rule
     deduce:
       diy.planner/Meal:
-        this: ?meal
         attendee: ?person
         recipe: ?recipe
     when:
       - diy.cook/Recipe:
-          this: ?recipe
+          this: ?this
           title: _
           ingredient: ?ingredient
       - diy.cook/Ingredient:
@@ -548,15 +546,14 @@ user.rules:
         assert_eq!(rule.namespace, "user.rules");
         assert_eq!(rule.description.as_deref(), Some("Test rule"));
         assert_eq!(rule.conclusion.concept_name, "Meal");
-        assert_eq!(rule.conclusion.bindings.len(), 3); // this + attendee + recipe
-        assert_eq!(rule.conclusion.bindings["this"], "?meal");
+        assert_eq!(rule.conclusion.bindings.len(), 2); // attendee + recipe
         assert_eq!(rule.conclusion.bindings["attendee"], "?person");
         assert_eq!(rule.conclusion.bindings["recipe"], "?recipe");
 
         assert_eq!(rule.when.len(), 2);
         assert_eq!(rule.when[0].kind, PremiseKind::Concept);
         assert_eq!(rule.when[0].concept_name, "Recipe");
-        assert_eq!(rule.when[0].this_value, "?recipe");
+        assert_eq!(rule.when[0].this_value, "?this");
         assert_eq!(rule.when[0].attributes.len(), 2);
 
         assert_eq!(rule.when[1].concept_name, "Ingredient");
@@ -570,46 +567,23 @@ user.rules:
     }
 
     #[test]
-    fn parse_rule_with_this_in_conclusion() {
+    fn parse_rule_without_this_in_conclusion_succeeds() {
         let yaml = r#"
 ns:
   my-rule:
     deduce:
       ns/Thing:
-        this: ?entity
         name: ?n
     when:
       - ns/Other:
-          this: ?entity
+          this: ?this
           label: ?n
 "#;
         let rules = parse_rules_yaml(yaml).unwrap();
         let rule = &rules[0];
-        assert_eq!(rule.conclusion.bindings["this"], "?entity");
-        assert_eq!(rule.conclusion.bindings.len(), 2); // this + name
+        assert_eq!(rule.conclusion.bindings.len(), 1); // just name
         assert_eq!(rule.conclusion.bindings["name"], "?n");
-    }
-
-    #[test]
-    fn parse_rule_missing_this_in_conclusion_fails() {
-        let yaml = r#"
-ns:
-  my-rule:
-    deduce:
-      ns/Thing:
-        name: ?n
-    when:
-      - ns/Other:
-          this: ?entity
-          label: ?n
-"#;
-        let err = parse_rules_yaml(yaml).unwrap_err();
-        let msg = format!("{:#}", err);
-        assert!(
-            msg.contains("this"),
-            "Error should mention missing 'this': {}",
-            msg
-        );
+        assert!(!rule.conclusion.bindings.contains_key("this"));
     }
 
     #[test]
@@ -619,11 +593,10 @@ ns:
   simple-rule:
     deduce:
       ns/Output:
-        this: ?x
         value: ?v
     when:
       - ns/Input:
-          this: ?x
+          this: ?this
           data: ?v
 "#;
         let rules = parse_rules_yaml(yaml).unwrap();
@@ -638,11 +611,10 @@ ns:
     description: This is a test rule
     deduce:
       ns/Output:
-        this: ?x
         value: ?v
     when:
       - ns/Input:
-          this: ?x
+          this: ?this
           data: ?v
 "#;
         let rules = parse_rules_yaml(yaml).unwrap();
@@ -656,18 +628,17 @@ ns:
   my-rule:
     deduce:
       ns/Output:
-        this: ?entity
         name: ?n
     when:
       - diy.cook/ingredient-name:
-          this: ?entity
+          this: ?this
           is: ?n
 "#;
         let rules = parse_rules_yaml(yaml).unwrap();
         let premise = &rules[0].when[0];
         assert_eq!(premise.kind, PremiseKind::RawAttribute);
         assert_eq!(premise.reference, "diy.cook/ingredient-name");
-        assert_eq!(premise.this_value, "?entity");
+        assert_eq!(premise.this_value, "?this");
         assert_eq!(premise.attributes.len(), 1);
         assert_eq!(premise.attributes[0], ("is".to_string(), "?n".to_string()));
     }
@@ -679,11 +650,10 @@ ns:
   my-rule:
     deduce:
       ns/Output:
-        this: ?p
         name: ?name
     when:
       - ns/Person:
-          this: ?p
+          this: ?this
           name: ?name
       - ==:
           this: ?name
@@ -709,11 +679,10 @@ ns:
   my-rule:
     deduce:
       ns/Output:
-        this: ?e
         total: ?result
     when:
       - ns/Input:
-          this: ?e
+          this: ?this
           value: ?a
       - math/sum:
           of: ?a
@@ -741,12 +710,11 @@ user.rules:
   my-rule:
     deduce:
       diy.planner/Meal:
-        this: ?meal
         attendee: ?person
         recipe: ?recipe
     when:
       - diy.planner/Meal:
-          this: ?meal
+          this: ?this
           attendee: ?person
           recipe: ?recipe
       - diy.cook/Recipe:
@@ -766,15 +734,14 @@ user.rules:
         let def = lower_rule(&rules[0]).unwrap();
 
         assert_eq!(def.conclusion.concept, "Meal");
-        assert_eq!(def.conclusion.bindings.len(), 3); // this + attendee + recipe
-        assert_eq!(def.conclusion.bindings["this"], "?meal");
+        assert_eq!(def.conclusion.bindings.len(), 2); // attendee + recipe
         assert_eq!(def.conclusion.bindings["attendee"], "?person");
         assert_eq!(def.conclusion.bindings["recipe"], "?recipe");
 
         // When: Meal has 2 attrs, Recipe has 2 attrs, Ingredient has 1
         assert_eq!(def.when.len(), 5);
 
-        // Meal premises keep ?meal as entity
+        // Meal premises keep ?this as entity
         let meal_premises: Vec<&RulePremise> = def
             .when
             .iter()
@@ -782,7 +749,7 @@ user.rules:
             .collect();
         assert_eq!(meal_premises.len(), 2);
         for p in &meal_premises {
-            assert_eq!(p.of, "?meal");
+            assert_eq!(p.of, "?this");
         }
 
         // Recipe premises keep ?recipe as entity
@@ -828,9 +795,7 @@ user.rules:
     }
 
     #[test]
-    fn lower_rule_with_this_in_conclusion_no_conflict() {
-        // When `this: ?entity` is in the conclusion and NO attribute
-        // binding uses ?entity, there's no conflict.
+    fn parse_rule_with_explicit_this_in_conclusion_is_rejected() {
         let yaml = r#"
 ns:
   my-rule:
@@ -843,73 +808,13 @@ ns:
           this: ?entity
           label: ?n
 "#;
-        let rules = parse_rules_yaml(yaml).unwrap();
-        let def = lower_rule(&rules[0]).unwrap();
-
-        // `this` is now inside bindings alongside attribute bindings
-        assert_eq!(def.conclusion.bindings["this"], "?entity");
-        assert_eq!(def.conclusion.bindings.len(), 2); // this + name
-        assert_eq!(def.conclusion.bindings["name"], "?n");
-        assert_eq!(def.when[0].of, "?entity");
-    }
-
-    #[test]
-    fn lower_passes_through_conflicting_vars() {
-        // Lowering does NOT split variables. If a conclusion binding
-        // variable is also used as `this` in a premise, both keep the
-        // original variable. The conflict is handled later at compile time
-        // (build_rename_map will detect the duplicate).
-        let yaml = r#"
-ns:
-  rule:
-    deduce:
-      ns/Output:
-        this: ?entity
-        source: ?entity
-        value: ?v
-    when:
-      - ns/Input:
-          this: ?entity
-          data: ?v
-"#;
-        let rules = parse_rules_yaml(yaml).unwrap();
-        let def = lower_rule(&rules[0]).unwrap();
-
-        // Variables pass through as-is — no splitting
-        assert_eq!(def.conclusion.bindings.len(), 3); // this + source + value
-        assert_eq!(def.conclusion.bindings["this"], "?entity");
-        assert_eq!(def.conclusion.bindings["source"], "?entity");
-        assert_eq!(def.conclusion.bindings["value"], "?v");
-        assert_eq!(def.when[0].of, "?entity");
-    }
-
-    #[test]
-    fn lower_explicit_this_with_same_binding_passes_through() {
-        // Lowering passes variables through as-is. The `this` binding
-        // and attribute binding using the same variable will be caught
-        // later at compile time by build_rename_map.
-        let yaml = r#"
-ns:
-  rule:
-    deduce:
-      ns/Output:
-        this: ?entity
-        source: ?entity
-        value: ?v
-    when:
-      - ns/Input:
-          this: ?entity
-          data: ?v
-"#;
-        let rules = parse_rules_yaml(yaml).unwrap();
-        let def = lower_rule(&rules[0]).unwrap();
-
-        // Lowering just passes through; no splitting.
-        // `this` is inside bindings alongside attribute bindings.
-        assert_eq!(def.conclusion.bindings["this"], "?entity");
-        assert_eq!(def.conclusion.bindings["source"], "?entity");
-        assert_eq!(def.conclusion.bindings["value"], "?v");
-        assert_eq!(def.when[0].of, "?entity");
+        let err = parse_rules_yaml(yaml).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("must not appear"),
+            "Error should reject 'this' in deduce bindings: {}",
+            msg
+        );
     }
 
     #[test]
@@ -919,18 +824,16 @@ ns:
   rule:
     deduce:
       ns/Output:
-        this: ?src
         name: ?n
     when:
       - ns/Input:
-          this: ?src
+          this: ?this
           data: ?n
 "#;
         let rules = parse_rules_yaml(yaml).unwrap();
         let def = lower_rule(&rules[0]).unwrap();
 
-        assert_eq!(def.conclusion.bindings.len(), 2); // this + name
-        assert_eq!(def.conclusion.bindings["this"], "?src");
+        assert_eq!(def.conclusion.bindings.len(), 1);
         assert_eq!(def.conclusion.bindings["name"], "?n");
     }
 
@@ -941,20 +844,18 @@ ns:
   rule:
     deduce:
       ns/Output:
-        this: ?src
         value: ?v
     when:
       - ns/Input:
-          this: ?src
+          this: ?this
           data: ?v
 "#;
         let rules = parse_rules_yaml(yaml).unwrap();
         let def = lower_rule(&rules[0]).unwrap();
 
-        assert_eq!(def.conclusion.bindings.len(), 2); // this + value
-        assert_eq!(def.conclusion.bindings["this"], "?src");
+        assert_eq!(def.conclusion.bindings.len(), 1);
         assert_eq!(def.conclusion.bindings["value"], "?v");
-        assert_eq!(def.when[0].of, "?src");
+        assert_eq!(def.when[0].of, "?this");
     }
 
     #[test]
@@ -964,13 +865,12 @@ ns:
   my-rule:
     deduce:
       ns/Out:
-        this: ?x
         val: ?v
     when:
       - ns/In:
           data: ?v
       - ns/Src:
-          this: ?x
+          this: ?this
           id: _
 "#;
         let rules = parse_rules_yaml(yaml).unwrap();
@@ -989,11 +889,10 @@ ns:
   my-rule:
     deduce:
       ns/Output:
-        this: ?entity
         name: ?n
     when:
       - diy.cook/ingredient-name:
-          this: ?entity
+          this: ?this
           is: ?n
 "#;
         let rules = parse_rules_yaml(yaml).unwrap();
@@ -1001,7 +900,7 @@ ns:
 
         assert_eq!(def.when.len(), 1);
         assert_eq!(def.when[0].the, "diy.cook/ingredient-name");
-        assert_eq!(def.when[0].of, "?entity");
+        assert_eq!(def.when[0].of, "?this");
         assert_eq!(def.when[0].is, "?n");
     }
 
@@ -1012,11 +911,10 @@ ns:
   my-rule:
     deduce:
       ns/Output:
-        this: ?p
         name: ?name
     when:
       - ns/Person:
-          this: ?p
+          this: ?this
           name: ?name
       - ==:
           this: ?name

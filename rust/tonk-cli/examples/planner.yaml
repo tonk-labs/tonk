@@ -42,7 +42,6 @@ diy.planner:
     description: Find conflicts between recipe ingredients and allergies
     deduce:
       AllergyConflict:
-        this: ?allergy
         person: ?person
         recipe: ?recipe
     when:
@@ -53,7 +52,7 @@ diy.planner:
           this: ?ingredient
           name: ?substance
       - diy.health/Allergy:
-          this: ?allergy
+          this: ?this
           person: ?person
           substance: ?substance
 
@@ -61,13 +60,12 @@ diy.planner:
     description: A meal that respects dietary restrictions
     deduce:
       Meal:
-        this: ?meal
         attendee: ?person
         recipe: ?recipe
         occasion: ?occasion
     when:
       - diy.planner/Meal:
-          this: ?meal
+          this: ?this
           attendee: ?person
           recipe: ?recipe
           occasion: ?occasion

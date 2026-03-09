@@ -59,11 +59,13 @@ impl RuleDefinition {
             anyhow::bail!("Rule conclusion must specify a non-empty 'concept' name.");
         }
 
-        if !def.conclusion.bindings.contains_key("this") {
+        if def.conclusion.bindings.contains_key("this") {
             anyhow::bail!(
-                "Rule conclusion bindings must include a 'this' key that specifies \
-                 which entity variable provides the derived entity's identity. \
-                 For example: \"bindings\": {{ \"this\": \"?entity\", ... }}"
+                "The 'this' key must not appear in conclusion bindings. \
+                 The variable ?this is implicit and always refers to the derived \
+                 entity's identity. Use ?this directly in your premises instead.\n\
+                 Remove the 'this' key from bindings and use \"of\": \"?this\" \
+                 in your 'when' premises."
             );
         }
 
@@ -74,19 +76,19 @@ impl RuleDefinition {
 /// The conclusion of a rule: which concept is derived, and how its
 /// attributes map to variables.
 ///
-/// The `bindings` map must include a `"this"` key that designates which
-/// entity variable provides the identity of each derived instance. All
-/// other keys map concept attribute short names to premise variables.
+/// The variable `?this` is implicit and refers to the derived entity's
+/// identity. It must not appear in `bindings`; instead, use `?this`
+/// directly in premises to bind the entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConclusion {
     /// Name of the conclusion concept (e.g. "AllergyConflict").
     pub concept: String,
 
-    /// Maps concept attribute short names (and `"this"`) to variables.
+    /// Maps concept attribute short names to variables.
     ///
-    /// The `"this"` key is required and designates which entity variable
-    /// in the premises provides the *identity* of each derived instance.
-    /// e.g. `{"this": "?allergy", "attendee": "?person", "recipe": "?recipe"}`
+    /// `?this` is implicitly bound to the derived entity and must be
+    /// used directly in premises. The key `"this"` must not appear here.
+    /// e.g. `{"attendee": "?person", "recipe": "?recipe"}`
     pub bindings: HashMap<String, String>,
 }
 
@@ -225,8 +227,9 @@ fn collect_all_premise_vars(definition: &RuleDefinition) -> std::collections::Ha
 /// variables: `{"attendee": "?person"}` means the premise variable
 /// `?person` should be renamed to `?attendee` (the concept operand name).
 ///
-/// The required `"this"` key in bindings designates which entity variable
-/// becomes `"this"` — the implicit entity operand every Concept has.
+/// The variable `?this` is implicit — it always refers to the derived
+/// entity identity and must be used directly in premises. No rename is
+/// needed for the entity variable.
 ///
 /// If renaming would collide with existing premise variables that are
 /// NOT themselves being renamed, those existing variables are also
@@ -239,31 +242,9 @@ fn build_rename_map(
 ) -> Result<HashMap<String, String>> {
     let all_vars = collect_all_premise_vars(definition);
     let mut rename: HashMap<String, String> = HashMap::new();
-
-    // Extract and validate `this` from bindings first
-    let this_str = definition.conclusion.bindings.get("this").context(
-        "Rule conclusion bindings must include a 'this' key that specifies \
-             which entity variable provides the derived entity's identity.",
-    )?;
-
-    let this_var = match PremiseTerm::parse(this_str) {
-        PremiseTerm::Variable(name) => name,
-        _ => anyhow::bail!(
-            "Conclusion binding 'this' must be a variable (starting with '?'), got: {}",
-            this_str
-        ),
-    };
-
-    rename.insert(this_var.clone(), "this".to_string());
-
-    // Map each remaining conclusion binding: user variable → attribute short name
     let mut binding_vars: std::collections::HashSet<String> = std::collections::HashSet::new();
-    binding_vars.insert(this_var);
 
     for (attr_short, var_str) in &definition.conclusion.bindings {
-        if attr_short == "this" {
-            continue; // Already handled above
-        }
         if let PremiseTerm::Variable(var_name) = PremiseTerm::parse(var_str) {
             // Validate the attribute is in the concept
             let _qualified = qualify_attribute(namespace, attr_short)?;
@@ -272,8 +253,7 @@ fn build_rename_map(
             if binding_vars.contains(&var_name) {
                 anyhow::bail!(
                     "Variable '?{}' is used in multiple conclusion bindings. \
-                     Each variable can only be bound to one operand name. \
-                     Use separate variables for 'this' and attribute bindings.",
+                     Each variable can only be bound to one operand name.",
                     var_name
                 );
             }
@@ -480,14 +460,11 @@ pub fn validate_definition(
     conclusion_name: &ConceptName,
     namespace: &str,
 ) -> Result<()> {
-    // Check that all binding keys (except "this") are valid concept attributes.
+    // Check that all binding keys are valid concept attributes.
     // A binding key like "comment" matches either the concept-derived path
     // (e.g. "annotatedlink/comment") or any attribute whose short name
     // matches (e.g. "carry.links/comment" where the part after "/" is "comment").
     for short_name in definition.conclusion.bindings.keys() {
-        if short_name == "this" {
-            continue; // "this" designates entity identity, not a concept attribute
-        }
         let concept_qualified = qualify_attribute(namespace, short_name)?;
         let matches = conclusion_attrs.iter().any(|a| {
             *a == concept_qualified || a.rsplit_once('/').is_some_and(|(_, n)| n == short_name)
@@ -512,8 +489,8 @@ pub fn validate_definition(
     // only in `unless` is unsafe (Datalog safety requirement).
     let when_vars = collect_when_vars(definition);
 
-    // Check that all conclusion binding variables (including "this") appear
-    // in at least one `when` premise
+    // Check that all conclusion binding variables appear in at least one
+    // `when` premise
     for (attr, var_str) in &definition.conclusion.bindings {
         if let PremiseTerm::Variable(var_name) = PremiseTerm::parse(var_str)
             && !when_vars.contains(&var_name)
@@ -526,6 +503,16 @@ pub fn validate_definition(
                 attr,
             );
         }
+    }
+
+    // Verify that `?this` appears in at least one positive premise so the
+    // entity identity is grounded.
+    if !when_vars.contains("this") {
+        anyhow::bail!(
+            "Variable '?this' does not appear in any positive ('when') premise. \
+             The implicit entity identity variable '?this' must be used in at least \
+             one 'when' premise to ground the derived entity."
+        );
     }
 
     Ok(())

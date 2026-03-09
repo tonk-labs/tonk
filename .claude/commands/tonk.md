@@ -188,18 +188,17 @@ cat <<'EOF' | tonk --json rule define safe-meals --stdin --description "Meals sa
   "conclusion": {
     "concept": "SafeMeal",
     "bindings": {
-      "this": "?allergy",
       "attendee": "?person",
       "recipe": "?recipe_name"
     }
   },
   "when": [
-    { "the": "allergy/person", "of": "?allergy", "is": "?person" },
+    { "the": "allergy/person", "of": "?this", "is": "?person" },
     { "the": "recipe/name", "of": "?recipe", "is": "?recipe_name" },
     { "the": "recipe/ingredient", "of": "?recipe", "is": "?ingredient" }
   ],
   "unless": [
-    { "the": "allergy/substance", "of": "?allergy", "is": "?ingredient" }
+    { "the": "allergy/substance", "of": "?this", "is": "?ingredient" }
   ]
 }
 EOF
@@ -223,7 +222,7 @@ tonk --json query SafeMeal
 {
   "conclusion": {
     "concept": "ConceptName",
-    "bindings": { "this": "?entity_var", "attr_short_name": "?variable", ... }
+    "bindings": { "attr_short_name": "?variable", ... }
   },
   "when": [
     { "the": "namespace/attribute", "of": "?var_or_constant", "is": "?var_or_constant" },
@@ -238,17 +237,18 @@ tonk --json query SafeMeal
 
 **Conclusion fields:**
 - `concept` — the name of the concept being derived (must already be defined; referencing an undefined concept is an error)
-- `bindings` — maps concept attribute short names to premise variables (`"?var"`) or constant values (any string without `?` prefix). Must include a `"this"` key that designates which entity variable from the premises becomes the derived entity's identity. `"this"` is distinct from attribute bindings: it designates the *entity identity* of each derived instance, not an attribute value. Not every premise variable needs to appear in bindings — variables can appear only in premises to serve as join variables (e.g. `?ingredient` in the example above joins `when` and `unless` premises without appearing in the conclusion). The rule compiler automatically renames variables to match the concept's operand names; if this would cause a collision with another variable, the conflicting variable is auto-renamed.
+- `bindings` — maps concept attribute short names to premise variables (`"?var"`) or constant values (any string without `?` prefix). The variable `?this` is implicit and refers to the derived entity's identity — use it directly in premises (e.g. `"of": "?this"`). The `"this"` key must not appear in bindings. Not every premise variable needs to appear in bindings — variables can appear only in premises to serve as join variables (e.g. `?ingredient` in the example above joins `when` and `unless` premises without appearing in the conclusion). The rule compiler automatically renames variables to match the concept's operand names; if this would cause a collision with another variable, the conflicting variable is auto-renamed.
 
 **Premise terms:**
 - `"?name"` — variable (binds/joins by name across premises)
+- `"?this"` — implicit entity identity variable (refers to the derived entity)
 - `"_"` — wildcard (matches anything, no binding)
 - any other string — constant (exact match filter)
 
 **Constraints:**
 - `the` is always a fully qualified attribute name (constant). Premise attributes reference existing data but are not validated against concept schemas — only the conclusion concept must be defined.
-- `bindings` must include a `"this"` key — it is required and must be a variable (e.g. `"?entity"`)
-- Every variable in conclusion `bindings` (including `"this"`) must appear in at least one positive (`when`) premise (appearing only in `unless` is not sufficient — this is a Datalog safety requirement)
+- `?this` must appear in at least one positive (`when`) premise to ground the entity identity
+- Every variable in conclusion `bindings` must appear in at least one positive (`when`) premise (appearing only in `unless` is not sufficient — this is a Datalog safety requirement)
 - The conclusion concept must already be defined
 - The `unless` section is optional (negation-as-failure)
 - Rule names are optional. When provided, names are case-insensitive (stored and looked up in lowercase) and serve as human-friendly identifiers. When omitted, a deterministic entity ID is derived from the definition hash. Unnamed rules can be referenced by entity ID for show/delete.
