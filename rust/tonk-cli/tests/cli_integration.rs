@@ -1743,3 +1743,501 @@ async fn test_multiple_concepts_same_space() {
         assert!(result.is_ok(), "{} query should succeed", concept);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Attribute Introspection
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_list_empty_space() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-empty")
+        .await
+        .expect("Failed to create space");
+
+    // List attributes in an empty space — should succeed (prints empty message)
+    let result = tonk_cli::attribute::list(false).await;
+    assert!(
+        result.is_ok(),
+        "attribute list on empty space should succeed: {:?}",
+        result.err()
+    );
+
+    // JSON mode should also succeed
+    let result = tonk_cli::attribute::list(true).await;
+    assert!(
+        result.is_ok(),
+        "attribute list JSON on empty space should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_list_after_concept_define() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-define")
+        .await
+        .expect("Failed to create space");
+
+    // Define a concept (no metadata — just attribute names)
+    tonk_cli::concept::define(
+        "Task".to_string(),
+        vec!["title".to_string(), "status".to_string()],
+        None,
+        true,
+    )
+    .await
+    .expect("Failed to define concept");
+
+    // List attributes — should show Task with title and status (no metadata)
+    let result = tonk_cli::attribute::list(false).await;
+    assert!(
+        result.is_ok(),
+        "attribute list should succeed: {:?}",
+        result.err()
+    );
+
+    // JSON mode
+    let result = tonk_cli::attribute::list(true).await;
+    assert!(
+        result.is_ok(),
+        "attribute list JSON should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_list_after_import_with_metadata() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-import")
+        .await
+        .expect("Failed to create space");
+
+    // Import cook.yaml which has full attribute metadata
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // List attributes — should show Recipe, Ingredient, RecipeStep with metadata
+    let result = tonk_cli::attribute::list(false).await;
+    assert!(
+        result.is_ok(),
+        "attribute list after import should succeed: {:?}",
+        result.err()
+    );
+
+    // JSON mode
+    let result = tonk_cli::attribute::list(true).await;
+    assert!(
+        result.is_ok(),
+        "attribute list JSON after import should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_qualified_name() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-qual")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // Show by qualified name
+    let result = tonk_cli::attribute::show("recipe/title".to_string(), None, false).await;
+    assert!(
+        result.is_ok(),
+        "attribute show by qualified name should succeed: {:?}",
+        result.err()
+    );
+
+    // JSON mode
+    let result = tonk_cli::attribute::show("recipe/title".to_string(), None, true).await;
+    assert!(
+        result.is_ok(),
+        "attribute show JSON by qualified name should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_short_name_with_concept() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-short")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // Show by short name with --concept
+    let result =
+        tonk_cli::attribute::show("title".to_string(), Some("Recipe".to_string()), false).await;
+    assert!(
+        result.is_ok(),
+        "attribute show with --concept should succeed: {:?}",
+        result.err()
+    );
+
+    // JSON mode
+    let result =
+        tonk_cli::attribute::show("title".to_string(), Some("Recipe".to_string()), true).await;
+    assert!(
+        result.is_ok(),
+        "attribute show JSON with --concept should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_unambiguous_short_name() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-unambig")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // "steps" only exists on Recipe, so it should resolve unambiguously
+    let result = tonk_cli::attribute::show("steps".to_string(), None, false).await;
+    assert!(
+        result.is_ok(),
+        "attribute show unambiguous short name should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_ambiguous_short_name_errors() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-ambig")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // "name" exists on both Ingredient and possibly others — check if it's ambiguous
+    // Actually in cook.yaml, "name" only exists on Ingredient.
+    // Let's use a concept where we know there's overlap. Define a second concept
+    // with a "name" attribute to create ambiguity.
+    tonk_cli::concept::define(
+        "Person".to_string(),
+        vec!["name".to_string(), "age".to_string()],
+        None,
+        true,
+    )
+    .await
+    .expect("Failed to define Person concept");
+
+    // Now "name" exists on both Ingredient and Person
+    let result = tonk_cli::attribute::show("name".to_string(), None, false).await;
+    assert!(
+        result.is_err(),
+        "attribute show with ambiguous name should fail"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_nonexistent_qualified() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-noexist")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // Nonexistent qualified name
+    let result = tonk_cli::attribute::show("recipe/nonexistent".to_string(), None, false).await;
+    assert!(
+        result.is_err(),
+        "attribute show with nonexistent qualified name should fail"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_nonexistent_short() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-noexist-short")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // Nonexistent short name
+    let result = tonk_cli::attribute::show("zzz_nonexistent".to_string(), None, false).await;
+    assert!(
+        result.is_err(),
+        "attribute show with nonexistent short name should fail"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_wrong_concept() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-wrongconcept")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // "title" belongs to Recipe, not Ingredient
+    let result =
+        tonk_cli::attribute::show("title".to_string(), Some("Ingredient".to_string()), false).await;
+    assert!(
+        result.is_err(),
+        "attribute show with wrong concept should fail"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_nonexistent_concept() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-badconcept")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // Concept doesn't exist
+    let result =
+        tonk_cli::attribute::show("title".to_string(), Some("Nonexistent".to_string()), false)
+            .await;
+    assert!(
+        result.is_err(),
+        "attribute show with nonexistent concept should fail"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_enum_type() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-enum")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // "unit" on Ingredient has enum type ["tsp","mls"]
+    let result =
+        tonk_cli::attribute::show("unit".to_string(), Some("Ingredient".to_string()), false).await;
+    assert!(
+        result.is_ok(),
+        "attribute show for enum type should succeed: {:?}",
+        result.err()
+    );
+
+    // JSON mode
+    let result =
+        tonk_cli::attribute::show("unit".to_string(), Some("Ingredient".to_string()), true).await;
+    assert!(
+        result.is_ok(),
+        "attribute show JSON for enum type should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_many_cardinality() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-many")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // "ingredient" on Recipe has cardinality: many
+    let result =
+        tonk_cli::attribute::show("ingredient".to_string(), Some("Recipe".to_string()), false)
+            .await;
+    assert!(
+        result.is_ok(),
+        "attribute show for many-cardinality should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_optional_attribute() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-optional")
+        .await
+        .expect("Failed to create space");
+
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // "after" on RecipeStep has optional: true
+    let result =
+        tonk_cli::attribute::show("after".to_string(), Some("RecipeStep".to_string()), false).await;
+    assert!(
+        result.is_ok(),
+        "attribute show for optional attribute should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_list_no_space_errors() {
+    let _env = TestEnv::new().await.expect("Failed to create test env");
+    // No space created — should fail gracefully
+
+    let result = tonk_cli::attribute::list(false).await;
+    assert!(
+        result.is_err(),
+        "attribute list without a space should fail"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_no_space_errors() {
+    let _env = TestEnv::new().await.expect("Failed to create test env");
+    // No space created — should fail gracefully
+
+    let result = tonk_cli::attribute::show("recipe/title".to_string(), None, false).await;
+    assert!(
+        result.is_err(),
+        "attribute show without a space should fail"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_list_after_import_and_define_mixed() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-mixed")
+        .await
+        .expect("Failed to create space");
+
+    // Import cook.yaml (has metadata)
+    let file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // Also define a concept manually (no metadata)
+    tonk_cli::concept::define(
+        "Task".to_string(),
+        vec!["title".to_string(), "status".to_string()],
+        Some("A task".to_string()),
+        true,
+    )
+    .await
+    .expect("Failed to define Task");
+
+    // List should show both imported (with metadata) and defined (without)
+    let result = tonk_cli::attribute::list(false).await;
+    assert!(
+        result.is_ok(),
+        "attribute list with mixed concepts should succeed: {:?}",
+        result.err()
+    );
+
+    // JSON mode
+    let result = tonk_cli::attribute::list(true).await;
+    assert!(
+        result.is_ok(),
+        "attribute list JSON with mixed concepts should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attribute_show_defined_concept_no_metadata() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let _space = env
+        .create_space("attr-show-nometa")
+        .await
+        .expect("Failed to create space");
+
+    // Define a concept without importing (no metadata)
+    tonk_cli::concept::define(
+        "Note".to_string(),
+        vec!["body".to_string(), "tags".to_string()],
+        None,
+        true,
+    )
+    .await
+    .expect("Failed to define Note");
+
+    // Show should work, just without metadata
+    let result =
+        tonk_cli::attribute::show("body".to_string(), Some("Note".to_string()), false).await;
+    assert!(
+        result.is_ok(),
+        "attribute show without metadata should succeed: {:?}",
+        result.err()
+    );
+
+    // Qualified form too
+    let result = tonk_cli::attribute::show("note/body".to_string(), None, false).await;
+    assert!(
+        result.is_ok(),
+        "attribute show by qualified name without metadata should succeed: {:?}",
+        result.err()
+    );
+}
