@@ -1,0 +1,123 @@
+name: Mirror carry to tonk-labs/carry
+
+on:
+  push:
+    branches: [feat/carry]
+    paths:
+      - "rust/carry/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_BRANCH: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install git-filter-repo
+        run: pip install git-filter-repo
+
+      - name: Extract rust/carry with history
+        run: |
+          git clone --branch "$SOURCE_BRANCH" file://"$PWD" /tmp/carry-mirror
+          cd /tmp/carry-mirror
+          git-filter-repo --subdirectory-filter rust/carry --force
+          git branch -m main
+
+      - name: Inject workspace into Cargo.toml
+        env:
+          MONO_CARGO: ${{ github.workspace }}/Cargo.toml
+        run: |
+          cd /tmp/carry-mirror
+          python3 << 'PYEOF'
+          import tomllib, os, re
+
+          # Read monorepo workspace Cargo.toml
+          with open(os.environ["MONO_CARGO"], "rb") as f:
+              mono = tomllib.load(f)
+
+          ws_pkg = mono["workspace"]["package"]
+          ws_deps = mono["workspace"]["dependencies"]
+
+          # Read carry's Cargo.toml to find which workspace deps it uses
+          with open("Cargo.toml") as f:
+              carry_raw = f.read()
+
+          # Rewrite path deps to git deps
+          for name, spec in list(ws_deps.items()):
+              if isinstance(spec, dict) and "path" in spec:
+                  del spec["path"]
+                  spec["git"] = "https://github.com/tonk-labs/tonk.git"
+                  spec["branch"] = "feat/carry"
+
+          # Minimal TOML serializer (no external deps needed)
+          def fmt(v):
+              if isinstance(v, str): return f'"{v}"'
+              if isinstance(v, bool): return "true" if v else "false"
+              if isinstance(v, int): return str(v)
+              if isinstance(v, list):
+                  return "[\n" + "".join(f"    {fmt(i)},\n" for i in v) + "]"
+              if isinstance(v, dict):
+                  pairs = ", ".join(f'{k} = {fmt(vv)}' for k, vv in v.items())
+                  return "{ " + pairs + " }"
+              return str(v)
+
+          lines = ["[workspace]", "", "[workspace.package]"]
+          for k, v in ws_pkg.items():
+              lines.append(f'{k} = {fmt(v)}')
+          lines += ["", "[workspace.dependencies]"]
+          for k, v in ws_deps.items():
+              lines.append(f'{k} = {fmt(v)}')
+
+          ws_block = "\n".join(lines) + "\n\n"
+
+          with open("Cargo.toml", "w") as f:
+              f.write(ws_block + carry_raw)
+          PYEOF
+
+      - name: Configure SSH for push
+        env:
+          DEPLOY_KEY: ${{ secrets.CARRY_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/carry_deploy
+          chmod 600 ~/.ssh/carry_deploy
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          echo -e "Host carry-mirror\n  HostName github.com\n  IdentityFile ~/.ssh/carry_deploy\n  IdentitiesOnly yes" >> ~/.ssh/config
+
+      - name: Commit and push to tonk-labs/carry
+        run: |
+          cd /tmp/carry-mirror
+          git add Cargo.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci: sync from tonk monorepo"
+          git remote add mirror git@carry-mirror:tonk-labs/carry.git
+          git push mirror main --force
+
+  docs:
+    needs: mirror
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook
+        run: |
+          MDBOOK_VERSION=$(curl -sSL https://api.github.com/repos/rust-lang/mdBook/releases/latest | jq -r .tag_name)
+          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" | tar xz
+          chmod +x mdbook
+
+      - name: Build docs
+        run: ./mdbook build rust/carry/docs
+
+      - name: Deploy to carry repo gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          deploy_key: ${{ secrets.CARRY_DEPLOY_KEY }}
+          external_repository: tonk-labs/carry
+          publish_branch: gh-pages
+          publish_dir: rust/carry/docs/book

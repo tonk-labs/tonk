@@ -1,0 +1,63 @@
+[package]
+name = "carry"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Carry"
+license.workspace = true
+
+[[bin]]
+name = "carry"
+path = "src/bin/carry.rs"
+
+[dependencies]
+
+[dev-dependencies]
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# CLI
+clap = { workspace = true, features = ["derive"] }
+clap_complete = { workspace = true }
+
+# Dialog DB
+dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-operator = { workspace = true }
+dialog-query = { workspace = true }
+dialog-repository = { workspace = true, features = ["helpers"] }
+dialog-storage = { workspace = true }
+dialog-ucan = { workspace = true }
+dialog-ucan-core = { workspace = true }
+dialog-varsig = { workspace = true }
+
+# Tonk
+tonk-invite = { workspace = true }
+
+url = { workspace = true }
+
+# Async
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+blake3 = { workspace = true }
+bs58 = { workspace = true }
+# Crypto
+ed25519-dalek = { workspace = true }
+
+serde = { workspace = true, features = ["derive"] }
+# Serialization
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+
+# Utilities
+anyhow = { workspace = true }
+dirs = { workspace = true }
+
+[features]
+default = []

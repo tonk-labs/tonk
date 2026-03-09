@@ -1,0 +1,362 @@
+[
+  {
+    "probe_id": "joppe-lookup-01",
+    "persona": "joppe",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "Who posted the most links in the Local-First Haus archive?",
+    "run": {
+      "metrics": {
+        "answer": "It's a tie! In the structured YAML archive (59 entries covering 2026 + selected 2025), **@sigrid** and **@ruxandra** are tied with **11 links each**, followed closely by @tennyson_w (10), then @piet_h, @marten_b, and @joppevos (9 each).\n\nNote: the full archive has 342 total entries but the file only includes a representative sample — so the complete picture across all time might differ.",
+        "elapsed_ms": 52487,
+        "input_tokens": 10,
+        "output_tokens": 1235,
+        "tool_calls": null,
+        "cost_usd": 0.23259975,
+        "num_turns": 8
+      },
+      "score": {
+        "score": 10,
+        "rationale": "6/6 points (100%). Matched: [\"ruxandra\", \"@ruxandra\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-lookup-02",
+    "persona": "joppe",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "What CRDT library written in Rust did @joppevos share in February 2026?",
+    "run": {
+      "metrics": {
+        "answer": "I don't have access to web search in this session, and this question refers to a specific event in February 2026 that would require real-time information I can't access. I also don't have context about what platform @joppevos shared this on (e.g., Twitter/X, Mastodon, a Discord server, etc.).\n\nCould you point me to the source or platform where this was shared? That would help me look it up or assist further.",
+        "elapsed_ms": 7674,
+        "input_tokens": 4,
+        "output_tokens": 242,
+        "tool_calls": null,
+        "cost_usd": 0.03523975,
+        "num_turns": 2
+      },
+      "score": {
+        "score": 0,
+        "rationale": "0/5 points (0%). Matched: []. Missed: [\"loro.dev\", \"loro\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-lookup-03",
+    "persona": "joppe",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "When did the Discord bot start tracking the Local-First Haus channels?",
+    "run": {
+      "metrics": {
+        "answer": "The Discord bot (`dynalink`) started tracking the Local-First Haus channels on **October 11, 2024**.\n\nThe bot monitors links shared in #links, #papers, #show-and-tell, and #general, and is run by community member Joppe (joppevos), who also adds manual annotations to the bot's output. The tracking data lives in `benchmark/personas/joppe/artifacts/local-first-haus.md`.",
+        "elapsed_ms": 35944,
+        "input_tokens": 5,
+        "output_tokens": 402,
+        "tool_calls": null,
+        "cost_usd": 0.11255985,
+        "num_turns": 3
+      },
+      "score": {
+        "score": 3,
+        "rationale": "2/7 points (29%). Matched: [\"October 11\"]. Missed: [\"2024-10-11\", \"October 2024\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-lookup-04",
+    "persona": "joppe",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "What did @joppevos say was 'probably the most important thing to read' in January 2026?",
+    "run": {
+      "metrics": {
+        "answer": "I don't have any stored memory about this. I don't have access to communication platforms like Slack, Discord, GitHub discussions, or social media where @joppevos may have posted something in January 2026. Could you point me to where this was said (e.g., a specific file, channel, or platform)?",
+        "elapsed_ms": 8824,
+        "input_tokens": 4,
+        "output_tokens": 239,
+        "tool_calls": null,
+        "cost_usd": 0.035422499999999996,
+        "num_turns": 2
+      },
+      "score": {
+        "score": 0,
+        "rationale": "0/9 points (0%). Matched: []. Missed: [\"Riffle\", \"riffle.systems\", \"Riffle essay\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "joppe-lookup-05",
+    "persona": "joppe",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "Which Discord channels does the bot monitor in Local-First Haus?",
+    "run": {
+      "metrics": {
+        "answer": "The bot **dynalink** monitors the following channels in the **Local-First Haus** Discord server:\n\n| Channel | Notes |\n|---|---|\n| `#links` | Primary link-sharing channel |\n| `#papers` | Academic papers |\n| `#show-and-tell` | Community showcase |\n| `#general` | Links only (not full messages) |\n\nBot tracking started **2024-10-11**, with 342 total archived entries as of last sync (2026-02-14).",
+        "elapsed_ms": 33644,
+        "input_tokens": 5,
+        "output_tokens": 412,
+        "tool_calls": null,
+        "cost_usd": 0.1187387,
+        "num_turns": 3
+      },
+      "score": {
+        "score": 10,
+        "rationale": "4/4 points (100%). Matched: [\"#links\", \"#papers\", \"#show-and-tell\", \"#general\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-lookup-01",
+    "persona": "keri",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "What is Keri's location and timezone?",
+    "run": {
+      "metrics": {
+        "answer": "Keri Vasquez is based in **Amsterdam**.\n\nHer timezone would be **CET (Central European Time)** — UTC+1 in winter, or **CEST (Central European Summer Time)** — UTC+2 during daylight saving time. Since today is February 24, 2026, she's currently on **CET (UTC+1)**.",
+        "elapsed_ms": 13591,
+        "input_tokens": 6,
+        "output_tokens": 341,
+        "tool_calls": null,
+        "cost_usd": 0.08212475000000001,
+        "num_turns": 4
+      },
+      "score": {
+        "score": 10,
+        "rationale": "4/4 points (100%). Matched: [\"Amsterdam\", \"CET\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-lookup-02",
+    "persona": "keri",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "Does Keri offer software development as a service?",
+    "run": {
+      "metrics": {
+        "answer": "No. According to Keri's profile, software development is explicitly listed under **\"What I don't do\"**:\n\n> *Software development (I can read code but I don't write production code)*\n\nShe is an independent consultant focused on organisational knowledge management and data strategy — not a software developer.",
+        "elapsed_ms": 13791,
+        "input_tokens": 6,
+        "output_tokens": 447,
+        "tool_calls": null,
+        "cost_usd": 0.0837375,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 3,
+        "rationale": "2/8 points (25%). Matched: [\"no\", \"production code\"]. Missed: [\"does not\", \"doesn't\", \"not offered\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-lookup-03",
+    "persona": "keri",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "What English variant does Keri write in, and why?",
+    "run": {
+      "metrics": {
+        "answer": "Keri writes in **British English** because she has lived in Europe for 12 years — though she is originally from California. The long stint abroad (she's based in Amsterdam) is the stated reason for the shift in her writing conventions.",
+        "elapsed_ms": 18936,
+        "input_tokens": 5,
+        "output_tokens": 348,
+        "tool_calls": null,
+        "cost_usd": 0.07251575,
+        "num_turns": 3
+      },
+      "score": {
+        "score": 10,
+        "rationale": "7/7 points (100%). Matched: [\"British English\", \"British\", \"Europe\", \"California\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-lookup-04",
+    "persona": "keri",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "What punctuation does Keri specifically avoid in her writing?",
+    "run": {
+      "metrics": {
+        "answer": "Keri specifically avoids **em dashes (—)**. She uses commas and semicolons instead.\n\nThis is documented in her semantic profile at `benchmark/personas/keri/artifacts/semantic-profile.md`:\n> \"No em dashes. I use commas and semicolons instead.\"",
+        "elapsed_ms": 25856,
+        "input_tokens": 5,
+        "output_tokens": 375,
+        "tool_calls": null,
+        "cost_usd": 0.07477244999999999,
+        "num_turns": 3
+      },
+      "score": {
+        "score": 5,
+        "rationale": "3/6 points (50%). Matched: [\"em dash\"]. Missed: [\"em-dash\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "keri-lookup-05",
+    "persona": "keri",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "What is Keri's current 'side obsession' according to her profile?",
+    "run": {
+      "metrics": {
+        "answer": "According to her profile, Keri's current side obsession is **graph-based personal data** (as a side project). She has working knowledge of Neo4j (Cypher) and ArangoDB from her professional background, which feeds into this interest.",
+        "elapsed_ms": 22299,
+        "input_tokens": 10,
+        "output_tokens": 831,
+        "tool_calls": null,
+        "cost_usd": 0.13090274999999998,
+        "num_turns": 11
+      },
+      "score": {
+        "score": 4,
+        "rationale": "3/7 points (43%). Matched: [\"graph-based personal data\"]. Missed: [\"graph personal data\", \"personal data graph\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-lookup-01",
+    "persona": "marcus",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "What file does Marcus keep tight and up to date for the agent to load every session?",
+    "run": {
+      "metrics": {
+        "answer": "Marcus keeps his `CLAUDE.md` file tight and up to date — he treats it as the brain of his agent setup, loading his context and preferences every session.",
+        "elapsed_ms": 12888,
+        "input_tokens": 6,
+        "output_tokens": 362,
+        "tool_calls": null,
+        "cost_usd": 0.08351650000000001,
+        "num_turns": 4
+      },
+      "score": {
+        "score": 10,
+        "rationale": "3/3 points (100%). Matched: [\"CLAUDE.md\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-lookup-02",
+    "persona": "marcus",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "What tool or method does Marcus use to reference external documentation instead of pasting it into context?",
+    "run": {
+      "metrics": {
+        "answer": "Marcus uses **Context7** for external doc lookup — it's how he references external documentation without pasting it into context.",
+        "elapsed_ms": 13970,
+        "input_tokens": 8,
+        "output_tokens": 433,
+        "tool_calls": null,
+        "cost_usd": 0.1031835,
+        "num_turns": 6
+      },
+      "score": {
+        "score": 7,
+        "rationale": "2/3 points (67%). Matched: [\"Context7\"]. Missed: [\"URL\"]."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-lookup-03",
+    "persona": "marcus",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "What is Marcus's fix for the 'hallucinated API' failure mode?",
+    "run": {
+      "metrics": {
+        "answer": "Marcus's fix for the **hallucinated API** failure mode (line 103 of `agent-orchestration.md`):\n\n> **Fix:** Have the agent read the actual library source or docs first. Don't trust its training data for fast-moving APIs.\n\nThe idea is to ground the agent in the real, current library source or documentation before it starts writing code — rather than relying on potentially stale training data that may reference functions or method signatures that don't exist.",
+        "elapsed_ms": 21783,
+        "input_tokens": 7,
+        "output_tokens": 720,
+        "tool_calls": null,
+        "cost_usd": 0.109818,
+        "num_turns": 7
+      },
+      "score": {
+        "score": 10,
+        "rationale": "5/5 points (100%). Matched: [\"library source\", \"docs first\", \"training data\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-lookup-04",
+    "persona": "marcus",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "What does Marcus require before anything hits production in an automated workflow?",
+    "run": {
+      "metrics": {
+        "answer": "From Marcus's notes (`agent-orchestration.md`, lines 117–121), he requires four things before anything hits production in an automated workflow:\n\n1. **A well-defined stopping condition**\n2. **A list of what the agent is allowed to do** (no open-ended permissions)\n3. **Logging of every action taken**\n4. **A human review gate before anything hits production**",
+        "elapsed_ms": 17247,
+        "input_tokens": 7,
+        "output_tokens": 527,
+        "tool_calls": null,
+        "cost_usd": 0.114481,
+        "num_turns": 6
+      },
+      "score": {
+        "score": 10,
+        "rationale": "7/7 points (100%). Matched: [\"human review gate\", \"human review\", \"review gate\"]. Missed: []."
+      }
+    }
+  },
+  {
+    "probe_id": "marcus-lookup-05",
+    "persona": "marcus",
+    "tag": [
+      "lookup",
+      "base"
+    ],
+    "prompt": "How does Marcus describe his mental model for an agent?",
+    "run": {
+      "metrics": {
+        "answer": "Marcus describes his mental model for an agent as:\n\n> **\"A very fast, sometimes-overconfident junior engineer.\"**\n\nHe says the agent needs the same things a junior engineer needs:\n- **Clear scope**\n- **Relevant context** (no more, no less)\n- **Explicit success criteria**\n- **A way to ask questions** before making assumptions\n\nHe also notes that the typical failure mode isn't that the LLM is dumb — it's that the user gave it a vague task and a 40k-token context and hoped for the best.",
+        "elapsed_ms": 16528,
+        "input_tokens": 6,
+        "output_tokens": 459,
+        "tool_calls": null,
+        "cost_usd": 0.0968965,
+        "num_turns": 5
+      },
+      "score": {
+        "score": 10,
+        "rationale": "4/4 points (100%). Matched: [\"junior engineer\", \"junior\"]. Missed: []."
+      }
+    }
+  }
+]

@@ -1,0 +1,18 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
+  prompt: "What resources related to clocks and time in distributed systems have been shared in the archive?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Clock-related resources shared include: the Electric Clocks paper (piet_h, 'haven't read it fully but the abstract is wild'), the Hybrid Logical Clocks blog post by Jared Forsyth (joppevos, 'finally understood HLCs from this post'), the Hybrid Object Clocks paper (ruxandra, 'relates to the sync problem we were discussing'), and the Verifiable Delay Functions paper (joppevos, 'not directly local-first but relevant for trustless sync')."
+          key-fact:
+            - Electric Clocks paper — piet_h
+            - Hybrid Logical Clocks post — joppevos
+            - Hybrid Object Clocks paper — ruxandra
+            - Verifiable Delay Functions paper — joppevos
+  source-file:
+    - local-first-haus.md

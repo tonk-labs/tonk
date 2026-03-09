@@ -1,0 +1,17 @@
+tonk.assess/Probe:
+  persona: joppe
+  corpus: ../personas/joppe/artifacts
+  tag: [synthesis, base]
+  system-prompt: ../prompts/base.md
+  prompt: "Who are the most active members in the Local-First Haus archive and what kinds of content does each tend to share?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "According to joppevos's annotations, the three most active members are: @ruxandra (very active, mostly papers — arxiv CRDT papers, Byzantine fault tolerance, etc.), @sigrid (broad range — tools, specs, theory, practical links), and @joppevos himself (shares things he is currently building with — Rust CRDT tools, HLC posts, SQLite in browser). Other active members include @tennyson_w, @piet_h, and @marten_b."
+          key-fact:
+            - ruxandra — very active, mostly papers
+            - sigrid — broad range
+            - joppevos — shares things currently building with
+  source-file:
+    - local-first-haus.md
