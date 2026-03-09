@@ -17,6 +17,9 @@ js-sys = { workspace = true }
 web-sys = { workspace = true, features = ["Crypto", "SubtleCrypto", "CryptoKey", "HkdfParams"] }
 tonk-common = { workspace = true }
 
+# Encoding
+base64 = { workspace = true }
+
 # Error handling
 thiserror = { workspace = true }
 

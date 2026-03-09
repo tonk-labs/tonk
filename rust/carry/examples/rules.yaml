@@ -1,0 +1,18 @@
+user.rules:
+  plan-event-meal:
+    description: Suggest a meal for an event attendee using an available recipe
+    deduce:
+      diy.planner/Meal:
+        attendee: ?person
+        recipe: ?recipe
+        occasion: ?event
+    when:
+      - diy.planner/Event:
+          this: ?event
+          title: ?title
+      - diy.planner/Meal:
+          this: ?this
+          attendee: ?person
+      - diy.cook/Recipe:
+          this: ?recipe
+          title: ?recipe-name

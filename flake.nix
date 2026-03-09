@@ -52,6 +52,7 @@
             cachix
             cargo-nextest
             esbuild
+            mdbook
             worker-build
           ]
           ++ lib.optionals stdenv.isLinux [
@@ -213,6 +214,11 @@
             args = "--release";
           };
 
+          tests-cli-integration = buildTestArchive {
+            name = "cli-integration";
+            args = "--package carry --test cli_integration --bin carry";
+          };
+
           tests = pkgs.runCommand "tests-all" { } ''
             mkdir -p $out
             cp ${self.packages.${system}.tests-native-debug}/*.tar.zst $out/
@@ -220,6 +226,41 @@
             cp ${self.packages.${system}.tests-web-debug}/*.tar.zst $out/
             cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
           '';
+
+          carry = buildCrate {
+            pname = "carry";
+            cargoExtraArgs = "--package carry";
+            # Rewrite Nix store libiconv to the macOS system equivalent
+            # so the binary works on machines without Nix installed
+            fixupPhase = pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              for bin in $out/bin/*; do
+                if [ -f "$bin" ]; then
+                  NIX_ICONV=$(otool -L "$bin" | grep '/nix/store.*libiconv' | awk '{print $1}' || true)
+                  if [ -n "$NIX_ICONV" ]; then
+                    install_name_tool -change "$NIX_ICONV" /usr/lib/libiconv.2.dylib "$bin"
+                  fi
+                  /usr/bin/codesign --force --sign - "$bin"
+                fi
+              done
+            '';
+          };
+
+          tonk-assess = buildCrate {
+            pname = "tonk-assess";
+            cargoExtraArgs = "--package tonk-assess";
+            nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.sigtool ];
+            fixupPhase = pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              for bin in $out/bin/*; do
+                if [ -f "$bin" ]; then
+                  NIX_ICONV=$(otool -L "$bin" | grep '/nix/store.*libiconv' | awk '{print $1}' || true)
+                  if [ -n "$NIX_ICONV" ]; then
+                    install_name_tool -change "$NIX_ICONV" /usr/lib/libiconv.2.dylib "$bin"
+                  fi
+                  codesign -f -s - "$bin"
+                fi
+              done
+            '';
+          };
 
           tonk-ui = buildTrunkCrate {
             pname = "tonk-ui";

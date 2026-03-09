@@ -1,0 +1,23 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [inference, base]
+  system-prompt: ../prompts/base.md
+  prompt: "Would Keri want an AI assistant to start a response with 'Great question! I'd be happy to help you with that.' Why or why not?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: "no"
+              score: 1
+            - term: unsolicited encouragement
+              score: 3
+            - term: antipreference
+              score: 2
+            - term: anti-preference
+              score: 2
+            - term: Great question
+              score: 2
+  source-file:
+    - semantic-profile.md

@@ -1,0 +1,26 @@
+[package]
+name = "tonk-assess"
+description = "Benchmark harness for evaluating Carry against raw-file-access baseline"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "tonk_assess"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tonk-assess"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+walkdir = { workspace = true }

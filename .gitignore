@@ -4,6 +4,7 @@ automerge-repo-data
 .direnv
 .wrangler
 result
+.carry
 
 # Node dependencies
 node_modules
