@@ -1,0 +1,22 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [synthesis, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_1/agent-orchestration-data.yaml
+  carry-model: ../context_templates/case_1/agent-orchestration-model.yaml
+  prompt: "What open questions does Marcus still have about managing agent configs and knowledge across projects?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Marcus has four outstanding questions: (1) How to version CLAUDE.md configs across projects without drift — probably a private shared monorepo with a bootstrap script. (2) How to share agent configs across platforms like Claude, Cursor, Copilot — platform-agnostic format is unclear. (3) When does a queryable knowledge base like Carry beat a flat context dump — clearly better for long-lived reference material, less clear for frequently-changing state. (4) What is the right split between agent memory and manual CLAUDE.md maintenance."
+          key-fact:
+            - Versioning CLAUDE.md across projects without drift
+            - Sharing configs across platforms (Claude, Cursor, Copilot)
+            - When Carry beats flat context dump
+            - Agent memory vs manual CLAUDE.md maintenance split
+  source-file:
+    - agent-orchestration.md

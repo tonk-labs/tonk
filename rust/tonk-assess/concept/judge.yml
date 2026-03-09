@@ -1,0 +1,60 @@
+tonk.assess:
+  Judge:
+    the: A scoring mechanism that evaluates an agent's answer
+    option:
+      llm:
+        the: LLM-based judgment criteria
+        assert: .LlmJudge
+      keyword:
+        the: Keyword-based judgment criteria
+        assert: .KeywordJudge
+
+  LlmJudge:
+    the: Scores answers by asking an LLM to compare against ground truth
+    where:
+      ground-truth:
+        the: The ideal complete answer for the LLM to compare against
+        assert: Text
+    option:
+      key-fact:
+        the: Individual facts the LLM should check for
+        assert: Text
+        cardinality: many
+      system-prompt:
+        the: Custom system prompt for the judge LLM
+        assert: Text
+      model:
+        the: The model to use for judging
+        assert: Text
+
+  KeywordJudge:
+    the: Scores answers by checking for weighted keywords or phrases
+    where:
+      keyword:
+        the: A keyword or phrase to search for, with a point value
+        assert: .ScoredKeyword
+        cardinality: many
+    option:
+      max-score:
+        the: Maximum possible score (default is sum of all keyword scores)
+        assert: Integer
+
+  ScoredKeyword:
+    the: A keyword or phrase with an associated point value
+    where:
+      term:
+        the: The keyword or phrase to match (case-insensitive)
+        assert: Text
+      score:
+        the: Points awarded when this term is found in the answer
+        assert: Integer
+
+  Judgment:
+    the: The output of a judge evaluation
+    where:
+      score:
+        the: Numeric score from 0 (wrong) to 10 (fully correct)
+        assert: Integer
+      rationale:
+        the: Brief explanation of why this score was given
+        assert: Text

@@ -1,0 +1,27 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [inference, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_2/user-profile-data.yaml
+  carry-model: ../context_templates/case_2/user-profile-model.yaml
+  prompt: "Would Keri want an AI assistant to start a response with 'Great question! I'd be happy to help you with that.' Why or why not?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: "no"
+              score: 1
+            - term: unsolicited encouragement
+              score: 3
+            - term: antipreference
+              score: 2
+            - term: anti-preference
+              score: 2
+            - term: Great question
+              score: 2
+  source-file:
+    - semantic-profile.md

@@ -1,0 +1,147 @@
+carry.links:
+  # ─── Attributes ──────────────────────────────────────────────────────────
+
+  url:
+    description: The URL of the shared resource
+    as: Text
+
+  posted_date:
+    description: ISO 8601 date the link was posted (YYYY-MM-DD)
+    as: Text
+
+  comment:
+    description: Optional comment left by the person who shared the link
+    as: Text
+
+  handle:
+    description: Username of a community member, without the @ prefix
+    as: Text
+
+  resource_type:
+    description: Classification of the type of resource this link points to
+    as: [":paper", ":repository", ":blog_post", ":tool", ":documentation", ":hn_thread", ":conference", ":course", ":website"]
+
+  channel:
+    description: The community channel where the link was posted
+    as: [":links", ":papers", ":show_and_tell", ":general"]
+
+  platform:
+    description: The platform this community operates on
+    as: [":discord", ":slack", ":matrix"]
+
+  name:
+    description: Human-readable display name
+    as: Text
+
+  description:
+    description: Optional description or additional context
+    as: Text
+
+  # ─── Reference Attributes ────────────────────────────────────────────────
+
+  community:
+    description: The community this member belongs to
+    as: .Community
+
+  posted_by:
+    description: The community member who shared this link
+    as: .Member
+
+  tag:
+    description: A topic tag applied to this link
+    as: .Tag
+    cardinality: many
+
+  # ─── Concepts ────────────────────────────────────────────────────────────
+
+  Community:
+    description: A chat community from which links are archived
+    with:
+      name: carry.links/name
+      platform: carry.links/platform
+    maybe:
+      description: carry.links/description
+
+  Member:
+    description: A member of a community who shares links
+    with:
+      handle: carry.links/handle
+      community: carry.links/community
+
+  Tag:
+    description: A topic label that can be applied to links for classification and filtering
+    with:
+      name: carry.links/name
+    maybe:
+      description: carry.links/description
+
+  Link:
+    description: A URL shared in a community channel, with metadata about who shared it and when
+    with:
+      url: carry.links/url
+      posted_date: carry.links/posted_date
+      posted_by: carry.links/posted_by
+      resource_type: carry.links/resource_type
+    maybe:
+      comment: carry.links/comment
+      channel: carry.links/channel
+      tag: carry.links/tag
+
+  # ─── Derived Concepts ────────────────────────────────────────────────────
+
+  AnnotatedLink:
+    description: A link shared with a comment — tends to indicate the poster considered it worth explaining
+    with:
+      url: carry.links/url
+      posted_date: carry.links/posted_date
+      posted_by: carry.links/posted_by
+      comment: carry.links/comment
+
+  PaperLink:
+    description: A link to an academic paper
+    with:
+      url: carry.links/url
+      posted_date: carry.links/posted_date
+      posted_by: carry.links/posted_by
+
+  # ─── Derived Rules ───────────────────────────────────────────────────────
+
+  annotated-link:
+    description: >
+      Derives AnnotatedLink from any Link that has a comment attached.
+      Useful for filtering to links with context, which tend to be higher signal.
+    deduce:
+      AnnotatedLink:
+        this: ?link
+        url: ?url
+        posted_date: ?date
+        posted_by: ?poster
+        comment: ?comment
+    when:
+      - carry.links/Link:
+          this: ?link
+          url: ?url
+          posted_date: ?date
+          posted_by: ?poster
+          resource_type: ?rt
+      - carry.links/comment:
+          of: ?link
+          is: ?comment
+
+  paper-link:
+    description: >
+      Derives PaperLink from any Link classified as a paper.
+      Useful for surfacing the academic reading list independently of other resource types.
+    deduce:
+      PaperLink:
+        this: ?link
+        url: ?url
+        posted_date: ?date
+        posted_by: ?poster
+    when:
+      - carry.links/Link:
+          this: ?link
+          url: ?url
+          posted_date: ?date
+          posted_by: ?poster
+          resource_type: carry.links/paper

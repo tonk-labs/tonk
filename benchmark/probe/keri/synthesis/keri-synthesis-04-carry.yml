@@ -1,0 +1,22 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [synthesis, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_2/user-profile-data.yaml
+  carry-model: ../context_templates/case_2/user-profile-model.yaml
+  prompt: "Summarise Keri's communication preferences — both how she communicates and how she wants to receive information."
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Outbound (how she communicates): direct and structured, likes clear scaffolding; asks many 'why' and 'what would change your mind' questions; warm but efficient, dislikes small talk in work contexts; uses precise language ('might' vs 'should' are intentionally different). Inbound (how she likes to receive information): lead with conclusion then reasoning; concrete examples over abstract principles; flag uncertainty explicitly; show trade-offs, don't pre-decide for her."
+          key-fact:
+            - Outbound — direct, structured, precise language
+            - Outbound — warm but efficient, no small talk
+            - Inbound — conclusion first, then reasoning
+            - Inbound — flag uncertainty, show trade-offs
+  source-file:
+    - semantic-profile.md

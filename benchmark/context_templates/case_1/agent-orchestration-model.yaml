@@ -1,0 +1,121 @@
+carry.orchestration:
+  # ─── Attributes ──────────────────────────────────────────────────────────
+
+  name:
+    description: Human-readable name for this orchestration item
+    as: Text
+
+  description:
+    description: Detailed description or rationale
+    as: Text
+
+  example:
+    description: A concrete example illustrating this item
+    as: Text
+
+  fix:
+    description: The recommended remedy for a failure mode
+    as: Text
+
+  use_when:
+    description: A condition under which this approach is recommended
+    as: Text
+    cardinality: many
+
+  avoid_when:
+    description: A condition under which this approach should be avoided
+    as: Text
+    cardinality: many
+
+  stopping_condition:
+    description: The well-defined condition under which an automated workflow halts
+    as: Text
+
+  allowed_action:
+    description: An action explicitly permitted within an automated workflow
+    as: Text
+    cardinality: many
+
+  requires_human_review:
+    description: Whether a human review gate is required before this workflow reaches production
+    as: [":yes", ":no"]
+
+  # ─── Concepts ────────────────────────────────────────────────────────────
+
+  ContextPrinciple:
+    description: A principle governing what to load (and what to omit) from the agent context window
+    with:
+      name: carry.orchestration/name
+      description: carry.orchestration/description
+
+  TaskRule:
+    description: A rule for scoping or framing a task before handing it to an agent
+    with:
+      name: carry.orchestration/name
+      description: carry.orchestration/description
+    maybe:
+      example: carry.orchestration/example
+
+  PromptingPattern:
+    description: A named prompting strategy known to improve agent output quality
+    with:
+      name: carry.orchestration/name
+      description: carry.orchestration/description
+    maybe:
+      example: carry.orchestration/example
+
+  FailureMode:
+    description: A documented failure pattern and its recommended corrective fix
+    with:
+      name: carry.orchestration/name
+      description: carry.orchestration/description
+      fix: carry.orchestration/fix
+
+  SubagentPolicy:
+    description: A policy describing when subagents should or should not be used
+    with:
+      name: carry.orchestration/name
+      description: carry.orchestration/description
+    maybe:
+      use_when: carry.orchestration/use_when
+      avoid_when: carry.orchestration/avoid_when
+
+  AutomatedWorkflowConfig:
+    description: Requirements and constraints for a long-running autonomous agent workflow
+    with:
+      name: carry.orchestration/name
+      stopping_condition: carry.orchestration/stopping_condition
+      requires_human_review: carry.orchestration/requires_human_review
+    maybe:
+      allowed_action: carry.orchestration/allowed_action
+
+  SafeAutomatedWorkflow:
+    description: An automated workflow config verified to meet minimum safety requirements
+    with:
+      name: carry.orchestration/name
+      stopping_condition: carry.orchestration/stopping_condition
+    maybe:
+      allowed_action: carry.orchestration/allowed_action
+
+  # ─── Derived Rules ───────────────────────────────────────────────────────
+
+  safe-automated-workflow:
+    description: >
+      Derives SafeAutomatedWorkflow from any AutomatedWorkflowConfig that
+      requires human review before production and has at least one explicitly
+      permitted action — the minimum bar for a trustworthy autonomous loop.
+    deduce:
+      SafeAutomatedWorkflow:
+        this: ?config
+        name: ?name
+        stopping_condition: ?stop
+        allowed_action: ?action
+    when:
+      - carry.orchestration/AutomatedWorkflowConfig:
+          this: ?config
+          name: ?name
+          stopping_condition: ?stop
+          requires_human_review: carry.orchestration/yes
+      - carry.orchestration/allowed_action:
+          of: ?config
+          is: ?action

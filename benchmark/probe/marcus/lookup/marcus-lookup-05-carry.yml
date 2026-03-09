@@ -1,0 +1,21 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [lookup, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_1/agent-orchestration-data.yaml
+  carry-model: ../context_templates/case_1/agent-orchestration-model.yaml
+  prompt: "How does Marcus describe his mental model for an agent?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: junior engineer
+              score: 3
+            - term: junior
+              score: 1
+  source-file:
+    - agent-orchestration.md

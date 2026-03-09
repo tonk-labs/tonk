@@ -243,6 +243,23 @@
             '';
           };
 
+          tonk-assess = buildCrate {
+            pname = "tonk-assess";
+            cargoExtraArgs = "--package tonk-assess";
+            nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.sigtool ];
+            fixupPhase = pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              for bin in $out/bin/*; do
+                if [ -f "$bin" ]; then
+                  NIX_ICONV=$(otool -L "$bin" | grep '/nix/store.*libiconv' | awk '{print $1}' || true)
+                  if [ -n "$NIX_ICONV" ]; then
+                    install_name_tool -change "$NIX_ICONV" /usr/lib/libiconv.2.dylib "$bin"
+                  fi
+                  codesign -f -s - "$bin"
+                fi
+              done
+            '';
+          };
+
           tonk-ui = buildTrunkCrate {
             pname = "tonk-ui";
             trunkConfig = "./rust/tonk-ui/Trunk.toml";

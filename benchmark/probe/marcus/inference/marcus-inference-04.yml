@@ -1,0 +1,18 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [inference, base]
+  system-prompt: ../prompts/base.md
+  prompt: "Does Marcus think a queryable knowledge base like Carry will fully replace CLAUDE.md for him? What evidence from his notes supports your answer?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "No, Marcus does not think Carry will fully replace CLAUDE.md. In his outstanding questions he notes that a queryable knowledge base is 'clearly better for long-lived reference material (style guides, architecture docs)' but 'less clear for frequently-changing project state'. He still actively maintains CLAUDE.md as the file the agent loads every session. His framing treats the two as potentially complementary rather than one replacing the other."
+          key-fact:
+            - Clearly better for long-lived reference material
+            - Less clear for frequently-changing project state
+            - Still maintains CLAUDE.md for every-session loading
+            - Framed as open question not settled answer
+  source-file:
+    - agent-orchestration.md

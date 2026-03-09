@@ -1,0 +1,22 @@
+tonk.assess/Probe:
+  persona: marcus
+  corpus: ../personas/marcus/artifacts
+  tag: [synthesis, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_1/agent-orchestration-data.yaml
+  carry-model: ../context_templates/case_1/agent-orchestration-model.yaml
+  prompt: "What prompting patterns does Marcus use to prevent the agent from doing the wrong thing or going off scope?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Marcus uses several patterns to constrain agent behavior: 'Negative space' (telling the agent what NOT to do is as important as what to do), 'Explicit success criteria' (embedding a precise definition of done in the task prompt), 'Show your reasoning' (asking the agent to explain its approach before coding), and 'Plan, then execute' (reviewing a plan before any file changes)."
+          key-fact:
+            - Negative space — tell the agent what NOT to do
+            - Explicit success criteria — define done upfront
+            - Show your reasoning — explain approach before coding
+            - Plan then execute for multi-file changes
+  source-file:
+    - agent-orchestration.md

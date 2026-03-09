@@ -1,0 +1,23 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [lookup, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_2/user-profile-data.yaml
+  carry-model: ../context_templates/case_2/user-profile-model.yaml
+  prompt: "What is Keri's current 'side obsession' according to her profile?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: graph-based personal data
+              score: 3
+            - term: graph personal data
+              score: 2
+            - term: personal data graph
+              score: 2
+  source-file:
+    - semantic-profile.md
