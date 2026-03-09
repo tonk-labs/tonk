@@ -1,23 +1,34 @@
 //! YAML parsing and lowering for rule definitions.
 //!
-//! Parses a YAML file of the form:
+//! Parses rule definitions using the canonical abbreviated notation:
 //!
 //! ```yaml
-//! user.rules:
-//!   respect-dietary-restrictions:
-//!     assert:
-//!       diy.meal-planner/Meal:
+//! diy.planner:
+//!   safe-meal:
+//!     description: A meal that respects dietary restrictions
+//!     deduce:
+//!       SafeMeal:
 //!         attendee: ?person
 //!         recipe: ?recipe
 //!     when:
-//!       - diy.cook/Recipe:
-//!           this: ?recipe
-//!           ingredient: ?ingredient
+//!       - diy.planner/Meal:
+//!           this: ?meal
+//!           attendee: ?person
+//!           recipe: ?recipe
+//!       - diy.cook/ingredient-name:
+//!           this: ?entity
+//!           is: ?name
+//!       - ==:
+//!           this: ?name
+//!           is: Alice
+//!       - math/sum:
+//!           of: ?a
+//!           with: ?b
+//!           is: ?result
 //!     unless:
-//!       - diy.health/Allergy:
-//!           this: _
+//!       - diy.planner/AllergyConflict:
 //!           person: ?person
-//!           substance: ?substance
+//!           recipe: ?recipe
 //! ```
 //!
 //! After parsing, the concept-oriented representation is *lowered* into
@@ -28,6 +39,30 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap};
 
 // ---------------------------------------------------------------------------
+// Known formula and constraint references
+// ---------------------------------------------------------------------------
+
+/// Known formula references that are treated specially in premises.
+const FORMULA_REFS: &[&str] = &[
+    "math/sum",
+    "math/difference",
+    "math/product",
+    "math/quotient",
+    "math/modulo",
+    "text/concatenate",
+    "text/length",
+    "text/upper-case",
+    "text/lower-case",
+    "text/like",
+    "boolean/and",
+    "boolean/or",
+    "boolean/not",
+];
+
+/// Known constraint references.
+const CONSTRAINT_REFS: &[&str] = &["=="];
+
+// ---------------------------------------------------------------------------
 // Parsed intermediate representation
 // ---------------------------------------------------------------------------
 
@@ -36,9 +71,11 @@ use std::collections::{BTreeMap, HashMap};
 pub(super) struct ParsedRule {
     /// Rule name from the YAML key (e.g. "respect-dietary-restrictions").
     pub name: String,
-    /// Namespace from the top-level key (e.g. "user.rules").
+    /// Namespace from the top-level key (e.g. "diy.planner").
     pub namespace: String,
-    /// The conclusion: which concept is asserted and its bindings.
+    /// Description from the `description` field.
+    pub description: Option<String>,
+    /// The conclusion: which concept is deduced and its bindings.
     pub conclusion: ParsedRuleConclusion,
     /// Positive premises (must hold).
     pub when: Vec<ParsedRulePremise>,
@@ -49,7 +86,7 @@ pub(super) struct ParsedRule {
 /// The conclusion of a parsed rule.
 #[derive(Debug)]
 pub(super) struct ParsedRuleConclusion {
-    /// Concept name extracted from the reference (e.g. "Meal" from "diy.meal-planner/Meal").
+    /// Concept name extracted from the reference (e.g. "SafeMeal" from "diy.planner/SafeMeal").
     pub concept_name: String,
     /// Bindings: attribute short names to variables/wildcards/constants.
     /// The `this` key, if present, is stored separately.
@@ -58,16 +95,67 @@ pub(super) struct ParsedRuleConclusion {
     pub this: Option<String>,
 }
 
-/// A single concept-oriented premise from the YAML, before lowering to EAV.
+/// The kind of premise in a rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PremiseKind {
+    /// Concept premise: key is `namespace/ConceptName` (CamelCase after `/`).
+    Concept,
+    /// Raw attribute premise: key is `domain/attribute-name` (kebab-case after `/`).
+    RawAttribute,
+    /// Equality constraint: key is `==`.
+    Equality,
+    /// Formula: key is `math/sum`, `text/concatenate`, etc.
+    Formula,
+}
+
+/// A single premise from the YAML, before lowering to EAV.
 #[derive(Debug)]
 pub(super) struct ParsedRulePremise {
-    /// Concept name extracted from the reference (e.g. "Recipe" from "diy.cook/Recipe").
+    /// What kind of premise this is.
+    pub kind: PremiseKind,
+    /// The full reference key (e.g. "diy.cook/Recipe", "==", "math/sum").
+    pub reference: String,
+    /// For concept premises: the concept name extracted from the reference.
+    /// For others: the full reference.
     pub concept_name: String,
     /// The `this` value (entity binding). Defaults to `"_"` if absent.
     pub this_value: String,
     /// Attribute bindings: short name -> variable/wildcard/constant.
     /// Does not include `this`.
     pub attributes: Vec<(String, String)>,
+}
+
+// ---------------------------------------------------------------------------
+// Premise classification
+// ---------------------------------------------------------------------------
+
+/// Classify a premise reference key into its kind.
+fn classify_premise_ref(reference: &str) -> PremiseKind {
+    // Check for known constraints
+    if CONSTRAINT_REFS.contains(&reference) {
+        return PremiseKind::Equality;
+    }
+
+    // Check for known formulas
+    if FORMULA_REFS.contains(&reference) {
+        return PremiseKind::Formula;
+    }
+
+    // If it contains `/`, check whether the part after the last `/` starts
+    // with an uppercase letter (concept) or lowercase (raw attribute).
+    if let Some((_ns, name)) = reference.rsplit_once('/') {
+        if name.starts_with(|c: char| c.is_ascii_uppercase()) {
+            return PremiseKind::Concept;
+        }
+        return PremiseKind::RawAttribute;
+    }
+
+    // Bare name starting with uppercase → concept, else raw attribute
+    if reference.starts_with(|c: char| c.is_ascii_uppercase()) {
+        PremiseKind::Concept
+    } else {
+        PremiseKind::RawAttribute
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +175,7 @@ fn extract_concept_name(reference: &str) -> String {
 
 /// Parse a YAML string containing rule definitions.
 ///
-/// Structure: `namespace -> rule_name -> {assert, when, unless}`.
+/// Structure: `namespace -> rule_name -> {description, deduce, when, unless}`.
 pub(super) fn parse_rules_yaml(yaml_str: &str) -> Result<Vec<ParsedRule>> {
     let root: BTreeMap<String, BTreeMap<String, serde_yaml::Value>> =
         serde_yaml::from_str(yaml_str).context("Failed to parse YAML")?;
@@ -106,19 +194,32 @@ pub(super) fn parse_rules_yaml(yaml_str: &str) -> Result<Vec<ParsedRule>> {
 }
 
 /// Parse a single rule from its YAML value.
-fn parse_rule(namespace: &str, rule_name: &str, value: &serde_yaml::Value) -> Result<ParsedRule> {
+///
+/// Called both from `parse_rules_yaml` (standalone rules file) and from
+/// the mixed-file parser in `concept_parse`.
+pub(super) fn parse_rule(
+    namespace: &str,
+    rule_name: &str,
+    value: &serde_yaml::Value,
+) -> Result<ParsedRule> {
     let map: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_value(value.clone())
-        .context("Expected a mapping with assert/when/unless")?;
+        .context("Expected a mapping with deduce/when/unless")?;
 
-    // Parse `assert` (required)
-    let assert_value = map
-        .get("assert")
-        .ok_or_else(|| anyhow::anyhow!("Rule must have an 'assert' section"))?;
+    // Parse `description` (optional)
+    let description = map
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Parse `deduce` (required)
+    let deduce_value = map
+        .get("deduce")
+        .ok_or_else(|| anyhow::anyhow!("Rule must have a 'deduce' section"))?;
 
     let conclusion =
-        parse_rule_conclusion(assert_value).context("Failed to parse 'assert' section")?;
+        parse_rule_conclusion(deduce_value).context("Failed to parse 'deduce' section")?;
 
-    // Parse `when` (required, list of concept premises)
+    // Parse `when` (required, list of premises)
     let when_value = map
         .get("when")
         .ok_or_else(|| anyhow::anyhow!("Rule must have a 'when' section"))?;
@@ -139,20 +240,21 @@ fn parse_rule(namespace: &str, rule_name: &str, value: &serde_yaml::Value) -> Re
     Ok(ParsedRule {
         name: rule_name.to_string(),
         namespace: namespace.to_string(),
+        description,
         conclusion,
         when,
         unless,
     })
 }
 
-/// Parse the `assert` section of a rule YAML.
+/// Parse the `deduce` section of a rule YAML.
 ///
 /// Expected shape: a single-key mapping where the key is a concept reference
 /// and the value is a mapping of attribute bindings.
 ///
 /// ```yaml
-/// assert:
-///   diy.meal-planner/Meal:
+/// deduce:
+///   SafeMeal:
 ///     attendee: ?person
 ///     recipe: ?recipe
 /// ```
@@ -162,7 +264,7 @@ fn parse_rule_conclusion(value: &serde_yaml::Value) -> Result<ParsedRuleConclusi
 
     if map.len() != 1 {
         anyhow::bail!(
-            "The 'assert' section must contain exactly one concept, found {}",
+            "The 'deduce' section must contain exactly one concept, found {}",
             map.len()
         );
     }
@@ -191,17 +293,13 @@ fn parse_rule_conclusion(value: &serde_yaml::Value) -> Result<ParsedRuleConclusi
     })
 }
 
-/// Parse the `when` or `unless` section (a list of concept premises).
+/// Parse the `when` or `unless` section (a list of premises).
 ///
-/// Each entry is a single-key mapping: concept reference -> attribute bindings.
-///
-/// ```yaml
-/// when:
-///   - diy.cook/Recipe:
-///       this: ?recipe
-///       title: _
-///       ingredient: ?ingredient
-/// ```
+/// Each entry is a single-key mapping. The key determines the premise type:
+/// - `namespace/ConceptName` (CamelCase) → concept premise
+/// - `domain/attribute-name` (kebab-case) → raw attribute premise
+/// - `==` → equality constraint
+/// - `math/sum`, etc. → formula premise
 fn parse_rule_premises(value: &serde_yaml::Value) -> Result<Vec<ParsedRulePremise>> {
     let list: Vec<serde_yaml::Value> =
         serde_yaml::from_value(value.clone()).context("Expected a list of premises")?;
@@ -210,25 +308,26 @@ fn parse_rule_premises(value: &serde_yaml::Value) -> Result<Vec<ParsedRulePremis
 
     for (i, entry) in list.iter().enumerate() {
         let map: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_value(entry.clone())
-            .with_context(|| format!("Premise {} must be a concept mapping", i + 1))?;
+            .with_context(|| format!("Premise {} must be a mapping", i + 1))?;
 
         if map.len() != 1 {
             anyhow::bail!(
-                "Premise {} must reference exactly one concept, found {}",
+                "Premise {} must reference exactly one concept/attribute/constraint/formula, found {}",
                 i + 1,
                 map.len()
             );
         }
 
-        let (concept_ref, attrs_value) = map.into_iter().next().unwrap();
-        let concept_name = extract_concept_name(&concept_ref);
+        let (reference, attrs_value) = map.into_iter().next().unwrap();
+        let kind = classify_premise_ref(&reference);
+        let concept_name = extract_concept_name(&reference);
 
         let attrs_map: BTreeMap<String, String> = serde_yaml::from_value(attrs_value)
             .with_context(|| {
                 format!(
-                    "Premise {} ({}) must have attribute bindings (e.g. this: ?var, name: _)",
+                    "Premise {} ({}) must have bindings (e.g. this: ?var, name: _)",
                     i + 1,
-                    concept_ref
+                    reference
                 )
             })?;
 
@@ -244,6 +343,8 @@ fn parse_rule_premises(value: &serde_yaml::Value) -> Result<Vec<ParsedRulePremis
         }
 
         premises.push(ParsedRulePremise {
+            kind,
+            reference: reference.clone(),
             concept_name,
             this_value,
             attributes,
@@ -260,9 +361,9 @@ fn parse_rule_premises(value: &serde_yaml::Value) -> Result<Vec<ParsedRulePremis
 /// Lower a `ParsedRule` into the internal `RuleDefinition` (EAV-based).
 ///
 /// Each concept-oriented premise is expanded into one EAV premise per
-/// attribute mentioned. The `this` key maps to the entity (`of`) field.
-/// Attributes are qualified using the concept name as namespace prefix
-/// (e.g. attribute `title` on concept `Recipe` becomes `recipe/title`).
+/// attribute mentioned. Raw attribute premises pass through as single EAV
+/// premises. Equality constraints and formulas are lowered to EAV premises
+/// using the reference as the `the` field.
 pub(super) fn lower_rule(parsed: &ParsedRule) -> Result<RuleDefinition> {
     // Lower the conclusion
     let conclusion = RuleConclusion {
@@ -284,25 +385,77 @@ pub(super) fn lower_rule(parsed: &ParsedRule) -> Result<RuleDefinition> {
     })
 }
 
-/// Lower a list of parsed concept-oriented premises into flat EAV triples.
+/// Lower a list of parsed premises into flat EAV triples.
 ///
-/// Each attribute mentioned in a premise produces one `RulePremise` with:
-/// - `the`: fully qualified attribute (`concept_name_lowercase/attr_name`)
-/// - `of`: the entity binding from `this` (or `"_"` wildcard)
-/// - `is`: the attribute's value binding
+/// - **Concept premises**: Each attribute produces one `RulePremise` with
+///   `the = concept_name_lowercase/attr_name`, `of = this_value`, `is = value`.
+/// - **Raw attribute premises**: A single `RulePremise` with `the = reference`,
+///   `of = this_value`, `is = is_value`.
+/// - **Equality constraints**: A single `RulePremise` with `the = "=="`,
+///   `of = this_value`, `is = is_value`.
+/// - **Formulas**: A single `RulePremise` per binding with `the = formula_ref`,
+///   `of = param_name`, `is = param_value`. Note: formula lowering is
+///   provisional — the rule engine does not yet support formulas.
 fn lower_premises(premises: &[ParsedRulePremise]) -> Result<Vec<RulePremise>> {
     let mut eav_premises = Vec::new();
 
     for premise in premises {
-        let prefix = premise.concept_name.to_lowercase();
+        match premise.kind {
+            PremiseKind::Concept => {
+                let prefix = premise.concept_name.to_lowercase();
+                for (attr_name, value) in &premise.attributes {
+                    let qualified = format!("{}/{}", prefix, attr_name);
+                    eav_premises.push(RulePremise {
+                        the: qualified,
+                        of: premise.this_value.clone(),
+                        is: value.clone(),
+                    });
+                }
+            }
+            PremiseKind::RawAttribute => {
+                // Raw attribute premise: pass through the fully qualified reference
+                // The `is` binding is stored in attributes under key "is"
+                let is_value = premise
+                    .attributes
+                    .iter()
+                    .find(|&(k, _)| k == "is")
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_else(|| "_".to_string());
 
-        for (attr_name, value) in &premise.attributes {
-            let qualified = format!("{}/{}", prefix, attr_name);
-            eav_premises.push(RulePremise {
-                the: qualified,
-                of: premise.this_value.clone(),
-                is: value.clone(),
-            });
+                eav_premises.push(RulePremise {
+                    the: premise.reference.clone(),
+                    of: premise.this_value.clone(),
+                    is: is_value,
+                });
+            }
+            PremiseKind::Equality => {
+                // Equality constraint: `==: { this: ?x, is: ?y }`
+                let is_value = premise
+                    .attributes
+                    .iter()
+                    .find(|&(k, _)| k == "is")
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_else(|| "_".to_string());
+
+                eav_premises.push(RulePremise {
+                    the: "==".to_string(),
+                    of: premise.this_value.clone(),
+                    is: is_value,
+                });
+            }
+            PremiseKind::Formula => {
+                // Formula premise: lower each parameter binding as a separate
+                // EAV premise with the formula reference as `the`.
+                // This is provisional — the rule engine does not yet support
+                // formulas natively. We store them for forward compatibility.
+                for (param_name, param_value) in &premise.attributes {
+                    eav_premises.push(RulePremise {
+                        the: premise.reference.clone(),
+                        of: param_name.clone(),
+                        is: param_value.clone(),
+                    });
+                }
+            }
         }
     }
 
@@ -325,11 +478,51 @@ mod tests {
     }
 
     #[test]
+    fn classify_concept_premise() {
+        assert_eq!(
+            classify_premise_ref("diy.cook/Recipe"),
+            PremiseKind::Concept
+        );
+        assert_eq!(
+            classify_premise_ref("diy.planner/SafeMeal"),
+            PremiseKind::Concept
+        );
+    }
+
+    #[test]
+    fn classify_raw_attribute_premise() {
+        assert_eq!(
+            classify_premise_ref("diy.cook/ingredient-name"),
+            PremiseKind::RawAttribute
+        );
+        assert_eq!(
+            classify_premise_ref("diy.cook/quantity"),
+            PremiseKind::RawAttribute
+        );
+    }
+
+    #[test]
+    fn classify_equality_premise() {
+        assert_eq!(classify_premise_ref("=="), PremiseKind::Equality);
+    }
+
+    #[test]
+    fn classify_formula_premise() {
+        assert_eq!(classify_premise_ref("math/sum"), PremiseKind::Formula);
+        assert_eq!(
+            classify_premise_ref("text/concatenate"),
+            PremiseKind::Formula
+        );
+        assert_eq!(classify_premise_ref("boolean/not"), PremiseKind::Formula);
+    }
+
+    #[test]
     fn parse_basic_rule() {
         let yaml = r#"
 user.rules:
   my-rule:
-    assert:
+    description: Test rule
+    deduce:
       diy.planner/Meal:
         attendee: ?person
         recipe: ?recipe
@@ -353,6 +546,7 @@ user.rules:
         let rule = &rules[0];
         assert_eq!(rule.name, "my-rule");
         assert_eq!(rule.namespace, "user.rules");
+        assert_eq!(rule.description.as_deref(), Some("Test rule"));
         assert_eq!(rule.conclusion.concept_name, "Meal");
         assert_eq!(rule.conclusion.bindings.len(), 2);
         assert_eq!(rule.conclusion.bindings["attendee"], "?person");
@@ -360,9 +554,9 @@ user.rules:
         assert!(rule.conclusion.this.is_none());
 
         assert_eq!(rule.when.len(), 2);
+        assert_eq!(rule.when[0].kind, PremiseKind::Concept);
         assert_eq!(rule.when[0].concept_name, "Recipe");
         assert_eq!(rule.when[0].this_value, "?recipe");
-        // title and ingredient (BTreeMap sorted: ingredient, title)
         assert_eq!(rule.when[0].attributes.len(), 2);
 
         assert_eq!(rule.when[1].concept_name, "Ingredient");
@@ -380,7 +574,7 @@ user.rules:
         let yaml = r#"
 ns:
   my-rule:
-    assert:
+    deduce:
       ns/Thing:
         this: ?entity
         name: ?n
@@ -401,7 +595,7 @@ ns:
         let yaml = r#"
 ns:
   simple-rule:
-    assert:
+    deduce:
       ns/Output:
         value: ?v
     when:
@@ -413,6 +607,102 @@ ns:
         assert!(rules[0].unless.is_empty());
     }
 
+    #[test]
+    fn parse_rule_with_description() {
+        let yaml = r#"
+ns:
+  my-rule:
+    description: This is a test rule
+    deduce:
+      ns/Output:
+        value: ?v
+    when:
+      - ns/Input:
+          this: ?x
+          data: ?v
+"#;
+        let rules = parse_rules_yaml(yaml).unwrap();
+        assert_eq!(rules[0].description.as_deref(), Some("This is a test rule"));
+    }
+
+    #[test]
+    fn parse_raw_attribute_premise() {
+        let yaml = r#"
+ns:
+  my-rule:
+    deduce:
+      ns/Output:
+        name: ?n
+    when:
+      - diy.cook/ingredient-name:
+          this: ?entity
+          is: ?n
+"#;
+        let rules = parse_rules_yaml(yaml).unwrap();
+        let premise = &rules[0].when[0];
+        assert_eq!(premise.kind, PremiseKind::RawAttribute);
+        assert_eq!(premise.reference, "diy.cook/ingredient-name");
+        assert_eq!(premise.this_value, "?entity");
+        assert_eq!(premise.attributes.len(), 1);
+        assert_eq!(premise.attributes[0], ("is".to_string(), "?n".to_string()));
+    }
+
+    #[test]
+    fn parse_equality_premise() {
+        let yaml = r#"
+ns:
+  my-rule:
+    deduce:
+      ns/Output:
+        name: ?name
+    when:
+      - ns/Person:
+          this: ?p
+          name: ?name
+      - ==:
+          this: ?name
+          is: Alice
+"#;
+        let rules = parse_rules_yaml(yaml).unwrap();
+        assert_eq!(rules[0].when.len(), 2);
+
+        let eq_premise = &rules[0].when[1];
+        assert_eq!(eq_premise.kind, PremiseKind::Equality);
+        assert_eq!(eq_premise.reference, "==");
+        assert_eq!(eq_premise.this_value, "?name");
+        assert_eq!(
+            eq_premise.attributes[0],
+            ("is".to_string(), "Alice".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_formula_premise() {
+        let yaml = r#"
+ns:
+  my-rule:
+    deduce:
+      ns/Output:
+        total: ?result
+    when:
+      - ns/Input:
+          this: ?e
+          value: ?a
+      - math/sum:
+          of: ?a
+          with: ?a
+          is: ?result
+"#;
+        let rules = parse_rules_yaml(yaml).unwrap();
+        assert_eq!(rules[0].when.len(), 2);
+
+        let formula = &rules[0].when[1];
+        assert_eq!(formula.kind, PremiseKind::Formula);
+        assert_eq!(formula.reference, "math/sum");
+        // Formula bindings: of, is, with (sorted by BTreeMap)
+        assert_eq!(formula.attributes.len(), 3);
+    }
+
     // -----------------------------------------------------------------------
     // Rule lowering tests
     // -----------------------------------------------------------------------
@@ -422,7 +712,7 @@ ns:
         let yaml = r#"
 user.rules:
   my-rule:
-    assert:
+    deduce:
       diy.planner/Meal:
         attendee: ?person
         recipe: ?recipe
@@ -447,7 +737,6 @@ user.rules:
         let rules = parse_rules_yaml(yaml).unwrap();
         let def = lower_rule(&rules[0]).unwrap();
 
-        // Lowering passes variables through as-is (no splitting)
         assert_eq!(def.conclusion.concept, "Meal");
         assert!(def.conclusion.this.is_none());
         assert_eq!(def.conclusion.bindings.len(), 2);
@@ -512,12 +801,10 @@ user.rules:
 
     #[test]
     fn lower_rule_with_this_in_conclusion_no_conflict() {
-        // When `this: ?entity` is in the conclusion and NO binding
-        // uses ?entity, there's no conflict — no splitting needed.
         let yaml = r#"
 ns:
   my-rule:
-    assert:
+    deduce:
       ns/Thing:
         this: ?entity
         name: ?n
@@ -529,24 +816,18 @@ ns:
         let rules = parse_rules_yaml(yaml).unwrap();
         let def = lower_rule(&rules[0]).unwrap();
 
-        // No conflict: ?entity is only in `this`, not in bindings
         assert_eq!(def.conclusion.this.as_deref(), Some("?entity"));
         assert_eq!(def.conclusion.bindings.len(), 1);
         assert_eq!(def.conclusion.bindings["name"], "?n");
-        // Premise entity stays as-is
         assert_eq!(def.when[0].of, "?entity");
     }
 
     #[test]
     fn lower_passes_through_conflicting_vars() {
-        // Lowering does NOT split variables. If a conclusion binding
-        // variable is also used as `this` in a premise, both keep the
-        // original variable. The conflict is handled later at compile time
-        // (build_rename_map will skip the entity var for auto-detection).
         let yaml = r#"
 ns:
   rule:
-    assert:
+    deduce:
       ns/Output:
         source: ?entity
         value: ?v
@@ -558,25 +839,19 @@ ns:
         let rules = parse_rules_yaml(yaml).unwrap();
         let def = lower_rule(&rules[0]).unwrap();
 
-        // Variables pass through as-is — no splitting
         assert!(def.conclusion.this.is_none());
         assert_eq!(def.conclusion.bindings.len(), 2);
         assert_eq!(def.conclusion.bindings["source"], "?entity");
         assert_eq!(def.conclusion.bindings["value"], "?v");
-
-        // Premise entity keeps original variable
         assert_eq!(def.when[0].of, "?entity");
     }
 
     #[test]
     fn lower_explicit_this_with_same_binding_passes_through() {
-        // Lowering passes variables through as-is. The explicit `this`
-        // and binding using the same variable will be caught later at
-        // compile time by build_rename_map.
         let yaml = r#"
 ns:
   rule:
-    assert:
+    deduce:
       ns/Output:
         this: ?entity
         source: ?entity
@@ -589,7 +864,6 @@ ns:
         let rules = parse_rules_yaml(yaml).unwrap();
         let def = lower_rule(&rules[0]).unwrap();
 
-        // Lowering just passes through; no splitting
         assert_eq!(def.conclusion.this.as_deref(), Some("?entity"));
         assert_eq!(def.conclusion.bindings["source"], "?entity");
         assert_eq!(def.conclusion.bindings["value"], "?v");
@@ -598,12 +872,10 @@ ns:
 
     #[test]
     fn lower_binding_var_not_entity() {
-        // Binding variable that is NOT a premise entity variable.
-        // Lowering passes it through as-is.
         let yaml = r#"
 ns:
   rule:
-    assert:
+    deduce:
       ns/Output:
         name: ?n
     when:
@@ -621,11 +893,10 @@ ns:
 
     #[test]
     fn lower_no_conflict() {
-        // When entity var and binding vars are different, simple pass-through.
         let yaml = r#"
 ns:
   rule:
-    assert:
+    deduce:
       ns/Output:
         value: ?v
     when:
@@ -636,7 +907,6 @@ ns:
         let rules = parse_rules_yaml(yaml).unwrap();
         let def = lower_rule(&rules[0]).unwrap();
 
-        // Lowering just passes through; conclusion.this is not set by lowering
         assert!(def.conclusion.this.is_none());
         assert_eq!(def.conclusion.bindings.len(), 1);
         assert_eq!(def.conclusion.bindings["value"], "?v");
@@ -645,11 +915,10 @@ ns:
 
     #[test]
     fn lower_premise_no_this_defaults_to_wildcard() {
-        // A premise with no `this` key should use "_" as entity
         let yaml = r#"
 ns:
   my-rule:
-    assert:
+    deduce:
       ns/Out:
         val: ?v
     when:
@@ -666,31 +935,80 @@ ns:
     }
 
     #[test]
+    fn lower_raw_attribute_premise() {
+        let yaml = r#"
+ns:
+  my-rule:
+    deduce:
+      ns/Output:
+        name: ?n
+    when:
+      - diy.cook/ingredient-name:
+          this: ?entity
+          is: ?n
+"#;
+        let rules = parse_rules_yaml(yaml).unwrap();
+        let def = lower_rule(&rules[0]).unwrap();
+
+        assert_eq!(def.when.len(), 1);
+        assert_eq!(def.when[0].the, "diy.cook/ingredient-name");
+        assert_eq!(def.when[0].of, "?entity");
+        assert_eq!(def.when[0].is, "?n");
+    }
+
+    #[test]
+    fn lower_equality_constraint() {
+        let yaml = r#"
+ns:
+  my-rule:
+    deduce:
+      ns/Output:
+        name: ?name
+    when:
+      - ns/Person:
+          this: ?p
+          name: ?name
+      - ==:
+          this: ?name
+          is: Alice
+"#;
+        let rules = parse_rules_yaml(yaml).unwrap();
+        let def = lower_rule(&rules[0]).unwrap();
+
+        assert_eq!(def.when.len(), 2);
+        // First premise: concept
+        assert_eq!(def.when[0].the, "person/name");
+        // Second premise: equality constraint
+        assert_eq!(def.when[1].the, "==");
+        assert_eq!(def.when[1].of, "?name");
+        assert_eq!(def.when[1].is, "Alice");
+    }
+
+    #[test]
     fn parse_rules_example_file() {
         let yaml = include_str!("../../examples/rules.yaml");
         let rules = parse_rules_yaml(yaml).unwrap();
         assert_eq!(rules.len(), 2);
 
-        // First rule: find-allergy-conflicts -> AllergyConflict
-        let rule1 = rules
-            .iter()
-            .find(|r| r.name == "find-allergy-conflicts")
-            .unwrap();
-        assert_eq!(rule1.conclusion.concept_name, "AllergyConflict");
+        // First rule: plan-event-meal -> Meal
+        let rule1 = rules.iter().find(|r| r.name == "plan-event-meal").unwrap();
+        assert_eq!(rule1.conclusion.concept_name, "Meal");
+        assert!(rule1.description.is_some());
         let def1 = lower_rule(rule1).unwrap();
-        assert_eq!(def1.conclusion.concept, "AllergyConflict");
+        assert_eq!(def1.conclusion.concept, "Meal");
         assert!(!def1.when.is_empty());
         assert!(def1.unless.is_empty());
 
-        // Second rule: respect-dietary-restrictions -> SafeMeal
+        // Second rule: infer-safe-event-meal -> SafeMeal
         let rule2 = rules
             .iter()
-            .find(|r| r.name == "respect-dietary-restrictions")
+            .find(|r| r.name == "infer-safe-event-meal")
             .unwrap();
         assert_eq!(rule2.conclusion.concept_name, "SafeMeal");
+        assert!(rule2.description.is_some());
         let def2 = lower_rule(rule2).unwrap();
         assert_eq!(def2.conclusion.concept, "SafeMeal");
         assert!(!def2.when.is_empty());
-        assert!(!def2.unless.is_empty());
+        assert!(def2.unless.is_empty());
     }
 }

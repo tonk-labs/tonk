@@ -1,34 +1,34 @@
 user.rules:
-  find-allergy-conflicts:
-    assert:
-      diy.planner/AllergyConflict:
-        person: ?person
+  plan-event-meal:
+    description: Suggest a meal for an event attendee using an available recipe
+    deduce:
+      diy.planner/Meal:
+        attendee: ?person
         recipe: ?recipe
+        occasion: ?event
     when:
+      - diy.planner/Event:
+          this: ?event
+          title: ?title
+      - diy.planner/Meal:
+          this: ?existing
+          attendee: ?person
       - diy.cook/Recipe:
           this: ?recipe
-          ingredient: ?ingredient
-      - diy.cook/Ingredient:
-          this: ?ingredient
-          name: ?substance
-      - diy.health/Allergy:
-          this: ?allergy
-          person: ?person
-          substance: ?substance
+          title: ?recipe-name
 
-  respect-dietary-restrictions:
-    assert:
+  infer-safe-event-meal:
+    description: A safe meal for an event — combines event context with dietary safety
+    deduce:
       diy.planner/SafeMeal:
         attendee: ?person
         recipe: ?recipe
-        occasion: ?occasion
+        occasion: ?event
     when:
-      - diy.planner/Meal:
-          this: ?meal
+      - diy.planner/Event:
+          this: ?event
+          title: ?title
+      - diy.planner/SafeMeal:
+          this: ?safe
           attendee: ?person
-          recipe: ?recipe
-          occasion: ?occasion
-    unless:
-      - diy.planner/AllergyConflict:
-          person: ?person
           recipe: ?recipe

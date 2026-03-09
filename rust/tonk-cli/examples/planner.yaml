@@ -1,50 +1,84 @@
 diy.health:
   Allergy:
-    this:
-      the: The allergy person has
-    person:
-      the: Person having an allergy
-    substance:
-      the: Substance person has an allergy for
-      as: Text
+    description: The allergy person has
+    with:
+      person:
+        description: Person having an allergy
+      substance:
+        description: Substance person has an allergy for
+        as: Text
 
 diy.planner:
   Event:
-    this:
-      the: Event being planned
-    title:
-      the: Title of the event
-      as: Text
-    time:
-      the: Time of the event
-      as: Text
+    description: Event being planned
+    with:
+      title:
+        description: Title of the event
+        as: Text
+      time:
+        description: Time of the event
+        as: Text
 
   Meal:
-    this:
-      the: The plan for the meal
-    attendee:
-      the: The meal attendee
-    recipe:
-      the: The meal recipe
-    occasion:
-      the: The occasion for the meal
-      as: Event
+    description: The plan for the meal
+    with:
+      attendee:
+        description: The meal attendee
+      recipe:
+        description: The meal recipe
+      occasion:
+        description: The occasion for the meal
 
   SafeMeal:
-    this:
-      the: A meal that respects dietary restrictions
-    attendee:
-      the: The meal attendee
-    recipe:
-      the: The meal recipe
-    occasion:
-      the: The occasion for the meal
-      as: Event
+    description: A meal that respects dietary restrictions
+    with:
+      attendee:
+        description: The meal attendee
+      recipe:
+        description: The meal recipe
+      occasion:
+        description: The occasion for the meal
 
   AllergyConflict:
-    this:
-      the: A conflict between a recipe ingredient and an allergy
-    person:
-      the: The person with the allergy
-    recipe:
-      the: The recipe containing an allergenic ingredient
+    description: A conflict between a recipe ingredient and an allergy
+    with:
+      person:
+        description: The person with the allergy
+      recipe:
+        description: The recipe containing an allergenic ingredient
+
+  find-allergy-conflicts:
+    description: Find conflicts between recipe ingredients and allergies
+    deduce:
+      AllergyConflict:
+        person: ?person
+        recipe: ?recipe
+    when:
+      - diy.cook/Recipe:
+          this: ?recipe
+          ingredient: ?ingredient
+      - diy.cook/Ingredient:
+          this: ?ingredient
+          name: ?substance
+      - diy.health/Allergy:
+          this: ?allergy
+          person: ?person
+          substance: ?substance
+
+  respect-dietary-restrictions:
+    description: A meal that respects dietary restrictions
+    deduce:
+      SafeMeal:
+        attendee: ?person
+        recipe: ?recipe
+        occasion: ?occasion
+    when:
+      - diy.planner/Meal:
+          this: ?meal
+          attendee: ?person
+          recipe: ?recipe
+          occasion: ?occasion
+    unless:
+      - diy.planner/AllergyConflict:
+          person: ?person
+          recipe: ?recipe

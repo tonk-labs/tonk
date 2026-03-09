@@ -487,6 +487,13 @@ async fn test_import_planner_yaml() {
         .await
         .expect("Failed to create space");
 
+    // Import cook.yaml first (planner rules reference cook concepts)
+    let cook_file = TestEnv::example_file("cook.yaml");
+    tonk_cli::import::import(cook_file, false, true)
+        .await
+        .expect("Failed to import cook.yaml");
+
+    // planner.yaml is a mixed file: concepts + rules
     let file = TestEnv::example_file("planner.yaml");
     tonk_cli::import::import(file, false, true)
         .await
@@ -508,18 +515,19 @@ async fn test_import_rules_yaml() {
         .await
         .expect("Failed to create space");
 
-    // Import prerequisite concepts first
-    let planner_file = TestEnv::example_file("planner.yaml");
-    tonk_cli::import::import(planner_file, false, true)
-        .await
-        .expect("Failed to import planner.yaml");
-
+    // Import prerequisite concepts first (cook before planner, since
+    // planner's rules reference cook concepts)
     let cook_file = TestEnv::example_file("cook.yaml");
     tonk_cli::import::import(cook_file, false, true)
         .await
         .expect("Failed to import cook.yaml");
 
-    // Now import rules
+    let planner_file = TestEnv::example_file("planner.yaml");
+    tonk_cli::import::import(planner_file, false, true)
+        .await
+        .expect("Failed to import planner.yaml");
+
+    // Now import rules (standalone rules file)
     let rules_file = TestEnv::example_file("rules.yaml");
     tonk_cli::import::import(rules_file, false, true)
         .await
@@ -1575,17 +1583,17 @@ async fn test_import_concepts_and_rules_full_workflow() {
         .await
         .expect("Failed to create space");
 
-    // 1. Import planner concepts (2 namespaces, 5 concepts)
-    let planner = TestEnv::example_file("planner.yaml");
-    tonk_cli::import::import(planner, false, true)
-        .await
-        .expect("Failed to import planner concepts");
-
-    // 2. Import cook concepts (1 namespace, 3 concepts)
+    // 1. Import cook concepts first (planner rules reference cook concepts)
     let cook = TestEnv::example_file("cook.yaml");
     tonk_cli::import::import(cook, false, true)
         .await
         .expect("Failed to import cook concepts");
+
+    // 2. Import planner (mixed: 5 concepts + 2 rules across 2 namespaces)
+    let planner = TestEnv::example_file("planner.yaml");
+    tonk_cli::import::import(planner, false, true)
+        .await
+        .expect("Failed to import planner");
 
     // 3. Verify all 8 concepts exist
     for name in &[
@@ -1602,7 +1610,7 @@ async fn test_import_concepts_and_rules_full_workflow() {
         assert!(result.is_ok(), "{} should exist after import", name);
     }
 
-    // 4. Import rules
+    // 4. Import standalone rules file (rules referencing existing concepts)
     let rules = TestEnv::example_file("rules.yaml");
     tonk_cli::import::import(rules, false, true)
         .await
