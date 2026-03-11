@@ -928,8 +928,20 @@ async fn test_query_entities() {
     }
 
     // Query all entities
-    let result = tonk_cli::entity::query(&ctx, "Item".to_string(), vec![], true).await;
-    assert!(result.is_ok(), "query should succeed: {:?}", result.err());
+    let rows = tonk_cli::entity::query(&ctx, "Item".to_string(), vec![], true)
+        .await
+        .expect("query should succeed");
+    assert_eq!(rows.len(), 3, "should return all 3 entities");
+
+    // Verify each row has a non-null "name" attribute
+    for row in &rows {
+        let name_val = row.data.get("name").expect("row should have 'name' key");
+        assert!(
+            !name_val.is_null(),
+            "name should not be null for entity {}",
+            row.id
+        );
+    }
 }
 
 #[tokio::test]
@@ -977,17 +989,27 @@ async fn test_query_with_filter() {
     .expect("Failed to create task B");
 
     // Query with filter
-    let result = tonk_cli::entity::query(
+    let rows = tonk_cli::entity::query(
         &ctx,
         "Task".to_string(),
         vec!["status=todo".to_string()],
         true,
     )
-    .await;
-    assert!(
-        result.is_ok(),
-        "filtered query should succeed: {:?}",
-        result.err()
+    .await
+    .expect("filtered query should succeed");
+
+    assert_eq!(rows.len(), 1, "filter should match exactly 1 entity");
+    assert_eq!(
+        rows[0].data.get("title").and_then(|v| v.as_str()),
+        Some("Task A"),
+        "filtered entity should be Task A"
+    );
+    // The filtered attribute itself must be populated (not null).
+    // This is the regression check for the "Unbound variable" bug.
+    assert_eq!(
+        rows[0].data.get("status").and_then(|v| v.as_str()),
+        Some("todo"),
+        "filtered attribute 'status' must be populated, not null"
     );
 }
 
@@ -1124,8 +1146,10 @@ async fn test_delete_entity() {
         .expect("Failed to delete entity");
 
     // Query should return no entities
-    let result = tonk_cli::entity::query(&ctx, "Task".to_string(), vec![], true).await;
-    assert!(result.is_ok(), "query after delete should succeed");
+    let rows = tonk_cli::entity::query(&ctx, "Task".to_string(), vec![], true)
+        .await
+        .expect("query after delete should succeed");
+    assert!(rows.is_empty(), "should have 0 entities after deletion");
 }
 
 #[tokio::test]
@@ -1167,6 +1191,279 @@ async fn test_create_entity_from_json_file() {
         result.is_ok(),
         "create from JSON file should succeed: {:?}",
         result.err()
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Query result verification (regression tests for filter resolution)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Helper: define a 3-attribute Task concept and create 3 entities with
+/// distinct status and priority values. Returns the SpaceContext for
+/// further queries.
+async fn setup_task_entities(env: &TestEnv, space_name: &str) -> tonk_cli::schema::SpaceContext {
+    let _space = env
+        .create_space(space_name)
+        .await
+        .expect("Failed to create space");
+    let ctx = tonk_cli::schema::get_space_context().expect("Failed to get space context");
+
+    tonk_cli::concept::define(
+        &ctx,
+        "Task".to_string(),
+        vec![
+            "title".to_string(),
+            "status".to_string(),
+            "priority".to_string(),
+        ],
+        "A task for query tests".to_string(),
+        true,
+    )
+    .await
+    .expect("Failed to define Task concept");
+
+    for (title, status, priority) in [
+        ("Fix login bug", "todo", "high"),
+        ("Write tests", "done", "medium"),
+        ("Deploy to staging", "in-progress", "high"),
+    ] {
+        tonk_cli::entity::create(
+            &ctx,
+            "Task".to_string(),
+            vec![
+                format!("title={}", title),
+                format!("status={}", status),
+                format!("priority={}", priority),
+            ],
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("Failed to create task '{}': {}", title, e));
+    }
+
+    ctx
+}
+
+#[tokio::test]
+#[serial]
+async fn test_query_filter_returns_correct_count() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let ctx = setup_task_entities(&env, "filter-count-space").await;
+
+    // status=todo matches 1 entity
+    let rows = tonk_cli::entity::query(
+        &ctx,
+        "Task".to_string(),
+        vec!["status=todo".to_string()],
+        true,
+    )
+    .await
+    .expect("query with status=todo should succeed");
+    assert_eq!(rows.len(), 1, "status=todo should match 1 entity");
+
+    // priority=high matches 2 entities
+    let rows = tonk_cli::entity::query(
+        &ctx,
+        "Task".to_string(),
+        vec!["priority=high".to_string()],
+        true,
+    )
+    .await
+    .expect("query with priority=high should succeed");
+    assert_eq!(rows.len(), 2, "priority=high should match 2 entities");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_query_filter_populates_filtered_attribute() {
+    // Regression test: filtered attributes must appear with their actual
+    // value in the result rows, not as null. Before the fix, dialog-db's
+    // merge_parameters skipped constants, leaving the filtered variable
+    // unbound in the Answer — causing "Unbound variable" warnings and null.
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let ctx = setup_task_entities(&env, "filter-populate-space").await;
+
+    let rows = tonk_cli::entity::query(
+        &ctx,
+        "Task".to_string(),
+        vec!["status=todo".to_string()],
+        true,
+    )
+    .await
+    .expect("filtered query should succeed");
+
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+
+    // The filtered attribute "status" must be the filter value, not null
+    let status = row
+        .data
+        .get("status")
+        .expect("row should have 'status' key");
+    assert!(
+        !status.is_null(),
+        "filtered attribute 'status' must not be null"
+    );
+    assert_eq!(
+        status.as_str(),
+        Some("todo"),
+        "filtered attribute 'status' should equal the filter value"
+    );
+
+    // Non-filtered attributes must also be populated
+    let title = row.data.get("title").expect("row should have 'title' key");
+    assert!(
+        !title.is_null(),
+        "non-filtered attribute 'title' must not be null"
+    );
+    assert_eq!(title.as_str(), Some("Fix login bug"));
+
+    let priority = row
+        .data
+        .get("priority")
+        .expect("row should have 'priority' key");
+    assert!(
+        !priority.is_null(),
+        "non-filtered attribute 'priority' must not be null"
+    );
+    assert_eq!(priority.as_str(), Some("high"));
+}
+
+#[tokio::test]
+#[serial]
+async fn test_query_filter_populates_all_attributes() {
+    // Every attribute in every returned row must be non-null, regardless
+    // of whether it was used as a filter.
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let ctx = setup_task_entities(&env, "filter-all-attrs-space").await;
+
+    let rows = tonk_cli::entity::query(
+        &ctx,
+        "Task".to_string(),
+        vec!["priority=high".to_string()],
+        true,
+    )
+    .await
+    .expect("filtered query should succeed");
+
+    assert_eq!(rows.len(), 2, "priority=high matches 2 entities");
+
+    for row in &rows {
+        for attr in &["title", "status", "priority"] {
+            let val = row
+                .data
+                .get(*attr)
+                .unwrap_or_else(|| panic!("row {} missing attribute '{}'", row.id, attr));
+            assert!(
+                !val.is_null(),
+                "attribute '{}' is null for entity {} — possible unbound variable regression",
+                attr,
+                row.id
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_query_multi_filter() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let ctx = setup_task_entities(&env, "multi-filter-space").await;
+
+    // Filter on two attributes simultaneously
+    let rows = tonk_cli::entity::query(
+        &ctx,
+        "Task".to_string(),
+        vec!["status=todo".to_string(), "priority=high".to_string()],
+        true,
+    )
+    .await
+    .expect("multi-filter query should succeed");
+
+    assert_eq!(rows.len(), 1, "only 1 entity matches both filters");
+    let row = &rows[0];
+    assert_eq!(
+        row.data.get("title").and_then(|v| v.as_str()),
+        Some("Fix login bug")
+    );
+
+    // Both filtered attributes must be populated
+    assert_eq!(
+        row.data.get("status").and_then(|v| v.as_str()),
+        Some("todo"),
+        "filtered attribute 'status' must be populated"
+    );
+    assert_eq!(
+        row.data.get("priority").and_then(|v| v.as_str()),
+        Some("high"),
+        "filtered attribute 'priority' must be populated"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_query_filter_no_matches_returns_empty() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let ctx = setup_task_entities(&env, "filter-empty-space").await;
+
+    let rows = tonk_cli::entity::query(
+        &ctx,
+        "Task".to_string(),
+        vec!["status=nonexistent".to_string()],
+        true,
+    )
+    .await
+    .expect("query with no matches should still succeed");
+
+    assert!(
+        rows.is_empty(),
+        "query with nonexistent filter value should return 0 rows"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_query_no_filter_returns_all() {
+    let env = TestEnv::new().await.expect("Failed to create test env");
+    let ctx = setup_task_entities(&env, "no-filter-space").await;
+
+    let rows = tonk_cli::entity::query(&ctx, "Task".to_string(), vec![], true)
+        .await
+        .expect("unfiltered query should succeed");
+
+    assert_eq!(
+        rows.len(),
+        3,
+        "unfiltered query should return all 3 entities"
+    );
+
+    // All attributes populated for every row
+    for row in &rows {
+        for attr in &["title", "status", "priority"] {
+            let val = row
+                .data
+                .get(*attr)
+                .unwrap_or_else(|| panic!("row {} missing attribute '{}'", row.id, attr));
+            assert!(
+                !val.is_null(),
+                "attribute '{}' is null for entity {}",
+                attr,
+                row.id
+            );
+        }
+    }
+
+    // Verify all expected titles are present
+    let mut titles: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| r.data.get("title").and_then(|v| v.as_str()))
+        .collect();
+    titles.sort();
+    assert_eq!(
+        titles,
+        vec!["Deploy to staging", "Fix login bug", "Write tests"]
     );
 }
 
@@ -1961,18 +2258,21 @@ async fn test_full_crud_workflow() {
     .expect("Failed to create task 2");
 
     // 3. Query all tasks
-    let result = tonk_cli::entity::query(&ctx, "Task".to_string(), vec![], true).await;
-    assert!(result.is_ok(), "query all tasks should succeed");
+    let rows = tonk_cli::entity::query(&ctx, "Task".to_string(), vec![], true)
+        .await
+        .expect("query all tasks should succeed");
+    assert_eq!(rows.len(), 2, "should have 2 tasks");
 
     // 4. Query with filter
-    let result = tonk_cli::entity::query(
+    let rows = tonk_cli::entity::query(
         &ctx,
         "Task".to_string(),
         vec!["status=todo".to_string()],
         true,
     )
-    .await;
-    assert!(result.is_ok(), "filtered query should succeed");
+    .await
+    .expect("filtered query should succeed");
+    assert_eq!(rows.len(), 1, "filter should match 1 task");
 
     // 5. Find an entity and update it
     let branch = tonk_cli::schema::open_branch(&ctx)
@@ -2095,12 +2395,20 @@ async fn test_import_concepts_and_rules_full_workflow() {
     .await
     .expect("Failed to create ingredient");
 
-    // 7. Query entities
-    let result = tonk_cli::entity::query(&ctx, "Recipe".to_string(), vec![], true).await;
-    assert!(result.is_ok(), "recipe query should succeed");
+    // 7. Query entities — the queries should not error.
+    // Note: Recipe has 3 required attributes (title, steps, ingredient) but
+    // only title was provided, so the structural join returns 0 rows. Same
+    // for Ingredient (needs name, quantity, unit but only name + quantity
+    // were given). This is expected: dialog-db requires all attributes to
+    // match. We verify the query executes without error, not that rows are
+    // returned.
+    let _rows = tonk_cli::entity::query(&ctx, "Recipe".to_string(), vec![], true)
+        .await
+        .expect("recipe query should succeed");
 
-    let result = tonk_cli::entity::query(&ctx, "Ingredient".to_string(), vec![], true).await;
-    assert!(result.is_ok(), "ingredient query should succeed");
+    let _rows = tonk_cli::entity::query(&ctx, "Ingredient".to_string(), vec![], true)
+        .await
+        .expect("ingredient query should succeed");
 }
 
 #[tokio::test]
@@ -2217,8 +2525,14 @@ async fn test_multiple_concepts_same_space() {
 
     // Query each concept independently
     for concept in &["User", "Post", "Comment"] {
-        let result = tonk_cli::entity::query(&ctx, concept.to_string(), vec![], true).await;
-        assert!(result.is_ok(), "{} query should succeed", concept);
+        let rows = tonk_cli::entity::query(&ctx, concept.to_string(), vec![], true)
+            .await
+            .unwrap_or_else(|e| panic!("{} query should succeed: {}", concept, e));
+        assert!(
+            !rows.is_empty(),
+            "{} should have at least 1 entity",
+            concept
+        );
     }
 }
 
