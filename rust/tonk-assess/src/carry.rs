@@ -1,10 +1,10 @@
 //! Carry space provisioning for benchmark runs.
 //!
-//! Shells out to the `tonk` CLI to create spaces, import model schemas,
+//! Shells out to the `carry` CLI to create spaces, import model schemas,
 //! and load EAV data before running carry-tagged probes.
 //!
-//! The `tonk` binary is resolved via the `TONK_BIN` environment variable.
-//! If unset, falls back to `"tonk"` on PATH.
+//! The `carry` binary is resolved via the `CARRY_BIN` environment variable.
+//! If unset, falls back to `"carry"` on PATH.
 
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -14,17 +14,17 @@ use tokio::process::Command;
 
 const SPACE_PREFIX: &str = "assess-";
 
-/// Resolve the path to the `tonk` binary.
+/// Resolve the path to the `carry` binary.
 ///
-/// Checks `TONK_BIN` first (useful for development when the installed
-/// binary is stale). Falls back to bare `"tonk"` on PATH.
-fn tonk_bin() -> String {
-    std::env::var("TONK_BIN").unwrap_or_else(|_| "tonk".to_string())
+/// Checks `CARRY_BIN` first (useful for development when the installed
+/// binary is stale). Falls back to bare `"carry"` on PATH.
+fn carry_bin() -> String {
+    std::env::var("CARRY_BIN").unwrap_or_else(|_| "carry".to_string())
 }
 
-/// Run a `tonk` command and return its output, with context on failure.
-async fn run_tonk(args: &[impl AsRef<OsStr>], description: &str) -> Result<std::process::Output> {
-    let bin = tonk_bin();
+/// Run a `carry` command and return its output, with context on failure.
+async fn run_carry(args: &[impl AsRef<OsStr>], description: &str) -> Result<std::process::Output> {
+    let bin = carry_bin();
     Command::new(&bin)
         .args(args)
         .output()
@@ -45,23 +45,23 @@ fn args_display(args: &[impl AsRef<OsStr>]) -> String {
         .join(" ")
 }
 
-/// Check that the `tonk` CLI is available and has an active session.
+/// Check that the `carry` CLI is available and has an active session.
 ///
 /// Call this once before running any carry probes. Fails fast with a
 /// clear message rather than letting each probe fail individually.
 pub async fn ensure_available(verbose: bool) -> Result<()> {
-    let bin = tonk_bin();
+    let bin = carry_bin();
     if verbose {
-        eprintln!("[carry] Using tonk binary: {bin}");
+        eprintln!("[carry] Using carry binary: {bin}");
     }
 
-    let output = run_tonk(&["status", "--json"], "is the tonk CLI installed?").await?;
+    let output = run_carry(&["status", "--json"], "is the carry CLI installed?").await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!(
-            "tonk status failed (exit {}). Is there an active session?\n\
-             Run 'tonk login' and 'tonk space create' first.\n\
+            "carry status failed (exit {}). Is there an active session?\n\
+             Run 'carry login' and 'carry space create' first.\n\
              stderr: {stderr}",
             output.status
         );
@@ -69,7 +69,7 @@ pub async fn ensure_available(verbose: bool) -> Result<()> {
 
     if verbose {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        eprintln!("[carry] tonk status: {stdout}");
+        eprintln!("[carry] carry status: {stdout}");
     }
 
     Ok(())
@@ -79,8 +79,8 @@ pub async fn ensure_available(verbose: bool) -> Result<()> {
 ///
 /// 1. Deletes any existing `assess-{persona}` space (clean slate).
 /// 2. Creates a fresh `assess-{persona}` space.
-/// 3. If a model file is provided, imports it via `tonk import`.
-/// 4. Loads the data file via `tonk dev fact batch --file`.
+/// 3. If a model file is provided, imports it via `carry import`.
+/// 4. Loads the data file via `carry dev fact batch --file`.
 ///
 /// Returns the space name on success.
 pub async fn provision_space(
@@ -95,7 +95,7 @@ pub async fn provision_space(
     if verbose {
         eprintln!("[carry] Deleting space '{space_name}' if it exists...");
     }
-    let _ = run_tonk(
+    let _ = run_carry(
         &["space", "delete", &space_name, "--force"],
         "delete existing space",
     )
@@ -106,13 +106,13 @@ pub async fn provision_space(
         eprintln!("[carry] Creating space '{space_name}'...");
     }
     let create_output =
-        run_tonk(&["space", "create", &space_name, "--json"], "create space").await?;
+        run_carry(&["space", "create", &space_name, "--json"], "create space").await?;
 
     if !create_output.status.success() {
         let stderr = String::from_utf8_lossy(&create_output.stderr);
         anyhow::bail!(
             "Failed to create space '{space_name}': {stderr}\n\
-             Ensure you have an active session (run 'tonk login' first)."
+             Ensure you have an active session (run 'carry login' first)."
         );
     }
 
@@ -125,7 +125,7 @@ pub async fn provision_space(
     if verbose {
         eprintln!("[carry] Setting active space to '{space_name}'...");
     }
-    let set_output = run_tonk(&["space", "set", &space_name], "set active space").await?;
+    let set_output = run_carry(&["space", "set", &space_name], "set active space").await?;
 
     if !set_output.status.success() {
         let stderr = String::from_utf8_lossy(&set_output.stderr);
@@ -139,7 +139,7 @@ pub async fn provision_space(
             eprintln!("[carry] Importing model from '{model_str}'...");
         }
         let import_output =
-            run_tonk(&["import", &*model_str, "--json"], "import model schema").await?;
+            run_carry(&["import", &*model_str, "--json"], "import model schema").await?;
 
         if !import_output.status.success() {
             let stderr = String::from_utf8_lossy(&import_output.stderr);
@@ -161,7 +161,7 @@ pub async fn provision_space(
     if verbose {
         eprintln!("[carry] Loading data from '{data_path_str}'...");
     }
-    let batch_output = run_tonk(
+    let batch_output = run_carry(
         &["dev", "fact", "batch", "--file", &*data_path_str, "--json"],
         "load data",
     )
@@ -273,7 +273,7 @@ pub async fn set_active_space(persona: &str, verbose: bool) -> Result<()> {
         eprintln!("[carry] Switching to space '{space_name}'...");
     }
 
-    let output = run_tonk(&["space", "set", &space_name], "set active space").await?;
+    let output = run_carry(&["space", "set", &space_name], "set active space").await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -1,5 +1,5 @@
 use crate::crypto::Operator;
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use keyring::Entry;
 use thiserror::Error;
 
@@ -27,11 +27,11 @@ impl Keystore {
     }
 
     /// Get or create an operator from the keystore
-    /// If TONK_OPERATOR_KEY env var is set, uses that key (base58btc encoded)
+    /// If CARRY_OPERATOR_KEY env var is set, uses that key (base58btc encoded)
     /// Otherwise uses OS keyring
     pub fn get_or_create_keypair(&self) -> Result<Operator, KeystoreError> {
-        // Check for TONK_OPERATOR_KEY environment variable first
-        if let Ok(operator_key) = std::env::var("TONK_OPERATOR_KEY") {
+        // Check for CARRY_OPERATOR_KEY environment variable first
+        if let Ok(operator_key) = std::env::var("CARRY_OPERATOR_KEY") {
             return self.operator_from_env_key(&operator_key);
         }
 
@@ -47,7 +47,7 @@ impl Keystore {
         }
     }
 
-    /// Load operator from base58btc-encoded key in TONK_OPERATOR_KEY
+    /// Load operator from base58btc-encoded key in CARRY_OPERATOR_KEY
     fn operator_from_env_key(&self, key_b58: &str) -> Result<Operator, KeystoreError> {
         let key_bytes = bs58::decode(key_b58)
             .into_vec()
@@ -55,7 +55,7 @@ impl Keystore {
 
         if key_bytes.len() != 32 {
             return Err(KeystoreError::InvalidKeyData(format!(
-                "TONK_OPERATOR_KEY must be 32 bytes, got {}",
+                "CARRY_OPERATOR_KEY must be 32 bytes, got {}",
                 key_bytes.len()
             )));
         }

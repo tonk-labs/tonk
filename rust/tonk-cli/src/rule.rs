@@ -532,7 +532,7 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
         if json {
             println!("[]");
         } else {
-            println!("No rules defined. Use 'tonk rule define' to create one.");
+            println!("No rules defined. Use 'carry rule define' to create one.");
         }
         return Ok(());
     }
@@ -666,7 +666,7 @@ pub async fn define(
     if let Some(ref n) = name {
         if lookup_rule_by_name(&branch, n).await?.is_some() {
             anyhow::bail!(
-                "Rule '{}' already exists. Delete it first with 'tonk rule delete {}'.",
+                "Rule '{}' already exists. Delete it first with 'carry rule delete {}'.",
                 n,
                 n
             );

@@ -45,7 +45,7 @@ pub async fn execute(json: bool) -> Result<()> {
         if let Some(auth_did) = &authority_did {
             println!("👤 Authority: {}", auth_did);
         } else {
-            println!("👤 Authority: (none - run 'tonk login')");
+            println!("👤 Authority: (none - run 'carry login')");
         }
 
         if let Some((space_did, name)) = &space_info {
@@ -55,7 +55,7 @@ pub async fn execute(json: bool) -> Result<()> {
                 println!("🏠 Space:     {}", space_did);
             }
         } else {
-            println!("🏠 Space:     (none - run 'tonk space create')");
+            println!("🏠 Space:     (none - run 'carry space create')");
         }
         println!();
     }

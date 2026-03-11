@@ -215,7 +215,7 @@
 
           tests-cli-integration = buildTestArchive {
             name = "cli-integration";
-            args = "--package tonk-cli --test cli_integration";
+            args = "--package tonk-cli --test cli_integration --bin carry";
           };
 
           tests = pkgs.runCommand "tests-all" { } ''
@@ -226,8 +226,8 @@
             cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
           '';
 
-          tonk-cli = buildCrate {
-            pname = "tonk-cli";
+          carry-cli = buildCrate {
+            pname = "carry-cli";
             cargoExtraArgs = "--package tonk-cli";
             # Rewrite Nix store libiconv to the macOS system equivalent
             # so the binary works on machines without Nix installed

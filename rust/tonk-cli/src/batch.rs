@@ -40,7 +40,7 @@ pub async fn batch_create(
     let concept = lookup_concept_by_name(&session, &concept_name)
         .await?
         .context(format!(
-            "Concept '{}' not found. Define it first with 'tonk concept define {}'.",
+            "Concept '{}' not found. Define it first with 'carry concept define {}'.",
             concept_name, concept_name
         ))?;
 

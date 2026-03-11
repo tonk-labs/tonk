@@ -1,4 +1,4 @@
-//! Test harness for tonk-cli integration tests.
+//! Test harness for carry CLI (tonk-cli) integration tests.
 //!
 //! Provides a `TestEnv` struct that creates an isolated filesystem environment
 //! for each test, with a bootstrapped operator, session (authority), and
@@ -17,9 +17,9 @@ use tonk_cli::delegation::Delegation;
 
 /// An isolated test environment backed by a temporary directory.
 ///
-/// Sets `TONK_HOME` and `TONK_OPERATOR_KEY` env vars so that all tonk-cli
-/// functions use a fresh tempdir as the tonk data directory (equivalent to
-/// `~/.tonk/` in normal operation).
+/// Sets `CARRY_HOME` and `CARRY_OPERATOR_KEY` env vars so that all carry CLI
+/// functions use a fresh tempdir as the carry data directory (equivalent to
+/// `~/.carry/` in normal operation).
 ///
 /// On drop the tempdir and its contents are deleted automatically.
 #[allow(dead_code)]
@@ -35,7 +35,7 @@ pub struct TestEnv {
 impl TestEnv {
     /// Create a new test environment with a bootstrapped session.
     ///
-    /// This simulates the result of `tonk login` by:
+    /// This simulates the result of `carry login` by:
     /// 1. Generating a deterministic operator keypair
     /// 2. Generating an "authority" keypair (simulating the auth service)
     /// 3. Creating a powerline UCAN delegation: authority → operator
@@ -49,15 +49,15 @@ impl TestEnv {
         let operator = Operator::generate();
         let operator_did = operator.did().to_string();
 
-        // Encode operator secret as base58btc for TONK_OPERATOR_KEY
+        // Encode operator secret as base58btc for CARRY_OPERATOR_KEY
         let operator_secret = operator.to_secret();
         let operator_key_b58 = bs58::encode(&operator_secret).into_string();
 
         // Set environment variables for isolation.
         // SAFETY: Tests run serially (via #[serial]) so no concurrent env var access.
         unsafe {
-            std::env::set_var("TONK_HOME", &home_path);
-            std::env::set_var("TONK_OPERATOR_KEY", &operator_key_b58);
+            std::env::set_var("CARRY_HOME", &home_path);
+            std::env::set_var("CARRY_OPERATOR_KEY", &operator_key_b58);
         }
 
         // Generate authority keypair (simulates the auth service identity)
@@ -81,7 +81,7 @@ impl TestEnv {
 
         let delegation = Delegation::from_ucan(ucan_delegation);
 
-        // Save delegation to filesystem (this uses TONK_HOME via util::tonk_dir())
+        // Save delegation to filesystem (this uses CARRY_HOME via util::tonk_dir())
         delegation.save()?;
 
         // Set active session
@@ -155,8 +155,8 @@ impl Drop for TestEnv {
         // Clean up env vars (best-effort, tests run serially anyway).
         // SAFETY: Tests run serially (via #[serial]) so no concurrent env var access.
         unsafe {
-            std::env::remove_var("TONK_HOME");
-            std::env::remove_var("TONK_OPERATOR_KEY");
+            std::env::remove_var("CARRY_HOME");
+            std::env::remove_var("CARRY_OPERATOR_KEY");
         }
     }
 }

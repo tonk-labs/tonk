@@ -468,10 +468,10 @@ pub fn get_space_context() -> Result<SpaceContext> {
     let operator_did = operator.did().to_string();
 
     let authority = authority::get_active_authority()?
-        .context("No active authority. Run 'tonk login' first")?;
+        .context("No active authority. Run 'carry login' first")?;
 
     let space_did = state::get_active_space(&authority.did)?
-        .context("No active space. Run 'tonk space create' first")?;
+        .context("No active space. Run 'carry space create' first")?;
 
     let space_name = crate::metadata::SpaceMetadata::load(&space_did)?
         .map(|m| m.name)

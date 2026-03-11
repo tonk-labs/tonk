@@ -69,7 +69,7 @@ pub async fn show_current(json: bool) -> Result<()> {
             println!("{}", serde_json::json!({"authority": null}));
         } else {
             println!("🚏 No active sessions found");
-            println!("👤 Run 'tonk login' to create an authorization session\n");
+            println!("👤 Run 'carry login' to create an authorization session\n");
         }
         return Ok(());
     }
@@ -98,7 +98,7 @@ pub async fn set(authority_did: String) -> Result<()> {
     // Find the authority in the list
     if !authorities.iter().any(|a| a.did == authority_did) {
         anyhow::bail!(
-            "Authority not found: {}\n   Run 'tonk session' to see available sessions",
+            "Authority not found: {}\n   Run 'carry session' to see available sessions",
             authority_did
         );
     }
@@ -134,7 +134,7 @@ pub async fn list(verbose: bool, json: bool) -> Result<()> {
         } else {
             println!("🫆 Operator: {}\n", operator_did);
             println!("🚏 No active sessions found");
-            println!("👤 Run 'tonk login' to create an authorization session\n");
+            println!("👤 Run 'carry login' to create an authorization session\n");
         }
         return Ok(());
     }

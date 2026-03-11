@@ -20,10 +20,10 @@ fn get_active_space_info() -> Result<(String, PathBuf, Operator)> {
     let operator_did = operator.did().to_string();
 
     let authority = authority::get_active_authority()?
-        .context("No active authority. Please run 'tonk login' first")?;
+        .context("No active authority. Please run 'carry login' first")?;
 
     let space_did = state::get_active_space(&authority.did)?
-        .context("No active space. Please run 'tonk space create' or 'tonk space set' first")?;
+        .context("No active space. Please run 'carry space create' or 'carry space set' first")?;
 
     let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
     let path = tonk_dir
@@ -279,7 +279,7 @@ pub async fn show() -> Result<()> {
         }
         None => {
             println!("No upstream configured");
-            println!("Use 'tonk remote add <name>' to add a remote");
+            println!("Use 'carry remote add <name>' to add a remote");
         }
     }
 
@@ -311,7 +311,7 @@ pub async fn edit() -> Result<()> {
         );
     } else {
         println!("No upstream configured - nothing to edit");
-        println!("Use 'tonk remote add <name>' to add a remote");
+        println!("Use 'carry remote add <name>' to add a remote");
     }
 
     Ok(())

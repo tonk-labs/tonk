@@ -765,7 +765,7 @@ async fn retract_concept_if_exists<S: dialog_artifacts::ArtifactStore + Artifact
         } else {
             anyhow::bail!(
                 "Concept '{}' already exists. Use --force to overwrite, \
-                 or delete it first with 'tonk concept delete {}'.",
+                 or delete it first with 'carry concept delete {}'.",
                 cname,
                 cname
             );
@@ -1098,7 +1098,7 @@ async fn retract_rule_if_exists<S: dialog_artifacts::ArtifactStore + ArtifactSto
         } else {
             anyhow::bail!(
                 "Rule '{}' already exists. Use --force to overwrite, \
-                 or delete it first with 'tonk rule delete {}'.",
+                 or delete it first with 'carry rule delete {}'.",
                 parsed.name,
                 parsed.name
             );

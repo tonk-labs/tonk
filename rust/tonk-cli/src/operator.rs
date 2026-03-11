@@ -12,7 +12,7 @@ pub fn generate() -> Result<()> {
     println!("{}", did);
     println!("{}", key_b58);
     println!("\nTo use this operator:");
-    println!("  export TONK_OPERATOR_KEY={}", key_b58);
+    println!("  export CARRY_OPERATOR_KEY={}", key_b58);
 
     Ok(())
 }

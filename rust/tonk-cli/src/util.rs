@@ -1,20 +1,20 @@
 use std::path::PathBuf;
 
-/// Get the tonk data directory (`~/.tonk`).
+/// Get the carry data directory (`~/.carry`).
 ///
-/// If the `TONK_HOME` environment variable is set, its value is used directly
-/// as the tonk data directory. When unset, defaults to `~/.tonk`.
+/// If the `CARRY_HOME` environment variable is set, its value is used directly
+/// as the carry data directory. When unset, defaults to `~/.carry`.
 ///
 /// This allows integration tests (or custom deployments) to redirect all CLI
 /// state to an arbitrary directory.
 pub fn tonk_dir() -> Option<PathBuf> {
-    if let Ok(tonk_home) = std::env::var("TONK_HOME") {
-        return Some(PathBuf::from(tonk_home));
+    if let Ok(carry_home) = std::env::var("CARRY_HOME") {
+        return Some(PathBuf::from(carry_home));
     }
-    dirs::home_dir().map(|h| h.join(".tonk"))
+    dirs::home_dir().map(|h| h.join(".carry"))
 }
 
-/// Get the access directory (`~/.tonk/access`).
+/// Get the access directory (`~/.carry/access`).
 ///
 /// Delegations are stored under this directory, keyed by audience and issuer
 /// DIDs.

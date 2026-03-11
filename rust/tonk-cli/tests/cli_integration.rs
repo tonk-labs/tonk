@@ -1,12 +1,12 @@
-//! Integration tests for the tonk CLI.
+//! Integration tests for the carry CLI (tonk-cli crate).
 //!
 //! These tests exercise the CLI through its library API, using isolated
 //! filesystem environments for each test. Every test gets its own temporary
-//! directory set as `TONK_HOME` (the tonk data directory, equivalent to
-//! `~/.tonk/`) with a programmatically bootstrapped session.
+//! directory set as `CARRY_HOME` (the carry data directory, equivalent to
+//! `~/.carry/`) with a programmatically bootstrapped session.
 //!
 //! Tests are marked `#[serial]` because they modify process-global env vars
-//! (`TONK_HOME`, `TONK_OPERATOR_KEY`).
+//! (`CARRY_HOME`, `CARRY_OPERATOR_KEY`).
 
 mod common;
 

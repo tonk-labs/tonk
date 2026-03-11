@@ -2,7 +2,7 @@
 //!
 //! Attributes are the fields of a concept schema. Each attribute has a qualified
 //! name (e.g. `recipe/title`) and optional metadata — description, type,
-//! cardinality, and optional flag — written by `tonk import`.
+//! cardinality, and optional flag — written by `carry import`.
 //!
 //! This module reads that metadata back for schema discoverability.
 
@@ -174,7 +174,7 @@ pub async fn list(json: bool) -> Result<()> {
             println!("[]");
         } else {
             println!(
-                "No concepts defined. Use 'tonk concept define <name>' or 'tonk import <file>' to create one."
+                "No concepts defined. Use 'carry concept define <name>' or 'carry import <file>' to create one."
             );
         }
         return Ok(());
@@ -362,7 +362,7 @@ async fn resolve_qualified<S: dialog_artifacts::ArtifactStore>(
     }
 
     anyhow::bail!(
-        "Attribute '{}' not found. Run 'tonk attribute' to list available attributes.",
+        "Attribute '{}' not found. Run 'carry attribute' to list available attributes.",
         qualified_name
     );
 }
@@ -435,7 +435,7 @@ async fn resolve_unqualified<S: dialog_artifacts::ArtifactStore>(
     match matches.len() {
         0 => {
             anyhow::bail!(
-                "Attribute '{}' not found in any concept. Run 'tonk attribute' to list available attributes.",
+                "Attribute '{}' not found in any concept. Run 'carry attribute' to list available attributes.",
                 short_name
             );
         }

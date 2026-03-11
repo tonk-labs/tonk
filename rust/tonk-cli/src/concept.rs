@@ -27,7 +27,7 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
         if json {
             println!("[]");
         } else {
-            println!("No concepts defined. Use 'tonk concept define <name>' to create one.");
+            println!("No concepts defined. Use 'carry concept define <name>' to create one.");
         }
         return Ok(());
     }
@@ -636,7 +636,7 @@ pub async fn extend(
                         .collect::<Vec<_>>(),
                     "message": format!(
                         "Extending '{}' would create the same schema as existing concept '{}'. \
-                         Use 'tonk concept define' to resolve the conflict, or choose different attributes.",
+                         Use 'carry concept define' to resolve the conflict, or choose different attributes.",
                         name, colliding_name
                     ),
                 });

@@ -62,7 +62,7 @@ pub async fn list(json: bool) -> Result<()> {
             println!("[]");
         } else {
             println!("⚠  No active session");
-            println!("   Run 'tonk login' to authenticate\n");
+            println!("   Run 'carry login' to authenticate\n");
         }
         return Ok(());
     }
@@ -215,7 +215,7 @@ pub async fn list(json: bool) -> Result<()> {
 pub async fn show_current(json: bool) -> Result<()> {
     // Get active authority
     let authority = crate::authority::get_active_authority()?
-        .context("No active session. Please run `tonk login` first.")?;
+        .context("No active session. Please run `carry login` first.")?;
 
     // Get active space
     let active_space = crate::state::get_active_space(&authority.did)?;
@@ -244,7 +244,7 @@ pub async fn show_current(json: bool) -> Result<()> {
                 println!("{}", serde_json::json!({"did": null, "name": null}));
             } else {
                 println!("No active space set for current session.");
-                println!("Use `tonk space load <name-or-did>` to select a space.");
+                println!("Use `carry space load <name-or-did>` to select a space.");
             }
         }
     }
@@ -264,7 +264,7 @@ pub async fn load(space_identifier: String) -> Result<()> {
     let operator_did = operator.did().to_string();
 
     let authority = crate::authority::get_active_authority()?
-        .context("No active session. Please run `tonk login` first.")?;
+        .context("No active session. Please run `carry login` first.")?;
 
     // Resolve space by name or DID
     let space_did = resolve_space_identifier(&operator_did, &authority.did, &space_identifier)?;
@@ -300,7 +300,7 @@ pub async fn open(
 
     // Get active authority
     let authority = authority::get_active_authority()?
-        .context("No active authority. Please run 'tonk login' first")?;
+        .context("No active authority. Please run 'carry login' first")?;
 
     // Check if a space with this name already exists
     if let Some(existing_did) = find_existing_space_by_name(&operator_did, &authority.did, &name)? {
@@ -348,7 +348,7 @@ pub async fn create(
 
     // Get active authority (required for space creation)
     let authority = authority::get_active_authority()?
-        .context("No active authority. Please run 'tonk login' first")?;
+        .context("No active authority. Please run 'carry login' first")?;
 
     if !json {
         println!(
@@ -360,7 +360,7 @@ pub async fn create(
     // Check if a space with this name already exists under this authority
     if let Some(existing_did) = find_existing_space_by_name(&operator_did, &authority.did, &name)? {
         anyhow::bail!(
-            "Space '{}' already exists (DID: {}). Use 'tonk space open {}' to load it, or choose a different name.",
+            "Space '{}' already exists (DID: {}). Use 'carry space open {}' to load it, or choose a different name.",
             name,
             existing_did,
             name
@@ -567,7 +567,7 @@ fn get_space_storage_path(
     authority_did: &str,
     space_did: &str,
 ) -> Result<PathBuf> {
-    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
+    let tonk_dir = crate::util::tonk_dir().context("Could not determine carry directory")?;
     let path = tonk_dir
         .join("operator")
         .join(operator_did)
@@ -635,7 +635,7 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
 
     // Get active authority
     let authority = authority::get_active_authority()?
-        .context("No active authority. Please run 'tonk login' first")?;
+        .context("No active authority. Please run 'carry login' first")?;
 
     // Get the space to invite to
     let space_did = if let Some(name) = &space_name {
@@ -657,7 +657,7 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
     } else if let Some(active_id) = crate::state::get_active_space(&authority.did)? {
         active_id
     } else {
-        anyhow::bail!("No active space. Create one with 'tonk space create' or specify --space");
+        anyhow::bail!("No active space. Create one with 'carry space create' or specify --space");
     };
 
     // Load space metadata to get the name
@@ -707,7 +707,7 @@ pub async fn invite(email: String, space_name: Option<String>) -> Result<()> {
 
     // Save to storage (in the operator's access directory for the invitee)
     let access_dir = crate::util::access_dir()
-        .context("Could not determine tonk directory")?
+        .context("Could not determine carry directory")?
         .join(&invitee_did)
         .join(&operator_did);
     fs::create_dir_all(&access_dir)?;
@@ -877,7 +877,7 @@ pub fn inspect_invite(path: String) -> Result<()> {
 /// Find a delegation from issuer to audience for a specific subject
 fn find_delegation(issuer: &str, audience: &str) -> Result<Option<Delegation>> {
     let access_dir = crate::util::access_dir()
-        .context("Could not determine tonk directory")?
+        .context("Could not determine carry directory")?
         .join(audience)
         .join(issuer);
 
@@ -969,7 +969,7 @@ pub async fn join(invite_path: String, _profile_name: Option<String>) -> Result<
     // Step 4: Get active authority to delegate to
     println!("4️⃣  Getting active authority...");
     let authority = authority::get_active_authority()?
-        .context("No active authority. Please run 'tonk login' first")?;
+        .context("No active authority. Please run 'carry login' first")?;
     println!("   ✓ Authority: {}", authority.did);
 
     // Step 5: Create membership → authority delegation
@@ -1096,7 +1096,7 @@ pub async fn delegate(
 
     // Get active authority
     let auth = authority::get_active_authority()?
-        .context("No active authority. Please run 'tonk login' first")?;
+        .context("No active authority. Please run 'carry login' first")?;
 
     // Resolve space
     let space_did = if let Some(name) = &space_name {
@@ -1114,7 +1114,7 @@ pub async fn delegate(
     } else if let Some(active_id) = crate::state::get_active_space(&auth.did)? {
         active_id
     } else {
-        anyhow::bail!("No active space. Create one with 'tonk space create' or specify --space");
+        anyhow::bail!("No active space. Create one with 'carry space create' or specify --space");
     };
 
     // Parse target DID
@@ -1165,7 +1165,7 @@ pub async fn delegate(
     eprintln!("   From: {} (operator)", operator_did);
     eprintln!("   To:   {}", to);
     eprintln!(
-        "\n   Recipient can import with: tonk login --delegation {}",
+        "\n   Recipient can import with: carry login --delegation {}",
         output.as_deref().unwrap_or("<base64>")
     );
 
@@ -1182,7 +1182,7 @@ pub async fn delete(space_identifier: String, force: bool) -> Result<()> {
     let operator_did = operator.did().to_string();
 
     let authority = crate::authority::get_active_authority()?
-        .context("No active session. Please run `tonk login` first.")?;
+        .context("No active session. Please run `carry login` first.")?;
 
     // Resolve space by name or DID
     let space_did = resolve_space_identifier(&operator_did, &authority.did, &space_identifier)?;
@@ -1223,7 +1223,7 @@ pub async fn delete(space_identifier: String, force: bool) -> Result<()> {
     }
 
     // Delete delegations from this space (in access directory)
-    let access_dir = crate::util::access_dir().context("Could not determine tonk directory")?;
+    let access_dir = crate::util::access_dir().context("Could not determine carry directory")?;
 
     if access_dir.exists() {
         let mut deleted_delegations = 0;
