@@ -317,8 +317,9 @@ mod inner {
     pub enum RuleCommands {
         /// Define a new deductive rule
         Define {
-            /// Rule name (e.g., "safe-meals", "high-priority-tasks")
-            name: String,
+            /// Optional rule name (e.g., "safe-meals", "high-priority-tasks").
+            /// If omitted, a deterministic ID is derived from the definition.
+            name: Option<String>,
 
             /// Read rule definition from a JSON file
             #[arg(long, short)]
@@ -333,15 +334,15 @@ mod inner {
             description: String,
         },
 
-        /// Show details of a rule
+        /// Show details of a rule (by name or entity ID)
         Show {
-            /// Rule name
+            /// Rule name or entity ID
             name: String,
         },
 
-        /// Delete a rule
+        /// Delete a rule (by name or entity ID)
         Delete {
-            /// Rule name
+            /// Rule name or entity ID
             name: String,
         },
     }

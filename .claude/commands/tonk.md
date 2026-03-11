@@ -174,39 +174,43 @@ When you query a concept that has rules, conclusions from all applicable rules a
 ```bash
 # List all rules
 tonk --json rule
-# → [{"name":"safe-meals","conclusion":"SafeMeal"},...]
+# → [{"entity":"did:key:z...","name":"safe-meals","conclusion":"SafeMeal"},...]
 
-# Define a rule from JSON (via file)
+# Define a named rule from JSON (via file)
 tonk --json rule define safe-meals --file rule.json --description "Meals safe for all attendees"
+
+# Define an unnamed rule (name is optional; entity ID derived from definition hash)
+tonk --json rule define --file rule.json --description "Meals safe for all attendees"
 
 # Define a rule from JSON (via stdin)
 cat <<'EOF' | tonk --json rule define safe-meals --stdin --description "Meals safe for all attendees"
 {
   "conclusion": {
     "concept": "SafeMeal",
-    "this": "?allergy",
     "bindings": {
       "attendee": "?person",
       "recipe": "?recipe_name"
     }
   },
   "when": [
-    { "the": "allergy/person", "of": "?allergy", "is": "?person" },
+    { "the": "allergy/person", "of": "?this", "is": "?person" },
     { "the": "recipe/name", "of": "?recipe", "is": "?recipe_name" },
     { "the": "recipe/ingredient", "of": "?recipe", "is": "?ingredient" }
   ],
   "unless": [
-    { "the": "allergy/substance", "of": "?allergy", "is": "?ingredient" }
+    { "the": "allergy/substance", "of": "?this", "is": "?ingredient" }
   ]
 }
 EOF
-# → {"ok":true,"name":"safe-meals","conclusion":"SafeMeal","when_count":3,"unless_count":1}
+# → {"ok":true,"entity":"did:key:z...","name":"safe-meals","conclusion":"SafeMeal","when_count":3,"unless_count":1}
 
-# Show rule details
+# Show rule details (by name or entity ID)
 tonk --json rule show safe-meals
+tonk --json rule show did:key:z...
 
-# Delete a rule
+# Delete a rule (by name or entity ID)
 tonk --json rule delete safe-meals
+tonk --json rule delete did:key:z...
 
 # Query now includes derived entities transparently
 tonk --json query SafeMeal
@@ -218,7 +222,6 @@ tonk --json query SafeMeal
 {
   "conclusion": {
     "concept": "ConceptName",
-    "this": "?entity_var",
     "bindings": { "attr_short_name": "?variable", ... }
   },
   "when": [
@@ -234,20 +237,21 @@ tonk --json query SafeMeal
 
 **Conclusion fields:**
 - `concept` — the name of the concept being derived (must already be defined; referencing an undefined concept is an error)
-- `this` — which entity variable from the premises becomes the derived entity's identity. `this` is distinct from attribute bindings: it designates the *entity identity* of each derived instance, not an attribute value. If omitted, defaults to the first entity variable in the `when` premises.
-- `bindings` — maps concept attribute short names to premise variables (`"?var"`) or constant values (any string without `?` prefix). Not every premise variable needs to appear in bindings — variables can appear only in premises to serve as join variables (e.g. `?ingredient` in the example above joins `when` and `unless` premises without appearing in the conclusion). The rule compiler automatically renames variables to match the concept's operand names; if this would cause a collision with another variable, the conflicting variable is auto-renamed.
+- `bindings` — maps concept attribute short names to premise variables (`"?var"`) or constant values (any string without `?` prefix). The variable `?this` is implicit and refers to the derived entity's identity — use it directly in premises (e.g. `"of": "?this"`). The `"this"` key must not appear in bindings. Not every premise variable needs to appear in bindings — variables can appear only in premises to serve as join variables (e.g. `?ingredient` in the example above joins `when` and `unless` premises without appearing in the conclusion). The rule compiler automatically renames variables to match the concept's operand names; if this would cause a collision with another variable, the conflicting variable is auto-renamed.
 
 **Premise terms:**
 - `"?name"` — variable (binds/joins by name across premises)
+- `"?this"` — implicit entity identity variable (refers to the derived entity)
 - `"_"` — wildcard (matches anything, no binding)
 - any other string — constant (exact match filter)
 
 **Constraints:**
 - `the` is always a fully qualified attribute name (constant). Premise attributes reference existing data but are not validated against concept schemas — only the conclusion concept must be defined.
+- `?this` must appear in at least one positive (`when`) premise to ground the entity identity
 - Every variable in conclusion `bindings` must appear in at least one positive (`when`) premise (appearing only in `unless` is not sufficient — this is a Datalog safety requirement)
 - The conclusion concept must already be defined
 - The `unless` section is optional (negation-as-failure)
-- Rule names are case-insensitive (stored and looked up in lowercase). Names serve as human-friendly identifiers for lookup and deletion.
+- Rule names are optional. When provided, names are case-insensitive (stored and looked up in lowercase) and serve as human-friendly identifiers. When omitted, a deterministic entity ID is derived from the definition hash. Unnamed rules can be referenced by entity ID for show/delete.
 - Rules must have at least one positive premise in `when`
 
 ## Typical workflow
@@ -285,10 +289,10 @@ tonk sync
 | `tonk --json concept extend <name> <attrs...>` | Add attributes to a concept |
 | `tonk --json concept delete <name> [--force]` | Delete a concept |
 | `tonk --json rule` | List all rules in the active space |
-| `tonk --json rule define <name> --file <json> --description "..."` | Define a rule from JSON file |
-| `tonk --json rule define <name> --stdin --description "..."` | Define a rule from stdin JSON |
-| `tonk --json rule show <name>` | Show rule definition |
-| `tonk --json rule delete <name>` | Delete a rule |
+| `tonk --json rule define [name] --file <json> --description "..."` | Define a rule from JSON file (name optional) |
+| `tonk --json rule define [name] --stdin --description "..."` | Define a rule from stdin JSON (name optional) |
+| `tonk --json rule show <name-or-entity-id>` | Show rule definition |
+| `tonk --json rule delete <name-or-entity-id>` | Delete a rule |
 | `tonk --json create <concept> [key=val...]` | Create an entity |
 | `tonk --json query <concept> [key=val...]` | Query/filter entities |
 | `tonk --json show <id>` | Show entity details |

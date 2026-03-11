@@ -8,7 +8,7 @@ use crate::schema::*;
 use anyhow::{Context, Result};
 use dialog_artifacts::{Artifact, ArtifactStore, ArtifactStoreMut, Instruction};
 use dialog_query::claim::Attribute;
-use dialog_query::{DeductiveRule, Premise, Term, Value};
+use dialog_query::{DeductiveRule, Entity, Premise, Term, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
@@ -59,31 +59,37 @@ impl RuleDefinition {
             anyhow::bail!("Rule conclusion must specify a non-empty 'concept' name.");
         }
 
+        if def.conclusion.bindings.contains_key("this") {
+            anyhow::bail!(
+                "The 'this' key must not appear in conclusion bindings. \
+                 The variable ?this is implicit and always refers to the derived \
+                 entity's identity. Use ?this directly in your premises instead.\n\
+                 Remove the 'this' key from bindings and use \"of\": \"?this\" \
+                 in your 'when' premises."
+            );
+        }
+
         Ok(def)
     }
 }
 
 /// The conclusion of a rule: which concept is derived, and how its
 /// attributes map to variables.
+///
+/// The variable `?this` is implicit and refers to the derived entity's
+/// identity. It must not appear in `bindings`; instead, use `?this`
+/// directly in premises to bind the entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConclusion {
     /// Name of the conclusion concept (e.g. "AllergyConflict").
     pub concept: String,
 
     /// Maps concept attribute short names to variables.
+    ///
+    /// `?this` is implicitly bound to the derived entity and must be
+    /// used directly in premises. The key `"this"` must not appear here.
     /// e.g. `{"attendee": "?person", "recipe": "?recipe"}`
     pub bindings: HashMap<String, String>,
-
-    /// Which entity variable in the premises should bind to the
-    /// concept's implicit `this` entity. e.g. `"?allergy"`.
-    ///
-    /// This is distinct from attribute `bindings`: it designates the
-    /// *identity* of each derived instance rather than an attribute value.
-    ///
-    /// If omitted, defaults to the first entity variable (`of` field)
-    /// found in the `when` premises.
-    #[serde(default)]
-    pub this: Option<String>,
 }
 
 /// A single fact-level premise: an EAV pattern with variables.
@@ -221,8 +227,9 @@ fn collect_all_premise_vars(definition: &RuleDefinition) -> std::collections::Ha
 /// variables: `{"attendee": "?person"}` means the premise variable
 /// `?person` should be renamed to `?attendee` (the concept operand name).
 ///
-/// Additionally, the `this` field (or first entity variable) is mapped
-/// to `"this"` — the implicit entity operand every Concept has.
+/// The variable `?this` is implicit — it always refers to the derived
+/// entity identity and must be used directly in premises. No rename is
+/// needed for the entity variable.
 ///
 /// If renaming would collide with existing premise variables that are
 /// NOT themselves being renamed, those existing variables are also
@@ -235,64 +242,27 @@ fn build_rename_map(
 ) -> Result<HashMap<String, String>> {
     let all_vars = collect_all_premise_vars(definition);
     let mut rename: HashMap<String, String> = HashMap::new();
-
-    // Map each conclusion binding: user variable → attribute short name
     let mut binding_vars: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for (attr_short, var_str) in &definition.conclusion.bindings {
         if let PremiseTerm::Variable(var_name) = PremiseTerm::parse(var_str) {
             // Validate the attribute is in the concept
             let _qualified = qualify_attribute(namespace, attr_short)?;
+
+            // A variable can't map to two different operand names
+            if binding_vars.contains(&var_name) {
+                anyhow::bail!(
+                    "Variable '?{}' is used in multiple conclusion bindings. \
+                     Each variable can only be bound to one operand name.",
+                    var_name
+                );
+            }
+
             rename.insert(var_name.clone(), attr_short.clone());
             binding_vars.insert(var_name);
         }
         // Constants in bindings are allowed — they don't need renaming
     }
-
-    // Map `this`: find which entity variable should become "this"
-    let this_var = if let Some(ref this_str) = definition.conclusion.this {
-        let name = match PremiseTerm::parse(this_str) {
-            PremiseTerm::Variable(name) => name,
-            _ => anyhow::bail!(
-                "Conclusion 'this' must be a variable (starting with '?'), got: {}",
-                this_str
-            ),
-        };
-
-        // If the user explicitly sets `this` to a variable that's also
-        // used as a conclusion binding, that's an error — one variable
-        // can't map to two different operand names.
-        if binding_vars.contains(&name) {
-            anyhow::bail!(
-                "Variable '?{}' is used both as 'this' and as a conclusion binding attribute. \
-                 Use separate variables for the entity (this) and the attribute binding. \
-                 For example, add a dedicated entity variable like '?meal' with 'this: ?meal' \
-                 in the conclusion.",
-                name
-            );
-        }
-
-        name
-    } else {
-        // Auto-detect: use the first entity variable from `when` premises
-        // that is NOT already claimed by a conclusion binding.
-        definition
-            .when
-            .iter()
-            .filter_map(|p| {
-                PremiseTerm::parse(&p.of)
-                    .variable_name()
-                    .map(|v| v.to_string())
-            })
-            .find(|v| !binding_vars.contains(v))
-            .context(
-                "No suitable entity variable found in 'when' premises to use as 'this'. \
-                 All entity variables are already claimed by conclusion bindings. \
-                 Add an explicit 'this: ?var' to a when-premise that uses a dedicated \
-                 entity variable, or set 'this' in the conclusion.",
-            )?
-    };
-
-    rename.insert(this_var, "this".to_string());
 
     // Detect collisions: a rename target name might already be used by
     // a different variable in the premises that is NOT being renamed.
@@ -495,9 +465,6 @@ pub fn validate_definition(
     // (e.g. "annotatedlink/comment") or any attribute whose short name
     // matches (e.g. "carry.links/comment" where the part after "/" is "comment").
     for short_name in definition.conclusion.bindings.keys() {
-        if short_name == "this" {
-            continue; // `this` is the entity binding, not an attribute
-        }
         let concept_qualified = qualify_attribute(namespace, short_name)?;
         let matches = conclusion_attrs.iter().any(|a| {
             *a == concept_qualified || a.rsplit_once('/').is_some_and(|(_, n)| n == short_name)
@@ -522,7 +489,8 @@ pub fn validate_definition(
     // only in `unless` is unsafe (Datalog safety requirement).
     let when_vars = collect_when_vars(definition);
 
-    // Check that all conclusion binding variables appear in at least one `when` premise
+    // Check that all conclusion binding variables appear in at least one
+    // `when` premise
     for (attr, var_str) in &definition.conclusion.bindings {
         if let PremiseTerm::Variable(var_name) = PremiseTerm::parse(var_str)
             && !when_vars.contains(&var_name)
@@ -537,15 +505,13 @@ pub fn validate_definition(
         }
     }
 
-    // Also validate that the `this` variable (if explicit) appears in a `when` premise
-    if let Some(ref this_str) = definition.conclusion.this
-        && let PremiseTerm::Variable(var_name) = PremiseTerm::parse(this_str)
-        && !when_vars.contains(&var_name)
-    {
+    // Verify that `?this` appears in at least one positive premise so the
+    // entity identity is grounded.
+    if !when_vars.contains("this") {
         anyhow::bail!(
-            "Variable '?{}' used as 'this' does not appear in any positive ('when') \
-             premise. The entity variable must be grounded in 'when' premises.",
-            var_name,
+            "Variable '?this' does not appear in any positive ('when') premise. \
+             The implicit entity identity variable '?this' must be used in at least \
+             one 'when' premise to ground the derived entity."
         );
     }
 
@@ -566,12 +532,13 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
         if json {
             println!("[]");
         } else {
-            println!("No rules defined. Use 'tonk rule define <name>' to create one.");
+            println!("No rules defined. Use 'tonk rule define' to create one.");
         }
         return Ok(());
     }
 
-    let mut rules: Vec<(String, Option<String>, String)> = Vec::new();
+    // (entity, name_or_none, description, conclusion)
+    let mut rules: Vec<(String, Option<String>, Option<String>, String)> = Vec::new();
     for (entity, name) in &rule_entries {
         let description = fetch_string(
             &session,
@@ -588,24 +555,31 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
         {
             Some(c) => c,
             None => {
+                let entity_str = entity.to_string();
+                let label = name.as_deref().unwrap_or(&entity_str);
                 eprintln!(
                     "Warning: rule '{}' is missing its 'rule/conclusion' attribute — possible data corruption",
-                    name
+                    label
                 );
                 "???".to_string()
             }
         };
-        rules.push((name.clone(), description, conclusion));
+        rules.push((entity.to_string(), name.clone(), description, conclusion));
     }
 
     if json {
         let items: Vec<serde_json::Value> = rules
             .iter()
-            .map(|(name, desc, conclusion)| {
+            .map(|(entity, name, desc, conclusion)| {
                 let mut obj = serde_json::json!({
-                    "name": name,
+                    "entity": entity,
                     "conclusion": conclusion,
                 });
+                if let Some(n) = name {
+                    obj.as_object_mut()
+                        .unwrap()
+                        .insert("name".to_string(), serde_json::json!(n));
+                }
                 if let Some(d) = desc {
                     obj.as_object_mut()
                         .unwrap()
@@ -617,12 +591,13 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string(&items)?);
     } else {
         println!("Rules:\n");
-        for (name, desc, conclusion) in &rules {
+        for (entity, name, desc, conclusion) in &rules {
+            let label = name.as_deref().unwrap_or(entity.as_str());
             let desc_str = desc
                 .as_ref()
                 .map(|d| format!(" - {}", d))
                 .unwrap_or_default();
-            println!("  {} -> {}{}", name, conclusion, desc_str);
+            println!("  {} -> {}{}", label, conclusion, desc_str);
         }
     }
 
@@ -635,18 +610,24 @@ pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
 
 /// Define a new rule from a JSON definition.
 ///
+/// If `name` is `Some`, the rule is stored with that name and can be looked
+/// up by name. If `None`, a deterministic entity ID is derived from the
+/// definition JSON hash, making the define idempotent for the same definition.
+///
 /// Uses raw Branch + Instruction (not Session/Transaction) because
 /// Transaction deduplicates by `(entity, attribute)` — only one value
 /// survives per pair.
 pub async fn define(
     ctx: &SpaceContext,
-    name: String,
+    name: Option<String>,
     file: Option<String>,
     stdin: bool,
     description: String,
     json: bool,
 ) -> Result<()> {
-    validate_safe_name(&name, "Rule")?;
+    if let Some(ref n) = name {
+        validate_safe_name(n, "Rule")?;
+    }
 
     if file.is_some() && stdin {
         anyhow::bail!(
@@ -671,15 +652,45 @@ pub async fn define(
 
     let mut branch = open_branch(ctx).await?;
 
-    let rule = rule_entity(&ctx.space_did, &name)?;
+    // Serialize definition to canonical JSON for storage (and for hashing if unnamed)
+    let definition_str = serde_json::to_string(&definition)?;
 
-    // Check if rule already exists
-    if lookup_rule_by_name(&branch, &name).await?.is_some() {
-        anyhow::bail!(
-            "Rule '{}' already exists. Delete it first with 'tonk rule delete {}'.",
-            name,
-            name
-        );
+    // Derive entity ID: from name if provided, from definition hash otherwise
+    let rule = if let Some(ref n) = name {
+        rule_entity(&ctx.space_did, n)?
+    } else {
+        rule_entity_from_definition(&ctx.space_did, &definition_str)?
+    };
+
+    // Check for duplicates
+    if let Some(ref n) = name {
+        if lookup_rule_by_name(&branch, n).await?.is_some() {
+            anyhow::bail!(
+                "Rule '{}' already exists. Delete it first with 'tonk rule delete {}'.",
+                n,
+                n
+            );
+        }
+    } else {
+        // For unnamed rules, same definition = same entity = idempotent.
+        // Check if this exact entity already has a conclusion attribute.
+        if fetch_string(&branch, &rule, parse_claim_attribute(ATTR_RULE_CONCLUSION)?)
+            .await?
+            .is_some()
+        {
+            if json {
+                let output = serde_json::json!({
+                    "ok": true,
+                    "entity": rule.to_string(),
+                    "conclusion": definition.conclusion.concept,
+                    "already_exists": true,
+                });
+                println!("{}", serde_json::to_string(&output)?);
+            } else {
+                println!("Rule already exists (entity: {})", rule);
+            }
+            return Ok(());
+        }
     }
 
     // Verify the conclusion concept exists and get its attributes
@@ -719,33 +730,34 @@ pub async fn define(
          conclusion bindings and premises.",
     )?;
 
-    // Serialize definition back to canonical JSON for storage
-    let definition_str = serde_json::to_string(&definition)?;
-
     // Build instructions
-    let mut instructions = vec![
-        // Rule name
-        Instruction::Assert(Artifact {
+    let mut instructions = Vec::new();
+
+    // Rule name (only if provided)
+    if let Some(ref n) = name {
+        instructions.push(Instruction::Assert(Artifact {
             the: Attribute::from_str(ATTR_RULE_NAME)?,
             of: rule.clone(),
-            is: Value::String(name.clone()),
+            is: Value::String(n.clone()),
             cause: None,
-        }),
-        // Rule conclusion concept name
-        Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
-            of: rule.clone(),
-            is: Value::String(concept_name.to_string()),
-            cause: None,
-        }),
-        // Rule definition JSON
-        Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_RULE_DEFINITION)?,
-            of: rule.clone(),
-            is: Value::String(definition_str.clone()),
-            cause: None,
-        }),
-    ];
+        }));
+    }
+
+    // Rule conclusion concept name
+    instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
+        of: rule.clone(),
+        is: Value::String(concept_name.to_string()),
+        cause: None,
+    }));
+
+    // Rule definition JSON
+    instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_RULE_DEFINITION)?,
+        of: rule.clone(),
+        is: Value::String(definition_str.clone()),
+        cause: None,
+    }));
 
     // Description
     instructions.push(Instruction::Assert(Artifact {
@@ -760,16 +772,26 @@ pub async fn define(
         .await?;
 
     if json {
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "ok": true,
-            "name": name,
+            "entity": rule.to_string(),
             "conclusion": concept_name.as_str(),
             "when_count": definition.when.len(),
             "unless_count": definition.unless.len(),
         });
+        if let Some(ref n) = name {
+            output
+                .as_object_mut()
+                .unwrap()
+                .insert("name".to_string(), serde_json::json!(n));
+        }
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("Defined rule '{}'", name);
+        if let Some(ref n) = name {
+            println!("Defined rule '{}'", n);
+        } else {
+            println!("Defined rule (entity: {})", rule);
+        }
         println!("  Conclusion: {}", concept_name);
         println!(
             "  Premises: {} when, {} unless",
@@ -786,17 +808,31 @@ pub async fn define(
 // Show rule details
 // ---------------------------------------------------------------------------
 
-/// Show the full definition of a rule.
-pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
+/// Show the full definition of a rule (by name or entity ID).
+pub async fn show(ctx: &SpaceContext, name_or_id: String, json: bool) -> Result<()> {
     let session = open_session(ctx).await?;
 
-    let rule = lookup_rule_by_name(&session, &name)
+    // Try lookup by name first, then by entity ID
+    let rule = if let Some(entity) = lookup_rule_by_name(&session, &name_or_id).await? {
+        entity
+    } else if let Ok(entity) = Entity::from_str(&name_or_id) {
+        // Verify this entity is actually a rule (has a conclusion attribute)
+        if fetch_string(
+            &session,
+            &entity,
+            parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
+        )
         .await?
-        .context(format!("Rule '{}' not found", name))?;
+        .is_none()
+        {
+            anyhow::bail!("Rule '{}' not found", name_or_id);
+        }
+        entity
+    } else {
+        anyhow::bail!("Rule '{}' not found", name_or_id);
+    };
 
-    let stored_name = fetch_string(&session, &rule, parse_claim_attribute(ATTR_RULE_NAME)?)
-        .await?
-        .unwrap_or_else(|| name.clone());
+    let stored_name = fetch_string(&session, &rule, parse_claim_attribute(ATTR_RULE_NAME)?).await?;
 
     let description = fetch_string(
         &session,
@@ -813,9 +849,11 @@ pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
     {
         Some(c) => c,
         None => {
+            let rule_str = rule.to_string();
+            let label = stored_name.as_deref().unwrap_or(&rule_str);
             eprintln!(
                 "Warning: rule '{}' is missing its 'rule/conclusion' attribute — possible data corruption",
-                name
+                label
             );
             "???".to_string()
         }
@@ -833,11 +871,16 @@ pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
 
     if json {
         let mut output = serde_json::json!({
-            "name": stored_name,
             "conclusion": conclusion,
             "definition": definition,
             "entity": rule.to_string(),
         });
+        if let Some(ref n) = stored_name {
+            output
+                .as_object_mut()
+                .unwrap()
+                .insert("name".to_string(), serde_json::json!(n));
+        }
         if let Some(desc) = &description {
             output
                 .as_object_mut()
@@ -846,7 +889,9 @@ pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
         }
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("Rule: {}", stored_name);
+        let rule_str = rule.to_string();
+        let display_name = stored_name.as_deref().unwrap_or(&rule_str);
+        println!("Rule: {}", display_name);
         if let Some(desc) = &description {
             println!("  Description: {}", desc);
         }
@@ -875,43 +920,85 @@ pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
 // Delete a rule
 // ---------------------------------------------------------------------------
 
-/// Delete a rule.
+/// Delete a rule (by name or entity ID).
+///
+/// For named rules, retracts the `rule/name` attribute (soft delete).
+/// For unnamed rules (identified by entity ID), retracts the `rule/conclusion`
+/// attribute to make the rule undiscoverable.
 ///
 /// Uses raw Branch + Instruction (not Session/Transaction) because
 /// Transaction deduplicates by `(entity, attribute)`.
-pub async fn delete(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
+pub async fn delete(ctx: &SpaceContext, name_or_id: String, json: bool) -> Result<()> {
     let mut branch = open_branch(ctx).await?;
 
-    let rule = lookup_rule_by_name(&branch, &name)
-        .await?
-        .context(format!("Rule '{}' not found", name))?;
+    // Try lookup by name first, then by entity ID
+    let (rule, stored_name) =
+        if let Some(entity) = lookup_rule_by_name(&branch, &name_or_id).await? {
+            let sn = fetch_string(&branch, &entity, parse_claim_attribute(ATTR_RULE_NAME)?).await?;
+            (entity, sn)
+        } else if let Ok(entity) = Entity::from_str(&name_or_id) {
+            // Verify this entity is actually a rule
+            if fetch_string(
+                &branch,
+                &entity,
+                parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
+            )
+            .await?
+            .is_none()
+            {
+                anyhow::bail!("Rule '{}' not found", name_or_id);
+            }
+            (entity, None)
+        } else {
+            anyhow::bail!("Rule '{}' not found", name_or_id);
+        };
 
-    let stored_name = fetch_string(&branch, &rule, parse_claim_attribute(ATTR_RULE_NAME)?)
-        .await?
-        .unwrap_or_else(|| name.clone());
+    let mut instructions = Vec::new();
 
-    // Soft delete: only retract the rule name.
-    // The entity keeps its conclusion, definition, and description data intact.
-    // This makes the rule undiscoverable by name but preserves its data.
-    let instructions = vec![Instruction::Retract(Artifact {
-        the: Attribute::from_str(ATTR_RULE_NAME)?,
-        of: rule.clone(),
-        is: Value::String(stored_name),
-        cause: None,
-    })];
+    // Retract the name if present (soft delete for named rules)
+    if let Some(ref sn) = stored_name {
+        instructions.push(Instruction::Retract(Artifact {
+            the: Attribute::from_str(ATTR_RULE_NAME)?,
+            of: rule.clone(),
+            is: Value::String(sn.clone()),
+            cause: None,
+        }));
+    }
 
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    // Retract the conclusion to make the rule fully undiscoverable
+    if let Some(conclusion) =
+        fetch_string(&branch, &rule, parse_claim_attribute(ATTR_RULE_CONCLUSION)?).await?
+    {
+        instructions.push(Instruction::Retract(Artifact {
+            the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
+            of: rule.clone(),
+            is: Value::String(conclusion),
+            cause: None,
+        }));
+    }
 
+    if !instructions.is_empty() {
+        branch
+            .commit(futures_util::stream::iter(instructions))
+            .await?;
+    }
+
+    let display = stored_name.as_deref().unwrap_or(&name_or_id);
     if json {
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "ok": true,
-            "deleted": name,
+            "deleted": display,
+            "entity": rule.to_string(),
         });
+        if let Some(ref n) = stored_name {
+            output
+                .as_object_mut()
+                .unwrap()
+                .insert("name".to_string(), serde_json::json!(n));
+        }
         println!("{}", serde_json::to_string(&output)?);
     } else {
-        println!("Deleted rule '{}'", name);
+        println!("Deleted rule '{}'", display);
     }
 
     Ok(())
@@ -931,7 +1018,7 @@ pub async fn load_rules_for_concept<S: ArtifactStore>(
     let rule_entries = find_all_rules(store).await?;
 
     let mut rules = Vec::new();
-    for (rule_ent, _name) in &rule_entries {
+    for (rule_ent, _maybe_name) in &rule_entries {
         let conclusion = fetch_string(
             store,
             rule_ent,
@@ -975,7 +1062,7 @@ pub async fn load_all_rules<S: ArtifactStore>(store: &S) -> Result<Vec<(String, 
     let rule_entries = find_all_rules(store).await?;
 
     let mut rules = Vec::new();
-    for (rule_ent, _name) in &rule_entries {
+    for (rule_ent, _maybe_name) in &rule_entries {
         let conclusion = match fetch_string(
             store,
             rule_ent,

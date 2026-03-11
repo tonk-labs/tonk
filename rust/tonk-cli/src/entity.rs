@@ -18,6 +18,23 @@ use std::io::Read;
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
+// Query result types
+// ---------------------------------------------------------------------------
+
+/// A single row returned by a concept query.
+///
+/// Contains the entity ID and a map of short attribute names to their
+/// JSON-serialized values. Returned by [`query`] so callers (including
+/// tests) can inspect structured results.
+#[derive(Debug, Clone)]
+pub struct QueryRow {
+    /// The entity's `did:key` identifier.
+    pub id: String,
+    /// Attribute values keyed by short name (e.g. `"title"`, `"status"`).
+    pub data: serde_json::Map<String, serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
 // Create an entity
 // ---------------------------------------------------------------------------
 
@@ -148,12 +165,17 @@ pub async fn create(
 /// Uses dialog-db's Session-based concept querying which performs a
 /// structural join over the concept's attributes. When rules exist,
 /// they are registered with the Session to merge stored and derived entities.
+///
+/// Returns the matched rows as [`QueryRow`] values so callers can
+/// inspect the structured results. Display is also handled internally
+/// (printed to stdout in human-readable or JSON format depending on
+/// the `json` flag).
 pub async fn query(
     ctx: &SpaceContext,
     concept_name: String,
     filters: Vec<String>,
     json: bool,
-) -> Result<()> {
+) -> Result<Vec<QueryRow>> {
     let session = open_session(ctx).await?;
 
     let concept_name = ConceptName::new(concept_name)?;
@@ -208,7 +230,7 @@ pub async fn query(
     }
 
     // Always use Session-based concept query (structural matching via joins)
-    let rows = query_concept(
+    let raw_rows = query_concept(
         session,
         &schema_attrs,
         &namespace,
@@ -218,8 +240,13 @@ pub async fn query(
     )
     .await?;
 
-    display_rows(&rows, &stored_name, &schema_attrs, &namespace, json);
-    Ok(())
+    display_rows(&raw_rows, &stored_name, &schema_attrs, &namespace, json);
+
+    let rows = raw_rows
+        .into_iter()
+        .map(|(id, data)| QueryRow { id, data })
+        .collect();
+    Ok(rows)
 }
 
 /// Session-based concept query. Uses dialog-db's structural matching:
@@ -278,6 +305,15 @@ async fn query_concept(
         .await
         .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
 
+    // Build a lookup of filtered attributes so we can use the known constant
+    // value instead of trying to resolve an unbound variable. When a filter
+    // replaces a variable with Term::Constant in the params, the original
+    // Term::var stored in attr_vars is never bound in the query answer.
+    let filter_lookup: std::collections::HashMap<String, &Value> = qualified_filters
+        .iter()
+        .map(|(attr_name, val)| (short_attribute(namespace, attr_name), val))
+        .collect();
+
     // Convert answers to rows, deduplicating by entity ID.
     // Rules involving multi-valued attributes (like ingredient) can produce
     // duplicate rows for the same derived entity — we keep only the first.
@@ -303,13 +339,20 @@ async fn query_concept(
 
         // Resolve each attribute value
         for (_qualified, short, var) in &attr_vars {
-            match answer.resolve(var) {
-                Ok(val) => {
-                    data.insert(short.clone(), value_to_json(&val));
-                }
-                Err(e) => {
-                    eprintln!("Warning: could not resolve attribute '{}': {}", short, e);
-                    data.insert(short.clone(), serde_json::Value::Null);
+            // If this attribute was used as a filter, use the known filter value
+            // directly — the original variable is unbound since it was replaced
+            // by a constant in the concept application.
+            if let Some(filter_val) = filter_lookup.get(short) {
+                data.insert(short.clone(), value_to_json(filter_val));
+            } else {
+                match answer.resolve(var) {
+                    Ok(val) => {
+                        data.insert(short.clone(), value_to_json(&val));
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: could not resolve attribute '{}': {}", short, e);
+                        data.insert(short.clone(), serde_json::Value::Null);
+                    }
                 }
             }
         }

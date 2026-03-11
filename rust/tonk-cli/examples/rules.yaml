@@ -11,7 +11,7 @@ user.rules:
           this: ?event
           title: ?title
       - diy.planner/Meal:
-          this: ?existing
+          this: ?this
           attendee: ?person
       - diy.cook/Recipe:
           this: ?recipe

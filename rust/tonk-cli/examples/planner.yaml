@@ -52,7 +52,7 @@ diy.planner:
           this: ?ingredient
           name: ?substance
       - diy.health/Allergy:
-          this: ?allergy
+          this: ?this
           person: ?person
           substance: ?substance
 
@@ -65,7 +65,7 @@ diy.planner:
         occasion: ?occasion
     when:
       - diy.planner/Meal:
-          this: ?meal
+          this: ?this
           attendee: ?person
           recipe: ?recipe
           occasion: ?occasion
