@@ -57,10 +57,10 @@ impl Site {
                 return Some(Self { root: candidate });
             }
             // Don't walk above $HOME
-            if let Some(ref home) = stop_at {
-                if current == *home {
-                    return None;
-                }
+            if let Some(ref home) = stop_at
+                && current == *home
+            {
+                return None;
             }
             if !current.pop() {
                 return None;
@@ -85,11 +85,14 @@ impl Site {
         Ok(Self { root: carry_dir })
     }
 
-    /// Resolve a site from an optional `--site` flag, falling back to CWD
-    /// discovery.
+    /// Resolve a site from an optional `--site` flag, falling back to the
+    /// `CARRY_SITE` env var, then CWD discovery.
     pub fn resolve(site_flag: Option<&Path>) -> Result<Self> {
         if let Some(path) = site_flag {
             return Self::open(path);
+        }
+        if let Ok(env_site) = std::env::var("CARRY_SITE") {
+            return Self::open(Path::new(&env_site));
         }
         let cwd = std::env::current_dir().context("Failed to determine current directory")?;
         Self::discover(&cwd).context("No .carry site found (run `carry init` to create one)")

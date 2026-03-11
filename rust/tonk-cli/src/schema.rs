@@ -1,23 +1,16 @@
 //! Shared helpers for the concepts & facts system.
 //!
 //! Provides deterministic entity derivation, attribute name prefixing,
-//! and common storage access patterns used by both `concept` and `entity` modules.
+//! and common storage access patterns.
 
-use crate::authority;
-use crate::crypto::Operator;
-use crate::keystore::Keystore;
-use crate::state;
 use anyhow::{Context, Result};
 use base64::Engine as _;
-use dialog_artifacts::repository::{BranchId, Credentials, Repository};
 use dialog_artifacts::{ArtifactSelector, ArtifactStore};
 pub use dialog_query::claim::Attribute as ClaimAttribute;
 use dialog_query::concept::Concept as _;
-use dialog_query::{Cardinality, Entity, Session, Value};
+use dialog_query::{Cardinality, Entity, Value};
 use futures_util::TryStreamExt;
-use std::path::PathBuf;
 use std::str::FromStr;
-use tonk_space::FsBackend;
 
 // ---------------------------------------------------------------------------
 // Typed meta-schema for registered concepts
@@ -445,94 +438,6 @@ pub fn short_attribute(namespace: &str, attr: &str) -> String {
 /// Extract the namespace from a fully-qualified attribute name.
 pub fn attribute_namespace(attr: &str) -> &str {
     attr.split_once('/').map(|(ns, _)| ns).unwrap_or("")
-}
-
-// ---------------------------------------------------------------------------
-// Storage access helpers
-// ---------------------------------------------------------------------------
-
-/// Information about the active space needed to open storage.
-pub struct SpaceContext {
-    pub storage_path: PathBuf,
-    pub space_did: String,
-    pub space_name: String,
-    pub operator: Operator,
-}
-
-/// Get the storage path, space DID, and operator for the active space.
-pub fn get_space_context() -> Result<SpaceContext> {
-    let keystore = Keystore::new().context("Failed to initialize keystore")?;
-    let operator = keystore
-        .get_or_create_keypair()
-        .context("Failed to get operator keypair")?;
-    let operator_did = operator.did().to_string();
-
-    let authority = authority::get_active_authority()?
-        .context("No active authority. Run 'carry login' first")?;
-
-    let space_did = state::get_active_space(&authority.did)?
-        .context("No active space. Run 'carry space create' first")?;
-
-    let space_name = crate::metadata::SpaceMetadata::load(&space_did)?
-        .map(|m| m.name)
-        .unwrap_or_else(|| "local".to_string());
-
-    let tonk_dir = crate::util::tonk_dir().context("Could not determine tonk directory")?;
-    let storage_path = tonk_dir
-        .join("operator")
-        .join(&operator_did)
-        .join("session")
-        .join(&authority.did)
-        .join("space")
-        .join(&space_did)
-        .join("facts");
-
-    Ok(SpaceContext {
-        storage_path,
-        space_did,
-        space_name,
-        operator,
-    })
-}
-
-/// Open a `Session` for the active space's dialog-db.
-pub async fn open_session(
-    ctx: &SpaceContext,
-) -> Result<Session<dialog_artifacts::repository::Branch<FsBackend>>> {
-    let backend = FsBackend::new(&ctx.storage_path).await?;
-    let credentials = Credentials::from(&ctx.operator);
-    let space_did_parsed: dialog_varsig::Did = ctx
-        .space_did
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
-    let replica = Repository::open(credentials, space_did_parsed, backend)?;
-    let branch_id = BranchId::new("main".to_string());
-    let branch = replica.branches.open(&branch_id).await?;
-    Ok(Session::open(branch))
-}
-
-/// Open a raw Branch for the active space's dialog-db.
-///
-/// Use `open_session()` for read-only paths and single-valued entity writes
-/// (Session wraps Branch and provides the Transaction API + rule-aware querying).
-///
-/// Use `open_branch()` for write paths involving multi-valued attributes
-/// (e.g. `concept/attribute`). Transaction deduplicates by
-/// `(entity, attribute)`, so only one value per pair survives — raw
-/// Branch + `Instruction` is required for multi-valued writes.
-pub async fn open_branch(
-    ctx: &SpaceContext,
-) -> Result<dialog_artifacts::repository::Branch<FsBackend>> {
-    let backend = FsBackend::new(&ctx.storage_path).await?;
-    let credentials = Credentials::from(&ctx.operator);
-    let space_did_parsed: dialog_varsig::Did = ctx
-        .space_did
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse space DID: {:?}", e))?;
-    let replica = Repository::open(credentials, space_did_parsed, backend)?;
-    let branch_id = BranchId::new("main".to_string());
-    let branch = replica.branches.open(&branch_id).await?;
-    Ok(branch)
 }
 
 // ---------------------------------------------------------------------------

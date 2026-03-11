@@ -218,9 +218,6 @@ async fn main() -> Result<()> {
         cancel_clone.cancel();
     });
 
-    // Track which persona's space is currently active
-    let mut active_persona: Option<String> = None;
-
     let mut results: Vec<ProbeResult> = Vec::new();
 
     // Determine output path early so we can write partial results
@@ -242,23 +239,13 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        // Switch active Carry space if this probe uses carry-data and
-        // the persona differs from the currently active one.
+        // Set the CARRY_SITE env var so carry commands within the agent
+        // use the correct per-persona site directory.
         if probe.carry_data.is_some() {
-            let need_switch = active_persona.as_ref() != Some(&probe.persona);
-            if need_switch {
-                match carry::set_active_space(&probe.persona, verbose).await {
-                    Ok(()) => {
-                        active_persona = Some(probe.persona.clone());
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "--- {} --- SKIPPED (failed to switch Carry space: {e:#})\n",
-                            probe.name.as_deref().unwrap_or(&probe.id),
-                        );
-                        continue;
-                    }
-                }
+            let site_path = carry::site_arg_for_persona(&probe.persona);
+            // SAFETY: probes run sequentially, no concurrent env var access.
+            unsafe {
+                std::env::set_var("CARRY_SITE", &site_path);
             }
         }
 

@@ -1,6 +1,6 @@
 [package]
 name = "tonk-cli"
-description = "CLI tool for Tonk authentication and management"
+description = "Carry CLI - interact with Dialog DB spaces"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -19,17 +19,14 @@ default = []
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # CLI
 clap = { workspace = true, features = ["derive"] }
-dialoguer = { workspace = true }
 
 # Tonk packages
 tonk-space = { workspace = true }
 
 # Dialog DB
-dialog-storage = { workspace = true }
 dialog-query = { workspace = true }
-dialog-artifacts = { workspace = true, features = ["ucan"] }
-dialog-common = { workspace = true }
-dialog-s3-credentials = { workspace = true, features = ["ucan"] }
+dialog-artifacts = { workspace = true }
+dialog-varsig = { workspace = true }
 
 # Async
 futures-util = { workspace = true }
@@ -39,60 +36,19 @@ tokio = { workspace = true, features = ["full"] }
 ed25519-dalek = { workspace = true }
 rand_0_8 = { workspace = true }
 bs58 = { workspace = true }
-sha2_0_10 = { workspace = true }
-hex = { workspace = true }
-hkdf = { workspace = true }
 blake3 = { workspace = true }
 
 # Serialization
-serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 base64 = { workspace = true }
-serde_ipld_dagcbor = { workspace = true }
-ciborium = { workspace = true }
-
-# HTTP server
-axum = { workspace = true, features = ["tokio", "form", "http1"] }
-tower = { workspace = true }
-
-# UCAN
-dialog-ucan = { workspace = true }
-dialog-varsig = { workspace = true }
-dialog-credentials = { workspace = true }
 
 # Utilities
 anyhow = { workspace = true }
-thiserror = { workspace = true }
-chrono = { workspace = true, features = ["serde"] }
 dirs = { workspace = true }
 
-# For opening browser
-webbrowser = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
-serial_test = { workspace = true }
-bs58 = { workspace = true }
-dialog-ucan = { workspace = true }
-dialog-varsig = { workspace = true }
-dialog-credentials = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-
-# Platform-specific keyring backends
-[target.'cfg(all(not(target_arch = "wasm32"), target_os = "macos"))'.dependencies]
-keyring = { workspace = true, features = ["apple-native"] }
-
-[target.'cfg(all(not(target_arch = "wasm32"), target_os = "ios"))'.dependencies]
-keyring = { workspace = true, features = ["apple-native"] }
-
-[target.'cfg(all(not(target_arch = "wasm32"), target_os = "windows"))'.dependencies]
-keyring = { workspace = true, features = ["windows-native"] }
-
-[target.'cfg(all(not(target_arch = "wasm32"), target_os = "linux"))'.dependencies]
-keyring = { workspace = true, features = ["sync-secret-service"] }
-
-# Fallback for other platforms (FreeBSD, etc.)
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux")))'.dependencies]
-keyring = { workspace = true }
