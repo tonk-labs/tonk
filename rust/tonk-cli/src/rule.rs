@@ -1,6 +1,6 @@
 //! Rule management: define, list, show, and delete deductive rules.
 //!
-//! A rule derives instances of a conclusion concept from patterns across
+//! A rule derives entities of a conclusion concept from patterns across
 //! existing facts. Rules are stored as JSON blobs in dialog-db and compiled
 //! into `DeductiveRule`s at query time.
 
@@ -51,7 +51,7 @@ impl RuleDefinition {
         if def.when.is_empty() {
             anyhow::bail!(
                 "Rule must have at least one positive premise in 'when'. \
-                 Rules with no positive premises cannot derive any instances."
+                 Rules with no positive premises cannot derive any entities."
             );
         }
 
@@ -67,7 +67,7 @@ impl RuleDefinition {
 /// attributes map to variables.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConclusion {
-    /// Name of the conclusion concept (e.g. "SafeMeal").
+    /// Name of the conclusion concept (e.g. "AllergyConflict").
     pub concept: String,
 
     /// Maps concept attribute short names to variables.
@@ -231,7 +231,7 @@ fn collect_all_premise_vars(definition: &RuleDefinition) -> std::collections::Ha
 /// Returns a map from user variable name (without `?`) to new variable name.
 fn build_rename_map(
     definition: &RuleDefinition,
-    concept_name: &ConceptName,
+    namespace: &str,
 ) -> Result<HashMap<String, String>> {
     let all_vars = collect_all_premise_vars(definition);
     let mut rename: HashMap<String, String> = HashMap::new();
@@ -241,7 +241,7 @@ fn build_rename_map(
     for (attr_short, var_str) in &definition.conclusion.bindings {
         if let PremiseTerm::Variable(var_name) = PremiseTerm::parse(var_str) {
             // Validate the attribute is in the concept
-            let _qualified = qualify_attribute(concept_name, attr_short)?;
+            let _qualified = qualify_attribute(namespace, attr_short)?;
             rename.insert(var_name.clone(), attr_short.clone());
             binding_vars.insert(var_name);
         }
@@ -302,6 +302,7 @@ fn build_rename_map(
     let renamed_sources: std::collections::HashSet<String> = rename.keys().cloned().collect();
 
     let mut collision_renames: Vec<(String, String)> = Vec::new();
+    let mut generated_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for target_name in &rename_targets {
         // Is there a variable with the same name as a rename target,
         // that is NOT itself being renamed?
@@ -312,9 +313,10 @@ fn build_rename_map(
                 let candidate = format!("{}_{}", target_name, suffix);
                 if !all_vars.contains(&candidate)
                     && !rename_targets.contains(&candidate)
-                    && !collision_renames.iter().any(|(_, t)| t == &candidate)
+                    && !generated_names.contains(&candidate)
                 {
-                    collision_renames.push((target_name.clone(), candidate));
+                    collision_renames.push((target_name.clone(), candidate.clone()));
+                    generated_names.insert(candidate);
                     break;
                 }
                 suffix += 1;
@@ -348,16 +350,25 @@ fn rename_var(s: &str, rename: &HashMap<String, String>) -> String {
 
 /// Compile a `RuleDefinition` into a `DeductiveRule` using the given
 /// concept attributes for the conclusion.
+///
+/// The `cardinalities` map provides per-attribute cardinality from stored
+/// metadata. It is propagated to `build_dynamic_concept()` so that the
+/// query planner assigns correct costs for `Cardinality::Many` attributes.
+///
+/// The `namespace` is the attribute namespace for the conclusion concept
+/// (used to qualify short attribute names in conclusion bindings).
 pub fn compile_rule(
     definition: &RuleDefinition,
-    concept_name: &ConceptName,
+    _concept_name: &ConceptName,
     concept_attrs: &[String],
+    cardinalities: &std::collections::HashMap<String, dialog_query::Cardinality>,
+    namespace: &str,
 ) -> Result<DeductiveRule> {
     // 1. Build dynamic Concept from conclusion concept's attributes
-    let concept = build_dynamic_concept(concept_attrs)?;
+    let concept = build_dynamic_concept(concept_attrs, cardinalities)?;
 
     // 2. Build variable renaming map from conclusion bindings
-    let rename = build_rename_map(definition, concept_name)?;
+    let rename = build_rename_map(definition, namespace)?;
 
     // 3. Build positive premises (with renamed variables)
     let mut premises: Vec<Premise> = Vec::new();
@@ -477,6 +488,7 @@ pub fn validate_definition(
     definition: &RuleDefinition,
     conclusion_attrs: &[String],
     conclusion_name: &ConceptName,
+    namespace: &str,
 ) -> Result<()> {
     // Check that all binding keys are valid concept attributes.
     // A binding key like "comment" matches either the concept-derived path
@@ -486,7 +498,7 @@ pub fn validate_definition(
         if short_name == "this" {
             continue; // `this` is the entity binding, not an attribute
         }
-        let concept_qualified = qualify_attribute(conclusion_name, short_name)?;
+        let concept_qualified = qualify_attribute(namespace, short_name)?;
         let matches = conclusion_attrs.iter().any(|a| {
             *a == concept_qualified || a.rsplit_once('/').is_some_and(|(_, n)| n == short_name)
         });
@@ -496,7 +508,11 @@ pub fn validate_definition(
                  Known attributes: {}",
                 short_name,
                 conclusion_name,
-                conclusion_attrs.join(", ")
+                conclusion_attrs
+                    .iter()
+                    .map(|a| short_attribute(namespace, a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
     }
@@ -541,14 +557,12 @@ pub fn validate_definition(
 // ---------------------------------------------------------------------------
 
 /// List all rules in the active space.
-pub async fn list(json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let branch = open_branch(&ctx).await?;
+pub async fn list(ctx: &SpaceContext, json: bool) -> Result<()> {
+    let session = open_session(ctx).await?;
 
-    let registry = registry_entity(&ctx.space_did)?;
-    let rule_entities = fetch_entity_values(&branch, &registry, ATTR_REGISTRY_RULE).await?;
+    let rule_entries = find_all_rules(&session).await?;
 
-    if rule_entities.is_empty() {
+    if rule_entries.is_empty() {
         if json {
             println!("[]");
         } else {
@@ -558,19 +572,20 @@ pub async fn list(json: bool) -> Result<()> {
     }
 
     let mut rules: Vec<(String, Option<String>, String)> = Vec::new();
-    for entity in &rule_entities {
-        let name = match fetch_string(&branch, entity, ATTR_RULE_NAME).await? {
-            Some(n) => n,
-            None => {
-                eprintln!(
-                    "Warning: rule entity '{}' is missing its 'rule/name' attribute — possible data corruption",
-                    entity
-                );
-                "???".to_string()
-            }
-        };
-        let description = fetch_string(&branch, entity, ATTR_RULE_DESCRIPTION).await?;
-        let conclusion = match fetch_string(&branch, entity, ATTR_RULE_CONCLUSION).await? {
+    for (entity, name) in &rule_entries {
+        let description = fetch_string(
+            &session,
+            entity,
+            parse_claim_attribute(ATTR_RULE_DESCRIPTION)?,
+        )
+        .await?;
+        let conclusion = match fetch_string(
+            &session,
+            entity,
+            parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
+        )
+        .await?
+        {
             Some(c) => c,
             None => {
                 eprintln!(
@@ -580,7 +595,7 @@ pub async fn list(json: bool) -> Result<()> {
                 "???".to_string()
             }
         };
-        rules.push((name, description, conclusion));
+        rules.push((name.clone(), description, conclusion));
     }
 
     if json {
@@ -619,11 +634,16 @@ pub async fn list(json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Define a new rule from a JSON definition.
+///
+/// Uses raw Branch + Instruction (not Session/Transaction) because
+/// Transaction deduplicates by `(entity, attribute)` — only one value
+/// survives per pair.
 pub async fn define(
+    ctx: &SpaceContext,
     name: String,
     file: Option<String>,
     stdin: bool,
-    description: Option<String>,
+    description: String,
     json: bool,
 ) -> Result<()> {
     validate_safe_name(&name, "Rule")?;
@@ -649,15 +669,12 @@ pub async fn define(
 
     let definition = RuleDefinition::from_json(definition_json.trim())?;
 
-    let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+    let mut branch = open_branch(ctx).await?;
 
-    let registry = registry_entity(&ctx.space_did)?;
     let rule = rule_entity(&ctx.space_did, &name)?;
 
     // Check if rule already exists
-    let existing = fetch_string(&branch, &rule, ATTR_RULE_NAME).await?;
-    if existing.is_some() {
+    if lookup_rule_by_name(&branch, &name).await?.is_some() {
         anyhow::bail!(
             "Rule '{}' already exists. Delete it first with 'tonk rule delete {}'.",
             name,
@@ -667,22 +684,37 @@ pub async fn define(
 
     // Verify the conclusion concept exists and get its attributes
     let conclusion_concept = ConceptName::new(&definition.conclusion.concept)?;
-    let concept = concept_entity(&ctx.space_did, &conclusion_concept)?;
-    let concept_name = fetch_string(&branch, &concept, ATTR_CONCEPT_NAME)
+    let concept = lookup_concept_by_name(&branch, &conclusion_concept)
         .await?
         .context(format!(
             "Conclusion concept '{}' not found. Define it first.",
             definition.conclusion.concept
         ))?;
-    let concept_name = ConceptName::from_stored(concept_name);
+    let concept_name = ConceptName::from_stored(
+        fetch_string(&branch, &concept, concept_name_selector())
+            .await?
+            .unwrap_or_else(|| conclusion_concept.to_string()),
+    );
 
-    let concept_attrs = fetch_string_values(&branch, &concept, ATTR_CONCEPT_ATTRIBUTE).await?;
+    let concept_attrs =
+        fetch_string_values(&branch, &concept, concept_attribute_selector()).await?;
+    let concept_ns = fetch_string(&branch, &concept, concept_namespace_selector())
+        .await?
+        .unwrap_or_else(|| ctx.space_name.clone());
+    let cardinalities = fetch_attribute_cardinalities(&branch, &concept_attrs).await?;
 
     // Validate the definition
-    validate_definition(&definition, &concept_attrs, &concept_name)?;
+    validate_definition(&definition, &concept_attrs, &concept_name, &concept_ns)?;
 
     // Try to compile the rule to catch errors early
-    compile_rule(&definition, &concept_name, &concept_attrs).context(
+    compile_rule(
+        &definition,
+        &concept_name,
+        &concept_attrs,
+        &cardinalities,
+        &concept_ns,
+    )
+    .context(
         "Rule definition is invalid. Check that variable names match between \
          conclusion bindings and premises.",
     )?;
@@ -692,13 +724,6 @@ pub async fn define(
 
     // Build instructions
     let mut instructions = vec![
-        // Register in registry
-        Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_REGISTRY_RULE)?,
-            of: registry.clone(),
-            is: Value::Entity(rule.clone()),
-            cause: None,
-        }),
         // Rule name
         Instruction::Assert(Artifact {
             the: Attribute::from_str(ATTR_RULE_NAME)?,
@@ -722,15 +747,13 @@ pub async fn define(
         }),
     ];
 
-    // Description (optional)
-    if let Some(desc) = &description {
-        instructions.push(Instruction::Assert(Artifact {
-            the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
-            of: rule.clone(),
-            is: Value::String(desc.clone()),
-            cause: None,
-        }));
-    }
+    // Description
+    instructions.push(Instruction::Assert(Artifact {
+        the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
+        of: rule.clone(),
+        is: Value::String(description.clone()),
+        cause: None,
+    }));
 
     branch
         .commit(futures_util::stream::iter(instructions))
@@ -753,9 +776,7 @@ pub async fn define(
             definition.when.len(),
             definition.unless.len()
         );
-        if let Some(desc) = &description {
-            println!("  Description: {}", desc);
-        }
+        println!("  Description: {}", description);
     }
 
     Ok(())
@@ -766,18 +787,30 @@ pub async fn define(
 // ---------------------------------------------------------------------------
 
 /// Show the full definition of a rule.
-pub async fn show(name: String, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let branch = open_branch(&ctx).await?;
+pub async fn show(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
+    let session = open_session(ctx).await?;
 
-    let rule = rule_entity(&ctx.space_did, &name)?;
-
-    let stored_name = fetch_string(&branch, &rule, ATTR_RULE_NAME)
+    let rule = lookup_rule_by_name(&session, &name)
         .await?
         .context(format!("Rule '{}' not found", name))?;
 
-    let description = fetch_string(&branch, &rule, ATTR_RULE_DESCRIPTION).await?;
-    let conclusion = match fetch_string(&branch, &rule, ATTR_RULE_CONCLUSION).await? {
+    let stored_name = fetch_string(&session, &rule, parse_claim_attribute(ATTR_RULE_NAME)?)
+        .await?
+        .unwrap_or_else(|| name.clone());
+
+    let description = fetch_string(
+        &session,
+        &rule,
+        parse_claim_attribute(ATTR_RULE_DESCRIPTION)?,
+    )
+    .await?;
+    let conclusion = match fetch_string(
+        &session,
+        &rule,
+        parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
+    )
+    .await?
+    {
         Some(c) => c,
         None => {
             eprintln!(
@@ -787,9 +820,13 @@ pub async fn show(name: String, json: bool) -> Result<()> {
             "???".to_string()
         }
     };
-    let definition_str = fetch_string(&branch, &rule, ATTR_RULE_DEFINITION)
-        .await?
-        .context("Rule definition not found")?;
+    let definition_str = fetch_string(
+        &session,
+        &rule,
+        parse_claim_attribute(ATTR_RULE_DEFINITION)?,
+    )
+    .await?
+    .context("Rule definition not found")?;
 
     let definition: RuleDefinition =
         serde_json::from_str(&definition_str).context("Failed to parse stored rule definition")?;
@@ -839,65 +876,29 @@ pub async fn show(name: String, json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Delete a rule.
-pub async fn delete(name: String, json: bool) -> Result<()> {
-    let ctx = get_space_context()?;
-    let mut branch = open_branch(&ctx).await?;
+///
+/// Uses raw Branch + Instruction (not Session/Transaction) because
+/// Transaction deduplicates by `(entity, attribute)`.
+pub async fn delete(ctx: &SpaceContext, name: String, json: bool) -> Result<()> {
+    let mut branch = open_branch(ctx).await?;
 
-    let registry = registry_entity(&ctx.space_did)?;
-    let rule = rule_entity(&ctx.space_did, &name)?;
-
-    // Verify rule exists
-    let stored_name = fetch_string(&branch, &rule, ATTR_RULE_NAME)
+    let rule = lookup_rule_by_name(&branch, &name)
         .await?
         .context(format!("Rule '{}' not found", name))?;
 
-    let mut instructions = Vec::new();
+    let stored_name = fetch_string(&branch, &rule, parse_claim_attribute(ATTR_RULE_NAME)?)
+        .await?
+        .unwrap_or_else(|| name.clone());
 
-    // Retract rule name
-    instructions.push(Instruction::Retract(Artifact {
+    // Soft delete: only retract the rule name.
+    // The entity keeps its conclusion, definition, and description data intact.
+    // This makes the rule undiscoverable by name but preserves its data.
+    let instructions = vec![Instruction::Retract(Artifact {
         the: Attribute::from_str(ATTR_RULE_NAME)?,
         of: rule.clone(),
         is: Value::String(stored_name),
         cause: None,
-    }));
-
-    // Retract conclusion
-    if let Some(conclusion) = fetch_string(&branch, &rule, ATTR_RULE_CONCLUSION).await? {
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_RULE_CONCLUSION)?,
-            of: rule.clone(),
-            is: Value::String(conclusion),
-            cause: None,
-        }));
-    }
-
-    // Retract definition
-    if let Some(def) = fetch_string(&branch, &rule, ATTR_RULE_DEFINITION).await? {
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_RULE_DEFINITION)?,
-            of: rule.clone(),
-            is: Value::String(def),
-            cause: None,
-        }));
-    }
-
-    // Retract description
-    if let Some(desc) = fetch_string(&branch, &rule, ATTR_RULE_DESCRIPTION).await? {
-        instructions.push(Instruction::Retract(Artifact {
-            the: Attribute::from_str(ATTR_RULE_DESCRIPTION)?,
-            of: rule.clone(),
-            is: Value::String(desc),
-            cause: None,
-        }));
-    }
-
-    // Retract registry entry
-    instructions.push(Instruction::Retract(Artifact {
-        the: Attribute::from_str(ATTR_REGISTRY_RULE)?,
-        of: registry.clone(),
-        is: Value::Entity(rule.clone()),
-        cause: None,
-    }));
+    })];
 
     branch
         .commit(futures_util::stream::iter(instructions))
@@ -917,7 +918,7 @@ pub async fn delete(name: String, json: bool) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Rule loading helpers (used by instance::query)
+// Rule loading helpers (used by entity::query)
 // ---------------------------------------------------------------------------
 
 /// Load all rule definitions that conclude a given concept name.
@@ -925,19 +926,28 @@ pub async fn delete(name: String, json: bool) -> Result<()> {
 /// Returns the parsed `RuleDefinition` for each matching rule.
 pub async fn load_rules_for_concept<S: ArtifactStore>(
     store: &S,
-    space_did: &str,
     concept_name: &ConceptName,
 ) -> Result<Vec<RuleDefinition>> {
-    let registry = registry_entity(space_did)?;
-    let rule_entities = fetch_entity_values(store, &registry, ATTR_REGISTRY_RULE).await?;
+    let rule_entries = find_all_rules(store).await?;
 
     let mut rules = Vec::new();
-    for rule_entity in &rule_entities {
-        let conclusion = fetch_string(store, rule_entity, ATTR_RULE_CONCLUSION).await?;
+    for (rule_ent, _name) in &rule_entries {
+        let conclusion = fetch_string(
+            store,
+            rule_ent,
+            parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
+        )
+        .await?;
         if conclusion.as_deref() != Some(concept_name.as_str()) {
             continue;
         }
-        if let Some(def_str) = fetch_string(store, rule_entity, ATTR_RULE_DEFINITION).await? {
+        if let Some(def_str) = fetch_string(
+            store,
+            rule_ent,
+            parse_claim_attribute(ATTR_RULE_DEFINITION)?,
+        )
+        .await?
+        {
             match serde_json::from_str::<RuleDefinition>(&def_str) {
                 Ok(def) => rules.push(def),
                 Err(e) => {
@@ -950,7 +960,7 @@ pub async fn load_rules_for_concept<S: ArtifactStore>(
         } else {
             eprintln!(
                 "Warning: rule entity '{}' for concept '{}' has no definition attribute",
-                rule_entity, concept_name
+                rule_ent, concept_name
             );
         }
     }
@@ -961,20 +971,28 @@ pub async fn load_rules_for_concept<S: ArtifactStore>(
 /// Load all rule definitions in the space, paired with their conclusion concept name.
 ///
 /// Returns `(conclusion_concept_name, RuleDefinition)` for each rule.
-pub async fn load_all_rules<S: ArtifactStore>(
-    store: &S,
-    space_did: &str,
-) -> Result<Vec<(String, RuleDefinition)>> {
-    let registry = registry_entity(space_did)?;
-    let rule_entities = fetch_entity_values(store, &registry, ATTR_REGISTRY_RULE).await?;
+pub async fn load_all_rules<S: ArtifactStore>(store: &S) -> Result<Vec<(String, RuleDefinition)>> {
+    let rule_entries = find_all_rules(store).await?;
 
     let mut rules = Vec::new();
-    for rule_entity in &rule_entities {
-        let conclusion = match fetch_string(store, rule_entity, ATTR_RULE_CONCLUSION).await? {
+    for (rule_ent, _name) in &rule_entries {
+        let conclusion = match fetch_string(
+            store,
+            rule_ent,
+            parse_claim_attribute(ATTR_RULE_CONCLUSION)?,
+        )
+        .await?
+        {
             Some(c) => c,
             None => continue,
         };
-        if let Some(def_str) = fetch_string(store, rule_entity, ATTR_RULE_DEFINITION).await? {
+        if let Some(def_str) = fetch_string(
+            store,
+            rule_ent,
+            parse_claim_attribute(ATTR_RULE_DEFINITION)?,
+        )
+        .await?
+        {
             match serde_json::from_str::<RuleDefinition>(&def_str) {
                 Ok(def) => rules.push((conclusion, def)),
                 Err(e) => {

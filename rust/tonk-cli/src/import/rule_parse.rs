@@ -7,7 +7,7 @@
 //!   safe-meal:
 //!     description: A meal that respects dietary restrictions
 //!     deduce:
-//!       SafeMeal:
+//!       Meal:
 //!         attendee: ?person
 //!         recipe: ?recipe
 //!     when:
@@ -73,7 +73,7 @@ pub(super) struct ParsedRule {
     pub name: String,
     /// Namespace from the top-level key (e.g. "diy.planner").
     pub namespace: String,
-    /// Description from the `description` field.
+    /// Optional human-readable description from the `description` field.
     pub description: Option<String>,
     /// The conclusion: which concept is deduced and its bindings.
     pub conclusion: ParsedRuleConclusion,
@@ -86,7 +86,7 @@ pub(super) struct ParsedRule {
 /// The conclusion of a parsed rule.
 #[derive(Debug)]
 pub(super) struct ParsedRuleConclusion {
-    /// Concept name extracted from the reference (e.g. "SafeMeal" from "diy.planner/SafeMeal").
+    /// Concept name extracted from the reference (e.g. "Meal" from "diy.planner/Meal").
     pub concept_name: String,
     /// Bindings: attribute short names to variables/wildcards/constants.
     /// The `this` key, if present, is stored separately.
@@ -254,7 +254,7 @@ pub(super) fn parse_rule(
 ///
 /// ```yaml
 /// deduce:
-///   SafeMeal:
+///   Meal:
 ///     attendee: ?person
 ///     recipe: ?recipe
 /// ```
@@ -484,7 +484,7 @@ mod tests {
             PremiseKind::Concept
         );
         assert_eq!(
-            classify_premise_ref("diy.planner/SafeMeal"),
+            classify_premise_ref("diy.planner/Meal"),
             PremiseKind::Concept
         );
     }
@@ -987,28 +987,32 @@ ns:
     #[test]
     fn parse_rules_example_file() {
         let yaml = include_str!("../../examples/rules.yaml");
-        let rules = parse_rules_yaml(yaml).unwrap();
-        assert_eq!(rules.len(), 2);
+        let entries = super::super::concept_parse::parse_yaml(yaml).unwrap();
 
-        // First rule: plan-event-meal -> Meal
-        let rule1 = rules.iter().find(|r| r.name == "plan-event-meal").unwrap();
+        // Extract rule entries
+        let mut rules = Vec::new();
+        for entry in entries {
+            if let super::super::concept_parse::ParsedEntry::Rule {
+                name,
+                namespace,
+                value,
+            } = entry
+            {
+                let parsed = parse_rule(&namespace, &name, &value).unwrap();
+                rules.push(parsed);
+            }
+        }
+
+        assert_eq!(rules.len(), 1);
+
+        // plan-event-meal -> Meal
+        let rule1 = &rules[0];
+        assert_eq!(rule1.name, "plan-event-meal");
         assert_eq!(rule1.conclusion.concept_name, "Meal");
         assert!(rule1.description.is_some());
         let def1 = lower_rule(rule1).unwrap();
         assert_eq!(def1.conclusion.concept, "Meal");
         assert!(!def1.when.is_empty());
         assert!(def1.unless.is_empty());
-
-        // Second rule: infer-safe-event-meal -> SafeMeal
-        let rule2 = rules
-            .iter()
-            .find(|r| r.name == "infer-safe-event-meal")
-            .unwrap();
-        assert_eq!(rule2.conclusion.concept_name, "SafeMeal");
-        assert!(rule2.description.is_some());
-        let def2 = lower_rule(rule2).unwrap();
-        assert_eq!(def2.conclusion.concept, "SafeMeal");
-        assert!(!def2.when.is_empty());
-        assert!(def2.unless.is_empty());
     }
 }

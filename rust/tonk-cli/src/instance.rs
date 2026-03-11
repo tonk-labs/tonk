@@ -248,7 +248,7 @@ async fn query_with_rules(
     // Open a Session and register all rules
     let mut session = Session::open(branch);
     for rule in compiled_rules {
-        session = session.register(rule.clone());
+        session = session.register(rule);
     }
 
     // Build the dynamic concept
@@ -290,10 +290,7 @@ async fn query_with_rules(
         .await
         .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
 
-    // Convert answers to rows, deduplicating by entity ID.
-    // Rules involving multi-valued attributes (like ingredient) can produce
-    // duplicate rows for the same derived entity — we keep only the first.
-    let mut seen_entities = std::collections::HashSet::new();
+    // Convert answers to rows
     let mut rows = Vec::new();
     for answer in &answers {
         let mut data = serde_json::Map::new();
@@ -307,11 +304,6 @@ async fn query_with_rules(
                 "???".to_string()
             }
         };
-
-        // Deduplicate by entity ID
-        if !seen_entities.insert(entity_str.clone()) {
-            continue;
-        }
 
         // Resolve each attribute value
         for attr_var in &attr_vars {

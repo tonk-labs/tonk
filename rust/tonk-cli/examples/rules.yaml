@@ -16,19 +16,3 @@ user.rules:
       - diy.cook/Recipe:
           this: ?recipe
           title: ?recipe-name
-
-  infer-safe-event-meal:
-    description: A safe meal for an event — combines event context with dietary safety
-    deduce:
-      diy.planner/SafeMeal:
-        attendee: ?person
-        recipe: ?recipe
-        occasion: ?event
-    when:
-      - diy.planner/Event:
-          this: ?event
-          title: ?title
-      - diy.planner/SafeMeal:
-          this: ?safe
-          attendee: ?person
-          recipe: ?recipe

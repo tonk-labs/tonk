@@ -1,5 +1,5 @@
 # tonk CLI — Agent Reference
-tonk is a CLI for managing spaces (context repositories) with DID-based identity. Spaces store structured data through **concepts** (schemas) and **instances** (entries). All commands support `--json` for structured output.
+tonk is a CLI for managing spaces (context repositories) with DID-based identity. Spaces store structured data through **concepts** (schemas) and **entities** (entries). All commands support `--json` for structured output.
 
 ## Bootstrap (first-time setup)
  
@@ -20,37 +20,59 @@ Always run `tonk --json status` first to orient before creating new sessions/spa
 
 ## Concepts — defining schemas
 
-A concept is a named schema that defines what attributes instances can have. Attribute names are auto-prefixed with the concept's lowercase namespace (e.g. concept "Task" → attributes stored as `task/title`, `task/status`).
+A concept is a named schema that defines what attributes can be associated with entities. Attribute names are auto-prefixed with the lowercase concept name (for CLI-defined concepts) or the YAML-declared namespace (for imported concepts). For example, concept "Task" → attributes stored as `task/title`, `task/status`. Description is required (`--description` flag).
 
 ```bash
 # List all concepts in the active space
 tonk --json concept
-# → [{"name":"Task","instances":12},{"name":"Contact","instances":5,"description":"People and orgs"}]
+# → [{"name":"Task","count":12},{"name":"Contact","count":5,"description":"People and orgs"}]
 
-# Define a new concept (attributes are short names, auto-prefixed)
-tonk --json concept define Task title status priority
-# → {"ok":true,"name":"Task","attributes":["task/title","task/status","task/priority"]}
-
-# With a description
-tonk --json concept define Contact name email role --description "People and organizations"
+# Define a new concept (attributes are short names, auto-prefixed with concept name)
+tonk --json concept define Task title status priority --description "A task to track"
+# → {"ok":true,"name":"Task","namespace":"task","attributes":["task/title","task/status","task/priority"],"description":"A task to track"}
 
 # Interactive mode (prompts for attributes one by one)
-tonk concept define Task
+tonk concept define Task --description "A task to track"
 
 # Show concept schema
 tonk --json concept show Task
-# → {"name":"Task","attributes":["task/title","task/status","task/priority"],"instance_count":12,"entity":"did:key:z..."}
+# → {"name":"Task","namespace":"task","attributes":["task/title","task/status","task/priority"],"count":12,"entity":"did:key:z..."}
 
 # Add attributes to an existing concept
 tonk --json concept extend Task due_date assignee
 # → {"ok":true,"added":["task/due_date","task/assignee"]}
 
-# Delete a concept (fails if it has instances unless --force)
+# Delete a concept (fails if matches exist unless --force)
 tonk --json concept delete Task --force
-# → {"ok":true,"deleted":"Task","instances_deleted":12}
+# → {"ok":true,"deleted":"Task","count_deleted":12}
 ```
 
-## Creating instances — `tonk create`
+### Convergent define (idempotency & conflict handling)
+
+`concept define` uses convergent semantics. The concept entity is derived deterministically from its attribute set, so defining the same concept twice is a noop:
+
+```bash
+# Re-defining with identical attributes converges (noop)
+tonk --json concept define Task title status priority --description "A task to track"
+# → {"ok":true,"converged":true,"name":"Task","attributes":["task/title","task/status","task/priority"],"description":"A task to track"}
+```
+
+If a concept with the same name but **different attributes** already exists, the JSON response returns a conflict with full details instead of an error:
+
+```bash
+# Defining with different attributes produces a conflict response
+tonk --json concept define Task title status priority due_date --description "Updated task schema"
+# → {"ok":false,"conflict":true,"name":"Task",
+#    "existing_entity":"did:key:z...",
+#    "existing_attributes":["title","status","priority"],
+#    "proposed_entity":"did:key:z...",
+#    "proposed_attributes":["title","status","priority","due_date"],
+#    "message":"A different concept already exists under the name 'Task'. Re-run with --update to replace it (a provenance link will be created), or choose a different name."}
+```
+
+When a conflict is detected in JSON mode, the caller should inspect `existing_attributes` vs `proposed_attributes` and decide whether to update or rename. In interactive mode (without `--json`), the user is prompted to choose and can provide a rationale for the update, which is stored as `concept/update-rationale` on the new concept entity. Updated concepts link to their predecessor via `concept/prior` for provenance tracking.
+
+## Creating entities — `tonk create`
 
 ```bash
 # From key=value pairs (keys auto-prefixed to concept namespace)
@@ -64,12 +86,12 @@ echo '{"title":"Fix login bug","status":"todo"}' | tonk --json create Task --std
 tonk --json create Task --file task.json
 ```
 
-The instance ID (`did:key:z...`) is randomly generated and returned in the response. Store it to reference the instance later.
+The entity ID (`did:key:z...`) is deterministically derived from the entity's field content and returned in the response. Store it to reference the entity later.
 
-## Querying instances — `tonk query`
+## Querying entities — `tonk query`
 
 ```bash
-# All instances of a concept
+# All entities of a concept
 tonk --json query Task
 # → [{"id":"did:key:z...","data":{"title":"Fix login bug","status":"todo","priority":"high"}},...]
 
@@ -80,25 +102,27 @@ tonk --json query Task status=todo
 tonk --json query Task status=todo priority=high
 ```
 
-## Instance operations — `tonk show`, `tonk update`, `tonk delete`
+## Entity operations — `tonk show`, `tonk assert`, `tonk retract`
 
 ```bash
-# Show full details of an instance
+# Show full details of an entity
 tonk --json show "did:key:z..."
 # → {"id":"did:key:z...","concept":"Task","data":{"title":"Fix login bug","status":"todo","priority":"high"},"created":1739012345}
 
-# Update specific fields (keys auto-prefixed)
-tonk --json update "did:key:z..." status=done
+# Assert (update) specific fields (keys auto-prefixed)
+tonk --json assert "did:key:z..." status=done
 # → {"ok":true,"id":"did:key:z...","updated":[{"status":"done"}]}
 
-# Delete an instance
-tonk --json delete "did:key:z..."
+# Retract an entity (soft retraction — marks facts as retracted)
+tonk --json retract "did:key:z..."
 # → {"ok":true,"id":"did:key:z...","concept":"Task"}
 ```
 
+Note: Entity-to-concept inference is best-effort. An entity may have attributes spanning multiple concepts, so `show` reports the best matching concept based on attribute overlap.
+
 ## Batch operations — `tonk batch`
 
-Create, update, or delete multiple instances atomically in a single commit. Input is a JSON array via `--file` or `--stdin`. If any item fails validation, the entire batch aborts with no changes committed.
+Create, update, or delete multiple entities atomically in a single commit. Input is a JSON array via `--file` or `--stdin`. If any item fails validation, the entire batch aborts with no changes committed.
 
 ```bash
 # Batch create — array of attribute objects
@@ -114,7 +138,7 @@ echo '[{"id":"did:key:z...","status":"done"},{"id":"did:key:z...","priority":"hi
   | tonk --json batch update Task --stdin
 # → {"ok":true,"concept":"Task","count":2,"updated":[{"id":"did:key:z...","updated":[{"status":"done"}]},...]}}
 
-# Batch delete — array of instance ID strings
+# Batch delete — array of entity ID strings
 echo '["did:key:z...","did:key:z..."]' \
   | tonk --json batch delete Task --stdin
 # → {"ok":true,"concept":"Task","count":2,"deleted":["did:key:z...","did:key:z..."]}
@@ -126,7 +150,7 @@ echo '["did:key:z...","did:key:z..."]' \
 |-----------|------------|-----------------|
 | `batch create` | `[{...}, ...]` | Attribute key-value objects |
 | `batch update` | `[{...}, ...]` | Each object must have `"id"` plus fields to change |
-| `batch delete` | `["id", ...]` | Array of instance ID strings |
+| `batch delete` | `["id", ...]` | Array of entity ID strings |
 
 ## Spaces
 
@@ -137,15 +161,15 @@ tonk --json space create "name"      # Create a new space
 tonk space set "name-or-did"         # Switch active space
 ```
 
-Concepts and instances are scoped to the active space. Switching spaces gives you a different set of concepts and data.
+Concepts and entities are scoped to the active space. Switching spaces gives you a different set of concepts and data.
 
-## Rules — deriving instances from patterns
+## Rules — deriving entities from patterns
 
-A rule defines how instances of a concept can be **derived** from patterns across existing facts. Rules use Datalog-style deduction: positive premises (`when`) that must hold, and negative premises (`unless`) that must NOT hold. Variables (prefixed with `?`) bind values and create implicit joins across premises.
+A rule defines how entities of a concept can be **derived** from patterns across existing facts. Rules use Datalog-style deduction: positive premises (`when`) that must hold, and negative premises (`unless`) that must NOT hold. Variables (prefixed with `?`) bind values and create implicit joins across premises.
 
-Multiple rules can derive the same concept — they act as **OR branches**. Each rule independently produces derived instances, and results are merged. This lets you evolve rules independently rather than maintaining one giant rule with many branches.
+Multiple rules can derive the same concept — they act as **OR branches**. Each rule independently produces conclusions that match the conceptual model, and all conclusions are combined forming a unified set. This lets you evolve rules independently rather than maintaining one giant rule with many branches.
 
-When you query a concept that has rules, derived instances are transparently merged with stored instances.
+When you query a concept that has rules, conclusions from all applicable rules are transparently merged with directly asserted data.
 
 ```bash
 # List all rules
@@ -153,10 +177,10 @@ tonk --json rule
 # → [{"name":"safe-meals","conclusion":"SafeMeal"},...]
 
 # Define a rule from JSON (via file)
-tonk --json rule define safe-meals --file rule.json
+tonk --json rule define safe-meals --file rule.json --description "Meals safe for all attendees"
 
 # Define a rule from JSON (via stdin)
-cat <<'EOF' | tonk --json rule define safe-meals --stdin
+cat <<'EOF' | tonk --json rule define safe-meals --stdin --description "Meals safe for all attendees"
 {
   "conclusion": {
     "concept": "SafeMeal",
@@ -184,7 +208,7 @@ tonk --json rule show safe-meals
 # Delete a rule
 tonk --json rule delete safe-meals
 
-# Query now includes derived instances transparently
+# Query now includes derived entities transparently
 tonk --json query SafeMeal
 ```
 
@@ -234,17 +258,17 @@ tonk --json status
 tonk --json concept
 
 # 2. Define a schema (if needed)
-tonk --json concept define Task title status priority
+tonk --json concept define Task title status priority --description "A task to track"
 
-# 3. Create instances
+# 3. Create entities
 tonk --json create Task title="Fix login bug" status=todo priority=high
 tonk --json create Task title="Write tests" status=todo priority=medium
 
 # 4. Query and filter
 tonk --json query Task status=todo
 
-# 5. Update as work progresses
-tonk --json update "did:key:z..." status=done
+# 5. Assert updates as work progresses
+tonk --json assert "did:key:z..." status=done
 
 # 6. Sync with remote
 tonk sync
@@ -256,23 +280,23 @@ tonk sync
 |---------|---------|
 | `tonk --json status` | Current context (operator, session, space) |
 | `tonk --json concept` | List all concepts in the active space |
-| `tonk --json concept define <name> [attrs...]` | Define a new concept |
+| `tonk --json concept define <name> [attrs...] --description "..."` | Define a new concept |
 | `tonk --json concept show <name>` | Show concept schema |
 | `tonk --json concept extend <name> <attrs...>` | Add attributes to a concept |
 | `tonk --json concept delete <name> [--force]` | Delete a concept |
 | `tonk --json rule` | List all rules in the active space |
-| `tonk --json rule define <name> --file <json>` | Define a rule from JSON file |
-| `tonk --json rule define <name> --stdin` | Define a rule from stdin JSON |
+| `tonk --json rule define <name> --file <json> --description "..."` | Define a rule from JSON file |
+| `tonk --json rule define <name> --stdin --description "..."` | Define a rule from stdin JSON |
 | `tonk --json rule show <name>` | Show rule definition |
 | `tonk --json rule delete <name>` | Delete a rule |
-| `tonk --json create <concept> [key=val...]` | Create an instance |
-| `tonk --json query <concept> [key=val...]` | Query/filter instances |
-| `tonk --json show <id>` | Show instance details |
-| `tonk --json update <id> [key=val...]` | Update instance fields |
-| `tonk --json delete <id>` | Delete an instance |
-| `tonk --json batch create <concept> --file/--stdin` | Batch create instances from JSON array |
-| `tonk --json batch update <concept> --file/--stdin` | Batch update instances (objects with "id") |
-| `tonk --json batch delete <concept> --file/--stdin` | Batch delete instances (array of IDs) |
+| `tonk --json create <concept> [key=val...]` | Create an entity |
+| `tonk --json query <concept> [key=val...]` | Query/filter entities |
+| `tonk --json show <id>` | Show entity details |
+| `tonk --json assert <id> [key=val...]` | Assert (update) entity fields |
+| `tonk --json retract <id>` | Retract an entity |
+| `tonk --json batch create <concept> --file/--stdin` | Batch create entities from JSON array |
+| `tonk --json batch update <concept> --file/--stdin` | Batch update entities (objects with "id") |
+| `tonk --json batch delete <concept> --file/--stdin` | Batch delete entities (array of IDs) |
 | `tonk login` | Authenticate via browser |
 | `tonk login --delegation <file>` | Import delegation from file/base64 |
 | `tonk --json space create <name>` | Create a new space |

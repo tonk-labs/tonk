@@ -244,7 +244,7 @@ pub async fn show_current(json: bool) -> Result<()> {
                 println!("{}", serde_json::json!({"did": null, "name": null}));
             } else {
                 println!("No active space set for current session.");
-                println!("Use `tonk space set <name-or-did>` to select a space.");
+                println!("Use `tonk space load <name-or-did>` to select a space.");
             }
         }
     }
@@ -252,8 +252,10 @@ pub async fn show_current(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Switch to a different space (by name or DID)
-pub async fn set(space_identifier: String) -> Result<()> {
+/// Load an existing space by name or DID and set it as the active space.
+///
+/// Fails if the space does not exist or is not accessible.
+pub async fn load(space_identifier: String) -> Result<()> {
     // Get operator and authority
     let keystore = crate::keystore::Keystore::new().context("Failed to initialize keystore")?;
     let operator = keystore
@@ -264,54 +266,66 @@ pub async fn set(space_identifier: String) -> Result<()> {
     let authority = crate::authority::get_active_authority()?
         .context("No active session. Please run `tonk login` first.")?;
 
-    // Collect available spaces
-    let spaces = collect_spaces_for_authority(&operator_did, &authority.did)?;
-
-    // Find space by name or DID
-    let space_did = if space_identifier.starts_with("did:key:") {
-        // Direct DID lookup
-        if spaces.contains_key(&space_identifier) {
-            space_identifier
-        } else {
-            anyhow::bail!("Space {} not found or not accessible", space_identifier);
-        }
-    } else {
-        // Name lookup
-        let matching_spaces: Vec<String> = spaces
-            .keys()
-            .filter(|space_did| {
-                if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(space_did) {
-                    metadata.name == space_identifier
-                } else {
-                    false
-                }
-            })
-            .cloned()
-            .collect();
-
-        if matching_spaces.is_empty() {
-            anyhow::bail!("No space found with name '{}'", space_identifier);
-        } else if matching_spaces.len() > 1 {
-            anyhow::bail!(
-                "Multiple spaces found with name '{}'. Use the DID instead.",
-                space_identifier
-            );
-        } else {
-            matching_spaces[0].clone()
-        }
-    };
+    // Resolve space by name or DID
+    let space_did = resolve_space_identifier(&operator_did, &authority.did, &space_identifier)?;
 
     // Set as active space
     crate::state::set_active_space(&authority.did, &space_did)?;
 
     // Show confirmation
     if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(&space_did) {
-        println!("✅ Switched to space: {} ({})", metadata.name, space_did);
+        println!("Switched to space: {} ({})", metadata.name, space_did);
     } else {
-        println!("✅ Switched to space: {}", space_did);
+        println!("Switched to space: {}", space_did);
     }
 
     Ok(())
+}
+
+/// Open a space by name: load it if it already exists, otherwise create it.
+///
+/// This is idempotent — calling it multiple times with the same name is safe.
+pub async fn open(
+    name: String,
+    owners: Option<Vec<String>>,
+    description: Option<String>,
+    json: bool,
+) -> Result<()> {
+    // Get operator
+    let keystore = Keystore::new().context("Failed to initialize keystore")?;
+    let operator = keystore
+        .get_or_create_keypair()
+        .context("Failed to get operator keypair")?;
+    let operator_did = operator.did().to_string();
+
+    // Get active authority
+    let authority = authority::get_active_authority()?
+        .context("No active authority. Please run 'tonk login' first")?;
+
+    // Check if a space with this name already exists
+    if let Some(existing_did) = find_existing_space_by_name(&operator_did, &authority.did, &name)? {
+        // Space exists — load it
+        crate::state::set_active_space(&authority.did, &existing_did)?;
+
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "name": name,
+                    "did": existing_did,
+                    "created": false,
+                })
+            );
+        } else {
+            println!("Switched to existing space: {} ({})", name, existing_did);
+        }
+
+        return Ok(());
+    }
+
+    // Space does not exist — create it
+    create(name, owners, description, json).await
 }
 
 /// Create a new space
@@ -340,6 +354,16 @@ pub async fn create(
         println!(
             "👤 Authority: {}\n",
             authority::format_authority_did(&authority.did)
+        );
+    }
+
+    // Check if a space with this name already exists under this authority
+    if let Some(existing_did) = find_existing_space_by_name(&operator_did, &authority.did, &name)? {
+        anyhow::bail!(
+            "Space '{}' already exists (DID: {}). Use 'tonk space open {}' to load it, or choose a different name.",
+            name,
+            existing_did,
+            name
         );
     }
 
@@ -469,6 +493,72 @@ pub async fn create(
     }
 
     Ok(())
+}
+
+/// Resolve a space identifier (name or DID) to a space DID within the given authority's accessible spaces.
+///
+/// - If the identifier starts with `did:key:`, it is looked up directly.
+/// - Otherwise, it is treated as a name and matched against space metadata.
+///
+/// Returns the space DID if found, or an error if not found or ambiguous.
+fn resolve_space_identifier(
+    operator_did: &str,
+    authority_did: &str,
+    space_identifier: &str,
+) -> Result<String> {
+    let spaces = collect_spaces_for_authority(operator_did, authority_did)?;
+
+    if space_identifier.starts_with("did:key:") {
+        if spaces.contains_key(space_identifier) {
+            Ok(space_identifier.to_string())
+        } else {
+            anyhow::bail!("Space {} not found or not accessible", space_identifier);
+        }
+    } else {
+        let matching_spaces: Vec<String> = spaces
+            .keys()
+            .filter(|space_did| {
+                if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(space_did) {
+                    metadata.name == space_identifier
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        if matching_spaces.is_empty() {
+            anyhow::bail!("No space found with name '{}'", space_identifier);
+        } else if matching_spaces.len() > 1 {
+            anyhow::bail!(
+                "Multiple spaces found with name '{}'. Use the DID instead.",
+                space_identifier
+            );
+        } else {
+            Ok(matching_spaces[0].clone())
+        }
+    }
+}
+
+/// Check if a space with the given name already exists under the given authority.
+///
+/// Returns `Some(space_did)` if a space with that name is found, `None` otherwise.
+fn find_existing_space_by_name(
+    operator_did: &str,
+    authority_did: &str,
+    name: &str,
+) -> Result<Option<String>> {
+    let spaces = collect_spaces_for_authority(operator_did, authority_did)?;
+
+    for space_did in spaces.keys() {
+        if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(space_did)
+            && metadata.name == name
+        {
+            return Ok(Some(space_did.clone()));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Get the storage path for a space's facts database
@@ -1094,42 +1184,8 @@ pub async fn delete(space_identifier: String, force: bool) -> Result<()> {
     let authority = crate::authority::get_active_authority()?
         .context("No active session. Please run `tonk login` first.")?;
 
-    // Collect available spaces
-    let spaces = collect_spaces_for_authority(&operator_did, &authority.did)?;
-
-    // Find space by name or DID
-    let space_did = if space_identifier.starts_with("did:key:") {
-        // Direct DID lookup
-        if spaces.contains_key(&space_identifier) {
-            space_identifier.clone()
-        } else {
-            anyhow::bail!("Space {} not found or not accessible", space_identifier);
-        }
-    } else {
-        // Name lookup
-        let matching_spaces: Vec<String> = spaces
-            .keys()
-            .filter(|space_did| {
-                if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(space_did) {
-                    metadata.name == space_identifier
-                } else {
-                    false
-                }
-            })
-            .cloned()
-            .collect();
-
-        if matching_spaces.is_empty() {
-            anyhow::bail!("No space found with name '{}'", space_identifier);
-        } else if matching_spaces.len() > 1 {
-            anyhow::bail!(
-                "Multiple spaces found with name '{}'. Use the DID instead.",
-                space_identifier
-            );
-        } else {
-            matching_spaces[0].clone()
-        }
-    };
+    // Resolve space by name or DID
+    let space_did = resolve_space_identifier(&operator_did, &authority.did, &space_identifier)?;
 
     // Get space name for display
     let space_name = if let Ok(Some(metadata)) = crate::metadata::SpaceMetadata::load(&space_did) {

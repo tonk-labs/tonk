@@ -20,7 +20,7 @@ pub struct Keystore {
 }
 
 impl Keystore {
-    /// Create a new keystore instance
+    /// Create a new keystore entity
     pub fn new() -> Result<Self, KeystoreError> {
         let entry = Entry::new(SERVICE_NAME, KEY_NAME)?;
         Ok(Self { entry })

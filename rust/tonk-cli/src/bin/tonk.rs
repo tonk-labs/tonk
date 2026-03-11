@@ -71,7 +71,7 @@ mod inner {
             force: bool,
         },
 
-        /// Create a new instance of a concept
+        /// Create a new entity
         Create {
             /// Concept name (e.g., "Task")
             concept: String,
@@ -89,7 +89,7 @@ mod inner {
             stdin: bool,
         },
 
-        /// Query instances of a concept with optional selectors
+        /// Query entities with optional selectors
         Query {
             /// Concept name (e.g., "Task")
             concept: String,
@@ -99,15 +99,15 @@ mod inner {
             selectors: Vec<String>,
         },
 
-        /// Show details of an instance by ID
+        /// Show details of an entity by ID
         Show {
-            /// Instance ID (did:key:...)
+            /// Entity ID (did:key:...)
             id: String,
         },
 
-        /// Update an existing instance
-        Update {
-            /// Instance ID (did:key:...)
+        /// Assert new attributes on an entity
+        Assert {
+            /// Entity ID (did:key:...)
             id: String,
 
             /// Field values to update as key=value pairs
@@ -115,13 +115,13 @@ mod inner {
             fields: Vec<String>,
         },
 
-        /// Delete an instance by ID
-        Delete {
-            /// Instance ID (did:key:...)
+        /// Retract all known attributes of the entity
+        Retract {
+            /// Entity ID (did:key:...)
             id: String,
         },
 
-        /// Batch operations on instances (create, update, delete multiple at once)
+        /// Batch operations on entities (create, update, delete multiple at once)
         Batch {
             #[command(subcommand)]
             command: BatchCommands,
@@ -169,13 +169,13 @@ mod inner {
         /// Show the current space DID
         Current,
 
-        /// Switch to a different space
-        Set {
-            /// Space name or DID to switch to
+        /// Load an existing space by name or DID (fails if not found)
+        Load {
+            /// Space name or DID to load
             space: String,
         },
 
-        /// Create a new space
+        /// Create a new space (fails if a space with the same name already exists)
         Create {
             /// Name of the space
             name: String,
@@ -186,6 +186,22 @@ mod inner {
             owners: Option<Vec<String>>,
 
             /// Optional description
+            #[arg(short, long)]
+            description: Option<String>,
+        },
+
+        /// Open a space: load if it exists, otherwise create it
+        Open {
+            /// Name of the space
+            name: String,
+
+            /// Owner DIDs (did:key identifiers). If not provided, will prompt interactively.
+            /// The active authority is always included as an owner.
+            /// Only used when creating a new space.
+            #[arg(short, long)]
+            owners: Option<Vec<String>>,
+
+            /// Optional description (only used when creating a new space)
             #[arg(short, long)]
             description: Option<String>,
         },
@@ -252,9 +268,9 @@ mod inner {
             #[arg(trailing_var_arg = true)]
             attributes: Vec<String>,
 
-            /// Optional description of the concept
+            /// Description of the concept (required for discoverability)
             #[arg(short, long)]
-            description: Option<String>,
+            description: String,
         },
 
         /// Show details of a concept
@@ -278,7 +294,7 @@ mod inner {
             /// Concept name
             name: String,
 
-            /// Also delete all instances of this concept
+            /// Also delete all entities of this concept
             #[arg(short, long)]
             force: bool,
         },
@@ -312,9 +328,9 @@ mod inner {
             #[arg(long)]
             stdin: bool,
 
-            /// Optional description of the rule
+            /// Description of the rule (required for discoverability)
             #[arg(short, long)]
-            description: Option<String>,
+            description: String,
         },
 
         /// Show details of a rule
@@ -442,21 +458,21 @@ mod inner {
 
     #[derive(Subcommand)]
     pub enum BatchCommands {
-        /// Create multiple instances of a concept from a JSON array
+        /// Create multiple entities of a concept from a JSON array
         Create {
             /// Concept name (e.g., "Task")
             concept: String,
 
-            /// Read instance data from a JSON file (array of objects)
+            /// Read entity data from a JSON file (array of objects)
             #[arg(long, short)]
             file: Option<String>,
 
-            /// Read instance data from stdin as JSON array
+            /// Read entity data from stdin as JSON array
             #[arg(long)]
             stdin: bool,
         },
 
-        /// Update multiple instances from a JSON array (each object must include "id")
+        /// Update multiple entities from a JSON array (each object must include "id")
         Update {
             /// Concept name (e.g., "Task")
             concept: String,
@@ -470,16 +486,16 @@ mod inner {
             stdin: bool,
         },
 
-        /// Delete multiple instances from a JSON array of IDs
+        /// Delete multiple entities from a JSON array of IDs
         Delete {
             /// Concept name (e.g., "Task")
             concept: String,
 
-            /// Read instance IDs from a JSON file (array of ID strings)
+            /// Read entity IDs from a JSON file (array of ID strings)
             #[arg(long, short)]
             file: Option<String>,
 
-            /// Read instance IDs from stdin as JSON array
+            /// Read entity IDs from stdin as JSON array
             #[arg(long)]
             stdin: bool,
         },
@@ -565,8 +581,8 @@ async fn main() -> anyhow::Result<()> {
             Some(SpaceCommands::Current) => {
                 tonk_cli::space::show_current(json).await?;
             }
-            Some(SpaceCommands::Set { space }) => {
-                tonk_cli::space::set(space).await?;
+            Some(SpaceCommands::Load { space }) => {
+                tonk_cli::space::load(space).await?;
             }
             Some(SpaceCommands::Create {
                 name,
@@ -574,6 +590,13 @@ async fn main() -> anyhow::Result<()> {
                 description,
             }) => {
                 tonk_cli::space::create(name, owners, description, json).await?;
+            }
+            Some(SpaceCommands::Open {
+                name,
+                owners,
+                description,
+            }) => {
+                tonk_cli::space::open(name, owners, description, json).await?;
             }
             Some(SpaceCommands::Invite { email, space }) => {
                 tonk_cli::space::invite(email, space).await?;
@@ -593,28 +616,31 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::space::delegate(to, space, read_only, output).await?;
             }
         },
-        Commands::Concept { command } => match command {
-            None => {
-                // `tonk concept` with no subcommand lists all concepts
-                tonk_cli::concept::list(json).await?;
+        Commands::Concept { command } => {
+            let ctx = tonk_cli::schema::get_space_context()?;
+            match command {
+                None => {
+                    // `tonk concept` with no subcommand lists all concepts
+                    tonk_cli::concept::list(&ctx, json).await?;
+                }
+                Some(ConceptCommands::Define {
+                    name,
+                    attributes,
+                    description,
+                }) => {
+                    tonk_cli::concept::define(&ctx, name, attributes, description, json).await?;
+                }
+                Some(ConceptCommands::Show { name }) => {
+                    tonk_cli::concept::show(&ctx, name, json).await?;
+                }
+                Some(ConceptCommands::Extend { name, attributes }) => {
+                    tonk_cli::concept::extend(&ctx, name, attributes, json).await?;
+                }
+                Some(ConceptCommands::Delete { name, force }) => {
+                    tonk_cli::concept::delete(&ctx, name, force, json).await?;
+                }
             }
-            Some(ConceptCommands::Define {
-                name,
-                attributes,
-                description,
-            }) => {
-                tonk_cli::concept::define(name, attributes, description, json).await?;
-            }
-            Some(ConceptCommands::Show { name }) => {
-                tonk_cli::concept::show(name, json).await?;
-            }
-            Some(ConceptCommands::Extend { name, attributes }) => {
-                tonk_cli::concept::extend(name, attributes, json).await?;
-            }
-            Some(ConceptCommands::Delete { name, force }) => {
-                tonk_cli::concept::delete(name, force, json).await?;
-            }
-        },
+        }
         Commands::Attribute { command } => match command {
             None => {
                 tonk_cli::attribute::list(json).await?;
@@ -623,28 +649,32 @@ async fn main() -> anyhow::Result<()> {
                 tonk_cli::attribute::show(name, concept, json).await?;
             }
         },
-        Commands::Rule { command } => match command {
-            None => {
-                // `tonk rule` with no subcommand lists all rules
-                tonk_cli::rule::list(json).await?;
+        Commands::Rule { command } => {
+            let ctx = tonk_cli::schema::get_space_context()?;
+            match command {
+                None => {
+                    // `tonk rule` with no subcommand lists all rules
+                    tonk_cli::rule::list(&ctx, json).await?;
+                }
+                Some(RuleCommands::Define {
+                    name,
+                    file,
+                    stdin,
+                    description,
+                }) => {
+                    tonk_cli::rule::define(&ctx, name, file, stdin, description, json).await?;
+                }
+                Some(RuleCommands::Show { name }) => {
+                    tonk_cli::rule::show(&ctx, name, json).await?;
+                }
+                Some(RuleCommands::Delete { name }) => {
+                    tonk_cli::rule::delete(&ctx, name, json).await?;
+                }
             }
-            Some(RuleCommands::Define {
-                name,
-                file,
-                stdin,
-                description,
-            }) => {
-                tonk_cli::rule::define(name, file, stdin, description, json).await?;
-            }
-            Some(RuleCommands::Show { name }) => {
-                tonk_cli::rule::show(name, json).await?;
-            }
-            Some(RuleCommands::Delete { name }) => {
-                tonk_cli::rule::delete(name, json).await?;
-            }
-        },
+        }
         Commands::Import { file, force } => {
-            tonk_cli::import::import(file, force, json).await?;
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::import::import(&ctx, file, force, json).await?;
         }
         Commands::Create {
             concept,
@@ -652,65 +682,76 @@ async fn main() -> anyhow::Result<()> {
             file,
             stdin,
         } => {
-            tonk_cli::instance::create(concept, fields, file, stdin, json).await?;
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::entity::create(&ctx, concept, fields, file, stdin, json).await?;
         }
         Commands::Query { concept, selectors } => {
-            tonk_cli::instance::query(concept, selectors, json).await?;
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::entity::query(&ctx, concept, selectors, json).await?;
         }
         Commands::Show { id } => {
-            tonk_cli::instance::show(id, json).await?;
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::entity::show(&ctx, id, json).await?;
         }
-        Commands::Update { id, fields } => {
-            tonk_cli::instance::update(id, fields, json).await?;
+        Commands::Assert { id, fields } => {
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::entity::assert(&ctx, id, fields, json).await?;
         }
-        Commands::Delete { id } => {
-            tonk_cli::instance::delete(id, json).await?;
+        Commands::Retract { id } => {
+            let ctx = tonk_cli::schema::get_space_context()?;
+            tonk_cli::entity::retract(&ctx, id, json).await?;
         }
-        Commands::Batch { command } => match command {
-            BatchCommands::Create {
-                concept,
-                file,
-                stdin,
-            } => {
-                tonk_cli::batch::batch_create(concept, file, stdin, json).await?;
-            }
-            BatchCommands::Update {
-                concept,
-                file,
-                stdin,
-            } => {
-                tonk_cli::batch::batch_update(concept, file, stdin, json).await?;
-            }
-            BatchCommands::Delete {
-                concept,
-                file,
-                stdin,
-            } => {
-                tonk_cli::batch::batch_delete(concept, file, stdin, json).await?;
-            }
-        },
-        Commands::Dev { command } => match command {
-            DevCommands::Fact { command } => match command {
-                FactCommands::Assert { the, of, is } => {
-                    let is_value = is.join(" ").trim().to_string();
-                    tonk_cli::fact::assert(the, of, is_value, json).await?;
-                }
-                FactCommands::Retract { the, of, is } => {
-                    let is_value = is.join(" ").trim().to_string();
-                    tonk_cli::fact::retract(the, of, is_value, json).await?;
-                }
-                FactCommands::Find {
-                    the,
-                    of,
-                    is,
-                    format,
+        Commands::Batch { command } => {
+            let ctx = tonk_cli::schema::get_space_context()?;
+            match command {
+                BatchCommands::Create {
+                    concept,
+                    file,
+                    stdin,
                 } => {
-                    tonk_cli::fact::find(the, of, is, format, json).await?;
+                    tonk_cli::batch::batch_create(&ctx, concept, file, stdin, json).await?;
                 }
-                FactCommands::Batch { file } => {
-                    tonk_cli::fact::batch(file, json).await?;
+                BatchCommands::Update {
+                    concept,
+                    file,
+                    stdin,
+                } => {
+                    tonk_cli::batch::batch_update(&ctx, concept, file, stdin, json).await?;
                 }
-            },
+                BatchCommands::Delete {
+                    concept,
+                    file,
+                    stdin,
+                } => {
+                    tonk_cli::batch::batch_delete(&ctx, concept, file, stdin, json).await?;
+                }
+            }
+        }
+        Commands::Dev { command } => match command {
+            DevCommands::Fact { command } => {
+                let ctx = tonk_cli::schema::get_space_context()?;
+                match command {
+                    FactCommands::Assert { the, of, is } => {
+                        let is_value = is.join(" ").trim().to_string();
+                        tonk_cli::fact::assert(&ctx, the, of, is_value, json).await?;
+                    }
+                    FactCommands::Retract { the, of, is } => {
+                        let is_value = is.join(" ").trim().to_string();
+                        tonk_cli::fact::retract(&ctx, the, of, is_value, json).await?;
+                    }
+                    FactCommands::Find {
+                        the,
+                        of,
+                        is,
+                        format,
+                    } => {
+                        tonk_cli::fact::find(&ctx, the, of, is, format, json).await?;
+                    }
+                    FactCommands::Batch { file } => {
+                        tonk_cli::fact::batch(&ctx, file, json).await?;
+                    }
+                }
+            }
             DevCommands::Operator { command } => match command {
                 OperatorCommands::Generate => {
                     tonk_cli::operator::generate()?;
