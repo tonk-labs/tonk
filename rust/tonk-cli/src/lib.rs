@@ -4,6 +4,7 @@
 // New carry modules (Phase 1)
 // ---------------------------------------------------------------------------
 pub mod assert_cmd;
+pub mod help;
 pub mod init;
 pub mod query_cmd;
 pub mod retract_cmd;

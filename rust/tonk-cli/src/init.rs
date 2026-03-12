@@ -2,6 +2,14 @@
 //!
 //! Creates a `.carry/` directory, generates an Ed25519 keypair, and
 //! initializes a space directory. Optionally asserts a label claim.
+//!
+//! # TODO: Behavior when site already has spaces
+//!
+//! Currently `carry init` reuses the first/active space if one exists.
+//! With multispace support, consider:
+//! - `carry init` with existing spaces could warn or prompt
+//! - `carry space create` becomes the explicit way to add spaces
+//! - `carry init` might only create the site, not a space, if spaces exist
 
 use crate::schema;
 use crate::site::Site;

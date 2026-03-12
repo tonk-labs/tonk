@@ -1,6 +1,21 @@
 //! `carry assert` — assert claims on entities.
 //!
 //! Supports domain targets, concept targets, file input, and stdin.
+//!
+//! # TODO: Support asserted notation for file/stdin input
+//!
+//! Currently file/stdin input requires formal triple format: `[{the, of, is}, ...]`
+//! The spec says asserted notation (entity -> context -> fields) should also work,
+//! enabling round-trip: `carry query ... | carry assert -`
+//!
+//! To implement:
+//! 1. Detect if input is asserted notation (map with entity keys) vs formal triples
+//! 2. If asserted notation, expand to triples:
+//!    - Level 1 key = entity (DID or `_` for anonymous)
+//!    - Level 2 key = context (domain if contains `.`, concept if not)
+//!    - Level 3 = field/value pairs -> expand to `{the: context/field, of: entity, is: value}`
+//! 3. Handle concept context by resolving bookmarked concept to get attribute relations
+//! 4. Handle nested entities (non-scalar values at level 3)
 
 use crate::schema;
 use crate::site::SiteContext;

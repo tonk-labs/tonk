@@ -12,6 +12,20 @@
 //!
 //! The active space is tracked in `.carry/@active` (a plain-text file
 //! containing the space DID).
+//!
+//! # TODO: Expose multi-space support in CLI
+//!
+//! The infrastructure here already supports multiple spaces per site:
+//! - [`Site::list_spaces`] - enumerate all spaces
+//! - [`Site::create_space`] - create additional spaces
+//! - [`Site::set_active_space`] / [`Site::active_space_did`] - switch between spaces
+//! - [`Site::space_by_did`] - lookup by DID
+//!
+//! What's needed:
+//! 1. Add `carry space` subcommand in `bin/carry.rs` (see TODO there)
+//! 2. Add label storage for spaces (currently only xyz.tonk.carry/label on init)
+//! 3. Consider: space_by_label() lookup for `carry space switch my-label`
+//! 4. Consider: delete_space() with safety checks (no active, confirm prompt)
 
 use anyhow::{Context, Result};
 use dialog_artifacts::repository::{BranchId, Credentials, Repository};
