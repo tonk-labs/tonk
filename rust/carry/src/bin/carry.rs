@@ -31,6 +31,7 @@ mod inner {
     #[derive(Subcommand)]
     pub enum Commands {
         /// Create a new .carry/ repository
+        #[command(alias = "i")]
         #[command(long_about = help::INIT_LONG_ABOUT)]
         #[command(after_help = help::INIT_AFTER_HELP)]
         Init {
@@ -40,6 +41,7 @@ mod inner {
         },
 
         /// Query entities by domain or concept
+        #[command(alias = "q")]
         #[command(long_about = help::QUERY_LONG_ABOUT)]
         #[command(after_help = help::QUERY_AFTER_HELP)]
         Query {
@@ -54,6 +56,7 @@ mod inner {
         },
 
         /// Assert claims on entities
+        #[command(alias = "a")]
         #[command(long_about = help::ASSERT_LONG_ABOUT)]
         #[command(after_help = help::ASSERT_AFTER_HELP)]
         Assert {
@@ -68,6 +71,7 @@ mod inner {
         },
 
         /// Retract claims from entities
+        #[command(alias = "r")]
         #[command(long_about = help::RETRACT_LONG_ABOUT)]
         #[command(after_help = help::RETRACT_AFTER_HELP)]
         Retract {
@@ -82,11 +86,13 @@ mod inner {
         },
 
         /// Show current site and space information
+        #[command(alias = "st")]
         #[command(long_about = help::STATUS_LONG_ABOUT)]
         #[command(after_help = help::STATUS_AFTER_HELP)]
         Status,
 
         /// Manage spaces within a .carry/ repository
+        #[command(alias = "s")]
         #[command(long_about = help::SPACE_LONG_ABOUT)]
         #[command(after_help = help::SPACE_AFTER_HELP)]
         Space {
@@ -98,9 +104,11 @@ mod inner {
     #[derive(Subcommand)]
     pub enum SpaceCommands {
         /// List all spaces in the site
+        #[command(alias = "l")]
         List,
 
         /// Create a new space
+        #[command(alias = "c")]
         Create {
             /// Label for the new space
             #[arg(value_name = "LABEL")]
@@ -108,6 +116,7 @@ mod inner {
         },
 
         /// Switch active space
+        #[command(alias = "s")]
         Switch {
             /// DID or label of the space to switch to
             #[arg(value_name = "DID|LABEL")]
@@ -115,9 +124,11 @@ mod inner {
         },
 
         /// Show current active space
+        #[command(alias = "a")]
         Active,
 
         /// Delete a space (cannot delete the active space)
+        #[command(alias = "d")]
         Delete {
             /// DID or label of the space to delete
             #[arg(value_name = "DID|LABEL")]
