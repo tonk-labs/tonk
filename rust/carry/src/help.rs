@@ -8,7 +8,8 @@ organized into domains (namespaced like 'com.myapp.person') and can be grouped
 into concepts (reusable schemas). All data lives in a .carry/ repository.
 
 KEY CONCEPTS:
-  Space       A .carry/ repository containing your data
+  Site        A .carry/ repository containing your data
+  Space       An isolated namespace within a site, with its own identity
   Entity      Anything with an identity (has a DID like did:key:z...)
   Claim       A single fact: the X of Y is Z
   Domain      A namespace for relations (e.g., 'com.myapp.person')
@@ -65,9 +66,12 @@ For detailed help on any command: carry help <command>";
 pub const INIT_LONG_ABOUT: &str = "\
 Creates a new Dialog DB repository at .carry/ in the target directory.
 
-If --site is not specified, the repository is created in $PWD. If a repository 
-already exists at that location and a name is provided, the name is asserted 
-as the space label.
+If --site is not specified, the repository is created in $PWD. A first space
+is created automatically. If a name is provided, it is asserted as the space
+label.
+
+If a repository already exists, reports its status without creating another
+space. Use `carry space create` to add more spaces after initialization.
 
 The command generates an Ed25519 keypair for the space, creating a unique 
 space DID (e.g., did:key:zSpace). The private key is stored in 
@@ -132,6 +136,9 @@ EXAMPLES:
   # Output as JSON
   carry query person --format json
 
+  # Query in a different space (by label or DID)
+  carry query com.app.person name age --space research
+
 OUTPUT FORMAT (asserted notation):
   did:key:zAlice:
     com.app.person:
@@ -178,6 +185,9 @@ EXAMPLES:
 
   # Update an existing entity
   carry assert person this=did:key:zAlice age=29
+
+  # Assert into a specific space
+  carry assert com.app.person name=Alice --space research
 
   # Assert from a YAML file
   carry assert schema.yaml
@@ -232,6 +242,9 @@ EXAMPLES:
   # Retract using domain
   carry retract com.app.person this=did:key:zAlice name age
 
+  # Retract from a specific space
+  carry retract person this=did:key:zAlice age --space research
+
   # Retract from file
   carry retract retractions.yaml
 
@@ -264,3 +277,50 @@ OUTPUT:
   Site: /path/to/project/.carry/did:key:zSpace
   Space: did:key:zSpace
   Label: my-project";
+
+// -----------------------------------------------------------------------------
+// Space
+// -----------------------------------------------------------------------------
+
+pub const SPACE_LONG_ABOUT: &str = "\
+Manage spaces within a .carry/ repository.
+
+Spaces are isolated namespaces within a single carry repo, each with its own
+Ed25519 identity and data store. Use spaces to keep workstreams separate
+within the same project.
+
+Each space has a unique DID (e.g., did:key:z...) and an optional human-readable
+label. The active space is the default target for query, assert, and retract
+commands. Use --space <DID|LABEL> on any command to target a specific space
+without switching.";
+
+pub const SPACE_AFTER_HELP: &str = "\
+EXAMPLES:
+  # List all spaces
+  carry space list
+
+  # Create a new space with a label
+  carry space create research
+
+  # Switch to a space by label
+  carry space switch research
+
+  # Switch to a space by DID
+  carry space switch did:key:zAbc123
+
+  # Show current active space
+  carry space active
+
+  # Delete a space (with confirmation)
+  carry space delete research
+
+  # Delete without confirmation
+  carry space delete research --yes
+
+  # Query in a specific space without switching
+  carry query person --space research
+
+SPACE RESOLUTION:
+  Commands accept either a DID or a label to identify a space.
+  If a label matches multiple spaces, an error is returned —
+  use the DID to be specific.";

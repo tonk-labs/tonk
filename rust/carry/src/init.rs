@@ -1,15 +1,9 @@
 //! `carry init` — create a new `.carry/` repository.
 //!
-//! Creates a `.carry/` directory, generates an Ed25519 keypair, and
-//! initializes a space directory. Optionally asserts a label claim.
-//!
-//! # TODO: Behavior when site already has spaces
-//!
-//! Currently `carry init` reuses the first/active space if one exists.
-//! With multispace support, consider:
-//! - `carry init` with existing spaces could warn or prompt
-//! - `carry space create` becomes the explicit way to add spaces
-//! - `carry init` might only create the site, not a space, if spaces exist
+//! Creates a `.carry/` directory and a first space. Optionally asserts a
+//! label claim on the space. If a repository already exists, reports its
+//! status without creating additional spaces — use `carry space create`
+//! for that.
 
 use crate::schema;
 use crate::site::Site;
@@ -26,31 +20,40 @@ pub async fn execute(name: Option<String>, site_path: Option<&Path>) -> Result<(
         std::env::current_dir()?
     };
 
-    // Create or open the .carry/ directory
-    let site = if parent.join(".carry").is_dir() {
-        Site::open(&parent)?
-    } else {
-        Site::init(&parent)?
-    };
+    // If a .carry/ directory already exists, report status and return
+    if parent.join(".carry").is_dir() {
+        let site = Site::open(&parent)?;
+        let spaces = site.list_spaces()?;
+        let active_did = site.active_space_did()?;
 
-    // Check if there's already a space
-    let existing_spaces = site.list_spaces()?;
-
-    let space = if existing_spaces.is_empty() {
-        // Create a new space
-        let space = site.create_space()?;
-        site.set_active_space(&space.did)?;
-        space
-    } else {
-        // Use existing active space or first space
-        if let Ok(active) = site.active_space() {
-            active
-        } else {
-            let space = &existing_spaces[0];
-            site.set_active_space(&space.did)?;
-            space.clone()
+        println!("Repository already exists at {}", site.root().display());
+        println!(
+            "{} space{}",
+            spaces.len(),
+            if spaces.len() == 1 { "" } else { "s" }
+        );
+        if let Some(ref did) = active_did {
+            if let Some(space) = site.space_by_did(did) {
+                let label = site.space_label(&space).await.unwrap_or(None);
+                let label_display = label
+                    .as_ref()
+                    .map(|l| format!(" ({})", l))
+                    .unwrap_or_default();
+                println!("Active: {}{}", did, label_display);
+            } else {
+                println!("Active: {}", did);
+            }
         }
-    };
+        println!("\nUse `carry space create` to add more spaces.");
+        return Ok(());
+    }
+
+    // Create the .carry/ directory
+    let site = Site::init(&parent)?;
+
+    // Create the first space
+    let space = site.create_space()?;
+    site.set_active_space(&space.did)?;
 
     // If a name is provided, assert it as a label claim
     if let Some(ref label) = name {
