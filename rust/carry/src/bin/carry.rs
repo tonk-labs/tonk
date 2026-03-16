@@ -163,27 +163,35 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Query { target, fields } => {
             let parsed_target = carry::target::Target::parse(&target)?;
-            let (parsed_fields, _this_entity) = carry::target::parse_fields(&fields)?;
+            let parsed = carry::target::parse_fields(&fields)?;
             let ctx = carry::site::SiteContext::resolve(site_path, space_flag).await?;
-            carry::query_cmd::execute(&ctx, parsed_target, parsed_fields, format).await?;
+            carry::query_cmd::execute(&ctx, parsed_target, parsed.fields, format).await?;
         }
         Commands::Assert {
             target_or_file,
             fields,
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
-            let (parsed_fields, this_entity) = carry::target::parse_fields(&fields)?;
+            let parsed = carry::target::parse_fields(&fields)?;
             let ctx = carry::site::SiteContext::resolve(site_path, space_flag).await?;
-            carry::assert_cmd::execute(&ctx, first_arg, this_entity, parsed_fields, format).await?;
+            carry::assert_cmd::execute(
+                &ctx,
+                first_arg,
+                parsed.this_entity,
+                parsed.entity_name,
+                parsed.fields,
+                format,
+            )
+            .await?;
         }
         Commands::Retract {
             target_or_file,
             fields,
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
-            let (parsed_fields, this_entity) = carry::target::parse_fields(&fields)?;
+            let parsed = carry::target::parse_fields(&fields)?;
             let ctx = carry::site::SiteContext::resolve(site_path, space_flag).await?;
-            carry::retract_cmd::execute(&ctx, first_arg, this_entity, parsed_fields, format)
+            carry::retract_cmd::execute(&ctx, first_arg, parsed.this_entity, parsed.fields, format)
                 .await?;
         }
         Commands::Status => {
