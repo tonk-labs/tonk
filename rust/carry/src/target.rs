@@ -115,19 +115,43 @@ impl Field {
 // Parsing
 // ---------------------------------------------------------------------------
 
+/// Parsed fields from CLI arguments.
+#[derive(Debug, Clone)]
+pub struct ParsedFields {
+    /// The field list (projections and filters).
+    pub fields: Vec<Field>,
+    /// The entity target (`this=<ENTITY>`), if provided.
+    pub this_entity: Option<String>,
+    /// The entity name (`@name`), if provided.
+    pub entity_name: Option<String>,
+}
+
 /// Parse a list of field arguments from the CLI.
 ///
 /// Each argument is either:
-/// - `name` — projection (include in output)
+/// - `@name` — entity name (asserts `dialog.meta/name = name`)
+/// - `this=<ENTITY>` — targets an existing entity
 /// - `name=value` — filter/assertion
-///
-/// The special field `this=<ENTITY>` is extracted separately and returned
-/// as the second element of the tuple.
-pub fn parse_fields(args: &[String]) -> Result<(Vec<Field>, Option<String>)> {
+/// - `name` — projection (include in output)
+pub fn parse_fields(args: &[String]) -> Result<ParsedFields> {
     let mut fields = Vec::new();
     let mut this_entity = None;
+    let mut entity_name = None;
 
     for arg in args {
+        // @name — entity naming
+        if let Some(name) = arg.strip_prefix('@') {
+            if entity_name.is_some() {
+                anyhow::bail!("Duplicate `@name` argument");
+            }
+            if name.is_empty() {
+                anyhow::bail!("`@` requires a name (e.g. @person)");
+            }
+            entity_name = Some(name.to_string());
+            continue;
+        }
+
+        // this=<ENTITY>
         if let Some(entity) = arg.strip_prefix("this=") {
             if this_entity.is_some() {
                 anyhow::bail!("Duplicate `this=` argument");
@@ -154,7 +178,11 @@ pub fn parse_fields(args: &[String]) -> Result<(Vec<Field>, Option<String>)> {
         fields.push(field);
     }
 
-    Ok((fields, this_entity))
+    Ok(ParsedFields {
+        fields,
+        this_entity,
+        entity_name,
+    })
 }
 
 /// Determine whether the first CLI argument is a file path, stdin marker,
@@ -227,34 +255,55 @@ mod tests {
     #[test]
     fn test_parse_fields_projection() {
         let args = vec!["name".to_string(), "age".to_string()];
-        let (fields, this_ent) = parse_fields(&args).unwrap();
-        assert!(this_ent.is_none());
-        assert_eq!(fields.len(), 2);
-        assert!(fields[0].is_projection());
-        assert!(fields[1].is_projection());
+        let parsed = parse_fields(&args).unwrap();
+        assert!(parsed.this_entity.is_none());
+        assert!(parsed.entity_name.is_none());
+        assert_eq!(parsed.fields.len(), 2);
+        assert!(parsed.fields[0].is_projection());
+        assert!(parsed.fields[1].is_projection());
     }
 
     #[test]
     fn test_parse_fields_filter() {
         let args = vec!["name=Alice".to_string(), "age".to_string()];
-        let (fields, _) = parse_fields(&args).unwrap();
-        assert_eq!(fields.len(), 2);
-        assert!(fields[0].is_filter());
-        assert_eq!(fields[0].value.as_deref(), Some("Alice"));
-        assert!(fields[1].is_projection());
+        let parsed = parse_fields(&args).unwrap();
+        assert_eq!(parsed.fields.len(), 2);
+        assert!(parsed.fields[0].is_filter());
+        assert_eq!(parsed.fields[0].value.as_deref(), Some("Alice"));
+        assert!(parsed.fields[1].is_projection());
     }
 
     #[test]
     fn test_parse_fields_this() {
         let args = vec!["this=did:key:z123".to_string(), "name=Alice".to_string()];
-        let (fields, this_ent) = parse_fields(&args).unwrap();
-        assert_eq!(this_ent, Some("did:key:z123".to_string()));
-        assert_eq!(fields.len(), 1);
+        let parsed = parse_fields(&args).unwrap();
+        assert_eq!(parsed.this_entity, Some("did:key:z123".to_string()));
+        assert_eq!(parsed.fields.len(), 1);
     }
 
     #[test]
     fn test_duplicate_this_fails() {
         let args = vec!["this=did:key:z1".to_string(), "this=did:key:z2".to_string()];
+        assert!(parse_fields(&args).is_err());
+    }
+
+    #[test]
+    fn test_parse_fields_entity_name() {
+        let args = vec!["@person".to_string(), "name=Alice".to_string()];
+        let parsed = parse_fields(&args).unwrap();
+        assert_eq!(parsed.entity_name, Some("person".to_string()));
+        assert_eq!(parsed.fields.len(), 1);
+    }
+
+    #[test]
+    fn test_duplicate_entity_name_fails() {
+        let args = vec!["@foo".to_string(), "@bar".to_string()];
+        assert!(parse_fields(&args).is_err());
+    }
+
+    #[test]
+    fn test_empty_entity_name_fails() {
+        let args = vec!["@".to_string()];
         assert!(parse_fields(&args).is_err());
     }
 
