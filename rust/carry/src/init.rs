@@ -7,6 +7,7 @@
 use crate::schema;
 use crate::site::Site;
 use anyhow::Result;
+use dialog_query::Attribute;
 use dialog_query::claim::{Claim, Relation};
 use std::path::Path;
 

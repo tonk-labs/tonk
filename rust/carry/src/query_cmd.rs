@@ -2,6 +2,10 @@
 //!
 //! Supports both domain queries (`carry query io.gozala.person name age`)
 //! and concept queries (`carry query person name="Alice"`).
+//!
+//! Concept queries resolve the concept via `dialog.meta/name`, fetch its
+//! `dialog.concept.with/*` attributes, and return all matching entities
+//! with output grouped under the concept's bookmark name.
 
 use crate::schema;
 use crate::site::SiteContext;
@@ -9,6 +13,18 @@ use crate::target::{Field, Target};
 use anyhow::Result;
 use dialog_query::Value;
 use std::collections::BTreeMap;
+
+/// A concept field name mapped to its attribute selector (for display).
+struct FieldMapping {
+    field_name: String,
+    selector: String,
+}
+
+/// An attribute selector with a required value (for filtering).
+struct FilterConstraint {
+    selector: String,
+    value: String,
+}
 
 /// Execute `carry query <TARGET> [FIELD[=VALUE]...]`.
 pub async fn execute(
@@ -50,7 +66,6 @@ async fn domain_query(
     let all_attr_names: Vec<&str> = qualified_fields.iter().map(|f| f.0.as_str()).collect();
 
     // Find entities that have ANY of the requested attributes
-    // (we start with the first attribute and filter down)
     let first_attr = schema::parse_claim_attribute(all_attr_names[0])?;
     let candidate_entities = schema::find_entities_by_attribute(&session, first_attr).await?;
 
@@ -104,54 +119,52 @@ async fn concept_query(
 ) -> Result<()> {
     let session = ctx.open_session().await?;
 
-    // Look up the concept by name
-    let cname = schema::ConceptName::new(concept_name)?;
-    let concept_entity = schema::lookup_concept_by_name(&session, &cname)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Concept '{}' not found", concept_name))?;
+    // Resolve the concept from the database
+    let concept = schema::resolve_concept(&session, concept_name).await?;
 
-    // Get schema attributes for this concept
-    let schema_attrs = schema::fetch_string_values(
-        &session,
-        &concept_entity,
-        schema::concept_attribute_selector(),
-    )
-    .await?;
+    // Get the attribute selectors for structural membership matching
+    let schema_attrs = schema::concept_attribute_selectors(&concept);
 
     if schema_attrs.is_empty() {
         anyhow::bail!("Concept '{}' has no attributes", concept_name);
     }
 
-    // Find entities belonging to this concept
+    // Find entities belonging to this concept (structural matching)
     let entities = schema::find_entities_by_concept(&session, &schema_attrs).await?;
 
-    // Determine which attributes to show
-    let namespace = schema::fetch_string_values(
-        &session,
-        &concept_entity,
-        schema::concept_namespace_selector(),
-    )
-    .await?
-    .into_iter()
-    .next()
-    .unwrap_or_else(|| concept_name.to_string());
-
-    // If fields are specified, use them as filters/projections
-    // Otherwise show all concept attributes
-    let (show_attrs, filter_pairs): (Vec<String>, Vec<(String, String)>) = if fields.is_empty() {
-        (schema_attrs.clone(), Vec::new())
-    } else {
-        let mut show = Vec::new();
-        let mut filters = Vec::new();
-        for f in fields {
-            let qname = f.qualified_name(&namespace);
-            show.push(qname.clone());
-            if let Some(ref v) = f.value {
-                filters.push((qname, v.clone()));
+    // Determine which attributes to show and which to filter by
+    let (show_attrs, filter_pairs): (Vec<FieldMapping>, Vec<FilterConstraint>) =
+        if fields.is_empty() {
+            // No fields specified: show all concept attributes
+            let show: Vec<FieldMapping> = concept
+                .with_fields
+                .iter()
+                .chain(concept.maybe_fields.iter())
+                .map(|(field_name, (_, selector))| FieldMapping {
+                    field_name: field_name.clone(),
+                    selector: selector.clone(),
+                })
+                .collect();
+            (show, Vec::new())
+        } else {
+            // Fields specified: use as filters/projections
+            let mut show = Vec::new();
+            let mut filters = Vec::new();
+            for f in fields {
+                let selector = schema::resolve_field_selector(&concept, &f.name)?;
+                show.push(FieldMapping {
+                    field_name: f.name.clone(),
+                    selector: selector.clone(),
+                });
+                if let Some(ref v) = f.value {
+                    filters.push(FilterConstraint {
+                        selector,
+                        value: v.clone(),
+                    });
+                }
             }
-        }
-        (show, filters)
-    };
+            (show, filters)
+        };
 
     let mut results: BTreeMap<String, BTreeMap<String, Vec<Value>>> = BTreeMap::new();
 
@@ -159,8 +172,8 @@ async fn concept_query(
         let mut entity_values: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         let mut matches_filters = true;
 
-        for attr_name in &show_attrs {
-            let attr = schema::parse_claim_attribute(attr_name)?;
+        for mapping in &show_attrs {
+            let attr = schema::parse_claim_attribute(&mapping.selector)?;
             let values = schema::fetch_values(&session, entity, attr).await?;
 
             if values.is_empty() {
@@ -168,9 +181,9 @@ async fn concept_query(
             }
 
             // Check filters
-            for (filter_attr, filter_val) in &filter_pairs {
-                if filter_attr == attr_name {
-                    let expected = schema::parse_value(filter_val);
+            for filter in &filter_pairs {
+                if filter.selector == mapping.selector {
+                    let expected = schema::parse_value(&filter.value);
                     if !values.contains(&expected) {
                         matches_filters = false;
                         break;
@@ -182,7 +195,8 @@ async fn concept_query(
                 break;
             }
 
-            entity_values.insert(attr_name.clone(), values);
+            // Use the concept field name (not the qualified selector) as the key
+            entity_values.insert(mapping.field_name.clone(), values);
         }
 
         if matches_filters && !entity_values.is_empty() {
@@ -190,10 +204,11 @@ async fn concept_query(
         }
     }
 
-    output_results(&results, &namespace, format)
+    // Output under the concept name, with short field names
+    output_concept_results(&results, concept_name, format)
 }
 
-/// Format and print query results.
+/// Format and print domain query results (grouped under domain namespace).
 fn output_results(
     results: &BTreeMap<String, BTreeMap<String, Vec<Value>>>,
     namespace: &str,
@@ -232,7 +247,7 @@ fn output_results(
             println!("{}", serde_json::to_string_pretty(&json_results)?);
         }
         _ => {
-            // YAML output (default)
+            // YAML asserted notation output
             for (entity_id, attrs) in results {
                 println!("{}:", entity_id);
                 println!("  {}:", namespace);
@@ -242,6 +257,65 @@ fn output_results(
                         println!("    {}: {}", short, schema::format_value(&values[0]));
                     } else {
                         println!("    {}:", short);
+                        for v in values {
+                            println!("      - {}", schema::format_value(v));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Format and print concept query results (grouped under concept name).
+fn output_concept_results(
+    results: &BTreeMap<String, BTreeMap<String, Vec<Value>>>,
+    concept_name: &str,
+    format: &str,
+) -> Result<()> {
+    if results.is_empty() {
+        return Ok(());
+    }
+
+    match format {
+        "json" => {
+            let json_results: Vec<serde_json::Value> = results
+                .iter()
+                .map(|(entity_id, attrs)| {
+                    let mut obj = serde_json::Map::new();
+                    obj.insert(
+                        "id".to_string(),
+                        serde_json::Value::String(entity_id.clone()),
+                    );
+                    for (field_name, values) in attrs {
+                        if values.len() == 1 {
+                            obj.insert(field_name.clone(), schema::value_to_json(&values[0]));
+                        } else {
+                            obj.insert(
+                                field_name.clone(),
+                                serde_json::Value::Array(
+                                    values.iter().map(schema::value_to_json).collect(),
+                                ),
+                            );
+                        }
+                    }
+                    serde_json::Value::Object(obj)
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json_results)?);
+        }
+        _ => {
+            // YAML asserted notation output under concept name
+            for (entity_id, attrs) in results {
+                println!("{}:", entity_id);
+                println!("  {}:", concept_name);
+                for (field_name, values) in attrs {
+                    if values.len() == 1 {
+                        println!("    {}: {}", field_name, schema::format_value(&values[0]));
+                    } else {
+                        println!("    {}:", field_name);
                         for v in values {
                             println!("      - {}", schema::format_value(v));
                         }

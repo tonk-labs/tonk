@@ -1,6 +1,7 @@
 //! `carry retract` — retract claims from entities.
 //!
-//! Supports domain targets, concept targets, file input, and stdin.
+//! Supports domain targets, concept targets (builtin and user-defined),
+//! file input, and stdin.
 
 use crate::schema;
 use crate::site::SiteContext;
@@ -45,12 +46,27 @@ async fn retract_with_target(
         schema::derive_entity(&entity_str)?
     };
 
-    let namespace = target.namespace();
+    match target {
+        Target::Domain(ref domain) => retract_domain(ctx, domain, &entity, &fields, format).await,
+        Target::Concept(ref concept_name) => {
+            retract_concept(ctx, concept_name, &entity, &fields, format).await
+        }
+    }
+}
+
+/// Retract claims using a domain target.
+async fn retract_domain(
+    ctx: &SiteContext,
+    domain: &str,
+    entity: &dialog_query::Entity,
+    fields: &[Field],
+    format: &str,
+) -> Result<()> {
     let mut branch = ctx.open_branch().await?;
 
     if fields.is_empty() {
         // Retract ALL facts about this entity
-        let all_facts = schema::fetch_all_entity_facts(&branch, &entity).await?;
+        let all_facts = schema::fetch_all_entity_facts(&branch, entity).await?;
         if all_facts.is_empty() {
             anyhow::bail!("Entity '{}' not found (no facts to retract)", entity);
         }
@@ -72,75 +88,184 @@ async fn retract_with_target(
             .commit(futures_util::stream::iter(instructions))
             .await?;
 
-        match format {
-            "json" => {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "entity": entity.to_string(),
-                        "retracted": count,
-                    })
-                );
-            }
-            _ => {
-                println!("Retracted {} claims from {}", count, entity);
-            }
-        }
+        print_retract_result(entity, count, format);
     } else {
-        // Retract specific fields
-        let mut instructions = Vec::new();
+        retract_specific_fields(&mut branch, entity, domain, fields, format).await?;
+    }
 
-        for f in &fields {
-            let attr_name = f.qualified_name(namespace);
-            let attr = schema::parse_claim_attribute(&attr_name)?;
+    Ok(())
+}
 
-            if let Some(ref val_str) = f.value {
-                // Retract a specific value
-                let value = schema::parse_value(val_str);
-                instructions.push(Instruction::Retract(Artifact {
-                    the: attr,
-                    of: entity.clone(),
-                    is: value,
-                    cause: None,
-                }));
-            } else {
-                // Retract all values for this attribute
-                let values = schema::fetch_values(&branch, &entity, attr.clone()).await?;
-                for value in values {
-                    instructions.push(Instruction::Retract(Artifact {
-                        the: attr.clone(),
-                        of: entity.clone(),
-                        is: value,
-                        cause: None,
-                    }));
-                }
-            }
+/// Retract claims using a concept target.
+async fn retract_concept(
+    ctx: &SiteContext,
+    concept_name: &str,
+    entity: &dialog_query::Entity,
+    fields: &[Field],
+    format: &str,
+) -> Result<()> {
+    if fields.is_empty() {
+        // Retract all facts about this entity
+        let mut branch = ctx.open_branch().await?;
+        let all_facts = schema::fetch_all_entity_facts(&branch, entity).await?;
+        if all_facts.is_empty() {
+            anyhow::bail!("Entity '{}' not found (no facts to retract)", entity);
         }
 
-        if instructions.is_empty() {
-            anyhow::bail!("No matching claims found to retract");
-        }
+        let instructions: Vec<Instruction> = all_facts
+            .into_iter()
+            .map(|artifact| {
+                Instruction::Retract(Artifact {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    cause: artifact.cause,
+                })
+            })
+            .collect();
 
         let count = instructions.len();
         branch
             .commit(futures_util::stream::iter(instructions))
             .await?;
 
-        match format {
-            "json" => {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "entity": entity.to_string(),
-                        "retracted": count,
-                    })
-                );
-            }
-            _ => {
-                println!("Retracted {} claims from {}", count, entity);
+        print_retract_result(entity, count, format);
+        return Ok(());
+    }
+
+    // Resolve the concept to get field→selector mappings
+    let session = ctx.open_session().await?;
+
+    // Try builtin first, then user-defined
+    let resolved_fields: Vec<(String, Option<String>)> = if let Some(builtin) =
+        schema::lookup_builtin(concept_name)
+    {
+        fields
+            .iter()
+            .map(|f| {
+                let (relation, _) =
+                    schema::resolve_builtin_field(builtin, &f.name).ok_or_else(|| {
+                        anyhow::anyhow!("Unknown field '{}' for concept '{}'", f.name, concept_name)
+                    })?;
+                Ok((relation, f.value.clone()))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        let concept = schema::resolve_concept(&session, concept_name).await?;
+        fields
+            .iter()
+            .map(|f| {
+                let selector = schema::resolve_field_selector(&concept, &f.name)?;
+                Ok((selector, f.value.clone()))
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+
+    drop(session);
+    let mut branch = ctx.open_branch().await?;
+
+    let mut instructions = Vec::new();
+
+    for (attr_name, value) in &resolved_fields {
+        let attr = schema::parse_claim_attribute(attr_name)?;
+
+        if let Some(val_str) = value {
+            // Retract a specific value
+            let value = schema::parse_value(val_str);
+            instructions.push(Instruction::Retract(Artifact {
+                the: attr,
+                of: entity.clone(),
+                is: value,
+                cause: None,
+            }));
+        } else {
+            // Retract all values for this attribute
+            let values = schema::fetch_values(&branch, entity, attr.clone()).await?;
+            for value in values {
+                instructions.push(Instruction::Retract(Artifact {
+                    the: attr.clone(),
+                    of: entity.clone(),
+                    is: value,
+                    cause: None,
+                }));
             }
         }
     }
 
+    if instructions.is_empty() {
+        anyhow::bail!("No matching claims found to retract");
+    }
+
+    let count = instructions.len();
+    branch
+        .commit(futures_util::stream::iter(instructions))
+        .await?;
+
+    print_retract_result(entity, count, format);
     Ok(())
+}
+
+/// Retract specific fields using domain-qualified names.
+async fn retract_specific_fields(
+    branch: &mut dialog_artifacts::repository::Branch<tonk_space::FsBackend>,
+    entity: &dialog_query::Entity,
+    namespace: &str,
+    fields: &[Field],
+    format: &str,
+) -> Result<()> {
+    let mut instructions = Vec::new();
+
+    for f in fields {
+        let attr_name = f.qualified_name(namespace);
+        let attr = schema::parse_claim_attribute(&attr_name)?;
+
+        if let Some(ref val_str) = f.value {
+            let value = schema::parse_value(val_str);
+            instructions.push(Instruction::Retract(Artifact {
+                the: attr,
+                of: entity.clone(),
+                is: value,
+                cause: None,
+            }));
+        } else {
+            let values = schema::fetch_values(branch, entity, attr.clone()).await?;
+            for value in values {
+                instructions.push(Instruction::Retract(Artifact {
+                    the: attr.clone(),
+                    of: entity.clone(),
+                    is: value,
+                    cause: None,
+                }));
+            }
+        }
+    }
+
+    if instructions.is_empty() {
+        anyhow::bail!("No matching claims found to retract");
+    }
+
+    let count = instructions.len();
+    branch
+        .commit(futures_util::stream::iter(instructions))
+        .await?;
+
+    print_retract_result(entity, count, format);
+    Ok(())
+}
+
+fn print_retract_result(entity: &dialog_query::Entity, count: usize, format: &str) {
+    match format {
+        "json" => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "entity": entity.to_string(),
+                    "retracted": count,
+                })
+            );
+        }
+        _ => {
+            println!("Retracted {} claims from {}", count, entity);
+        }
+    }
 }

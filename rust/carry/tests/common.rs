@@ -22,12 +22,20 @@ pub struct TestEnv {
 #[allow(dead_code)]
 impl TestEnv {
     /// Create a new test environment with a bootstrapped space.
+    ///
+    /// The space is initialized with pre-registered concepts (attribute,
+    /// concept, bookmark) so that meta-schema operations work immediately.
     pub async fn new() -> Result<Self> {
         let temp_dir = TempDir::new().context("Failed to create temp directory")?;
         let site_path = temp_dir.path().to_path_buf();
         let site = Site::init(&site_path)?;
         let space = site.create_space()?;
         site.set_active_space(&space.did)?;
+
+        // Bootstrap pre-registered concepts (attribute, concept, bookmark)
+        let mut session = space.open_session().await?;
+        carry::schema::bootstrap_builtins(&mut session).await?;
+
         let space_did = space.did.clone();
 
         Ok(Self {

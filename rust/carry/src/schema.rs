@@ -50,8 +50,7 @@ pub mod dialog_attribute {
     /// Value type of the attribute (e.g. Text, UnsignedInteger, Symbol).
     #[derive(dialog_query::Attribute, Clone, PartialEq)]
     #[namespace("dialog.attribute")]
-    #[dialog(rename = "type")]
-    pub struct Kind(pub String);
+    pub struct Type(pub String);
 
     /// Cardinality: `one` or `many`.
     #[derive(dialog_query::Attribute, Clone, PartialEq)]
@@ -74,10 +73,9 @@ pub mod dialog_attribute {
 pub struct AttributeDef {
     pub this: Entity,
     pub description: dialog_meta::Description,
-    #[dialog(rename = "the")]
-    pub selector: dialog_attribute::Id,
-    #[dialog(rename = "as")]
-    pub value_type: dialog_attribute::Kind,
+    pub the: dialog_attribute::Id,
+    // TODO: use `#[dialog(rename = "as")]` when available
+    pub as_type: dialog_attribute::Type,
     pub cardinality: dialog_attribute::Cardinality,
 }
 
@@ -244,15 +242,13 @@ pub fn resolve_builtin_field(
     }
     // Check variable-keyed fields (e.g. "with.name" → prefix "with")
     for f in schema.with_fields.iter().chain(schema.maybe_fields.iter()) {
-        if f.variable_keyed {
-            if let Some(key) = cli_field
+        if f.variable_keyed
+            && let Some(key) = cli_field
                 .strip_prefix(f.cli_name)
                 .and_then(|s| s.strip_prefix('.'))
-            {
-                if !key.is_empty() {
-                    return Some((format!("{}{}", f.relation, key), true));
-                }
-            }
+            && !key.is_empty()
+        {
+            return Some((format!("{}{}", f.relation, key), true));
         }
     }
     None
@@ -612,7 +608,7 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
     let name_attr = dialog_meta::Name::selector();
     let desc_attr = dialog_meta::Description::selector();
     let attr_id = dialog_attribute::Id::selector();
-    let attr_type = dialog_attribute::Kind::selector();
+    let attr_type = dialog_attribute::Type::selector();
     let attr_card = dialog_attribute::Cardinality::selector();
 
     // Assert attribute entity claims
