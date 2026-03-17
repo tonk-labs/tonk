@@ -1,0 +1,54 @@
+[package]
+name = "carry"
+description = "Carry - interact with Dialog DB spaces"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "carry"
+path = "src/bin/carry.rs"
+
+[features]
+default = []
+
+[dependencies]
+
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# CLI
+clap = { workspace = true, features = ["derive"] }
+
+# Tonk packages
+tonk-space = { workspace = true }
+
+# Dialog DB
+dialog-query = { workspace = true }
+dialog-artifacts = { workspace = true }
+dialog-varsig = { workspace = true }
+
+# Async
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+# Crypto
+ed25519-dalek = { workspace = true }
+rand_0_8 = { workspace = true }
+bs58 = { workspace = true }
+blake3 = { workspace = true }
+
+# Serialization
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+base64 = { workspace = true }
+
+# Utilities
+anyhow = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+anyhow = { workspace = true }
+serde_json = { workspace = true }

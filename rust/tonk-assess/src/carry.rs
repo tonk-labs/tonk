@@ -1,30 +1,28 @@
 //! Carry space provisioning for benchmark runs.
 //!
-//! Shells out to the `tonk` CLI to create spaces, import model schemas,
-//! and load EAV data before running carry-tagged probes.
+//! Provisions per-persona `.carry/` site directories for benchmarking.
+//! Shells out to the `carry` CLI to create spaces and load data.
 //!
-//! The `tonk` binary is resolved via the `TONK_BIN` environment variable.
-//! If unset, falls back to `"tonk"` on PATH.
+//! The `carry` binary is resolved via the `CARRY_BIN` environment variable.
+//! If unset, falls back to `"carry"` on PATH.
 
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-const SPACE_PREFIX: &str = "assess-";
-
-/// Resolve the path to the `tonk` binary.
+/// Resolve the path to the `carry` binary.
 ///
-/// Checks `TONK_BIN` first (useful for development when the installed
-/// binary is stale). Falls back to bare `"tonk"` on PATH.
-fn tonk_bin() -> String {
-    std::env::var("TONK_BIN").unwrap_or_else(|_| "tonk".to_string())
+/// Checks `CARRY_BIN` first (useful for development when the installed
+/// binary is stale). Falls back to bare `"carry"` on PATH.
+fn carry_bin() -> String {
+    std::env::var("CARRY_BIN").unwrap_or_else(|_| "carry".to_string())
 }
 
-/// Run a `tonk` command and return its output, with context on failure.
-async fn run_tonk(args: &[impl AsRef<OsStr>], description: &str) -> Result<std::process::Output> {
-    let bin = tonk_bin();
+/// Run a `carry` command and return its output, with context on failure.
+async fn run_carry(args: &[impl AsRef<OsStr>], description: &str) -> Result<std::process::Output> {
+    let bin = carry_bin();
     Command::new(&bin)
         .args(args)
         .output()
@@ -45,143 +43,143 @@ fn args_display(args: &[impl AsRef<OsStr>]) -> String {
         .join(" ")
 }
 
-/// Check that the `tonk` CLI is available and has an active session.
+/// Check that the `carry` CLI is available.
 ///
 /// Call this once before running any carry probes. Fails fast with a
 /// clear message rather than letting each probe fail individually.
 pub async fn ensure_available(verbose: bool) -> Result<()> {
-    let bin = tonk_bin();
+    let bin = carry_bin();
     if verbose {
-        eprintln!("[carry] Using tonk binary: {bin}");
+        eprintln!("[carry] Using carry binary: {bin}");
     }
 
-    let output = run_tonk(&["status", "--json"], "is the tonk CLI installed?").await?;
+    // Verify the carry binary is accessible by running --help
+    let output = run_carry(&["--help"], "is the carry CLI installed?").await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!(
-            "tonk status failed (exit {}). Is there an active session?\n\
-             Run 'tonk login' and 'tonk space create' first.\n\
+            "carry --help failed (exit {}). Is the carry CLI installed?\n\
              stderr: {stderr}",
             output.status
         );
     }
 
     if verbose {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        eprintln!("[carry] tonk status: {stdout}");
+        eprintln!("[carry] carry binary verified");
     }
 
     Ok(())
 }
 
+/// Derive a site directory path for a persona within the workspace.
+fn persona_site_dir(workspace: &Path, persona: &str) -> PathBuf {
+    workspace.join(format!("assess-{persona}"))
+}
+
 /// Provision a Carry space for a persona.
 ///
-/// 1. Deletes any existing `assess-{persona}` space (clean slate).
-/// 2. Creates a fresh `assess-{persona}` space.
-/// 3. If a model file is provided, imports it via `tonk import`.
-/// 4. Loads the data file via `tonk dev fact batch --file`.
+/// 1. Creates a fresh per-persona site directory.
+/// 2. Runs `carry init` to set up the `.carry/` repository.
+/// 3. If a model file is provided, asserts it via `carry assert`.
+/// 4. Loads the data file via `carry assert`.
 ///
-/// Returns the space name on success.
+/// Returns the site directory path on success.
 pub async fn provision_space(
     persona: &str,
     model_file: Option<&Path>,
     data_file: &Path,
+    workspace: &Path,
     verbose: bool,
-) -> Result<String> {
-    let space_name = format!("{SPACE_PREFIX}{persona}");
+) -> Result<PathBuf> {
+    let site_dir = persona_site_dir(workspace, persona);
 
-    // Step 1: Delete existing space (ignore errors — it may not exist)
-    if verbose {
-        eprintln!("[carry] Deleting space '{space_name}' if it exists...");
+    // Step 1: Remove existing site directory (clean slate)
+    if site_dir.exists() {
+        if verbose {
+            eprintln!(
+                "[carry] Removing existing site at '{}'...",
+                site_dir.display()
+            );
+        }
+        std::fs::remove_dir_all(&site_dir)
+            .with_context(|| format!("Failed to remove {}", site_dir.display()))?;
     }
-    let _ = run_tonk(
-        &["space", "delete", &space_name, "--force"],
-        "delete existing space",
-    )
-    .await;
 
-    // Step 2: Create a fresh space
-    if verbose {
-        eprintln!("[carry] Creating space '{space_name}'...");
-    }
-    let create_output =
-        run_tonk(&["space", "create", &space_name, "--json"], "create space").await?;
+    // Step 2: Create site directory and init
+    std::fs::create_dir_all(&site_dir)
+        .with_context(|| format!("Failed to create {}", site_dir.display()))?;
 
-    if !create_output.status.success() {
-        let stderr = String::from_utf8_lossy(&create_output.stderr);
-        anyhow::bail!(
-            "Failed to create space '{space_name}': {stderr}\n\
-             Ensure you have an active session (run 'tonk login' first)."
-        );
-    }
+    let site_str = site_dir.to_string_lossy();
 
     if verbose {
-        let stdout = String::from_utf8_lossy(&create_output.stdout);
-        eprintln!("[carry] Created space: {stdout}");
+        eprintln!("[carry] Initializing space for persona '{persona}'...");
+    }
+    let init_output = run_carry(&["--site", &*site_str, "init", persona], "init space").await?;
+
+    if !init_output.status.success() {
+        let stderr = String::from_utf8_lossy(&init_output.stderr);
+        anyhow::bail!("Failed to init space for persona '{persona}': {stderr}");
     }
 
-    // Step 3: Set the space as active
     if verbose {
-        eprintln!("[carry] Setting active space to '{space_name}'...");
-    }
-    let set_output = run_tonk(&["space", "set", &space_name], "set active space").await?;
-
-    if !set_output.status.success() {
-        let stderr = String::from_utf8_lossy(&set_output.stderr);
-        anyhow::bail!("Failed to set active space to '{space_name}': {stderr}");
+        let stdout = String::from_utf8_lossy(&init_output.stdout);
+        eprintln!("[carry] Initialized: {stdout}");
     }
 
-    // Step 4: Import model schema (if provided)
+    // Step 3: Import model schema (if provided)
     if let Some(model) = model_file {
         let model_str = model.to_string_lossy();
         if verbose {
-            eprintln!("[carry] Importing model from '{model_str}'...");
+            eprintln!("[carry] Asserting model from '{model_str}'...");
         }
-        let import_output =
-            run_tonk(&["import", &*model_str, "--json"], "import model schema").await?;
+        let assert_output = run_carry(
+            &["--site", &*site_str, "assert", &*model_str],
+            "assert model schema",
+        )
+        .await?;
 
-        if !import_output.status.success() {
-            let stderr = String::from_utf8_lossy(&import_output.stderr);
-            let stdout = String::from_utf8_lossy(&import_output.stdout);
+        if !assert_output.status.success() {
+            let stderr = String::from_utf8_lossy(&assert_output.stderr);
+            let stdout = String::from_utf8_lossy(&assert_output.stdout);
             anyhow::bail!(
-                "Failed to import model into space '{space_name}' from '{model_str}':\n\
+                "Failed to assert model for persona '{persona}' from '{model_str}':\n\
                  stderr: {stderr}\nstdout: {stdout}"
             );
         }
 
         if verbose {
-            let stdout = String::from_utf8_lossy(&import_output.stdout);
-            eprintln!("[carry] Imported model: {stdout}");
+            let stdout = String::from_utf8_lossy(&assert_output.stdout);
+            eprintln!("[carry] Asserted model: {stdout}");
         }
     }
 
-    // Step 5: Load data from YAML file
+    // Step 4: Load data from YAML file
     let data_path_str = data_file.to_string_lossy();
     if verbose {
-        eprintln!("[carry] Loading data from '{data_path_str}'...");
+        eprintln!("[carry] Asserting data from '{data_path_str}'...");
     }
-    let batch_output = run_tonk(
-        &["dev", "fact", "batch", "--file", &*data_path_str, "--json"],
-        "load data",
+    let data_output = run_carry(
+        &["--site", &*site_str, "assert", &*data_path_str],
+        "assert data",
     )
     .await?;
 
-    if !batch_output.status.success() {
-        let stderr = String::from_utf8_lossy(&batch_output.stderr);
-        let stdout = String::from_utf8_lossy(&batch_output.stdout);
+    if !data_output.status.success() {
+        let stderr = String::from_utf8_lossy(&data_output.stderr);
+        let stdout = String::from_utf8_lossy(&data_output.stdout);
         anyhow::bail!(
-            "Failed to load data into space '{space_name}' from '{data_path_str}':\n\
+            "Failed to assert data for persona '{persona}' from '{data_path_str}':\n\
              stderr: {stderr}\nstdout: {stdout}"
         );
     }
 
     if verbose {
-        let stdout = String::from_utf8_lossy(&batch_output.stdout);
-        eprintln!("[carry] Loaded data: {stdout}");
+        let stdout = String::from_utf8_lossy(&data_output.stdout);
+        eprintln!("[carry] Asserted data: {stdout}");
     }
 
-    Ok(space_name)
+    Ok(site_dir)
 }
 
 /// Provision all unique Carry spaces needed by the matched probes.
@@ -202,6 +200,13 @@ pub async fn provision_all(
     let mut failures: Vec<(String, anyhow::Error)> = Vec::new();
     let mut attempted: HashSet<String> = HashSet::new();
 
+    // Create a workspace directory for all persona sites
+    let workspace = std::env::temp_dir().join("carry-assess");
+    if let Err(e) = std::fs::create_dir_all(&workspace) {
+        failures.push(("_workspace".to_string(), e.into()));
+        return (provisioned, failures);
+    }
+
     for probe in probes {
         if let Some(ref carry_data) = probe.carry_data {
             if provisioned.contains(&probe.persona) || attempted.contains(&probe.persona) {
@@ -209,9 +214,13 @@ pub async fn provision_all(
             }
             attempted.insert(probe.persona.clone());
 
-            match provision_one_persona(probe, carry_data, probe_dir, verbose).await {
-                Ok(space_name) => {
-                    println!("  Space '{}' ready.", space_name);
+            match provision_one_persona(probe, carry_data, probe_dir, &workspace, verbose).await {
+                Ok(site_dir) => {
+                    println!(
+                        "  Space for '{}' ready at {}.",
+                        probe.persona,
+                        site_dir.display()
+                    );
                     provisioned.insert(probe.persona.clone());
                 }
                 Err(e) => {
@@ -230,8 +239,9 @@ async fn provision_one_persona(
     probe: &crate::types::Probe,
     carry_data: &str,
     probe_dir: &Path,
+    workspace: &Path,
     verbose: bool,
-) -> Result<String> {
+) -> Result<PathBuf> {
     let data_path = probe_dir.join(carry_data);
     if !data_path.exists() {
         anyhow::bail!(
@@ -260,25 +270,21 @@ async fn provision_one_persona(
         "Provisioning Carry space for persona '{}'...",
         probe.persona
     );
-    provision_space(&probe.persona, model_path.as_deref(), &data_path, verbose).await
+    provision_space(
+        &probe.persona,
+        model_path.as_deref(),
+        &data_path,
+        workspace,
+        verbose,
+    )
+    .await
 }
 
-/// Set the active Carry space for a persona.
+/// Set the active Carry site for a persona.
 ///
-/// Called before running a probe to ensure the correct space is active.
-pub async fn set_active_space(persona: &str, verbose: bool) -> Result<()> {
-    let space_name = format!("{SPACE_PREFIX}{persona}");
-
-    if verbose {
-        eprintln!("[carry] Switching to space '{space_name}'...");
-    }
-
-    let output = run_tonk(&["space", "set", &space_name], "set active space").await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to set active space to '{space_name}': {stderr}");
-    }
-
-    Ok(())
+/// Returns the `--site` argument that should be passed to carry commands.
+pub fn site_arg_for_persona(persona: &str) -> String {
+    let workspace = std::env::temp_dir().join("carry-assess");
+    let site_dir = persona_site_dir(&workspace, persona);
+    site_dir.to_string_lossy().into_owned()
 }

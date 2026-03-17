@@ -1,22 +1,22 @@
-# tonk CLI — Agent Reference
-tonk is a CLI for managing spaces (context repositories) with DID-based identity. Spaces store structured data through **concepts** (schemas) and **entities** (entries). All commands support `--json` for structured output.
+# carry CLI — Agent Reference
+carry is a CLI for managing spaces (context repositories) with DID-based identity. Spaces store structured data through **concepts** (schemas) and **entities** (entries). All commands support `--json` for structured output.
 
 ## Bootstrap (first-time setup)
  
 ```bash
 # Check current context
-tonk --json status
+carry --json status
 # → {"operator":"did:key:z...","session":null,"space":null}
 
 # If session is null, create one (opens browser for authentication):
-tonk login
+carry login
 
 # If space is null, create one:
-tonk --json space create "workspace-name"
+carry --json space create "workspace-name"
 # → {"ok":true,"name":"workspace-name","did":"did:key:z...","owners":["did:key:z..."]}
 ```
 
-Always run `tonk --json status` first to orient before creating new sessions/spaces.
+Always run `carry --json status` first to orient before creating new sessions/spaces.
 
 ## Concepts — defining schemas
 
@@ -24,26 +24,26 @@ A concept is a named schema that defines what attributes can be associated with 
 
 ```bash
 # List all concepts in the active space
-tonk --json concept
+carry --json concept
 # → [{"name":"Task","count":12},{"name":"Contact","count":5,"description":"People and orgs"}]
 
 # Define a new concept (attributes are short names, auto-prefixed with concept name)
-tonk --json concept define Task title status priority --description "A task to track"
+carry --json concept define Task title status priority --description "A task to track"
 # → {"ok":true,"name":"Task","namespace":"task","attributes":["task/title","task/status","task/priority"],"description":"A task to track"}
 
 # Interactive mode (prompts for attributes one by one)
-tonk concept define Task --description "A task to track"
+carry concept define Task --description "A task to track"
 
 # Show concept schema
-tonk --json concept show Task
+carry --json concept show Task
 # → {"name":"Task","namespace":"task","attributes":["task/title","task/status","task/priority"],"count":12,"entity":"did:key:z..."}
 
 # Add attributes to an existing concept
-tonk --json concept extend Task due_date assignee
+carry --json concept extend Task due_date assignee
 # → {"ok":true,"added":["task/due_date","task/assignee"]}
 
 # Delete a concept (fails if matches exist unless --force)
-tonk --json concept delete Task --force
+carry --json concept delete Task --force
 # → {"ok":true,"deleted":"Task","count_deleted":12}
 ```
 
@@ -53,7 +53,7 @@ tonk --json concept delete Task --force
 
 ```bash
 # Re-defining with identical attributes converges (noop)
-tonk --json concept define Task title status priority --description "A task to track"
+carry --json concept define Task title status priority --description "A task to track"
 # → {"ok":true,"converged":true,"name":"Task","attributes":["task/title","task/status","task/priority"],"description":"A task to track"}
 ```
 
@@ -61,7 +61,7 @@ If a concept with the same name but **different attributes** already exists, the
 
 ```bash
 # Defining with different attributes produces a conflict response
-tonk --json concept define Task title status priority due_date --description "Updated task schema"
+carry --json concept define Task title status priority due_date --description "Updated task schema"
 # → {"ok":false,"conflict":true,"name":"Task",
 #    "existing_entity":"did:key:z...",
 #    "existing_attributes":["title","status","priority"],
@@ -72,75 +72,75 @@ tonk --json concept define Task title status priority due_date --description "Up
 
 When a conflict is detected in JSON mode, the caller should inspect `existing_attributes` vs `proposed_attributes` and decide whether to update or rename. In interactive mode (without `--json`), the user is prompted to choose and can provide a rationale for the update, which is stored as `concept/update-rationale` on the new concept entity. Updated concepts link to their predecessor via `concept/prior` for provenance tracking.
 
-## Creating entities — `tonk create`
+## Creating entities — `carry create`
 
 ```bash
 # From key=value pairs (keys auto-prefixed to concept namespace)
-tonk --json create Task title="Fix login bug" status=todo priority=high
+carry --json create Task title="Fix login bug" status=todo priority=high
 # → {"ok":true,"id":"did:key:z...","concept":"Task","data":{"title":"Fix login bug","status":"todo","priority":"high"},"created":1739012345}
 
 # From JSON on stdin
-echo '{"title":"Fix login bug","status":"todo"}' | tonk --json create Task --stdin
+echo '{"title":"Fix login bug","status":"todo"}' | carry --json create Task --stdin
 
 # From a JSON file
-tonk --json create Task --file task.json
+carry --json create Task --file task.json
 ```
 
 The entity ID (`did:key:z...`) is deterministically derived from the entity's field content and returned in the response. Store it to reference the entity later.
 
-## Querying entities — `tonk query`
+## Querying entities — `carry query`
 
 ```bash
 # All entities of a concept
-tonk --json query Task
+carry --json query Task
 # → [{"id":"did:key:z...","data":{"title":"Fix login bug","status":"todo","priority":"high"}},...]
 
 # Filter by a single attribute (fast — uses value index)
-tonk --json query Task status=todo
+carry --json query Task status=todo
 
 # Filter by multiple attributes (client-side filtering)
-tonk --json query Task status=todo priority=high
+carry --json query Task status=todo priority=high
 ```
 
-## Entity operations — `tonk show`, `tonk assert`, `tonk retract`
+## Entity operations — `carry show`, `carry assert`, `carry retract`
 
 ```bash
 # Show full details of an entity
-tonk --json show "did:key:z..."
+carry --json show "did:key:z..."
 # → {"id":"did:key:z...","concept":"Task","data":{"title":"Fix login bug","status":"todo","priority":"high"},"created":1739012345}
 
 # Assert (update) specific fields (keys auto-prefixed)
-tonk --json assert "did:key:z..." status=done
+carry --json assert "did:key:z..." status=done
 # → {"ok":true,"id":"did:key:z...","updated":[{"status":"done"}]}
 
 # Retract an entity (soft retraction — marks facts as retracted)
-tonk --json retract "did:key:z..."
+carry --json retract "did:key:z..."
 # → {"ok":true,"id":"did:key:z...","concept":"Task"}
 ```
 
 Note: Entity-to-concept inference is best-effort. An entity may have attributes spanning multiple concepts, so `show` reports the best matching concept based on attribute overlap.
 
-## Batch operations — `tonk batch`
+## Batch operations — `carry batch`
 
 Create, update, or delete multiple entities atomically in a single commit. Input is a JSON array via `--file` or `--stdin`. If any item fails validation, the entire batch aborts with no changes committed.
 
 ```bash
 # Batch create — array of attribute objects
 echo '[{"title":"Fix bug","status":"todo"},{"title":"Write docs","status":"todo"}]' \
-  | tonk --json batch create Task --stdin
+  | carry --json batch create Task --stdin
 # → {"ok":true,"concept":"Task","count":2,"created":[{"id":"did:key:z...","data":{...}},...]}}
 
 # From a file
-tonk --json batch create Task --file tasks.json
+carry --json batch create Task --file tasks.json
 
 # Batch update — each object must include "id" plus fields to change
 echo '[{"id":"did:key:z...","status":"done"},{"id":"did:key:z...","priority":"high"}]' \
-  | tonk --json batch update Task --stdin
+  | carry --json batch update Task --stdin
 # → {"ok":true,"concept":"Task","count":2,"updated":[{"id":"did:key:z...","updated":[{"status":"done"}]},...]}}
 
 # Batch delete — array of entity ID strings
 echo '["did:key:z...","did:key:z..."]' \
-  | tonk --json batch delete Task --stdin
+  | carry --json batch delete Task --stdin
 # → {"ok":true,"concept":"Task","count":2,"deleted":["did:key:z...","did:key:z..."]}
 ```
 
@@ -155,10 +155,10 @@ echo '["did:key:z...","did:key:z..."]' \
 ## Spaces
 
 ```bash
-tonk --json space                    # List accessible spaces
-tonk --json space current            # Show active space
-tonk --json space create "name"      # Create a new space
-tonk space set "name-or-did"         # Switch active space
+carry --json space                    # List accessible spaces
+carry --json space current            # Show active space
+carry --json space create "name"      # Create a new space
+carry space set "name-or-did"         # Switch active space
 ```
 
 Concepts and entities are scoped to the active space. Switching spaces gives you a different set of concepts and data.
@@ -173,17 +173,17 @@ When you query a concept that has rules, conclusions from all applicable rules a
 
 ```bash
 # List all rules
-tonk --json rule
+carry --json rule
 # → [{"entity":"did:key:z...","name":"safe-meals","conclusion":"SafeMeal"},...]
 
 # Define a named rule from JSON (via file)
-tonk --json rule define safe-meals --file rule.json --description "Meals safe for all attendees"
+carry --json rule define safe-meals --file rule.json --description "Meals safe for all attendees"
 
 # Define an unnamed rule (name is optional; entity ID derived from definition hash)
-tonk --json rule define --file rule.json --description "Meals safe for all attendees"
+carry --json rule define --file rule.json --description "Meals safe for all attendees"
 
 # Define a rule from JSON (via stdin)
-cat <<'EOF' | tonk --json rule define safe-meals --stdin --description "Meals safe for all attendees"
+cat <<'EOF' | carry --json rule define safe-meals --stdin --description "Meals safe for all attendees"
 {
   "conclusion": {
     "concept": "SafeMeal",
@@ -205,15 +205,15 @@ EOF
 # → {"ok":true,"entity":"did:key:z...","name":"safe-meals","conclusion":"SafeMeal","when_count":3,"unless_count":1}
 
 # Show rule details (by name or entity ID)
-tonk --json rule show safe-meals
-tonk --json rule show did:key:z...
+carry --json rule show safe-meals
+carry --json rule show did:key:z...
 
 # Delete a rule (by name or entity ID)
-tonk --json rule delete safe-meals
-tonk --json rule delete did:key:z...
+carry --json rule delete safe-meals
+carry --json rule delete did:key:z...
 
 # Query now includes derived entities transparently
-tonk --json query SafeMeal
+carry --json query SafeMeal
 ```
 
 ### Rule definition JSON format
@@ -258,66 +258,66 @@ tonk --json query SafeMeal
 
 ```bash
 # 1. Orient
-tonk --json status
-tonk --json concept
+carry --json status
+carry --json concept
 
 # 2. Define a schema (if needed)
-tonk --json concept define Task title status priority --description "A task to track"
+carry --json concept define Task title status priority --description "A task to track"
 
 # 3. Create entities
-tonk --json create Task title="Fix login bug" status=todo priority=high
-tonk --json create Task title="Write tests" status=todo priority=medium
+carry --json create Task title="Fix login bug" status=todo priority=high
+carry --json create Task title="Write tests" status=todo priority=medium
 
 # 4. Query and filter
-tonk --json query Task status=todo
+carry --json query Task status=todo
 
 # 5. Assert updates as work progresses
-tonk --json assert "did:key:z..." status=done
+carry --json assert "did:key:z..." status=done
 
 # 6. Sync with remote
-tonk sync
+carry sync
 ```
 
 ## Full command reference
 
 | Command | Purpose |
 |---------|---------|
-| `tonk --json status` | Current context (operator, session, space) |
-| `tonk --json concept` | List all concepts in the active space |
-| `tonk --json concept define <name> [attrs...] --description "..."` | Define a new concept |
-| `tonk --json concept show <name>` | Show concept schema |
-| `tonk --json concept extend <name> <attrs...>` | Add attributes to a concept |
-| `tonk --json concept delete <name> [--force]` | Delete a concept |
-| `tonk --json rule` | List all rules in the active space |
-| `tonk --json rule define [name] --file <json> --description "..."` | Define a rule from JSON file (name optional) |
-| `tonk --json rule define [name] --stdin --description "..."` | Define a rule from stdin JSON (name optional) |
-| `tonk --json rule show <name-or-entity-id>` | Show rule definition |
-| `tonk --json rule delete <name-or-entity-id>` | Delete a rule |
-| `tonk --json create <concept> [key=val...]` | Create an entity |
-| `tonk --json query <concept> [key=val...]` | Query/filter entities |
-| `tonk --json show <id>` | Show entity details |
-| `tonk --json assert <id> [key=val...]` | Assert (update) entity fields |
-| `tonk --json retract <id>` | Retract an entity |
-| `tonk --json batch create <concept> --file/--stdin` | Batch create entities from JSON array |
-| `tonk --json batch update <concept> --file/--stdin` | Batch update entities (objects with "id") |
-| `tonk --json batch delete <concept> --file/--stdin` | Batch delete entities (array of IDs) |
-| `tonk login` | Authenticate via browser |
-| `tonk login --delegation <file>` | Import delegation from file/base64 |
-| `tonk --json space create <name>` | Create a new space |
-| `tonk --json space` | List accessible spaces |
-| `tonk space set <name-or-did>` | Switch active space |
-| `tonk space delegate --to <did>` | Delegate space access |
-| `tonk --json session` | List sessions |
-| `tonk sync` | Sync with remote |
+| `carry --json status` | Current context (operator, session, space) |
+| `carry --json concept` | List all concepts in the active space |
+| `carry --json concept define <name> [attrs...] --description "..."` | Define a new concept |
+| `carry --json concept show <name>` | Show concept schema |
+| `carry --json concept extend <name> <attrs...>` | Add attributes to a concept |
+| `carry --json concept delete <name> [--force]` | Delete a concept |
+| `carry --json rule` | List all rules in the active space |
+| `carry --json rule define [name] --file <json> --description "..."` | Define a rule from JSON file (name optional) |
+| `carry --json rule define [name] --stdin --description "..."` | Define a rule from stdin JSON (name optional) |
+| `carry --json rule show <name-or-entity-id>` | Show rule definition |
+| `carry --json rule delete <name-or-entity-id>` | Delete a rule |
+| `carry --json create <concept> [key=val...]` | Create an entity |
+| `carry --json query <concept> [key=val...]` | Query/filter entities |
+| `carry --json show <id>` | Show entity details |
+| `carry --json assert <id> [key=val...]` | Assert (update) entity fields |
+| `carry --json retract <id>` | Retract an entity |
+| `carry --json batch create <concept> --file/--stdin` | Batch create entities from JSON array |
+| `carry --json batch update <concept> --file/--stdin` | Batch update entities (objects with "id") |
+| `carry --json batch delete <concept> --file/--stdin` | Batch delete entities (array of IDs) |
+| `carry login` | Authenticate via browser |
+| `carry login --delegation <file>` | Import delegation from file/base64 |
+| `carry --json space create <name>` | Create a new space |
+| `carry --json space` | List accessible spaces |
+| `carry space set <name-or-did>` | Switch active space |
+| `carry space delegate --to <did>` | Delegate space access |
+| `carry --json session` | List sessions |
+| `carry sync` | Sync with remote |
 
 ## Developer tools
 
-Raw fact operations and inspection are under `tonk dev`:
+Raw fact operations and inspection are under `carry dev`:
 
 ```bash
-tonk dev fact assert --the "ns/pred" --of "~/entity" --is value
-tonk dev fact find --the "ns/pred"
-tonk dev fact batch                  # JSON lines from stdin
-tonk dev inspect delegation <input>
-tonk dev operator generate
+carry dev fact assert --the "ns/pred" --of "~/entity" --is value
+carry dev fact find --the "ns/pred"
+carry dev fact batch                  # JSON lines from stdin
+carry dev inspect delegation <input>
+carry dev operator generate
 ```
