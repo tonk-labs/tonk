@@ -22,18 +22,38 @@ ASSERTED NOTATION:
       <domain-or-concept>:
         <field>: <value>
 
-  This format is used for query output. File/stdin input currently requires
-  formal triple format (see 'carry help assert').";
+  This format is used for both query output and file/stdin input.
+
+EAV TRIPLE FORMAT:
+  Use --format triples for a flat, pipeable YAML format:
+    - the: <namespace/field>
+      of: <entity-did>
+      is: <value>
+
+  This format is used for piping between carry commands:
+    carry query person --format triples | carry assert -
+    carry query person --format triples | carry retract -
+
+NAMING:
+  Use @name in assert commands to give an entity a human-readable name.
+  Names assert dialog.meta/name on the entity and can be used as bookmarks.
+
+META-SCHEMA:
+  Domains starting with 'dialog.' are reserved for Dialog DB internals.
+  Pre-registered concepts: attribute, concept, bookmark.";
 
 pub const MAIN_AFTER_HELP: &str = "\
 QUICK START:
   # Initialize a new space
   carry init my-project
 
-  # Define a schema (concept with attributes)
-  carry assert concept description='A person' \\
-    with.name.the=com.app.person/name with.name.as=Text with.name.cardinality=one \\
-    with.age.the=com.app.person/age with.age.as=UnsignedInteger with.age.cardinality=one
+  # Define an attribute with a name
+  carry assert attribute @person-name \\
+    the=com.app.person/name as=Text cardinality=one
+
+  # Define a concept referencing named attributes
+  carry assert concept @person \\
+    description='A person' with.name=person-name with.age=person-age
 
   # Or define via YAML file
   carry assert schema.yaml
@@ -49,13 +69,22 @@ QUICK START:
 
 COMMON WORKFLOWS:
   # Update an existing entity
-  carry assert person this=did:key:zAlice age=29
+  carry assert com.app.person this=did:key:zAlice age=29
 
   # Retract a field
-  carry retract person this=did:key:zAlice age
+  carry retract com.app.person this=did:key:zAlice age
 
-  # Assert from a file (formal triple format)
+  # Assert from a file (asserted notation)
   carry assert claims.yaml
+
+  # Pipe query output back as assert input (EAV triples)
+  carry query person --format triples | carry assert -
+
+  # Pipe query output to retract matching claims
+  carry query person name=\"Alice\" --format triples | carry retract -
+
+  # Pipe default YAML output (asserted notation also accepted)
+  carry query com.app.person name age | carry assert -
 
 For detailed help on any command: carry help <command>";
 
@@ -75,7 +104,10 @@ space. Use `carry space create` to add more spaces after initialization.
 
 The command generates an Ed25519 keypair for the space, creating a unique 
 space DID (e.g., did:key:zSpace). The private key is stored in 
-.carry/<space-did>/credentials.";
+.carry/<space-did>/credentials.
+
+Pre-registered concepts (attribute, concept, bookmark) are bootstrapped during
+init so they can be queried and used immediately.";
 
 pub const INIT_AFTER_HELP: &str = "\
 EXAMPLES:
@@ -107,8 +139,8 @@ TARGET TYPES:
     to include in output.
     
   Concept query (target has no '.')
-    Resolves the named concept via bookmark and returns all fields the concept 
-    defines. Specify fields only to filter, not to select output.
+    Resolves the named concept via dialog.meta/name and returns all fields the
+    concept defines. Specify fields only to filter, not to select output.
 
 FIELD SYNTAX:
   name          Output field - include in results without filtering
@@ -136,19 +168,32 @@ EXAMPLES:
   # Output as JSON
   carry query person --format json
 
+  # Output as EAV triples (for piping into assert/retract)
+  carry query person --format triples
+
+  # Pipe query results into assert
+  carry query person --format triples | carry assert -
+
   # Query in a different space (by label or DID)
   carry query com.app.person name age --space research
 
-OUTPUT FORMAT (asserted notation):
-  did:key:zAlice:
-    com.app.person:
-      name: Alice
-      age: 28
+OUTPUT FORMATS:
+  --format yaml (default):
+    did:key:zAlice:
+      com.app.person:
+        name: Alice
+        age: 28
 
-  did:key:zBob:
-    com.app.person:
-      name: Bob
-      age: 35";
+  --format triples:
+    - the: com.app.person/name
+      of: did:key:zAlice
+      is: Alice
+    - the: com.app.person/age
+      of: did:key:zAlice
+      is: 28
+
+  --format json:
+    [{\"id\": \"did:key:zAlice\", \"name\": \"Alice\", \"age\": 28}]";
 
 // -----------------------------------------------------------------------------
 // Assert
@@ -158,7 +203,7 @@ pub const ASSERT_LONG_ABOUT: &str = "\
 Assert claims on entities. Claims are facts stored as (the: relation, of: entity, is: value).
 
 INPUT MODES:
-  Target mode     carry assert <domain-or-concept> field=value ...
+  Target mode     carry assert <domain-or-concept> [@name] [this=<ENTITY>] field=value ...
   File mode       carry assert <file.yaml>
   Stdin mode      carry assert -
 
@@ -166,13 +211,34 @@ TARGET SYNTAX:
   Contains '.'    Domain - fields expand to domain/field relations
   No '.'          Concept - fields are validated against the concept schema
 
+ENTITY NAMING:
+  @name           Asserts dialog.meta/name on the entity. Use to give entities
+                  human-readable names (e.g., @person-name, @person).
+
 ENTITY SELECTION:
   Without this=   Creates a new entity (DID printed to stdout)
   With this=      Targets an existing entity
 
+BUILTIN CONCEPTS:
+  attribute       the=<relation> as=<Type> cardinality=<one|many>
+  concept         with.<field>=<attr-name> [maybe.<field>=<attr-name>]
+  bookmark        this=<DID> name=<bookmark-name>
+
 FILE/STDIN FORMAT:
-  Accepts formal triple format: a YAML/JSON sequence of {the, of, is} objects.
-  Format is auto-detected for stdin (JSON if starts with '{' or '[').";
+  Accepts two YAML formats, auto-detected:
+  
+  EAV triples (from --format triples):
+    - the: <namespace/field>
+      of: <entity-did>
+      is: <value>
+  
+  Asserted notation (from default --format yaml):
+    <entity-did>:
+      <namespace>:
+        <field>: <value>
+  
+  Also accepts JSON EAV triples:
+    [{\"the\": \"...\", \"of\": \"...\", \"is\": ...}]";
 
 pub const ASSERT_AFTER_HELP: &str = "\
 EXAMPLES:
@@ -180,32 +246,43 @@ EXAMPLES:
   carry assert com.app.person name=Alice age=28
   # Output: did:key:zNewEntity
 
-  # Assert using a concept (creates new entity)
-  carry assert person name=Bob age=35
+  # Define an attribute with a name
+  carry assert attribute @person-name \\
+    the=com.app.person/name as=Text cardinality=one
+
+  # Define a concept referencing named attributes
+  carry assert concept @person \\
+    description='A person' with.name=person-name with.age=person-age
 
   # Update an existing entity
-  carry assert person this=did:key:zAlice age=29
+  carry assert com.app.person this=did:key:zAlice age=29
 
   # Assert into a specific space
   carry assert com.app.person name=Alice --space research
 
-  # Assert from a YAML file
+  # Assert from a YAML file (asserted notation)
   carry assert schema.yaml
 
-  # Assert from stdin (formal triple format)
-  cat claims.yaml | carry assert -
+  # Assert from stdin / pipe query output back (EAV triples)
+  carry query person --format triples | carry assert -
 
-YAML FILE FORMAT (formal triples):
-  File/stdin input uses formal triple format, NOT asserted notation.
-  Each triple is a {the, of, is} object:
+  # Assert from stdin (asserted notation also works)
+  carry query person name=\"Alice\" | carry assert -
 
-  - the: com.app.person/name
-    of: did:key:zAlice
-    is: Alice
+ATTRIBUTE FIELDS:
+  the             Relation identifier (e.g., com.app.person/name)
+  as              Value type (Text, UnsignedInteger, Boolean, Entity, etc.)
+  cardinality     one (default) or many
+  description     Human-readable description (optional)
 
-  - the: com.app.person/age
-    of: did:key:zAlice
-    is: 28
+CONCEPT FIELDS:
+  with.<field>    Required field referencing an attribute by name or selector
+  maybe.<field>   Optional field referencing an attribute by name or selector
+  description     Human-readable description (optional)
+
+  If a with/maybe value contains '/', it is treated as an attribute selector
+  (the attribute is looked up or auto-created). Without '/', it is treated
+  as an attribute bookmark name.
 
 FILE VS TARGET DETECTION:
   - '-' is always stdin

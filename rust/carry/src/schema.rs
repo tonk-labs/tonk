@@ -1,67 +1,257 @@
 //! Shared helpers for the concepts & facts system.
 //!
-//! Provides deterministic entity derivation, attribute name prefixing,
-//! and common storage access patterns.
+//! Provides typed meta-schema definitions using dialog-query derive macros,
+//! deterministic entity derivation, and common storage access patterns.
+//!
+//! ## Meta-schema domains (RFC)
+//!
+//! | Domain                  | Purpose                                          |
+//! |-------------------------|--------------------------------------------------|
+//! | `dialog.attribute`      | Attribute identity fields (id, type, cardinality) |
+//! | `dialog.concept.with`   | Required concept membership by field name         |
+//! | `dialog.concept.maybe`  | Optional concept membership by field name          |
+//! | `dialog.meta`           | Universal metadata: names and descriptions        |
 
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use dialog_artifacts::{ArtifactSelector, ArtifactStore};
+use dialog_query::Attribute as _;
 pub use dialog_query::claim::Attribute as ClaimAttribute;
 use dialog_query::concept::Concept as _;
-use dialog_query::{Cardinality, Entity, Value};
+use dialog_query::{Entity, Value};
 use futures_util::TryStreamExt;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
-// Typed meta-schema for registered concepts
+// Typed primitive attributes (RFC §Appendix: Primitive domains)
 // ---------------------------------------------------------------------------
 
-/// Meta-schema attributes for registered concepts.
-///
-/// These model "the concept of a concept" as a typed schema using
-/// dialog-query's `#[derive(Attribute)]` system. The module name
-/// `concept` becomes the attribute namespace, producing selectors
-/// like `concept/name`, `concept/attribute`, etc.
-pub mod concept {
-    /// The human-readable name of the concept.
+/// Universal metadata attributes: names and descriptions for any entity.
+pub mod dialog_meta {
+    /// Human-readable name for any entity.
     #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    #[namespace("dialog.meta")]
     pub struct Name(pub String);
 
-    /// Description of the concept.
+    /// Human-readable description for any entity.
     #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    #[namespace("dialog.meta")]
     pub struct Description(pub String);
-
-    /// A fully-qualified attribute belonging to the concept (multi-valued).
-    #[derive(dialog_query::Attribute, Clone, PartialEq)]
-    #[cardinality(many)]
-    pub struct Attribute(pub String);
-
-    /// The namespace the concept belongs to.
-    #[derive(dialog_query::Attribute, Clone, PartialEq)]
-    pub struct Namespace(pub String);
-
-    /// Entity ID of the prior concept (for schema evolution tracking).
-    #[derive(dialog_query::Attribute, Clone, PartialEq)]
-    pub struct Prior(pub String);
-
-    /// Rationale for updating a concept.
-    #[derive(dialog_query::Attribute, Clone, PartialEq)]
-    pub struct UpdateRationale(pub String);
 }
 
-/// A registered concept in the space, modeled as a typed concept.
+/// Attribute identity fields.
+pub mod dialog_attribute {
+    /// Nominal identifier (selector) of the attribute, e.g. `io.gozala.person/name`.
+    #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    #[namespace("dialog.attribute")]
+    pub struct Id(pub String);
+
+    /// Value type of the attribute (e.g. Text, UnsignedInteger, Symbol).
+    #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    #[namespace("dialog.attribute")]
+    pub struct Type(pub String);
+
+    /// Cardinality: `one` or `many`.
+    #[derive(dialog_query::Attribute, Clone, PartialEq)]
+    #[namespace("dialog.attribute")]
+    pub struct Cardinality(pub String);
+}
+
+// ---------------------------------------------------------------------------
+// Typed builtin concept structs
+// ---------------------------------------------------------------------------
+
+/// The `attribute` concept: models a typed relation.
 ///
-/// Because the `attribute` field has `Cardinality::Many`, querying
-/// `Match::<RegisteredConcept>` returns one row per attribute value
-/// (join semantics). Callers should deduplicate by entity.
+/// CLI field mapping:
+///   `the`         → `dialog.attribute/id`
+///   `as`          → `dialog.attribute/type`
+///   `cardinality` → `dialog.attribute/cardinality`
+///   `description` → `dialog.meta/description`
 #[derive(dialog_query::Concept, Debug, Clone)]
-#[allow(dead_code)]
-pub struct RegisteredConcept {
+pub struct AttributeDef {
     pub this: Entity,
-    pub name: concept::Name,
-    pub description: concept::Description,
-    pub namespace: concept::Namespace,
-    pub attribute: concept::Attribute,
+    pub description: dialog_meta::Description,
+    pub the: dialog_attribute::Id,
+    // TODO: use `#[dialog(rename = "as")]` when available
+    pub as_type: dialog_attribute::Type,
+    pub cardinality: dialog_attribute::Cardinality,
+}
+
+/// The `bookmark` concept: maps a name to any entity.
+///
+/// CLI field mapping:
+///   `name` → `dialog.meta/name`
+#[derive(dialog_query::Concept, Debug, Clone)]
+pub struct BookmarkDef {
+    pub this: Entity,
+    pub name: dialog_meta::Name,
+}
+
+// Note: The `concept` concept cannot be fully expressed with #[derive(Concept)]
+// because its `with` and `maybe` fields are variable-keyed (with.{?name}).
+// The fixed `description` field is captured here; variable-keyed fields are
+// handled dynamically.
+
+/// The `concept` concept (partial): captures the fixed `description` field.
+///
+/// Variable-keyed fields (`with.{name}`, `maybe.{name}`) are handled
+/// dynamically in assertion/query code.
+#[derive(dialog_query::Concept, Debug, Clone)]
+pub struct ConceptDef {
+    pub this: Entity,
+    pub description: dialog_meta::Description,
+}
+
+// ---------------------------------------------------------------------------
+// Builtin concept field mapping (CLI field name → attribute selector)
+// ---------------------------------------------------------------------------
+
+/// A field within a pre-registered concept's schema.
+#[derive(Debug, Clone)]
+pub struct BuiltinField {
+    /// The field name as exposed to the CLI (e.g. "the", "as", "name").
+    pub cli_name: &'static str,
+    /// The fully-qualified relation identifier this field maps to.
+    pub relation: &'static str,
+    /// The expected value type (for documentation/validation).
+    pub value_type: &'static str,
+    /// Default cardinality.
+    pub cardinality: &'static str,
+    /// Whether this is a variable-keyed field (e.g. `with` on the concept concept).
+    pub variable_keyed: bool,
+}
+
+/// Schema for a pre-registered concept.
+#[derive(Debug, Clone)]
+pub struct BuiltinConceptSchema {
+    /// The concept name (also its bookmark).
+    pub name: &'static str,
+    /// Human-readable description.
+    pub description: &'static str,
+    /// Required fields (`with`).
+    pub with_fields: &'static [BuiltinField],
+    /// Optional fields (`maybe`).
+    pub maybe_fields: &'static [BuiltinField],
+}
+
+/// The `attribute` concept schema.
+pub static BUILTIN_ATTRIBUTE: BuiltinConceptSchema = BuiltinConceptSchema {
+    name: "attribute",
+    description: "Built-in concept for modeling attributes",
+    with_fields: &[
+        BuiltinField {
+            cli_name: "description",
+            relation: "dialog.meta/description",
+            value_type: "Text",
+            cardinality: "one",
+            variable_keyed: false,
+        },
+        BuiltinField {
+            cli_name: "the",
+            relation: "dialog.attribute/id",
+            value_type: "Symbol",
+            cardinality: "one",
+            variable_keyed: false,
+        },
+        BuiltinField {
+            cli_name: "as",
+            relation: "dialog.attribute/type",
+            value_type: "Symbol",
+            cardinality: "one",
+            variable_keyed: false,
+        },
+        BuiltinField {
+            cli_name: "cardinality",
+            relation: "dialog.attribute/cardinality",
+            value_type: "Symbol",
+            cardinality: "one",
+            variable_keyed: false,
+        },
+    ],
+    maybe_fields: &[],
+};
+
+/// The `concept` concept schema.
+pub static BUILTIN_CONCEPT: BuiltinConceptSchema = BuiltinConceptSchema {
+    name: "concept",
+    description: "Built-in concept for composing attributes into a shape",
+    with_fields: &[
+        BuiltinField {
+            cli_name: "description",
+            relation: "dialog.meta/description",
+            value_type: "Text",
+            cardinality: "one",
+            variable_keyed: false,
+        },
+        BuiltinField {
+            cli_name: "with",
+            relation: "dialog.concept.with/",
+            value_type: "attribute",
+            cardinality: "one",
+            variable_keyed: true,
+        },
+    ],
+    maybe_fields: &[BuiltinField {
+        cli_name: "maybe",
+        relation: "dialog.concept.maybe/",
+        value_type: "attribute",
+        cardinality: "one",
+        variable_keyed: true,
+    }],
+};
+
+/// The `bookmark` concept schema.
+pub static BUILTIN_BOOKMARK: BuiltinConceptSchema = BuiltinConceptSchema {
+    name: "bookmark",
+    description: "Naming mechanism mapping a local name to any entity",
+    with_fields: &[BuiltinField {
+        cli_name: "name",
+        relation: "dialog.meta/name",
+        value_type: "Text",
+        cardinality: "one",
+        variable_keyed: false,
+    }],
+    maybe_fields: &[],
+};
+
+/// Look up a pre-registered (builtin) concept schema by name.
+pub fn lookup_builtin(name: &str) -> Option<&'static BuiltinConceptSchema> {
+    match name.to_lowercase().as_str() {
+        "attribute" => Some(&BUILTIN_ATTRIBUTE),
+        "concept" => Some(&BUILTIN_CONCEPT),
+        "bookmark" => Some(&BUILTIN_BOOKMARK),
+        _ => None,
+    }
+}
+
+/// Find the relation for a CLI field name within a builtin concept schema.
+///
+/// For variable-keyed fields, `cli_field` should be the dotted form (e.g. "with.name").
+/// Returns `(relation, is_variable_keyed)`.
+pub fn resolve_builtin_field(
+    schema: &BuiltinConceptSchema,
+    cli_field: &str,
+) -> Option<(String, bool)> {
+    // Check fixed fields first
+    for f in schema.with_fields.iter().chain(schema.maybe_fields.iter()) {
+        if !f.variable_keyed && f.cli_name == cli_field {
+            return Some((f.relation.to_string(), false));
+        }
+    }
+    // Check variable-keyed fields (e.g. "with.name" → prefix "with")
+    for f in schema.with_fields.iter().chain(schema.maybe_fields.iter()) {
+        if f.variable_keyed
+            && let Some(key) = cli_field
+                .strip_prefix(f.cli_name)
+                .and_then(|s| s.strip_prefix('.'))
+            && !key.is_empty()
+        {
+            return Some((format!("{}{}", f.relation, key), true));
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +259,7 @@ pub struct RegisteredConcept {
 // ---------------------------------------------------------------------------
 
 /// Validate that a name contains only safe characters: letters, digits,
-/// hyphens, and underscores. Used for both concept and rule names.
+/// hyphens, and underscores.
 pub fn validate_safe_name(name: &str, kind: &str) -> Result<()> {
     if name.is_empty() {
         anyhow::bail!("{} name cannot be empty", kind);
@@ -92,38 +282,20 @@ pub fn validate_safe_name(name: &str, kind: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// A validated concept name (alphanumeric, hyphens, underscores only).
-///
-/// Concept names are labels for concepts — they are decoupled from attribute
-/// namespaces. This type guarantees the name contains only safe characters.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConceptName(String);
 
 impl ConceptName {
-    /// Create a new `ConceptName`, validating that it contains only safe characters.
-    ///
-    /// The name is normalized to lowercase for consistent storage and
-    /// exact-match lookups. Use [`ConceptName::from_stored`] to load
-    /// names read back from the database without re-normalizing.
     pub fn new(s: impl Into<String>) -> Result<Self> {
         let s = s.into();
         validate_safe_name(&s, "Concept")?;
         Ok(Self(s.to_lowercase()))
     }
 
-    /// Create from a name already stored in the database (skips validation).
-    ///
-    /// Use this only for names read back from storage that were validated
-    /// at write time.
     pub fn from_stored(s: String) -> Self {
         Self(s)
     }
 
-    /// The lowercase form used for entity derivation and attribute namespacing.
-    pub fn to_lowercase(&self) -> String {
-        self.0.to_lowercase()
-    }
-
-    /// The original name as stored.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -149,217 +321,45 @@ impl AsRef<str> for ConceptName {
 }
 
 // ---------------------------------------------------------------------------
-// Well-known attribute selectors
+// Entity derivation
 // ---------------------------------------------------------------------------
 
-// Concept meta-schema attributes are defined as typed newtypes in the
-// `concept` module above. These selector functions and string constants
-// provide access for low-level Instruction building and fetch_string
-// queries respectively.
-
-/// Get the artifact-level selector for `concept/name`.
-pub fn concept_name_selector() -> ClaimAttribute {
-    <concept::Name as dialog_query::Attribute>::selector()
-}
-
-/// Get the artifact-level selector for `concept/description`.
-pub fn concept_description_selector() -> ClaimAttribute {
-    <concept::Description as dialog_query::Attribute>::selector()
-}
-
-/// Get the artifact-level selector for `concept/attribute`.
-pub fn concept_attribute_selector() -> ClaimAttribute {
-    <concept::Attribute as dialog_query::Attribute>::selector()
-}
-
-/// Get the artifact-level selector for `concept/namespace`.
-pub fn concept_namespace_selector() -> ClaimAttribute {
-    <concept::Namespace as dialog_query::Attribute>::selector()
-}
-
-/// Get the artifact-level selector for `concept/prior`.
-pub fn concept_prior_selector() -> ClaimAttribute {
-    <concept::Prior as dialog_query::Attribute>::selector()
-}
-
-/// Get the artifact-level selector for `concept/update-rationale`.
-pub fn concept_update_rationale_selector() -> ClaimAttribute {
-    <concept::UpdateRationale as dialog_query::Attribute>::selector()
-}
-
-/// Attribute metadata: human-readable description of the attribute.
-pub const ATTR_ATTRIBUTE_DESCRIPTION: &str = "attribute/description";
-
-/// Attribute metadata: type constraint (e.g. "Text", "Integer", "RecipeStep", or JSON array for enums).
-pub const ATTR_ATTRIBUTE_TYPE: &str = "attribute/type";
-
-/// Attribute metadata: cardinality ("many" for multi-valued, absent for single).
-pub const ATTR_ATTRIBUTE_CARDINALITY: &str = "attribute/cardinality";
-
-/// Attribute metadata: whether the attribute is optional.
-pub const ATTR_ATTRIBUTE_OPTIONAL: &str = "attribute/optional";
-
-/// Rule attribute: the human-readable name of the rule.
-pub const ATTR_RULE_NAME: &str = "rule/name";
-
-/// Rule attribute: optional description.
-pub const ATTR_RULE_DESCRIPTION: &str = "rule/description";
-
-/// Rule attribute: name of the conclusion concept.
-pub const ATTR_RULE_CONCLUSION: &str = "rule/conclusion";
-
-/// Rule attribute: JSON-serialized rule definition.
-pub const ATTR_RULE_DEFINITION: &str = "rule/definition";
-
-// ---------------------------------------------------------------------------
-// Deterministic entity derivation
-// ---------------------------------------------------------------------------
-
-/// Derive a concept entity from its attribute set using dialog-db's
-/// structural identity.
+/// Derive an attribute entity from its identity fields.
 ///
-/// Builds a dynamic `Concept` from the attribute list, computes its
-/// `operator()` URI (a blake3 hash of the CBOR-encoded attribute set),
-/// then derives a deterministic `did:key` entity from that URI.
-///
-/// Two concepts with the same attributes (same namespace/name/cardinality/type
-/// per attribute) produce the same entity ID, regardless of concept name.
-pub fn concept_entity_from_attrs(
-    attributes: &[String],
-    cardinalities: &std::collections::HashMap<String, Cardinality>,
+/// Per the RFC: `entity = hash(the, type, cardinality)`.
+/// Description and name do NOT participate in identity.
+pub fn derive_attribute_entity(
+    selector: &str,
+    value_type: &str,
+    cardinality: &str,
 ) -> Result<Entity> {
-    let concept = build_dynamic_concept(attributes, cardinalities)?;
-    let operator_uri = concept.operator();
-    derive_entity(&operator_uri)
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"attribute\0");
+    hasher.update(selector.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(value_type.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(cardinality.as_bytes());
+    derive_entity_from_hash(&hasher.finalize())
 }
 
-/// Look up a concept entity by name.
+/// Derive a concept entity from its field→attribute mappings.
 ///
-/// Queries the AEV index using the typed `concept::Name` selector,
-/// with case-insensitive matching.
-pub async fn lookup_concept_by_name<S: ArtifactStore>(
-    store: &S,
-    name: &ConceptName,
-) -> Result<Option<Entity>> {
-    let concept_entities = find_entities_by_attribute(store, concept_name_selector()).await?;
-
-    for entity in concept_entities {
-        let stored_names = fetch_string_values(store, &entity, concept_name_selector()).await?;
-        if stored_names
-            .iter()
-            .any(|n| n.to_lowercase() == name.to_lowercase())
-        {
-            return Ok(Some(entity));
-        }
+/// Per the RFC: identity = hash(sorted (field_name, attribute_entity) pairs).
+/// Both field names and attribute entities participate. `maybe` fields do NOT.
+pub fn derive_concept_entity(with_fields: &BTreeMap<String, Entity>) -> Result<Entity> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"concept\0");
+    for (field_name, attr_entity) in with_fields {
+        hasher.update(field_name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(attr_entity.to_string().as_bytes());
+        hasher.update(b"\0");
     }
-    Ok(None)
-}
-
-/// Find all named concept entities in the store.
-///
-/// Discovers concepts by querying the AEV index for entities with the
-/// typed `concept::Name` attribute. Returns `(entity, name)` pairs.
-pub async fn find_all_concepts<S: ArtifactStore>(store: &S) -> Result<Vec<(Entity, String)>> {
-    let entities = find_entities_by_attribute(store, concept_name_selector()).await?;
-    let mut result = Vec::new();
-    for entity in entities {
-        let names = fetch_string_values(store, &entity, concept_name_selector()).await?;
-        for name in names {
-            result.push((entity.clone(), name));
-        }
-    }
-    Ok(result)
-}
-
-/// Find all rule entities in the store (both named and unnamed).
-///
-/// Discovers rules by querying the AEV index for entities with a
-/// `rule/conclusion` attribute (which all rules have). Returns
-/// `(entity, Option<name>)` pairs.
-pub async fn find_all_rules<S: ArtifactStore>(store: &S) -> Result<Vec<(Entity, Option<String>)>> {
-    let conclusion_attr = parse_claim_attribute(ATTR_RULE_CONCLUSION)?;
-    let rule_name_attr = parse_claim_attribute(ATTR_RULE_NAME)?;
-    let entities = find_entities_by_attribute(store, conclusion_attr).await?;
-    let mut result = Vec::new();
-    for entity in entities {
-        let name = fetch_string(store, &entity, rule_name_attr.clone()).await?;
-        result.push((entity, name));
-    }
-    Ok(result)
-}
-
-/// Look up a rule entity by name.
-///
-/// Discovers rules structurally by querying the AEV index for all
-/// entities with a `rule/name` attribute, then matches by name
-/// (case-insensitive).
-pub async fn lookup_rule_by_name<S: ArtifactStore>(
-    store: &S,
-    name: &str,
-) -> Result<Option<Entity>> {
-    let rule_name_attr = parse_claim_attribute(ATTR_RULE_NAME)?;
-    let rule_entities = find_entities_by_attribute(store, rule_name_attr.clone()).await?;
-    for entity in rule_entities {
-        if let Some(stored_name) = fetch_string(store, &entity, rule_name_attr.clone()).await?
-            && stored_name.to_lowercase() == name.to_lowercase()
-        {
-            return Ok(Some(entity));
-        }
-    }
-    Ok(None)
-}
-
-/// Derive the rule entity for a given rule name within a space.
-///
-/// Deterministically derived as an Ed25519 `did:key` from the space DID and rule name.
-pub fn rule_entity(space_did: &str, rule_name: &str) -> Result<Entity> {
-    derive_entity(&format!(
-        "{}\0rule\0{}",
-        space_did,
-        rule_name.to_lowercase()
-    ))
-}
-
-/// Derive the rule entity from its definition content (for unnamed rules).
-///
-/// Deterministically derived as an Ed25519 `did:key` from the space DID and
-/// the blake3 hash of the canonical definition JSON. Same definition in the
-/// same space always produces the same entity, making unnamed defines idempotent.
-pub fn rule_entity_from_definition(space_did: &str, definition_json: &str) -> Result<Entity> {
-    let def_hash = blake3::hash(definition_json.as_bytes());
-    derive_entity(&format!("{}\0rule\0def:{}", space_did, def_hash.to_hex()))
-}
-
-/// Derive an attribute metadata entity from its structural identity.
-///
-/// Uses dialog-db's `AttributeSchema::to_uri()` to derive a deterministic
-/// entity ID from the attribute's namespace/name. This is concept-independent —
-/// the same attribute used in multiple concepts shares one metadata entity.
-pub fn attribute_meta_entity(attr_name: &str) -> Result<Entity> {
-    let (ns, name) = attr_name.split_once('/').ok_or_else(|| {
-        anyhow::anyhow!(
-            "Malformed attribute '{}': expected 'namespace/name' format",
-            attr_name
-        )
-    })?;
-    let schema = dialog_query::AttributeSchema::<Value>::new(
-        leak_str(ns),
-        leak_str(name),
-        leak_str(""),
-        dialog_query::Type::String,
-    );
-    let uri = schema.to_uri();
-    derive_entity(&uri)
+    derive_entity_from_hash(&hasher.finalize())
 }
 
 /// Convert 32 bytes of hash output into a proper Ed25519 `did:key` entity.
-///
-/// Treats the hash as an Ed25519 signing key seed, then formats the
-/// resulting verifying (public) key as a standards-compliant `did:key`
-/// with the Ed25519 multicodec prefix `[0xed, 0x01]`.
-///
-/// This is the canonical implementation — `derive_entity()` and
-/// `derive_entity_from_fields()` both delegate here, as does `fact.rs`.
 pub fn derive_entity_from_hash(hash: &blake3::Hash) -> Result<Entity> {
     let signing_key = ed25519_dalek::SigningKey::from_bytes(hash.as_bytes());
     let verifying_key = signing_key.verifying_key();
@@ -372,18 +372,12 @@ pub fn derive_entity_from_hash(hash: &blake3::Hash) -> Result<Entity> {
     Entity::from_str(&uri).context("Failed to derive did:key entity")
 }
 
-/// Low-level: hash input to produce a deterministic `did:key` entity.
-///
-/// Uses blake3 to hash the input, then delegates to [`derive_entity_from_hash`].
+/// Hash input to produce a deterministic `did:key` entity.
 pub fn derive_entity(input: &str) -> Result<Entity> {
     derive_entity_from_hash(&blake3::hash(input.as_bytes()))
 }
 
 /// Derive an entity ID deterministically from field content.
-///
-/// Sorts fields by attribute name, hashes the concatenated key/value pairs
-/// with blake3, then delegates to [`derive_entity_from_hash`] for proper Ed25519
-/// `did:key` formatting.
 pub fn derive_entity_from_fields(fields: &[(String, String)]) -> Result<Entity> {
     let mut sorted = fields.to_vec();
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
@@ -400,14 +394,342 @@ pub fn derive_entity_from_fields(fields: &[(String, String)]) -> Result<Entity> 
 }
 
 // ---------------------------------------------------------------------------
+// Concept resolution (runtime lookup via dialog.meta/name)
+// ---------------------------------------------------------------------------
+
+/// Look up any entity by its `dialog.meta/name` value.
+pub async fn lookup_entity_by_name<S: ArtifactStore>(
+    store: &S,
+    name: &str,
+) -> Result<Option<Entity>> {
+    let name_attr = dialog_meta::Name::selector();
+    let entities = find_entities_by_attribute(store, name_attr.clone()).await?;
+
+    for entity in entities {
+        let stored_names = fetch_string_values(store, &entity, name_attr.clone()).await?;
+        if stored_names
+            .iter()
+            .any(|n| n.to_lowercase() == name.to_lowercase())
+        {
+            return Ok(Some(entity));
+        }
+    }
+    Ok(None)
+}
+
+/// A concept resolved from the database at runtime.
+#[derive(Debug, Clone)]
+pub struct ResolvedConcept {
+    /// The concept entity.
+    pub entity: Entity,
+    /// The concept's name.
+    pub name: String,
+    /// Required fields: field_name → (attribute_entity, attribute_selector).
+    pub with_fields: BTreeMap<String, (Entity, String)>,
+    /// Optional fields: same structure.
+    pub maybe_fields: BTreeMap<String, (Entity, String)>,
+}
+
+/// Resolve a concept by name: look up the entity, fetch its
+/// `dialog.concept.with/*` and `dialog.concept.maybe/*` claims,
+/// and for each attribute entity fetch its `dialog.attribute/id`.
+pub async fn resolve_concept<S: ArtifactStore>(
+    store: &S,
+    concept_name: &str,
+) -> Result<ResolvedConcept> {
+    let concept_entity = lookup_entity_by_name(store, concept_name)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Concept '{}' not found", concept_name))?;
+
+    let with_fields = fetch_concept_fields(store, &concept_entity, "dialog.concept.with/").await?;
+    let maybe_fields =
+        fetch_concept_fields(store, &concept_entity, "dialog.concept.maybe/").await?;
+
+    if with_fields.is_empty() {
+        anyhow::bail!("Concept '{}' has no required fields", concept_name);
+    }
+
+    Ok(ResolvedConcept {
+        entity: concept_entity,
+        name: concept_name.to_string(),
+        with_fields,
+        maybe_fields,
+    })
+}
+
+/// Fetch concept fields from `dialog.concept.with/*` or `dialog.concept.maybe/*` claims.
+///
+/// Returns a map of field_name → (attribute_entity, attribute_selector).
+async fn fetch_concept_fields<S: ArtifactStore>(
+    store: &S,
+    concept_entity: &Entity,
+    prefix: &str,
+) -> Result<BTreeMap<String, (Entity, String)>> {
+    let mut fields = BTreeMap::new();
+
+    let results: Vec<_> = store
+        .select(ArtifactSelector::new().of(concept_entity.clone()))
+        .try_collect()
+        .await?;
+
+    let attr_id_selector = dialog_attribute::Id::selector();
+
+    for artifact in &results {
+        let attr_str = artifact.the.to_string();
+        if let Some(field_name) = attr_str.strip_prefix(prefix) {
+            if field_name.is_empty() {
+                continue;
+            }
+            let attr_entity = match &artifact.is {
+                Value::Entity(e) => e.clone(),
+                _ => continue,
+            };
+
+            let selector = fetch_string(store, &attr_entity, attr_id_selector.clone())
+                .await?
+                .unwrap_or_default();
+
+            fields.insert(field_name.to_string(), (attr_entity, selector));
+        }
+    }
+
+    Ok(fields)
+}
+
+/// Get all attribute selectors for a resolved concept's required fields.
+pub fn concept_attribute_selectors(concept: &ResolvedConcept) -> Vec<String> {
+    concept
+        .with_fields
+        .values()
+        .map(|(_, selector)| selector.clone())
+        .collect()
+}
+
+/// Resolve a concept field name to its attribute selector.
+pub fn resolve_field_selector(concept: &ResolvedConcept, field_name: &str) -> Result<String> {
+    if let Some((_, selector)) = concept.with_fields.get(field_name) {
+        return Ok(selector.clone());
+    }
+    if let Some((_, selector)) = concept.maybe_fields.get(field_name) {
+        return Ok(selector.clone());
+    }
+    anyhow::bail!(
+        "Field '{}' not found in concept '{}'. Available fields: {}",
+        field_name,
+        concept.name,
+        concept
+            .with_fields
+            .keys()
+            .chain(concept.maybe_fields.keys())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Concept membership (structural matching)
+// ---------------------------------------------------------------------------
+
+/// Find all entities belonging to a concept by checking ALL required attribute selectors.
+pub async fn find_entities_by_concept<S: ArtifactStore>(
+    store: &S,
+    schema_attrs: &[String],
+) -> Result<Vec<Entity>> {
+    if schema_attrs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let first_attr = parse_claim_attribute(&schema_attrs[0])?;
+    let mut result_set: std::collections::HashSet<String> =
+        find_entities_by_attribute(store, first_attr)
+            .await?
+            .iter()
+            .map(|e| e.to_string())
+            .collect();
+
+    for attr in &schema_attrs[1..] {
+        let claim_attr = parse_claim_attribute(attr)?;
+        let attr_entities: std::collections::HashSet<String> =
+            find_entities_by_attribute(store, claim_attr)
+                .await?
+                .iter()
+                .map(|e| e.to_string())
+                .collect();
+        result_set = result_set.intersection(&attr_entities).cloned().collect();
+        if result_set.is_empty() {
+            return Ok(Vec::new());
+        }
+    }
+
+    let first_attr = parse_claim_attribute(&schema_attrs[0])?;
+    let all_entities = find_entities_by_attribute(store, first_attr).await?;
+    Ok(all_entities
+        .into_iter()
+        .filter(|e| result_set.contains(&e.to_string()))
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
+// Init bootstrapping
+// ---------------------------------------------------------------------------
+
+/// Assert all pre-registered concepts into the space.
+///
+/// Called during `carry init` to bootstrap the meta-schema.
+/// Claims are deterministic (content-addressed), so re-running is idempotent.
+pub async fn bootstrap_builtins<S: dialog_query::Store>(
+    session: &mut dialog_query::Session<S>,
+) -> Result<()> {
+    use dialog_query::claim::{Claim, Relation};
+
+    let builtins = [&BUILTIN_ATTRIBUTE, &BUILTIN_CONCEPT, &BUILTIN_BOOKMARK];
+
+    // First pass: derive attribute entities for all fixed fields.
+    let mut attr_entities: BTreeMap<String, Entity> = BTreeMap::new();
+
+    for builtin in &builtins {
+        for field in builtin
+            .with_fields
+            .iter()
+            .chain(builtin.maybe_fields.iter())
+        {
+            if field.variable_keyed {
+                continue;
+            }
+            let entity =
+                derive_attribute_entity(field.relation, field.value_type, field.cardinality)?;
+            attr_entities.insert(field.relation.to_string(), entity);
+        }
+    }
+
+    let mut transaction = session.edit();
+
+    let name_attr = dialog_meta::Name::selector();
+    let desc_attr = dialog_meta::Description::selector();
+    let attr_id = dialog_attribute::Id::selector();
+    let attr_type = dialog_attribute::Type::selector();
+    let attr_card = dialog_attribute::Cardinality::selector();
+
+    // Assert attribute entity claims
+    for builtin in &builtins {
+        for field in builtin
+            .with_fields
+            .iter()
+            .chain(builtin.maybe_fields.iter())
+        {
+            if field.variable_keyed {
+                continue;
+            }
+
+            let entity = attr_entities[field.relation].clone();
+
+            // dialog.attribute/id
+            Relation::new(
+                attr_id.clone(),
+                entity.clone(),
+                Value::String(field.relation.to_string()),
+            )
+            .assert(&mut transaction);
+
+            // dialog.attribute/type
+            Relation::new(
+                attr_type.clone(),
+                entity.clone(),
+                Value::String(field.value_type.to_string()),
+            )
+            .assert(&mut transaction);
+
+            // dialog.attribute/cardinality
+            Relation::new(
+                attr_card.clone(),
+                entity.clone(),
+                Value::String(field.cardinality.to_string()),
+            )
+            .assert(&mut transaction);
+
+            // dialog.meta/name = qualified name (e.g. "attribute/the")
+            Relation::new(
+                name_attr.clone(),
+                entity.clone(),
+                Value::String(format!("{}/{}", builtin.name, field.cli_name)),
+            )
+            .assert(&mut transaction);
+        }
+    }
+
+    // Assert concept entity claims
+    for builtin in &builtins {
+        let mut with_fields: BTreeMap<String, Entity> = BTreeMap::new();
+        for field in builtin.with_fields {
+            if field.variable_keyed {
+                continue;
+            }
+            with_fields.insert(
+                field.cli_name.to_string(),
+                attr_entities[field.relation].clone(),
+            );
+        }
+
+        let concept_entity = derive_concept_entity(&with_fields)?;
+
+        // dialog.meta/name
+        Relation::new(
+            name_attr.clone(),
+            concept_entity.clone(),
+            Value::String(builtin.name.to_string()),
+        )
+        .assert(&mut transaction);
+
+        // dialog.meta/description
+        Relation::new(
+            desc_attr.clone(),
+            concept_entity.clone(),
+            Value::String(builtin.description.to_string()),
+        )
+        .assert(&mut transaction);
+
+        // dialog.concept.with/{field} = attribute_entity
+        for field in builtin.with_fields {
+            if field.variable_keyed {
+                continue;
+            }
+            let rel = format!("dialog.concept.with/{}", field.cli_name);
+            let rel_attr = parse_claim_attribute(&rel)?;
+            Relation::new(
+                rel_attr,
+                concept_entity.clone(),
+                Value::Entity(attr_entities[field.relation].clone()),
+            )
+            .assert(&mut transaction);
+        }
+
+        // dialog.concept.maybe/{field} = attribute_entity
+        for field in builtin.maybe_fields {
+            if field.variable_keyed {
+                continue;
+            }
+            let rel = format!("dialog.concept.maybe/{}", field.cli_name);
+            let rel_attr = parse_claim_attribute(&rel)?;
+            Relation::new(
+                rel_attr,
+                concept_entity.clone(),
+                Value::Entity(attr_entities[field.relation].clone()),
+            )
+            .assert(&mut transaction);
+        }
+    }
+
+    session.commit(transaction).await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Attribute name helpers
 // ---------------------------------------------------------------------------
 
-/// Given a namespace and user-supplied attribute key, produce the fully
-/// qualified attribute name `{namespace}/{key}`.
-///
-/// If the key already contains a `/`, it is returned as-is (the user
-/// provided a fully qualified attribute name).
+/// Qualify a field name within a namespace: `{namespace}/{key}`.
+/// If the key already contains `/`, it is returned as-is.
 pub fn qualify_attribute(namespace: &str, key: &str) -> Result<String> {
     if key.contains('/') {
         Ok(key.to_string())
@@ -416,22 +738,15 @@ pub fn qualify_attribute(namespace: &str, key: &str) -> Result<String> {
     }
 }
 
-/// Strip the namespace prefix from an attribute name, returning just the
-/// short key (e.g. `"my-space/title"` -> `"title"`).
-///
-/// If the attribute doesn't match the provided namespace, the full
-/// attribute name is returned as-is.
+/// Strip the namespace prefix from an attribute name.
 pub fn short_attribute(namespace: &str, attr: &str) -> String {
     let prefix = format!("{}/", namespace);
     if let Some(short) = attr.strip_prefix(&prefix) {
         short.to_string()
+    } else if let Some((_ns, name)) = attr.split_once('/') {
+        name.to_string()
     } else {
-        // Fall back to stripping any namespace prefix
-        if let Some((_ns, name)) = attr.split_once('/') {
-            name.to_string()
-        } else {
-            attr.to_string()
-        }
+        attr.to_string()
     }
 }
 
@@ -527,10 +842,6 @@ pub async fn fetch_values<S: ArtifactStore>(
 // ---------------------------------------------------------------------------
 
 /// Find all entities that have a given attribute (using the AEV index).
-///
-/// This replaces the old `concept/entity` back-reference pattern.
-/// Dialog-db identifies concept membership structurally: an entity belongs
-/// to a concept if it has facts for that concept's attributes.
 pub async fn find_entities_by_attribute<S: ArtifactStore>(
     store: &S,
     attr: ClaimAttribute,
@@ -540,8 +851,6 @@ pub async fn find_entities_by_attribute<S: ArtifactStore>(
         .try_collect()
         .await?;
 
-    // Deduplicate entities (multiple values for the same entity+attribute
-    // would otherwise produce duplicates).
     let mut seen = std::collections::HashSet::new();
     let mut entities = Vec::new();
     for artifact in results {
@@ -552,123 +861,12 @@ pub async fn find_entities_by_attribute<S: ArtifactStore>(
     Ok(entities)
 }
 
-/// Find all entities belonging to a concept by checking ALL schema attributes.
-///
-/// Queries the AEV index for each schema attribute and intersects the
-/// entity sets. An entity must have facts for every attribute to be
-/// included — matching dialog-db's structural inner-join semantics.
-pub async fn find_entities_by_concept<S: ArtifactStore>(
-    store: &S,
-    schema_attrs: &[String],
-) -> Result<Vec<Entity>> {
-    if schema_attrs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Start with entities from the first attribute
-    let first_attr = parse_claim_attribute(&schema_attrs[0])?;
-    let mut result_set: std::collections::HashSet<String> =
-        find_entities_by_attribute(store, first_attr)
-            .await?
-            .iter()
-            .map(|e| e.to_string())
-            .collect();
-
-    // Intersect with entities from each subsequent attribute
-    for attr in &schema_attrs[1..] {
-        let claim_attr = parse_claim_attribute(attr)?;
-        let attr_entities: std::collections::HashSet<String> =
-            find_entities_by_attribute(store, claim_attr)
-                .await?
-                .iter()
-                .map(|e| e.to_string())
-                .collect();
-        result_set = result_set.intersection(&attr_entities).cloned().collect();
-        if result_set.is_empty() {
-            return Ok(Vec::new());
-        }
-    }
-
-    // Convert back to Entity values (preserving original Entity objects)
-    let first_attr = parse_claim_attribute(&schema_attrs[0])?;
-    let all_entities = find_entities_by_attribute(store, first_attr).await?;
-    Ok(all_entities
-        .into_iter()
-        .filter(|e| result_set.contains(&e.to_string()))
-        .collect())
-}
-
 /// Parse a string attribute name into a `ClaimAttribute`.
 pub fn parse_claim_attribute(attr_name: &str) -> Result<ClaimAttribute> {
     ClaimAttribute::from_str(attr_name).context(format!("Invalid attribute: {}", attr_name))
 }
 
-/// Infer the concept that an entity belongs to by examining its attributes.
-///
-/// Fetches all facts about the entity, then checks each registered concept
-/// to see if the entity has facts for ALL of that concept's attributes.
-/// Returns the best-matching concept (the one with the most attributes).
-///
-/// Returns `(concept_name, concept_entity, schema_attrs)` or an error if
-/// the entity has no attributes or the concept cannot be resolved.
-pub async fn infer_concept_from_entity<S: ArtifactStore>(
-    store: &S,
-    entity: &Entity,
-) -> Result<(ConceptName, Entity, Vec<String>)> {
-    // Fetch all facts about this entity
-    let results: Vec<_> = store
-        .select(ArtifactSelector::new().of(entity.clone()))
-        .try_collect()
-        .await?;
-
-    if results.is_empty() {
-        anyhow::bail!("Entity '{}' not found (no facts)", entity);
-    }
-
-    // Collect the entity's attribute names
-    let entity_attrs: std::collections::HashSet<String> =
-        results.iter().map(|a| a.the.to_string()).collect();
-
-    // Find all named concepts via structural discovery (AEV index)
-    let concept_entities = find_entities_by_attribute(store, concept_name_selector()).await?;
-
-    let mut best_match: Option<(ConceptName, Entity, Vec<String>, usize)> = None;
-
-    for concept_ent in &concept_entities {
-        let name = match fetch_string(store, concept_ent, concept_name_selector()).await? {
-            Some(n) => ConceptName::from_stored(n),
-            None => continue,
-        };
-        let schema_attrs =
-            fetch_string_values(store, concept_ent, concept_attribute_selector()).await?;
-
-        if schema_attrs.is_empty() {
-            continue;
-        }
-
-        // Check if the entity has ALL of this concept's attributes
-        let has_all = schema_attrs.iter().all(|a| entity_attrs.contains(a));
-        if has_all {
-            let score = schema_attrs.len();
-            if best_match.as_ref().is_none_or(|(_, _, _, s)| score > *s) {
-                best_match = Some((name, concept_ent.clone(), schema_attrs, score));
-            }
-        }
-    }
-
-    match best_match {
-        Some((name, ent, attrs, _)) => Ok((name, ent, attrs)),
-        None => anyhow::bail!(
-            "Could not resolve concept for entity '{}' (no named concept matches its attributes)",
-            entity
-        ),
-    }
-}
-
 /// Fetch all facts (as Artifacts) for an entity.
-///
-/// Used by retract operations to discover and remove all facts about an
-/// entity without needing to know its concept schema in advance.
 pub async fn fetch_all_entity_facts<S: ArtifactStore>(
     store: &S,
     entity: &Entity,
@@ -681,37 +879,11 @@ pub async fn fetch_all_entity_facts<S: ArtifactStore>(
 }
 
 // ---------------------------------------------------------------------------
-// Cardinality helpers
-// ---------------------------------------------------------------------------
-
-/// Fetch the cardinality for each attribute from stored metadata.
-///
-/// Returns a map from fully-qualified attribute name to `Cardinality`.
-/// Attributes without stored cardinality metadata default to `Cardinality::One`.
-pub async fn fetch_attribute_cardinalities<S: ArtifactStore>(
-    store: &S,
-    schema_attrs: &[String],
-) -> Result<std::collections::HashMap<String, Cardinality>> {
-    let cardinality_attr = parse_claim_attribute(ATTR_ATTRIBUTE_CARDINALITY)?;
-    let mut cardinalities = std::collections::HashMap::new();
-    for attr_name in schema_attrs {
-        let meta_entity = attribute_meta_entity(attr_name)?;
-        if let Some(val) = fetch_string(store, &meta_entity, cardinality_attr.clone()).await?
-            && val.to_lowercase() == "many"
-        {
-            cardinalities.insert(attr_name.clone(), Cardinality::Many);
-        }
-    }
-    Ok(cardinalities)
-}
-
-// ---------------------------------------------------------------------------
 // Value helpers
 // ---------------------------------------------------------------------------
 
 /// Parse a string input into a Value, trying integer -> float -> string.
 pub fn parse_value(input: &str) -> Value {
-    // Entity references (DID URIs)
     if input.starts_with("did:")
         && let Ok(entity) = dialog_query::Entity::from_str(input)
     {
@@ -727,7 +899,6 @@ pub fn parse_value(input: &str) -> Value {
     if let Ok(f) = input.parse::<f64>() {
         return Value::Float(f);
     }
-    // Handle booleans
     match input.to_lowercase().as_str() {
         "true" => return Value::Boolean(true),
         "false" => return Value::Boolean(false),
@@ -770,72 +941,7 @@ pub fn format_value(value: &Value) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Dynamic concept construction (for rule compilation)
-// ---------------------------------------------------------------------------
-
 /// Leak a runtime string to get a `&'static str`.
-///
-/// This is safe for CLI tools that run once and exit. The leaked memory
-/// lives for the process lifetime, which is exactly what `AttributeSchema`
-/// needs for its `&'static str` fields.
-///
-/// # Safety note
-///
-/// Intentionally leaks memory for CLI single-run usage. Each call leaks
-/// one small `String` allocation that lives until process exit.
 pub fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
-}
-
-/// Build a `dialog_query::predicate::Concept` dynamically from a list of
-/// fully-qualified attribute names (e.g. `["task/title", "task/status"]`).
-///
-/// Each attribute is split on `/` to extract namespace and name, then
-/// wrapped in an `AttributeSchema<Value>`.
-///
-/// ## Type::String default
-///
-/// `Type::String` is used for all attributes because dialog-db's type
-/// checking at query time is a no-op (`AttributeSchema::check()` always
-/// returns Ok). Type only affects the concept's identity hash (used for
-/// rule resolution), but since both `build_dynamic_concept()` and
-/// `compile_rule()` use the same `Type::String` default, concept URIs
-/// are consistent and rules resolve correctly.
-///
-/// ## Cardinality
-///
-/// If a `cardinalities` map is provided, attributes with
-/// `Cardinality::Many` get correct cost estimates from the query planner.
-/// Attributes not in the map default to `Cardinality::One`.
-pub fn build_dynamic_concept(
-    attributes: &[String],
-    cardinalities: &std::collections::HashMap<String, Cardinality>,
-) -> Result<dialog_query::predicate::Concept> {
-    use dialog_query::{AttributeSchema, Type};
-
-    let attr_schemas: Vec<(&str, AttributeSchema<Value>)> = attributes
-        .iter()
-        .map(|attr| {
-            let (ns, name) = attr.split_once('/').ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Malformed attribute '{}': expected 'namespace/name' format",
-                    attr
-                )
-            })?;
-            let short_name = leak_str(name);
-            let mut schema = AttributeSchema::<Value>::new(
-                leak_str(ns),
-                short_name,
-                leak_str(""), // description
-                Type::String, // see doc comment above
-            );
-            if let Some(&cardinality) = cardinalities.get(attr) {
-                schema.cardinality = cardinality;
-            }
-            Ok((short_name, schema))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(dialog_query::predicate::Concept::new(attr_schemas.into()))
 }
