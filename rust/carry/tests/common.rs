@@ -4,9 +4,9 @@
 //! in a temporary directory, with a bootstrapped space.
 
 use anyhow::{Context, Result};
+use carry::site::{Site, SpaceRef};
 use std::path::PathBuf;
 use tempfile::TempDir;
-use tonk_cli::site::{Site, SpaceRef};
 
 /// An isolated test environment backed by a temporary directory.
 ///
@@ -53,8 +53,8 @@ impl TestEnv {
     }
 
     /// Resolve a `SiteContext` for use in commands.
-    pub fn ctx(&self) -> tonk_cli::site::SiteContext {
-        tonk_cli::site::SiteContext::resolve(Some(self.site_path.as_path())).unwrap()
+    pub fn ctx(&self) -> carry::site::SiteContext {
+        carry::site::SiteContext::resolve(Some(self.site_path.as_path())).unwrap()
     }
 
     /// Get path to a specific example YAML file.

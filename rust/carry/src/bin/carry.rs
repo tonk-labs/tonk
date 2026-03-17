@@ -3,8 +3,8 @@ mod inner {}
 
 #[cfg(not(target_arch = "wasm32"))]
 mod inner {
+    use carry::help;
     use clap::{Parser, Subcommand};
-    use tonk_cli::help;
 
     #[derive(Parser)]
     #[command(name = "carry")]
@@ -121,36 +121,35 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init { name } => {
-            tonk_cli::init::execute(name, site_path).await?;
+            carry::init::execute(name, site_path).await?;
         }
         Commands::Query { target, fields } => {
-            let parsed_target = tonk_cli::target::Target::parse(&target)?;
-            let (parsed_fields, _this_entity) = tonk_cli::target::parse_fields(&fields)?;
-            let ctx = tonk_cli::site::SiteContext::resolve(site_path)?;
-            tonk_cli::query_cmd::execute(&ctx, parsed_target, parsed_fields, format).await?;
+            let parsed_target = carry::target::Target::parse(&target)?;
+            let (parsed_fields, _this_entity) = carry::target::parse_fields(&fields)?;
+            let ctx = carry::site::SiteContext::resolve(site_path)?;
+            carry::query_cmd::execute(&ctx, parsed_target, parsed_fields, format).await?;
         }
         Commands::Assert {
             target_or_file,
             fields,
         } => {
-            let first_arg = tonk_cli::target::FirstArg::parse(&target_or_file)?;
-            let (parsed_fields, this_entity) = tonk_cli::target::parse_fields(&fields)?;
-            let ctx = tonk_cli::site::SiteContext::resolve(site_path)?;
-            tonk_cli::assert_cmd::execute(&ctx, first_arg, this_entity, parsed_fields, format)
-                .await?;
+            let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
+            let (parsed_fields, this_entity) = carry::target::parse_fields(&fields)?;
+            let ctx = carry::site::SiteContext::resolve(site_path)?;
+            carry::assert_cmd::execute(&ctx, first_arg, this_entity, parsed_fields, format).await?;
         }
         Commands::Retract {
             target_or_file,
             fields,
         } => {
-            let first_arg = tonk_cli::target::FirstArg::parse(&target_or_file)?;
-            let (parsed_fields, this_entity) = tonk_cli::target::parse_fields(&fields)?;
-            let ctx = tonk_cli::site::SiteContext::resolve(site_path)?;
-            tonk_cli::retract_cmd::execute(&ctx, first_arg, this_entity, parsed_fields, format)
+            let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
+            let (parsed_fields, this_entity) = carry::target::parse_fields(&fields)?;
+            let ctx = carry::site::SiteContext::resolve(site_path)?;
+            carry::retract_cmd::execute(&ctx, first_arg, this_entity, parsed_fields, format)
                 .await?;
         }
         Commands::Status => {
-            tonk_cli::status_cmd::execute(site_path, format).await?;
+            carry::status_cmd::execute(site_path, format).await?;
         }
     }
 

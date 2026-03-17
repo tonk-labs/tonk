@@ -1,4 +1,4 @@
-//! Integration tests for the carry CLI (tonk-cli crate).
+//! Integration tests for the carry CLI.
 //!
 //! These tests exercise the CLI through its library API, using isolated
 //! `.carry/` site directories for each test. Every test gets its own
@@ -6,8 +6,8 @@
 
 mod common;
 
+use carry::target::{Field, FirstArg, Target};
 use common::TestEnv;
-use tonk_cli::target::{Field, FirstArg, Target};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Site & Init
@@ -26,11 +26,11 @@ async fn test_init_creates_site() {
 #[tokio::test]
 async fn test_init_with_name() {
     let tmp = tempfile::TempDir::new().unwrap();
-    tonk_cli::init::execute(Some("my-project".to_string()), Some(tmp.path()))
+    carry::init::execute(Some("my-project".to_string()), Some(tmp.path()))
         .await
         .unwrap();
 
-    let site = tonk_cli::site::Site::open(tmp.path()).unwrap();
+    let site = carry::site::Site::open(tmp.path()).unwrap();
     let spaces = site.list_spaces().unwrap();
     assert_eq!(spaces.len(), 1);
     assert!(site.active_space_did().unwrap().is_some());
@@ -39,14 +39,10 @@ async fn test_init_with_name() {
 #[tokio::test]
 async fn test_init_idempotent() {
     let tmp = tempfile::TempDir::new().unwrap();
-    tonk_cli::init::execute(None, Some(tmp.path()))
-        .await
-        .unwrap();
-    tonk_cli::init::execute(None, Some(tmp.path()))
-        .await
-        .unwrap();
+    carry::init::execute(None, Some(tmp.path())).await.unwrap();
+    carry::init::execute(None, Some(tmp.path())).await.unwrap();
 
-    let site = tonk_cli::site::Site::open(tmp.path()).unwrap();
+    let site = carry::site::Site::open(tmp.path()).unwrap();
     let spaces = site.list_spaces().unwrap();
     assert_eq!(spaces.len(), 1, "Should not create a second space");
 }
@@ -59,7 +55,7 @@ async fn test_init_idempotent() {
 async fn test_status_runs() {
     let env = TestEnv::new().await.unwrap();
     // Just verify it doesn't error
-    tonk_cli::status_cmd::execute(Some(env.site_path.as_path()), "yaml")
+    carry::status_cmd::execute(Some(env.site_path.as_path()), "yaml")
         .await
         .unwrap();
 }
@@ -67,7 +63,7 @@ async fn test_status_runs() {
 #[tokio::test]
 async fn test_status_json() {
     let env = TestEnv::new().await.unwrap();
-    tonk_cli::status_cmd::execute(Some(env.site_path.as_path()), "json")
+    carry::status_cmd::execute(Some(env.site_path.as_path()), "json")
         .await
         .unwrap();
 }
@@ -93,7 +89,7 @@ async fn test_assert_and_query_domain() {
             value: Some("28".to_string()),
         },
     ];
-    tonk_cli::assert_cmd::execute(&ctx, target, None, fields, "yaml")
+    carry::assert_cmd::execute(&ctx, target, None, fields, "yaml")
         .await
         .unwrap();
 
@@ -109,7 +105,7 @@ async fn test_assert_and_query_domain() {
             value: None,
         },
     ];
-    tonk_cli::query_cmd::execute(&ctx, query_target, query_fields, "yaml")
+    carry::query_cmd::execute(&ctx, query_target, query_fields, "yaml")
         .await
         .unwrap();
 }
@@ -130,7 +126,7 @@ async fn test_assert_multiple_entities() {
             value: Some("28".to_string()),
         },
     ];
-    tonk_cli::assert_cmd::execute(
+    carry::assert_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
@@ -150,7 +146,7 @@ async fn test_assert_multiple_entities() {
             value: Some("35".to_string()),
         },
     ];
-    tonk_cli::assert_cmd::execute(
+    carry::assert_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
@@ -165,7 +161,7 @@ async fn test_assert_multiple_entities() {
         name: "name".to_string(),
         value: None,
     }];
-    tonk_cli::query_cmd::execute(
+    carry::query_cmd::execute(
         &ctx,
         Target::Domain("io.test.person".to_string()),
         query_fields,
@@ -192,7 +188,7 @@ async fn test_query_with_filter() {
                 value: Some(age.to_string()),
             },
         ];
-        tonk_cli::assert_cmd::execute(
+        carry::assert_cmd::execute(
             &ctx,
             FirstArg::Target(Target::Domain("io.test.person".to_string())),
             None,
@@ -214,7 +210,7 @@ async fn test_query_with_filter() {
             value: None,
         },
     ];
-    tonk_cli::query_cmd::execute(
+    carry::query_cmd::execute(
         &ctx,
         Target::Domain("io.test.person".to_string()),
         query_fields,
@@ -238,7 +234,7 @@ async fn test_assert_with_this_entity() {
         name: "name".to_string(),
         value: Some("Alice".to_string()),
     }];
-    tonk_cli::assert_cmd::execute(
+    carry::assert_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
@@ -249,7 +245,7 @@ async fn test_assert_with_this_entity() {
     .unwrap();
 
     // Derive the same entity to update it
-    let entity = tonk_cli::schema::derive_entity_from_fields(&[(
+    let entity = carry::schema::derive_entity_from_fields(&[(
         "io.test.person/name".to_string(),
         "Alice".to_string(),
     )])
@@ -260,7 +256,7 @@ async fn test_assert_with_this_entity() {
         name: "age".to_string(),
         value: Some("28".to_string()),
     }];
-    tonk_cli::assert_cmd::execute(
+    carry::assert_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         Some(entity.to_string()),
@@ -291,7 +287,7 @@ async fn test_retract_specific_field() {
             value: Some("28".to_string()),
         },
     ];
-    tonk_cli::assert_cmd::execute(
+    carry::assert_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
@@ -301,7 +297,7 @@ async fn test_retract_specific_field() {
     .await
     .unwrap();
 
-    let entity = tonk_cli::schema::derive_entity_from_fields(&[
+    let entity = carry::schema::derive_entity_from_fields(&[
         ("io.test.person/name".to_string(), "Alice".to_string()),
         ("io.test.person/age".to_string(), "28".to_string()),
     ])
@@ -312,7 +308,7 @@ async fn test_retract_specific_field() {
         name: "age".to_string(),
         value: None,
     }];
-    tonk_cli::retract_cmd::execute(
+    carry::retract_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         Some(entity.to_string()),
@@ -333,7 +329,7 @@ async fn test_retract_all_fields() {
         name: "name".to_string(),
         value: Some("Alice".to_string()),
     }];
-    tonk_cli::assert_cmd::execute(
+    carry::assert_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
@@ -343,14 +339,14 @@ async fn test_retract_all_fields() {
     .await
     .unwrap();
 
-    let entity = tonk_cli::schema::derive_entity_from_fields(&[(
+    let entity = carry::schema::derive_entity_from_fields(&[(
         "io.test.person/name".to_string(),
         "Alice".to_string(),
     )])
     .unwrap();
 
     // Retract all
-    tonk_cli::retract_cmd::execute(
+    carry::retract_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         Some(entity.to_string()),
@@ -384,7 +380,7 @@ async fn test_assert_from_json_content() {
     let json_path = format!("{}.json", path_str);
     std::fs::copy(tmp_file.path(), &json_path).unwrap();
 
-    tonk_cli::assert_cmd::execute(
+    carry::assert_cmd::execute(
         &ctx,
         FirstArg::File(json_path.clone()),
         None,
@@ -406,7 +402,7 @@ async fn test_assert_requires_fields() {
     let env = TestEnv::new().await.unwrap();
     let ctx = env.ctx();
 
-    let result = tonk_cli::assert_cmd::execute(
+    let result = carry::assert_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
@@ -423,7 +419,7 @@ async fn test_assert_requires_values() {
     let env = TestEnv::new().await.unwrap();
     let ctx = env.ctx();
 
-    let result = tonk_cli::assert_cmd::execute(
+    let result = carry::assert_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
@@ -443,7 +439,7 @@ async fn test_retract_requires_this() {
     let env = TestEnv::new().await.unwrap();
     let ctx = env.ctx();
 
-    let result = tonk_cli::retract_cmd::execute(
+    let result = carry::retract_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
@@ -471,7 +467,7 @@ async fn test_assert_json_format() {
         name: "name".to_string(),
         value: Some("Alice".to_string()),
     }];
-    tonk_cli::assert_cmd::execute(
+    carry::assert_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
@@ -491,7 +487,7 @@ async fn test_query_json_format() {
         name: "name".to_string(),
         value: Some("Alice".to_string()),
     }];
-    tonk_cli::assert_cmd::execute(
+    carry::assert_cmd::execute(
         &ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
@@ -505,7 +501,7 @@ async fn test_query_json_format() {
         name: "name".to_string(),
         value: None,
     }];
-    tonk_cli::query_cmd::execute(
+    carry::query_cmd::execute(
         &ctx,
         Target::Domain("io.test.person".to_string()),
         query_fields,
@@ -522,7 +518,7 @@ async fn test_query_json_format() {
 #[tokio::test]
 async fn test_site_discovery() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let site = tonk_cli::site::Site::init(tmp.path()).unwrap();
+    let site = carry::site::Site::init(tmp.path()).unwrap();
     let space = site.create_space().unwrap();
     site.set_active_space(&space.did).unwrap();
 
@@ -531,13 +527,13 @@ async fn test_site_discovery() {
     std::fs::create_dir_all(&nested).unwrap();
 
     // Should find site from nested directory
-    let found = tonk_cli::site::Site::discover(&nested).unwrap();
+    let found = carry::site::Site::discover(&nested).unwrap();
     assert_eq!(found.root(), tmp.path().join(".carry"));
 }
 
 #[tokio::test]
 async fn test_site_context_resolve() {
     let env = TestEnv::new().await.unwrap();
-    let ctx = tonk_cli::site::SiteContext::resolve(Some(env.site_path.as_path())).unwrap();
+    let ctx = carry::site::SiteContext::resolve(Some(env.site_path.as_path())).unwrap();
     assert_eq!(ctx.space.did, env.space_did);
 }

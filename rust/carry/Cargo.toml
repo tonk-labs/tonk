@@ -1,6 +1,6 @@
 [package]
-name = "tonk-cli"
-description = "Carry CLI - interact with Dialog DB spaces"
+name = "carry"
+description = "Carry - interact with Dialog DB spaces"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

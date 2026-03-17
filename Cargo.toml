@@ -3,7 +3,7 @@
 members = [
     "rust/tonk-access-service",
     "rust/tonk-blobs",
-    "rust/tonk-cli",
+    "rust/carry",
     "rust/tonk-core",
     "rust/tonk-common",
     "rust/tonk-assess",
@@ -21,7 +21,7 @@ edition = "2024"
 
 [workspace.dependencies]
 tonk-access-service = { path = "./rust/tonk-access-service" }
-tonk-cli = { path = "./rust/tonk-cli" }
+carry = { path = "./rust/carry" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-core = { path = "./rust/tonk-core" }
 tonk-space = { path = "./rust/tonk-space" }

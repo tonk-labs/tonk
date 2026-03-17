@@ -467,6 +467,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629a66d692cb9ff1a1c664e41771b3dcaf961985a9774c0eb0bd1b51cf60a48"
 
 [[package]]
+name = "carry"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "blake3",
+ "bs58",
+ "clap",
+ "dialog-artifacts",
+ "dialog-query",
+ "dialog-varsig",
+ "dirs",
+ "ed25519-dalek",
+ "futures-util",
+ "rand 0.8.5",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tonk-space",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4477,29 +4500,6 @@ dependencies = [
  "wasm-bindgen-test",
  "wasm-streams",
  "web-sys",
-]
-
-[[package]]
-name = "tonk-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "blake3",
- "bs58",
- "clap",
- "dialog-artifacts",
- "dialog-query",
- "dialog-varsig",
- "dirs",
- "ed25519-dalek",
- "futures-util",
- "rand 0.8.5",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "tokio",
- "tonk-space",
 ]
 
 [[package]]
