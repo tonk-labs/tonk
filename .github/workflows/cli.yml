@@ -73,7 +73,7 @@ jobs:
     name: 'Publish CLI'
     needs: ['build-cli', 'test-cli']
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/stable'
+    if: github.ref == 'refs/heads/stable' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
     steps:
@@ -90,7 +90,12 @@ jobs:
           mv artifacts/macos-arm64/carry carry-macos-arm64
           mv artifacts/linux-x86_64/carry carry-linux-x86_64
           chmod +x carry-macos-arm64 carry-linux-x86_64
-      - name: Create/update rolling release
+      - name: Delete existing rolling release
+        run: gh release delete latest --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+      - name: Create rolling release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
