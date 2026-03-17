@@ -147,11 +147,14 @@ use inner::*;
 pub fn main() {}
 
 #[cfg(not(target_arch = "wasm32"))]
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+#[cfg(not(target_arch = "wasm32"))]
+use clap_complete::env::CompleteEnv;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    CompleteEnv::with_factory(Cli::command).complete();
     let cli = Cli::parse();
     let site_path = cli.site.as_deref().map(std::path::Path::new);
     let space_flag = cli.space.as_deref();

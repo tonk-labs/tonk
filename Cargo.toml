@@ -42,6 +42,7 @@ chrono = { version = "0.4", default-features = false, features = [
     "wasmbind",
 ] }
 clap = { version = "4", features = ["derive"] }
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
 console_error_panic_hook = "0.1"
 crypto-common = "=0.2.0-rc.5"
 dialoguer = "0.11"
