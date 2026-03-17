@@ -53,8 +53,10 @@ impl TestEnv {
     }
 
     /// Resolve a `SiteContext` for use in commands.
-    pub fn ctx(&self) -> carry::site::SiteContext {
-        carry::site::SiteContext::resolve(Some(self.site_path.as_path())).unwrap()
+    pub async fn ctx(&self) -> carry::site::SiteContext {
+        carry::site::SiteContext::resolve(Some(self.site_path.as_path()), None)
+            .await
+            .unwrap()
     }
 
     /// Get path to a specific example YAML file.

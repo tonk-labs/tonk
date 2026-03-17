@@ -13,26 +13,22 @@
 //! The active space is tracked in `.carry/@active` (a plain-text file
 //! containing the space DID).
 //!
-//! # TODO: Expose multi-space support in CLI
-//!
-//! The infrastructure here already supports multiple spaces per site:
-//! - [`Site::list_spaces`] - enumerate all spaces
-//! - [`Site::create_space`] - create additional spaces
-//! - [`Site::set_active_space`] / [`Site::active_space_did`] - switch between spaces
-//! - [`Site::space_by_did`] - lookup by DID
-//!
-//! What's needed:
-//! 1. Add `carry space` subcommand in `bin/carry.rs` (see TODO there)
-//! 2. Add label storage for spaces (currently only xyz.tonk.carry/label on init)
-//! 3. Consider: space_by_label() lookup for `carry space switch my-label`
-//! 4. Consider: delete_space() with safety checks (no active, confirm prompt)
+//! Multi-space support is exposed via `carry space` subcommands:
+//! - `carry space list` — enumerate all spaces with labels
+//! - `carry space create [LABEL]` — create additional spaces
+//! - `carry space switch <DID|LABEL>` — switch active space
+//! - `carry space active` — show current active space
+//! - `carry space delete <DID|LABEL>` — delete a space (with confirmation)
 
+use crate::schema;
 use anyhow::{Context, Result};
 use dialog_artifacts::repository::{BranchId, Credentials, Repository};
 use dialog_query::Session;
+use dialog_query::claim::Attribute as ClaimAttribute;
 use ed25519_dalek::SigningKey;
 use rand_0_8::rngs::OsRng;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use tonk_space::{FsBackend, Operator};
 
 /// Marker file for the active space within a `.carry/` directory.
@@ -213,6 +209,62 @@ impl Site {
             .with_context(|| format!("Active space {} not found on disk", did))
     }
 
+    /// Resolve a space by DID or label.
+    ///
+    /// If `id` starts with `did:key:`, looks up by DID directly.
+    /// Otherwise, treats `id` as a label and searches all spaces for a
+    /// matching `xyz.tonk.carry/label` claim.
+    pub async fn resolve_space(&self, id: &str) -> Result<SpaceRef> {
+        if id.starts_with("did:key:") {
+            return self
+                .space_by_did(id)
+                .with_context(|| format!("No space found with DID {}", id));
+        }
+        // Search by label
+        let spaces = self.list_spaces()?;
+        let mut matches = Vec::new();
+        for space in &spaces {
+            if let Some(label) = self.space_label(space).await?
+                && label == id
+            {
+                matches.push(space.clone());
+            }
+        }
+        match matches.len() {
+            0 => anyhow::bail!("No space found with label '{}'", id),
+            1 => Ok(matches.into_iter().next().unwrap()),
+            n => anyhow::bail!(
+                "Ambiguous: {} spaces match label '{}'. Use a DID to be specific.",
+                n,
+                id
+            ),
+        }
+    }
+
+    /// Read the label for a space from its `xyz.tonk.carry/label` claim.
+    ///
+    /// Opens the space's session, queries for the label on the well-known
+    /// `derive_entity("space")` entity. Returns `None` if no label is set.
+    pub async fn space_label(&self, space: &SpaceRef) -> Result<Option<String>> {
+        let entity = schema::derive_entity("space")?;
+        let attr = ClaimAttribute::from_str("xyz.tonk.carry/label")
+            .map_err(|e| anyhow::anyhow!("Invalid attribute: {:?}", e))?;
+        let session = space.open_session().await?;
+        let label = schema::fetch_string(&session, &entity, attr).await?;
+        Ok(label)
+    }
+
+    /// Delete a space directory from disk.
+    ///
+    /// Removes the entire space directory. Caller is responsible for
+    /// checking that this is not the active space and confirming with the
+    /// user before calling this method.
+    pub fn delete_space(&self, space: &SpaceRef) -> Result<()> {
+        std::fs::remove_dir_all(space.dir())
+            .with_context(|| format!("Failed to delete space at {}", space.dir().display()))?;
+        Ok(())
+    }
+
     /// Create a new space: generate an Ed25519 keypair, create the directory
     /// structure, and write the credentials file.
     ///
@@ -350,11 +402,17 @@ pub struct SiteContext {
 }
 
 impl SiteContext {
-    /// Resolve from an optional `--site` flag. Discovers the site, then
-    /// loads the active space.
-    pub fn resolve(site_flag: Option<&Path>) -> Result<Self> {
+    /// Resolve from optional `--site` and `--space` flags.
+    ///
+    /// If `space_flag` is provided, resolves the space by DID or label
+    /// (requires async for label lookup). Otherwise uses the active space.
+    pub async fn resolve(site_flag: Option<&Path>, space_flag: Option<&str>) -> Result<Self> {
         let site = Site::resolve(site_flag)?;
-        let space = site.active_space()?;
+        let space = if let Some(space_id) = space_flag {
+            site.resolve_space(space_id).await?
+        } else {
+            site.active_space()?
+        };
         Ok(Self { site, space })
     }
 
@@ -482,5 +540,130 @@ mod tests {
 
         // Should successfully open a session (creates the prolly tree storage)
         let _session = space.open_session().await.unwrap();
+    }
+
+    // -- Helper: assert a label claim on a space ----------------------------
+
+    async fn assert_label(space: &SpaceRef, label: &str) {
+        use dialog_query::claim::{Claim, Relation};
+        let mut session = space.open_session().await.unwrap();
+        let entity = crate::schema::derive_entity("space").unwrap();
+        let attr = ClaimAttribute::from_str("xyz.tonk.carry/label").unwrap();
+        let value = dialog_query::Value::String(label.to_string());
+        let relation = Relation::new(attr, entity, value);
+        let mut tx = session.edit();
+        relation.assert(&mut tx);
+        session.commit(tx).await.unwrap();
+    }
+
+    // -- resolve_space tests ------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resolve_space_by_did() {
+        let tmp = TempDir::new().unwrap();
+        let site = Site::init(tmp.path()).unwrap();
+        let space = site.create_space().unwrap();
+
+        let resolved = site.resolve_space(&space.did).await.unwrap();
+        assert_eq!(resolved.did, space.did);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_space_by_label() {
+        let tmp = TempDir::new().unwrap();
+        let site = Site::init(tmp.path()).unwrap();
+        let space = site.create_space().unwrap();
+        assert_label(&space, "my-space").await;
+
+        let resolved = site.resolve_space("my-space").await.unwrap();
+        assert_eq!(resolved.did, space.did);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_space_ambiguous_label() {
+        let tmp = TempDir::new().unwrap();
+        let site = Site::init(tmp.path()).unwrap();
+        let space1 = site.create_space().unwrap();
+        let space2 = site.create_space().unwrap();
+        assert_label(&space1, "shared-label").await;
+        assert_label(&space2, "shared-label").await;
+
+        let result = site.resolve_space("shared-label").await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Ambiguous"),
+            "Expected 'Ambiguous' in error, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_space_nonexistent_did() {
+        let tmp = TempDir::new().unwrap();
+        let site = Site::init(tmp.path()).unwrap();
+        let _space = site.create_space().unwrap();
+
+        let result = site.resolve_space("did:key:zBogus").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_space_nonexistent_label() {
+        let tmp = TempDir::new().unwrap();
+        let site = Site::init(tmp.path()).unwrap();
+        let _space = site.create_space().unwrap();
+
+        let result = site.resolve_space("no-such-label").await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("No space found with label"),
+            "Expected label-not-found error, got: {}",
+            err_msg
+        );
+    }
+
+    // -- space_label tests --------------------------------------------------
+
+    #[tokio::test]
+    async fn test_space_label_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let site = Site::init(tmp.path()).unwrap();
+        let space = site.create_space().unwrap();
+        assert_label(&space, "test-label").await;
+
+        let label = site.space_label(&space).await.unwrap();
+        assert_eq!(label, Some("test-label".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_space_label_none() {
+        let tmp = TempDir::new().unwrap();
+        let site = Site::init(tmp.path()).unwrap();
+        let space = site.create_space().unwrap();
+
+        let label = site.space_label(&space).await.unwrap();
+        assert_eq!(label, None);
+    }
+
+    // -- delete_space tests -------------------------------------------------
+
+    #[tokio::test]
+    async fn test_delete_space_removes_dir() {
+        let tmp = TempDir::new().unwrap();
+        let site = Site::init(tmp.path()).unwrap();
+        let space = site.create_space().unwrap();
+        let space_dir = space.dir().to_path_buf();
+
+        // Verify directory exists before delete
+        assert!(space_dir.exists());
+        assert_eq!(site.list_spaces().unwrap().len(), 1);
+
+        site.delete_space(&space).unwrap();
+
+        // Verify directory is gone
+        assert!(!space_dir.exists());
+        assert_eq!(site.list_spaces().unwrap().len(), 0);
     }
 }
