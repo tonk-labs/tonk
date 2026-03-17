@@ -22,6 +22,7 @@ use dialog_query::Attribute;
 use dialog_query::Value;
 use dialog_query::claim::{Claim, Relation};
 use std::collections::BTreeMap;
+use std::slice::from_ref;
 use std::str::FromStr;
 
 /// Execute `carry assert <TARGET>|<FILE>|- [this=<ENTITY>] [@name] [FIELD=VALUE...]`.
@@ -509,21 +510,47 @@ async fn assert_from_json(ctx: &SiteContext, content: &str) -> Result<()> {
 }
 
 /// Assert claims from formal YAML content.
+///
+/// Supports two formats:
+/// 1. EAV triple notation (sequence of `{the, of, is}` mappings)
+/// 2. Asserted notation (entity-grouped: `entity → namespace → field: value`)
 async fn assert_from_yaml(ctx: &SiteContext, content: &str) -> Result<()> {
-    let docs: Vec<serde_yaml::Value> = serde_yaml::from_str(content)?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(content)?;
+
+    match &doc {
+        serde_yaml::Value::Sequence(seq) => {
+            // Sequence of EAV triples
+            assert_from_eav_yaml(ctx, seq).await
+        }
+        serde_yaml::Value::Mapping(map) => {
+            // Check if this looks like asserted notation (entity → namespace → fields)
+            // by seeing if any top-level key starts with "did:" and maps to a mapping.
+            let is_asserted = map
+                .iter()
+                .any(|(k, v)| k.as_str().is_some_and(|s| s.starts_with("did:")) && v.is_mapping());
+
+            if is_asserted {
+                assert_from_asserted_yaml(ctx, map).await
+            } else if map.get("the").is_some() {
+                // Single EAV triple (not wrapped in a sequence)
+                assert_from_eav_yaml(ctx, from_ref(&doc)).await
+            } else {
+                anyhow::bail!(
+                    "Unrecognized YAML format: expected EAV triples (sequence of {{the, of, is}}) \
+                     or asserted notation (entity → namespace → fields)"
+                )
+            }
+        }
+        _ => anyhow::bail!("Expected YAML sequence or mapping"),
+    }
+}
+
+/// Assert claims from EAV triple YAML (sequence of `{the, of, is}` mappings).
+async fn assert_from_eav_yaml(ctx: &SiteContext, triples: &[serde_yaml::Value]) -> Result<()> {
     let mut branch = ctx.open_branch().await?;
 
-    let triples = if docs.len() == 1 {
-        match &docs[0] {
-            serde_yaml::Value::Sequence(seq) => seq.clone(),
-            other => vec![other.clone()],
-        }
-    } else {
-        docs
-    };
-
     let mut instructions = Vec::new();
-    for triple in &triples {
+    for triple in triples {
         let the = triple["the"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'the' in triple"))?;
@@ -542,6 +569,85 @@ async fn assert_from_yaml(ctx: &SiteContext, content: &str) -> Result<()> {
             is: value,
             cause: None,
         }));
+    }
+
+    let count = instructions.len();
+    branch
+        .commit(futures_util::stream::iter(instructions))
+        .await?;
+
+    println!("Asserted {} claims", count);
+    Ok(())
+}
+
+/// Assert claims from asserted notation YAML (entity-grouped mapping).
+///
+/// Expected structure:
+/// ```yaml
+/// <entity_did>:
+///   <namespace>:
+///     <field>: <value>
+///     <multi_field>:
+///       - <value1>
+///       - <value2>
+/// ```
+async fn assert_from_asserted_yaml(ctx: &SiteContext, top_map: &serde_yaml::Mapping) -> Result<()> {
+    let mut branch = ctx.open_branch().await?;
+    let mut instructions = Vec::new();
+
+    for (entity_key, namespace_map) in top_map {
+        let entity_id = entity_key
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Expected entity key to be a string"))?;
+        let entity = resolve_entity(entity_id)?;
+
+        let ns_map = namespace_map.as_mapping().ok_or_else(|| {
+            anyhow::anyhow!("Expected namespace mapping for entity '{}'", entity_id)
+        })?;
+
+        for (ns_key, fields_val) in ns_map {
+            let namespace = ns_key
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Expected namespace key to be a string"))?;
+
+            let fields_map = fields_val.as_mapping().ok_or_else(|| {
+                anyhow::anyhow!("Expected fields mapping under namespace '{}'", namespace)
+            })?;
+
+            for (field_key, value) in fields_map {
+                let field_name = field_key
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Expected field key to be a string"))?;
+
+                // Build the qualified attribute name: namespace/field
+                let qualified = format!("{}/{}", namespace, field_name);
+                let attr = schema::parse_claim_attribute(&qualified)?;
+
+                // Handle multi-valued fields (YAML sequences)
+                match value {
+                    serde_yaml::Value::Sequence(seq) => {
+                        for item in seq {
+                            let val = yaml_to_value(item)?;
+                            instructions.push(Instruction::Assert(Artifact {
+                                the: attr.clone(),
+                                of: entity.clone(),
+                                is: val,
+                                cause: None,
+                            }));
+                        }
+                    }
+                    _ => {
+                        let val = yaml_to_value(value)?;
+                        instructions.push(Instruction::Assert(Artifact {
+                            the: attr,
+                            of: entity.clone(),
+                            is: val,
+                            cause: None,
+                        }));
+                    }
+                }
+            }
+        }
     }
 
     let count = instructions.len();

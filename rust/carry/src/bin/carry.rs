@@ -24,7 +24,7 @@ mod inner {
         pub space: Option<String>,
 
         /// Output format for query results
-        #[arg(long, global = true, default_value = "yaml", value_parser = ["yaml", "json"])]
+        #[arg(long, global = true, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
         pub format: String,
     }
 
@@ -466,5 +466,64 @@ mod tests {
             }
             _ => panic!("Expected Query command"),
         }
+    }
+
+    // -- --format triples ----------------------------------------------------
+
+    #[test]
+    fn query_format_triples() {
+        let cli = Cli::try_parse_from([
+            "carry",
+            "query",
+            "com.app.person",
+            "name",
+            "--format",
+            "triples",
+        ])
+        .unwrap();
+        assert_eq!(cli.format, "triples");
+        match cli.command {
+            Commands::Query { ref fields, .. } => {
+                assert_eq!(fields, &["name"]);
+            }
+            _ => panic!("Expected Query command"),
+        }
+    }
+
+    #[test]
+    fn query_format_triples_with_space() {
+        let cli = Cli::try_parse_from([
+            "carry",
+            "query",
+            "com.app.person",
+            "name",
+            "age",
+            "--format",
+            "triples",
+            "--space",
+            "research",
+        ])
+        .unwrap();
+        assert_eq!(cli.format, "triples");
+        assert_eq!(cli.space.as_deref(), Some("research"));
+        match cli.command {
+            Commands::Query { ref fields, .. } => {
+                assert_eq!(fields, &["name", "age"]);
+            }
+            _ => panic!("Expected Query command"),
+        }
+    }
+
+    #[test]
+    fn format_invalid_value_rejected() {
+        let result = Cli::try_parse_from([
+            "carry",
+            "query",
+            "com.app.person",
+            "name",
+            "--format",
+            "csv",
+        ]);
+        assert!(result.is_err());
     }
 }

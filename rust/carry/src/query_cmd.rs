@@ -167,6 +167,7 @@ async fn concept_query(
         };
 
     let mut results: BTreeMap<String, BTreeMap<String, Vec<Value>>> = BTreeMap::new();
+    let use_selectors = format == "triples";
 
     for entity in &entities {
         let mut entity_values: BTreeMap<String, Vec<Value>> = BTreeMap::new();
@@ -195,8 +196,15 @@ async fn concept_query(
                 break;
             }
 
-            // Use the concept field name (not the qualified selector) as the key
-            entity_values.insert(mapping.field_name.clone(), values);
+            // For triples format, use the qualified selector as the key
+            // so that output_triples emits fully-qualified attribute names.
+            // For other formats, use the concept field name (short name).
+            let key = if use_selectors {
+                mapping.selector.clone()
+            } else {
+                mapping.field_name.clone()
+            };
+            entity_values.insert(key, values);
         }
 
         if matches_filters && !entity_values.is_empty() {
@@ -204,8 +212,12 @@ async fn concept_query(
         }
     }
 
-    // Output under the concept name, with short field names
-    output_concept_results(&results, concept_name, format)
+    if use_selectors {
+        output_triples(&results)
+    } else {
+        // Output under the concept name, with short field names
+        output_concept_results(&results, concept_name, format)
+    }
 }
 
 /// Format and print domain query results (grouped under domain namespace).
@@ -219,6 +231,7 @@ fn output_results(
     }
 
     match format {
+        "triples" => output_triples(results),
         "json" => {
             let json_results: Vec<serde_json::Value> = results
                 .iter()
@@ -245,28 +258,15 @@ fn output_results(
                 })
                 .collect();
             println!("{}", serde_json::to_string_pretty(&json_results)?);
+            Ok(())
         }
         _ => {
             // YAML asserted notation output
-            for (entity_id, attrs) in results {
-                println!("{}:", entity_id);
-                println!("  {}:", namespace);
-                for (attr, values) in attrs {
-                    let short = schema::short_attribute(namespace, attr);
-                    if values.len() == 1 {
-                        println!("    {}: {}", short, schema::format_value(&values[0]));
-                    } else {
-                        println!("    {}:", short);
-                        for v in values {
-                            println!("      - {}", schema::format_value(v));
-                        }
-                    }
-                }
-            }
+            let yaml = format_asserted_yaml(results, namespace);
+            print!("{}", yaml);
+            Ok(())
         }
     }
-
-    Ok(())
 }
 
 /// Format and print concept query results (grouped under concept name).
@@ -326,4 +326,125 @@ fn output_concept_results(
     }
 
     Ok(())
+}
+
+/// Format and print results as EAV triples in YAML.
+///
+/// Each attribute-value pair becomes a separate triple:
+/// ```yaml
+/// - the: <qualified_attribute>
+///   of: <entity_did>
+///   is: <value>
+/// ```
+///
+/// Multi-valued attributes expand into multiple triples.
+fn output_triples(results: &BTreeMap<String, BTreeMap<String, Vec<Value>>>) -> Result<()> {
+    let yaml = format_triples(results)?;
+    if !yaml.is_empty() {
+        print!("{}", yaml);
+    }
+    Ok(())
+}
+
+/// Format results as asserted notation YAML string (entity-grouped).
+///
+/// Returns a YAML string with the structure:
+/// ```yaml
+/// <entity_did>:
+///   <namespace>:
+///     <field>: <value>
+/// ```
+pub fn format_asserted_yaml(
+    results: &BTreeMap<String, BTreeMap<String, Vec<Value>>>,
+    namespace: &str,
+) -> String {
+    use std::fmt::Write;
+    let mut output = String::new();
+    for (entity_id, attrs) in results {
+        writeln!(output, "{}:", entity_id).unwrap();
+        writeln!(output, "  {}:", namespace).unwrap();
+        for (attr, values) in attrs {
+            let short = schema::short_attribute(namespace, attr);
+            if values.len() == 1 {
+                writeln!(
+                    output,
+                    "    {}: {}",
+                    short,
+                    schema::format_value(&values[0])
+                )
+                .unwrap();
+            } else {
+                writeln!(output, "    {}:", short).unwrap();
+                for v in values {
+                    writeln!(output, "      - {}", schema::format_value(v)).unwrap();
+                }
+            }
+        }
+    }
+    output
+}
+
+/// Format results as EAV triple YAML string.
+///
+/// Returns the YAML string (without printing). Used by `output_triples`
+/// and available for testing round-trips.
+pub fn format_triples(results: &BTreeMap<String, BTreeMap<String, Vec<Value>>>) -> Result<String> {
+    if results.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut triples: Vec<serde_yaml::Value> = Vec::new();
+
+    for (entity_id, attrs) in results {
+        for (attr_name, values) in attrs {
+            for value in values {
+                let mut map = serde_yaml::Mapping::new();
+                map.insert(
+                    serde_yaml::Value::String("the".to_string()),
+                    serde_yaml::Value::String(attr_name.clone()),
+                );
+                map.insert(
+                    serde_yaml::Value::String("of".to_string()),
+                    serde_yaml::Value::String(entity_id.clone()),
+                );
+                map.insert(
+                    serde_yaml::Value::String("is".to_string()),
+                    value_to_yaml(value),
+                );
+                triples.push(serde_yaml::Value::Mapping(map));
+            }
+        }
+    }
+
+    Ok(serde_yaml::to_string(&triples)?)
+}
+
+/// Convert a dialog_query::Value to a serde_yaml::Value.
+fn value_to_yaml(value: &Value) -> serde_yaml::Value {
+    match value {
+        Value::String(s) => serde_yaml::Value::String(s.clone()),
+        Value::UnsignedInt(n) => {
+            // serde_yaml::Value doesn't support u128, downcast if possible
+            if *n <= u64::MAX as u128 {
+                serde_yaml::Value::Number(serde_yaml::Number::from(*n as u64))
+            } else {
+                serde_yaml::Value::String(n.to_string())
+            }
+        }
+        Value::SignedInt(n) => {
+            if *n >= i64::MIN as i128 && *n <= i64::MAX as i128 {
+                serde_yaml::Value::Number(serde_yaml::Number::from(*n as i64))
+            } else {
+                serde_yaml::Value::String(n.to_string())
+            }
+        }
+        Value::Float(f) => {
+            serde_yaml::to_value(f).unwrap_or_else(|_| serde_yaml::Value::String(f.to_string()))
+        }
+        Value::Boolean(b) => serde_yaml::Value::Bool(*b),
+        Value::Entity(e) => serde_yaml::Value::String(e.to_string()),
+        Value::Symbol(s) => serde_yaml::Value::String(format!(":{}", s)),
+        Value::Bytes(b) => serde_yaml::Value::String(format!("<{} bytes>", b.len())),
+        Value::Record(r) => serde_yaml::Value::String(format!("<{} bytes record>", r.len())),
+    }
 }
