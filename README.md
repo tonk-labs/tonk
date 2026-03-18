@@ -54,8 +54,7 @@ retain control of their tools and data).
 
 ## Quick Start
 
-> ⚠️ Tonk is under heavy development. See the [quickstart guide](docs/src/quickstart.md) for setup
-> instructions.
+> ⚠️ Tonk is under heavy development.
 
 Install Nix and then run the following in your terminal:
 
@@ -63,9 +62,15 @@ Install Nix and then run the following in your terminal:
 nix develop
 ```
 
+## Carry
+
+[Carry](rust/carry/) is a CLI for persistent, local-first memory backed by Dialog DB.
+See the [Carry documentation](rust/carry/docs/src/introduction.md) for getting started, or build the
+docs locally with `mdbook build` from `rust/carry/docs/`.
+
 ## Resources
 
-- [Documentation](https://tonk-labs.github.io/tonk)
+- [Carry Docs](rust/carry/docs/src/SUMMARY.md)
 - [Website](https://tonk.xyz)
 - [GitHub](https://github.com/tonk-labs/tonk)
 - [Community](https://discord.gg/cHqkYpRE)

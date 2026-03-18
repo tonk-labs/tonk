@@ -52,6 +52,7 @@
             cachix
             cargo-nextest
             esbuild
+            mdbook
             worker-build
           ]
           ++ lib.optionals stdenv.isLinux [
