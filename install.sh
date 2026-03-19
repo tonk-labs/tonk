@@ -57,13 +57,19 @@ main() {
 
     chmod +x "$TMPFILE"
 
-    # Install to INSTALL_DIR, using sudo if needed
+    # Install to INSTALL_DIR, using sudo if needed, falling back to ~/.local/bin
     if [ -w "$INSTALL_DIR" ]; then
         mv "$TMPFILE" "${INSTALL_DIR}/${BINARY_NAME}"
-    else
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null || [ -t 0 ]; then
         echo "Installing to ${INSTALL_DIR} (you may be prompted for your password)..."
         sudo mv "$TMPFILE" "${INSTALL_DIR}/${BINARY_NAME}"
         sudo chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+    else
+        INSTALL_DIR="${HOME}/.local/bin"
+        echo "No admin privileges detected. Installing to ${INSTALL_DIR} instead..."
+        mkdir -p "$INSTALL_DIR"
+        mv "$TMPFILE" "${INSTALL_DIR}/${BINARY_NAME}"
+        chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
     fi
 
     # Verify
@@ -93,16 +99,30 @@ install_completions() {
     COMP_FILE=""
     NEEDS_SUDO=false
 
+    # Check if we can use sudo
+    CAN_SUDO=false
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null || [ -t 0 ]; then
+        CAN_SUDO=true
+    fi
+
     case "$SHELL_NAME" in
         zsh)
-            COMP_DIR="/usr/local/share/zsh/site-functions"
+            if [ "$CAN_SUDO" = true ]; then
+                COMP_DIR="/usr/local/share/zsh/site-functions"
+                NEEDS_SUDO=true
+            else
+                COMP_DIR="${HOME}/.zfunc"
+            fi
             COMP_FILE="${COMP_DIR}/_carry"
-            NEEDS_SUDO=true
             ;;
         bash)
-            COMP_DIR="/usr/local/share/bash-completion/completions"
+            if [ "$CAN_SUDO" = true ]; then
+                COMP_DIR="/usr/local/share/bash-completion/completions"
+                NEEDS_SUDO=true
+            else
+                COMP_DIR="${HOME}/.local/share/bash-completion/completions"
+            fi
             COMP_FILE="${COMP_DIR}/carry"
-            NEEDS_SUDO=true
             ;;
         fish)
             COMP_DIR="${HOME}/.config/fish/completions"
@@ -132,6 +152,11 @@ install_completions() {
     fi
 
     echo "Shell completions installed for ${SHELL_NAME}."
+    if [ "$SHELL_NAME" = "zsh" ] && [ "$NEEDS_SUDO" = false ]; then
+        echo "Add this to your .zshrc if not already present:"
+        echo "  fpath=(~/.zfunc \$fpath)"
+        echo "  autoload -Uz compinit && compinit"
+    fi
     echo "Restart your shell or run 'exec \$SHELL' to enable them."
 }
 
@@ -140,22 +165,26 @@ uninstall() {
 
     REMOVED=""
 
-    # Remove binary
-    BIN_PATH="${INSTALL_DIR}/${BINARY_NAME}"
-    if [ -f "$BIN_PATH" ]; then
-        if [ -w "$INSTALL_DIR" ]; then
-            rm "$BIN_PATH"
-        else
-            echo "Removing ${BIN_PATH} (you may be prompted for your password)..."
-            sudo rm "$BIN_PATH"
+    # Remove binary from both possible locations
+    for BIN_DIR in "$INSTALL_DIR" "${HOME}/.local/bin"; do
+        BIN_PATH="${BIN_DIR}/${BINARY_NAME}"
+        if [ -f "$BIN_PATH" ]; then
+            if [ -w "$BIN_DIR" ]; then
+                rm "$BIN_PATH"
+            else
+                echo "Removing ${BIN_PATH} (you may be prompted for your password)..."
+                sudo rm "$BIN_PATH"
+            fi
+            REMOVED="${REMOVED} ${BIN_PATH}"
         fi
-        REMOVED="${REMOVED} ${BIN_PATH}"
-    fi
+    done
 
-    # Remove completion files
+    # Remove completion files (both system and user-local paths)
     for COMP_FILE in \
         "/usr/local/share/zsh/site-functions/_carry" \
         "/usr/local/share/bash-completion/completions/carry" \
+        "${HOME}/.zfunc/_carry" \
+        "${HOME}/.local/share/bash-completion/completions/carry" \
         "${HOME}/.config/fish/completions/carry.fish"; do
         if [ -f "$COMP_FILE" ]; then
             case "$COMP_FILE" in
