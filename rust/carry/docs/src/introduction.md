@@ -25,7 +25,7 @@ At its core, Carry stores data as **claims** -- simple facts in the form *(the X
 ## Who is Carry for?
 
 - **Developers using multiple AI tools** who are tired of re-explaining context across Claude Code, Cursor, and others.
-- **Data modelers** who want a lightweight, local tool for defining and querying structured data without standing up a database server.
+- **Data modelers** who want a local and lightweight tool for defining and querying structured data without standing up a database server.
 - **Anyone** who wants to own their data, inspect it, and carry it with them.
 
 ## What's in these docs?
@@ -42,6 +42,7 @@ At its core, Carry stores data as **claims** -- simple facts in the form *(the X
 
 ## Status
 
-Carry is **version 0.1** and under active development. The CLI and data model are stabilizing, but expect rough edges. Dialog DB itself is experimental -- binary encoding and index construction may change between releases without a migration path.
+> [!CAUTION]
+> Carry is **version 0.1** and under active development. The CLI and data model are stabilizing, but expect rough edges. Dialog DB itself is experimental -- binary encoding and index construction may change between releases without a migration path. 
 
 That said, the data you write is yours. If the tooling changes, your data doesn't disappear.

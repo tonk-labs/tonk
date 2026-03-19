@@ -32,7 +32,8 @@ When you `carry query person`, the semantic layer reads the `person` concept def
 
 The behavioral layer. Where the semantic layer *interprets* data, the reactive layer *responds* to it. Processes would observe concepts and relations, and in response produce new claims. This is where effects, triggers, and inductive rules would live.
 
-The reactive layer is not yet implemented. Foundational data structures exist (Z-sets for database stream processing, an `Operator` trait) but there is no wiring to the query engine and no mechanism to trigger rule re-evaluation on data changes.
+> [!NOTE]
+> The reactive layer is not yet implemented. Foundational data structures exist (Z-sets for database stream processing, an `Operator` trait) but there is no wiring to the query engine and no mechanism to trigger rule re-evaluation on data changes.
 
 ## Key Properties
 

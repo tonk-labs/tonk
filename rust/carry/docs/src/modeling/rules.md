@@ -119,4 +119,7 @@ Rules extend the space of queryable data without materializing it. When you quer
 
 ## Deductive vs. Inductive Rules
 
-The rules described here are **deductive**: they interpret what is already in the database. Dialog also has a concept of **inductive rules** (inspired by [Dedalus](https://www2.eecs.berkeley.edu/Pubs/TechRpts/2009/EECS-2009-173.pdf)) that react to changes over time, producing new claims that get asserted back. Inductive rules are prototyped but not yet fully implemented in Carry.
+The rules described here are **deductive**: they interpret what is already in the database. Dialog also has a concept of **inductive rules** (inspired by [Dedalus](https://www2.eecs.berkeley.edu/Pubs/TechRpts/2009/EECS-2009-173.pdf)) that react to changes over time, producing new claims that get asserted back.
+
+> [!NOTE]
+> Inductive rules are prototyped but not yet fully implemented in Carry.
