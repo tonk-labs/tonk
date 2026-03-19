@@ -511,9 +511,10 @@ async fn assert_from_json(ctx: &SiteContext, content: &str) -> Result<()> {
 
 /// Assert claims from formal YAML content.
 ///
-/// Supports two formats:
+/// Supports three formats:
 /// 1. EAV triple notation (sequence of `{the, of, is}` mappings)
-/// 2. Asserted notation (entity-grouped: `entity → namespace → field: value`)
+/// 2. Asserted notation with domain context (entity → domain → fields)
+/// 3. Asserted notation with concept context (name → concept_type → fields)
 async fn assert_from_yaml(ctx: &SiteContext, content: &str) -> Result<()> {
     let doc: serde_yaml::Value = serde_yaml::from_str(content)?;
 
@@ -523,21 +524,18 @@ async fn assert_from_yaml(ctx: &SiteContext, content: &str) -> Result<()> {
             assert_from_eav_yaml(ctx, seq).await
         }
         serde_yaml::Value::Mapping(map) => {
-            // Check if this looks like asserted notation (entity → namespace → fields)
-            // by seeing if any top-level key starts with "did:" and maps to a mapping.
-            let is_asserted = map
-                .iter()
-                .any(|(k, v)| k.as_str().is_some_and(|s| s.starts_with("did:")) && v.is_mapping());
-
-            if is_asserted {
-                assert_from_asserted_yaml(ctx, map).await
-            } else if map.get("the").is_some() {
+            if map.get("the").is_some() {
                 // Single EAV triple (not wrapped in a sequence)
                 assert_from_eav_yaml(ctx, from_ref(&doc)).await
+            } else if map.iter().any(|(_, v)| v.is_mapping()) {
+                // Asserted notation: entity → context → fields.
+                // Covers both domain context (level-2 key contains '.')
+                // and concept context (level-2 key has no '.').
+                assert_from_asserted_yaml(ctx, map).await
             } else {
                 anyhow::bail!(
                     "Unrecognized YAML format: expected EAV triples (sequence of {{the, of, is}}) \
-                     or asserted notation (entity → namespace → fields)"
+                     or asserted notation (entity → context → fields)"
                 )
             }
         }
@@ -582,20 +580,295 @@ async fn assert_from_eav_yaml(ctx: &SiteContext, triples: &[serde_yaml::Value]) 
 
 /// Assert claims from asserted notation YAML (entity-grouped mapping).
 ///
-/// Expected structure:
+/// Handles both domain context (level-2 key contains '.') and concept context
+/// (level-2 key has no '.'), as specified by the carry RFC.
+///
+/// Domain context example:
 /// ```yaml
-/// <entity_did>:
-///   <namespace>:
-///     <field>: <value>
-///     <multi_field>:
-///       - <value1>
-///       - <value2>
+/// did:key:zAlice:
+///   io.gozala.person:
+///     name: Alice
+///     age: 28
+/// ```
+///
+/// Concept context example:
+/// ```yaml
+/// task-title:
+///   attribute:
+///     description: Title of a task
+///     the: com.app.task/title
+///     as: Text
+///     cardinality: one
 /// ```
 async fn assert_from_asserted_yaml(ctx: &SiteContext, top_map: &serde_yaml::Mapping) -> Result<()> {
+    // Collect entries classified by context type.
+    struct ConceptEntry<'a> {
+        entity_name: Option<String>,
+        this_entity: Option<String>,
+        concept_type: String,
+        fields_yaml: &'a serde_yaml::Value,
+    }
+
+    let mut domain_map = serde_yaml::Mapping::new();
+    let mut concept_entries: Vec<ConceptEntry> = Vec::new();
+
+    for (entity_key, context_val) in top_map {
+        let entity_id = entity_key
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Expected entity key to be a string"))?;
+
+        let ctx_map = context_val.as_mapping().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Expected context mapping for entity '{}', got {:?}",
+                entity_id,
+                context_val
+            )
+        })?;
+
+        for (ctx_key, fields_val) in ctx_map {
+            let ctx_name = ctx_key
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Expected context key to be a string"))?;
+
+            if ctx_name.contains('.') {
+                // Domain context — collect for batch processing
+                let entity_entry = domain_map
+                    .entry(entity_key.clone())
+                    .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+                if let serde_yaml::Value::Mapping(m) = entity_entry {
+                    m.insert(ctx_key.clone(), fields_val.clone());
+                }
+            } else {
+                // Concept context — entity name from level-1 key
+                let (entity_name, this_entity) = classify_entity_id(entity_id);
+                concept_entries.push(ConceptEntry {
+                    entity_name,
+                    this_entity,
+                    concept_type: ctx_name.to_string(),
+                    fields_yaml: fields_val,
+                });
+            }
+        }
+    }
+
+    // Sort concept entries: attributes first, then concepts, then others.
+    // This ensures attributes exist before concepts reference them.
+    concept_entries.sort_by_key(|e| match e.concept_type.as_str() {
+        "attribute" => 0,
+        "concept" => 1,
+        "bookmark" => 2,
+        "rule" => 3,
+        _ => 4,
+    });
+
+    // Process concept-context entries via the target-based assertion pipeline.
+    for entry in &concept_entries {
+        assert_concept_from_yaml(
+            ctx,
+            &entry.concept_type,
+            entry.entity_name.clone(),
+            entry.this_entity.clone(),
+            entry.fields_yaml,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to assert {} '{}'",
+                entry.concept_type,
+                entry
+                    .entity_name
+                    .as_deref()
+                    .or(entry.this_entity.as_deref())
+                    .unwrap_or("_")
+            )
+        })?;
+    }
+
+    // Process domain-context entries using raw branch (existing batch logic).
+    if !domain_map.is_empty() {
+        assert_domain_entries_from_yaml(ctx, &domain_map).await?;
+    }
+
+    Ok(())
+}
+
+/// Classify a level-1 entity identifier from asserted notation YAML.
+///
+/// Returns (entity_name, this_entity):
+/// - DID/URI (contains ':'): this_entity = the DID, no entity_name
+/// - `_` (anonymous): both None (entity derived from fields)
+/// - Bookmark name: entity_name = the name, no this_entity
+fn classify_entity_id(id: &str) -> (Option<String>, Option<String>) {
+    if id.contains(':') {
+        // DID or URI — use as explicit entity
+        (None, Some(id.to_string()))
+    } else if id == "_" {
+        // Anonymous entity
+        (None, None)
+    } else {
+        // Bookmark name → becomes @name
+        (Some(id.to_string()), None)
+    }
+}
+
+/// Assert a concept-context entry from asserted notation YAML.
+///
+/// Converts YAML fields to CLI-style `Field`s and dispatches through
+/// `assert_with_target`, which handles builtin and user-defined concepts.
+///
+/// Handles:
+/// - Simple fields: `key: value` → `Field { name: key, value: Some(value) }`
+/// - Nested `with`/`maybe` maps: `with: { title: task-title }` → `Field { name: "with.title", value: Some("task-title") }`
+/// - Inline attribute definitions: `with: { name: { the: ..., as: ... } }` → asserts the
+///   attribute first, then references it by selector
+async fn assert_concept_from_yaml(
+    ctx: &SiteContext,
+    concept_type: &str,
+    entity_name: Option<String>,
+    this_entity: Option<String>,
+    fields_yaml: &serde_yaml::Value,
+) -> Result<()> {
+    let map = fields_yaml
+        .as_mapping()
+        .ok_or_else(|| anyhow::anyhow!("Expected mapping for {} fields", concept_type))?;
+
+    let mut fields = Vec::new();
+
+    for (key, value) in map {
+        let key_str = key
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Expected string key in {} fields", concept_type))?;
+
+        if (key_str == "with" || key_str == "maybe") && value.is_mapping() {
+            // Nested mapping: expand each sub-entry as a variable-keyed field
+            let sub_map = value.as_mapping().unwrap();
+            for (sub_key, sub_value) in sub_map {
+                let sub_key_str = sub_key
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Expected string key in {}.{{}}", key_str))?;
+
+                if sub_value.is_mapping() {
+                    // Inline attribute definition: assert it first, then use its selector
+                    let selector = assert_inline_attribute_from_yaml(ctx, sub_value)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to process inline attribute definition for {}.{}",
+                                key_str, sub_key_str
+                            )
+                        })?;
+                    fields.push(Field {
+                        name: format!("{}.{}", key_str, sub_key_str),
+                        value: Some(selector),
+                    });
+                } else {
+                    let value_str = yaml_scalar_to_string(sub_value).with_context(|| {
+                        format!("Invalid value for {}.{}", key_str, sub_key_str)
+                    })?;
+                    fields.push(Field {
+                        name: format!("{}.{}", key_str, sub_key_str),
+                        value: Some(value_str),
+                    });
+                }
+            }
+        } else {
+            let value_str = yaml_scalar_to_string(value)
+                .with_context(|| format!("Invalid value for field '{}'", key_str))?;
+            fields.push(Field {
+                name: key_str.to_string(),
+                value: Some(value_str),
+            });
+        }
+    }
+
+    let target = Target::parse(concept_type)?;
+    assert_with_target(ctx, target, this_entity, entity_name, fields, "yaml").await
+}
+
+/// Assert an inline attribute definition from YAML and return its selector.
+///
+/// Used when a `with` block in a concept definition contains an inline mapping
+/// instead of a string reference:
+/// ```yaml
+/// with:
+///   name:
+///     description: The person's name
+///     the: io.gozala.person/name
+///     as: Text
+///     cardinality: one
+/// ```
+async fn assert_inline_attribute_from_yaml(
+    ctx: &SiteContext,
+    fields_yaml: &serde_yaml::Value,
+) -> Result<String> {
+    let map = fields_yaml
+        .as_mapping()
+        .ok_or_else(|| anyhow::anyhow!("Expected mapping for inline attribute definition"))?;
+
+    let mut fields = Vec::new();
+    let mut selector = None;
+
+    for (key, value) in map {
+        let key_str = key
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Expected string key in inline attribute"))?;
+        let value_str = yaml_scalar_to_string(value)
+            .with_context(|| format!("Invalid value for inline attribute field '{}'", key_str))?;
+
+        if key_str == "the" {
+            selector = Some(value_str.clone());
+        }
+
+        fields.push(Field {
+            name: key_str.to_string(),
+            value: Some(value_str),
+        });
+    }
+
+    let selector = selector.ok_or_else(|| {
+        anyhow::anyhow!("Inline attribute definition missing required 'the' field")
+    })?;
+
+    let target = Target::parse("attribute")?;
+    assert_with_target(ctx, target, None, None, fields, "yaml").await?;
+
+    Ok(selector)
+}
+
+/// Convert a YAML scalar value to its string representation for use in Field values.
+fn yaml_scalar_to_string(v: &serde_yaml::Value) -> Result<String> {
+    match v {
+        serde_yaml::Value::String(s) => Ok(s.clone()),
+        serde_yaml::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i.to_string())
+            } else if let Some(f) = n.as_f64() {
+                Ok(f.to_string())
+            } else {
+                Ok(format!("{:?}", n))
+            }
+        }
+        serde_yaml::Value::Bool(b) => Ok(b.to_string()),
+        serde_yaml::Value::Null => anyhow::bail!("Unexpected null value"),
+        _ => {
+            let s = serde_yaml::to_string(v)?;
+            Ok(s.trim().to_string())
+        }
+    }
+}
+
+/// Assert domain-context entries from asserted notation YAML (batch via raw branch).
+///
+/// This handles the `entity → domain → field: value` structure where the
+/// domain key contains '.'.
+async fn assert_domain_entries_from_yaml(
+    ctx: &SiteContext,
+    domain_map: &serde_yaml::Mapping,
+) -> Result<()> {
     let mut branch = ctx.open_branch().await?;
     let mut instructions = Vec::new();
 
-    for (entity_key, namespace_map) in top_map {
+    for (entity_key, namespace_map) in domain_map {
         let entity_id = entity_key
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Expected entity key to be a string"))?;
