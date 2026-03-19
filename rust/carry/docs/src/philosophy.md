@@ -2,15 +2,13 @@
 
 ## The Problem
 
-People using AI tools run into three compounding issues:
+Structured data tends to end up in one of two bad places: a cloud service you don't control, or ad-hoc files you can't query.
 
-**Session amnesia.** Tools don't remember across sessions. You re-explain your context every time you open a new chat or switch to a different app. Agents forget mid-conversation.
+Cloud services are convenient but fragile. Your data lives on someone else's machine, under their terms, queryable only through their API. If they change the product or shut it down, your data is gone or locked in an export format. If the data is sensitive, you've handed it to a third party by design.
 
-**Cross-tool silos.** Each app has its own memory. Nothing is shared. Cursor has `.cursorrules`, Claude has `CLAUDE.md`, ChatGPT has its own internal memory. Conventions, style guides, and project facts must be re-entered across every tool.
+Ad-hoc files -- markdown notes, CSV exports, JSON dumps, per-tool config files like `.cursorrules` or `CLAUDE.md` -- give you local control but sacrifice structure. They're hard to query across, drift out of sync, can't be written to by the tools that read them, and don't scale as the amount of data grows.
 
-**Privacy and data control.** Any solution to the first two problems must respect that memories contain sensitive data. Users need to know where their data lives and who can access it. Cloud memory services fail here by design.
-
-Current workarounds -- `.cursorrules`, Memory Bank markdown files, `CLAUDE.md`, copy-paste, per-tool configs -- are manual, fragile, and don't scale across tools or teams.
+Neither option is good if you want data that is **private, durable, structured, and accessible to the tools you use**.
 
 ## Carry's Answer
 
@@ -22,9 +20,9 @@ Carry stores everything on your filesystem in a `.carry/` directory. There's no 
 
 Sync is optional. If you want it, you choose the remote -- your own bucket, a peer, or a Tonk relay.
 
-### One memory, every tool
+### One repository, every tool
 
-Instead of maintaining parallel copies of your context in every AI tool's proprietary format, Carry provides a single repository to which any tool can read and write. The same facts are available to Cursor, Claude, and anything else that can use the CLI.
+Instead of maintaining parallel copies of your data in every tool's proprietary format, Carry provides a single repository to which any tool can read and write. The same facts are available to a CLI script, an AI coding assistant, a custom agent, or anything else that can speak YAML.
 
 ### Human-readable means machine-readable
 
@@ -37,7 +35,7 @@ did:key:zAlice:
     age: 28
 ```
 
-There's no binary blob to decode, no proprietary format to reverse-engineer. If you can read YAML, you can read your data. If your AI tool can read YAML, it can read your data too. The same format is used for query output and data input, so piping between commands works naturally:
+There's no binary blob to decode, no proprietary format to reverse-engineer. If you can read YAML, you can read your data. Any tool that can read YAML can read your data too. The same format is used for query output and data input, so piping between commands works naturally:
 
 ```bash
 carry query person --format triples | carry assert -
@@ -55,19 +53,17 @@ Later, when patterns emerge, you can define [attributes](./modeling/attributes.m
 
 ### Attribution matters
 
-Each space has its own cryptographic identity, providing a foundation for trust in human-agent collaboration. By using separate spaces for different tools or agents, you can keep contributions isolated and merge them selectively.
+Each space has its own cryptographic identity, providing a foundation for knowing who contributed what. By using separate spaces for different tools, agents, or collaborators, you can keep contributions isolated and merge them selectively.
 
-As AI tools become more autonomous, knowing the provenance of data becomes essential. Per-claim attribution (tracking who made each individual claim and when) is a planned feature but not yet implemented. In the meantime, spaces provide coarse-grained separation of data sources.
+Knowing the provenance of data matters whether the source is a person, a script, or an AI agent. Per-claim attribution (tracking who made each individual claim and when) is a planned feature but not yet implemented. In the meantime, spaces provide coarse-grained separation of data sources.
 
 ## What Carry Is Not
 
-- **Not a replacement for your AI tools.** Carry doesn't compete with Cursor, Claude, or ChatGPT. It gives them a shared, durable place to read and write context.
-- **Not an AI model or chat UI.** Carry is the store and the protocol to access it.
+- **Not a replacement for your tools.** Carry doesn't compete with Cursor, Claude, Obsidian, or any application you use. It gives them a shared, durable place to read and write structured data.
+- **Not an application layer.** Carry is the store and the protocol to access it. What you build on top is up to you.
 - **Not mandatory cloud.** Local-only is a first-class path.
-- **Not a full personal data lake** (yet). The focus is on structured, queryable data for AI/agent context, with room to grow.
+- **Not a high-throughput database.** Carry works well for hundreds to thousands of entities. It's not designed for large-scale analytics or concurrent multi-user writes (sync is still developing).
 
 ## The Bigger Picture
 
-Carry is built by [Tonk](https://tonk.xyz). The ideas that power Carry are general-purpose. Carry is one application of these ideas, focused on the specific problem of persistent memory for AI tools.
-
-The long-term vision is broader: a world where your data is truly yours, where tools interoperate on your terms, and where the structure of your information is something you define and control, not something imposed by a vendor.
+Carry is built by [Tonk](https://tonk.xyz). The long-term vision is a world where your data is truly yours, where tools interoperate on your terms, and where the structure of your information is something you define and control, not something imposed by a vendor.

@@ -1,6 +1,6 @@
 # Carry
 
-**Persistent, local-first memory for humans and LLMs.**
+**A local-first semantic database for humans and machines.**
 
 Carry is a CLI tool for working with [Dialog DB](./dialog.md) -- a local-first, semantic database designed for structured data that both people and machines can read, write, and reason about.
 
@@ -12,7 +12,7 @@ carry query com.app.person name age
 
 ## What is Carry?
 
-Carry gives you a **private, local-first data repository** to which both you and your agents can read and write. Instead of re-explaining your context every time you open a new chat, switch tools, or start a new session, Carry provides a shared, durable place for your data to live.
+Carry gives you a **private, local-first data repository** to which both you and your tools can read and write. Data lives on your machine, not in a cloud service. Carry provides a shared, durable place for your data to live.
 
 At its core, Carry stores data as **claims** -- simple facts in the form *(the X of Y is Z)* -- organized into domains and composable schemas. This structure is flexible enough to model anything from a personal profile to a recipe database, while remaining queryable and human-readable.
 

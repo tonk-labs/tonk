@@ -186,4 +186,7 @@ carry query person name="Alice" --format triples | carry retract -
 - [Core Concepts](./concepts/overview.md) -- understand claims, entities, and domains
 - [Domain Modeling](./modeling/attributes.md) -- define attributes, concepts, and rules
 - [CLI Reference](./cli/overview.md) -- every command and flag
-- [Use Cases](./use-cases/persistent-memory.md) -- practical applications
+- Use Cases:
+  - [Persistent Memory for AI Tools](./use-cases/persistent-memory.md) -- shared context across Cursor, Claude, and others
+  - [Personal Knowledge Management](./use-cases/personal-knowledge.md) -- contacts, research notes, reading lists
+  - [Structured Data Modeling](./use-cases/data-modeling.md) -- lightweight local database for any structured data
