@@ -274,6 +274,91 @@ async fn test_assert_with_this_entity() {
     .unwrap();
 }
 
+/// Asserting a new value for a cardinality-one attribute on an existing entity
+/// should replace the old value, not accumulate both values.
+#[tokio::test]
+async fn test_assert_cardinality_one_replaces_value() {
+    let env = TestEnv::new().await.unwrap();
+    let ctx = env.ctx().await;
+
+    // Assert name=Alice age=28
+    let fields = vec![
+        Field {
+            name: "name".to_string(),
+            value: Some("Alice".to_string()),
+        },
+        Field {
+            name: "age".to_string(),
+            value: Some("28".to_string()),
+        },
+    ];
+    carry::assert_cmd::execute(
+        &ctx,
+        FirstArg::Target(Target::Domain("io.test.person".to_string())),
+        None,
+        None,
+        fields,
+        "yaml",
+    )
+    .await
+    .unwrap();
+
+    // Derive the entity
+    let entity = carry::schema::derive_entity_from_fields(&[
+        ("io.test.person/name".to_string(), "Alice".to_string()),
+        ("io.test.person/age".to_string(), "28".to_string()),
+    ])
+    .unwrap();
+
+    // Update age to 29 using this=<entity>
+    let update_fields = vec![Field {
+        name: "age".to_string(),
+        value: Some("29".to_string()),
+    }];
+    carry::assert_cmd::execute(
+        &ctx,
+        FirstArg::Target(Target::Domain("io.test.person".to_string())),
+        Some(entity.to_string()),
+        None,
+        update_fields,
+        "yaml",
+    )
+    .await
+    .unwrap();
+
+    // Query: age should be [29], not [28, 29]
+    use dialog_query::claim::Attribute as ClaimAttribute;
+    use std::str::FromStr;
+    let session = ctx.open_session().await.unwrap();
+
+    let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
+    let age_values = carry::schema::fetch_values(&session, &entity, age_attr)
+        .await
+        .unwrap();
+    assert_eq!(
+        age_values.len(),
+        1,
+        "Cardinality-one attribute should have exactly one value after update, got: {:?}",
+        age_values
+    );
+    assert_eq!(
+        age_values[0],
+        dialog_query::Value::UnsignedInt(29),
+        "Age should be updated to 29"
+    );
+
+    // Name should still be Alice (unchanged)
+    let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
+    let name_values = carry::schema::fetch_values(&session, &entity, name_attr)
+        .await
+        .unwrap();
+    assert_eq!(name_values.len(), 1);
+    assert_eq!(
+        name_values[0],
+        dialog_query::Value::String("Alice".to_string())
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Retract
 // ═══════════════════════════════════════════════════════════════════════════

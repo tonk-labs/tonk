@@ -73,6 +73,40 @@ async fn assert_with_target(
     }
 }
 
+/// Build retract instructions for existing values of a cardinality-one attribute.
+///
+/// If the attribute's cardinality is `"one"` (the default) and the entity already
+/// has values for it, returns `Instruction::Retract` for each existing value so
+/// they can be committed alongside the new `Instruction::Assert`.
+///
+/// Returns an empty vec when:
+/// - The attribute has `cardinality: many`
+/// - The entity has no existing values for the attribute
+async fn retract_cardinality_one_values<S: dialog_artifacts::ArtifactStore>(
+    store: &S,
+    entity: &dialog_query::Entity,
+    attr: &dialog_query::claim::Attribute,
+    attr_selector: &str,
+) -> Result<Vec<Instruction>> {
+    let cardinality = schema::fetch_attribute_cardinality(store, attr_selector).await?;
+    if cardinality == "many" {
+        return Ok(Vec::new());
+    }
+
+    let existing = schema::fetch_values(store, entity, attr.clone()).await?;
+    Ok(existing
+        .into_iter()
+        .map(|value| {
+            Instruction::Retract(Artifact {
+                the: attr.clone(),
+                of: entity.clone(),
+                is: value,
+                cause: None,
+            })
+        })
+        .collect())
+}
+
 /// Assert claims using a domain target (open-ended, no schema).
 async fn assert_domain(
     ctx: &SiteContext,
@@ -93,11 +127,55 @@ async fn assert_domain(
         }
     }
 
-    let mut session = ctx.open_session().await?;
+    let is_update = this_entity.is_some();
 
-    let entity = if let Some(ref entity_str) = this_entity {
-        resolve_entity(entity_str)?
+    if is_update {
+        // Updating an existing entity — use raw instructions via Branch so we
+        // can retract old cardinality-one values in the same commit.
+        let mut branch = ctx.open_branch().await?;
+        let entity = resolve_entity(this_entity.as_ref().unwrap())?;
+        let mut instructions = Vec::new();
+
+        for f in fields {
+            let attr_name = f.qualified_name(domain);
+            let attr = dialog_query::claim::Attribute::from_str(&attr_name)
+                .context(format!("Invalid attribute: {}", attr_name))?;
+            let value = schema::parse_value(f.value.as_deref().unwrap());
+
+            // Retract existing values if cardinality is "one"
+            instructions
+                .extend(retract_cardinality_one_values(&branch, &entity, &attr, &attr_name).await?);
+
+            instructions.push(Instruction::Assert(Artifact {
+                the: attr,
+                of: entity.clone(),
+                is: value,
+                cause: None,
+            }));
+        }
+
+        // Assert entity name if @name was provided
+        if let Some(ref name) = entity_name {
+            let name_attr = schema::dialog_meta::Name::selector();
+            let name_selector = "dialog.meta/name";
+            instructions.extend(
+                retract_cardinality_one_values(&branch, &entity, &name_attr, name_selector).await?,
+            );
+            instructions.push(Instruction::Assert(Artifact {
+                the: name_attr,
+                of: entity.clone(),
+                is: Value::String(name.clone()),
+                cause: None,
+            }));
+        }
+
+        branch
+            .commit(futures_util::stream::iter(instructions))
+            .await?;
+        print_assert_result(&entity, fields.len(), entity_name.as_deref(), format);
     } else {
+        // New entity derived from field content — no existing values to retract.
+        let mut session = ctx.open_session().await?;
         let field_pairs: Vec<(String, String)> = fields
             .iter()
             .map(|f| {
@@ -107,28 +185,28 @@ async fn assert_domain(
                 )
             })
             .collect();
-        schema::derive_entity_from_fields(&field_pairs)?
-    };
+        let entity = schema::derive_entity_from_fields(&field_pairs)?;
 
-    let mut transaction = session.edit();
+        let mut transaction = session.edit();
 
-    for f in fields {
-        let attr_name = f.qualified_name(domain);
-        let attr = dialog_query::claim::Attribute::from_str(&attr_name)
-            .context(format!("Invalid attribute: {}", attr_name))?;
-        let value = schema::parse_value(f.value.as_deref().unwrap());
-        Relation::new(attr, entity.clone(), value).assert(&mut transaction);
+        for f in fields {
+            let attr_name = f.qualified_name(domain);
+            let attr = dialog_query::claim::Attribute::from_str(&attr_name)
+                .context(format!("Invalid attribute: {}", attr_name))?;
+            let value = schema::parse_value(f.value.as_deref().unwrap());
+            Relation::new(attr, entity.clone(), value).assert(&mut transaction);
+        }
+
+        // Assert entity name if @name was provided
+        if let Some(ref name) = entity_name {
+            let name_attr = schema::dialog_meta::Name::selector();
+            Relation::new(name_attr, entity.clone(), Value::String(name.clone()))
+                .assert(&mut transaction);
+        }
+
+        session.commit(transaction).await?;
+        print_assert_result(&entity, fields.len(), entity_name.as_deref(), format);
     }
-
-    // Assert entity name if @name was provided
-    if let Some(ref name) = entity_name {
-        let name_attr = schema::dialog_meta::Name::selector();
-        Relation::new(name_attr, entity.clone(), Value::String(name.clone()))
-            .assert(&mut transaction);
-    }
-
-    session.commit(transaction).await?;
-    print_assert_result(&entity, fields.len(), entity_name.as_deref(), format);
     Ok(())
 }
 
@@ -254,21 +332,64 @@ async fn assert_builtin_concept(
         }
     };
 
-    let mut transaction = session.edit();
+    if this_entity.is_some() {
+        // Updating an existing entity — use raw instructions via Branch so we
+        // can retract old cardinality-one values in the same commit.
+        drop(session);
+        let mut branch = ctx.open_branch().await?;
+        let mut instructions = Vec::new();
 
-    for (relation, value) in &resolved_claims {
-        let attr = schema::parse_claim_attribute(relation)?;
-        Relation::new(attr, entity.clone(), value.clone()).assert(&mut transaction);
+        for (relation, value) in &resolved_claims {
+            let attr = schema::parse_claim_attribute(relation)?;
+
+            // Retract existing values if cardinality is "one"
+            instructions
+                .extend(retract_cardinality_one_values(&branch, &entity, &attr, relation).await?);
+
+            instructions.push(Instruction::Assert(Artifact {
+                the: attr,
+                of: entity.clone(),
+                is: value.clone(),
+                cause: None,
+            }));
+        }
+
+        // Assert entity name if @name was provided
+        if let Some(ref name) = entity_name {
+            let name_attr = schema::dialog_meta::Name::selector();
+            let name_selector = "dialog.meta/name";
+            instructions.extend(
+                retract_cardinality_one_values(&branch, &entity, &name_attr, name_selector).await?,
+            );
+            instructions.push(Instruction::Assert(Artifact {
+                the: name_attr,
+                of: entity.clone(),
+                is: Value::String(name.clone()),
+                cause: None,
+            }));
+        }
+
+        branch
+            .commit(futures_util::stream::iter(instructions))
+            .await?;
+    } else {
+        let mut transaction = session.edit();
+
+        for (relation, value) in &resolved_claims {
+            let attr = schema::parse_claim_attribute(relation)?;
+            Relation::new(attr, entity.clone(), value.clone()).assert(&mut transaction);
+        }
+
+        // Assert entity name if @name was provided
+        if let Some(ref name) = entity_name {
+            let name_attr = schema::dialog_meta::Name::selector();
+            Relation::new(name_attr, entity.clone(), Value::String(name.clone()))
+                .assert(&mut transaction);
+        }
+
+        session.commit(transaction).await?;
     }
 
-    // Assert entity name if @name was provided
-    if let Some(ref name) = entity_name {
-        let name_attr = schema::dialog_meta::Name::selector();
-        Relation::new(name_attr, entity.clone(), Value::String(name.clone()))
-            .assert(&mut transaction);
-    }
-
-    session.commit(transaction).await?;
     print_assert_result(
         &entity,
         resolved_claims.len(),
@@ -311,37 +432,84 @@ async fn assert_user_concept(
     }
 
     drop(session);
-    let mut session = ctx.open_session().await?;
 
-    // Derive or resolve entity
-    let entity = if let Some(ref entity_str) = this_entity {
-        resolve_entity(entity_str)?
+    let is_update = this_entity.is_some();
+
+    if is_update {
+        // Updating an existing entity — use raw instructions via Branch so we
+        // can retract old cardinality-one values in the same commit.
+        let mut branch = ctx.open_branch().await?;
+        let entity = resolve_entity(this_entity.as_ref().unwrap())?;
+        let mut instructions = Vec::new();
+
+        for (attr_name, value_str) in &qualified_fields {
+            let attr = schema::parse_claim_attribute(attr_name)?;
+            let value = schema::parse_value(value_str);
+
+            // Retract existing values if cardinality is "one"
+            instructions
+                .extend(retract_cardinality_one_values(&branch, &entity, &attr, attr_name).await?);
+
+            instructions.push(Instruction::Assert(Artifact {
+                the: attr,
+                of: entity.clone(),
+                is: value,
+                cause: None,
+            }));
+        }
+
+        // Assert entity name if @name was provided
+        if let Some(ref name) = entity_name {
+            let name_attr = schema::dialog_meta::Name::selector();
+            let name_selector = "dialog.meta/name";
+            instructions.extend(
+                retract_cardinality_one_values(&branch, &entity, &name_attr, name_selector).await?,
+            );
+            instructions.push(Instruction::Assert(Artifact {
+                the: name_attr,
+                of: entity.clone(),
+                is: Value::String(name.clone()),
+                cause: None,
+            }));
+        }
+
+        branch
+            .commit(futures_util::stream::iter(instructions))
+            .await?;
+        print_assert_result(
+            &entity,
+            qualified_fields.len(),
+            entity_name.as_deref(),
+            format,
+        );
     } else {
-        schema::derive_entity_from_fields(&qualified_fields)?
-    };
+        // New entity derived from field content — no existing values to retract.
+        let mut session = ctx.open_session().await?;
+        let entity = schema::derive_entity_from_fields(&qualified_fields)?;
 
-    let mut transaction = session.edit();
+        let mut transaction = session.edit();
 
-    for (attr_name, value_str) in &qualified_fields {
-        let attr = schema::parse_claim_attribute(attr_name)?;
-        let value = schema::parse_value(value_str);
-        Relation::new(attr, entity.clone(), value).assert(&mut transaction);
+        for (attr_name, value_str) in &qualified_fields {
+            let attr = schema::parse_claim_attribute(attr_name)?;
+            let value = schema::parse_value(value_str);
+            Relation::new(attr, entity.clone(), value).assert(&mut transaction);
+        }
+
+        // Assert entity name if @name was provided
+        if let Some(ref name) = entity_name {
+            let name_attr = schema::dialog_meta::Name::selector();
+            Relation::new(name_attr, entity.clone(), Value::String(name.clone()))
+                .assert(&mut transaction);
+        }
+
+        session.commit(transaction).await?;
+        print_assert_result(
+            &entity,
+            qualified_fields.len(),
+            entity_name.as_deref(),
+            format,
+        );
     }
-
-    // Assert entity name if @name was provided
-    if let Some(ref name) = entity_name {
-        let name_attr = schema::dialog_meta::Name::selector();
-        Relation::new(name_attr, entity.clone(), Value::String(name.clone()))
-            .assert(&mut transaction);
-    }
-
-    session.commit(transaction).await?;
-    print_assert_result(
-        &entity,
-        qualified_fields.len(),
-        entity_name.as_deref(),
-        format,
-    );
     Ok(())
 }
 
@@ -492,6 +660,9 @@ async fn assert_from_json(ctx: &SiteContext, content: &str) -> Result<()> {
         let entity = resolve_entity(of)?;
         let value = json_to_value(is)?;
 
+        // Retract existing values if cardinality is "one"
+        instructions.extend(retract_cardinality_one_values(&branch, &entity, &attr, the).await?);
+
         instructions.push(Instruction::Assert(Artifact {
             the: attr,
             of: entity,
@@ -560,6 +731,9 @@ async fn assert_from_eav_yaml(ctx: &SiteContext, triples: &[serde_yaml::Value]) 
         let entity = resolve_entity(of)?;
         let is = &triple["is"];
         let value = yaml_to_value(is)?;
+
+        // Retract existing values if cardinality is "one"
+        instructions.extend(retract_cardinality_one_values(&branch, &entity, &attr, the).await?);
 
         instructions.push(Instruction::Assert(Artifact {
             the: attr,
@@ -895,6 +1069,11 @@ async fn assert_domain_entries_from_yaml(
                 // Build the qualified attribute name: namespace/field
                 let qualified = format!("{}/{}", namespace, field_name);
                 let attr = schema::parse_claim_attribute(&qualified)?;
+
+                // Retract existing values if cardinality is "one"
+                instructions.extend(
+                    retract_cardinality_one_values(&branch, &entity, &attr, &qualified).await?,
+                );
 
                 // Handle multi-valued fields (YAML sequences)
                 match value {

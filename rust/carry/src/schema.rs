@@ -837,6 +837,40 @@ pub async fn fetch_values<S: ArtifactStore>(
     Ok(results.into_iter().map(|a| a.is).collect())
 }
 
+/// Look up the cardinality of an attribute by its selector string.
+///
+/// Searches for an attribute entity whose `dialog.attribute/id` equals the
+/// given selector, then reads its `dialog.attribute/cardinality` value.
+/// Returns `"one"` (the documented default) if the attribute entity is not
+/// found or has no cardinality claim.
+pub async fn fetch_attribute_cardinality<S: ArtifactStore>(
+    store: &S,
+    selector: &str,
+) -> Result<String> {
+    let id_attr = dialog_attribute::Id::selector();
+    let card_attr = dialog_attribute::Cardinality::selector();
+
+    // Find the attribute entity by its selector value: the=dialog.attribute/id, is=<selector>
+    let results: Vec<_> = store
+        .select(
+            ArtifactSelector::new()
+                .the(id_attr)
+                .is(Value::String(selector.to_string())),
+        )
+        .try_collect()
+        .await?;
+
+    if let Some(artifact) = results.into_iter().next() {
+        let attr_entity = artifact.of;
+        if let Some(card) = fetch_string(store, &attr_entity, card_attr).await? {
+            return Ok(card);
+        }
+    }
+
+    // Default cardinality is "one"
+    Ok("one".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Entity discovery helpers
 // ---------------------------------------------------------------------------
