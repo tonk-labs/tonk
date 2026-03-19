@@ -74,9 +74,9 @@ carry assert context.yaml
 
 ### Step 3: Connect Your Tools
 
-Carry can be exposed to AI tools via MCP (Model Context Protocol) or by reading from the repository directly. The connection is a one-time config step per tool.
+Carry can be exposed to any agentic AI tool with shell permissions and access to the Carry CLI.
 
-Once connected, your tools share the same context. Cursor knows your conventions. Claude knows your project structure. A new chat session can pick up where the last one left off.
+Through agentic calls to Carry, your tools share the same context. Cursor knows your conventions. Claude knows your project structure. A new chat session can pick up with all the context built in the last one.
 
 ### Step 4: Let Tools Write Back
 

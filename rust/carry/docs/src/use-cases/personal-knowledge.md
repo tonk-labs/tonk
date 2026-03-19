@@ -152,8 +152,7 @@ carry query com.me.reading title author status=finished
 |---|---|---|
 | Data format | Proprietary or semi-structured markdown | Structured YAML claims |
 | Query language | Limited (Dataview, formulas) | Full EAV queries + rules |
-| AI access | Plugin-dependent | Direct via CLI/MCP |
-| Data portability | Export required | It's already files on disk |
+| AI access | Plugin-dependent | Direct via CLI |
 | Schema | Informal, drifts over time | Explicit, validated |
 | Offline | Varies | Always (local-first) |
 
