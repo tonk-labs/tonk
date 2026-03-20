@@ -1,17 +1,16 @@
 # CLI Reference
 
-Carry provides a small set of commands for interacting with Dialog DB spaces. Every command follows a consistent pattern and shares global options.
+Carry provides a small set of commands for interacting with Dialog DB. Every command follows a consistent pattern and shares global options.
 
 ## Commands
 
 | Command | Alias | Description |
 |---|---|---|
-| [`carry init`](./init.md) | `i` | Create a new repository and space |
+| [`carry init`](./init.md) | `i` | Create a new repository |
 | [`carry assert`](./assert.md) | `a` | Assert claims (add or update data) |
 | [`carry query`](./query.md) | `q` | Query entities by domain or concept |
 | [`carry retract`](./retract.md) | `r` | Retract claims (remove data) |
-| [`carry status`](./status.md) | `st` | Show repository and space info |
-| [`carry space`](./spaces.md) | `s` | Manage spaces within a repository |
+| [`carry status`](./status.md) | `st` | Show repository info |
 
 ## Global Options
 
@@ -20,7 +19,6 @@ Every command accepts:
 | Flag | Description |
 |---|---|
 | `--repo <PATH>` | Path to a specific `.carry/` repository. Skips filesystem walk. |
-| `--space <DID\|LABEL>` | Target a specific space by DID or label. Does not change the active space. |
 | `--format <FORMAT>` | Output format: `yaml` (default), `json`, or `triples`. |
 
 ### Repo Resolution

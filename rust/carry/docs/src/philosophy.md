@@ -53,9 +53,9 @@ Later, when patterns emerge, you can define [attributes](./modeling/attributes.m
 
 ### Attribution matters
 
-Each space has its own cryptographic identity, providing a foundation for knowing who contributed what. By using separate spaces for different tools, agents, or collaborators, you can keep contributions isolated and merge them selectively.
+Each repository has its own cryptographic identity, providing a foundation for knowing who contributed what. By using separate repositories for different tools, agents, or collaborators, you can keep contributions isolated.
 
-Knowing the provenance of data matters whether the source is a person, a script, or an AI agent. Per-claim attribution (tracking who made each individual claim and when) is a planned feature but not yet implemented. In the meantime, spaces provide coarse-grained separation of data sources.
+Knowing the provenance of data matters whether the source is a person, a script, or an AI agent. Per-claim attribution (tracking who made each individual claim and when) is a planned feature.
 
 ## What Carry Is Not
 

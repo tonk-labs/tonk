@@ -1,6 +1,6 @@
 # carry status
 
-Display information about the current repository and space.
+Display information about the current repository.
 
 ## Synopsis
 
@@ -10,7 +10,7 @@ carry status [--repo <PATH>] [--format <FMT>]
 
 ## Description
 
-Shows the resolved `.carry/` repository path, the active space DID, and the space label (if set). Useful for verifying which space commands will operate on.
+Shows the resolved `.carry/` repository path and DID.
 
 ## Options
 
@@ -33,9 +33,7 @@ carry status --format json
 
 ```
 Repo: /path/to/project/.carry
-Spaces:
-  did:key:zAbc123 (active)
-  did:key:zDef456
+DID: did:key:zAbc123
 ```
 
 With `--format json`:
@@ -43,9 +41,6 @@ With `--format json`:
 ```json
 {
   "repo": "/path/to/project/.carry",
-  "spaces": [
-    {"did": "did:key:zAbc123", "active": true, "path": "/path/to/project/.carry/did:key:zAbc123"},
-    {"did": "did:key:zDef456", "active": false, "path": "/path/to/project/.carry/did:key:zDef456"}
-  ]
+  "did": "did:key:zAbc123"
 }
 ```

@@ -5,7 +5,7 @@ Retract claims from entities -- remove data.
 ## Synopsis
 
 ```
-carry retract <TARGET|FILE|-> [this=<ENTITY>] [FIELD[=VALUE] ...] [--repo <PATH>] [--space <DID|LABEL>] [--format <FMT>]
+carry retract <TARGET|FILE|-> [this=<ENTITY>] [FIELD[=VALUE] ...] [--repo <PATH>] [--format <FMT>]
 ```
 
 ## Description
@@ -43,7 +43,6 @@ Using `field=value` is useful for `cardinality: many` attributes where an entity
 | Flag | Description |
 |---|---|
 | `--repo <PATH>` | Path to `.carry/` repository |
-| `--space <DID\|LABEL>` | Target a specific space |
 | `--format <FMT>` | Output format |
 
 ## Examples
@@ -66,9 +65,6 @@ carry retract retractions.yaml
 
 # Retract from stdin (pipe query output to remove matching data)
 carry query person name="Alice" --format triples | carry retract -
-
-# Retract in a specific space
-carry retract person this=did:key:zAlice age --space research
 ```
 
 ## Notes

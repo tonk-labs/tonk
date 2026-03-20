@@ -74,7 +74,7 @@ The `@person-name` asserts `dialog.meta/name` on the entity, creating a bookmark
 carry assert concept @person with.name=person-name
 ```
 
-Names are shared across all members of a space and travel with synced data.
+Names are shared across the repository and travel with synced data.
 
 ## Value Types
 

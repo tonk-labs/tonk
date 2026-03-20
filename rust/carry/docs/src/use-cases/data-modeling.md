@@ -208,11 +208,7 @@ This approach gives you:
 
 1. **Start with data, add schema later.** Assert raw domain claims first. When you see patterns, formalize them into concepts.
 
-2. **Use spaces for environments.** Keep production data in one space and test data in another:
-   ```bash
-   carry space create staging
-   carry assert sample --space staging id=TEST-001 ...
-   ```
+2. **Use separate repos for environments.** Keep production data in one repository and test data in another by using `--repo` to target different directories.
 
 3. **Export with queries.** Need CSV? Pipe JSON output through `jq`:
    ```bash

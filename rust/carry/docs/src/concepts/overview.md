@@ -28,11 +28,10 @@ Everything in Carry reduces to **claims**. Schemas, concepts, and rules are them
 
 4. You write **rules** that derive new concept instances from existing data, like "a safe meal is one where no attendee has an allergy to any ingredient."
 
-5. All of this lives in a **space** -- an isolated namespace with its own cryptographic identity inside your `.carry/` repository.
+5. All of this lives in a `.carry/` repository with its own cryptographic identity.
 
 Each of these is explained in its own section:
 
 - [Claims and Entities](./claims-and-entities.md)
 - [Domains](./domains.md)
 - [Asserted Notation](./asserted-notation.md)
-- [Spaces](./spaces.md)

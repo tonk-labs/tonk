@@ -17,7 +17,6 @@
 - [Claims and Entities](./concepts/claims-and-entities.md)
 - [Domains](./concepts/domains.md)
 - [Asserted Notation](./concepts/asserted-notation.md)
-- [Spaces](./concepts/spaces.md)
 
 # Domain Modeling
 
@@ -34,7 +33,6 @@
 - [carry query](./cli/query.md)
 - [carry retract](./cli/retract.md)
 - [carry status](./cli/status.md)
-- [carry space](./cli/spaces.md)
 
 # Use Cases
 

@@ -113,15 +113,7 @@ Carry is persistent and structured. Once data is asserted, it stays until you re
 
 ## Separation: Who Wrote What?
 
-Carry's spaces provide a natural boundary for separating data sources. You can use separate spaces for different tools or agents, keeping contributions isolated and merging them selectively.
-
-Per-claim provenance tracking (recording who asserted each individual claim and when) is a planned feature. In the meantime, spaces give you coarse-grained separation:
-
-- A space for your own manual entries
-- A space for AI-generated suggestions
-- A shared space for reviewed, merged data
-
-This matters for trust. When an AI writes to its own space, you can review what it added before merging it into your main space.
+Per-claim provenance tracking (recording who asserted each individual claim and when) is a planned feature. In the meantime, you can use separate repositories for different tools or agents, keeping contributions isolated.
 
 ## Example: Developer Profile
 

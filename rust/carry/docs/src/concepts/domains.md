@@ -31,7 +31,7 @@ Domains starting with `dialog.` are reserved for Dialog DB internals:
 
 Do not assert claims into `dialog.*` domains directly. Carry manages these when you use `carry assert attribute`, `carry assert concept`, etc.
 
-The `xyz.tonk.carry` domain is used by Carry itself for space-level metadata like labels and settings.
+The `xyz.tonk.carry` domain is used by Carry itself for repository-level metadata like labels and settings.
 
 ## Using Domains
 

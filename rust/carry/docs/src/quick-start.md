@@ -13,7 +13,7 @@ Output:
 Initialized my-project repository in /path/to/.carry/did:key:zAbc123
 ```
 
-This creates a `.carry/` directory in your current working directory containing a single [**space**](./concepts/spaces.md). Carry looks for a repository in the current directory first, then seeks through parent directories until it finds one. Repositories hold all the data created when using Carry.
+This creates a `.carry/` directory in your current working directory. Carry looks for a repository in the current directory first, then seeks through parent directories until it finds one. Repositories hold all the data created when using Carry.
 
 ## 2. Assert Some Data
 

@@ -5,7 +5,7 @@ Assert claims on entities -- add or update data.
 ## Synopsis
 
 ```
-carry assert <TARGET|FILE|-> [this=<ENTITY>] [@name] [FIELD=VALUE ...] [--repo <PATH>] [--space <DID|LABEL>] [--format <FMT>]
+carry assert <TARGET|FILE|-> [this=<ENTITY>] [@name] [FIELD=VALUE ...] [--repo <PATH>] [--format <FMT>]
 ```
 
 ## Description
@@ -50,7 +50,6 @@ Assert creates or updates claims. Claims are facts stored as `(the: relation, of
 | Flag | Description |
 |---|---|
 | `--repo <PATH>` | Path to `.carry/` repository |
-| `--space <DID\|LABEL>` | Target a specific space |
 | `--format <FMT>` | Output format: `yaml`, `json`, or `triples` |
 
 ## Examples
@@ -63,9 +62,6 @@ carry assert com.app.person name=Alice age=28
 
 # Update an existing entity
 carry assert com.app.person this=did:key:zAlice age=29
-
-# Assert into a specific space
-carry assert com.app.person name=Alice --space research
 ```
 
 ### Concept Assertions
