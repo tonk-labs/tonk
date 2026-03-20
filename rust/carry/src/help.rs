@@ -9,7 +9,6 @@ into concepts (reusable schemas). All data lives in a .carry/ repository.
 
 KEY CONCEPTS:
   Repo        A .carry/ repository containing your data
-  Space       An isolated namespace within a repo, with its own identity
   Entity      Anything with an identity (has a DID like did:key:z...)
   Claim       A single fact: the X of Y is Z
   Domain      A namespace for relations (e.g., 'com.myapp.person')
@@ -44,7 +43,7 @@ META-SCHEMA:
 
 pub const MAIN_AFTER_HELP: &str = "\
 QUICK START:
-  # Initialize a new space
+  # Initialize a new repository
   carry init my-project
 
   # Define an attribute with a name
@@ -95,16 +94,13 @@ For detailed help on any command: carry help <command>";
 pub const INIT_LONG_ABOUT: &str = "\
 Creates a new Dialog DB repository at .carry/ in the target directory.
 
-If --repo is not specified, the repository is created in $PWD. A first space
-is created automatically. If a name is provided, it is asserted as the space
-label.
+If --repo is not specified, the repository is created in $PWD. If a name is
+provided, it is asserted as the repository label.
 
-If a repository already exists, reports its status without creating another
-space. Use `carry space create` to add more spaces after initialization.
+If a repository already exists, reports its status.
 
-The command generates an Ed25519 keypair for the space, creating a unique 
-space DID (e.g., did:key:zSpace). The private key is stored in 
-.carry/<space-did>/credentials.
+The command generates an Ed25519 keypair for the repository, creating a unique
+DID (e.g., did:key:z...). The private key is stored in .carry/<did>/credentials.
 
 Pre-registered concepts (attribute, concept, bookmark) are bootstrapped during
 init so they can be queried and used immediately.";
@@ -124,7 +120,7 @@ EXAMPLES:
   carry init my-project --repo /path/to/project
 
 OUTPUT:
-  Initialized my-project repository in /path/to/.carry/did:key:zAbc123";
+  Initialized my-project repository in /path/to/.carry/did:key:z...";
 
 // -----------------------------------------------------------------------------
 // Query
@@ -173,9 +169,6 @@ EXAMPLES:
 
   # Pipe query results into assert
   carry query person --format triples | carry assert -
-
-  # Query in a different space (by label or DID)
-  carry query com.app.person name age --space research
 
 OUTPUT FORMATS:
   --format yaml (default):
@@ -257,9 +250,6 @@ EXAMPLES:
   # Update an existing entity
   carry assert com.app.person this=did:key:zAlice age=29
 
-  # Assert into a specific space
-  carry assert com.app.person name=Alice --space research
-
   # Assert from a YAML file (asserted notation)
   carry assert schema.yaml
 
@@ -319,9 +309,6 @@ EXAMPLES:
   # Retract using domain
   carry retract com.app.person this=did:key:zAlice name age
 
-  # Retract from a specific space
-  carry retract person this=did:key:zAlice age --space research
-
   # Retract from file
   carry retract retractions.yaml
 
@@ -337,10 +324,9 @@ DIFFERENCE FROM ASSERT:
 // -----------------------------------------------------------------------------
 
 pub const STATUS_LONG_ABOUT: &str = "\
-Display information about the current space and repository.
+Display information about the current repository.
 
-Shows the resolved .carry/ repository path, space DID, and label (if set).
-Useful for verifying which space commands will operate on.";
+Shows the resolved .carry/ repository path and DID.";
 
 pub const STATUS_AFTER_HELP: &str = "\
 EXAMPLES:
@@ -351,9 +337,8 @@ EXAMPLES:
   carry status --format json
 
 OUTPUT:
-  Repo: /path/to/project/.carry/did:key:zSpace
-  Space: did:key:zSpace
-  Label: my-project";
+  Repo: /path/to/project/.carry
+  DID: did:key:z...";
 
 // -----------------------------------------------------------------------------
 // Space

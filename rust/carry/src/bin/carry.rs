@@ -20,7 +20,7 @@ mod inner {
         pub repo: Option<String>,
 
         /// Target a specific space by DID or label (overrides active space)
-        #[arg(long, global = true)]
+        #[arg(long, global = true, hide = true)]
         pub space: Option<String>,
 
         /// Output format for query results
@@ -35,7 +35,7 @@ mod inner {
         #[command(long_about = help::INIT_LONG_ABOUT)]
         #[command(after_help = help::INIT_AFTER_HELP)]
         Init {
-            /// Label for the space (stored as xyz.tonk.carry/label claim)
+            /// Label for the repository (stored as a name claim)
             #[arg(value_name = "LABEL")]
             name: Option<String>,
         },
@@ -85,14 +85,14 @@ mod inner {
             fields: Vec<String>,
         },
 
-        /// Show current site and space information
+        /// Show current repository information
         #[command(alias = "st")]
         #[command(long_about = help::STATUS_LONG_ABOUT)]
         #[command(after_help = help::STATUS_AFTER_HELP)]
         Status,
 
         /// Manage spaces within a .carry/ repository
-        #[command(alias = "s")]
+        #[command(alias = "s", hide = true)]
         #[command(long_about = help::SPACE_LONG_ABOUT)]
         #[command(after_help = help::SPACE_AFTER_HELP)]
         Space {

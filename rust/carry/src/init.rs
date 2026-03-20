@@ -22,15 +22,9 @@ pub async fn execute(name: Option<String>, site_path: Option<&Path>) -> Result<(
     // If a .carry/ directory already exists, report status and return
     if parent.join(".carry").is_dir() {
         let site = Site::open(&parent)?;
-        let spaces = site.list_spaces()?;
         let active_did = site.active_space_did()?;
 
         println!("Repository already exists at {}", site.root().display());
-        println!(
-            "{} space{}",
-            spaces.len(),
-            if spaces.len() == 1 { "" } else { "s" }
-        );
         if let Some(ref did) = active_did {
             if let Some(space) = site.space_by_did(did) {
                 let label = site.space_label(&space).await.unwrap_or(None);
@@ -38,12 +32,11 @@ pub async fn execute(name: Option<String>, site_path: Option<&Path>) -> Result<(
                     .as_ref()
                     .map(|l| format!(" ({})", l))
                     .unwrap_or_default();
-                println!("Active: {}{}", did, label_display);
+                println!("DID: {}{}", did, label_display);
             } else {
-                println!("Active: {}", did);
+                println!("DID: {}", did);
             }
         }
-        println!("\nUse `carry space create` to add more spaces.");
         return Ok(());
     }
 
