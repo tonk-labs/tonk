@@ -11,7 +11,7 @@ use dialog_query::Attribute;
 use dialog_query::claim::{Claim, Relation};
 use std::path::Path;
 
-/// Execute `carry init [<name>] [--site <SITE>]`.
+/// Execute `carry init [<name>] [--repo <REPO>]`.
 pub async fn execute(name: Option<String>, site_path: Option<&Path>) -> Result<()> {
     let parent = if let Some(p) = site_path {
         p.to_path_buf()

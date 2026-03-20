@@ -4,7 +4,7 @@ use crate::site::Site;
 use anyhow::Result;
 use std::path::Path;
 
-/// Execute `carry status [--site <SITE>]`.
+/// Execute `carry status [--repo <REPO>]`.
 pub async fn execute(site_flag: Option<&Path>, format: &str) -> Result<()> {
     let site = Site::resolve(site_flag)?;
     let spaces = site.list_spaces()?;
@@ -26,13 +26,13 @@ pub async fn execute(site_flag: Option<&Path>, format: &str) -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "site": site.root().display().to_string(),
+                    "repo": site.root().display().to_string(),
                     "spaces": space_list,
                 }))?
             );
         }
         _ => {
-            println!("Site: {}", site.root().display());
+            println!("Repo: {}", site.root().display());
             if spaces.is_empty() {
                 println!("No spaces. Run `carry init` to create one.");
             } else {

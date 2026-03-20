@@ -17,7 +17,7 @@ mod inner {
 
         /// Path to a specific .carry/ repository (skips filesystem search from $PWD)
         #[arg(long, global = true)]
-        pub site: Option<String>,
+        pub repo: Option<String>,
 
         /// Target a specific space by DID or label (overrides active space)
         #[arg(long, global = true)]
@@ -156,18 +156,18 @@ use clap_complete::env::CompleteEnv;
 async fn main() -> anyhow::Result<()> {
     CompleteEnv::with_factory(Cli::command).complete();
     let cli = Cli::parse();
-    let site_path = cli.site.as_deref().map(std::path::Path::new);
+    let repo_path = cli.repo.as_deref().map(std::path::Path::new);
     let space_flag = cli.space.as_deref();
     let format = &cli.format;
 
     match cli.command {
         Commands::Init { name } => {
-            carry::init::execute(name, site_path).await?;
+            carry::init::execute(name, repo_path).await?;
         }
         Commands::Query { target, fields } => {
             let parsed_target = carry::target::Target::parse(&target)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let ctx = carry::site::SiteContext::resolve(site_path, space_flag).await?;
+            let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
             carry::query_cmd::execute(&ctx, parsed_target, parsed.fields, format).await?;
         }
         Commands::Assert {
@@ -176,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let ctx = carry::site::SiteContext::resolve(site_path, space_flag).await?;
+            let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
             carry::assert_cmd::execute(
                 &ctx,
                 first_arg,
@@ -193,15 +193,15 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let ctx = carry::site::SiteContext::resolve(site_path, space_flag).await?;
+            let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
             carry::retract_cmd::execute(&ctx, first_arg, parsed.this_entity, parsed.fields, format)
                 .await?;
         }
         Commands::Status => {
-            carry::status_cmd::execute(site_path, format).await?;
+            carry::status_cmd::execute(repo_path, format).await?;
         }
         Commands::Space { command } => {
-            let site = carry::space_cmd::resolve_site(site_path)?;
+            let site = carry::space_cmd::resolve_site(repo_path)?;
             match command {
                 SpaceCommands::List => {
                     carry::space_cmd::list(&site, format).await?;

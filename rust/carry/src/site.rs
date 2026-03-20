@@ -2,7 +2,7 @@
 //!
 //! A **site** is a directory containing a `.carry/` subdirectory. Commands walk
 //! up the filesystem tree from `$PWD` toward `$HOME` looking for the first
-//! `.carry/` directory, unless `--site <PATH>` is supplied.
+//! `.carry/` directory, unless `--repo <PATH>` is supplied.
 //!
 //! A **space** is a subdirectory of `.carry/` named by its `did:key:z...` DID.
 //! Each space directory contains:
@@ -78,7 +78,7 @@ impl Site {
         }
     }
 
-    /// Open a site at an explicit path (`--site <PATH>`).
+    /// Open a site at an explicit path (`--repo <PATH>`).
     ///
     /// `path` should point to the directory *containing* `.carry/`, or to the
     /// `.carry/` directory itself. Returns an error if the directory does not
@@ -95,17 +95,17 @@ impl Site {
         Ok(Self { root: carry_dir })
     }
 
-    /// Resolve a site from an optional `--site` flag, falling back to the
-    /// `CARRY_SITE` env var, then CWD discovery.
+    /// Resolve a site from an optional `--repo` flag, falling back to the
+    /// `CARRY_REPO` env var, then CWD discovery.
     pub fn resolve(site_flag: Option<&Path>) -> Result<Self> {
         if let Some(path) = site_flag {
             return Self::open(path);
         }
-        if let Ok(env_site) = std::env::var("CARRY_SITE") {
-            return Self::open(Path::new(&env_site));
+        if let Ok(env_repo) = std::env::var("CARRY_REPO") {
+            return Self::open(Path::new(&env_repo));
         }
         let cwd = std::env::current_dir().context("Failed to determine current directory")?;
-        Self::discover(&cwd).context("No .carry site found (run `carry init` to create one)")
+        Self::discover(&cwd).context("No .carry repo found (run `carry init` to create one)")
     }
 
     /// Create a new `.carry/` directory at `parent`.
@@ -402,7 +402,7 @@ pub struct SiteContext {
 }
 
 impl SiteContext {
-    /// Resolve from optional `--site` and `--space` flags.
+    /// Resolve from optional `--repo` and `--space` flags.
     ///
     /// If `space_flag` is provided, resolves the space by DID or label
     /// (requires async for label lookup). Otherwise uses the active space.

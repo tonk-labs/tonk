@@ -8,8 +8,8 @@ organized into domains (namespaced like 'com.myapp.person') and can be grouped
 into concepts (reusable schemas). All data lives in a .carry/ repository.
 
 KEY CONCEPTS:
-  Site        A .carry/ repository containing your data
-  Space       An isolated namespace within a site, with its own identity
+  Repo        A .carry/ repository containing your data
+  Space       An isolated namespace within a repo, with its own identity
   Entity      Anything with an identity (has a DID like did:key:z...)
   Claim       A single fact: the X of Y is Z
   Domain      A namespace for relations (e.g., 'com.myapp.person')
@@ -95,7 +95,7 @@ For detailed help on any command: carry help <command>";
 pub const INIT_LONG_ABOUT: &str = "\
 Creates a new Dialog DB repository at .carry/ in the target directory.
 
-If --site is not specified, the repository is created in $PWD. A first space
+If --repo is not specified, the repository is created in $PWD. A first space
 is created automatically. If a name is provided, it is asserted as the space
 label.
 
@@ -118,10 +118,10 @@ EXAMPLES:
   carry init my-project
 
   # Initialize in a specific directory
-  carry init --site /path/to/project
+  carry init --repo /path/to/project
 
   # Initialize with label in specific directory
-  carry init my-project --site /path/to/project
+  carry init my-project --repo /path/to/project
 
 OUTPUT:
   Initialized my-project repository in /path/to/.carry/did:key:zAbc123";
@@ -351,7 +351,7 @@ EXAMPLES:
   carry status --format json
 
 OUTPUT:
-  Site: /path/to/project/.carry/did:key:zSpace
+  Repo: /path/to/project/.carry/did:key:zSpace
   Space: did:key:zSpace
   Label: my-project";
 
@@ -362,7 +362,7 @@ OUTPUT:
 pub const SPACE_LONG_ABOUT: &str = "\
 Manage spaces within a .carry/ repository.
 
-Spaces are isolated namespaces within a single carry repo, each with its own
+Spaces are isolated namespaces within a single repo, each with its own
 Ed25519 identity and data store. Use spaces to keep workstreams separate
 within the same project.
 

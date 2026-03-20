@@ -213,7 +213,7 @@ pub async fn delete(site: &Site, target: &str, skip_confirm: bool) -> Result<()>
 
 use anyhow::Context as _;
 
-/// Resolve a `Site` from the optional `--site` flag, for space subcommands
+/// Resolve a `Site` from the optional `--repo` flag, for space subcommands
 /// that only need site-level access (not a full `SiteContext`).
 pub fn resolve_site(site_flag: Option<&Path>) -> Result<Site> {
     Site::resolve(site_flag)
