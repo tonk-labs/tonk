@@ -5,7 +5,7 @@ Query entities by domain or concept.
 ## Synopsis
 
 ```
-carry query <TARGET> [FIELD[=VALUE] ...] [--site <PATH>] [--space <DID|LABEL>] [--format <FMT>]
+carry query <TARGET> [FIELD[=VALUE] ...] [--repo <PATH>] [--space <DID|LABEL>] [--format <FMT>]
 ```
 
 ## Description
@@ -34,7 +34,7 @@ Filter fields narrow results. Projection fields expand what's shown. For concept
 
 | Flag | Description |
 |---|---|
-| `--site <PATH>` | Path to `.carry/` repository |
+| `--repo <PATH>` | Path to `.carry/` repository |
 | `--space <DID\|LABEL>` | Target a specific space |
 | `--format <FMT>` | Output format: `yaml` (default), `json`, or `triples` |
 

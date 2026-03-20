@@ -94,13 +94,13 @@ carry assert com.app.person name=Alice --space research
 
 This is read-only with respect to the active space setting -- the active space remains unchanged.
 
-## Site Discovery
+## Repo Discovery
 
-When you run a Carry command without `--site`, Carry walks up the filesystem tree from `$PWD` toward `$HOME`, looking for a `.carry/` directory. The first one found is used.
+When you run a Carry command without `--repo`, Carry walks up the filesystem tree from `$PWD` toward `$HOME`, looking for a `.carry/` directory. The first one found is used.
 
 You can override this with:
 
-- `--site /path/to/project` -- point to a specific repository
-- `CARRY_SITE` environment variable
+- `--repo /path/to/project` -- point to a specific repository
+- `CARRY_REPO` environment variable
 
 This means you can run Carry commands from any subdirectory of your project and it will find the right repository automatically.

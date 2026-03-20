@@ -20,9 +20,9 @@ project/
   ...
 ```
 
-### Site
+### Repo
 
-A **site** is any directory containing a `.carry/` subdirectory. Carry discovers sites by walking up from `$PWD` toward `$HOME`. The `--site` flag or `CARRY_SITE` environment variable can override this.
+A **repo** is any directory containing a `.carry/` subdirectory. Carry discovers repos by walking up from `$PWD` toward `$HOME`. The `--repo` flag or `CARRY_REPO` environment variable can override this.
 
 ### Space
 

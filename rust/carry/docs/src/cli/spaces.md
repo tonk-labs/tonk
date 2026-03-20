@@ -5,7 +5,7 @@ Manage spaces within a `.carry/` repository.
 ## Synopsis
 
 ```
-carry space <SUBCOMMAND> [--site <PATH>] [--format <FMT>]
+carry space <SUBCOMMAND> [--repo <PATH>] [--format <FMT>]
 ```
 
 ## Subcommands

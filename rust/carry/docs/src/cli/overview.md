@@ -19,13 +19,13 @@ Every command accepts:
 
 | Flag | Description |
 |---|---|
-| `--site <PATH>` | Path to a specific `.carry/` repository. Skips filesystem walk. |
+| `--repo <PATH>` | Path to a specific `.carry/` repository. Skips filesystem walk. |
 | `--space <DID\|LABEL>` | Target a specific space by DID or label. Does not change the active space. |
 | `--format <FORMAT>` | Output format: `yaml` (default), `json`, or `triples`. |
 
-### Site Resolution
+### Repo Resolution
 
-When `--site` is omitted, Carry walks up the filesystem tree from `$PWD` toward `$HOME`, looking for a `.carry/` directory. The first one found is used. You can also set the `CARRY_SITE` environment variable.
+When `--repo` is omitted, Carry walks up the filesystem tree from `$PWD` toward `$HOME`, looking for a `.carry/` directory. The first one found is used. You can also set the `CARRY_REPO` environment variable.
 
 ### Output Formats
 

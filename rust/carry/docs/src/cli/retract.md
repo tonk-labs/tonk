@@ -5,7 +5,7 @@ Retract claims from entities -- remove data.
 ## Synopsis
 
 ```
-carry retract <TARGET|FILE|-> [this=<ENTITY>] [FIELD[=VALUE] ...] [--site <PATH>] [--space <DID|LABEL>] [--format <FMT>]
+carry retract <TARGET|FILE|-> [this=<ENTITY>] [FIELD[=VALUE] ...] [--repo <PATH>] [--space <DID|LABEL>] [--format <FMT>]
 ```
 
 ## Description
@@ -42,7 +42,7 @@ Using `field=value` is useful for `cardinality: many` attributes where an entity
 
 | Flag | Description |
 |---|---|
-| `--site <PATH>` | Path to `.carry/` repository |
+| `--repo <PATH>` | Path to `.carry/` repository |
 | `--space <DID\|LABEL>` | Target a specific space |
 | `--format <FMT>` | Output format |
 

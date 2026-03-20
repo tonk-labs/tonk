@@ -5,12 +5,12 @@ Create a new Dialog DB repository.
 ## Synopsis
 
 ```
-carry init [LABEL] [--site <PATH>]
+carry init [LABEL] [--repo <PATH>]
 ```
 
 ## Description
 
-Creates a `.carry/` directory containing a new space. If `--site` is not specified, the repository is created in the current working directory.
+Creates a `.carry/` directory containing a new space. If `--repo` is not specified, the repository is created in the current working directory.
 
 The command:
 
@@ -31,7 +31,7 @@ If a `.carry/` directory already exists at the target location, the command repo
 
 | Flag | Description |
 |---|---|
-| `--site <PATH>` | Directory where `.carry/` should be created. Defaults to `$PWD`. |
+| `--repo <PATH>` | Directory where `.carry/` should be created. Defaults to `$PWD`. |
 
 ## Examples
 
@@ -43,10 +43,10 @@ carry init
 carry init my-project
 
 # Initialize in a specific directory
-carry init --site /path/to/project
+carry init --repo /path/to/project
 
 # Initialize with label in specific directory
-carry init my-project --site /path/to/project
+carry init my-project --repo /path/to/project
 ```
 
 ## Output
