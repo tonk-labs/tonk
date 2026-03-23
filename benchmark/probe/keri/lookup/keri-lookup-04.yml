@@ -1,0 +1,17 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [lookup, base]
+  system-prompt: ../prompts/base.md
+  prompt: "What punctuation does Keri specifically avoid in her writing?"
+  judge:
+    tonk.assess/Judge:
+      keyword:
+        tonk.assess/KeywordJudge:
+          keyword:
+            - term: em dash
+              score: 3
+            - term: em-dash
+              score: 3
+  source-file:
+    - semantic-profile.md

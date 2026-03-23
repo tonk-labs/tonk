@@ -1,0 +1,236 @@
+# Agent Orchestration — Data Assertions
+# Semantic-layer EAV triples derived from agent-orchestration.md.
+# Each block asserts all relations for one entity.
+
+# ─── Context Principles ──────────────────────────────────────────────────────
+
+- the: carry.orchestration/name
+  of: ctx-load-only-relevant
+  is: "Load what's needed, nothing else"
+- the: carry.orchestration/description
+  of: ctx-load-only-relevant
+  is: "Every irrelevant token crowds out relevant ones. Load only what the current task actually requires — nothing more."
+
+- the: carry.orchestration/name
+  of: ctx-order-matters
+  is: "Order matters: most important context first"
+- the: carry.orchestration/description
+  of: ctx-order-matters
+  is: "Recency bias is real. Put the most critical context first and the least important last in the context window."
+
+- the: carry.orchestration/name
+  of: ctx-persistent-in-claude-md
+  is: "Persistent reminders belong in CLAUDE.md"
+- the: carry.orchestration/description
+  of: ctx-persistent-in-claude-md
+  is: "If you are repeatedly reminding the agent of something across prompts, it should live in CLAUDE.md, not in every individual prompt."
+
+- the: carry.orchestration/name
+  of: ctx-no-large-pastes
+  is: "Avoid pasting entire codebases"
+- the: carry.orchestration/description
+  of: ctx-no-large-pastes
+  is: "Large paste-the-whole-codebase approaches are almost always worse than targeted, queryable context."
+
+- the: carry.orchestration/name
+  of: ctx-summarize-long-explorations
+  is: "Summarize long explorations before continuing"
+- the: carry.orchestration/description
+  of: ctx-summarize-long-explorations
+  is: "After extended exploratory work, summarize what has been established before continuing to the next step. Keeps the active context lean."
+
+- the: carry.orchestration/name
+  of: ctx-remove-completed-subtasks
+  is: "Remove completed sub-tasks from the active context"
+- the: carry.orchestration/description
+  of: ctx-remove-completed-subtasks
+  is: "Don't carry the full history of completed steps forward. Drop what is resolved to make room for what is current."
+
+- the: carry.orchestration/name
+  of: ctx-trust-the-context
+  is: "Don't re-explain things the agent already knows"
+- the: carry.orchestration/description
+  of: ctx-trust-the-context
+  is: "Trust the context window. Re-explaining what the agent already holds is noise. Start fresh if you genuinely cannot trust it."
+
+- the: carry.orchestration/name
+  of: ctx-reference-docs-by-url
+  is: "Reference external docs by URL, not by pasting"
+- the: carry.orchestration/description
+  of: ctx-reference-docs-by-url
+  is: "Point to external documentation via URL or Context7 rather than pasting full content into the prompt."
+
+# ─── Task Rules ──────────────────────────────────────────────────────────────
+
+- the: carry.orchestration/name
+  of: task-narrower-is-better
+  is: "The narrower the task, the better the output"
+- the: carry.orchestration/description
+  of: task-narrower-is-better
+  is: "Task specificity directly correlates with output quality. This is always true — no exceptions."
+- the: carry.orchestration/example
+  of: task-narrower-is-better
+  is: "Good: 'Refactor parseToken in lib/auth/tokens.ts to use the Result type. Add a test for the error path.' Bad: 'Improve the auth system.'"
+
+- the: carry.orchestration/name
+  of: task-one-sentence-one-turn
+  is: "If a task can't be expressed in a sentence, it's too big for one turn"
+- the: carry.orchestration/description
+  of: task-one-sentence-one-turn
+  is: "A task too large to state in a single sentence needs to be broken down before being handed to the agent. Five minutes of decomposition saves thirty minutes of cleanup."
+
+- the: carry.orchestration/name
+  of: task-explicit-done-criteria
+  is: "Define explicit success criteria upfront"
+- the: carry.orchestration/description
+  of: task-explicit-done-criteria
+  is: "Tell the agent what 'done' means before it starts. Ambiguous completion criteria lead to over-engineering and scope creep."
+- the: carry.orchestration/example
+  of: task-explicit-done-criteria
+  is: "Done means: the endpoint accepts page and pageSize query params, returns { data, total, page, pageSize }, and has tests for boundary conditions."
+
+# ─── Prompting Patterns ──────────────────────────────────────────────────────
+
+- the: carry.orchestration/name
+  of: pattern-read-before-write
+  is: "Read before you write"
+- the: carry.orchestration/description
+  of: pattern-read-before-write
+  is: "Never ask the agent to modify a file it hasn't read. Always front-load: read the file first, then make changes."
+- the: carry.orchestration/example
+  of: pattern-read-before-write
+  is: "Read foo.ts first, then refactor the parseUser function to..."
+
+- the: carry.orchestration/name
+  of: pattern-plan-then-execute
+  is: "Plan, then execute"
+- the: carry.orchestration/description
+  of: pattern-plan-then-execute
+  is: "For anything touching more than two or three files, ask for a plan before execution. Review the plan — it is far cheaper to correct a plan than to roll back eight file changes."
+
+- the: carry.orchestration/name
+  of: pattern-show-reasoning
+  is: "Show your reasoning"
+- the: carry.orchestration/description
+  of: pattern-show-reasoning
+  is: "When unsure what the agent is about to do, ask it to explain its approach before writing any code. Catches misunderstandings before they reach the file system."
+- the: carry.orchestration/example
+  of: pattern-show-reasoning
+  is: "What changes will you make and why?"
+
+- the: carry.orchestration/name
+  of: pattern-explicit-success-criteria
+  is: "Explicit success criteria"
+- the: carry.orchestration/description
+  of: pattern-explicit-success-criteria
+  is: "Embed a precise definition of done directly in the task prompt. The agent should not have to infer when it is finished."
+- the: carry.orchestration/example
+  of: pattern-explicit-success-criteria
+  is: "Add pagination to the user list endpoint. Done means: accepts page and pageSize params, returns { data, total, page, pageSize }, and has tests for boundary conditions."
+
+- the: carry.orchestration/name
+  of: pattern-negative-space
+  is: "Negative space"
+- the: carry.orchestration/description
+  of: pattern-negative-space
+  is: "Telling the agent what NOT to do is as important as what to do. Explicit exclusions prevent scope creep and unwanted side effects."
+- the: carry.orchestration/example
+  of: pattern-negative-space
+  is: "Refactor parseUser — but don't change the return type or add new dependencies."
+
+# ─── Failure Modes ───────────────────────────────────────────────────────────
+
+- the: carry.orchestration/name
+  of: failure-silent-workaround
+  is: "The silent workaround"
+- the: carry.orchestration/description
+  of: failure-silent-workaround
+  is: "The agent cannot do X, so it quietly does Y instead without saying so. The output looks complete but solves a different problem."
+- the: carry.orchestration/fix
+  of: failure-silent-workaround
+  is: "Explicitly instruct: 'If you can't do X, stop and tell me rather than finding an alternative.'"
+
+- the: carry.orchestration/name
+  of: failure-over-architecter
+  is: "The over-architecter"
+- the: carry.orchestration/description
+  of: failure-over-architecter
+  is: "Given a simple task, the agent introduces a whole new abstraction layer that was not requested and is not needed."
+- the: carry.orchestration/fix
+  of: failure-over-architecter
+  is: "Include in the prompt: 'Solve this with minimal changes. No new abstractions unless you explain why first.'"
+
+- the: carry.orchestration/name
+  of: failure-context-bleed
+  is: "Context bleed"
+- the: carry.orchestration/description
+  of: failure-context-bleed
+  is: "The agent carries assumptions from an earlier part of the session into a new, unrelated task. Prior context poisons current reasoning."
+- the: carry.orchestration/fix
+  of: failure-context-bleed
+  is: "For major context shifts, start a new session. Or explicitly say: 'Forget what we were doing before — focus only on the following.'"
+
+- the: carry.orchestration/name
+  of: failure-hallucinated-api
+  is: "The hallucinated API"
+- the: carry.orchestration/description
+  of: failure-hallucinated-api
+  is: "The agent uses a function that does not exist or a method signature that is wrong, relying on stale or invented training data."
+- the: carry.orchestration/fix
+  of: failure-hallucinated-api
+  is: "Have the agent read the actual library source or documentation first. Do not trust its training data for fast-moving APIs."
+
+- the: carry.orchestration/name
+  of: failure-infinite-refactor
+  is: "The infinite refactor"
+- the: carry.orchestration/description
+  of: failure-infinite-refactor
+  is: "A vague improvement prompt ('improve the code') leads to changes everywhere, far beyond the intended scope."
+- the: carry.orchestration/fix
+  of: failure-infinite-refactor
+  is: "Never use vague improvement prompts. Always specify exact scope — file, function, and what 'improved' means."
+
+# ─── Subagent Policy ─────────────────────────────────────────────────────────
+
+- the: carry.orchestration/name
+  of: subagent-policy-default
+  is: "Use subagents for research; keep main session for writing"
+- the: carry.orchestration/description
+  of: subagent-policy-default
+  is: "Subagents are best used to find things and protect the main context from exploratory noise. The main session should own all file changes."
+- the: carry.orchestration/use_when
+  of: subagent-policy-default
+  is: "Tasks are genuinely independent and can run in parallel"
+- the: carry.orchestration/use_when
+  of: subagent-policy-default
+  is: "You want to protect the main context from exploratory research noise"
+- the: carry.orchestration/use_when
+  of: subagent-policy-default
+  is: "A task is repetitive across many files (e.g. check each of these 20 modules for a pattern)"
+- the: carry.orchestration/avoid_when
+  of: subagent-policy-default
+  is: "Tasks depend on each other's output — use sequencing, not parallelism"
+- the: carry.orchestration/avoid_when
+  of: subagent-policy-default
+  is: "The task is simple — spinning up an agent adds latency and overhead"
+- the: carry.orchestration/avoid_when
+  of: subagent-policy-default
+  is: "You need tight feedback loops between steps"
+
+# ─── Automated Workflow Config ───────────────────────────────────────────────
+
+- the: carry.orchestration/name
+  of: automated-workflow-standard
+  is: "Standard requirements for autonomous agent loops"
+- the: carry.orchestration/stopping_condition
+  of: automated-workflow-standard
+  is: "A well-defined stopping condition must be declared in advance before the workflow is started"
+- the: carry.orchestration/requires_human_review
+  of: automated-workflow-standard
+  is: carry.orchestration/yes
+- the: carry.orchestration/allowed_action
+  of: automated-workflow-standard
+  is: "Perform only actions from an explicitly declared permitted list — no open-ended permissions"
+- the: carry.orchestration/allowed_action
+  of: automated-workflow-standard
+  is: "Log every action taken during the workflow"

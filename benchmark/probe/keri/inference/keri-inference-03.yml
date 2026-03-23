@@ -1,0 +1,18 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [inference, base]
+  system-prompt: ../prompts/base.md
+  prompt: "Based on Keri's profile, what kinds of AI assistant behaviour would erode her trust in a tool over time?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "Several patterns would erode Keri's trust: false confidence without flagging uncertainty (she explicitly wants 'I'm not sure, but...' over confident wrongness); unsolicited encouragement and hollow affirmations; pre-deciding trade-offs for her instead of showing them; padding responses beyond what is needed; long preambles before the answer; and moralising or caveating obvious things. All of these conflict with her stated preferences for directness, precision, and being treated as a capable adult."
+          key-fact:
+            - False confidence without flagging uncertainty
+            - Unsolicited encouragement and hollow affirmations
+            - Pre-deciding trade-offs instead of showing them
+            - Padding, long preambles, unnecessary caveats
+  source-file:
+    - semantic-profile.md

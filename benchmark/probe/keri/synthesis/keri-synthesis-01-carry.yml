@@ -1,0 +1,21 @@
+tonk.assess/Probe:
+  persona: keri
+  corpus: ../personas/keri/artifacts
+  tag: [synthesis, carry]
+  allowed-tool:
+    - Bash
+  system-prompt: ../prompts/carry.md
+  carry-data: ../context_templates/case_2/user-profile-data.yaml
+  carry-model: ../context_templates/case_2/user-profile-model.yaml
+  prompt: "How should an AI assistant behave differently when Keri is doing personal research vs. when she's working on a client deliverable?"
+  judge:
+    tonk.assess/Judge:
+      llm:
+        tonk.assess/LlmJudge:
+          ground-truth: "For personal research [research context]: be exploratory, speculative is fine, flag uncertainty explicitly. For client deliverables [work context]: be professional and client-ready, careful with claims, more formal, use third-person where appropriate, executive summary first. The tone shifts from exploratory and casual to precise and formal."
+          key-fact:
+            - Research context — exploratory, speculative is fine, flag uncertainty
+            - Work context — professional, client-ready, careful with claims
+            - Client deliverables — more formal, third-person, executive summary first
+  source-file:
+    - semantic-profile.md

@@ -1,0 +1,3 @@
+[submodule "rust/carry"]
+	path = rust/carry
+	url = git@github.com:tonk-labs/carry.git
