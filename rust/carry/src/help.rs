@@ -158,9 +158,6 @@ EXAMPLES:
   # Concept query with filter
   carry query person name=\"Alice\"
 
-  # Compose queries with + (join on same entity)
-  carry query com.app.person name=\"Alice\" + com.app.user email
-
   # Output as JSON
   carry query person --format json
 
