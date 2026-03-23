@@ -6,5 +6,5 @@ title = "Carry"
 description = "Persistent, local-first memory for LLMs and humans"
 
 [output.html]
-git-repository-url = "https://github.com/tonk-labs/tonk"
-edit-url-template = "https://github.com/tonk-labs/tonk/edit/main/rust/carry/docs/{path}"
+git-repository-url = "https://github.com/tonk-labs/carry"
+edit-url-template = "https://github.com/tonk-labs/carry/edit/main/docs/{path}"
