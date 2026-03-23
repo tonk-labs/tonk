@@ -14,7 +14,7 @@ carry query com.app.person name age
 
 Carry gives you a **private, local-first data repository** to which both you and your tools can read and write. Data lives on your machine, not in a cloud service. Carry provides a shared, durable place for your data to live.
 
-At its core, Carry stores data as **claims** -- simple facts in the form *(the X of Y is Z)* -- organized into domains and composable schemas. This structure is flexible enough to model anything from a personal profile to a recipe database, while remaining queryable and human-readable.
+At its core, Carry stores data as **claims** -- simple statements in the form *(the X of Y is Z)* -- organized into domains and composable schemas. This structure is flexible enough to model anything from a personal profile to a recipe database, while remaining queryable and human-readable.
 
 ## Key Properties
 

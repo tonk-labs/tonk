@@ -20,7 +20,7 @@ Everything in Carry reduces to **claims**. Schemas, concepts, and rules are them
 
 ## How the Pieces Fit Together
 
-1. You **assert claims** -- facts like "the name of Alice is Alice" -- into a domain like `com.app.person`.
+1. You **assert claims** -- like "the name of Alice is Alice" -- into a domain like `com.app.person`.
 
 2. When patterns emerge, you define **attributes** that refine relations with types (`Text`, `UnsignedInteger`, etc.) and cardinality (`one` or `many`).
 

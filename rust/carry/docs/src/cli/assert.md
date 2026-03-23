@@ -10,7 +10,7 @@ carry assert <TARGET|FILE|-> [this=<ENTITY>] [@name] [FIELD=VALUE ...] [--repo <
 
 ## Description
 
-Assert creates or updates claims. Claims are facts stored as `(the: relation, of: entity, is: value)`.
+Assert creates or updates claims. Claims are stored as `(the: relation, of: entity, is: value)`.
 
 ### Input Modes
 

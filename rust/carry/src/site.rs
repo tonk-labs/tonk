@@ -8,7 +8,7 @@
 //! Each space directory contains:
 //!
 //! - `credentials` — 32-byte Ed25519 secret key
-//! - `facts/`      — dialog-db prolly tree storage
+//! - `claims/`     — dialog-db prolly tree storage
 //!
 //! The active space is tracked in `.carry/@active` (a plain-text file
 //! containing the space DID).
@@ -38,7 +38,7 @@ const ACTIVE_MARKER: &str = "@active";
 const CREDENTIALS_FILE: &str = "credentials";
 
 /// Subdirectory inside each space for dialog-db storage.
-const FACTS_DIR: &str = "facts";
+const CLAIMS_DIR: &str = "claims";
 
 // ---------------------------------------------------------------------------
 // Site — the `.carry/` directory and its contents
@@ -285,9 +285,9 @@ impl Site {
         }
 
         // Create directories
-        let facts_dir = space_dir.join(FACTS_DIR);
-        std::fs::create_dir_all(&facts_dir)
-            .with_context(|| format!("Failed to create {}", facts_dir.display()))?;
+        let claims_dir = space_dir.join(CLAIMS_DIR);
+        std::fs::create_dir_all(&claims_dir)
+            .with_context(|| format!("Failed to create {}", claims_dir.display()))?;
 
         // Write credentials (raw 32-byte secret key)
         let creds_path = space_dir.join(CREDENTIALS_FILE);
@@ -328,9 +328,9 @@ impl SpaceRef {
         &self.dir
     }
 
-    /// Path to the `facts/` storage directory.
-    pub fn facts_dir(&self) -> PathBuf {
-        self.dir.join(FACTS_DIR)
+    /// Path to the `claims/` storage directory.
+    pub fn claims_dir(&self) -> PathBuf {
+        self.dir.join(CLAIMS_DIR)
     }
 
     /// Path to the `credentials` file.
@@ -381,7 +381,7 @@ impl SpaceRef {
             .did
             .parse()
             .map_err(|e| anyhow::anyhow!("Failed to parse space DID '{}': {:?}", self.did, e))?;
-        let backend = FsBackend::new(self.facts_dir()).await?;
+        let backend = FsBackend::new(self.claims_dir()).await?;
         let replica = Repository::open(credentials, space_did, backend)?;
         let branch_id = BranchId::new("main".to_string());
         let branch = replica.branches.open(&branch_id).await?;
@@ -450,7 +450,7 @@ mod tests {
         let space = site.create_space().unwrap();
         assert!(space.did.starts_with("did:key:"));
         assert!(space.dir().exists());
-        assert!(space.facts_dir().exists());
+        assert!(space.claims_dir().exists());
         assert!(space.credentials_path().exists());
 
         let spaces = site.list_spaces().unwrap();

@@ -65,13 +65,13 @@ async fn retract_domain(
     let mut branch = ctx.open_branch().await?;
 
     if fields.is_empty() {
-        // Retract ALL facts about this entity
-        let all_facts = schema::fetch_all_entity_facts(&branch, entity).await?;
-        if all_facts.is_empty() {
-            anyhow::bail!("Entity '{}' not found (no facts to retract)", entity);
+        // Retract ALL claims about this entity
+        let all_claims = schema::fetch_all_entity_claims(&branch, entity).await?;
+        if all_claims.is_empty() {
+            anyhow::bail!("Entity '{}' not found (no claims to retract)", entity);
         }
 
-        let instructions: Vec<Instruction> = all_facts
+        let instructions: Vec<Instruction> = all_claims
             .into_iter()
             .map(|artifact| {
                 Instruction::Retract(Artifact {
@@ -105,14 +105,14 @@ async fn retract_concept(
     format: &str,
 ) -> Result<()> {
     if fields.is_empty() {
-        // Retract all facts about this entity
+        // Retract all claims about this entity
         let mut branch = ctx.open_branch().await?;
-        let all_facts = schema::fetch_all_entity_facts(&branch, entity).await?;
-        if all_facts.is_empty() {
-            anyhow::bail!("Entity '{}' not found (no facts to retract)", entity);
+        let all_claims = schema::fetch_all_entity_claims(&branch, entity).await?;
+        if all_claims.is_empty() {
+            anyhow::bail!("Entity '{}' not found (no claims to retract)", entity);
         }
 
-        let instructions: Vec<Instruction> = all_facts
+        let instructions: Vec<Instruction> = all_claims
             .into_iter()
             .map(|artifact| {
                 Instruction::Retract(Artifact {

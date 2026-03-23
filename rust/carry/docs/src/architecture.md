@@ -12,10 +12,10 @@ project/
     @active                        # Plain text: DID of the active space
     did:key:zSpace1/
       credentials                  # 32-byte Ed25519 secret key (mode 0600)
-      facts/                       # Dialog DB storage (prolly trees)
+      claims/                       # Dialog DB storage (prolly trees)
     did:key:zSpace2/
       credentials
-      facts/
+      claims/
   src/
   ...
 ```
@@ -29,7 +29,7 @@ A **repo** is any directory containing a `.carry/` subdirectory. Carry discovers
 A **space** is a subdirectory of `.carry/` named by its `did:key:z...` DID. Each space contains:
 
 - **credentials**: A 32-byte Ed25519 private key. The corresponding public key determines the space's DID.
-- **facts/**: Dialog DB's on-disk storage using prolly trees.
+- **claims/**: Dialog DB's on-disk storage using prolly trees.
 
 The active space is tracked in `.carry/@active` as a plain text DID.
 

@@ -1,4 +1,4 @@
-//! Shared helpers for the concepts & facts system.
+//! Shared helpers for the concepts & claims system.
 //!
 //! Provides typed meta-schema definitions using dialog-query derive macros,
 //! deterministic entity derivation, and common storage access patterns.
@@ -900,8 +900,8 @@ pub fn parse_claim_attribute(attr_name: &str) -> Result<ClaimAttribute> {
     ClaimAttribute::from_str(attr_name).context(format!("Invalid attribute: {}", attr_name))
 }
 
-/// Fetch all facts (as Artifacts) for an entity.
-pub async fn fetch_all_entity_facts<S: ArtifactStore>(
+/// Fetch all claims (as Artifacts) for an entity.
+pub async fn fetch_all_entity_claims<S: ArtifactStore>(
     store: &S,
     entity: &Entity,
 ) -> Result<Vec<dialog_artifacts::Artifact>> {

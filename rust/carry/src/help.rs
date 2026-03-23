@@ -190,7 +190,7 @@ OUTPUT FORMATS:
 // -----------------------------------------------------------------------------
 
 pub const ASSERT_LONG_ABOUT: &str = "\
-Assert claims on entities. Claims are facts stored as (the: relation, of: entity, is: value).
+Assert claims on entities. Claims are stored as (the: relation, of: entity, is: value).
 
 INPUT MODES:
   Target mode     carry assert <domain-or-concept> [@name] [this=<ENTITY>] field=value ...
@@ -281,7 +281,7 @@ FILE VS TARGET DETECTION:
 // -----------------------------------------------------------------------------
 
 pub const RETRACT_LONG_ABOUT: &str = "\
-Retract claims from entities. Removes facts from the database.
+Retract claims from entities. Removes claims from the database.
 
 INPUT MODES:
   Target mode     carry retract <domain-or-concept> this=<entity> field[=value] ...

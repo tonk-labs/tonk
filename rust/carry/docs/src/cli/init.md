@@ -15,7 +15,7 @@ Creates a `.carry/` directory. If `--repo` is not specified, the repository is c
 The command:
 
 1. Generates an Ed25519 keypair for the repository.
-2. Creates `.carry/<did>/` with a `credentials` file and `facts/` directory.
+2. Creates `.carry/<did>/` with a `credentials` file and `claims/` directory.
 3. Bootstraps the builtin concepts (`attribute`, `concept`, `bookmark`) so they can be used immediately.
 4. If `LABEL` is provided, asserts it as the repository label.
 

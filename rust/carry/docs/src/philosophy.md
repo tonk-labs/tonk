@@ -22,7 +22,7 @@ Sync is optional. If you want it, you choose the remote -- your own bucket, a pe
 
 ### One repository, every tool
 
-Instead of maintaining parallel copies of your data in every tool's proprietary format, Carry provides a single repository to which any tool can read and write. The same facts are available to a CLI script, an AI coding assistant, a custom agent, or anything else that can speak YAML.
+Instead of maintaining parallel copies of your data in every tool's proprietary format, Carry provides a single repository to which any tool can read and write. The same claims are available to a CLI script, an AI coding assistant, a custom agent, or anything else that can speak YAML.
 
 ### Human-readable means machine-readable
 
