@@ -4551,6 +4551,7 @@ version = "0.1.0"
 name = "tonk-space"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "dialog-artifacts",
  "dialog-capability",
  "dialog-common",
