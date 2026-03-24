@@ -1,5 +1,37 @@
 # Tonk
 
+```
+                                    .-            ::.
+                                    -##.   ..     +@@@+
+                              -:    ###-  *##
+                              +##+  ###* *##%
+                              ########%*###*   +*%
+                        *###*:+##=*..:=####*++*#@
+                          ######*==-.----%#**##%..:                        :=
+                          .:=##-=:*#===*-##%@@*#@-                      ::.:=.
+                      =#%%%#%%***##+#-*-##@@@@@              -..      .---++
+                      =@%####@@@%%=*#@#*@@@@                -:      :--++
+                        -+****#*#%@@@@%@@@-                  :.:   =::     .....
+                      ++*#%*-+++*#@@@@@@@.                .:::-+:.#+   ..  .::::.
+                      -%     =+#@   . %@@@*                     =##@        .
+      ..                   *#%        .%@@+                       =###
+    ##@%#*%                             +@%+                           #=
+    :*#%%-:@                              @#=                            +-
+      +@@@##@                               %+-                             *
+                                        ::: :+=-     ...:-==.
+                                    ......:-++:  ::.::::=+
+                                    ++=-::+%@@#:--:...:-=+
+                            .--           @@%%#*+-:::-=+-
+                        .=++=--=+-     -==#%%####****#-
+                    .%@@@      +%+ ..-*%#
+              -=    =@@@@#       --:+%-     .    +@@%  :+#%*-:.
+          :+-==+=   =@@@       ==+%  *#     +@+%@@@@ #=    %#****@:
+          ###*=*  ..       .- .*=*. *        -@@#.-=#+      .**#*@+
+          :=-:=@.+=*   ::= :..===+= #-:.     .#-...++ .=....   =@+
+                %%%.   . -+    @*---%=*@@*:  ......-=  ==...-+  +%
+          -++    .+%=*::+.*-    ##*@+--#@@@+.....=:.==. *-*+%  +%+-
+```
+
 Tonk is a data substrate: a software environment as easy to change as it is to use. Where stacks are rigid and vertically integrated, substrates are malleable and horizontally connected. You modify software in the context of its use, not through a separate process. In a substrate, software truly becomes yours.
 
 Substrates are essential when LLMs make code generation abundant and personal software becomes practical. We won't get there by speeding up the same engineering-heavy processes of traditional software practice. We need a new surface; one interoperable and owned by the person running it. Tonk is that surface.
@@ -19,7 +51,9 @@ We encourage you to check out the repository to learn more.
 
 # What's in This Repo
 
-This is a Rust workspace (with some JS/WASM packages) where we are implementing our early experimentations on the Tonk substrate. This repo is heavily in flux, and not meant to be friendly for public access or contributions. If you would like to try some of our experiments, see the [Released Experiments](#released-experiments) section below!
+This is a Rust workspace (with some JS/WASM packages) where we are implementing our early experimentations on the Tonk substrate.
+
+> ⚠️ This repo is heavily in flux, and not meant to be friendly for public access or contributions. If you would like to try some of our experiments, see the [Released Experiments](#released-experiments) section below!
 
 ### Rust Crates
 
