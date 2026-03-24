@@ -38,20 +38,20 @@ Substrates are essential when LLMs make code generation abundant and personal so
 
 ## Dialog DB: The Foundation
 
-At the core of Tonk is [Dialog DB](https://github.com/dialog-db/dialog-db), an embeddable, local-first database that stores everything as facts: semantic triples of (entity, attribute, value). Facts are never deleted, only superseded or retracted. This append-only, content-addressed design means prolly-tree indexes depend only on data, not insertion order. Replicas sync deterministically without conflicts.
+At the core of Tonk is [Dialog DB](https://github.com/dialog-db/dialog-db), an embeddable, local-first database. Dialog stores everything as claims — semantic triples of (entity, attribute, value). Claims are never deleted, only superseded or retracted. This append-only, content-addressed design makes it straightforward to sync data across devices and collaborators without conflicts.
 
 You interact with Dialog through two primitives:
 
-- **Concepts** group related facts into structures. Define a `Person` with a name, location, and photo. Then create a `ClubMember` concept that reuses name and photo but leaves out location — multiple views over the same data.
-- **Rules** derive new concepts from existing facts. "A `FamilyMember` is any `Person` whose last name matches another and who shares the same home location."
+- **Concepts** group related claims into structures. Define a `Person` with a name, location, and photo. Then create a `ClubMember` concept that reuses name and photo but leaves out location — multiple views over the same data.
+- **Rules** derive new concepts from existing claims. "A `FamilyMember` is any `Person` whose last name matches another and who shares the same home location."
 
-Add new rules, new concepts, or extend existing ones. Declaratively express what data you expect and it works without a single migrations.
+Add new rules, new concepts, or extend existing ones. Declaratively express what data you expect and it works. No migrations required.
 
-We encourage you to check out the repository to learn more.
+Check out the [Dialog DB repository](https://github.com/dialog-db/dialog-db) to learn more about how it works under the hood.
 
 # What's in This Repo
 
-This is a Rust workspace (with some JS/WASM packages) where we are implementing our early experimentations on the Tonk substrate.
+This is a Rust workspace where we are implementing our early experimentations on the Tonk substrate.
 
 > ⚠️ This repo is heavily in flux, and not meant to be friendly for public access or contributions. If you would like to try some of our experiments, see the [Released Experiments](#released-experiments) section below!
 
@@ -67,13 +67,6 @@ This is a Rust workspace (with some JS/WASM packages) where we are implementing 
 | **tonk-ui**             | Leptos-based web frontend                                                                           |
 | **tonk-worker**         | Browser service worker (WASM) for offline web support                                               |
 | **tonk-core**           | Core library (in progress)                                                                          |
-
-### JavaScript Packages (`packages/`)
-
-| Package   | Purpose                                               |
-| --------- | ----------------------------------------------------- |
-| **core**  | WASM-compiled core library for browsers (sync engine) |
-| **relay** | Communication relay                                   |
 
 # Released Experiments
 
