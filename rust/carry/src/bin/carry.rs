@@ -91,6 +91,20 @@ mod inner {
         #[command(after_help = help::STATUS_AFTER_HELP)]
         Status,
 
+        /// Create an invite token for a collaborator
+        Invite {
+            /// DID of the user to invite (e.g., did:key:z6Mk...)
+            #[arg(value_name = "INVITED_DID")]
+            invited_did: String,
+        },
+
+        /// Join a space using an invite token
+        Join {
+            /// The invite token received from a collaborator
+            #[arg(value_name = "TOKEN")]
+            token: String,
+        },
+
         /// Manage spaces within a .carry/ repository
         #[command(alias = "s", hide = true)]
         #[command(long_about = help::SPACE_LONG_ABOUT)]
@@ -199,6 +213,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Status => {
             carry::status_cmd::execute(repo_path, format).await?;
+        }
+        Commands::Invite { invited_did } => {
+            let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
+            carry::invite_cmd::execute(&ctx, &invited_did).await?;
+        }
+        Commands::Join { token } => {
+            carry::join_cmd::execute(&token, repo_path).await?;
         }
         Commands::Space { command } => {
             let site = carry::space_cmd::resolve_site(repo_path)?;

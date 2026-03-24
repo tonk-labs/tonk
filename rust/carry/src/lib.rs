@@ -6,6 +6,8 @@
 pub mod assert_cmd;
 pub mod help;
 pub mod init;
+pub mod invite_cmd;
+pub mod join_cmd;
 pub mod query_cmd;
 pub mod retract_cmd;
 pub mod site;
