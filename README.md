@@ -40,12 +40,12 @@ Substrates are essential when LLMs make code generation abundant and personal so
 
 At the core of Tonk is [Dialog DB](https://github.com/dialog-db/dialog-db), an embeddable, local-first database. Dialog stores everything as claims — semantic triples of (entity, attribute, value). Claims are never deleted, only superseded or retracted. This append-only, content-addressed design makes it straightforward to sync data across devices and collaborators without conflicts.
 
-You interact with Dialog through two primitives:
+The primary interface is claims themselves — assert data, query it, retract it. On top of that, you can optionally define:
 
-- **Concepts** group related claims into structures. Define a `Person` with a name, location, and photo. Then create a `ClubMember` concept that reuses name and photo but leaves out location — multiple views over the same data.
-- **Rules** derive new concepts from existing claims. "A `FamilyMember` is any `Person` whose last name matches another and who shares the same home location."
+- **Concepts** to group related claims into queryable structures. Define a `Person` with a name, location, and photo. Then create a `ClubMember` concept that reuses name and photo but leaves out location — multiple views over the same data.
+- **Rules** to derive new concepts from existing claims. "A `FamilyMember` is any `Person` whose last name matches another and who shares the same home location."
 
-Add new rules, new concepts, or extend existing ones. Declaratively express what data you expect and it works. No migrations required.
+Add new rules, concepts, or extend existing ones as your needs evolve. No migrations required.
 
 Check out the [Dialog DB repository](https://github.com/dialog-db/dialog-db) to learn more about how it works under the hood.
 
