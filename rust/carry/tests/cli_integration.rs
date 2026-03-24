@@ -3045,3 +3045,173 @@ async fn test_attribute_concept_data_roundtrip() {
         .await
         .unwrap();
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Invite & Join
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_invite_creates_valid_token() {
+    let env = TestEnv::new().await.unwrap();
+    let ctx = env.ctx().await;
+
+    // Create an invited operator (simulating Bob)
+    let bob = tonk_space::Operator::generate();
+
+    // Create invite
+    let (envelope, delegation) = tonk_space::create_invite(
+        &ctx.space.load_operator().unwrap(),
+        &ctx.space.load_operator().unwrap().did(),
+        &bob.did(),
+        Some("test-repo".to_string()),
+    )
+    .await
+    .unwrap();
+
+    // Encode and decode roundtrip
+    let token = tonk_space::encode_invite(&envelope).unwrap();
+    assert!(token.starts_with("carry_inv1_"));
+
+    let decoded = tonk_space::decode_invite(&token).unwrap();
+    assert_eq!(decoded.v, 1);
+    assert_eq!(decoded.kind, "carry.invite");
+    assert_eq!(decoded.invited, bob.did().to_string());
+    assert_eq!(decoded.grants.len(), 1);
+    assert_eq!(decoded.grants[0].space, env.space_did);
+    assert_eq!(decoded.repo_hint.as_deref(), Some("test-repo"));
+
+    // Verify the delegation fields
+    assert_eq!(delegation.audience().to_string(), bob.did().to_string());
+    assert_eq!(
+        delegation.issuer().to_string(),
+        ctx.space.load_operator().unwrap().did().to_string()
+    );
+}
+
+#[tokio::test]
+async fn test_invite_cmd_runs_without_error() {
+    let env = TestEnv::new().await.unwrap();
+    let ctx = env.ctx().await;
+    let bob = tonk_space::Operator::generate();
+
+    // The invite command should succeed
+    carry::invite_cmd::execute(&ctx, &bob.did().to_string())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_invite_verify_rejects_wrong_did() {
+    let env = TestEnv::new().await.unwrap();
+    let bob = tonk_space::Operator::generate();
+    let charlie = tonk_space::Operator::generate();
+
+    let space_op = env.space().load_operator().unwrap();
+    let (envelope, _) = tonk_space::create_invite(&space_op, &space_op.did(), &bob.did(), None)
+        .await
+        .unwrap();
+
+    let token = tonk_space::encode_invite(&envelope).unwrap();
+    let decoded = tonk_space::decode_invite(&token).unwrap();
+
+    // Verify with Charlie's DID should fail (invite is for Bob)
+    let now = tonk_space::Timestamp::now().to_unix();
+    let result = tonk_space::verify_grant(&decoded.grants[0], &charlie.did(), now);
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_invite_multi_space_grants() {
+    // Create a site with two spaces
+    let tmp = tempfile::TempDir::new().unwrap();
+    let site = carry::site::Site::init(tmp.path()).unwrap();
+
+    let space1 = site.create_space().unwrap();
+    site.set_active_space(&space1.did).unwrap();
+    let mut session1 = space1.open_session().await.unwrap();
+    carry::schema::bootstrap_builtins(&mut session1)
+        .await
+        .unwrap();
+
+    let space2 = site.create_space().unwrap();
+    let mut session2 = space2.open_session().await.unwrap();
+    carry::schema::bootstrap_builtins(&mut session2)
+        .await
+        .unwrap();
+
+    let bob = tonk_space::Operator::generate();
+    let now = tonk_space::Timestamp::now().to_unix();
+    let exp = now + 3600;
+
+    let op1 = space1.load_operator().unwrap();
+    let op2 = space2.load_operator().unwrap();
+
+    let (grant1, _) = tonk_space::create_space_grant(&op1, &op1.did(), &bob.did(), exp, Some(now))
+        .await
+        .unwrap();
+
+    let (grant2, _) = tonk_space::create_space_grant(&op2, &op2.did(), &bob.did(), exp, Some(now))
+        .await
+        .unwrap();
+
+    let envelope = tonk_space::InviteEnvelopeV1 {
+        v: 1,
+        kind: "carry.invite".to_string(),
+        invited: bob.did().to_string(),
+        issued_at: now,
+        issuer_hint: None,
+        repo_hint: None,
+        grants: vec![grant1, grant2],
+    };
+
+    let token = tonk_space::encode_invite(&envelope).unwrap();
+    let decoded = tonk_space::decode_invite(&token).unwrap();
+    assert_eq!(decoded.grants.len(), 2);
+
+    // All grants should verify
+    let delegations = tonk_space::verify_envelope(&decoded, now).unwrap();
+    assert_eq!(delegations.len(), 2);
+}
+
+#[tokio::test]
+async fn test_identity_load_save_roundtrip() {
+    // This test uses a custom HOME to avoid touching the real ~/.carry/
+    let tmp = tempfile::TempDir::new().unwrap();
+    let identity_path = tmp.path().join("identity");
+
+    // Write a test identity
+    let operator = tonk_space::Operator::generate();
+    let secret = operator.to_secret();
+    std::fs::write(&identity_path, secret).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&identity_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    // Read it back
+    let bytes = std::fs::read(&identity_path).unwrap();
+    assert_eq!(bytes.len(), 32);
+    let mut secret_read = [0u8; 32];
+    secret_read.copy_from_slice(&bytes);
+    let operator_read = tonk_space::Operator::from_secret(secret_read);
+
+    assert_eq!(
+        operator.did().to_string(),
+        operator_read.did().to_string(),
+        "Identity should roundtrip through file"
+    );
+}
+
+#[tokio::test]
+async fn test_decode_invite_rejects_bad_tokens() {
+    // Missing prefix
+    assert!(tonk_space::decode_invite("not_a_token").is_err());
+
+    // Invalid base64
+    assert!(tonk_space::decode_invite("carry_inv1_!!!").is_err());
+
+    // Valid base64 but invalid CBOR
+    assert!(tonk_space::decode_invite("carry_inv1_aGVsbG8").is_err());
+}

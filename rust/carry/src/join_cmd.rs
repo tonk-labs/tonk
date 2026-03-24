@@ -4,6 +4,7 @@
 //! space directories with the collaborator's credentials, and stores the
 //! delegations in the space DB.
 
+use crate::identity_cmd;
 use crate::schema;
 use crate::site::Site;
 use anyhow::{Context, Result};
@@ -14,6 +15,17 @@ use tonk_space::{Timestamp, decode_invite, verify_envelope};
 pub async fn execute(token: &str, site_flag: Option<&Path>) -> Result<()> {
     // Decode and validate the token structure
     let envelope = decode_invite(token).context("Failed to decode invite token")?;
+
+    // Load the local identity (must exist and match the invited DID)
+    let operator = identity_cmd::require_identity()?;
+    if operator.did().to_string() != envelope.invited {
+        anyhow::bail!(
+            "Local identity {} does not match invited DID {}.\n\
+             Run `carry identity` to check your identity.",
+            operator.did(),
+            envelope.invited
+        );
+    }
 
     // Verify all grants cryptographically
     let now = Timestamp::now().to_unix();
@@ -33,51 +45,6 @@ pub async fn execute(token: &str, site_flag: Option<&Path>) -> Result<()> {
         }
     };
 
-    // Generate the collaborator's operator keypair
-    let collab_key = ed25519_dalek::SigningKey::generate(&mut rand_0_8::rngs::OsRng);
-    let collab_operator = tonk_space::Operator::from_secret(collab_key.to_bytes());
-
-    // Verify the local operator matches the invited DID
-    if collab_operator.did().to_string() != envelope.invited {
-        // The collaborator needs a stable identity that matches the invited DID.
-        // For now, we need the invited DID's credentials to already exist locally,
-        // or we generate fresh (which won't match). This is a placeholder until
-        // `carry identity` exists.
-        //
-        // For v1: check if there's already a space with credentials whose DID
-        // matches the invited DID. If not, error with guidance.
-        let spaces = site.list_spaces()?;
-        let mut found_operator = None;
-        for space in &spaces {
-            if let Ok(op) = space.load_operator() {
-                if op.did().to_string() == envelope.invited {
-                    found_operator = Some(op);
-                    break;
-                }
-            }
-        }
-
-        let collab_operator = found_operator.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No local identity matching invited DID {}.\n\
-                 Your local operator DID must match the invite. \
-                 A `carry identity` command will address this in a future release.",
-                envelope.invited
-            )
-        })?;
-
-        return join_spaces(&site, &collab_operator, &delegations, &envelope).await;
-    }
-
-    join_spaces(&site, &collab_operator, &delegations, &envelope).await
-}
-
-async fn join_spaces(
-    site: &Site,
-    _collab_operator: &tonk_space::Operator,
-    delegations: &[tonk_space::Delegation],
-    envelope: &tonk_space::InviteEnvelopeV1,
-) -> Result<()> {
     let mut joined_count = 0;
 
     for (grant, delegation) in envelope.grants.iter().zip(delegations.iter()) {
@@ -88,9 +55,8 @@ async fn join_spaces(
             existing
         } else {
             // Create a new space directory for this space DID.
-            // The collaborator uses their own keypair as credentials.
-            let collab_key = ed25519_dalek::SigningKey::generate(&mut rand_0_8::rngs::OsRng);
-            let space = site.create_space_from_key(&collab_key)?;
+            // The collaborator uses their own identity key as credentials.
+            let space = site.create_space_from_key(operator.signer())?;
 
             // Bootstrap builtins in the new space
             let mut session = space.open_session().await?;
@@ -114,10 +80,7 @@ async fn join_spaces(
         site.set_active_space(space_did)?;
     }
 
-    eprintln!(
-        "Joined {} space(s) as {}",
-        joined_count, envelope.invited
-    );
+    eprintln!("Joined {} space(s) as {}", joined_count, envelope.invited);
 
     Ok(())
 }

@@ -22,10 +22,6 @@ mod inner {
         /// Target a specific space by DID or label (overrides active space)
         #[arg(long, global = true, hide = true)]
         pub space: Option<String>,
-
-        /// Output format for query results
-        #[arg(long, global = true, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
-        pub format: String,
     }
 
     #[derive(Subcommand)]
@@ -53,6 +49,10 @@ mod inner {
             /// 'field=value' to filter results.
             #[arg(value_name = "FIELD[=VALUE]")]
             fields: Vec<String>,
+
+            /// Output format for query results
+            #[arg(long, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
+            format: String,
         },
 
         /// Assert claims on entities
@@ -68,6 +68,10 @@ mod inner {
             /// otherwise a new entity is created.
             #[arg(value_name = "FIELD=VALUE")]
             fields: Vec<String>,
+
+            /// Output format for query results
+            #[arg(long, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
+            format: String,
         },
 
         /// Retract claims from entities
@@ -83,13 +87,29 @@ mod inner {
             /// 'field' retracts any value; 'field=value' retracts exact match only.
             #[arg(value_name = "FIELD[=VALUE]")]
             fields: Vec<String>,
+
+            /// Output format for query results
+            #[arg(long, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
+            format: String,
         },
 
         /// Show current repository information
         #[command(alias = "st")]
         #[command(long_about = help::STATUS_LONG_ABOUT)]
         #[command(after_help = help::STATUS_AFTER_HELP)]
-        Status,
+        Status {
+            /// Output format for query results
+            #[arg(long, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
+            format: String,
+        },
+
+        /// Show or create your local identity
+        #[command(alias = "id")]
+        Identity {
+            /// Discard cached identity and re-derive from passkey
+            #[arg(long)]
+            reset: bool,
+        },
 
         /// Create an invite token for a collaborator
         Invite {
@@ -119,7 +139,11 @@ mod inner {
     pub enum SpaceCommands {
         /// List all spaces in the site
         #[command(alias = "l")]
-        List,
+        List {
+            /// Output format
+            #[arg(long, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
+            format: String,
+        },
 
         /// Create a new space
         #[command(alias = "c")]
@@ -127,6 +151,10 @@ mod inner {
             /// Label for the new space
             #[arg(value_name = "LABEL")]
             label: Option<String>,
+
+            /// Output format
+            #[arg(long, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
+            format: String,
         },
 
         /// Switch active space
@@ -139,7 +167,11 @@ mod inner {
 
         /// Show current active space
         #[command(alias = "a")]
-        Active,
+        Active {
+            /// Output format
+            #[arg(long, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
+            format: String,
+        },
 
         /// Delete a space (cannot delete the active space)
         #[command(alias = "d")]
@@ -172,21 +204,25 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let repo_path = cli.repo.as_deref().map(std::path::Path::new);
     let space_flag = cli.space.as_deref();
-    let format = &cli.format;
 
     match cli.command {
         Commands::Init { name } => {
             carry::init::execute(name, repo_path).await?;
         }
-        Commands::Query { target, fields } => {
+        Commands::Query {
+            target,
+            fields,
+            format,
+        } => {
             let parsed_target = carry::target::Target::parse(&target)?;
             let parsed = carry::target::parse_fields(&fields)?;
             let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
-            carry::query_cmd::execute(&ctx, parsed_target, parsed.fields, format).await?;
+            carry::query_cmd::execute(&ctx, parsed_target, parsed.fields, &format).await?;
         }
         Commands::Assert {
             target_or_file,
             fields,
+            format,
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
             let parsed = carry::target::parse_fields(&fields)?;
@@ -197,22 +233,32 @@ async fn main() -> anyhow::Result<()> {
                 parsed.this_entity,
                 parsed.entity_name,
                 parsed.fields,
-                format,
+                &format,
             )
             .await?;
         }
         Commands::Retract {
             target_or_file,
             fields,
+            format,
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
             let parsed = carry::target::parse_fields(&fields)?;
             let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
-            carry::retract_cmd::execute(&ctx, first_arg, parsed.this_entity, parsed.fields, format)
-                .await?;
+            carry::retract_cmd::execute(
+                &ctx,
+                first_arg,
+                parsed.this_entity,
+                parsed.fields,
+                &format,
+            )
+            .await?;
         }
-        Commands::Status => {
-            carry::status_cmd::execute(repo_path, format).await?;
+        Commands::Status { format } => {
+            carry::status_cmd::execute(repo_path, &format).await?;
+        }
+        Commands::Identity { reset } => {
+            carry::identity_cmd::execute(reset).await?;
         }
         Commands::Invite { invited_did } => {
             let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
@@ -224,17 +270,17 @@ async fn main() -> anyhow::Result<()> {
         Commands::Space { command } => {
             let site = carry::space_cmd::resolve_site(repo_path)?;
             match command {
-                SpaceCommands::List => {
-                    carry::space_cmd::list(&site, format).await?;
+                SpaceCommands::List { format } => {
+                    carry::space_cmd::list(&site, &format).await?;
                 }
-                SpaceCommands::Create { label } => {
-                    carry::space_cmd::create(&site, label, format).await?;
+                SpaceCommands::Create { label, format } => {
+                    carry::space_cmd::create(&site, label, &format).await?;
                 }
                 SpaceCommands::Switch { target } => {
                     carry::space_cmd::switch(&site, &target).await?;
                 }
-                SpaceCommands::Active => {
-                    carry::space_cmd::active(&site, format).await?;
+                SpaceCommands::Active { format } => {
+                    carry::space_cmd::active(&site, &format).await?;
                 }
                 SpaceCommands::Delete { target, yes } => {
                     carry::space_cmd::delete(&site, &target, yes).await?;
@@ -275,6 +321,7 @@ mod tests {
             Commands::Query {
                 ref target,
                 ref fields,
+                ..
             } => {
                 assert_eq!(target, "com.app.person");
                 assert_eq!(fields, &["name", "age"]);
@@ -300,6 +347,7 @@ mod tests {
             Commands::Query {
                 ref target,
                 ref fields,
+                ..
             } => {
                 assert_eq!(target, "com.app.person");
                 assert_eq!(fields, &["name", "age"]);
@@ -335,10 +383,14 @@ mod tests {
             "json",
         ])
         .unwrap();
-        assert_eq!(cli.format, "json");
         match cli.command {
-            Commands::Query { ref fields, .. } => {
+            Commands::Query {
+                ref fields,
+                ref format,
+                ..
+            } => {
                 assert_eq!(fields, &["name"]);
+                assert_eq!(format, "json");
             }
             _ => panic!("Expected Query command"),
         }
@@ -361,14 +413,15 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(cli.space.as_deref(), Some("research"));
-        assert_eq!(cli.format, "json");
         match cli.command {
             Commands::Query {
                 ref target,
                 ref fields,
+                ref format,
             } => {
                 assert_eq!(target, "com.app.person");
                 assert_eq!(fields, &["name", "age"]);
+                assert_eq!(format, "json");
             }
             _ => panic!("Expected Query command"),
         }
@@ -393,6 +446,7 @@ mod tests {
             Commands::Assert {
                 ref target_or_file,
                 ref fields,
+                ..
             } => {
                 assert_eq!(target_or_file, "com.app.person");
                 assert_eq!(fields, &["name=Alice", "age=28"]);
@@ -412,10 +466,14 @@ mod tests {
             "json",
         ])
         .unwrap();
-        assert_eq!(cli.format, "json");
         match cli.command {
-            Commands::Assert { ref fields, .. } => {
+            Commands::Assert {
+                ref fields,
+                ref format,
+                ..
+            } => {
                 assert_eq!(fields, &["name=Alice"]);
+                assert_eq!(format, "json");
             }
             _ => panic!("Expected Assert command"),
         }
@@ -440,6 +498,7 @@ mod tests {
             Commands::Retract {
                 ref target_or_file,
                 ref fields,
+                ..
             } => {
                 assert_eq!(target_or_file, "com.app.person");
                 assert_eq!(fields, &["this=did:key:zAlice", "age"]);
@@ -460,10 +519,14 @@ mod tests {
             "json",
         ])
         .unwrap();
-        assert_eq!(cli.format, "json");
         match cli.command {
-            Commands::Retract { ref fields, .. } => {
+            Commands::Retract {
+                ref fields,
+                ref format,
+                ..
+            } => {
                 assert_eq!(fields, &["this=did:key:zAlice", "name"]);
+                assert_eq!(format, "json");
             }
             _ => panic!("Expected Retract command"),
         }
@@ -505,10 +568,14 @@ mod tests {
             "triples",
         ])
         .unwrap();
-        assert_eq!(cli.format, "triples");
         match cli.command {
-            Commands::Query { ref fields, .. } => {
+            Commands::Query {
+                ref fields,
+                ref format,
+                ..
+            } => {
                 assert_eq!(fields, &["name"]);
+                assert_eq!(format, "triples");
             }
             _ => panic!("Expected Query command"),
         }
@@ -528,11 +595,15 @@ mod tests {
             "research",
         ])
         .unwrap();
-        assert_eq!(cli.format, "triples");
         assert_eq!(cli.space.as_deref(), Some("research"));
         match cli.command {
-            Commands::Query { ref fields, .. } => {
+            Commands::Query {
+                ref fields,
+                ref format,
+                ..
+            } => {
                 assert_eq!(fields, &["name", "age"]);
+                assert_eq!(format, "triples");
             }
             _ => panic!("Expected Query command"),
         }
@@ -548,6 +619,90 @@ mod tests {
             "--format",
             "csv",
         ]);
+        assert!(result.is_err());
+    }
+
+    // -- Identity ---------------------------------------------------------------
+
+    #[test]
+    fn identity_parses() {
+        let cli = Cli::try_parse_from(["carry", "identity"]).unwrap();
+        match cli.command {
+            Commands::Identity { reset } => {
+                assert!(!reset);
+            }
+            _ => panic!("Expected Identity command"),
+        }
+    }
+
+    #[test]
+    fn identity_reset_flag() {
+        let cli = Cli::try_parse_from(["carry", "identity", "--reset"]).unwrap();
+        match cli.command {
+            Commands::Identity { reset } => {
+                assert!(reset);
+            }
+            _ => panic!("Expected Identity command"),
+        }
+    }
+
+    #[test]
+    fn identity_alias_id() {
+        let cli = Cli::try_parse_from(["carry", "id"]).unwrap();
+        assert!(matches!(cli.command, Commands::Identity { .. }));
+    }
+
+    // -- Invite -----------------------------------------------------------------
+
+    #[test]
+    fn invite_parses_did() {
+        let did = "did:key:z6MkvSLQtPtAraTvgQwjz3ps9JBuY8a41STNikZ9bJdShNr6";
+        let cli = Cli::try_parse_from(["carry", "invite", did]).unwrap();
+        match cli.command {
+            Commands::Invite { ref invited_did } => {
+                assert_eq!(invited_did, did);
+            }
+            _ => panic!("Expected Invite command"),
+        }
+    }
+
+    #[test]
+    fn invite_with_repo_flag() {
+        let cli = Cli::try_parse_from([
+            "carry",
+            "--repo",
+            "/tmp/myrepo",
+            "invite",
+            "did:key:z6MkTest",
+        ])
+        .unwrap();
+        assert_eq!(cli.repo.as_deref(), Some("/tmp/myrepo"));
+        assert!(matches!(cli.command, Commands::Invite { .. }));
+    }
+
+    #[test]
+    fn invite_missing_did_fails() {
+        let result = Cli::try_parse_from(["carry", "invite"]);
+        assert!(result.is_err());
+    }
+
+    // -- Join -------------------------------------------------------------------
+
+    #[test]
+    fn join_parses_token() {
+        let tok = "carry_inv1_somebase64data";
+        let cli = Cli::try_parse_from(["carry", "join", tok]).unwrap();
+        match cli.command {
+            Commands::Join { ref token } => {
+                assert_eq!(token, tok);
+            }
+            _ => panic!("Expected Join command"),
+        }
+    }
+
+    #[test]
+    fn join_missing_token_fails() {
+        let result = Cli::try_parse_from(["carry", "join"]);
         assert!(result.is_err());
     }
 }

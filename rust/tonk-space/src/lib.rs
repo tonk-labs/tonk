@@ -8,8 +8,8 @@ pub mod space;
 
 pub use delegation::{Delegation, DelegationError};
 pub use invite::{
-    InviteEnvelopeV1, InviteError, InviteGrantV1, create_invite, create_space_grant,
-    decode_invite, encode_invite, verify_envelope, verify_grant,
+    InviteEnvelopeV1, InviteError, InviteGrantV1, create_invite, create_space_grant, decode_invite,
+    encode_invite, verify_envelope, verify_grant,
 };
 pub use operator::Operator;
 pub use secret::*;

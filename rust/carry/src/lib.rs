@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 pub mod assert_cmd;
 pub mod help;
+pub mod identity_cmd;
 pub mod init;
 pub mod invite_cmd;
 pub mod join_cmd;

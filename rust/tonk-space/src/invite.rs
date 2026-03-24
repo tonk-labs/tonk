@@ -9,8 +9,8 @@
 
 use crate::delegation::Delegation;
 use crate::operator::Operator;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan::subject::Subject;
 use dialog_ucan::time::Timestamp;
@@ -109,8 +109,7 @@ pub struct InviteGrantV1 {
 impl InviteGrantV1 {
     /// Decode the embedded delegation from base64url DAG-CBOR.
     pub fn delegation(&self) -> Result<Delegation, InviteError> {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(&self.delegation_b64u)?;
+        let bytes = URL_SAFE_NO_PAD.decode(&self.delegation_b64u)?;
         let delegation: Delegation = serde_ipld_dagcbor::from_slice(&bytes)
             .map_err(|e| InviteError::CborDecode(e.to_string()))?;
         Ok(delegation)
@@ -123,8 +122,8 @@ impl InviteGrantV1 {
 
 /// Encode an invite envelope into a `carry_inv1_...` token string.
 pub fn encode_invite(envelope: &InviteEnvelopeV1) -> Result<String, InviteError> {
-    let cbor = serde_ipld_dagcbor::to_vec(envelope)
-        .map_err(|e| InviteError::Encoding(e.to_string()))?;
+    let cbor =
+        serde_ipld_dagcbor::to_vec(envelope).map_err(|e| InviteError::Encoding(e.to_string()))?;
     let b64 = URL_SAFE_NO_PAD.encode(&cbor);
     Ok(format!("{}{}", TOKEN_PREFIX, b64))
 }
@@ -432,15 +431,10 @@ mod tests {
         let now = Timestamp::now().to_unix();
         let exp = now + 10; // expires in 10 seconds
 
-        let (grant, _) = create_space_grant(
-            &space_op,
-            &space_op.did(),
-            &invited_op.did(),
-            exp,
-            None,
-        )
-        .await
-        .unwrap();
+        let (grant, _) =
+            create_space_grant(&space_op, &space_op.did(), &invited_op.did(), exp, None)
+                .await
+                .unwrap();
 
         // Verify at a time after expiration
         let future = exp + 100;

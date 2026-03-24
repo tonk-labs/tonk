@@ -42,9 +42,15 @@ ed25519-dalek = { workspace = true }
 rand_0_8 = { workspace = true }
 
 base64 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 # Serialization
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+
+# HTTP server (for passkey browser flow)
+axum = { workspace = true, features = ["http1", "json", "tokio"] }
+webbrowser = { workspace = true }
 
 # Utilities
 anyhow = { workspace = true }

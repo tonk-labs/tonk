@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>carry identity</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    max-width: 480px; margin: 80px auto; padding: 0 20px;
+    text-align: center;
+  }
+  h1 { font-size: 1.4em; margin-bottom: 0.5em; }
+  p { color: #666; line-height: 1.5; }
+  @media (prefers-color-scheme: dark) { p { color: #aaa; } }
+  .status { margin-top: 2em; font-size: 0.95em; }
+  .error { color: #c00; }
+  .ok { color: #080; }
+  @media (prefers-color-scheme: dark) { .ok { color: #4c4; } .error { color: #f66; } }
+</style>
+</head>
+<body>
+<h1>carry identity</h1>
+<p>Authenticate with your passkey to derive your carry identity.</p>
+<div id="status" class="status">Initializing...</div>
+
+<script>
+(async function() {
+  const status = document.getElementById('status');
+  const CALLBACK = '/callback';
+  const SALT = new TextEncoder().encode('carry identity v1');
+
+  // Check PRF support
+  if (!window.PublicKeyCredential) {
+    status.className = 'status error';
+    status.textContent = 'WebAuthn is not supported in this browser.';
+    return;
+  }
+
+  try {
+    // Fetch session info from the server (tells us if we have a stored credential)
+    const infoResp = await fetch('/info');
+    const info = await infoResp.json();
+
+    let prfOutput;
+
+    if (info.credential_id) {
+      // Authentication flow — we have a stored credential
+      status.textContent = 'Waiting for passkey authentication...';
+      prfOutput = await authenticate(info.credential_id);
+    } else {
+      // Registration flow — create a new passkey
+      status.textContent = 'Creating passkey...';
+      prfOutput = await register(info.rp_id, info.user_id, info.challenge);
+    }
+
+    // Send the PRF output back to the CLI
+    const resp = await fetch(CALLBACK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(prfOutput),
+    });
+
+    if (resp.ok) {
+      status.className = 'status ok';
+      status.textContent = 'Identity derived. You can close this tab.';
+    } else {
+      const err = await resp.text();
+      throw new Error(err);
+    }
+  } catch (e) {
+    status.className = 'status error';
+    status.textContent = 'Error: ' + e.message;
+    // Report error to server so it can exit cleanly
+    fetch(CALLBACK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: e.message }),
+    }).catch(() => {});
+  }
+
+  async function register(rpId, userId, challengeB64) {
+    const challenge = b64uToBytes(challengeB64);
+    const userIdBytes = b64uToBytes(userId);
+
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        rp: { name: 'carry', id: rpId },
+        user: {
+          id: userIdBytes,
+          name: 'carry-identity',
+          displayName: 'Carry Identity',
+        },
+        challenge: challenge,
+        pubKeyCredParams: [
+          { type: 'public-key', alg: -7 },   // ES256
+          { type: 'public-key', alg: -257 },  // RS256
+        ],
+        authenticatorSelection: {
+          residentKey: 'required',
+          userVerification: 'required',
+        },
+        extensions: {
+          prf: { eval: { first: SALT } },
+        },
+      },
+    });
+
+    const prfResults = credential.getClientExtensionResults().prf;
+    if (!prfResults || !prfResults.results || !prfResults.results.first) {
+      throw new Error(
+        'PRF extension not supported by this authenticator. ' +
+        'Try a different passkey provider (e.g., iCloud Keychain, Chrome profile).'
+      );
+    }
+
+    return {
+      credential_id: bytesToB64u(new Uint8Array(credential.rawId)),
+      prf_output: bytesToB64u(new Uint8Array(prfResults.results.first)),
+      phase: 'register',
+    };
+  }
+
+  async function authenticate(credentialIdB64) {
+    const credentialId = b64uToBytes(credentialIdB64);
+
+    // Generate a random challenge client-side (server doesn't need to verify
+    // the assertion — we only need the PRF output)
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: challenge,
+        allowCredentials: [{
+          type: 'public-key',
+          id: credentialId,
+        }],
+        userVerification: 'required',
+        extensions: {
+          prf: { eval: { first: SALT } },
+        },
+      },
+    });
+
+    const prfResults = assertion.getClientExtensionResults().prf;
+    if (!prfResults || !prfResults.results || !prfResults.results.first) {
+      throw new Error('PRF extension did not return a result.');
+    }
+
+    return {
+      credential_id: credentialIdB64,
+      prf_output: bytesToB64u(new Uint8Array(prfResults.results.first)),
+      phase: 'authenticate',
+    };
+  }
+
+  function b64uToBytes(b64u) {
+    const b64 = b64u.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+    const bin = atob(b64 + pad);
+    return Uint8Array.from(bin, c => c.charCodeAt(0));
+  }
+
+  function bytesToB64u(bytes) {
+    const bin = String.fromCharCode(...bytes);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+})();
+</script>
+</body>
+</html>
