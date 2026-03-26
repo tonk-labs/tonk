@@ -27,8 +27,15 @@ async fn test_init_creates_site() {
 
 #[tokio::test]
 async fn test_init_with_name() {
+    // Set up a test identity so ensure_identity() doesn't trigger passkey flow
+    let admin = tonk_space::Operator::generate();
+    let home = dirs::home_dir().unwrap();
+    let carry_home = home.join(".carry");
+    std::fs::create_dir_all(&carry_home).unwrap();
+    std::fs::write(carry_home.join("identity"), admin.to_secret()).unwrap();
+
     let tmp = tempfile::TempDir::new().unwrap();
-    carry::init::execute(Some("my-project".to_string()), Some(tmp.path()))
+    carry::init::execute(Some("my-project".to_string()), vec![], Some(tmp.path()))
         .await
         .unwrap();
 
@@ -40,9 +47,19 @@ async fn test_init_with_name() {
 
 #[tokio::test]
 async fn test_init_idempotent() {
+    let admin = tonk_space::Operator::generate();
+    let home = dirs::home_dir().unwrap();
+    let carry_home = home.join(".carry");
+    std::fs::create_dir_all(&carry_home).unwrap();
+    std::fs::write(carry_home.join("identity"), admin.to_secret()).unwrap();
+
     let tmp = tempfile::TempDir::new().unwrap();
-    carry::init::execute(None, Some(tmp.path())).await.unwrap();
-    carry::init::execute(None, Some(tmp.path())).await.unwrap();
+    carry::init::execute(None, vec![], Some(tmp.path()))
+        .await
+        .unwrap();
+    carry::init::execute(None, vec![], Some(tmp.path()))
+        .await
+        .unwrap();
 
     let site = carry::site::Site::open(tmp.path()).unwrap();
     let spaces = site.list_spaces().unwrap();
@@ -1432,7 +1449,7 @@ async fn test_query_json_format() {
 async fn test_site_discovery() {
     let tmp = tempfile::TempDir::new().unwrap();
     let site = carry::site::Site::init(tmp.path()).unwrap();
-    let space = site.create_space().unwrap();
+    let (space, _proofs) = site.create_delegated_space(&[]).await.unwrap();
     site.set_active_space(&space.did).unwrap();
 
     // Create a nested directory
@@ -1663,7 +1680,7 @@ async fn test_space_active_json() {
 async fn test_space_active_none() {
     let tmp = tempfile::TempDir::new().unwrap();
     let site = carry::site::Site::init(tmp.path()).unwrap();
-    let _space = site.create_space().unwrap();
+    let (_space, _proofs) = site.create_delegated_space(&[]).await.unwrap();
     // Don't set active — @active marker is absent
 
     // Should run without error, printing a helpful message
@@ -1763,7 +1780,7 @@ async fn test_space_flag_resolve_by_did() {
     let site = env.site();
 
     // Create a second space
-    let space2 = site.create_space().unwrap();
+    let (space2, _proofs) = site.create_delegated_space(&[]).await.unwrap();
 
     let ctx = carry::site::SiteContext::resolve(Some(env.site_path.as_path()), Some(&space2.did))
         .await
@@ -1798,7 +1815,7 @@ async fn test_space_flag_overrides_active() {
     let site = env.site();
 
     // Create a second space
-    let space2 = site.create_space().unwrap();
+    let (space2, _proofs) = site.create_delegated_space(&[]).await.unwrap();
 
     // Active is still the original (TestEnv sets it)
     assert_eq!(site.active_space_did().unwrap().unwrap(), env.space_did);
@@ -3058,12 +3075,15 @@ async fn test_invite_creates_valid_token() {
     // Create an invited operator (simulating Bob)
     let bob = tonk_space::Operator::generate();
 
-    // Create invite
+    // Create invite — admin invites bob, with admin's proofs from space
+    let proofs = ctx.space.load_proofs().unwrap_or_default();
+    let space_did_parsed: tonk_space::Did = env.space_did.parse().unwrap();
     let (envelope, delegation) = tonk_space::create_invite(
-        &ctx.space.load_operator().unwrap(),
-        &ctx.space.load_operator().unwrap().did(),
+        &env.admin,
+        &space_did_parsed,
         &bob.did(),
         Some("test-repo".to_string()),
+        &proofs,
     )
     .await
     .unwrap();
@@ -3082,10 +3102,7 @@ async fn test_invite_creates_valid_token() {
 
     // Verify the delegation fields
     assert_eq!(delegation.audience().to_string(), bob.did().to_string());
-    assert_eq!(
-        delegation.issuer().to_string(),
-        ctx.space.load_operator().unwrap().did().to_string()
-    );
+    assert_eq!(delegation.issuer().to_string(), env.admin.did().to_string());
 }
 
 #[tokio::test]
@@ -3106,10 +3123,12 @@ async fn test_invite_verify_rejects_wrong_did() {
     let bob = tonk_space::Operator::generate();
     let charlie = tonk_space::Operator::generate();
 
-    let space_op = env.space().load_operator().unwrap();
-    let (envelope, _) = tonk_space::create_invite(&space_op, &space_op.did(), &bob.did(), None)
-        .await
-        .unwrap();
+    let proofs = env.space().load_proofs().unwrap_or_default();
+    let space_did_parsed: tonk_space::Did = env.space_did.parse().unwrap();
+    let (envelope, _) =
+        tonk_space::create_invite(&env.admin, &space_did_parsed, &bob.did(), None, &proofs)
+            .await
+            .unwrap();
 
     let token = tonk_space::encode_invite(&envelope).unwrap();
     let decoded = tonk_space::decode_invite(&token).unwrap();
@@ -3126,14 +3145,21 @@ async fn test_invite_multi_space_grants() {
     let tmp = tempfile::TempDir::new().unwrap();
     let site = carry::site::Site::init(tmp.path()).unwrap();
 
-    let space1 = site.create_space().unwrap();
+    // Set up a test admin identity
+    let admin = tonk_space::Operator::generate();
+    let home = dirs::home_dir().unwrap();
+    let carry_home = home.join(".carry");
+    std::fs::create_dir_all(&carry_home).unwrap();
+    std::fs::write(carry_home.join("identity"), admin.to_secret()).unwrap();
+
+    let (space1, proofs1) = site.create_delegated_space(&[admin.did()]).await.unwrap();
     site.set_active_space(&space1.did).unwrap();
     let mut session1 = space1.open_session().await.unwrap();
     carry::schema::bootstrap_builtins(&mut session1)
         .await
         .unwrap();
 
-    let space2 = site.create_space().unwrap();
+    let (space2, proofs2) = site.create_delegated_space(&[admin.did()]).await.unwrap();
     let mut session2 = space2.open_session().await.unwrap();
     carry::schema::bootstrap_builtins(&mut session2)
         .await
@@ -3143,16 +3169,18 @@ async fn test_invite_multi_space_grants() {
     let now = tonk_space::Timestamp::now().to_unix();
     let exp = now + 3600;
 
-    let op1 = space1.load_operator().unwrap();
-    let op2 = space2.load_operator().unwrap();
+    let space1_did: tonk_space::Did = space1.did.parse().unwrap();
+    let space2_did: tonk_space::Did = space2.did.parse().unwrap();
 
-    let (grant1, _) = tonk_space::create_space_grant(&op1, &op1.did(), &bob.did(), exp, Some(now))
-        .await
-        .unwrap();
+    let (grant1, _) =
+        tonk_space::create_space_grant(&admin, &space1_did, &bob.did(), exp, Some(now), &proofs1)
+            .await
+            .unwrap();
 
-    let (grant2, _) = tonk_space::create_space_grant(&op2, &op2.did(), &bob.did(), exp, Some(now))
-        .await
-        .unwrap();
+    let (grant2, _) =
+        tonk_space::create_space_grant(&admin, &space2_did, &bob.did(), exp, Some(now), &proofs2)
+            .await
+            .unwrap();
 
     let envelope = tonk_space::InviteEnvelopeV1 {
         v: 1,
@@ -3207,19 +3235,21 @@ async fn test_identity_load_save_roundtrip() {
 #[tokio::test]
 async fn test_invite_join_roundtrip() {
     // Full invite→join flow: Alice invites Bob, Bob joins the space.
-    // Exercises: create_invite → encode → decode → verify → create_space_for_did → store delegation
+    // Exercises: create_invite → encode → decode → verify → create_space_with_proofs → store delegation
     let alice_env = TestEnv::new().await.unwrap();
     let alice_space = alice_env.space();
-    let alice_op = alice_space.load_operator().unwrap();
+    let alice_proofs = alice_space.load_proofs().unwrap_or_default();
+    let space_did_parsed: tonk_space::Did = alice_env.space_did.parse().unwrap();
 
     let bob = tonk_space::Operator::generate();
 
     // Alice creates invite for Bob
     let (envelope, _) = tonk_space::create_invite(
-        &alice_op,
-        &alice_op.did(),
+        &alice_env.admin,
+        &space_did_parsed,
         &bob.did(),
         Some("shared-repo".to_string()),
+        &alice_proofs,
     )
     .await
     .unwrap();
@@ -3239,29 +3269,23 @@ async fn test_invite_join_roundtrip() {
     let bob_site = carry::site::Site::init(bob_tmp.path()).unwrap();
 
     let space_did = &decoded.grants[0].space;
+    // Collect the full proof chain from the grant
+    let grant_proofs = decoded.grants[0].all_proof_bytes().unwrap();
     let bob_space = bob_site
-        .create_space_for_did(space_did, bob.signer())
+        .create_space_with_proofs(space_did, &grant_proofs)
         .unwrap();
-
-    // Bootstrap builtins in the new space
-    let mut session = bob_space.open_session().await.unwrap();
-    carry::schema::bootstrap_builtins(&mut session)
-        .await
-        .unwrap();
-
-    // Store the delegation
-    let mut session = bob_space.open_session().await.unwrap();
-    let mut tx = session.edit();
-    dialog_query::claim::Claim::assert(delegations[0].clone(), &mut tx);
-    session.commit(tx).await.unwrap();
 
     // Verify Bob's space directory exists and is keyed by the *space* DID
-    assert_eq!(bob_space.did, alice_op.did().to_string());
+    assert_eq!(bob_space.did, alice_env.space_did);
     assert!(bob_space.dir().exists());
 
-    // Verify Bob's credentials are his own key, not Alice's
-    let bob_loaded = bob_space.load_operator().unwrap();
-    assert_eq!(bob_loaded.did().to_string(), bob.did().to_string());
+    // Verify the full proof chain is stored (upstream + grant delegation)
+    let bob_proofs = bob_space.load_proofs().unwrap();
+    assert_eq!(
+        bob_proofs.len(),
+        2,
+        "Bob should have 2 proofs: space→admin + admin→bob"
+    );
 }
 
 #[tokio::test]
@@ -3269,8 +3293,6 @@ async fn test_invite_verify_rejects_wrong_issuer() {
     // An attacker creates a grant signed by their own key, but sets the
     // grant's space field to point to a real space they don't control.
     let env = TestEnv::new().await.unwrap();
-    let real_space_op = env.space().load_operator().unwrap();
-
     let attacker = tonk_space::Operator::generate();
     let bob = tonk_space::Operator::generate();
 
@@ -3279,23 +3301,24 @@ async fn test_invite_verify_rejects_wrong_issuer() {
 
     // Attacker signs a delegation with their own key
     let (mut grant, _) =
-        tonk_space::create_space_grant(&attacker, &attacker.did(), &bob.did(), exp, Some(now))
+        tonk_space::create_space_grant(&attacker, &attacker.did(), &bob.did(), exp, Some(now), &[])
             .await
             .unwrap();
 
     // Overwrite the space field to claim it's for the real space
-    grant.space = real_space_op.did().to_string();
+    grant.space = env.space_did.clone();
 
-    // Verification should reject: issuer doesn't match grant.space
+    // Verification should reject: either subject mismatch (delegation's
+    // subject is attacker's DID, not the space) or issuer mismatch
     let result = tonk_space::verify_grant(&grant, &bob.did(), now).await;
     assert!(
         result.is_err(),
-        "Should reject grant where issuer doesn't match space DID"
+        "Should reject grant where attacker's delegation doesn't match space DID"
     );
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("issuer DID mismatch"),
-        "Expected issuer mismatch error, got: {}",
+        err.contains("mismatch"),
+        "Expected a mismatch error, got: {}",
         err
     );
 }

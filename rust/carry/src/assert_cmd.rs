@@ -615,7 +615,13 @@ fn atty_stdout() -> bool {
 
 /// Assert claims from a YAML/JSON file.
 async fn assert_from_file(ctx: &SiteContext, path: &str, format: &str) -> Result<()> {
-    let content = std::fs::read_to_string(path)?;
+    let content = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "Failed to read '{}'. If this is a target (not a file), \
+             use a dotted domain (e.g. books.dune) instead of a slash",
+            path
+        )
+    })?;
     assert_from_content(ctx, &content, path, format).await
 }
 

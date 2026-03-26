@@ -7,8 +7,12 @@
 //! A **space** is a subdirectory of `.carry/` named by its `did:key:z...` DID.
 //! Each space directory contains:
 //!
-//! - `credentials` — 32-byte Ed25519 secret key
-//! - `claims/`     — dialog-db prolly tree storage
+//! - `proofs`  — DAG-CBOR encoded delegation chain (list of UCAN delegations)
+//! - `claims/` — dialog-db prolly tree storage
+//!
+//! Space keys are ephemeral: at creation time, the space key powerline-delegates
+//! authority to admin identities, then is discarded. All operations use the
+//! user's identity from `~/.carry/identity`.
 //!
 //! The active space is tracked in `.carry/@active` (a plain-text file
 //! containing the space DID).
@@ -25,17 +29,15 @@ use anyhow::{Context, Result};
 use dialog_artifacts::repository::{BranchId, Credentials, Repository};
 use dialog_query::Session;
 use dialog_query::claim::Attribute as ClaimAttribute;
-use ed25519_dalek::SigningKey;
-use rand_0_8::rngs::OsRng;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use tonk_space::{FsBackend, Operator};
+use tonk_space::{Delegation, Did, Ed25519Signer, FsBackend, Operator, Subject};
 
 /// Marker file for the active space within a `.carry/` directory.
 const ACTIVE_MARKER: &str = "@active";
 
-/// Filename for the 32-byte Ed25519 secret key inside a space directory.
-const CREDENTIALS_FILE: &str = "credentials";
+/// Filename for the delegation proof chain inside a space directory.
+const PROOFS_FILE: &str = "proofs";
 
 /// Subdirectory inside each space for dialog-db storage.
 const CLAIMS_DIR: &str = "claims";
@@ -265,35 +267,43 @@ impl Site {
         Ok(())
     }
 
-    /// Create a new space: generate an Ed25519 keypair, create the directory
-    /// structure, and write the credentials file.
-    ///
-    /// Returns a `SpaceRef` for the newly created space.
-    pub fn create_space(&self) -> Result<SpaceRef> {
-        let signing_key = SigningKey::generate(&mut OsRng);
-        self.create_space_from_key(&signing_key)
+    /// Create a new space with the delegation model: generates an ephemeral
+    /// space key, delegates authority to the given admin identities, stores
+    /// the delegation proofs, and discards the space key.
+    pub async fn create_delegated_space(
+        &self,
+        admin_dids: &[Did],
+    ) -> Result<(SpaceRef, Vec<Vec<u8>>)> {
+        let space_operator = Operator::generate();
+        let space_did = space_operator.did();
+
+        let mut proof_bytes: Vec<Vec<u8>> = Vec::new();
+        for admin_did in admin_dids {
+            let signer = Ed25519Signer::from(&space_operator);
+            let ucan_delegation = Delegation::builder()
+                .issuer(signer)
+                .audience(admin_did)
+                .subject(Subject::Specific(space_did.clone()))
+                .command(Vec::new()) // root command "/"
+                .try_build()
+                .await
+                .context("Failed to build admin delegation")?;
+            proof_bytes.push(Delegation::from(ucan_delegation).to_bytes());
+        }
+        // space_operator is dropped here — ephemeral key discarded
+
+        let space = self.create_space_with_proofs(space_did.as_ref(), &proof_bytes)?;
+        Ok((space, proof_bytes))
     }
 
-    /// Create a space from an existing signing key.
+    /// Create a space directory for a given DID, storing delegation proofs.
     ///
-    /// The directory is named after the DID derived from the signing key.
-    pub fn create_space_from_key(&self, signing_key: &SigningKey) -> Result<SpaceRef> {
-        let operator = Operator::from_secret(signing_key.to_bytes());
-        let did = operator.did().to_string();
-        self.create_space_for_did(&did, signing_key)
-    }
-
-    /// Create a local space directory for a given space DID, storing the
-    /// provided signing key as credentials.
-    ///
-    /// Unlike `create_space_from_key`, the directory is named after `space_did`
-    /// (which may differ from the DID derived from `credentials_key`). This is
-    /// used when joining a space via an invite: the directory is keyed by the
-    /// *space* DID, but the credentials belong to the *collaborator*.
-    pub fn create_space_for_did(
+    /// `proofs` is a list of DAG-CBOR-encoded UCAN delegations forming the
+    /// chain of trust from the space root to the local operator.
+    pub fn create_space_with_proofs(
         &self,
         space_did: &str,
-        credentials_key: &SigningKey,
+        proofs: &[Vec<u8>],
     ) -> Result<SpaceRef> {
         let space_dir = self.root.join(space_did);
 
@@ -310,17 +320,19 @@ impl Site {
         std::fs::create_dir_all(&claims_dir)
             .with_context(|| format!("Failed to create {}", claims_dir.display()))?;
 
-        // Write credentials (raw 32-byte secret key)
-        let creds_path = space_dir.join(CREDENTIALS_FILE);
-        std::fs::write(&creds_path, credentials_key.to_bytes())
-            .with_context(|| format!("Failed to write {}", creds_path.display()))?;
+        // Write proofs file (DAG-CBOR encoded list of delegation bytes)
+        let proofs_path = space_dir.join(PROOFS_FILE);
+        let encoded =
+            serde_ipld_dagcbor::to_vec(proofs).context("Failed to encode proofs as DAG-CBOR")?;
+        std::fs::write(&proofs_path, &encoded)
+            .with_context(|| format!("Failed to write {}", proofs_path.display()))?;
 
-        // Restrict permissions on credentials file (Unix only)
+        // Restrict permissions on proofs file (Unix only)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&creds_path, perms)?;
+            std::fs::set_permissions(&proofs_path, perms)?;
         }
 
         Ok(SpaceRef {
@@ -354,32 +366,51 @@ impl SpaceRef {
         self.dir.join(CLAIMS_DIR)
     }
 
-    /// Path to the `credentials` file.
-    fn credentials_path(&self) -> PathBuf {
-        self.dir.join(CREDENTIALS_FILE)
+    /// Path to the `proofs` file.
+    fn proofs_path(&self) -> PathBuf {
+        self.dir.join(PROOFS_FILE)
     }
 
-    /// Load the Ed25519 signing key from the `credentials` file.
-    pub fn load_signing_key(&self) -> Result<SigningKey> {
-        let path = self.credentials_path();
-        let bytes = std::fs::read(&path)
-            .with_context(|| format!("Failed to read credentials at {}", path.display()))?;
-        if bytes.len() != 32 {
-            anyhow::bail!(
-                "Invalid credentials file at {} (expected 32 bytes, got {})",
-                path.display(),
-                bytes.len()
-            );
+    /// Load delegation proofs from the `proofs` file.
+    ///
+    /// Returns a list of raw delegation byte vectors (each is DAG-CBOR
+    /// encoded UCAN delegation) forming the chain of trust from the space
+    /// root to the local operator.
+    pub fn load_proofs(&self) -> Result<Vec<Vec<u8>>> {
+        let path = self.proofs_path();
+        if !path.exists() {
+            return Ok(Vec::new());
         }
-        let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&bytes);
-        Ok(SigningKey::from_bytes(&key_bytes))
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("Failed to read proofs at {}", path.display()))?;
+        let proofs: Vec<Vec<u8>> = serde_ipld_dagcbor::from_slice(&bytes)
+            .with_context(|| format!("Failed to decode proofs at {}", path.display()))?;
+        Ok(proofs)
     }
 
-    /// Load an `Operator` from the credentials file.
+    /// Save delegation proofs to the `proofs` file.
+    pub fn save_proofs(&self, proofs: &[Vec<u8>]) -> Result<()> {
+        let path = self.proofs_path();
+        let encoded =
+            serde_ipld_dagcbor::to_vec(proofs).context("Failed to encode proofs as DAG-CBOR")?;
+        std::fs::write(&path, &encoded)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        Ok(())
+    }
+
+    /// Load the operator identity for this space.
+    ///
+    /// In the delegation model, the operator is the user's identity from
+    /// `~/.carry/identity`, not a space-specific key.
     pub fn load_operator(&self) -> Result<Operator> {
-        let key = self.load_signing_key()?;
-        Ok(Operator::from_secret(key.to_bytes()))
+        crate::identity_cmd::require_identity()
     }
 
     /// Open a dialog-db `Session` for this space.
@@ -455,6 +486,26 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Helper: create a delegated space for tests (generates ephemeral key,
+    /// delegates to a test admin operator).
+    async fn create_test_space(site: &Site) -> (SpaceRef, Operator) {
+        let admin = Operator::generate();
+        let (space, _proofs) = site.create_delegated_space(&[admin.did()]).await.unwrap();
+        (space, admin)
+    }
+
+    /// Helper: set up identity for tests that call load_operator().
+    /// Writes a test identity to ~/.carry/identity (or a temp override).
+    fn setup_test_identity() -> Operator {
+        let op = Operator::generate();
+        let home = dirs::home_dir().expect("home dir");
+        let carry_home = home.join(".carry");
+        std::fs::create_dir_all(&carry_home).unwrap();
+        let identity_path = carry_home.join("identity");
+        std::fs::write(&identity_path, op.to_secret()).unwrap();
+        op
+    }
+
     #[test]
     fn test_init_creates_carry_dir() {
         let tmp = TempDir::new().unwrap();
@@ -464,26 +515,26 @@ mod tests {
         assert_eq!(site.root(), tmp.path().join(".carry"));
     }
 
-    #[test]
-    fn test_create_space_and_list() {
+    #[tokio::test]
+    async fn test_create_space_and_list() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let space = site.create_space().unwrap();
+        let (space, _admin) = create_test_space(&site).await;
         assert!(space.did.starts_with("did:key:"));
         assert!(space.dir().exists());
         assert!(space.claims_dir().exists());
-        assert!(space.credentials_path().exists());
+        assert!(space.proofs_path().exists());
 
         let spaces = site.list_spaces().unwrap();
         assert_eq!(spaces.len(), 1);
         assert_eq!(spaces[0].did, space.did);
     }
 
-    #[test]
-    fn test_active_space_roundtrip() {
+    #[tokio::test]
+    async fn test_active_space_roundtrip() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let space = site.create_space().unwrap();
+        let (space, _admin) = create_test_space(&site).await;
 
         assert!(site.active_space_did().unwrap().is_none());
 
@@ -497,15 +548,40 @@ mod tests {
         assert!(site.active_space_did().unwrap().is_none());
     }
 
-    #[test]
-    fn test_credentials_roundtrip() {
+    #[tokio::test]
+    async fn test_proofs_roundtrip() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let space = site.create_space().unwrap();
+        let (space, _admin) = create_test_space(&site).await;
 
-        let key = space.load_signing_key().unwrap();
-        let operator = Operator::from_secret(key.to_bytes());
-        assert_eq!(operator.did().to_string(), space.did);
+        let proofs = space.load_proofs().unwrap();
+        assert_eq!(proofs.len(), 1);
+
+        // Each proof should deserialize as a valid delegation
+        let delegation = serde_ipld_dagcbor::from_slice::<Delegation>(&proofs[0]).unwrap();
+        assert_eq!(delegation.audience().to_string(), _admin.did().to_string());
+    }
+
+    #[tokio::test]
+    async fn test_multi_admin_proofs() {
+        let tmp = TempDir::new().unwrap();
+        let site = Site::init(tmp.path()).unwrap();
+        let admin1 = Operator::generate();
+        let admin2 = Operator::generate();
+        let (space, _) = site
+            .create_delegated_space(&[admin1.did(), admin2.did()])
+            .await
+            .unwrap();
+
+        let proofs = space.load_proofs().unwrap();
+        assert_eq!(proofs.len(), 2);
+
+        let d1 = serde_ipld_dagcbor::from_slice::<Delegation>(&proofs[0]).unwrap();
+        let d2 = serde_ipld_dagcbor::from_slice::<Delegation>(&proofs[1]).unwrap();
+        assert_eq!(d1.audience().to_string(), admin1.did().to_string());
+        assert_eq!(d2.audience().to_string(), admin2.did().to_string());
+        // Both should have the same issuer (the ephemeral space key)
+        assert_eq!(d1.issuer().to_string(), d2.issuer().to_string());
     }
 
     #[test]
@@ -513,11 +589,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let _site = Site::init(tmp.path()).unwrap();
 
-        // Create a nested directory
         let nested = tmp.path().join("foo").join("bar").join("baz");
         std::fs::create_dir_all(&nested).unwrap();
 
-        // Discovery from nested should find the .carry/ at root
         let found = Site::discover(&nested).unwrap();
         assert_eq!(found.root(), tmp.path().join(".carry"));
     }
@@ -533,23 +607,21 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let _site = Site::init(tmp.path()).unwrap();
 
-        // Open via parent directory
         let opened = Site::open(tmp.path()).unwrap();
         assert_eq!(opened.root(), tmp.path().join(".carry"));
 
-        // Open via .carry/ directly
         let opened2 = Site::open(&tmp.path().join(".carry")).unwrap();
         assert_eq!(opened2.root(), tmp.path().join(".carry"));
     }
 
-    #[test]
-    fn test_duplicate_space_fails() {
+    #[tokio::test]
+    async fn test_duplicate_space_fails() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
 
-        let key = SigningKey::generate(&mut OsRng);
-        site.create_space_from_key(&key).unwrap();
-        let result = site.create_space_from_key(&key);
+        let admin = Operator::generate();
+        let (space, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
+        let result = site.create_space_with_proofs(&space.did, &[]);
         assert!(result.is_err());
     }
 
@@ -557,10 +629,15 @@ mod tests {
     async fn test_open_session() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let space = site.create_space().unwrap();
+        let (_space, admin) = create_test_space(&site).await;
 
-        // Should successfully open a session (creates the prolly tree storage)
-        let _session = space.open_session().await.unwrap();
+        // Set up the admin as the local identity so load_operator() works
+        let home = dirs::home_dir().expect("home dir");
+        let carry_home = home.join(".carry");
+        std::fs::create_dir_all(&carry_home).unwrap();
+        std::fs::write(carry_home.join("identity"), admin.to_secret()).unwrap();
+
+        let _session = _space.open_session().await.unwrap();
     }
 
     // -- Helper: assert a label claim on a space ----------------------------
@@ -583,7 +660,8 @@ mod tests {
     async fn test_resolve_space_by_did() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let space = site.create_space().unwrap();
+        let admin = setup_test_identity();
+        let (space, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
 
         let resolved = site.resolve_space(&space.did).await.unwrap();
         assert_eq!(resolved.did, space.did);
@@ -593,7 +671,8 @@ mod tests {
     async fn test_resolve_space_by_label() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let space = site.create_space().unwrap();
+        let admin = setup_test_identity();
+        let (space, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
         assert_label(&space, "my-space").await;
 
         let resolved = site.resolve_space("my-space").await.unwrap();
@@ -604,8 +683,9 @@ mod tests {
     async fn test_resolve_space_ambiguous_label() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let space1 = site.create_space().unwrap();
-        let space2 = site.create_space().unwrap();
+        let admin = setup_test_identity();
+        let (space1, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
+        let (space2, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
         assert_label(&space1, "shared-label").await;
         assert_label(&space2, "shared-label").await;
 
@@ -623,7 +703,6 @@ mod tests {
     async fn test_resolve_space_nonexistent_did() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let _space = site.create_space().unwrap();
 
         let result = site.resolve_space("did:key:zBogus").await;
         assert!(result.is_err());
@@ -633,7 +712,6 @@ mod tests {
     async fn test_resolve_space_nonexistent_label() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let _space = site.create_space().unwrap();
 
         let result = site.resolve_space("no-such-label").await;
         assert!(result.is_err());
@@ -651,7 +729,8 @@ mod tests {
     async fn test_space_label_roundtrip() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let space = site.create_space().unwrap();
+        let admin = setup_test_identity();
+        let (space, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
         assert_label(&space, "test-label").await;
 
         let label = site.space_label(&space).await.unwrap();
@@ -662,7 +741,8 @@ mod tests {
     async fn test_space_label_none() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let space = site.create_space().unwrap();
+        let admin = setup_test_identity();
+        let (space, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
 
         let label = site.space_label(&space).await.unwrap();
         assert_eq!(label, None);
@@ -674,16 +754,14 @@ mod tests {
     async fn test_delete_space_removes_dir() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let space = site.create_space().unwrap();
+        let (space, _admin) = create_test_space(&site).await;
         let space_dir = space.dir().to_path_buf();
 
-        // Verify directory exists before delete
         assert!(space_dir.exists());
         assert_eq!(site.list_spaces().unwrap().len(), 1);
 
         site.delete_space(&space).unwrap();
 
-        // Verify directory is gone
         assert!(!space_dir.exists());
         assert_eq!(site.list_spaces().unwrap().len(), 0);
     }

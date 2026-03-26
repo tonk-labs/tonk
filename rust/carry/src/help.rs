@@ -99,8 +99,12 @@ provided, it is asserted as the repository label.
 
 If a repository already exists, reports its status.
 
-The command generates an Ed25519 keypair for the repository, creating a unique
-DID (e.g., did:key:z...). The private key is stored in .carry/<did>/credentials.
+If no user identity exists (~/.carry/identity), the passkey authentication
+flow is triggered automatically before creating the repository.
+
+The command generates an ephemeral Ed25519 space key, delegates full authority
+to the user's identity (and any additional --admin DIDs), then discards the
+space key. The delegation proofs are stored in .carry/<did>/proofs.
 
 Pre-registered concepts (attribute, concept, bookmark) are bootstrapped during
 init so they can be queried and used immediately.";
@@ -112,6 +116,9 @@ EXAMPLES:
 
   # Initialize with a label
   carry init my-project
+
+  # Initialize with additional admins
+  carry init --admin did:key:z6Mk... --admin did:key:z6Mn...
 
   # Initialize in a specific directory
   carry init --repo /path/to/project

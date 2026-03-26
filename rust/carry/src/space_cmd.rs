@@ -64,7 +64,8 @@ pub async fn list(site: &Site, format: &str) -> Result<()> {
 
 /// Execute `carry space create [LABEL]`.
 pub async fn create(site: &Site, label: Option<String>, format: &str) -> Result<()> {
-    let space = site.create_space()?;
+    let identity = crate::identity_cmd::require_identity()?;
+    let (space, _proofs) = site.create_delegated_space(&[identity.did()]).await?;
     site.set_active_space(&space.did)?;
 
     // If a label is provided, assert it as a claim

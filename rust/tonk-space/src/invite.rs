@@ -110,6 +110,11 @@ pub struct InviteGrantV1 {
     pub nbf: Option<u64>,
     /// Expiration time (unix seconds).
     pub exp: u64,
+    /// Upstream delegation proofs (base64url-encoded DAG-CBOR bytes).
+    /// Each entry is a serialized UCAN delegation forming the chain of trust
+    /// from the space root to the inviter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proofs: Vec<String>,
 }
 
 impl InviteGrantV1 {
@@ -119,6 +124,31 @@ impl InviteGrantV1 {
         let delegation: Delegation = serde_ipld_dagcbor::from_slice(&bytes)
             .map_err(|e| InviteError::CborDecode(e.to_string()))?;
         Ok(delegation)
+    }
+
+    /// Decode upstream proof delegations from base64url DAG-CBOR.
+    pub fn decode_proofs(&self) -> Result<Vec<Delegation>, InviteError> {
+        self.proofs
+            .iter()
+            .map(|p| {
+                let bytes = URL_SAFE_NO_PAD.decode(p)?;
+                let d: Delegation = serde_ipld_dagcbor::from_slice(&bytes)
+                    .map_err(|e| InviteError::CborDecode(e.to_string()))?;
+                Ok(d)
+            })
+            .collect()
+    }
+
+    /// Get all proof bytes (raw DAG-CBOR) including the grant delegation itself.
+    /// This is the full chain the joiner should store.
+    pub fn all_proof_bytes(&self) -> Result<Vec<Vec<u8>>, InviteError> {
+        let mut all: Vec<Vec<u8>> = self
+            .proofs
+            .iter()
+            .map(|p| URL_SAFE_NO_PAD.decode(p).map_err(InviteError::from))
+            .collect::<Result<_, _>>()?;
+        all.push(URL_SAFE_NO_PAD.decode(&self.delegation_b64u)?);
+        Ok(all)
     }
 }
 
@@ -162,16 +192,21 @@ pub fn decode_invite(token: &str) -> Result<InviteEnvelopeV1, InviteError> {
 
 /// Create a delegation grant for a single space.
 ///
-/// Signs a UCAN delegation: `issuer=space_operator, audience=invited,
+/// Signs a UCAN delegation: `issuer=inviter, audience=invited,
 /// subject=Specific(space_did), command=/`.
+///
+/// `upstream_proofs` is the chain of delegations from the space root to the
+/// inviter (e.g., `[space_key → admin]`). These are included in the grant
+/// so the joiner can verify the full chain.
 pub async fn create_space_grant(
-    space_operator: &Operator,
+    inviter: &Operator,
     space_did: &Did,
     invited: &Did,
     exp_unix: u64,
     nbf_unix: Option<u64>,
+    upstream_proofs: &[Vec<u8>],
 ) -> Result<(InviteGrantV1, Delegation), InviteError> {
-    let signer = Ed25519Signer::from(space_operator);
+    let signer = Ed25519Signer::from(inviter);
 
     let exp_ts = Timestamp::try_from(exp_unix as i128)
         .map_err(|e| InviteError::DelegationBuild(format!("invalid expiration: {}", e)))?;
@@ -198,12 +233,19 @@ pub async fn create_space_grant(
     let delegation_bytes = delegation.to_bytes();
     let delegation_b64u = URL_SAFE_NO_PAD.encode(&delegation_bytes);
 
+    // Encode upstream proofs as base64url
+    let proofs: Vec<String> = upstream_proofs
+        .iter()
+        .map(|p| URL_SAFE_NO_PAD.encode(p))
+        .collect();
+
     let grant = InviteGrantV1 {
         space: space_did.to_string(),
         delegation_b64u,
         ability: delegation.command().to_string(),
         nbf: nbf_unix,
         exp: exp_unix,
+        proofs,
     };
 
     Ok((grant, delegation))
@@ -211,24 +253,29 @@ pub async fn create_space_grant(
 
 /// Convenience: create a full invite envelope for a single space with default
 /// lifetime (7 days).
+///
+/// `inviter` is the identity of the user creating the invite.
+/// `upstream_proofs` is the chain of delegations from the space root to the
+/// inviter (proving the inviter has authority over this space).
 pub async fn create_invite(
-    space_operator: &Operator,
+    inviter: &Operator,
     space_did: &Did,
     invited: &Did,
     repo_hint: Option<String>,
+    upstream_proofs: &[Vec<u8>],
 ) -> Result<(InviteEnvelopeV1, Delegation), InviteError> {
     let now = Timestamp::now().to_unix();
     let exp = now + DEFAULT_LIFETIME_SECS;
 
     let (grant, delegation) =
-        create_space_grant(space_operator, space_did, invited, exp, Some(now)).await?;
+        create_space_grant(inviter, space_did, invited, exp, Some(now), upstream_proofs).await?;
 
     let envelope = InviteEnvelopeV1 {
         v: 1,
         kind: "carry.invite".to_string(),
         invited: invited.to_string(),
         issued_at: now,
-        issuer_hint: Some(space_operator.did().to_string()),
+        issuer_hint: Some(inviter.did().to_string()),
         repo_hint,
         grants: vec![grant],
     };
@@ -240,49 +287,24 @@ pub async fn create_invite(
 // Grant verification
 // ---------------------------------------------------------------------------
 
-/// Verify a single grant against the expected invited DID and current time.
-///
-/// Checks:
-/// - Delegation deserializes and has a valid cryptographic signature
-/// - Issuer matches the grant's space DID (only the space key can delegate)
-/// - Audience matches the expected invited DID
-/// - Subject is Specific (not Any) and matches the grant's space field
-/// - Time bounds are valid
-pub async fn verify_grant(
-    grant: &InviteGrantV1,
-    invited: &Did,
+/// Verify a single delegation's signature, subject, and time bounds.
+async fn verify_single_delegation(
+    delegation: &Delegation,
+    space_did: &str,
     now_unix: u64,
-) -> Result<Delegation, InviteError> {
-    let delegation = grant.delegation()?;
-
-    // Verify cryptographic signature before trusting any fields
+) -> Result<(), InviteError> {
+    // Verify cryptographic signature
     delegation
         .verify_signature()
         .await
         .map_err(|e| InviteError::InvalidSignature(e.to_string()))?;
 
-    // Issuer must match the space DID — only the space key can delegate for itself
-    if delegation.issuer().to_string() != grant.space {
-        return Err(InviteError::IssuerMismatch {
-            expected: grant.space.clone(),
-            got: delegation.issuer().to_string(),
-        });
-    }
-
-    // Audience must match invited DID
-    if delegation.audience().to_string() != invited.to_string() {
-        return Err(InviteError::AudienceMismatch {
-            expected: invited.to_string(),
-            got: delegation.audience().to_string(),
-        });
-    }
-
-    // Subject must be Specific, not Any
+    // Subject must be Specific and match the space DID
     match delegation.subject() {
         Subject::Specific(did) => {
-            if did.to_string() != grant.space {
+            if did.to_string() != space_did {
                 return Err(InviteError::SubjectMismatch {
-                    expected: grant.space.clone(),
+                    expected: space_did.to_string(),
                     got: did.to_string(),
                 });
             }
@@ -300,6 +322,62 @@ pub async fn verify_grant(
         crate::DelegationError::NotYetValid => InviteError::NotYetValid,
         other => InviteError::DelegationBuild(other.to_string()),
     })?;
+
+    Ok(())
+}
+
+/// Verify a single grant against the expected invited DID and current time.
+///
+/// Walks the full delegation chain from the space root:
+/// 1. Each upstream proof is verified (signature, subject, time bounds)
+/// 2. Chain continuity: each delegation's audience == next delegation's issuer
+/// 3. First delegation's issuer must be the space DID (root of trust)
+/// 4. Final delegation's audience must be the invited DID
+pub async fn verify_grant(
+    grant: &InviteGrantV1,
+    invited: &Did,
+    now_unix: u64,
+) -> Result<Delegation, InviteError> {
+    let delegation = grant.delegation()?;
+    let upstream = grant.decode_proofs()?;
+
+    // Build the full chain: [upstream_0, upstream_1, ..., delegation]
+    let mut chain: Vec<&Delegation> = upstream.iter().collect();
+    chain.push(&delegation);
+
+    // Verify each delegation individually
+    for d in &chain {
+        verify_single_delegation(d, &grant.space, now_unix).await?;
+    }
+
+    // Chain root: first delegation's issuer must be the space DID
+    if chain[0].issuer().to_string() != grant.space {
+        return Err(InviteError::IssuerMismatch {
+            expected: grant.space.clone(),
+            got: chain[0].issuer().to_string(),
+        });
+    }
+
+    // Chain continuity: audience[i] == issuer[i+1]
+    for i in 0..chain.len() - 1 {
+        let audience = chain[i].audience().to_string();
+        let next_issuer = chain[i + 1].issuer().to_string();
+        if audience != next_issuer {
+            return Err(InviteError::IssuerMismatch {
+                expected: audience,
+                got: next_issuer,
+            });
+        }
+    }
+
+    // Final delegation's audience must match invited DID
+    let last = chain.last().unwrap();
+    if last.audience().to_string() != invited.to_string() {
+        return Err(InviteError::AudienceMismatch {
+            expected: invited.to_string(),
+            got: last.audience().to_string(),
+        });
+    }
 
     Ok(delegation)
 }
@@ -329,6 +407,7 @@ pub async fn verify_envelope(
 mod tests {
     use super::*;
     use crate::Operator;
+    use dialog_credentials::Ed25519Signer;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test;
@@ -336,17 +415,36 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
+    /// Helper: create a powerline delegation from space_op to admin_op,
+    /// returning the raw bytes (simulating what `carry init` does).
+    async fn make_admin_proof(space_op: &Operator, admin_op: &Operator) -> Vec<u8> {
+        let signer = Ed25519Signer::from(space_op);
+        let ucan = Delegation::builder()
+            .issuer(signer)
+            .audience(&admin_op.did())
+            .subject(Subject::Specific(space_op.did()))
+            .command(Vec::new())
+            .try_build()
+            .await
+            .unwrap();
+        Delegation::from(ucan).to_bytes()
+    }
+
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     async fn encode_decode_roundtrip() {
         let space_op = Operator::generate();
+        let admin_op = Operator::generate();
         let invited_op = Operator::generate();
 
+        let admin_proof = make_admin_proof(&space_op, &admin_op).await;
+
         let (envelope, _delegation) = create_invite(
-            &space_op,
+            &admin_op,
             &space_op.did(),
             &invited_op.did(),
             Some("my-repo".to_string()),
+            &[admin_proof],
         )
         .await
         .expect("create_invite should succeed");
@@ -361,28 +459,32 @@ mod tests {
         assert_eq!(decoded.grants.len(), 1);
         assert_eq!(decoded.grants[0].space, space_op.did().to_string());
         assert_eq!(decoded.repo_hint.as_deref(), Some("my-repo"));
+        assert_eq!(decoded.grants[0].proofs.len(), 1);
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     async fn grant_has_correct_delegation_fields() {
         let space_op = Operator::generate();
+        let admin_op = Operator::generate();
         let invited_op = Operator::generate();
 
+        let admin_proof = make_admin_proof(&space_op, &admin_op).await;
         let now = Timestamp::now().to_unix();
         let exp = now + 3600;
 
         let (grant, delegation) = create_space_grant(
-            &space_op,
+            &admin_op,
             &space_op.did(),
             &invited_op.did(),
             exp,
             Some(now),
+            &[admin_proof],
         )
         .await
         .expect("create_space_grant should succeed");
 
-        assert_eq!(delegation.issuer().to_string(), space_op.did().to_string());
+        assert_eq!(delegation.issuer().to_string(), admin_op.did().to_string());
         assert_eq!(
             delegation.audience().to_string(),
             invited_op.did().to_string()
@@ -395,23 +497,27 @@ mod tests {
         }
         assert_eq!(grant.exp, exp);
         assert_eq!(grant.nbf, Some(now));
+        assert_eq!(grant.proofs.len(), 1);
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
-    async fn verify_grant_succeeds_for_valid_grant() {
+    async fn verify_grant_succeeds_for_valid_chain() {
         let space_op = Operator::generate();
+        let admin_op = Operator::generate();
         let invited_op = Operator::generate();
 
+        let admin_proof = make_admin_proof(&space_op, &admin_op).await;
         let now = Timestamp::now().to_unix();
         let exp = now + 3600;
 
         let (grant, _) = create_space_grant(
-            &space_op,
+            &admin_op,
             &space_op.did(),
             &invited_op.did(),
             exp,
             Some(now),
+            &[admin_proof],
         )
         .await
         .unwrap();
@@ -424,18 +530,21 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     async fn verify_grant_rejects_wrong_audience() {
         let space_op = Operator::generate();
+        let admin_op = Operator::generate();
         let invited_op = Operator::generate();
         let wrong_op = Operator::generate();
 
+        let admin_proof = make_admin_proof(&space_op, &admin_op).await;
         let now = Timestamp::now().to_unix();
         let exp = now + 3600;
 
         let (grant, _) = create_space_grant(
-            &space_op,
+            &admin_op,
             &space_op.did(),
             &invited_op.did(),
             exp,
             Some(now),
+            &[admin_proof],
         )
         .await
         .unwrap();
@@ -446,31 +555,28 @@ mod tests {
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
-    async fn verify_grant_rejects_wrong_issuer() {
-        // An attacker signs a delegation with their own key but claims it's
-        // for a different space — the signature is valid but the issuer doesn't
-        // match the space DID in the grant.
-        let attacker_op = Operator::generate();
-        let real_space_op = Operator::generate();
+    async fn verify_grant_rejects_broken_chain() {
+        // Admin signs a delegation but with no upstream proof connecting
+        // them to the space — the chain root won't match the space DID.
+        let space_op = Operator::generate();
+        let unlinked_admin = Operator::generate();
         let invited_op = Operator::generate();
 
         let now = Timestamp::now().to_unix();
         let exp = now + 3600;
 
-        // Attacker creates a grant using their own key as issuer, but
-        // the grant's space field points to the real space DID.
-        let (mut grant, _) = create_space_grant(
-            &attacker_op,
-            &attacker_op.did(),
+        // No upstream proofs — the chain is just [admin → invited],
+        // so chain[0].issuer != space_did.
+        let (grant, _) = create_space_grant(
+            &unlinked_admin,
+            &space_op.did(),
             &invited_op.did(),
             exp,
             Some(now),
+            &[], // no proofs!
         )
         .await
         .unwrap();
-
-        // Overwrite the space field to point to the real space
-        grant.space = real_space_op.did().to_string();
 
         let result = verify_grant(&grant, &invited_op.did(), now).await;
         assert!(
@@ -482,19 +588,65 @@ mod tests {
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
-    async fn verify_grant_rejects_expired() {
-        let space_op = Operator::generate();
+    async fn verify_grant_rejects_wrong_issuer() {
+        // An attacker creates their own proof chain for a different space,
+        // then sets the grant.space to the real space DID.
+        let attacker_space_op = Operator::generate();
+        let real_space_op = Operator::generate();
+        let attacker_admin = Operator::generate();
         let invited_op = Operator::generate();
 
+        let attacker_proof = make_admin_proof(&attacker_space_op, &attacker_admin).await;
         let now = Timestamp::now().to_unix();
-        let exp = now + 10; // expires in 10 seconds
+        let exp = now + 3600;
 
-        let (grant, _) =
-            create_space_grant(&space_op, &space_op.did(), &invited_op.did(), exp, None)
-                .await
-                .unwrap();
+        let (mut grant, _) = create_space_grant(
+            &attacker_admin,
+            &attacker_space_op.did(),
+            &invited_op.did(),
+            exp,
+            Some(now),
+            &[attacker_proof],
+        )
+        .await
+        .unwrap();
 
-        // Verify at a time after expiration
+        // Overwrite the space field to point to the real space
+        grant.space = real_space_op.did().to_string();
+
+        let result = verify_grant(&grant, &invited_op.did(), now).await;
+        assert!(
+            matches!(
+                result,
+                Err(InviteError::SubjectMismatch { .. } | InviteError::IssuerMismatch { .. })
+            ),
+            "Expected SubjectMismatch or IssuerMismatch, got: {:?}",
+            result
+        );
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn verify_grant_rejects_expired() {
+        let space_op = Operator::generate();
+        let admin_op = Operator::generate();
+        let invited_op = Operator::generate();
+
+        let admin_proof = make_admin_proof(&space_op, &admin_op).await;
+        let now = Timestamp::now().to_unix();
+        let exp = now + 10;
+
+        let (grant, _) = create_space_grant(
+            &admin_op,
+            &space_op.did(),
+            &invited_op.did(),
+            exp,
+            None,
+            &[admin_proof],
+        )
+        .await
+        .unwrap();
+
         let future = exp + 100;
         let result = verify_grant(&grant, &invited_op.did(), future).await;
         assert!(matches!(result, Err(InviteError::Expired)));
@@ -504,23 +656,25 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     async fn verify_grant_rejects_not_yet_valid() {
         let space_op = Operator::generate();
+        let admin_op = Operator::generate();
         let invited_op = Operator::generate();
 
+        let admin_proof = make_admin_proof(&space_op, &admin_op).await;
         let now = Timestamp::now().to_unix();
-        let nbf = now + 3600; // not valid for another hour
+        let nbf = now + 3600;
         let exp = now + 7200;
 
         let (grant, _) = create_space_grant(
-            &space_op,
+            &admin_op,
             &space_op.did(),
             &invited_op.did(),
             exp,
             Some(nbf),
+            &[admin_proof],
         )
         .await
         .unwrap();
 
-        // Verify at current time (before nbf)
         let result = verify_grant(&grant, &invited_op.did(), now).await;
         assert!(matches!(result, Err(InviteError::NotYetValid)));
     }
@@ -542,27 +696,32 @@ mod tests {
     async fn multi_grant_roundtrip() {
         let space1_op = Operator::generate();
         let space2_op = Operator::generate();
+        let admin_op = Operator::generate();
         let invited_op = Operator::generate();
 
+        let admin_proof1 = make_admin_proof(&space1_op, &admin_op).await;
+        let admin_proof2 = make_admin_proof(&space2_op, &admin_op).await;
         let now = Timestamp::now().to_unix();
         let exp = now + 3600;
 
         let (grant1, _) = create_space_grant(
-            &space1_op,
+            &admin_op,
             &space1_op.did(),
             &invited_op.did(),
             exp,
             Some(now),
+            &[admin_proof1],
         )
         .await
         .unwrap();
 
         let (grant2, _) = create_space_grant(
-            &space2_op,
+            &admin_op,
             &space2_op.did(),
             &invited_op.did(),
             exp,
             Some(now),
+            &[admin_proof2],
         )
         .await
         .unwrap();
@@ -583,7 +742,6 @@ mod tests {
         assert_eq!(decoded.grants[0].space, space1_op.did().to_string());
         assert_eq!(decoded.grants[1].space, space2_op.did().to_string());
 
-        // Verify all grants
         let delegations = verify_envelope(&decoded, now).await.unwrap();
         assert_eq!(delegations.len(), 2);
     }
@@ -592,30 +750,78 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     async fn verify_grant_rejects_subject_mismatch() {
         let space_op = Operator::generate();
+        let admin_op = Operator::generate();
         let invited_op = Operator::generate();
         let other = Operator::generate();
 
+        // Admin proof is for the real space
+        let admin_proof = make_admin_proof(&space_op, &admin_op).await;
         let now = Timestamp::now().to_unix();
         let exp = now + 3600;
 
-        // Create a grant where the delegation's subject differs from the
-        // grant's space field, but the issuer still matches grant.space.
-        // We do this by passing a different space_did to create_space_grant.
+        // Create a grant where the delegation's subject is other.did()
         let (mut grant, _) = create_space_grant(
-            &space_op,
-            &other.did(), // subject will be other's DID
+            &admin_op,
+            &other.did(),
             &invited_op.did(),
             exp,
             Some(now),
+            &[admin_proof],
         )
         .await
         .unwrap();
 
-        // Set grant.space to match the issuer (passes issuer check)
-        // but now it mismatches the delegation's subject (other.did())
+        // Set grant.space to match space_op (mismatches delegation subject)
         grant.space = space_op.did().to_string();
 
         let result = verify_grant(&grant, &invited_op.did(), now).await;
         assert!(matches!(result, Err(InviteError::SubjectMismatch { .. })));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn verify_three_level_chain() {
+        // space_key → admin → collaborator → invitee
+        let space_op = Operator::generate();
+        let admin_op = Operator::generate();
+        let collab_op = Operator::generate();
+        let invited_op = Operator::generate();
+
+        let admin_proof = make_admin_proof(&space_op, &admin_op).await;
+
+        // Admin delegates to collaborator
+        let now = Timestamp::now().to_unix();
+        let exp = now + 3600;
+        let signer = Ed25519Signer::from(&admin_op);
+        let ucan = Delegation::builder()
+            .issuer(signer)
+            .audience(&collab_op.did())
+            .subject(Subject::Specific(space_op.did()))
+            .command(Vec::new())
+            .expiration(Timestamp::try_from(exp as i128).unwrap())
+            .not_before(Timestamp::try_from(now as i128).unwrap())
+            .try_build()
+            .await
+            .unwrap();
+        let collab_proof = Delegation::from(ucan).to_bytes();
+
+        // Collaborator invites
+        let (grant, _) = create_space_grant(
+            &collab_op,
+            &space_op.did(),
+            &invited_op.did(),
+            exp,
+            Some(now),
+            &[admin_proof, collab_proof],
+        )
+        .await
+        .unwrap();
+
+        let result = verify_grant(&grant, &invited_op.did(), now).await;
+        assert!(
+            result.is_ok(),
+            "Three-level chain should verify: {:?}",
+            result
+        );
     }
 }

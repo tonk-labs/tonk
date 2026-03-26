@@ -1,8 +1,8 @@
 //! `carry join <TOKEN>` — redeem an invite token to join a space.
 //!
-//! Decodes the invite token, verifies the delegation grants, creates local
-//! space directories with the collaborator's credentials, and stores the
-//! delegations in the space DB.
+//! Decodes the invite token, verifies the delegation chain, creates local
+//! space directories with the delegation proofs, and stores the delegations
+//! in the space DB.
 
 use crate::identity_cmd;
 use crate::schema;
@@ -17,7 +17,7 @@ pub async fn execute(token: &str, site_flag: Option<&Path>) -> Result<()> {
     let envelope = decode_invite(token).context("Failed to decode invite token")?;
 
     // Load the local identity (must exist and match the invited DID)
-    let operator = identity_cmd::require_identity()?;
+    let operator = identity_cmd::ensure_identity().await?;
     if operator.did().to_string() != envelope.invited {
         anyhow::bail!(
             "Local identity {} does not match invited DID {}.\n\
@@ -38,9 +38,6 @@ pub async fn execute(token: &str, site_flag: Option<&Path>) -> Result<()> {
         Ok(site) => site,
         Err(_) => {
             let parent = if let Some(p) = site_flag {
-                // Normalize: if --repo points at a .carry path, init at its
-                // parent (mirrors Site::open semantics), otherwise init at the
-                // given path.
                 if p.ends_with(".carry") {
                     p.parent()
                         .context("--repo .carry path has no parent")?
@@ -64,9 +61,13 @@ pub async fn execute(token: &str, site_flag: Option<&Path>) -> Result<()> {
         let space_ref = if let Some(existing) = site.space_by_did(space_did) {
             existing
         } else {
-            // Create a directory named after the *space* DID, storing the
-            // collaborator's own key as credentials.
-            let space = site.create_space_for_did(space_did, operator.signer())?;
+            // Collect the full proof chain: upstream proofs + this grant's delegation
+            let all_proofs = grant
+                .all_proof_bytes()
+                .context("Failed to decode proof bytes from grant")?;
+
+            // Create space directory with proofs
+            let space = site.create_space_with_proofs(space_did, &all_proofs)?;
 
             // Bootstrap builtins in the new space
             let mut session = space.open_session().await?;

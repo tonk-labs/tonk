@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use carry::site::{Site, SpaceRef};
 use std::path::PathBuf;
 use tempfile::TempDir;
+use tonk_space::Operator;
 
 /// An isolated test environment backed by a temporary directory.
 ///
@@ -17,19 +18,28 @@ pub struct TestEnv {
     _temp_dir: TempDir,
     pub site_path: PathBuf,
     pub space_did: String,
+    pub admin: Operator,
 }
 
 #[allow(dead_code)]
 impl TestEnv {
     /// Create a new test environment with a bootstrapped space.
     ///
-    /// The space is initialized with pre-registered concepts (attribute,
-    /// concept, bookmark) so that meta-schema operations work immediately.
+    /// Sets up a test identity in `~/.carry/identity` and creates a
+    /// delegated space.
     pub async fn new() -> Result<Self> {
         let temp_dir = TempDir::new().context("Failed to create temp directory")?;
         let site_path = temp_dir.path().to_path_buf();
         let site = Site::init(&site_path)?;
-        let space = site.create_space()?;
+
+        // Create a test admin identity
+        let admin = Operator::generate();
+        let home = dirs::home_dir().context("home dir")?;
+        let carry_home = home.join(".carry");
+        std::fs::create_dir_all(&carry_home)?;
+        std::fs::write(carry_home.join("identity"), admin.to_secret())?;
+
+        let (space, _proofs) = site.create_delegated_space(&[admin.did()]).await?;
         site.set_active_space(&space.did)?;
 
         // Bootstrap pre-registered concepts (attribute, concept, bookmark)
@@ -42,6 +52,7 @@ impl TestEnv {
             _temp_dir: temp_dir,
             site_path,
             space_did,
+            admin,
         })
     }
 

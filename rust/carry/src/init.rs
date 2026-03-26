@@ -1,18 +1,28 @@
 //! `carry init` — create a new `.carry/` repository.
 //!
-//! Creates a `.carry/` directory and a first space. Optionally asserts a
-//! label claim on the space. Bootstraps pre-registered concepts (attribute,
-//! concept, bookmark) so they can be queried and used immediately.
+//! Creates a `.carry/` directory and a first space with delegation-based
+//! authority. The space key is ephemeral: it powerline-delegates to admin
+//! identities, then is discarded. All subsequent operations use the user's
+//! passkey-derived identity from `~/.carry/identity`.
+//!
+//! Bootstraps pre-registered concepts (attribute, concept, bookmark) so
+//! they can be queried and used immediately.
 
+use crate::identity_cmd;
 use crate::schema;
 use crate::site::Site;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use dialog_query::Attribute;
 use dialog_query::claim::{Claim, Relation};
 use std::path::Path;
+use tonk_space::Did;
 
-/// Execute `carry init [<name>] [--repo <REPO>]`.
-pub async fn execute(name: Option<String>, site_path: Option<&Path>) -> Result<()> {
+/// Execute `carry init [<name>] [--admin <DID>...] [--repo <REPO>]`.
+pub async fn execute(
+    name: Option<String>,
+    admin_dids: Vec<String>,
+    site_path: Option<&Path>,
+) -> Result<()> {
     let parent = if let Some(p) = site_path {
         p.to_path_buf()
     } else {
@@ -40,11 +50,29 @@ pub async fn execute(name: Option<String>, site_path: Option<&Path>) -> Result<(
         return Ok(());
     }
 
+    // Ensure we have a local identity (auto-trigger passkey flow if needed)
+    let identity = identity_cmd::ensure_identity().await?;
+
+    // Build list of admin DIDs (always includes the local identity)
+    let mut all_admins: Vec<Did> = vec![identity.did()];
+    for did_str in &admin_dids {
+        let did: Did = did_str
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid admin DID '{}': {:?}", did_str, e))?;
+        // Deduplicate
+        if !all_admins.iter().any(|d| d.to_string() == did.to_string()) {
+            all_admins.push(did);
+        }
+    }
+
     // Create the .carry/ directory
     let site = Site::init(&parent)?;
 
-    // Create the first space
-    let space = site.create_space()?;
+    // Create the first space with delegation to admin(s)
+    let (space, _proofs) = site
+        .create_delegated_space(&all_admins)
+        .await
+        .context("Failed to create delegated space")?;
     site.set_active_space(&space.did)?;
 
     // Open a session for bootstrapping
@@ -70,6 +98,10 @@ pub async fn execute(name: Option<String>, site_path: Option<&Path>) -> Result<(
         println!("Initialized {} repository in {}", label, dir_display);
     } else {
         println!("Initialized repository in {}", dir_display);
+    }
+    eprintln!("Identity: {}", identity.did());
+    if all_admins.len() > 1 {
+        eprintln!("Admins: {} total", all_admins.len());
     }
 
     Ok(())

@@ -34,6 +34,10 @@ mod inner {
             /// Label for the repository (stored as a name claim)
             #[arg(value_name = "LABEL")]
             name: Option<String>,
+
+            /// Additional admin DIDs to delegate authority to at init time
+            #[arg(long = "admin", value_name = "DID")]
+            admins: Vec<String>,
         },
 
         /// Query entities by domain or concept
@@ -206,8 +210,8 @@ async fn main() -> anyhow::Result<()> {
     let space_flag = cli.space.as_deref();
 
     match cli.command {
-        Commands::Init { name } => {
-            carry::init::execute(name, repo_path).await?;
+        Commands::Init { name, admins } => {
+            carry::init::execute(name, admins, repo_path).await?;
         }
         Commands::Query {
             target,

@@ -44,9 +44,20 @@ fn carry_home() -> Result<PathBuf> {
     Ok(carry_dir)
 }
 
-/// Load a cached identity from `~/.carry/identity`, if it exists.
+/// Resolve the identity file path.
+///
+/// Checks `CARRY_IDENTITY` env var first, then falls back to
+/// `~/.carry/identity`.
+pub fn identity_path() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("CARRY_IDENTITY") {
+        return Ok(PathBuf::from(p));
+    }
+    Ok(carry_home()?.join(IDENTITY_FILE))
+}
+
+/// Load a cached identity from the identity file, if it exists.
 pub fn load_identity() -> Result<Option<Operator>> {
-    let path = carry_home()?.join(IDENTITY_FILE);
+    let path = identity_path()?;
     if !path.exists() {
         return Ok(None);
     }
@@ -69,9 +80,14 @@ pub fn require_identity() -> Result<Operator> {
     load_identity()?.context("No local identity found. Run `carry identity` to create one.")
 }
 
-/// Save an identity to `~/.carry/identity`.
+/// Save an identity to the identity file.
 fn save_identity(operator: &Operator) -> Result<()> {
-    let path = carry_home()?.join(IDENTITY_FILE);
+    let path = identity_path()?;
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
     std::fs::write(&path, operator.to_secret())
         .with_context(|| format!("Failed to write {}", path.display()))?;
 
@@ -111,6 +127,20 @@ fn save_credential_id(id: &str) -> Result<()> {
 // CLI execute
 // ---------------------------------------------------------------------------
 
+/// Ensure a local identity exists, running the passkey flow if needed.
+/// Returns the operator without printing to stdout.
+pub async fn ensure_identity() -> Result<Operator> {
+    if let Some(op) = load_identity()? {
+        return Ok(op);
+    }
+    eprintln!("No local identity found. Creating one now...");
+    let prf_output = run_passkey_flow().await?;
+    let operator = Operator::from_passphrase(&prf_output).await;
+    save_identity(&operator)?;
+    eprintln!("Identity created: {}", operator.did());
+    Ok(operator)
+}
+
 /// Execute `carry identity [--reset]`.
 ///
 /// If `reset` is false and a cached identity exists, just print the DID.
@@ -119,6 +149,11 @@ pub async fn execute(reset: bool) -> Result<()> {
     if !reset && let Some(operator) = load_identity()? {
         println!("{}", operator.did());
         return Ok(());
+    }
+
+    if reset {
+        std::fs::remove_file(carry_home()?.join(CREDENTIAL_FILE)).ok();
+        std::fs::remove_file(identity_path()?).ok();
     }
 
     // Run the passkey browser flow

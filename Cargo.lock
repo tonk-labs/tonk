@@ -489,6 +489,7 @@ dependencies = [
  "hex",
  "rand 0.8.5",
  "serde",
+ "serde_ipld_dagcbor",
  "serde_json",
  "serde_yaml",
  "tempfile",
