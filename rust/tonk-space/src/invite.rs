@@ -56,6 +56,12 @@ pub enum InviteError {
     #[error("Grant verification failed: delegation not yet valid")]
     NotYetValid,
 
+    #[error("Grant verification failed: invalid signature: {0}")]
+    InvalidSignature(String),
+
+    #[error("Grant verification failed: issuer DID mismatch (expected {expected}, got {got})")]
+    IssuerMismatch { expected: String, got: String },
+
     #[error("Delegation build error: {0}")]
     DelegationBuild(String),
 
@@ -237,15 +243,31 @@ pub async fn create_invite(
 /// Verify a single grant against the expected invited DID and current time.
 ///
 /// Checks:
-/// - Delegation deserializes and has correct audience
+/// - Delegation deserializes and has a valid cryptographic signature
+/// - Issuer matches the grant's space DID (only the space key can delegate)
+/// - Audience matches the expected invited DID
 /// - Subject is Specific (not Any) and matches the grant's space field
 /// - Time bounds are valid
-pub fn verify_grant(
+pub async fn verify_grant(
     grant: &InviteGrantV1,
     invited: &Did,
     now_unix: u64,
 ) -> Result<Delegation, InviteError> {
     let delegation = grant.delegation()?;
+
+    // Verify cryptographic signature before trusting any fields
+    delegation
+        .verify_signature()
+        .await
+        .map_err(|e| InviteError::InvalidSignature(e.to_string()))?;
+
+    // Issuer must match the space DID — only the space key can delegate for itself
+    if delegation.issuer().to_string() != grant.space {
+        return Err(InviteError::IssuerMismatch {
+            expected: grant.space.clone(),
+            got: delegation.issuer().to_string(),
+        });
+    }
 
     // Audience must match invited DID
     if delegation.audience().to_string() != invited.to_string() {
@@ -283,7 +305,7 @@ pub fn verify_grant(
 }
 
 /// Verify all grants in an envelope.
-pub fn verify_envelope(
+pub async fn verify_envelope(
     envelope: &InviteEnvelopeV1,
     now_unix: u64,
 ) -> Result<Vec<Delegation>, InviteError> {
@@ -292,11 +314,11 @@ pub fn verify_envelope(
         .parse()
         .map_err(|e| InviteError::InvalidDid(format!("{:?}", e)))?;
 
-    envelope
-        .grants
-        .iter()
-        .map(|grant| verify_grant(grant, &invited, now_unix))
-        .collect()
+    let mut delegations = Vec::with_capacity(envelope.grants.len());
+    for grant in &envelope.grants {
+        delegations.push(verify_grant(grant, &invited, now_unix).await?);
+    }
+    Ok(delegations)
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +416,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = verify_grant(&grant, &invited_op.did(), now);
+        let result = verify_grant(&grant, &invited_op.did(), now).await;
         assert!(result.is_ok());
     }
 
@@ -418,8 +440,44 @@ mod tests {
         .await
         .unwrap();
 
-        let result = verify_grant(&grant, &wrong_op.did(), now);
+        let result = verify_grant(&grant, &wrong_op.did(), now).await;
         assert!(matches!(result, Err(InviteError::AudienceMismatch { .. })));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    async fn verify_grant_rejects_wrong_issuer() {
+        // An attacker signs a delegation with their own key but claims it's
+        // for a different space — the signature is valid but the issuer doesn't
+        // match the space DID in the grant.
+        let attacker_op = Operator::generate();
+        let real_space_op = Operator::generate();
+        let invited_op = Operator::generate();
+
+        let now = Timestamp::now().to_unix();
+        let exp = now + 3600;
+
+        // Attacker creates a grant using their own key as issuer, but
+        // the grant's space field points to the real space DID.
+        let (mut grant, _) = create_space_grant(
+            &attacker_op,
+            &attacker_op.did(),
+            &invited_op.did(),
+            exp,
+            Some(now),
+        )
+        .await
+        .unwrap();
+
+        // Overwrite the space field to point to the real space
+        grant.space = real_space_op.did().to_string();
+
+        let result = verify_grant(&grant, &invited_op.did(), now).await;
+        assert!(
+            matches!(result, Err(InviteError::IssuerMismatch { .. })),
+            "Expected IssuerMismatch, got: {:?}",
+            result
+        );
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
@@ -438,7 +496,7 @@ mod tests {
 
         // Verify at a time after expiration
         let future = exp + 100;
-        let result = verify_grant(&grant, &invited_op.did(), future);
+        let result = verify_grant(&grant, &invited_op.did(), future).await;
         assert!(matches!(result, Err(InviteError::Expired)));
     }
 
@@ -463,7 +521,7 @@ mod tests {
         .unwrap();
 
         // Verify at current time (before nbf)
-        let result = verify_grant(&grant, &invited_op.did(), now);
+        let result = verify_grant(&grant, &invited_op.did(), now).await;
         assert!(matches!(result, Err(InviteError::NotYetValid)));
     }
 
@@ -526,7 +584,7 @@ mod tests {
         assert_eq!(decoded.grants[1].space, space2_op.did().to_string());
 
         // Verify all grants
-        let delegations = verify_envelope(&decoded, now).unwrap();
+        let delegations = verify_envelope(&decoded, now).await.unwrap();
         assert_eq!(delegations.len(), 2);
     }
 
@@ -535,13 +593,17 @@ mod tests {
     async fn verify_grant_rejects_subject_mismatch() {
         let space_op = Operator::generate();
         let invited_op = Operator::generate();
+        let other = Operator::generate();
 
         let now = Timestamp::now().to_unix();
         let exp = now + 3600;
 
+        // Create a grant where the delegation's subject differs from the
+        // grant's space field, but the issuer still matches grant.space.
+        // We do this by passing a different space_did to create_space_grant.
         let (mut grant, _) = create_space_grant(
             &space_op,
-            &space_op.did(),
+            &other.did(), // subject will be other's DID
             &invited_op.did(),
             exp,
             Some(now),
@@ -549,11 +611,11 @@ mod tests {
         .await
         .unwrap();
 
-        // Tamper with the space field to mismatch the delegation's subject
-        let other = Operator::generate();
-        grant.space = other.did().to_string();
+        // Set grant.space to match the issuer (passes issuer check)
+        // but now it mismatches the delegation's subject (other.did())
+        grant.space = space_op.did().to_string();
 
-        let result = verify_grant(&grant, &invited_op.did(), now);
+        let result = verify_grant(&grant, &invited_op.did(), now).await;
         assert!(matches!(result, Err(InviteError::SubjectMismatch { .. })));
     }
 }

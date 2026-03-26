@@ -157,6 +157,17 @@ impl Delegation {
         Entity::from_str(&cid_str).expect("ucan:{cid} is a valid Entity URI")
     }
 
+    /// Verify the cryptographic signature of this delegation.
+    ///
+    /// Resolves the issuer DID to an Ed25519 verifier, then checks that the
+    /// signature over the encoded payload is valid.
+    pub async fn verify_signature(&self) -> Result<(), DelegationError> {
+        let resolver = dialog_credentials::ed25519::Ed25519KeyResolver;
+        self.0.verify_signature(&resolver).await.map_err(|e| {
+            DelegationError::InvalidDelegation(format!("signature verification failed: {}", e))
+        })
+    }
+
     /// Serializes this delegation to DAG-CBOR bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         serde_ipld_dagcbor::to_vec(&self.0).expect("UcanDelegation serialization cannot fail")

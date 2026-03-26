@@ -3095,7 +3095,7 @@ async fn test_invite_cmd_runs_without_error() {
     let bob = tonk_space::Operator::generate();
 
     // The invite command should succeed
-    carry::invite_cmd::execute(&ctx, &bob.did().to_string())
+    carry::invite_cmd::execute(&ctx, bob.did().as_ref())
         .await
         .unwrap();
 }
@@ -3116,7 +3116,7 @@ async fn test_invite_verify_rejects_wrong_did() {
 
     // Verify with Charlie's DID should fail (invite is for Bob)
     let now = tonk_space::Timestamp::now().to_unix();
-    let result = tonk_space::verify_grant(&decoded.grants[0], &charlie.did(), now);
+    let result = tonk_space::verify_grant(&decoded.grants[0], &charlie.did(), now).await;
     assert!(result.is_err());
 }
 
@@ -3169,7 +3169,7 @@ async fn test_invite_multi_space_grants() {
     assert_eq!(decoded.grants.len(), 2);
 
     // All grants should verify
-    let delegations = tonk_space::verify_envelope(&decoded, now).unwrap();
+    let delegations = tonk_space::verify_envelope(&decoded, now).await.unwrap();
     assert_eq!(delegations.len(), 2);
 }
 
@@ -3202,6 +3202,133 @@ async fn test_identity_load_save_roundtrip() {
         operator_read.did().to_string(),
         "Identity should roundtrip through file"
     );
+}
+
+#[tokio::test]
+async fn test_invite_join_roundtrip() {
+    // Full invite→join flow: Alice invites Bob, Bob joins the space.
+    // Exercises: create_invite → encode → decode → verify → create_space_for_did → store delegation
+    let alice_env = TestEnv::new().await.unwrap();
+    let alice_space = alice_env.space();
+    let alice_op = alice_space.load_operator().unwrap();
+
+    let bob = tonk_space::Operator::generate();
+
+    // Alice creates invite for Bob
+    let (envelope, _) = tonk_space::create_invite(
+        &alice_op,
+        &alice_op.did(),
+        &bob.did(),
+        Some("shared-repo".to_string()),
+    )
+    .await
+    .unwrap();
+
+    let token = tonk_space::encode_invite(&envelope).unwrap();
+
+    // Bob decodes and verifies
+    let decoded = tonk_space::decode_invite(&token).unwrap();
+    assert_eq!(decoded.invited, bob.did().to_string());
+
+    let now = tonk_space::Timestamp::now().to_unix();
+    let delegations = tonk_space::verify_envelope(&decoded, now).await.unwrap();
+    assert_eq!(delegations.len(), 1);
+
+    // Bob creates a local site and joins the space
+    let bob_tmp = tempfile::TempDir::new().unwrap();
+    let bob_site = carry::site::Site::init(bob_tmp.path()).unwrap();
+
+    let space_did = &decoded.grants[0].space;
+    let bob_space = bob_site
+        .create_space_for_did(space_did, bob.signer())
+        .unwrap();
+
+    // Bootstrap builtins in the new space
+    let mut session = bob_space.open_session().await.unwrap();
+    carry::schema::bootstrap_builtins(&mut session)
+        .await
+        .unwrap();
+
+    // Store the delegation
+    let mut session = bob_space.open_session().await.unwrap();
+    let mut tx = session.edit();
+    dialog_query::claim::Claim::assert(delegations[0].clone(), &mut tx);
+    session.commit(tx).await.unwrap();
+
+    // Verify Bob's space directory exists and is keyed by the *space* DID
+    assert_eq!(bob_space.did, alice_op.did().to_string());
+    assert!(bob_space.dir().exists());
+
+    // Verify Bob's credentials are his own key, not Alice's
+    let bob_loaded = bob_space.load_operator().unwrap();
+    assert_eq!(bob_loaded.did().to_string(), bob.did().to_string());
+}
+
+#[tokio::test]
+async fn test_invite_verify_rejects_wrong_issuer() {
+    // An attacker creates a grant signed by their own key, but sets the
+    // grant's space field to point to a real space they don't control.
+    let env = TestEnv::new().await.unwrap();
+    let real_space_op = env.space().load_operator().unwrap();
+
+    let attacker = tonk_space::Operator::generate();
+    let bob = tonk_space::Operator::generate();
+
+    let now = tonk_space::Timestamp::now().to_unix();
+    let exp = now + 3600;
+
+    // Attacker signs a delegation with their own key
+    let (mut grant, _) =
+        tonk_space::create_space_grant(&attacker, &attacker.did(), &bob.did(), exp, Some(now))
+            .await
+            .unwrap();
+
+    // Overwrite the space field to claim it's for the real space
+    grant.space = real_space_op.did().to_string();
+
+    // Verification should reject: issuer doesn't match grant.space
+    let result = tonk_space::verify_grant(&grant, &bob.did(), now).await;
+    assert!(
+        result.is_err(),
+        "Should reject grant where issuer doesn't match space DID"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("issuer DID mismatch"),
+        "Expected issuer mismatch error, got: {}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_join_repo_normalization_carry_suffix() {
+    // When --repo points to a .carry path that doesn't exist yet,
+    // Site::init should create .carry at the parent, not .carry/.carry
+    let tmp = tempfile::TempDir::new().unwrap();
+    let carry_path = tmp.path().join(".carry");
+
+    // The .carry path doesn't exist yet — this mimics `join --repo /x/.carry`
+    assert!(!carry_path.exists());
+
+    // Normalize like join_cmd does: if path ends with .carry, init at parent
+    let init_target = if carry_path.ends_with(".carry") {
+        carry_path.parent().unwrap().to_path_buf()
+    } else {
+        carry_path.clone()
+    };
+
+    let site = carry::site::Site::init(&init_target).unwrap();
+
+    // Should create .carry/ at the right level, not nested
+    assert!(
+        carry_path.is_dir(),
+        ".carry should exist at expected location"
+    );
+    assert!(
+        !carry_path.join(".carry").exists(),
+        "Should NOT have nested .carry/.carry"
+    );
+    assert_eq!(site.root(), carry_path);
 }
 
 #[tokio::test]

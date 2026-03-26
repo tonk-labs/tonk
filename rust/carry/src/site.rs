@@ -275,13 +275,34 @@ impl Site {
     }
 
     /// Create a space from an existing signing key.
+    ///
+    /// The directory is named after the DID derived from the signing key.
     pub fn create_space_from_key(&self, signing_key: &SigningKey) -> Result<SpaceRef> {
         let operator = Operator::from_secret(signing_key.to_bytes());
         let did = operator.did().to_string();
-        let space_dir = self.root.join(&did);
+        self.create_space_for_did(&did, signing_key)
+    }
+
+    /// Create a local space directory for a given space DID, storing the
+    /// provided signing key as credentials.
+    ///
+    /// Unlike `create_space_from_key`, the directory is named after `space_did`
+    /// (which may differ from the DID derived from `credentials_key`). This is
+    /// used when joining a space via an invite: the directory is keyed by the
+    /// *space* DID, but the credentials belong to the *collaborator*.
+    pub fn create_space_for_did(
+        &self,
+        space_did: &str,
+        credentials_key: &SigningKey,
+    ) -> Result<SpaceRef> {
+        let space_dir = self.root.join(space_did);
 
         if space_dir.exists() {
-            anyhow::bail!("Space {} already exists at {}", did, space_dir.display());
+            anyhow::bail!(
+                "Space {} already exists at {}",
+                space_did,
+                space_dir.display()
+            );
         }
 
         // Create directories
@@ -291,7 +312,7 @@ impl Site {
 
         // Write credentials (raw 32-byte secret key)
         let creds_path = space_dir.join(CREDENTIALS_FILE);
-        std::fs::write(&creds_path, signing_key.to_bytes())
+        std::fs::write(&creds_path, credentials_key.to_bytes())
             .with_context(|| format!("Failed to write {}", creds_path.display()))?;
 
         // Restrict permissions on credentials file (Unix only)
@@ -303,7 +324,7 @@ impl Site {
         }
 
         Ok(SpaceRef {
-            did,
+            did: space_did.to_string(),
             dir: space_dir,
         })
     }

@@ -29,15 +29,25 @@ pub async fn execute(token: &str, site_flag: Option<&Path>) -> Result<()> {
 
     // Verify all grants cryptographically
     let now = Timestamp::now().to_unix();
-    let delegations =
-        verify_envelope(&envelope, now).context("Invite token verification failed")?;
+    let delegations = verify_envelope(&envelope, now)
+        .await
+        .context("Invite token verification failed")?;
 
     // Resolve or create the .carry/ site
     let site = match Site::resolve(site_flag) {
         Ok(site) => site,
         Err(_) => {
             let parent = if let Some(p) = site_flag {
-                p.to_path_buf()
+                // Normalize: if --repo points at a .carry path, init at its
+                // parent (mirrors Site::open semantics), otherwise init at the
+                // given path.
+                if p.ends_with(".carry") {
+                    p.parent()
+                        .context("--repo .carry path has no parent")?
+                        .to_path_buf()
+                } else {
+                    p.to_path_buf()
+                }
             } else {
                 std::env::current_dir().context("Failed to determine current directory")?
             };
@@ -54,9 +64,9 @@ pub async fn execute(token: &str, site_flag: Option<&Path>) -> Result<()> {
         let space_ref = if let Some(existing) = site.space_by_did(space_did) {
             existing
         } else {
-            // Create a new space directory for this space DID.
-            // The collaborator uses their own identity key as credentials.
-            let space = site.create_space_from_key(operator.signer())?;
+            // Create a directory named after the *space* DID, storing the
+            // collaborator's own key as credentials.
+            let space = site.create_space_for_did(space_did, operator.signer())?;
 
             // Bootstrap builtins in the new space
             let mut session = space.open_session().await?;
