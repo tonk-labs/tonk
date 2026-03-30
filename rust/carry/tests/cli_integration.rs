@@ -27,12 +27,8 @@ async fn test_init_creates_site() {
 
 #[tokio::test]
 async fn test_init_with_name() {
-    // Set up a test identity so ensure_identity() doesn't trigger passkey flow
     let admin = tonk_space::Operator::generate();
-    let home = dirs::home_dir().unwrap();
-    let carry_home = home.join(".carry");
-    std::fs::create_dir_all(&carry_home).unwrap();
-    std::fs::write(carry_home.join("identity"), admin.to_secret()).unwrap();
+    let id_dir = common::TestEnv::setup_test_identity(&admin);
 
     let tmp = tempfile::TempDir::new().unwrap();
     carry::init::execute(Some("my-project".to_string()), vec![], Some(tmp.path()))
@@ -43,15 +39,13 @@ async fn test_init_with_name() {
     let spaces = site.list_spaces().unwrap();
     assert_eq!(spaces.len(), 1);
     assert!(site.active_space_did().unwrap().is_some());
+    drop(id_dir);
 }
 
 #[tokio::test]
 async fn test_init_idempotent() {
     let admin = tonk_space::Operator::generate();
-    let home = dirs::home_dir().unwrap();
-    let carry_home = home.join(".carry");
-    std::fs::create_dir_all(&carry_home).unwrap();
-    std::fs::write(carry_home.join("identity"), admin.to_secret()).unwrap();
+    let id_dir = common::TestEnv::setup_test_identity(&admin);
 
     let tmp = tempfile::TempDir::new().unwrap();
     carry::init::execute(None, vec![], Some(tmp.path()))
@@ -64,6 +58,7 @@ async fn test_init_idempotent() {
     let site = carry::site::Site::open(tmp.path()).unwrap();
     let spaces = site.list_spaces().unwrap();
     assert_eq!(spaces.len(), 1, "Should not create a second space");
+    drop(id_dir);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3145,12 +3140,8 @@ async fn test_invite_multi_space_grants() {
     let tmp = tempfile::TempDir::new().unwrap();
     let site = carry::site::Site::init(tmp.path()).unwrap();
 
-    // Set up a test admin identity
     let admin = tonk_space::Operator::generate();
-    let home = dirs::home_dir().unwrap();
-    let carry_home = home.join(".carry");
-    std::fs::create_dir_all(&carry_home).unwrap();
-    std::fs::write(carry_home.join("identity"), admin.to_secret()).unwrap();
+    let id_dir = common::TestEnv::setup_test_identity(&admin);
 
     let (space1, proofs1) = site.create_delegated_space(&[admin.did()]).await.unwrap();
     site.set_active_space(&space1.did).unwrap();
@@ -3199,6 +3190,7 @@ async fn test_invite_multi_space_grants() {
     // All grants should verify
     let delegations = tonk_space::verify_envelope(&decoded, now).await.unwrap();
     assert_eq!(delegations.len(), 2);
+    drop(id_dir);
 }
 
 #[tokio::test]

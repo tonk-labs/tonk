@@ -16,6 +16,7 @@ use tonk_space::Operator;
 #[allow(dead_code)]
 pub struct TestEnv {
     _temp_dir: TempDir,
+    _identity_dir: TempDir,
     pub site_path: PathBuf,
     pub space_did: String,
     pub admin: Operator,
@@ -25,19 +26,20 @@ pub struct TestEnv {
 impl TestEnv {
     /// Create a new test environment with a bootstrapped space.
     ///
-    /// Sets up a test identity in `~/.carry/identity` and creates a
-    /// delegated space.
+    /// Sets up a test identity via `CARRY_IDENTITY` env var pointing to a
+    /// temp file, avoiding writes to the real `~/.carry/identity`.
     pub async fn new() -> Result<Self> {
         let temp_dir = TempDir::new().context("Failed to create temp directory")?;
         let site_path = temp_dir.path().to_path_buf();
         let site = Site::init(&site_path)?;
 
-        // Create a test admin identity
+        // Create a test admin identity in an isolated temp directory
+        let identity_dir = TempDir::new().context("Failed to create identity temp dir")?;
         let admin = Operator::generate();
-        let home = dirs::home_dir().context("home dir")?;
-        let carry_home = home.join(".carry");
-        std::fs::create_dir_all(&carry_home)?;
-        std::fs::write(carry_home.join("identity"), admin.to_secret())?;
+        let identity_path = identity_dir.path().join("identity");
+        std::fs::write(&identity_path, admin.to_secret())?;
+        // Point CARRY_IDENTITY to the temp file so load_identity() finds it
+        unsafe { std::env::set_var("CARRY_IDENTITY", &identity_path) };
 
         let (space, _proofs) = site.create_delegated_space(&[admin.did()]).await?;
         site.set_active_space(&space.did)?;
@@ -50,6 +52,7 @@ impl TestEnv {
 
         Ok(Self {
             _temp_dir: temp_dir,
+            _identity_dir: identity_dir,
             site_path,
             space_did,
             admin,
@@ -76,6 +79,18 @@ impl TestEnv {
         carry::site::SiteContext::resolve(Some(self.site_path.as_path()), None)
             .await
             .unwrap()
+    }
+
+    /// Set up a test identity via `CARRY_IDENTITY` env var.
+    ///
+    /// Returns the operator and a `TempDir` that must be kept alive for the
+    /// identity file to persist.
+    pub fn setup_test_identity(op: &Operator) -> TempDir {
+        let dir = TempDir::new().expect("Failed to create identity temp dir");
+        let path = dir.path().join("identity");
+        std::fs::write(&path, op.to_secret()).unwrap();
+        unsafe { std::env::set_var("CARRY_IDENTITY", &path) };
+        dir
     }
 
     /// Get path to a specific example YAML file.

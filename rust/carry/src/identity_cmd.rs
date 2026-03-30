@@ -152,8 +152,16 @@ pub async fn execute(reset: bool) -> Result<()> {
     }
 
     if reset {
-        std::fs::remove_file(carry_home()?.join(CREDENTIAL_FILE)).ok();
-        std::fs::remove_file(identity_path()?).ok();
+        match std::fs::remove_file(carry_home()?.join(CREDENTIAL_FILE)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context("Failed to remove credential file"),
+        }
+        match std::fs::remove_file(identity_path()?) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context("Failed to remove identity file"),
+        }
     }
 
     // Run the passkey browser flow
@@ -196,6 +204,7 @@ struct CallbackPayload {
 struct ServerState {
     credential_id: Option<String>,
     challenge: String,
+    expected_origin: String,
     tx: std::sync::Mutex<Option<oneshot::Sender<Result<CallbackPayload>>>>,
 }
 
@@ -216,9 +225,15 @@ async fn run_passkey_flow() -> Result<String> {
 
     let (tx, rx) = oneshot::channel();
 
+    // Bind to ephemeral port
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let expected_origin = format!("http://localhost:{}", addr.port());
+
     let state = Arc::new(ServerState {
         credential_id: credential_id.clone(),
         challenge: challenge.clone(),
+        expected_origin: expected_origin.clone(),
         tx: std::sync::Mutex::new(Some(tx)),
     });
 
@@ -242,10 +257,7 @@ async fn run_passkey_flow() -> Result<String> {
         .route("/callback", post(handle_callback))
         .with_state(state);
 
-    // Bind to ephemeral port
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    let url = format!("http://localhost:{}/auth", addr.port());
+    let url = format!("{}/auth", expected_origin);
 
     eprintln!("Opening browser for passkey authentication...");
 
@@ -275,8 +287,15 @@ async fn serve_page() -> Html<&'static str> {
 
 async fn handle_callback(
     State(state): State<Arc<ServerState>>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<CallbackPayload>,
 ) -> StatusCode {
+    // Reject requests from unexpected origins to prevent local cross-origin theft
+    if let Some(origin) = headers.get("origin")
+        && origin.as_bytes() != state.expected_origin.as_bytes()
+    {
+        return StatusCode::FORBIDDEN;
+    }
     if let Some(tx) = state.tx.lock().unwrap().take() {
         let _ = tx.send(Ok(payload));
         StatusCode::OK

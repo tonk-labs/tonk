@@ -495,15 +495,15 @@ mod tests {
     }
 
     /// Helper: set up identity for tests that call load_operator().
-    /// Writes a test identity to ~/.carry/identity (or a temp override).
-    fn setup_test_identity() -> Operator {
+    /// Uses CARRY_IDENTITY env var to avoid writing to the real ~/.carry/.
+    /// Returns (operator, temp_dir) — caller must keep temp_dir alive.
+    fn setup_test_identity() -> (Operator, tempfile::TempDir) {
         let op = Operator::generate();
-        let home = dirs::home_dir().expect("home dir");
-        let carry_home = home.join(".carry");
-        std::fs::create_dir_all(&carry_home).unwrap();
-        let identity_path = carry_home.join("identity");
-        std::fs::write(&identity_path, op.to_secret()).unwrap();
-        op
+        let dir = tempfile::TempDir::new().expect("temp dir for identity");
+        let path = dir.path().join("identity");
+        std::fs::write(&path, op.to_secret()).unwrap();
+        unsafe { std::env::set_var("CARRY_IDENTITY", &path) };
+        (op, dir)
     }
 
     #[test]
@@ -629,15 +629,16 @@ mod tests {
     async fn test_open_session() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let (_space, admin) = create_test_space(&site).await;
+        let (space, admin) = create_test_space(&site).await;
 
-        // Set up the admin as the local identity so load_operator() works
-        let home = dirs::home_dir().expect("home dir");
-        let carry_home = home.join(".carry");
-        std::fs::create_dir_all(&carry_home).unwrap();
-        std::fs::write(carry_home.join("identity"), admin.to_secret()).unwrap();
+        // Point CARRY_IDENTITY to a temp file so load_operator() works
+        let id_dir = tempfile::TempDir::new().unwrap();
+        let id_path = id_dir.path().join("identity");
+        std::fs::write(&id_path, admin.to_secret()).unwrap();
+        unsafe { std::env::set_var("CARRY_IDENTITY", &id_path) };
 
-        let _session = _space.open_session().await.unwrap();
+        let _session = space.open_session().await.unwrap();
+        drop(id_dir);
     }
 
     // -- Helper: assert a label claim on a space ----------------------------
@@ -660,30 +661,32 @@ mod tests {
     async fn test_resolve_space_by_did() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let admin = setup_test_identity();
+        let (admin, id_dir) = setup_test_identity();
         let (space, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
 
         let resolved = site.resolve_space(&space.did).await.unwrap();
         assert_eq!(resolved.did, space.did);
+        drop(id_dir);
     }
 
     #[tokio::test]
     async fn test_resolve_space_by_label() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let admin = setup_test_identity();
+        let (admin, id_dir) = setup_test_identity();
         let (space, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
         assert_label(&space, "my-space").await;
 
         let resolved = site.resolve_space("my-space").await.unwrap();
         assert_eq!(resolved.did, space.did);
+        drop(id_dir);
     }
 
     #[tokio::test]
     async fn test_resolve_space_ambiguous_label() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let admin = setup_test_identity();
+        let (admin, id_dir) = setup_test_identity();
         let (space1, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
         let (space2, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
         assert_label(&space1, "shared-label").await;
@@ -697,6 +700,7 @@ mod tests {
             "Expected 'Ambiguous' in error, got: {}",
             err_msg
         );
+        drop(id_dir);
     }
 
     #[tokio::test]
@@ -729,23 +733,25 @@ mod tests {
     async fn test_space_label_roundtrip() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let admin = setup_test_identity();
+        let (admin, id_dir) = setup_test_identity();
         let (space, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
         assert_label(&space, "test-label").await;
 
         let label = site.space_label(&space).await.unwrap();
         assert_eq!(label, Some("test-label".to_string()));
+        drop(id_dir);
     }
 
     #[tokio::test]
     async fn test_space_label_none() {
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
-        let admin = setup_test_identity();
+        let (admin, id_dir) = setup_test_identity();
         let (space, _) = site.create_delegated_space(&[admin.did()]).await.unwrap();
 
         let label = site.space_label(&space).await.unwrap();
         assert_eq!(label, None);
+        drop(id_dir);
     }
 
     // -- delete_space tests -------------------------------------------------
