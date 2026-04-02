@@ -11,7 +11,7 @@ use crate::identity_cmd;
 use anyhow::{Context, Result};
 use dialog_artifacts::profile::Profile;
 use dialog_artifacts::storage::Storage;
-use dialog_artifacts::{Artifacts, Operator};
+use dialog_artifacts::{Artifacts, Operator, Repository};
 use dialog_query::Session;
 use dialog_storage::FileSystemStorageBackend;
 use std::path::{Path, PathBuf};
@@ -43,6 +43,8 @@ pub struct Site {
     pub operator: Operator,
     /// The backing storage.
     pub storage: Storage,
+    /// The capability-based repository (owns the delegation chain).
+    pub repo: Repository,
 }
 
 impl Site {
@@ -98,19 +100,27 @@ impl Site {
         Self::discover_dir(&cwd).context("No .carry repo found (run `carry init` to create one)")
     }
 
-    /// Resolve a site from an optional `--repo` flag. Opens identity.
+    /// Resolve a site from an optional `--repo` flag. Opens identity + repo.
     pub async fn resolve(site_flag: Option<&Path>) -> Result<Self> {
         let root = Self::locate(site_flag)?;
         let id = identity_cmd::ensure_identity().await?;
+        let repo = Repository::open(Storage::current(".carry"))
+            .perform(&id.operator)
+            .await
+            .context("Failed to open repository")?;
         Ok(Self {
             root,
             profile: id.profile,
             operator: id.operator,
             storage: id.storage,
+            repo,
         })
     }
 
-    /// Create a new `.carry/` directory at `parent` and open identity.
+    /// Create a new `.carry/` directory at `parent` and open identity + repo.
+    ///
+    /// Creates the repository credential and delegates ownership to the
+    /// profile so the operator can act on behalf of the repo.
     pub async fn init(parent: &Path) -> Result<Self> {
         let carry_dir = parent.join(".carry");
         std::fs::create_dir_all(&carry_dir)
@@ -122,11 +132,33 @@ impl Site {
             .with_context(|| format!("Failed to create {}", claims_dir.display()))?;
 
         let id = identity_cmd::ensure_identity().await?;
+
+        // Create the repository (generates a repo credential)
+        let repo = Repository::open(Storage::current(".carry"))
+            .perform(&id.operator)
+            .await
+            .context("Failed to create repository")?;
+
+        // Delegate repo ownership to the profile so the operator
+        // (derived from the profile) can act on the repo's behalf.
+        let chain = repo
+            .ownership()
+            .delegate(&id.profile)
+            .perform(&id.operator)
+            .await
+            .context("Failed to delegate repo ownership to profile")?;
+        id.profile
+            .save(chain)
+            .perform(&id.operator)
+            .await
+            .context("Failed to save ownership delegation")?;
+
         Ok(Self {
             root: carry_dir,
             profile: id.profile,
             operator: id.operator,
             storage: id.storage,
+            repo,
         })
     }
 
@@ -141,11 +173,16 @@ impl Site {
             anyhow::bail!("No .carry directory found at {}", carry_dir.display());
         }
         let id = identity_cmd::ensure_identity().await?;
+        let repo = Repository::open(Storage::current(".carry"))
+            .perform(&id.operator)
+            .await
+            .context("Failed to open repository")?;
         Ok(Self {
             root: carry_dir,
             profile: id.profile,
             operator: id.operator,
             storage: id.storage,
+            repo,
         })
     }
 
@@ -171,6 +208,11 @@ impl Site {
     /// The profile DID.
     pub fn did(&self) -> String {
         self.profile.did().to_string()
+    }
+
+    /// The repository DID.
+    pub fn repo_did(&self) -> String {
+        self.repo.did().to_string()
     }
 
     // -- Data access ---------------------------------------------------------

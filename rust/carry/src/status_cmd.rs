@@ -14,13 +14,15 @@ pub async fn execute(site_flag: Option<&Path>, format: &str) -> Result<()> {
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "repo": site.root().display().to_string(),
-                    "did": site.did(),
+                    "profile": site.did(),
+                    "repository": site.repo_did(),
                 }))?
             );
         }
         _ => {
             println!("Repo: {}", site.root().display());
-            println!("DID: {}", site.did());
+            println!("Profile: {}", site.did());
+            println!("Repository: {}", site.repo_did());
         }
     }
 
