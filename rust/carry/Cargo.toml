@@ -25,9 +25,11 @@ clap_complete = { workspace = true }
 
 # Dialog DB
 dialog-artifacts = { workspace = true, features = ["helpers"] }
-dialog-capability = { workspace = true }
+dialog-capability = { workspace = true, features = ["ucan"] }
+dialog-credentials = { workspace = true }
 dialog-query = { workspace = true }
 dialog-storage = { workspace = true }
+dialog-ucan = { workspace = true }
 dialog-varsig = { workspace = true }
 
 # Async

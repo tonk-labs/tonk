@@ -2283,3 +2283,98 @@ async fn test_attribute_concept_data_roundtrip() {
         .await
         .unwrap();
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Invite & Join
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_invite_creates_token() {
+    let env = TestEnv::new().await.unwrap();
+    let site = env.site();
+
+    // Generate an invite token
+    // (execute prints to stdout, so we test the encode/decode path directly)
+    use dialog_capability::Subject;
+    use dialog_capability::ucan::Ucan;
+    use dialog_credentials::Ed25519Signer;
+    use dialog_credentials::credential::SignerCredential;
+    use dialog_varsig::Principal;
+
+    let membership_signer = Ed25519Signer::generate().await.unwrap();
+    let membership = SignerCredential::from(membership_signer);
+
+    let chain = Ucan::delegate(&Subject::from(site.repo.did()))
+        .issuer(site.profile.credential().signer().clone())
+        .audience(membership.did())
+        .perform(&site.operator)
+        .await
+        .unwrap();
+
+    let cred_export = membership.export().await.unwrap();
+    let cred_bytes: &[u8] = cred_export.as_ref();
+    let chain_bytes = chain.to_bytes().unwrap();
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(cred_bytes.len() as u32).to_le_bytes());
+    payload.extend_from_slice(cred_bytes);
+    payload.extend_from_slice(&chain_bytes);
+
+    let token = format!("carry_inv2_{}", bs58::encode(&payload).into_string());
+
+    // Decode it back
+    let (decoded_cred, decoded_chain) = carry::invite_cmd::decode_token(&token).unwrap();
+    assert_eq!(decoded_cred, cred_bytes);
+    // Chain should roundtrip
+    assert_eq!(decoded_chain.to_bytes().unwrap(), chain_bytes);
+}
+
+#[tokio::test]
+async fn test_invite_decode_rejects_bad_tokens() {
+    assert!(carry::invite_cmd::decode_token("not_a_token").is_err());
+    assert!(carry::invite_cmd::decode_token("carry_inv2_").is_err());
+    assert!(carry::invite_cmd::decode_token("carry_inv2_1111").is_err());
+}
+
+#[tokio::test]
+async fn test_invite_join_roundtrip() {
+    let env = TestEnv::new().await.unwrap();
+    let site = env.site();
+
+    // Generate invite token using the same logic as invite_cmd
+    use dialog_capability::Subject;
+    use dialog_capability::ucan::Ucan;
+    use dialog_credentials::Ed25519Signer;
+    use dialog_credentials::credential::SignerCredential;
+    use dialog_varsig::Principal;
+
+    let membership_signer = Ed25519Signer::generate().await.unwrap();
+    let membership = SignerCredential::from(membership_signer);
+
+    let chain = Ucan::delegate(&Subject::from(site.repo.did()))
+        .issuer(site.profile.credential().signer().clone())
+        .audience(membership.did())
+        .perform(&site.operator)
+        .await
+        .unwrap();
+
+    let cred_export = membership.export().await.unwrap();
+    let cred_bytes: &[u8] = cred_export.as_ref();
+    let chain_bytes = chain.to_bytes().unwrap();
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(cred_bytes.len() as u32).to_le_bytes());
+    payload.extend_from_slice(cred_bytes);
+    payload.extend_from_slice(&chain_bytes);
+
+    let token = format!("carry_inv2_{}", bs58::encode(&payload).into_string());
+
+    // Join with the token in a new directory
+    let join_dir = tempfile::TempDir::new().unwrap();
+    carry::join_cmd::execute(&token, Some(join_dir.path()))
+        .await
+        .unwrap();
+
+    // Verify the joined site exists
+    assert!(join_dir.path().join(".carry").is_dir());
+}

@@ -112,13 +112,9 @@ mod inner {
         },
 
         /// Create an invite token for a collaborator
-        Invite {
-            /// DID of the user to invite (e.g., did:key:z6Mk...)
-            #[arg(value_name = "INVITED_DID")]
-            invited_did: String,
-        },
+        Invite {},
 
-        /// Join a space using an invite token
+        /// Join a repository using an invite token
         Join {
             /// The invite token received from a collaborator
             #[arg(value_name = "TOKEN")]
@@ -199,9 +195,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Identity { reset } => {
             carry::identity_cmd::execute(reset).await?;
         }
-        Commands::Invite { invited_did } => {
+        Commands::Invite {} => {
             let site = carry::site::Site::resolve(repo_path).await?;
-            carry::invite_cmd::execute(&site, &invited_did).await?;
+            carry::invite_cmd::execute(&site, "").await?;
         }
         Commands::Join { token } => {
             carry::join_cmd::execute(&token, repo_path).await?;
@@ -372,35 +368,16 @@ mod tests {
     // -- Invite -----------------------------------------------------------------
 
     #[test]
-    fn invite_parses_did() {
-        let did = "did:key:z6MkvSLQtPtAraTvgQwjz3ps9JBuY8a41STNikZ9bJdShNr6";
-        let cli = Cli::try_parse_from(["carry", "invite", did]).unwrap();
-        match cli.command {
-            Commands::Invite { ref invited_did } => {
-                assert_eq!(invited_did, did);
-            }
-            _ => panic!("Expected Invite command"),
-        }
-    }
-
-    #[test]
-    fn invite_with_repo_flag() {
-        let cli = Cli::try_parse_from([
-            "carry",
-            "--repo",
-            "/tmp/myrepo",
-            "invite",
-            "did:key:z6MkTest",
-        ])
-        .unwrap();
-        assert_eq!(cli.repo.as_deref(), Some("/tmp/myrepo"));
+    fn invite_parses() {
+        let cli = Cli::try_parse_from(["carry", "invite"]).unwrap();
         assert!(matches!(cli.command, Commands::Invite { .. }));
     }
 
     #[test]
-    fn invite_missing_did_fails() {
-        let result = Cli::try_parse_from(["carry", "invite"]);
-        assert!(result.is_err());
+    fn invite_with_repo_flag() {
+        let cli = Cli::try_parse_from(["carry", "--repo", "/tmp/myrepo", "invite"]).unwrap();
+        assert_eq!(cli.repo.as_deref(), Some("/tmp/myrepo"));
+        assert!(matches!(cli.command, Commands::Invite { .. }));
     }
 
     // -- Join -------------------------------------------------------------------
