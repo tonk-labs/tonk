@@ -102,10 +102,6 @@ If a repository already exists, reports its status.
 If no user identity exists (~/.carry/identity), the passkey authentication
 flow is triggered automatically before creating the repository.
 
-The command generates an ephemeral Ed25519 space key, delegates full authority
-to the user's identity (and any additional --admin DIDs), then discards the
-space key. The delegation proofs are stored in .carry/<did>/proofs.
-
 Pre-registered concepts (attribute, concept, bookmark) are bootstrapped during
 init so they can be queried and used immediately.";
 
@@ -343,50 +339,3 @@ EXAMPLES:
 OUTPUT:
   Repo: /path/to/project/.carry
   DID: did:key:z...";
-
-// -----------------------------------------------------------------------------
-// Space
-// -----------------------------------------------------------------------------
-
-pub const SPACE_LONG_ABOUT: &str = "\
-Manage spaces within a .carry/ repository.
-
-Spaces are isolated namespaces within a single repo, each with its own
-Ed25519 identity and data store. Use spaces to keep workstreams separate
-within the same project.
-
-Each space has a unique DID (e.g., did:key:z...) and an optional human-readable
-label. The active space is the default target for query, assert, and retract
-commands. Use --space <DID|LABEL> on any command to target a specific space
-without switching.";
-
-pub const SPACE_AFTER_HELP: &str = "\
-EXAMPLES:
-  # List all spaces
-  carry space list
-
-  # Create a new space with a label
-  carry space create research
-
-  # Switch to a space by label
-  carry space switch research
-
-  # Switch to a space by DID
-  carry space switch did:key:zAbc123
-
-  # Show current active space
-  carry space active
-
-  # Delete a space (with confirmation)
-  carry space delete research
-
-  # Delete without confirmation
-  carry space delete research --yes
-
-  # Query in a specific space without switching
-  carry query person --space research
-
-SPACE RESOLUTION:
-  Commands accept either a DID or a label to identify a space.
-  If a label matches multiple spaces, an error is returned —
-  use the DID to be specific.";

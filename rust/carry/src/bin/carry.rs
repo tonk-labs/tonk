@@ -18,10 +18,6 @@ mod inner {
         /// Path to a specific .carry/ repository (skips filesystem search from $PWD)
         #[arg(long, global = true)]
         pub repo: Option<String>,
-
-        /// Target a specific space by DID or label (overrides active space)
-        #[arg(long, global = true, hide = true)]
-        pub space: Option<String>,
     }
 
     #[derive(Subcommand)]
@@ -128,66 +124,6 @@ mod inner {
             #[arg(value_name = "TOKEN")]
             token: String,
         },
-
-        /// Manage spaces within a .carry/ repository
-        #[command(alias = "s", hide = true)]
-        #[command(long_about = help::SPACE_LONG_ABOUT)]
-        #[command(after_help = help::SPACE_AFTER_HELP)]
-        Space {
-            #[command(subcommand)]
-            command: SpaceCommands,
-        },
-    }
-
-    #[derive(Subcommand)]
-    pub enum SpaceCommands {
-        /// List all spaces in the site
-        #[command(alias = "l")]
-        List {
-            /// Output format
-            #[arg(long, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
-            format: String,
-        },
-
-        /// Create a new space
-        #[command(alias = "c")]
-        Create {
-            /// Label for the new space
-            #[arg(value_name = "LABEL")]
-            label: Option<String>,
-
-            /// Output format
-            #[arg(long, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
-            format: String,
-        },
-
-        /// Switch active space
-        #[command(alias = "s")]
-        Switch {
-            /// DID or label of the space to switch to
-            #[arg(value_name = "DID|LABEL")]
-            target: String,
-        },
-
-        /// Show current active space
-        #[command(alias = "a")]
-        Active {
-            /// Output format
-            #[arg(long, default_value = "yaml", value_parser = ["yaml", "json", "triples"])]
-            format: String,
-        },
-
-        /// Delete a space (cannot delete the active space)
-        #[command(alias = "d")]
-        Delete {
-            /// DID or label of the space to delete
-            #[arg(value_name = "DID|LABEL")]
-            target: String,
-
-            /// Skip confirmation prompt
-            #[arg(long, short)]
-            yes: bool,
-        },
     }
 }
 
@@ -207,7 +143,6 @@ async fn main() -> anyhow::Result<()> {
     CompleteEnv::with_factory(Cli::command).complete();
     let cli = Cli::parse();
     let repo_path = cli.repo.as_deref().map(std::path::Path::new);
-    let space_flag = cli.space.as_deref();
 
     match cli.command {
         Commands::Init { name, admins } => {
@@ -220,7 +155,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let parsed_target = carry::target::Target::parse(&target)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
+            let ctx = carry::site::SiteContext::resolve(repo_path).await?;
             carry::query_cmd::execute(&ctx, parsed_target, parsed.fields, &format).await?;
         }
         Commands::Assert {
@@ -230,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
+            let ctx = carry::site::SiteContext::resolve(repo_path).await?;
             carry::assert_cmd::execute(
                 &ctx,
                 first_arg,
@@ -248,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
+            let ctx = carry::site::SiteContext::resolve(repo_path).await?;
             carry::retract_cmd::execute(
                 &ctx,
                 first_arg,
@@ -265,31 +200,11 @@ async fn main() -> anyhow::Result<()> {
             carry::identity_cmd::execute(reset).await?;
         }
         Commands::Invite { invited_did } => {
-            let ctx = carry::site::SiteContext::resolve(repo_path, space_flag).await?;
+            let ctx = carry::site::SiteContext::resolve(repo_path).await?;
             carry::invite_cmd::execute(&ctx, &invited_did).await?;
         }
         Commands::Join { token } => {
             carry::join_cmd::execute(&token, repo_path).await?;
-        }
-        Commands::Space { command } => {
-            let site = carry::space_cmd::resolve_site(repo_path)?;
-            match command {
-                SpaceCommands::List { format } => {
-                    carry::space_cmd::list(&site, &format).await?;
-                }
-                SpaceCommands::Create { label, format } => {
-                    carry::space_cmd::create(&site, label, &format).await?;
-                }
-                SpaceCommands::Switch { target } => {
-                    carry::space_cmd::switch(&site, &target).await?;
-                }
-                SpaceCommands::Active { format } => {
-                    carry::space_cmd::active(&site, &format).await?;
-                }
-                SpaceCommands::Delete { target, yes } => {
-                    carry::space_cmd::delete(&site, &target, yes).await?;
-                }
-            }
         }
     }
 
@@ -305,74 +220,6 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::inner::*;
     use clap::Parser;
-
-    // -- Query: --space not consumed by fields ------------------------------
-
-    #[test]
-    fn query_space_flag_after_fields() {
-        let cli = Cli::try_parse_from([
-            "carry",
-            "query",
-            "com.app.person",
-            "name",
-            "age",
-            "--space",
-            "test",
-        ])
-        .unwrap();
-        assert_eq!(cli.space.as_deref(), Some("test"));
-        match cli.command {
-            Commands::Query {
-                ref target,
-                ref fields,
-                ..
-            } => {
-                assert_eq!(target, "com.app.person");
-                assert_eq!(fields, &["name", "age"]);
-            }
-            _ => panic!("Expected Query command"),
-        }
-    }
-
-    #[test]
-    fn query_space_flag_before_fields() {
-        let cli = Cli::try_parse_from([
-            "carry",
-            "--space",
-            "test",
-            "query",
-            "com.app.person",
-            "name",
-            "age",
-        ])
-        .unwrap();
-        assert_eq!(cli.space.as_deref(), Some("test"));
-        match cli.command {
-            Commands::Query {
-                ref target,
-                ref fields,
-                ..
-            } => {
-                assert_eq!(target, "com.app.person");
-                assert_eq!(fields, &["name", "age"]);
-            }
-            _ => panic!("Expected Query command"),
-        }
-    }
-
-    #[test]
-    fn query_space_flag_with_did() {
-        let did = "did:key:z6MkvSLQtPtAraTvgQwjz3ps9JBuY8a41STNikZ9bJdShNr6";
-        let cli = Cli::try_parse_from(["carry", "query", "com.app.person", "name", "--space", did])
-            .unwrap();
-        assert_eq!(cli.space.as_deref(), Some(did));
-        match cli.command {
-            Commands::Query { ref fields, .. } => {
-                assert_eq!(fields, &["name"]);
-            }
-            _ => panic!("Expected Query command"),
-        }
-    }
 
     // -- Query: --format not consumed by fields -----------------------------
 
@@ -400,64 +247,7 @@ mod tests {
         }
     }
 
-    // -- Query: --space and --format together -------------------------------
-
-    #[test]
-    fn query_space_and_format_flags_after_fields() {
-        let cli = Cli::try_parse_from([
-            "carry",
-            "query",
-            "com.app.person",
-            "name",
-            "age",
-            "--space",
-            "research",
-            "--format",
-            "json",
-        ])
-        .unwrap();
-        assert_eq!(cli.space.as_deref(), Some("research"));
-        match cli.command {
-            Commands::Query {
-                ref target,
-                ref fields,
-                ref format,
-            } => {
-                assert_eq!(target, "com.app.person");
-                assert_eq!(fields, &["name", "age"]);
-                assert_eq!(format, "json");
-            }
-            _ => panic!("Expected Query command"),
-        }
-    }
-
-    // -- Assert: --space not consumed by fields -----------------------------
-
-    #[test]
-    fn assert_space_flag_after_fields() {
-        let cli = Cli::try_parse_from([
-            "carry",
-            "assert",
-            "com.app.person",
-            "name=Alice",
-            "age=28",
-            "--space",
-            "test",
-        ])
-        .unwrap();
-        assert_eq!(cli.space.as_deref(), Some("test"));
-        match cli.command {
-            Commands::Assert {
-                ref target_or_file,
-                ref fields,
-                ..
-            } => {
-                assert_eq!(target_or_file, "com.app.person");
-                assert_eq!(fields, &["name=Alice", "age=28"]);
-            }
-            _ => panic!("Expected Assert command"),
-        }
-    }
+    // -- Assert: --format not consumed by fields -----------------------------
 
     #[test]
     fn assert_format_flag_after_fields() {
@@ -483,33 +273,7 @@ mod tests {
         }
     }
 
-    // -- Retract: --space not consumed by fields ----------------------------
-
-    #[test]
-    fn retract_space_flag_after_fields() {
-        let cli = Cli::try_parse_from([
-            "carry",
-            "retract",
-            "com.app.person",
-            "this=did:key:zAlice",
-            "age",
-            "--space",
-            "test",
-        ])
-        .unwrap();
-        assert_eq!(cli.space.as_deref(), Some("test"));
-        match cli.command {
-            Commands::Retract {
-                ref target_or_file,
-                ref fields,
-                ..
-            } => {
-                assert_eq!(target_or_file, "com.app.person");
-                assert_eq!(fields, &["this=did:key:zAlice", "age"]);
-            }
-            _ => panic!("Expected Retract command"),
-        }
-    }
+    // -- Retract: --format not consumed by fields ----------------------------
 
     #[test]
     fn retract_format_flag_after_fields() {
@@ -536,29 +300,6 @@ mod tests {
         }
     }
 
-    // -- Fields with = values still parse correctly -------------------------
-
-    #[test]
-    fn query_filter_fields_with_space_flag() {
-        let cli = Cli::try_parse_from([
-            "carry",
-            "query",
-            "com.app.person",
-            "name=Alice",
-            "age",
-            "--space",
-            "my-space",
-        ])
-        .unwrap();
-        assert_eq!(cli.space.as_deref(), Some("my-space"));
-        match cli.command {
-            Commands::Query { ref fields, .. } => {
-                assert_eq!(fields, &["name=Alice", "age"]);
-            }
-            _ => panic!("Expected Query command"),
-        }
-    }
-
     // -- --format triples ----------------------------------------------------
 
     #[test]
@@ -579,34 +320,6 @@ mod tests {
                 ..
             } => {
                 assert_eq!(fields, &["name"]);
-                assert_eq!(format, "triples");
-            }
-            _ => panic!("Expected Query command"),
-        }
-    }
-
-    #[test]
-    fn query_format_triples_with_space() {
-        let cli = Cli::try_parse_from([
-            "carry",
-            "query",
-            "com.app.person",
-            "name",
-            "age",
-            "--format",
-            "triples",
-            "--space",
-            "research",
-        ])
-        .unwrap();
-        assert_eq!(cli.space.as_deref(), Some("research"));
-        match cli.command {
-            Commands::Query {
-                ref fields,
-                ref format,
-                ..
-            } => {
-                assert_eq!(fields, &["name", "age"]);
                 assert_eq!(format, "triples");
             }
             _ => panic!("Expected Query command"),

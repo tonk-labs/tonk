@@ -76,7 +76,7 @@ impl TestEnv {
 
     /// Resolve a `SiteContext` for use in commands.
     pub async fn ctx(&self) -> carry::site::SiteContext {
-        carry::site::SiteContext::resolve(Some(self.site_path.as_path()), None)
+        carry::site::SiteContext::resolve(Some(self.site_path.as_path()))
             .await
             .unwrap()
     }

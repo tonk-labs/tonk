@@ -12,7 +12,6 @@ pub mod join_cmd;
 pub mod query_cmd;
 pub mod retract_cmd;
 pub mod site;
-pub mod space_cmd;
 pub mod status_cmd;
 pub mod target;
 

@@ -454,17 +454,10 @@ pub struct SiteContext {
 }
 
 impl SiteContext {
-    /// Resolve from optional `--repo` and `--space` flags.
-    ///
-    /// If `space_flag` is provided, resolves the space by DID or label
-    /// (requires async for label lookup). Otherwise uses the active space.
-    pub async fn resolve(site_flag: Option<&Path>, space_flag: Option<&str>) -> Result<Self> {
+    /// Resolve from optional `--repo` flag.
+    pub async fn resolve(site_flag: Option<&Path>) -> Result<Self> {
         let site = Site::resolve(site_flag)?;
-        let space = if let Some(space_id) = space_flag {
-            site.resolve_space(space_id).await?
-        } else {
-            site.active_space()?
-        };
+        let space = site.active_space()?;
         Ok(Self { site, space })
     }
 
