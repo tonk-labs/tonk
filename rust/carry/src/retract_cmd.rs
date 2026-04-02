@@ -4,7 +4,7 @@
 //! file input, and stdin.
 
 use crate::schema;
-use crate::site::SiteContext;
+use crate::site::Site;
 use crate::target::{Field, FirstArg, Target};
 use anyhow::{Context, Result};
 use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
@@ -12,7 +12,7 @@ use std::slice::from_ref;
 
 /// Execute `carry retract <TARGET>|<FILE>|- [this=<ENTITY>] [FIELD[=VALUE]...]`.
 pub async fn execute(
-    ctx: &SiteContext,
+    site: &Site,
     first_arg: FirstArg,
     this_entity: Option<String>,
     fields: Vec<Field>,
@@ -20,16 +20,16 @@ pub async fn execute(
 ) -> Result<()> {
     match first_arg {
         FirstArg::Target(target) => {
-            retract_with_target(ctx, target, this_entity, fields, format).await
+            retract_with_target(site, target, this_entity, fields, format).await
         }
-        FirstArg::Stdin => retract_from_stdin(ctx, format).await,
-        FirstArg::File(path) => retract_from_file(ctx, &path, format).await,
+        FirstArg::Stdin => retract_from_stdin(site, format).await,
+        FirstArg::File(path) => retract_from_file(site, &path, format).await,
     }
 }
 
 /// Retract claims for a target + fields.
 async fn retract_with_target(
-    ctx: &SiteContext,
+    site: &Site,
     target: Target,
     this_entity: Option<String>,
     fields: Vec<Field>,
@@ -47,22 +47,22 @@ async fn retract_with_target(
     };
 
     match target {
-        Target::Domain(ref domain) => retract_domain(ctx, domain, &entity, &fields, format).await,
+        Target::Domain(ref domain) => retract_domain(site, domain, &entity, &fields, format).await,
         Target::Concept(ref concept_name) => {
-            retract_concept(ctx, concept_name, &entity, &fields, format).await
+            retract_concept(site, concept_name, &entity, &fields, format).await
         }
     }
 }
 
 /// Retract claims using a domain target.
 async fn retract_domain(
-    ctx: &SiteContext,
+    site: &Site,
     domain: &str,
     entity: &dialog_query::Entity,
     fields: &[Field],
     format: &str,
 ) -> Result<()> {
-    let mut branch = ctx.open_branch().await?;
+    let mut branch = site.open_branch().await?;
 
     if fields.is_empty() {
         // Retract ALL claims about this entity
@@ -98,7 +98,7 @@ async fn retract_domain(
 
 /// Retract claims using a concept target.
 async fn retract_concept(
-    ctx: &SiteContext,
+    site: &Site,
     concept_name: &str,
     entity: &dialog_query::Entity,
     fields: &[Field],
@@ -106,7 +106,7 @@ async fn retract_concept(
 ) -> Result<()> {
     if fields.is_empty() {
         // Retract all claims about this entity
-        let mut branch = ctx.open_branch().await?;
+        let mut branch = site.open_branch().await?;
         let all_claims = schema::fetch_all_entity_claims(&branch, entity).await?;
         if all_claims.is_empty() {
             anyhow::bail!("Entity '{}' not found (no claims to retract)", entity);
@@ -134,7 +134,7 @@ async fn retract_concept(
     }
 
     // Resolve the concept to get field→selector mappings
-    let session = ctx.open_session().await?;
+    let session = site.open_session().await?;
 
     // Try builtin first, then user-defined
     let resolved_fields: Vec<(String, Option<String>)> = if let Some(builtin) =
@@ -162,7 +162,7 @@ async fn retract_concept(
     };
 
     drop(session);
-    let mut branch = ctx.open_branch().await?;
+    let mut branch = site.open_branch().await?;
 
     let mut instructions = Vec::new();
 
@@ -207,7 +207,7 @@ async fn retract_concept(
 
 /// Retract specific fields using domain-qualified names.
 async fn retract_specific_fields(
-    branch: &mut dialog_artifacts::repository::Branch<tonk_space::FsBackend>,
+    branch: &mut crate::site::FsArtifacts,
     entity: &dialog_query::Entity,
     namespace: &str,
     fields: &[Field],
@@ -275,37 +275,37 @@ fn print_retract_result(entity: &dialog_query::Entity, count: usize, format: &st
 // ---------------------------------------------------------------------------
 
 /// Retract claims from a YAML/JSON file.
-async fn retract_from_file(ctx: &SiteContext, path: &str, format: &str) -> Result<()> {
+async fn retract_from_file(site: &Site, path: &str, format: &str) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
-    retract_from_content(ctx, &content, path, format).await
+    retract_from_content(site, &content, path, format).await
 }
 
 /// Retract claims from stdin.
-async fn retract_from_stdin(ctx: &SiteContext, format: &str) -> Result<()> {
+async fn retract_from_stdin(site: &Site, format: &str) -> Result<()> {
     let content = std::io::read_to_string(std::io::stdin())?;
-    retract_from_content(ctx, &content, "-", format).await
+    retract_from_content(site, &content, "-", format).await
 }
 
 /// Retract claims from file/stdin content.
 async fn retract_from_content(
-    ctx: &SiteContext,
+    site: &Site,
     content: &str,
     source: &str,
     _format: &str,
 ) -> Result<()> {
     let trimmed = content.trim();
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        retract_from_json(ctx, trimmed).await
+        retract_from_json(site, trimmed).await
     } else {
-        retract_from_yaml(ctx, trimmed).await
+        retract_from_yaml(site, trimmed).await
     }
     .with_context(|| format!("Failed to process {}", source))
 }
 
 /// Retract claims from formal JSON content (EAV triples).
-async fn retract_from_json(ctx: &SiteContext, content: &str) -> Result<()> {
+async fn retract_from_json(site: &Site, content: &str) -> Result<()> {
     let triples: Vec<serde_json::Value> = serde_json::from_str(content)?;
-    let mut branch = ctx.open_branch().await?;
+    let mut branch = site.open_branch().await?;
 
     let mut instructions = Vec::new();
     for triple in &triples {
@@ -343,20 +343,20 @@ async fn retract_from_json(ctx: &SiteContext, content: &str) -> Result<()> {
 /// Supports two formats:
 /// 1. EAV triple notation (sequence of `{the, of, is}` mappings)
 /// 2. Asserted notation (entity-grouped: `entity → namespace → field: value`)
-async fn retract_from_yaml(ctx: &SiteContext, content: &str) -> Result<()> {
+async fn retract_from_yaml(site: &Site, content: &str) -> Result<()> {
     let doc: serde_yaml::Value = serde_yaml::from_str(content)?;
 
     match &doc {
-        serde_yaml::Value::Sequence(seq) => retract_from_eav_yaml(ctx, seq).await,
+        serde_yaml::Value::Sequence(seq) => retract_from_eav_yaml(site, seq).await,
         serde_yaml::Value::Mapping(map) => {
             let is_asserted = map
                 .iter()
                 .any(|(k, v)| k.as_str().is_some_and(|s| s.starts_with("did:")) && v.is_mapping());
 
             if is_asserted {
-                retract_from_asserted_yaml(ctx, map).await
+                retract_from_asserted_yaml(site, map).await
             } else if map.get("the").is_some() {
-                retract_from_eav_yaml(ctx, from_ref(&doc)).await
+                retract_from_eav_yaml(site, from_ref(&doc)).await
             } else {
                 anyhow::bail!(
                     "Unrecognized YAML format: expected EAV triples (sequence of {{the, of, is}}) \
@@ -369,8 +369,8 @@ async fn retract_from_yaml(ctx: &SiteContext, content: &str) -> Result<()> {
 }
 
 /// Retract claims from EAV triple YAML.
-async fn retract_from_eav_yaml(ctx: &SiteContext, triples: &[serde_yaml::Value]) -> Result<()> {
-    let mut branch = ctx.open_branch().await?;
+async fn retract_from_eav_yaml(site: &Site, triples: &[serde_yaml::Value]) -> Result<()> {
+    let mut branch = site.open_branch().await?;
 
     let mut instructions = Vec::new();
     for triple in triples {
@@ -404,11 +404,8 @@ async fn retract_from_eav_yaml(ctx: &SiteContext, triples: &[serde_yaml::Value])
 }
 
 /// Retract claims from asserted notation YAML (entity-grouped mapping).
-async fn retract_from_asserted_yaml(
-    ctx: &SiteContext,
-    top_map: &serde_yaml::Mapping,
-) -> Result<()> {
-    let mut branch = ctx.open_branch().await?;
+async fn retract_from_asserted_yaml(site: &Site, top_map: &serde_yaml::Mapping) -> Result<()> {
+    let mut branch = site.open_branch().await?;
     let mut instructions = Vec::new();
 
     for (entity_key, namespace_map) in top_map {

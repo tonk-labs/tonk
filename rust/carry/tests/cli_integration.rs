@@ -20,45 +20,34 @@ async fn test_init_creates_site() {
     let env = TestEnv::new().await.unwrap();
     let site = env.site();
     assert!(site.root().exists());
-    let spaces = site.list_spaces().unwrap();
-    assert_eq!(spaces.len(), 1);
-    assert!(spaces[0].did.starts_with("did:key:"));
+    assert!(site.claims_dir().exists());
 }
 
 #[tokio::test]
 async fn test_init_with_name() {
-    let admin = tonk_space::Operator::generate();
-    let id_dir = common::TestEnv::setup_test_identity(&admin);
-
     let tmp = tempfile::TempDir::new().unwrap();
     carry::init::execute(Some("my-project".to_string()), vec![], Some(tmp.path()))
         .await
         .unwrap();
 
-    let site = carry::site::Site::open(tmp.path()).unwrap();
-    let spaces = site.list_spaces().unwrap();
-    assert_eq!(spaces.len(), 1);
-    assert!(site.active_space_did().unwrap().is_some());
-    drop(id_dir);
+    let site = carry::site::Site::open(tmp.path()).await.unwrap();
+    assert!(site.root().exists());
+    assert!(site.claims_dir().exists());
 }
 
 #[tokio::test]
 async fn test_init_idempotent() {
-    let admin = tonk_space::Operator::generate();
-    let id_dir = common::TestEnv::setup_test_identity(&admin);
-
     let tmp = tempfile::TempDir::new().unwrap();
     carry::init::execute(None, vec![], Some(tmp.path()))
         .await
         .unwrap();
+    // Second init should succeed (idempotent)
     carry::init::execute(None, vec![], Some(tmp.path()))
         .await
         .unwrap();
 
-    let site = carry::site::Site::open(tmp.path()).unwrap();
-    let spaces = site.list_spaces().unwrap();
-    assert_eq!(spaces.len(), 1, "Should not create a second space");
-    drop(id_dir);
+    let site = carry::site::Site::open(tmp.path()).await.unwrap();
+    assert!(site.root().exists());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -103,7 +92,7 @@ async fn test_assert_and_query_domain() {
             value: Some("28".to_string()),
         },
     ];
-    carry::assert_cmd::execute(&ctx, target, None, None, fields, "yaml")
+    carry::assert_cmd::execute(ctx, target, None, None, fields, "yaml")
         .await
         .unwrap();
 
@@ -119,7 +108,7 @@ async fn test_assert_and_query_domain() {
             value: None,
         },
     ];
-    carry::query_cmd::execute(&ctx, query_target, query_fields, "yaml")
+    carry::query_cmd::execute(ctx, query_target, query_fields, "yaml")
         .await
         .unwrap();
 }
@@ -141,7 +130,7 @@ async fn test_assert_multiple_entities() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -162,7 +151,7 @@ async fn test_assert_multiple_entities() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -178,7 +167,7 @@ async fn test_assert_multiple_entities() {
         value: None,
     }];
     carry::query_cmd::execute(
-        &ctx,
+        ctx,
         Target::Domain("io.test.person".to_string()),
         query_fields,
         "yaml",
@@ -205,7 +194,7 @@ async fn test_query_with_filter() {
             },
         ];
         carry::assert_cmd::execute(
-            &ctx,
+            ctx,
             FirstArg::Target(Target::Domain("io.test.person".to_string())),
             None,
             None,
@@ -228,7 +217,7 @@ async fn test_query_with_filter() {
         },
     ];
     carry::query_cmd::execute(
-        &ctx,
+        ctx,
         Target::Domain("io.test.person".to_string()),
         query_fields,
         "yaml",
@@ -252,7 +241,7 @@ async fn test_assert_with_this_entity() {
         value: Some("Alice".to_string()),
     }];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -275,7 +264,7 @@ async fn test_assert_with_this_entity() {
         value: Some("28".to_string()),
     }];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         Some(entity.to_string()),
         None,
@@ -305,7 +294,7 @@ async fn test_assert_cardinality_one_replaces_value() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -328,7 +317,7 @@ async fn test_assert_cardinality_one_replaces_value() {
         value: Some("29".to_string()),
     }];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         Some(entity.to_string()),
         None,
@@ -339,7 +328,7 @@ async fn test_assert_cardinality_one_replaces_value() {
     .unwrap();
 
     // Query: age should be [29], not [28, 29]
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let session = ctx.open_session().await.unwrap();
 
@@ -392,7 +381,7 @@ async fn test_retract_specific_field() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -414,7 +403,7 @@ async fn test_retract_specific_field() {
         value: None,
     }];
     carry::retract_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         Some(entity.to_string()),
         retract_fields,
@@ -435,7 +424,7 @@ async fn test_retract_all_fields() {
         value: Some("Alice".to_string()),
     }];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -453,7 +442,7 @@ async fn test_retract_all_fields() {
 
     // Retract all
     carry::retract_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         Some(entity.to_string()),
         vec![],
@@ -487,7 +476,7 @@ async fn test_assert_from_json_content() {
     std::fs::copy(tmp_file.path(), &json_path).unwrap();
 
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::File(json_path.clone()),
         None,
         None,
@@ -672,7 +661,7 @@ async fn test_roundtrip_triples_yaml() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -691,7 +680,7 @@ async fn test_roundtrip_triples_yaml() {
 
     // 3. Verify we can fetch the data
     let session = ctx.open_session().await.unwrap();
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
     let values = carry::schema::fetch_values(&session, &entity, name_attr)
@@ -719,7 +708,7 @@ async fn test_roundtrip_triples_yaml() {
 
     // 5. Assert from the triples YAML file (idempotent in same space)
     let (yaml_path, _tmp) = write_yaml_file(&triples_yaml);
-    carry::assert_cmd::execute(&ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
+    carry::assert_cmd::execute(ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
         .await
         .unwrap();
 
@@ -758,7 +747,7 @@ async fn test_roundtrip_asserted_notation_yaml() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -793,12 +782,12 @@ async fn test_roundtrip_asserted_notation_yaml() {
 
     // 3. Assert from the asserted notation YAML (idempotent in same space)
     let (yaml_path, _tmp) = write_yaml_file(&asserted_yaml);
-    carry::assert_cmd::execute(&ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
+    carry::assert_cmd::execute(ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
         .await
         .unwrap();
 
     // 4. Verify data is still intact
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let session = ctx.open_session().await.unwrap();
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
@@ -823,12 +812,12 @@ async fn test_roundtrip_asserted_notation_multivalued() {
     );
 
     let (yaml_path, _tmp) = write_yaml_file(&yaml);
-    carry::assert_cmd::execute(&ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
+    carry::assert_cmd::execute(ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
         .await
         .unwrap();
 
     // Verify
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let session = ctx.open_session().await.unwrap();
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
@@ -856,12 +845,12 @@ async fn test_assert_from_eav_triple_yaml() {
     );
 
     let (yaml_path, _tmp) = write_yaml_file(&yaml);
-    carry::assert_cmd::execute(&ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
+    carry::assert_cmd::execute(ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
         .await
         .unwrap();
 
     // Verify
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let session = ctx.open_session().await.unwrap();
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
@@ -899,7 +888,7 @@ async fn test_retract_from_eav_triple_yaml() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -917,7 +906,7 @@ async fn test_retract_from_eav_triple_yaml() {
 
     // Verify data exists
     let session = ctx.open_session().await.unwrap();
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
     let values = carry::schema::fetch_values(&session, &entity, age_attr.clone())
@@ -929,7 +918,7 @@ async fn test_retract_from_eav_triple_yaml() {
     // Now retract the age via EAV triple YAML file
     let yaml = format!("- the: io.test.person/age\n  of: {}\n  is: 28\n", entity);
     let (yaml_path, _tmp) = write_yaml_file(&yaml);
-    carry::retract_cmd::execute(&ctx, FirstArg::File(yaml_path), None, vec![], "yaml")
+    carry::retract_cmd::execute(ctx, FirstArg::File(yaml_path), None, vec![], "yaml")
         .await
         .unwrap();
 
@@ -966,7 +955,7 @@ async fn test_retract_from_asserted_yaml() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -1000,13 +989,13 @@ async fn test_retract_from_asserted_yaml() {
     let asserted_yaml = carry::query_cmd::format_asserted_yaml(&results, "io.test.person");
     let (yaml_path, _tmp) = write_yaml_file(&asserted_yaml);
 
-    carry::retract_cmd::execute(&ctx, FirstArg::File(yaml_path), None, vec![], "yaml")
+    carry::retract_cmd::execute(ctx, FirstArg::File(yaml_path), None, vec![], "yaml")
         .await
         .unwrap();
 
     // Verify both fields are retracted
     let session = ctx.open_session().await.unwrap();
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
     let name_vals = carry::schema::fetch_values(&session, &entity, name_attr)
@@ -1038,12 +1027,12 @@ async fn test_retract_from_json_content() {
     std::fs::write(tmp.path(), &json_content).unwrap();
     let json_path = tmp.path().to_string_lossy().to_string();
 
-    carry::assert_cmd::execute(&ctx, FirstArg::File(json_path), None, None, vec![], "yaml")
+    carry::assert_cmd::execute(ctx, FirstArg::File(json_path), None, None, vec![], "yaml")
         .await
         .unwrap();
 
     // Verify exists
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let session = ctx.open_session().await.unwrap();
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
@@ -1063,7 +1052,7 @@ async fn test_retract_from_json_content() {
     std::fs::write(tmp2.path(), &retract_json).unwrap();
     let json_path2 = tmp2.path().to_string_lossy().to_string();
 
-    carry::retract_cmd::execute(&ctx, FirstArg::File(json_path2), None, vec![], "yaml")
+    carry::retract_cmd::execute(ctx, FirstArg::File(json_path2), None, vec![], "yaml")
         .await
         .unwrap();
 
@@ -1093,7 +1082,7 @@ async fn test_roundtrip_query_retract_triples() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -1128,12 +1117,12 @@ async fn test_roundtrip_query_retract_triples() {
 
     // Retract using the triples YAML
     let (yaml_path, _tmp) = write_yaml_file(&triples_yaml);
-    carry::retract_cmd::execute(&ctx, FirstArg::File(yaml_path), None, vec![], "yaml")
+    carry::retract_cmd::execute(ctx, FirstArg::File(yaml_path), None, vec![], "yaml")
         .await
         .unwrap();
 
     // Verify both fields are retracted
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let session = ctx.open_session().await.unwrap();
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
@@ -1177,12 +1166,12 @@ async fn test_triples_format_contract() {
 
     // Assert from the triples YAML
     let (yaml_path, _tmp) = write_yaml_file(&triples_yaml);
-    carry::assert_cmd::execute(&ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
+    carry::assert_cmd::execute(ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
         .await
         .unwrap();
 
     // Verify each value was stored
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let session = ctx.open_session().await.unwrap();
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
@@ -1234,7 +1223,7 @@ async fn test_query_triples_format_runs() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -1256,7 +1245,7 @@ async fn test_query_triples_format_runs() {
         },
     ];
     carry::query_cmd::execute(
-        &ctx,
+        ctx,
         Target::Domain("io.test.person".to_string()),
         query_fields,
         "triples",
@@ -1274,7 +1263,7 @@ async fn test_assert_malformed_yaml_error() {
     let bad_yaml = "this is not valid YAML for triples: [[[";
     let (yaml_path, _tmp) = write_yaml_file(bad_yaml);
     let result =
-        carry::assert_cmd::execute(&ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
+        carry::assert_cmd::execute(ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
             .await;
     assert!(result.is_err());
 }
@@ -1288,7 +1277,7 @@ async fn test_retract_malformed_yaml_error() {
     let bad_yaml = "this is not valid YAML for triples: [[[";
     let (yaml_path, _tmp) = write_yaml_file(bad_yaml);
     let result =
-        carry::retract_cmd::execute(&ctx, FirstArg::File(yaml_path), None, vec![], "yaml").await;
+        carry::retract_cmd::execute(ctx, FirstArg::File(yaml_path), None, vec![], "yaml").await;
     assert!(result.is_err());
 }
 
@@ -1301,7 +1290,7 @@ async fn test_assert_eav_missing_the_error() {
     let yaml = "- of: did:key:z6MkihEpYC9Q7Qx46UTkepj9WmvEFzn8Hymeb6BKH95ehSWD\n  is: Alice\n";
     let (yaml_path, _tmp) = write_yaml_file(yaml);
     let result =
-        carry::assert_cmd::execute(&ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
+        carry::assert_cmd::execute(ctx, FirstArg::File(yaml_path), None, None, vec![], "yaml")
             .await;
     assert!(result.is_err());
     // The error chain should mention the missing 'the' key
@@ -1324,7 +1313,7 @@ async fn test_assert_requires_fields() {
     let ctx = env.ctx().await;
 
     let result = carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -1342,7 +1331,7 @@ async fn test_assert_requires_values() {
     let ctx = env.ctx().await;
 
     let result = carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -1363,7 +1352,7 @@ async fn test_retract_requires_this() {
     let ctx = env.ctx().await;
 
     let result = carry::retract_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         vec![Field {
@@ -1391,7 +1380,7 @@ async fn test_assert_json_format() {
         value: Some("Alice".to_string()),
     }];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -1412,7 +1401,7 @@ async fn test_query_json_format() {
         value: Some("Alice".to_string()),
     }];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         None,
@@ -1427,7 +1416,7 @@ async fn test_query_json_format() {
         value: None,
     }];
     carry::query_cmd::execute(
-        &ctx,
+        ctx,
         Target::Domain("io.test.person".to_string()),
         query_fields,
         "json",
@@ -1441,28 +1430,12 @@ async fn test_query_json_format() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn test_site_discovery() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let site = carry::site::Site::init(tmp.path()).unwrap();
-    let (space, _proofs) = site.create_delegated_space(&[]).await.unwrap();
-    site.set_active_space(&space.did).unwrap();
-
-    // Create a nested directory
-    let nested = tmp.path().join("deep").join("nested");
-    std::fs::create_dir_all(&nested).unwrap();
-
-    // Should find site from nested directory
-    let found = carry::site::Site::discover(&nested).unwrap();
-    assert_eq!(found.root(), tmp.path().join(".carry"));
-}
-
-#[tokio::test]
-async fn test_site_context_resolve() {
+async fn test_site_resolve() {
     let env = TestEnv::new().await.unwrap();
-    let ctx = carry::site::SiteContext::resolve(Some(env.site_path.as_path()))
+    let site = carry::site::Site::resolve(Some(env.site_path.as_path()))
         .await
         .unwrap();
-    assert_eq!(ctx.space.did, env.space_did);
+    assert!(site.root().exists());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1545,7 +1518,7 @@ async fn test_assert_attribute_creates_entity() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("attribute".to_string())),
         None,
         None,
@@ -1557,7 +1530,7 @@ async fn test_assert_attribute_creates_entity() {
 
     // Verify the attribute entity exists with the right dialog.attribute/id
     let session = ctx.open_session().await.unwrap();
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
 
     let attr_id = ClaimAttribute::from_str("dialog.attribute/id").unwrap();
@@ -1607,7 +1580,7 @@ async fn test_assert_attribute_with_name() {
         },
     ];
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("attribute".to_string())),
         None,
         Some("person-name".to_string()),
@@ -1646,7 +1619,7 @@ async fn test_assert_attribute_defaults_cardinality() {
     ];
     // This should succeed without cardinality — defaults to "one"
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("attribute".to_string())),
         None,
         None,
@@ -1661,7 +1634,7 @@ async fn test_assert_attribute_defaults_cardinality() {
         carry::schema::derive_attribute_entity("io.test.thing/color", "Text", "one").unwrap();
 
     let session = ctx.open_session().await.unwrap();
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
 
     let card_attr = ClaimAttribute::from_str("dialog.attribute/cardinality").unwrap();
@@ -1712,7 +1685,7 @@ async fn test_assert_concept_with_named_attrs() {
 
     // Define attribute @test-name
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("attribute".to_string())),
         None,
         Some("test-name".to_string()),
@@ -1737,7 +1710,7 @@ async fn test_assert_concept_with_named_attrs() {
 
     // Define attribute @test-age
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("attribute".to_string())),
         None,
         Some("test-age".to_string()),
@@ -1762,7 +1735,7 @@ async fn test_assert_concept_with_named_attrs() {
 
     // Define concept @test-person with.name=test-name with.age=test-age
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("concept".to_string())),
         None,
         Some("test-person".to_string()),
@@ -1825,7 +1798,7 @@ async fn test_assert_concept_with_selector_attrs() {
 
     // Define concept with inline selectors — attributes auto-created
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("concept".to_string())),
         None,
         Some("test-widget".to_string()),
@@ -1854,13 +1827,13 @@ async fn test_assert_concept_with_selector_attrs() {
 
 /// Helper: set up a concept with two attributes and assert some data.
 /// Returns the ctx for further querying.
-async fn setup_concept_with_data() -> (TestEnv, carry::site::SiteContext) {
+async fn setup_concept_with_data() -> TestEnv {
     let env = TestEnv::new().await.unwrap();
     let ctx = env.ctx().await;
 
     // Define attributes
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("attribute".to_string())),
         None,
         Some("cq-name".to_string()),
@@ -1884,7 +1857,7 @@ async fn setup_concept_with_data() -> (TestEnv, carry::site::SiteContext) {
     .unwrap();
 
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("attribute".to_string())),
         None,
         Some("cq-age".to_string()),
@@ -1909,7 +1882,7 @@ async fn setup_concept_with_data() -> (TestEnv, carry::site::SiteContext) {
 
     // Define concept
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("concept".to_string())),
         None,
         Some("cq-person".to_string()),
@@ -1930,7 +1903,7 @@ async fn setup_concept_with_data() -> (TestEnv, carry::site::SiteContext) {
 
     // Assert data using the domain (so concept query can find it)
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.cq".to_string())),
         None,
         None,
@@ -1950,7 +1923,7 @@ async fn setup_concept_with_data() -> (TestEnv, carry::site::SiteContext) {
     .unwrap();
 
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.cq".to_string())),
         None,
         None,
@@ -1969,17 +1942,18 @@ async fn setup_concept_with_data() -> (TestEnv, carry::site::SiteContext) {
     .await
     .unwrap();
 
-    (env, ctx)
+    env
 }
 
 /// Concept query should resolve by name and return matching entities.
 #[tokio::test]
 async fn test_concept_query_resolves_by_name() {
-    let (_env, ctx) = setup_concept_with_data().await;
+    let env = setup_concept_with_data().await;
+    let ctx = env.site();
 
     // Query using concept name — should succeed and find both entities
     carry::query_cmd::execute(
-        &ctx,
+        ctx,
         Target::Concept("cq-person".to_string()),
         vec![],
         "yaml",
@@ -2008,11 +1982,12 @@ async fn test_concept_query_resolves_by_name() {
 /// Concept query with a filter should narrow results.
 #[tokio::test]
 async fn test_concept_query_with_filter() {
-    let (_env, ctx) = setup_concept_with_data().await;
+    let env = setup_concept_with_data().await;
+    let ctx = env.site();
 
     // Query with filter name=Alice
     carry::query_cmd::execute(
-        &ctx,
+        ctx,
         Target::Concept("cq-person".to_string()),
         vec![Field {
             name: "name".to_string(),
@@ -2025,7 +2000,7 @@ async fn test_concept_query_with_filter() {
 
     // The query itself printed output; verify at data level that only Alice matches
     let session = ctx.open_session().await.unwrap();
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
 
     let name_attr = ClaimAttribute::from_str("io.test.cq/name").unwrap();
@@ -2052,7 +2027,7 @@ async fn test_concept_query_unknown_concept_fails() {
     let ctx = env.ctx().await;
 
     let result = carry::query_cmd::execute(
-        &ctx,
+        ctx,
         Target::Concept("nonexistent-concept".to_string()),
         vec![],
         "yaml",
@@ -2082,7 +2057,7 @@ async fn test_domain_assert_with_name() {
     let ctx = env.ctx().await;
 
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.person".to_string())),
         None,
         Some("alice".to_string()),
@@ -2120,11 +2095,12 @@ async fn test_domain_assert_with_name() {
 /// field name is resolved to its attribute selector for the retraction.
 #[tokio::test]
 async fn test_retract_concept_field() {
-    let (_env, ctx) = setup_concept_with_data().await;
+    let env = setup_concept_with_data().await;
+    let ctx = env.site();
 
     // Find Alice's entity DID
     let session = ctx.open_session().await.unwrap();
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
 
     let name_attr = ClaimAttribute::from_str("io.test.cq/name").unwrap();
@@ -2147,7 +2123,7 @@ async fn test_retract_concept_field() {
 
     // Retract age using concept field name
     carry::retract_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("cq-person".to_string())),
         Some(alice_entity.to_string()),
         vec![Field {
@@ -2197,7 +2173,7 @@ async fn test_attribute_concept_data_roundtrip() {
         ("rt-pages", "io.test.book/pages", "UnsignedInteger"),
     ] {
         carry::assert_cmd::execute(
-            &ctx,
+            ctx,
             FirstArg::Target(Target::Concept("attribute".to_string())),
             None,
             Some(name.to_string()),
@@ -2223,7 +2199,7 @@ async fn test_attribute_concept_data_roundtrip() {
 
     // 2. Define concept
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Concept("concept".to_string())),
         None,
         Some("rt-book".to_string()),
@@ -2244,7 +2220,7 @@ async fn test_attribute_concept_data_roundtrip() {
 
     // 3. Assert data via domain
     carry::assert_cmd::execute(
-        &ctx,
+        ctx,
         FirstArg::Target(Target::Domain("io.test.book".to_string())),
         None,
         None,
@@ -2280,7 +2256,7 @@ async fn test_attribute_concept_data_roundtrip() {
     assert_eq!(entities.len(), 1, "Should find exactly 1 book entity");
 
     // 6. Verify the data values
-    use dialog_query::claim::Attribute as ClaimAttribute;
+    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
 
     let title_attr = ClaimAttribute::from_str("io.test.book/title").unwrap();
@@ -2303,307 +2279,7 @@ async fn test_attribute_concept_data_roundtrip() {
     );
 
     // 7. Verify concept query works (doesn't error)
-    carry::query_cmd::execute(&ctx, Target::Concept("rt-book".to_string()), vec![], "yaml")
+    carry::query_cmd::execute(ctx, Target::Concept("rt-book".to_string()), vec![], "yaml")
         .await
         .unwrap();
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Invite & Join
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[tokio::test]
-async fn test_invite_creates_valid_token() {
-    let env = TestEnv::new().await.unwrap();
-    let ctx = env.ctx().await;
-
-    // Create an invited operator (simulating Bob)
-    let bob = tonk_space::Operator::generate();
-
-    // Create invite — admin invites bob, with admin's proofs from space
-    let proofs = ctx.space.load_proofs().unwrap_or_default();
-    let space_did_parsed: tonk_space::Did = env.space_did.parse().unwrap();
-    let (envelope, delegation) = tonk_space::create_invite(
-        &env.admin,
-        &space_did_parsed,
-        &bob.did(),
-        Some("test-repo".to_string()),
-        &proofs,
-    )
-    .await
-    .unwrap();
-
-    // Encode and decode roundtrip
-    let token = tonk_space::encode_invite(&envelope).unwrap();
-    assert!(token.starts_with("carry_inv1_"));
-
-    let decoded = tonk_space::decode_invite(&token).unwrap();
-    assert_eq!(decoded.v, 1);
-    assert_eq!(decoded.kind, "carry.invite");
-    assert_eq!(decoded.invited, bob.did().to_string());
-    assert_eq!(decoded.grants.len(), 1);
-    assert_eq!(decoded.grants[0].space, env.space_did);
-    assert_eq!(decoded.repo_hint.as_deref(), Some("test-repo"));
-
-    // Verify the delegation fields
-    assert_eq!(delegation.audience().to_string(), bob.did().to_string());
-    assert_eq!(delegation.issuer().to_string(), env.admin.did().to_string());
-}
-
-#[tokio::test]
-async fn test_invite_cmd_runs_without_error() {
-    let env = TestEnv::new().await.unwrap();
-    let ctx = env.ctx().await;
-    let bob = tonk_space::Operator::generate();
-
-    // The invite command should succeed
-    carry::invite_cmd::execute(&ctx, bob.did().as_ref())
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn test_invite_verify_rejects_wrong_did() {
-    let env = TestEnv::new().await.unwrap();
-    let bob = tonk_space::Operator::generate();
-    let charlie = tonk_space::Operator::generate();
-
-    let proofs = env.space().load_proofs().unwrap_or_default();
-    let space_did_parsed: tonk_space::Did = env.space_did.parse().unwrap();
-    let (envelope, _) =
-        tonk_space::create_invite(&env.admin, &space_did_parsed, &bob.did(), None, &proofs)
-            .await
-            .unwrap();
-
-    let token = tonk_space::encode_invite(&envelope).unwrap();
-    let decoded = tonk_space::decode_invite(&token).unwrap();
-
-    // Verify with Charlie's DID should fail (invite is for Bob)
-    let now = tonk_space::Timestamp::now().to_unix();
-    let result = tonk_space::verify_grant(&decoded.grants[0], &charlie.did(), now).await;
-    assert!(result.is_err());
-}
-
-#[tokio::test]
-async fn test_invite_multi_space_grants() {
-    // Create a site with two spaces
-    let tmp = tempfile::TempDir::new().unwrap();
-    let site = carry::site::Site::init(tmp.path()).unwrap();
-
-    let admin = tonk_space::Operator::generate();
-    let id_dir = common::TestEnv::setup_test_identity(&admin);
-
-    let (space1, proofs1) = site.create_delegated_space(&[admin.did()]).await.unwrap();
-    site.set_active_space(&space1.did).unwrap();
-    let mut session1 = space1.open_session().await.unwrap();
-    carry::schema::bootstrap_builtins(&mut session1)
-        .await
-        .unwrap();
-
-    let (space2, proofs2) = site.create_delegated_space(&[admin.did()]).await.unwrap();
-    let mut session2 = space2.open_session().await.unwrap();
-    carry::schema::bootstrap_builtins(&mut session2)
-        .await
-        .unwrap();
-
-    let bob = tonk_space::Operator::generate();
-    let now = tonk_space::Timestamp::now().to_unix();
-    let exp = now + 3600;
-
-    let space1_did: tonk_space::Did = space1.did.parse().unwrap();
-    let space2_did: tonk_space::Did = space2.did.parse().unwrap();
-
-    let (grant1, _) =
-        tonk_space::create_space_grant(&admin, &space1_did, &bob.did(), exp, Some(now), &proofs1)
-            .await
-            .unwrap();
-
-    let (grant2, _) =
-        tonk_space::create_space_grant(&admin, &space2_did, &bob.did(), exp, Some(now), &proofs2)
-            .await
-            .unwrap();
-
-    let envelope = tonk_space::InviteEnvelopeV1 {
-        v: 1,
-        kind: "carry.invite".to_string(),
-        invited: bob.did().to_string(),
-        issued_at: now,
-        issuer_hint: None,
-        repo_hint: None,
-        grants: vec![grant1, grant2],
-    };
-
-    let token = tonk_space::encode_invite(&envelope).unwrap();
-    let decoded = tonk_space::decode_invite(&token).unwrap();
-    assert_eq!(decoded.grants.len(), 2);
-
-    // All grants should verify
-    let delegations = tonk_space::verify_envelope(&decoded, now).await.unwrap();
-    assert_eq!(delegations.len(), 2);
-    drop(id_dir);
-}
-
-#[tokio::test]
-async fn test_identity_load_save_roundtrip() {
-    // This test uses a custom HOME to avoid touching the real ~/.carry/
-    let tmp = tempfile::TempDir::new().unwrap();
-    let identity_path = tmp.path().join("identity");
-
-    // Write a test identity
-    let operator = tonk_space::Operator::generate();
-    let secret = operator.to_secret();
-    std::fs::write(&identity_path, secret).unwrap();
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&identity_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
-
-    // Read it back
-    let bytes = std::fs::read(&identity_path).unwrap();
-    assert_eq!(bytes.len(), 32);
-    let mut secret_read = [0u8; 32];
-    secret_read.copy_from_slice(&bytes);
-    let operator_read = tonk_space::Operator::from_secret(secret_read);
-
-    assert_eq!(
-        operator.did().to_string(),
-        operator_read.did().to_string(),
-        "Identity should roundtrip through file"
-    );
-}
-
-#[tokio::test]
-async fn test_invite_join_roundtrip() {
-    // Full invite→join flow: Alice invites Bob, Bob joins the space.
-    // Exercises: create_invite → encode → decode → verify → create_space_with_proofs → store delegation
-    let alice_env = TestEnv::new().await.unwrap();
-    let alice_space = alice_env.space();
-    let alice_proofs = alice_space.load_proofs().unwrap_or_default();
-    let space_did_parsed: tonk_space::Did = alice_env.space_did.parse().unwrap();
-
-    let bob = tonk_space::Operator::generate();
-
-    // Alice creates invite for Bob
-    let (envelope, _) = tonk_space::create_invite(
-        &alice_env.admin,
-        &space_did_parsed,
-        &bob.did(),
-        Some("shared-repo".to_string()),
-        &alice_proofs,
-    )
-    .await
-    .unwrap();
-
-    let token = tonk_space::encode_invite(&envelope).unwrap();
-
-    // Bob decodes and verifies
-    let decoded = tonk_space::decode_invite(&token).unwrap();
-    assert_eq!(decoded.invited, bob.did().to_string());
-
-    let now = tonk_space::Timestamp::now().to_unix();
-    let delegations = tonk_space::verify_envelope(&decoded, now).await.unwrap();
-    assert_eq!(delegations.len(), 1);
-
-    // Bob creates a local site and joins the space
-    let bob_tmp = tempfile::TempDir::new().unwrap();
-    let bob_site = carry::site::Site::init(bob_tmp.path()).unwrap();
-
-    let space_did = &decoded.grants[0].space;
-    // Collect the full proof chain from the grant
-    let grant_proofs = decoded.grants[0].all_proof_bytes().unwrap();
-    let bob_space = bob_site
-        .create_space_with_proofs(space_did, &grant_proofs)
-        .unwrap();
-
-    // Verify Bob's space directory exists and is keyed by the *space* DID
-    assert_eq!(bob_space.did, alice_env.space_did);
-    assert!(bob_space.dir().exists());
-
-    // Verify the full proof chain is stored (upstream + grant delegation)
-    let bob_proofs = bob_space.load_proofs().unwrap();
-    assert_eq!(
-        bob_proofs.len(),
-        2,
-        "Bob should have 2 proofs: space→admin + admin→bob"
-    );
-}
-
-#[tokio::test]
-async fn test_invite_verify_rejects_wrong_issuer() {
-    // An attacker creates a grant signed by their own key, but sets the
-    // grant's space field to point to a real space they don't control.
-    let env = TestEnv::new().await.unwrap();
-    let attacker = tonk_space::Operator::generate();
-    let bob = tonk_space::Operator::generate();
-
-    let now = tonk_space::Timestamp::now().to_unix();
-    let exp = now + 3600;
-
-    // Attacker signs a delegation with their own key
-    let (mut grant, _) =
-        tonk_space::create_space_grant(&attacker, &attacker.did(), &bob.did(), exp, Some(now), &[])
-            .await
-            .unwrap();
-
-    // Overwrite the space field to claim it's for the real space
-    grant.space = env.space_did.clone();
-
-    // Verification should reject: either subject mismatch (delegation's
-    // subject is attacker's DID, not the space) or issuer mismatch
-    let result = tonk_space::verify_grant(&grant, &bob.did(), now).await;
-    assert!(
-        result.is_err(),
-        "Should reject grant where attacker's delegation doesn't match space DID"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("mismatch"),
-        "Expected a mismatch error, got: {}",
-        err
-    );
-}
-
-#[tokio::test]
-async fn test_join_repo_normalization_carry_suffix() {
-    // When --repo points to a .carry path that doesn't exist yet,
-    // Site::init should create .carry at the parent, not .carry/.carry
-    let tmp = tempfile::TempDir::new().unwrap();
-    let carry_path = tmp.path().join(".carry");
-
-    // The .carry path doesn't exist yet — this mimics `join --repo /x/.carry`
-    assert!(!carry_path.exists());
-
-    // Normalize like join_cmd does: if path ends with .carry, init at parent
-    let init_target = if carry_path.ends_with(".carry") {
-        carry_path.parent().unwrap().to_path_buf()
-    } else {
-        carry_path.clone()
-    };
-
-    let site = carry::site::Site::init(&init_target).unwrap();
-
-    // Should create .carry/ at the right level, not nested
-    assert!(
-        carry_path.is_dir(),
-        ".carry should exist at expected location"
-    );
-    assert!(
-        !carry_path.join(".carry").exists(),
-        "Should NOT have nested .carry/.carry"
-    );
-    assert_eq!(site.root(), carry_path);
-}
-
-#[tokio::test]
-async fn test_decode_invite_rejects_bad_tokens() {
-    // Missing prefix
-    assert!(tonk_space::decode_invite("not_a_token").is_err());
-
-    // Invalid base64
-    assert!(tonk_space::decode_invite("carry_inv1_!!!").is_err());
-
-    // Valid base64 but invalid CBOR
-    assert!(tonk_space::decode_invite("carry_inv1_aGVsbG8").is_err());
 }

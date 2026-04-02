@@ -99,8 +99,8 @@ provided, it is asserted as the repository label.
 
 If a repository already exists, reports its status.
 
-If no user identity exists (~/.carry/identity), the passkey authentication
-flow is triggered automatically before creating the repository.
+If no user identity exists, one is created automatically before creating
+the repository.
 
 Pre-registered concepts (attribute, concept, bookmark) are bootstrapped during
 init so they can be queried and used immediately.";

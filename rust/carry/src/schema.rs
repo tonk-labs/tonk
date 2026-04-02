@@ -13,11 +13,10 @@
 //! | `dialog.meta`           | Universal metadata: names and descriptions        |
 
 use anyhow::{Context, Result};
-use base64::Engine as _;
+
+/// Re-export the attribute type used in Artifacts (EAV triples).
+pub use dialog_artifacts::Attribute as ClaimAttribute;
 use dialog_artifacts::{ArtifactSelector, ArtifactStore};
-use dialog_query::Attribute as _;
-pub use dialog_query::claim::Attribute as ClaimAttribute;
-use dialog_query::concept::Concept as _;
 use dialog_query::{Entity, Value};
 use futures_util::TryStreamExt;
 use std::collections::BTreeMap;
@@ -402,7 +401,7 @@ pub async fn lookup_entity_by_name<S: ArtifactStore>(
     store: &S,
     name: &str,
 ) -> Result<Option<Entity>> {
-    let name_attr = dialog_meta::Name::selector();
+    let name_attr: ClaimAttribute = dialog_meta::Name::the().into();
     let entities = find_entities_by_attribute(store, name_attr.clone()).await?;
 
     for entity in entities {
@@ -472,7 +471,7 @@ async fn fetch_concept_fields<S: ArtifactStore>(
         .try_collect()
         .await?;
 
-    let attr_id_selector = dialog_attribute::Id::selector();
+    let attr_id_selector = dialog_attribute::Id::the();
 
     for artifact in &results {
         let attr_str = artifact.the.to_string();
@@ -485,7 +484,7 @@ async fn fetch_concept_fields<S: ArtifactStore>(
                 _ => continue,
             };
 
-            let selector = fetch_string(store, &attr_entity, attr_id_selector.clone())
+            let selector = fetch_string(store, &attr_entity, attr_id_selector.clone().into())
                 .await?
                 .unwrap_or_default();
 
@@ -581,8 +580,6 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
 pub async fn bootstrap_builtins<S: dialog_query::Store>(
     session: &mut dialog_query::Session<S>,
 ) -> Result<()> {
-    use dialog_query::claim::{Claim, Relation};
-
     let builtins = [&BUILTIN_ATTRIBUTE, &BUILTIN_CONCEPT, &BUILTIN_BOOKMARK];
 
     // First pass: derive attribute entities for all fixed fields.
@@ -605,11 +602,11 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
 
     let mut transaction = session.edit();
 
-    let name_attr = dialog_meta::Name::selector();
-    let desc_attr = dialog_meta::Description::selector();
-    let attr_id = dialog_attribute::Id::selector();
-    let attr_type = dialog_attribute::Type::selector();
-    let attr_card = dialog_attribute::Cardinality::selector();
+    let name_attr = dialog_meta::Name::the();
+    let desc_attr = dialog_meta::Description::the();
+    let attr_id = dialog_attribute::Id::the();
+    let attr_type = dialog_attribute::Type::the();
+    let attr_card = dialog_attribute::Cardinality::the();
 
     // Assert attribute entity claims
     for builtin in &builtins {
@@ -625,36 +622,32 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
             let entity = attr_entities[field.relation].clone();
 
             // dialog.attribute/id
-            Relation::new(
+            transaction.associate(
                 attr_id.clone(),
                 entity.clone(),
                 Value::String(field.relation.to_string()),
-            )
-            .assert(&mut transaction);
+            );
 
             // dialog.attribute/type
-            Relation::new(
+            transaction.associate(
                 attr_type.clone(),
                 entity.clone(),
                 Value::String(field.value_type.to_string()),
-            )
-            .assert(&mut transaction);
+            );
 
             // dialog.attribute/cardinality
-            Relation::new(
+            transaction.associate(
                 attr_card.clone(),
                 entity.clone(),
                 Value::String(field.cardinality.to_string()),
-            )
-            .assert(&mut transaction);
+            );
 
             // dialog.meta/name = qualified name (e.g. "attribute/the")
-            Relation::new(
+            transaction.associate(
                 name_attr.clone(),
                 entity.clone(),
                 Value::String(format!("{}/{}", builtin.name, field.cli_name)),
-            )
-            .assert(&mut transaction);
+            );
         }
     }
 
@@ -674,20 +667,18 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
         let concept_entity = derive_concept_entity(&with_fields)?;
 
         // dialog.meta/name
-        Relation::new(
+        transaction.associate(
             name_attr.clone(),
             concept_entity.clone(),
             Value::String(builtin.name.to_string()),
-        )
-        .assert(&mut transaction);
+        );
 
         // dialog.meta/description
-        Relation::new(
+        transaction.associate(
             desc_attr.clone(),
             concept_entity.clone(),
             Value::String(builtin.description.to_string()),
-        )
-        .assert(&mut transaction);
+        );
 
         // dialog.concept.with/{field} = attribute_entity
         for field in builtin.with_fields {
@@ -696,12 +687,11 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
             }
             let rel = format!("dialog.concept.with/{}", field.cli_name);
             let rel_attr = parse_claim_attribute(&rel)?;
-            Relation::new(
-                rel_attr,
+            transaction.associate(
+                rel_attr.into(),
                 concept_entity.clone(),
                 Value::Entity(attr_entities[field.relation].clone()),
-            )
-            .assert(&mut transaction);
+            );
         }
 
         // dialog.concept.maybe/{field} = attribute_entity
@@ -711,12 +701,11 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
             }
             let rel = format!("dialog.concept.maybe/{}", field.cli_name);
             let rel_attr = parse_claim_attribute(&rel)?;
-            Relation::new(
-                rel_attr,
+            transaction.associate(
+                rel_attr.into(),
                 concept_entity.clone(),
                 Value::Entity(attr_entities[field.relation].clone()),
-            )
-            .assert(&mut transaction);
+            );
         }
     }
 
@@ -847,8 +836,8 @@ pub async fn fetch_attribute_cardinality<S: ArtifactStore>(
     store: &S,
     selector: &str,
 ) -> Result<String> {
-    let id_attr = dialog_attribute::Id::selector();
-    let card_attr = dialog_attribute::Cardinality::selector();
+    let id_attr: ClaimAttribute = dialog_attribute::Id::the().into();
+    let card_attr: ClaimAttribute = dialog_attribute::Cardinality::the().into();
 
     // Find the attribute entity by its selector value: the=dialog.attribute/id, is=<selector>
     let results: Vec<_> = store
@@ -952,10 +941,10 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
         Value::Entity(e) => serde_json::Value::String(e.to_string()),
         Value::Symbol(s) => serde_json::json!({"symbol": s.to_string()}),
         Value::Bytes(b) => {
-            serde_json::json!({"bytes": base64::engine::general_purpose::STANDARD.encode(b)})
+            serde_json::json!({"bytes": format!("{:02x?}", b)})
         }
         Value::Record(r) => {
-            serde_json::json!({"record": base64::engine::general_purpose::STANDARD.encode(r)})
+            serde_json::json!({"record": format!("{:02x?}", r)})
         }
     }
 }

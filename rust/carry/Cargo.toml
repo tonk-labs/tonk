@@ -3,7 +3,7 @@ name = "carry"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "Carry - interact with Dialog DB spaces"
+description = "Carry"
 license.workspace = true
 
 [[bin]]
@@ -23,12 +23,11 @@ tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true, features = ["derive"] }
 clap_complete = { workspace = true }
 
-# Tonk packages
-tonk-space = { workspace = true }
-
-dialog-artifacts = { workspace = true }
 # Dialog DB
+dialog-artifacts = { workspace = true, features = ["helpers"] }
+dialog-capability = { workspace = true }
 dialog-query = { workspace = true }
+dialog-storage = { workspace = true }
 dialog-varsig = { workspace = true }
 
 # Async
@@ -39,19 +38,11 @@ blake3 = { workspace = true }
 bs58 = { workspace = true }
 # Crypto
 ed25519-dalek = { workspace = true }
-rand_0_8 = { workspace = true }
 
-base64 = { workspace = true }
-hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 # Serialization
-serde_ipld_dagcbor = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-
-# HTTP server (for passkey browser flow)
-axum = { workspace = true, features = ["http1", "json", "tokio"] }
-webbrowser = { workspace = true }
 
 # Utilities
 anyhow = { workspace = true }

@@ -8,7 +8,7 @@
 //! with output grouped under the concept's bookmark name.
 
 use crate::schema;
-use crate::site::SiteContext;
+use crate::site::Site;
 use crate::target::{Field, Target};
 use anyhow::Result;
 use dialog_query::Value;
@@ -27,30 +27,20 @@ struct FilterConstraint {
 }
 
 /// Execute `carry query <TARGET> [FIELD[=VALUE]...]`.
-pub async fn execute(
-    ctx: &SiteContext,
-    target: Target,
-    fields: Vec<Field>,
-    format: &str,
-) -> Result<()> {
+pub async fn execute(site: &Site, target: Target, fields: Vec<Field>, format: &str) -> Result<()> {
     match target {
-        Target::Domain(ref domain) => domain_query(ctx, domain, &fields, format).await,
-        Target::Concept(ref concept) => concept_query(ctx, concept, &fields, format).await,
+        Target::Domain(ref domain) => domain_query(site, domain, &fields, format).await,
+        Target::Concept(ref concept) => concept_query(site, concept, &fields, format).await,
     }
 }
 
 /// Domain query: open-ended search over a domain namespace.
-async fn domain_query(
-    ctx: &SiteContext,
-    domain: &str,
-    fields: &[Field],
-    format: &str,
-) -> Result<()> {
+async fn domain_query(site: &Site, domain: &str, fields: &[Field], format: &str) -> Result<()> {
     if fields.is_empty() {
         anyhow::bail!("Domain query requires at least one field");
     }
 
-    let session = ctx.open_session().await?;
+    let session = site.open_session().await?;
 
     // Build qualified attribute names
     let qualified_fields: Vec<(String, Option<String>)> = fields
@@ -112,12 +102,12 @@ async fn domain_query(
 
 /// Concept query: resolve a named concept and match entities.
 async fn concept_query(
-    ctx: &SiteContext,
+    site: &Site,
     concept_name: &str,
     fields: &[Field],
     format: &str,
 ) -> Result<()> {
-    let session = ctx.open_session().await?;
+    let session = site.open_session().await?;
 
     // Resolve the concept from the database
     let concept = schema::resolve_concept(&session, concept_name).await?;

@@ -106,7 +106,7 @@ mod inner {
         /// Show or create your local identity
         #[command(alias = "id")]
         Identity {
-            /// Discard cached identity and re-derive from passkey
+            /// Reset and recreate the local identity
             #[arg(long)]
             reset: bool,
         },
@@ -155,8 +155,8 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let parsed_target = carry::target::Target::parse(&target)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let ctx = carry::site::SiteContext::resolve(repo_path).await?;
-            carry::query_cmd::execute(&ctx, parsed_target, parsed.fields, &format).await?;
+            let site = carry::site::Site::resolve(repo_path).await?;
+            carry::query_cmd::execute(&site, parsed_target, parsed.fields, &format).await?;
         }
         Commands::Assert {
             target_or_file,
@@ -165,9 +165,9 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let ctx = carry::site::SiteContext::resolve(repo_path).await?;
+            let site = carry::site::Site::resolve(repo_path).await?;
             carry::assert_cmd::execute(
-                &ctx,
+                &site,
                 first_arg,
                 parsed.this_entity,
                 parsed.entity_name,
@@ -183,9 +183,9 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let ctx = carry::site::SiteContext::resolve(repo_path).await?;
+            let site = carry::site::Site::resolve(repo_path).await?;
             carry::retract_cmd::execute(
-                &ctx,
+                &site,
                 first_arg,
                 parsed.this_entity,
                 parsed.fields,
@@ -200,8 +200,8 @@ async fn main() -> anyhow::Result<()> {
             carry::identity_cmd::execute(reset).await?;
         }
         Commands::Invite { invited_did } => {
-            let ctx = carry::site::SiteContext::resolve(repo_path).await?;
-            carry::invite_cmd::execute(&ctx, &invited_did).await?;
+            let site = carry::site::Site::resolve(repo_path).await?;
+            carry::invite_cmd::execute(&site, &invited_did).await?;
         }
         Commands::Join { token } => {
             carry::join_cmd::execute(&token, repo_path).await?;

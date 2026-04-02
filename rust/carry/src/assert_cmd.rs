@@ -14,20 +14,18 @@
 //! `dialog.concept.with/*` claims → attribute selectors.
 
 use crate::schema;
-use crate::site::SiteContext;
+use crate::site::Site;
 use crate::target::{Field, FirstArg, Target};
 use anyhow::{Context, Result};
 use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
-use dialog_query::Attribute;
 use dialog_query::Value;
-use dialog_query::claim::{Claim, Relation};
 use std::collections::BTreeMap;
 use std::slice::from_ref;
 use std::str::FromStr;
 
 /// Execute `carry assert <TARGET>|<FILE>|- [this=<ENTITY>] [@name] [FIELD=VALUE...]`.
 pub async fn execute(
-    ctx: &SiteContext,
+    site: &Site,
     first_arg: FirstArg,
     this_entity: Option<String>,
     entity_name: Option<String>,
@@ -35,17 +33,17 @@ pub async fn execute(
     format: &str,
 ) -> Result<()> {
     match first_arg {
-        FirstArg::Stdin => assert_from_stdin(ctx, format).await,
-        FirstArg::File(path) => assert_from_file(ctx, &path, format).await,
+        FirstArg::Stdin => assert_from_stdin(site, format).await,
+        FirstArg::File(path) => assert_from_file(site, &path, format).await,
         FirstArg::Target(target) => {
-            assert_with_target(ctx, target, this_entity, entity_name, fields, format).await
+            assert_with_target(site, target, this_entity, entity_name, fields, format).await
         }
     }
 }
 
 /// Assert claims from a target + fields.
 async fn assert_with_target(
-    ctx: &SiteContext,
+    site: &Site,
     target: Target,
     this_entity: Option<String>,
     entity_name: Option<String>,
@@ -58,16 +56,23 @@ async fn assert_with_target(
 
     match target {
         Target::Domain(ref domain) => {
-            assert_domain(ctx, domain, this_entity, entity_name, &fields, format).await
+            assert_domain(site, domain, this_entity, entity_name, &fields, format).await
         }
         Target::Concept(ref concept_name) => {
             // Check if it's a builtin concept first
             if let Some(builtin) = schema::lookup_builtin(concept_name) {
-                assert_builtin_concept(ctx, builtin, this_entity, entity_name, &fields, format)
+                assert_builtin_concept(site, builtin, this_entity, entity_name, &fields, format)
                     .await
             } else {
-                assert_user_concept(ctx, concept_name, this_entity, entity_name, &fields, format)
-                    .await
+                assert_user_concept(
+                    site,
+                    concept_name,
+                    this_entity,
+                    entity_name,
+                    &fields,
+                    format,
+                )
+                .await
             }
         }
     }
@@ -85,7 +90,7 @@ async fn assert_with_target(
 async fn retract_cardinality_one_values<S: dialog_artifacts::ArtifactStore>(
     store: &S,
     entity: &dialog_query::Entity,
-    attr: &dialog_query::claim::Attribute,
+    attr: &crate::schema::ClaimAttribute,
     attr_selector: &str,
 ) -> Result<Vec<Instruction>> {
     let cardinality = schema::fetch_attribute_cardinality(store, attr_selector).await?;
@@ -109,7 +114,7 @@ async fn retract_cardinality_one_values<S: dialog_artifacts::ArtifactStore>(
 
 /// Assert claims using a domain target (open-ended, no schema).
 async fn assert_domain(
-    ctx: &SiteContext,
+    site: &Site,
     domain: &str,
     this_entity: Option<String>,
     entity_name: Option<String>,
@@ -132,13 +137,13 @@ async fn assert_domain(
     if is_update {
         // Updating an existing entity — use raw instructions via Branch so we
         // can retract old cardinality-one values in the same commit.
-        let mut branch = ctx.open_branch().await?;
+        let mut branch = site.open_branch().await?;
         let entity = resolve_entity(this_entity.as_ref().unwrap())?;
         let mut instructions = Vec::new();
 
         for f in fields {
             let attr_name = f.qualified_name(domain);
-            let attr = dialog_query::claim::Attribute::from_str(&attr_name)
+            let attr = crate::schema::ClaimAttribute::from_str(&attr_name)
                 .context(format!("Invalid attribute: {}", attr_name))?;
             let value = schema::parse_value(f.value.as_deref().unwrap());
 
@@ -156,7 +161,7 @@ async fn assert_domain(
 
         // Assert entity name if @name was provided
         if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::selector();
+            let name_attr = schema::dialog_meta::Name::the().into();
             let name_selector = "dialog.meta/name";
             instructions.extend(
                 retract_cardinality_one_values(&branch, &entity, &name_attr, name_selector).await?,
@@ -175,7 +180,7 @@ async fn assert_domain(
         print_assert_result(&entity, fields.len(), entity_name.as_deref(), format);
     } else {
         // New entity derived from field content — no existing values to retract.
-        let mut session = ctx.open_session().await?;
+        let mut session = site.open_session().await?;
         let field_pairs: Vec<(String, String)> = fields
             .iter()
             .map(|f| {
@@ -191,17 +196,16 @@ async fn assert_domain(
 
         for f in fields {
             let attr_name = f.qualified_name(domain);
-            let attr = dialog_query::claim::Attribute::from_str(&attr_name)
+            let attr = crate::schema::ClaimAttribute::from_str(&attr_name)
                 .context(format!("Invalid attribute: {}", attr_name))?;
             let value = schema::parse_value(f.value.as_deref().unwrap());
-            Relation::new(attr, entity.clone(), value).assert(&mut transaction);
+            transaction.associate(attr.into(), entity.clone(), value);
         }
 
         // Assert entity name if @name was provided
         if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::selector();
-            Relation::new(name_attr, entity.clone(), Value::String(name.clone()))
-                .assert(&mut transaction);
+            let name_attr = schema::dialog_meta::Name::the().into();
+            transaction.associate(name_attr, entity.clone(), Value::String(name.clone()));
         }
 
         session.commit(transaction).await?;
@@ -212,7 +216,7 @@ async fn assert_domain(
 
 /// Assert claims using a builtin concept target (attribute, concept, bookmark).
 async fn assert_builtin_concept(
-    ctx: &SiteContext,
+    site: &Site,
     builtin: &schema::BuiltinConceptSchema,
     this_entity: Option<String>,
     entity_name: Option<String>,
@@ -230,7 +234,7 @@ async fn assert_builtin_concept(
         }
     }
 
-    let mut session = ctx.open_session().await?;
+    let mut session = site.open_session().await?;
 
     // Apply defaults for attribute assertions: cardinality defaults to "one"
     let mut fields_with_defaults;
@@ -336,7 +340,7 @@ async fn assert_builtin_concept(
         // Updating an existing entity — use raw instructions via Branch so we
         // can retract old cardinality-one values in the same commit.
         drop(session);
-        let mut branch = ctx.open_branch().await?;
+        let mut branch = site.open_branch().await?;
         let mut instructions = Vec::new();
 
         for (relation, value) in &resolved_claims {
@@ -356,7 +360,7 @@ async fn assert_builtin_concept(
 
         // Assert entity name if @name was provided
         if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::selector();
+            let name_attr = schema::dialog_meta::Name::the().into();
             let name_selector = "dialog.meta/name";
             instructions.extend(
                 retract_cardinality_one_values(&branch, &entity, &name_attr, name_selector).await?,
@@ -377,14 +381,13 @@ async fn assert_builtin_concept(
 
         for (relation, value) in &resolved_claims {
             let attr = schema::parse_claim_attribute(relation)?;
-            Relation::new(attr, entity.clone(), value.clone()).assert(&mut transaction);
+            transaction.associate(attr.into(), entity.clone(), value.clone());
         }
 
         // Assert entity name if @name was provided
         if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::selector();
-            Relation::new(name_attr, entity.clone(), Value::String(name.clone()))
-                .assert(&mut transaction);
+            let name_attr = schema::dialog_meta::Name::the().into();
+            transaction.associate(name_attr, entity.clone(), Value::String(name.clone()));
         }
 
         session.commit(transaction).await?;
@@ -401,7 +404,7 @@ async fn assert_builtin_concept(
 
 /// Assert claims using a user-defined concept target.
 async fn assert_user_concept(
-    ctx: &SiteContext,
+    site: &Site,
     concept_name: &str,
     this_entity: Option<String>,
     entity_name: Option<String>,
@@ -419,7 +422,7 @@ async fn assert_user_concept(
         }
     }
 
-    let session = ctx.open_session().await?;
+    let session = site.open_session().await?;
 
     // Resolve the concept from the database
     let concept = schema::resolve_concept(&session, concept_name).await?;
@@ -438,7 +441,7 @@ async fn assert_user_concept(
     if is_update {
         // Updating an existing entity — use raw instructions via Branch so we
         // can retract old cardinality-one values in the same commit.
-        let mut branch = ctx.open_branch().await?;
+        let mut branch = site.open_branch().await?;
         let entity = resolve_entity(this_entity.as_ref().unwrap())?;
         let mut instructions = Vec::new();
 
@@ -460,7 +463,7 @@ async fn assert_user_concept(
 
         // Assert entity name if @name was provided
         if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::selector();
+            let name_attr = schema::dialog_meta::Name::the().into();
             let name_selector = "dialog.meta/name";
             instructions.extend(
                 retract_cardinality_one_values(&branch, &entity, &name_attr, name_selector).await?,
@@ -484,7 +487,7 @@ async fn assert_user_concept(
         );
     } else {
         // New entity derived from field content — no existing values to retract.
-        let mut session = ctx.open_session().await?;
+        let mut session = site.open_session().await?;
         let entity = schema::derive_entity_from_fields(&qualified_fields)?;
 
         let mut transaction = session.edit();
@@ -492,14 +495,13 @@ async fn assert_user_concept(
         for (attr_name, value_str) in &qualified_fields {
             let attr = schema::parse_claim_attribute(attr_name)?;
             let value = schema::parse_value(value_str);
-            Relation::new(attr, entity.clone(), value).assert(&mut transaction);
+            transaction.associate(attr.into(), entity.clone(), value);
         }
 
         // Assert entity name if @name was provided
         if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::selector();
-            Relation::new(name_attr, entity.clone(), Value::String(name.clone()))
-                .assert(&mut transaction);
+            let name_attr = schema::dialog_meta::Name::the().into();
+            transaction.associate(name_attr, entity.clone(), Value::String(name.clone()));
         }
 
         session.commit(transaction).await?;
@@ -524,7 +526,7 @@ async fn resolve_or_create_attribute<S: dialog_query::Store>(
 
     // Check if it already exists
     let existing =
-        schema::fetch_string(session, &entity, schema::dialog_attribute::Id::selector()).await?;
+        schema::fetch_string(session, &entity, schema::dialog_attribute::Id::the().into()).await?;
 
     if existing.is_some() {
         return Ok(entity);
@@ -533,26 +535,23 @@ async fn resolve_or_create_attribute<S: dialog_query::Store>(
     // Create it with defaults
     let mut transaction = session.edit();
 
-    let attr_id = schema::dialog_attribute::Id::selector();
-    let attr_type = schema::dialog_attribute::Type::selector();
-    let attr_card = schema::dialog_attribute::Cardinality::selector();
+    let attr_id = schema::dialog_attribute::Id::the();
+    let attr_type = schema::dialog_attribute::Type::the();
+    let attr_card = schema::dialog_attribute::Cardinality::the();
 
-    Relation::new(attr_id, entity.clone(), Value::String(selector.to_string()))
-        .assert(&mut transaction);
+    transaction.associate(attr_id, entity.clone(), Value::String(selector.to_string()));
 
-    Relation::new(
+    transaction.associate(
         attr_type,
         entity.clone(),
         Value::String(default_type.to_string()),
-    )
-    .assert(&mut transaction);
+    );
 
-    Relation::new(
+    transaction.associate(
         attr_card,
         entity.clone(),
         Value::String(default_cardinality.to_string()),
-    )
-    .assert(&mut transaction);
+    );
 
     session.commit(transaction).await?;
 
@@ -614,7 +613,7 @@ fn atty_stdout() -> bool {
 // ---------------------------------------------------------------------------
 
 /// Assert claims from a YAML/JSON file.
-async fn assert_from_file(ctx: &SiteContext, path: &str, format: &str) -> Result<()> {
+async fn assert_from_file(site: &Site, path: &str, format: &str) -> Result<()> {
     let content = std::fs::read_to_string(path).with_context(|| {
         format!(
             "Failed to read '{}'. If this is a target (not a file), \
@@ -622,35 +621,35 @@ async fn assert_from_file(ctx: &SiteContext, path: &str, format: &str) -> Result
             path
         )
     })?;
-    assert_from_content(ctx, &content, path, format).await
+    assert_from_content(site, &content, path, format).await
 }
 
 /// Assert claims from stdin.
-async fn assert_from_stdin(ctx: &SiteContext, format: &str) -> Result<()> {
+async fn assert_from_stdin(site: &Site, format: &str) -> Result<()> {
     let content = std::io::read_to_string(std::io::stdin())?;
-    assert_from_content(ctx, &content, "-", format).await
+    assert_from_content(site, &content, "-", format).await
 }
 
 /// Assert claims from file/stdin content.
 async fn assert_from_content(
-    ctx: &SiteContext,
+    site: &Site,
     content: &str,
     source: &str,
     _format: &str,
 ) -> Result<()> {
     let trimmed = content.trim();
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        assert_from_json(ctx, trimmed).await
+        assert_from_json(site, trimmed).await
     } else {
-        assert_from_yaml(ctx, trimmed).await
+        assert_from_yaml(site, trimmed).await
     }
     .with_context(|| format!("Failed to process {}", source))
 }
 
 /// Assert claims from formal JSON content.
-async fn assert_from_json(ctx: &SiteContext, content: &str) -> Result<()> {
+async fn assert_from_json(site: &Site, content: &str) -> Result<()> {
     let triples: Vec<serde_json::Value> = serde_json::from_str(content)?;
-    let mut branch = ctx.open_branch().await?;
+    let mut branch = site.open_branch().await?;
 
     let mut instructions = Vec::new();
     for triple in &triples {
@@ -692,23 +691,23 @@ async fn assert_from_json(ctx: &SiteContext, content: &str) -> Result<()> {
 /// 1. EAV triple notation (sequence of `{the, of, is}` mappings)
 /// 2. Asserted notation with domain context (entity → domain → fields)
 /// 3. Asserted notation with concept context (name → concept_type → fields)
-async fn assert_from_yaml(ctx: &SiteContext, content: &str) -> Result<()> {
+async fn assert_from_yaml(site: &Site, content: &str) -> Result<()> {
     let doc: serde_yaml::Value = serde_yaml::from_str(content)?;
 
     match &doc {
         serde_yaml::Value::Sequence(seq) => {
             // Sequence of EAV triples
-            assert_from_eav_yaml(ctx, seq).await
+            assert_from_eav_yaml(site, seq).await
         }
         serde_yaml::Value::Mapping(map) => {
             if map.get("the").is_some() {
                 // Single EAV triple (not wrapped in a sequence)
-                assert_from_eav_yaml(ctx, from_ref(&doc)).await
+                assert_from_eav_yaml(site, from_ref(&doc)).await
             } else if map.iter().any(|(_, v)| v.is_mapping()) {
                 // Asserted notation: entity → context → fields.
                 // Covers both domain context (level-2 key contains '.')
                 // and concept context (level-2 key has no '.').
-                assert_from_asserted_yaml(ctx, map).await
+                assert_from_asserted_yaml(site, map).await
             } else {
                 anyhow::bail!(
                     "Unrecognized YAML format: expected EAV triples (sequence of {{the, of, is}}) \
@@ -721,8 +720,8 @@ async fn assert_from_yaml(ctx: &SiteContext, content: &str) -> Result<()> {
 }
 
 /// Assert claims from EAV triple YAML (sequence of `{the, of, is}` mappings).
-async fn assert_from_eav_yaml(ctx: &SiteContext, triples: &[serde_yaml::Value]) -> Result<()> {
-    let mut branch = ctx.open_branch().await?;
+async fn assert_from_eav_yaml(site: &Site, triples: &[serde_yaml::Value]) -> Result<()> {
+    let mut branch = site.open_branch().await?;
 
     let mut instructions = Vec::new();
     for triple in triples {
@@ -780,7 +779,7 @@ async fn assert_from_eav_yaml(ctx: &SiteContext, triples: &[serde_yaml::Value]) 
 ///     as: Text
 ///     cardinality: one
 /// ```
-async fn assert_from_asserted_yaml(ctx: &SiteContext, top_map: &serde_yaml::Mapping) -> Result<()> {
+async fn assert_from_asserted_yaml(site: &Site, top_map: &serde_yaml::Mapping) -> Result<()> {
     // Collect entries classified by context type.
     struct ConceptEntry<'a> {
         entity_name: Option<String>,
@@ -844,7 +843,7 @@ async fn assert_from_asserted_yaml(ctx: &SiteContext, top_map: &serde_yaml::Mapp
     // Process concept-context entries via the target-based assertion pipeline.
     for entry in &concept_entries {
         assert_concept_from_yaml(
-            ctx,
+            site,
             &entry.concept_type,
             entry.entity_name.clone(),
             entry.this_entity.clone(),
@@ -866,7 +865,7 @@ async fn assert_from_asserted_yaml(ctx: &SiteContext, top_map: &serde_yaml::Mapp
 
     // Process domain-context entries using raw branch (existing batch logic).
     if !domain_map.is_empty() {
-        assert_domain_entries_from_yaml(ctx, &domain_map).await?;
+        assert_domain_entries_from_yaml(site, &domain_map).await?;
     }
 
     Ok(())
@@ -902,7 +901,7 @@ fn classify_entity_id(id: &str) -> (Option<String>, Option<String>) {
 /// - Inline attribute definitions: `with: { name: { the: ..., as: ... } }` → asserts the
 ///   attribute first, then references it by selector
 async fn assert_concept_from_yaml(
-    ctx: &SiteContext,
+    site: &Site,
     concept_type: &str,
     entity_name: Option<String>,
     this_entity: Option<String>,
@@ -929,7 +928,7 @@ async fn assert_concept_from_yaml(
 
                 if sub_value.is_mapping() {
                     // Inline attribute definition: assert it first, then use its selector
-                    let selector = assert_inline_attribute_from_yaml(ctx, sub_value)
+                    let selector = assert_inline_attribute_from_yaml(site, sub_value)
                         .await
                         .with_context(|| {
                             format!(
@@ -962,7 +961,7 @@ async fn assert_concept_from_yaml(
     }
 
     let target = Target::parse(concept_type)?;
-    assert_with_target(ctx, target, this_entity, entity_name, fields, "yaml").await
+    assert_with_target(site, target, this_entity, entity_name, fields, "yaml").await
 }
 
 /// Assert an inline attribute definition from YAML and return its selector.
@@ -978,7 +977,7 @@ async fn assert_concept_from_yaml(
 ///     cardinality: one
 /// ```
 async fn assert_inline_attribute_from_yaml(
-    ctx: &SiteContext,
+    site: &Site,
     fields_yaml: &serde_yaml::Value,
 ) -> Result<String> {
     let map = fields_yaml
@@ -1010,7 +1009,7 @@ async fn assert_inline_attribute_from_yaml(
     })?;
 
     let target = Target::parse("attribute")?;
-    assert_with_target(ctx, target, None, None, fields, "yaml").await?;
+    assert_with_target(site, target, None, None, fields, "yaml").await?;
 
     Ok(selector)
 }
@@ -1042,10 +1041,10 @@ fn yaml_scalar_to_string(v: &serde_yaml::Value) -> Result<String> {
 /// This handles the `entity → domain → field: value` structure where the
 /// domain key contains '.'.
 async fn assert_domain_entries_from_yaml(
-    ctx: &SiteContext,
+    site: &Site,
     domain_map: &serde_yaml::Mapping,
 ) -> Result<()> {
-    let mut branch = ctx.open_branch().await?;
+    let mut branch = site.open_branch().await?;
     let mut instructions = Vec::new();
 
     for (entity_key, namespace_map) in domain_map {
