@@ -6,15 +6,23 @@
 use anyhow::{Context, Result};
 use carry::site::{Site, SpaceRef};
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 use tempfile::TempDir;
 use tonk_space::Operator;
+
+/// Global lock for tests that touch the CARRY_IDENTITY env var.
+/// Env vars are process-global, so tests must hold this lock for their
+/// entire lifetime to avoid races.
+static IDENTITY_LOCK: Mutex<()> = Mutex::new(());
 
 /// An isolated test environment backed by a temporary directory.
 ///
 /// Each `TestEnv` contains a `.carry/` site with a single space.
 /// On drop the tempdir and its contents are deleted automatically.
+/// Holds the identity lock for the lifetime of the test.
 #[allow(dead_code)]
 pub struct TestEnv {
+    _lock: MutexGuard<'static, ()>,
     _temp_dir: TempDir,
     _identity_dir: TempDir,
     pub site_path: PathBuf,
@@ -29,6 +37,8 @@ impl TestEnv {
     /// Sets up a test identity via `CARRY_IDENTITY` env var pointing to a
     /// temp file, avoiding writes to the real `~/.carry/identity`.
     pub async fn new() -> Result<Self> {
+        let lock = IDENTITY_LOCK.lock().unwrap();
+
         let temp_dir = TempDir::new().context("Failed to create temp directory")?;
         let site_path = temp_dir.path().to_path_buf();
         let site = Site::init(&site_path)?;
@@ -51,6 +61,7 @@ impl TestEnv {
         let space_did = space.did.clone();
 
         Ok(Self {
+            _lock: lock,
             _temp_dir: temp_dir,
             _identity_dir: identity_dir,
             site_path,

@@ -477,7 +477,13 @@ impl SiteContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// Global lock for tests that touch the CARRY_IDENTITY env var.
+    /// Env vars are process-global, so tests that set CARRY_IDENTITY must
+    /// hold this lock to avoid races.
+    static IDENTITY_LOCK: Mutex<()> = Mutex::new(());
 
     /// Helper: create a delegated space for tests (generates ephemeral key,
     /// delegates to a test admin operator).
@@ -620,6 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_session() {
+        let _lock = IDENTITY_LOCK.lock().unwrap();
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
         let (space, admin) = create_test_space(&site).await;
@@ -652,6 +659,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_space_by_did() {
+        let _lock = IDENTITY_LOCK.lock().unwrap();
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
         let (admin, id_dir) = setup_test_identity();
@@ -664,6 +672,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_space_by_label() {
+        let _lock = IDENTITY_LOCK.lock().unwrap();
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
         let (admin, id_dir) = setup_test_identity();
@@ -677,6 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_space_ambiguous_label() {
+        let _lock = IDENTITY_LOCK.lock().unwrap();
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
         let (admin, id_dir) = setup_test_identity();
@@ -724,6 +734,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_space_label_roundtrip() {
+        let _lock = IDENTITY_LOCK.lock().unwrap();
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
         let (admin, id_dir) = setup_test_identity();
@@ -737,6 +748,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_space_label_none() {
+        let _lock = IDENTITY_LOCK.lock().unwrap();
         let tmp = TempDir::new().unwrap();
         let site = Site::init(tmp.path()).unwrap();
         let (admin, id_dir) = setup_test_identity();
