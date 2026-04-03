@@ -7,7 +7,7 @@
 //! After discovery, `Site::resolve()` opens the identity (Profile + Operator)
 //! and provides access to the data store for queries and mutations.
 
-use crate::identity_cmd;
+use crate::identity_cmd::{self, ProfileLocation};
 use anyhow::{Context, Result};
 use dialog_artifacts::profile::Profile;
 use dialog_artifacts::storage::Storage;
@@ -45,6 +45,8 @@ pub struct Site {
     pub storage: Storage,
     /// The capability-based repository (owns the delegation chain).
     pub repo: Repository,
+    /// Profile storage location (kept for re-opening with the same identity).
+    profile_location: Option<ProfileLocation>,
 }
 
 impl Site {
@@ -101,9 +103,15 @@ impl Site {
     }
 
     /// Resolve a site from an optional `--repo` flag. Opens identity + repo.
-    pub async fn resolve(site_flag: Option<&Path>) -> Result<Self> {
+    ///
+    /// `profile_location`: `None` for production (platform data dir),
+    /// `Some(loc)` for test isolation.
+    pub async fn resolve(
+        site_flag: Option<&Path>,
+        profile_location: Option<ProfileLocation>,
+    ) -> Result<Self> {
         let root = Self::locate(site_flag)?;
-        let id = identity_cmd::ensure_identity().await?;
+        let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
         let repo = Repository::open(Storage::current(".carry"))
             .perform(&id.operator)
             .await
@@ -114,6 +122,7 @@ impl Site {
             operator: id.operator,
             storage: id.storage,
             repo,
+            profile_location,
         })
     }
 
@@ -121,7 +130,9 @@ impl Site {
     ///
     /// Creates the repository credential and delegates ownership to the
     /// profile so the operator can act on behalf of the repo.
-    pub async fn init(parent: &Path) -> Result<Self> {
+    ///
+    /// `profile_location`: `None` for production, `Some(loc)` for tests.
+    pub async fn init(parent: &Path, profile_location: Option<ProfileLocation>) -> Result<Self> {
         let carry_dir = parent.join(".carry");
         std::fs::create_dir_all(&carry_dir)
             .with_context(|| format!("Failed to create {}", carry_dir.display()))?;
@@ -131,7 +142,7 @@ impl Site {
         std::fs::create_dir_all(&claims_dir)
             .with_context(|| format!("Failed to create {}", claims_dir.display()))?;
 
-        let id = identity_cmd::ensure_identity().await?;
+        let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
 
         // Create the repository (generates a repo credential)
         let repo = Repository::open(Storage::current(".carry"))
@@ -159,11 +170,14 @@ impl Site {
             operator: id.operator,
             storage: id.storage,
             repo,
+            profile_location,
         })
     }
 
     /// Open a site at an explicit path (for use by init when .carry/ already exists).
-    pub async fn open(path: &Path) -> Result<Self> {
+    ///
+    /// `profile_location`: `None` for production, `Some(loc)` for tests.
+    pub async fn open(path: &Path, profile_location: Option<ProfileLocation>) -> Result<Self> {
         let carry_dir = if path.ends_with(".carry") {
             path.to_path_buf()
         } else {
@@ -172,7 +186,7 @@ impl Site {
         if !carry_dir.is_dir() {
             anyhow::bail!("No .carry directory found at {}", carry_dir.display());
         }
-        let id = identity_cmd::ensure_identity().await?;
+        let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
         let repo = Repository::open(Storage::current(".carry"))
             .perform(&id.operator)
             .await
@@ -183,6 +197,7 @@ impl Site {
             operator: id.operator,
             storage: id.storage,
             repo,
+            profile_location,
         })
     }
 
@@ -213,6 +228,11 @@ impl Site {
     /// The repository DID.
     pub fn repo_did(&self) -> String {
         self.repo.did().to_string()
+    }
+
+    /// The profile storage location (for passing to sub-sites, e.g. join).
+    pub fn profile_location(&self) -> Option<ProfileLocation> {
+        self.profile_location.clone()
     }
 
     // -- Data access ---------------------------------------------------------

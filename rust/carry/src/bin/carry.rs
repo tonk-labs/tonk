@@ -142,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init { name, admins } => {
-            carry::init::execute(name, admins, repo_path).await?;
+            carry::init::execute(name, admins, repo_path, None).await?;
         }
         Commands::Query {
             target,
@@ -151,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let parsed_target = carry::target::Target::parse(&target)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let site = carry::site::Site::resolve(repo_path).await?;
+            let site = carry::site::Site::resolve(repo_path, None).await?;
             carry::query_cmd::execute(&site, parsed_target, parsed.fields, &format).await?;
         }
         Commands::Assert {
@@ -161,7 +161,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let site = carry::site::Site::resolve(repo_path).await?;
+            let site = carry::site::Site::resolve(repo_path, None).await?;
             carry::assert_cmd::execute(
                 &site,
                 first_arg,
@@ -179,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let first_arg = carry::target::FirstArg::parse(&target_or_file)?;
             let parsed = carry::target::parse_fields(&fields)?;
-            let site = carry::site::Site::resolve(repo_path).await?;
+            let site = carry::site::Site::resolve(repo_path, None).await?;
             carry::retract_cmd::execute(
                 &site,
                 first_arg,
@@ -190,17 +190,17 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
         Commands::Status { format } => {
-            carry::status_cmd::execute(repo_path, &format).await?;
+            carry::status_cmd::execute(repo_path, &format, None).await?;
         }
         Commands::Identity { reset } => {
             carry::identity_cmd::execute(reset).await?;
         }
         Commands::Invite {} => {
-            let site = carry::site::Site::resolve(repo_path).await?;
+            let site = carry::site::Site::resolve(repo_path, None).await?;
             carry::invite_cmd::execute(&site, "").await?;
         }
         Commands::Join { token } => {
-            carry::join_cmd::execute(&token, repo_path).await?;
+            carry::join_cmd::execute(&token, repo_path, None).await?;
         }
     }
 

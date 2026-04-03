@@ -26,16 +26,49 @@ struct FilterConstraint {
     value: String,
 }
 
-/// Execute `carry query <TARGET> [FIELD[=VALUE]...]`.
+/// Query results: entity DID → attribute name → values.
+pub type QueryResults = BTreeMap<String, BTreeMap<String, Vec<Value>>>;
+
+/// Execute `carry query <TARGET> [FIELD[=VALUE]...]` — prints results to stdout.
 pub async fn execute(site: &Site, target: Target, fields: Vec<Field>, format: &str) -> Result<()> {
+    let (results, namespace) = query(site, target.clone(), fields).await?;
     match target {
-        Target::Domain(ref domain) => domain_query(site, domain, &fields, format).await,
-        Target::Concept(ref concept) => concept_query(site, concept, &fields, format).await,
+        Target::Domain(_) => output_results(&results, &namespace, format),
+        Target::Concept(ref concept) => {
+            if format == "triples" {
+                // Triples format needs qualified selectors as keys — remap
+                // from the short field names returned by query().
+                let session = site.open_session().await?;
+                let resolved = schema::resolve_concept(&session, concept).await?;
+                let remapped = remap_to_selectors(&results, &resolved);
+                output_triples(&remapped)
+            } else {
+                output_concept_results(&results, concept, format)
+            }
+        }
     }
 }
 
-/// Domain query: open-ended search over a domain namespace.
-async fn domain_query(site: &Site, domain: &str, fields: &[Field], format: &str) -> Result<()> {
+/// Query without printing — returns the result map and the namespace/concept name.
+pub async fn query(
+    site: &Site,
+    target: Target,
+    fields: Vec<Field>,
+) -> Result<(QueryResults, String)> {
+    match target {
+        Target::Domain(ref domain) => {
+            let results = domain_query_results(site, domain, &fields).await?;
+            Ok((results, domain.clone()))
+        }
+        Target::Concept(ref concept) => {
+            let results = concept_query_results(site, concept, &fields).await?;
+            Ok((results, concept.clone()))
+        }
+    }
+}
+
+/// Domain query: return matching entities and their attribute values.
+async fn domain_query_results(site: &Site, domain: &str, fields: &[Field]) -> Result<QueryResults> {
     if fields.is_empty() {
         anyhow::bail!("Domain query requires at least one field");
     }
@@ -60,7 +93,7 @@ async fn domain_query(site: &Site, domain: &str, fields: &[Field], format: &str)
     let candidate_entities = schema::find_entities_by_attribute(&session, first_attr).await?;
 
     // For each candidate, check filters and collect values
-    let mut results: BTreeMap<String, BTreeMap<String, Vec<Value>>> = BTreeMap::new();
+    let mut results: QueryResults = BTreeMap::new();
 
     for entity in &candidate_entities {
         let mut entity_values: BTreeMap<String, Vec<Value>> = BTreeMap::new();
@@ -97,16 +130,17 @@ async fn domain_query(site: &Site, domain: &str, fields: &[Field], format: &str)
         }
     }
 
-    output_results(&results, domain, format)
+    Ok(results)
 }
 
-/// Concept query: resolve a named concept and match entities.
-async fn concept_query(
+/// Concept query: return matching entities and their attribute values.
+///
+/// Keys in the returned map use the concept's short field names (not qualified selectors).
+async fn concept_query_results(
     site: &Site,
     concept_name: &str,
     fields: &[Field],
-    format: &str,
-) -> Result<()> {
+) -> Result<QueryResults> {
     let session = site.open_session().await?;
 
     // Resolve the concept from the database
@@ -156,8 +190,7 @@ async fn concept_query(
             (show, filters)
         };
 
-    let mut results: BTreeMap<String, BTreeMap<String, Vec<Value>>> = BTreeMap::new();
-    let use_selectors = format == "triples";
+    let mut results: QueryResults = BTreeMap::new();
 
     for entity in &entities {
         let mut entity_values: BTreeMap<String, Vec<Value>> = BTreeMap::new();
@@ -186,15 +219,7 @@ async fn concept_query(
                 break;
             }
 
-            // For triples format, use the qualified selector as the key
-            // so that output_triples emits fully-qualified attribute names.
-            // For other formats, use the concept field name (short name).
-            let key = if use_selectors {
-                mapping.selector.clone()
-            } else {
-                mapping.field_name.clone()
-            };
-            entity_values.insert(key, values);
+            entity_values.insert(mapping.field_name.clone(), values);
         }
 
         if matches_filters && !entity_values.is_empty() {
@@ -202,15 +227,37 @@ async fn concept_query(
         }
     }
 
-    if use_selectors {
-        output_triples(&results)
-    } else {
-        // Output under the concept name, with short field names
-        output_concept_results(&results, concept_name, format)
-    }
+    Ok(results)
 }
 
 /// Format and print domain query results (grouped under domain namespace).
+/// Remap short field names back to qualified selectors for triples output.
+fn remap_to_selectors(results: &QueryResults, concept: &schema::ResolvedConcept) -> QueryResults {
+    let field_to_selector: BTreeMap<&str, &str> = concept
+        .with_fields
+        .iter()
+        .chain(concept.maybe_fields.iter())
+        .map(|(name, (_, sel))| (name.as_str(), sel.as_str()))
+        .collect();
+
+    results
+        .iter()
+        .map(|(entity, attrs)| {
+            let remapped = attrs
+                .iter()
+                .map(|(field, values)| {
+                    let key = field_to_selector
+                        .get(field.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| field.clone());
+                    (key, values.clone())
+                })
+                .collect();
+            (entity.clone(), remapped)
+        })
+        .collect()
+}
+
 fn output_results(
     results: &BTreeMap<String, BTreeMap<String, Vec<Value>>>,
     namespace: &str,

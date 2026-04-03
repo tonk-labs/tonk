@@ -8,7 +8,12 @@ use anyhow::{Context, Result};
 use dialog_artifacts::profile::Profile;
 use dialog_artifacts::storage::Storage;
 use dialog_artifacts::{Operator, Remote};
-use dialog_capability::Subject;
+use dialog_capability::storage::Location;
+use dialog_capability::{Capability, Subject};
+use dialog_storage::provider::Address;
+
+/// A capability pointing to a profile's storage location.
+pub type ProfileLocation = Capability<Location<Address>>;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -24,9 +29,14 @@ pub struct Identity {
 
 /// Ensure a local identity exists (creates on first use).
 /// Returns the Profile, Operator, and Storage.
-pub async fn ensure_identity() -> Result<Identity> {
+///
+/// `location` controls where the profile is stored:
+/// - `None` → platform data directory (`Storage::profile("carry")`)
+/// - `Some(loc)` → custom location (e.g. `Storage::temp(...)` for tests)
+pub async fn ensure_identity(location: Option<ProfileLocation>) -> Result<Identity> {
     let storage = Storage::new();
-    let profile = Profile::open(Storage::profile("carry"))
+    let profile_location = location.unwrap_or_else(|| Storage::profile("carry"));
+    let profile = Profile::open(profile_location)
         .perform(&storage)
         .await
         .context("Failed to open carry profile")?;
@@ -71,7 +81,7 @@ pub async fn execute(reset: bool) -> Result<()> {
         }
     }
 
-    let id = ensure_identity().await?;
+    let id = ensure_identity(None).await?;
     println!("{}", id.profile.did());
 
     Ok(())

@@ -23,13 +23,24 @@ const TOKEN_PREFIX: &str = "carry_inv2_";
 ///
 /// Generates a bearer invite token that any recipient can use to join.
 pub async fn execute(site: &Site, _invited_did: &str) -> Result<()> {
-    // Generate an ephemeral membership credential
+    let token = create_token(site).await?;
+
+    eprintln!("Invite token (share securely with your collaborator):");
+    println!("{}", token);
+
+    Ok(())
+}
+
+/// Build an invite token from a site's identity and repository.
+///
+/// Generates an ephemeral membership credential, delegates the repo subject
+/// to it, and returns the encoded bearer token. Public for use by tests.
+pub async fn create_token(site: &Site) -> Result<String> {
     let membership_signer = Ed25519Signer::generate()
         .await
         .context("Failed to generate membership credential")?;
     let membership = SignerCredential::from(membership_signer);
 
-    // Delegate repo subject from profile → membership credential
     let chain = Ucan::delegate(&Subject::from(site.repo.did()))
         .issuer(site.profile.credential().signer().clone())
         .audience(membership.did())
@@ -37,14 +48,11 @@ pub async fn execute(site: &Site, _invited_did: &str) -> Result<()> {
         .await
         .context("Failed to create delegation to membership credential")?;
 
-    // Export the membership credential
     let credential_export = membership
         .export()
         .await
         .context("Failed to export membership credential")?;
 
-    // Serialize: credential_export_bytes || delegation_chain_bytes
-    // with a 4-byte length prefix for the credential portion
     let cred_bytes: &[u8] = credential_export.as_ref();
     let chain_bytes = chain
         .to_bytes()
@@ -55,13 +63,11 @@ pub async fn execute(site: &Site, _invited_did: &str) -> Result<()> {
     payload.extend_from_slice(cred_bytes);
     payload.extend_from_slice(&chain_bytes);
 
-    // Encode as base58 with prefix
-    let token = format!("{}{}", TOKEN_PREFIX, bs58::encode(&payload).into_string());
-
-    eprintln!("Invite token (share securely with your collaborator):");
-    println!("{}", token);
-
-    Ok(())
+    Ok(format!(
+        "{}{}",
+        TOKEN_PREFIX,
+        bs58::encode(&payload).into_string()
+    ))
 }
 
 /// Decode an invite token into its credential export bytes and delegation chain.

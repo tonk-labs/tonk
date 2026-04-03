@@ -26,11 +26,19 @@ async fn test_init_creates_site() {
 #[tokio::test]
 async fn test_init_with_name() {
     let tmp = tempfile::TempDir::new().unwrap();
-    carry::init::execute(Some("my-project".to_string()), vec![], Some(tmp.path()))
+    let loc = dialog_artifacts::helpers::unique_location("carry-test");
+    carry::init::execute(
+        Some("my-project".to_string()),
+        vec![],
+        Some(tmp.path()),
+        Some(loc.clone()),
+    )
+    .await
+    .unwrap();
+
+    let site = carry::site::Site::open(tmp.path(), Some(loc))
         .await
         .unwrap();
-
-    let site = carry::site::Site::open(tmp.path()).await.unwrap();
     assert!(site.root().exists());
     assert!(site.claims_dir().exists());
 }
@@ -38,15 +46,18 @@ async fn test_init_with_name() {
 #[tokio::test]
 async fn test_init_idempotent() {
     let tmp = tempfile::TempDir::new().unwrap();
-    carry::init::execute(None, vec![], Some(tmp.path()))
+    let loc = dialog_artifacts::helpers::unique_location("carry-test");
+    carry::init::execute(None, vec![], Some(tmp.path()), Some(loc.clone()))
         .await
         .unwrap();
     // Second init should succeed (idempotent)
-    carry::init::execute(None, vec![], Some(tmp.path()))
+    carry::init::execute(None, vec![], Some(tmp.path()), Some(loc.clone()))
         .await
         .unwrap();
 
-    let site = carry::site::Site::open(tmp.path()).await.unwrap();
+    let site = carry::site::Site::open(tmp.path(), Some(loc))
+        .await
+        .unwrap();
     assert!(site.root().exists());
 }
 
@@ -58,17 +69,25 @@ async fn test_init_idempotent() {
 async fn test_status_runs() {
     let env = TestEnv::new().await.unwrap();
     // Just verify it doesn't error
-    carry::status_cmd::execute(Some(env.site_path.as_path()), "yaml")
-        .await
-        .unwrap();
+    carry::status_cmd::execute(
+        Some(env.site_path.as_path()),
+        "yaml",
+        Some(env.profile_location.clone()),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn test_status_json() {
     let env = TestEnv::new().await.unwrap();
-    carry::status_cmd::execute(Some(env.site_path.as_path()), "json")
-        .await
-        .unwrap();
+    carry::status_cmd::execute(
+        Some(env.site_path.as_path()),
+        "json",
+        Some(env.profile_location.clone()),
+    )
+    .await
+    .unwrap();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1432,9 +1451,12 @@ async fn test_query_json_format() {
 #[tokio::test]
 async fn test_site_resolve() {
     let env = TestEnv::new().await.unwrap();
-    let site = carry::site::Site::resolve(Some(env.site_path.as_path()))
-        .await
-        .unwrap();
+    let site = carry::site::Site::resolve(
+        Some(env.site_path.as_path()),
+        Some(env.profile_location.clone()),
+    )
+    .await
+    .unwrap();
     assert!(site.root().exists());
 }
 
@@ -2293,40 +2315,17 @@ async fn test_invite_creates_token() {
     let env = TestEnv::new().await.unwrap();
     let site = env.site();
 
-    // Generate an invite token
-    // (execute prints to stdout, so we test the encode/decode path directly)
-    use dialog_capability::Subject;
-    use dialog_capability::ucan::Ucan;
-    use dialog_credentials::Ed25519Signer;
-    use dialog_credentials::credential::SignerCredential;
-    use dialog_varsig::Principal;
+    // Create token via the public API
+    let token = carry::invite_cmd::create_token(site).await.unwrap();
 
-    let membership_signer = Ed25519Signer::generate().await.unwrap();
-    let membership = SignerCredential::from(membership_signer);
+    // Token should have the expected prefix
+    assert!(token.starts_with("carry_inv2_"));
 
-    let chain = Ucan::delegate(&Subject::from(site.repo.did()))
-        .issuer(site.profile.credential().signer().clone())
-        .audience(membership.did())
-        .perform(&site.operator)
-        .await
-        .unwrap();
-
-    let cred_export = membership.export().await.unwrap();
-    let cred_bytes: &[u8] = cred_export.as_ref();
-    let chain_bytes = chain.to_bytes().unwrap();
-
-    let mut payload = Vec::new();
-    payload.extend_from_slice(&(cred_bytes.len() as u32).to_le_bytes());
-    payload.extend_from_slice(cred_bytes);
-    payload.extend_from_slice(&chain_bytes);
-
-    let token = format!("carry_inv2_{}", bs58::encode(&payload).into_string());
-
-    // Decode it back
-    let (decoded_cred, decoded_chain) = carry::invite_cmd::decode_token(&token).unwrap();
-    assert_eq!(decoded_cred, cred_bytes);
-    // Chain should roundtrip
-    assert_eq!(decoded_chain.to_bytes().unwrap(), chain_bytes);
+    // Decode roundtrip should succeed
+    let (cred_bytes, chain) = carry::invite_cmd::decode_token(&token).unwrap();
+    assert!(!cred_bytes.is_empty());
+    // Chain should serialize/deserialize cleanly
+    assert!(chain.to_bytes().is_ok());
 }
 
 #[tokio::test]
@@ -2341,40 +2340,134 @@ async fn test_invite_join_roundtrip() {
     let env = TestEnv::new().await.unwrap();
     let site = env.site();
 
-    // Generate invite token using the same logic as invite_cmd
-    use dialog_capability::Subject;
-    use dialog_capability::ucan::Ucan;
-    use dialog_credentials::Ed25519Signer;
-    use dialog_credentials::credential::SignerCredential;
-    use dialog_varsig::Principal;
-
-    let membership_signer = Ed25519Signer::generate().await.unwrap();
-    let membership = SignerCredential::from(membership_signer);
-
-    let chain = Ucan::delegate(&Subject::from(site.repo.did()))
-        .issuer(site.profile.credential().signer().clone())
-        .audience(membership.did())
-        .perform(&site.operator)
-        .await
-        .unwrap();
-
-    let cred_export = membership.export().await.unwrap();
-    let cred_bytes: &[u8] = cred_export.as_ref();
-    let chain_bytes = chain.to_bytes().unwrap();
-
-    let mut payload = Vec::new();
-    payload.extend_from_slice(&(cred_bytes.len() as u32).to_le_bytes());
-    payload.extend_from_slice(cred_bytes);
-    payload.extend_from_slice(&chain_bytes);
-
-    let token = format!("carry_inv2_{}", bs58::encode(&payload).into_string());
+    let token = carry::invite_cmd::create_token(site).await.unwrap();
 
     // Join with the token in a new directory
     let join_dir = tempfile::TempDir::new().unwrap();
-    carry::join_cmd::execute(&token, Some(join_dir.path()))
-        .await
-        .unwrap();
+    carry::join_cmd::execute(
+        &token,
+        Some(join_dir.path()),
+        Some(env.profile_location.clone()),
+    )
+    .await
+    .unwrap();
 
     // Verify the joined site exists
     assert!(join_dir.path().join(".carry").is_dir());
+}
+
+#[tokio::test]
+async fn test_invite_execute_succeeds() {
+    let env = TestEnv::new().await.unwrap();
+    let site = env.site();
+
+    // execute() prints to stdout — verify the production path doesn't error
+    carry::invite_cmd::execute(site, "").await.unwrap();
+}
+
+#[tokio::test]
+async fn test_invite_tokens_are_unique() {
+    let env = TestEnv::new().await.unwrap();
+    let site = env.site();
+
+    // Each invite should generate a distinct ephemeral credential
+    let token1 = carry::invite_cmd::create_token(site).await.unwrap();
+    let token2 = carry::invite_cmd::create_token(site).await.unwrap();
+    assert_ne!(token1, token2);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Site stability
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_site_reopen_preserves_dids() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loc = dialog_artifacts::helpers::unique_location("carry-test");
+    carry::init::execute(None, vec![], Some(tmp.path()), Some(loc.clone()))
+        .await
+        .unwrap();
+
+    let site1 = carry::site::Site::open(tmp.path(), Some(loc.clone()))
+        .await
+        .unwrap();
+    let profile_did = site1.did();
+    let repo_did = site1.repo_did();
+    drop(site1);
+
+    let site2 = carry::site::Site::open(tmp.path(), Some(loc))
+        .await
+        .unwrap();
+    assert_eq!(
+        site2.did(),
+        profile_did,
+        "Profile DID should be stable across reopens"
+    );
+    assert_eq!(
+        site2.repo_did(),
+        repo_did,
+        "Repo DID should be stable across reopens"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Join + data roundtrip
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_join_site_can_write_and_read_data() {
+    let env = TestEnv::new().await.unwrap();
+    let site = env.site();
+
+    // Invite → join (use the same test-scoped profile)
+    let token = carry::invite_cmd::create_token(site).await.unwrap();
+    let join_dir = tempfile::TempDir::new().unwrap();
+    carry::join_cmd::execute(
+        &token,
+        Some(join_dir.path()),
+        Some(env.profile_location.clone()),
+    )
+    .await
+    .unwrap();
+
+    // Open the joined site and bootstrap builtins
+    let joined = carry::site::Site::open(join_dir.path(), Some(env.profile_location.clone()))
+        .await
+        .unwrap();
+    let mut session = joined.open_session().await.unwrap();
+    carry::schema::bootstrap_builtins(&mut session)
+        .await
+        .unwrap();
+
+    // Assert data on the joined site
+    let target = FirstArg::Target(Target::Domain("test.join".to_string()));
+    let fields = vec![Field {
+        name: "name".to_string(),
+        value: Some("Alice".to_string()),
+    }];
+    carry::assert_cmd::execute(&joined, target, None, None, fields, "yaml")
+        .await
+        .unwrap();
+
+    // Query back
+    let query_fields = vec![Field {
+        name: "name".to_string(),
+        value: None,
+    }];
+    let (results, _) = carry::query_cmd::query(
+        &joined,
+        Target::Domain("test.join".to_string()),
+        query_fields,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(results.len(), 1, "Should find one entity");
+    let entity_attrs = results.values().next().unwrap();
+    let name_values = entity_attrs.get("test.join/name").unwrap();
+    assert_eq!(name_values.len(), 1);
+    assert_eq!(
+        name_values[0],
+        dialog_query::Value::String("Alice".to_string())
+    );
 }

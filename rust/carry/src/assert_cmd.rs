@@ -24,6 +24,9 @@ use std::slice::from_ref;
 use std::str::FromStr;
 
 /// Execute `carry assert <TARGET>|<FILE>|- [this=<ENTITY>] [@name] [FIELD=VALUE...]`.
+///
+/// Returns the DID of the asserted entity. For file/stdin input that may
+/// touch multiple entities, returns the last entity asserted.
 pub async fn execute(
     site: &Site,
     first_arg: FirstArg,
@@ -31,10 +34,16 @@ pub async fn execute(
     entity_name: Option<String>,
     fields: Vec<Field>,
     format: &str,
-) -> Result<()> {
+) -> Result<String> {
     match first_arg {
-        FirstArg::Stdin => assert_from_stdin(site, format).await,
-        FirstArg::File(path) => assert_from_file(site, &path, format).await,
+        FirstArg::Stdin => {
+            assert_from_stdin(site, format).await?;
+            Ok(String::new())
+        }
+        FirstArg::File(path) => {
+            assert_from_file(site, &path, format).await?;
+            Ok(String::new())
+        }
         FirstArg::Target(target) => {
             assert_with_target(site, target, this_entity, entity_name, fields, format).await
         }
@@ -49,7 +58,7 @@ async fn assert_with_target(
     entity_name: Option<String>,
     fields: Vec<Field>,
     format: &str,
-) -> Result<()> {
+) -> Result<String> {
     if fields.is_empty() {
         anyhow::bail!("At least one FIELD=VALUE pair is required for assert");
     }
@@ -120,7 +129,7 @@ async fn assert_domain(
     entity_name: Option<String>,
     fields: &[Field],
     format: &str,
-) -> Result<()> {
+) -> Result<String> {
     // All fields must have values for assert
     for f in fields {
         if f.value.is_none() {
@@ -178,6 +187,7 @@ async fn assert_domain(
             .commit(futures_util::stream::iter(instructions))
             .await?;
         print_assert_result(&entity, fields.len(), entity_name.as_deref(), format);
+        Ok(entity.to_string())
     } else {
         // New entity derived from field content — no existing values to retract.
         let mut session = site.open_session().await?;
@@ -204,14 +214,14 @@ async fn assert_domain(
 
         // Assert entity name if @name was provided
         if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::the().into();
+            let name_attr = schema::dialog_meta::Name::the();
             transaction.associate(name_attr, entity.clone(), Value::String(name.clone()));
         }
 
         session.commit(transaction).await?;
         print_assert_result(&entity, fields.len(), entity_name.as_deref(), format);
+        Ok(entity.to_string())
     }
-    Ok(())
 }
 
 /// Assert claims using a builtin concept target (attribute, concept, bookmark).
@@ -222,7 +232,7 @@ async fn assert_builtin_concept(
     entity_name: Option<String>,
     fields: &[Field],
     format: &str,
-) -> Result<()> {
+) -> Result<String> {
     // All fields must have values
     for f in fields {
         if f.value.is_none() {
@@ -386,7 +396,7 @@ async fn assert_builtin_concept(
 
         // Assert entity name if @name was provided
         if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::the().into();
+            let name_attr = schema::dialog_meta::Name::the();
             transaction.associate(name_attr, entity.clone(), Value::String(name.clone()));
         }
 
@@ -399,7 +409,7 @@ async fn assert_builtin_concept(
         entity_name.as_deref(),
         format,
     );
-    Ok(())
+    Ok(entity.to_string())
 }
 
 /// Assert claims using a user-defined concept target.
@@ -410,7 +420,7 @@ async fn assert_user_concept(
     entity_name: Option<String>,
     fields: &[Field],
     format: &str,
-) -> Result<()> {
+) -> Result<String> {
     // All fields must have values
     for f in fields {
         if f.value.is_none() {
@@ -485,6 +495,7 @@ async fn assert_user_concept(
             entity_name.as_deref(),
             format,
         );
+        Ok(entity.to_string())
     } else {
         // New entity derived from field content — no existing values to retract.
         let mut session = site.open_session().await?;
@@ -500,7 +511,7 @@ async fn assert_user_concept(
 
         // Assert entity name if @name was provided
         if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::the().into();
+            let name_attr = schema::dialog_meta::Name::the();
             transaction.associate(name_attr, entity.clone(), Value::String(name.clone()));
         }
 
@@ -511,8 +522,8 @@ async fn assert_user_concept(
             entity_name.as_deref(),
             format,
         );
+        Ok(entity.to_string())
     }
-    Ok(())
 }
 
 /// Look up or create an attribute entity from its selector, with default type and cardinality.
@@ -961,7 +972,8 @@ async fn assert_concept_from_yaml(
     }
 
     let target = Target::parse(concept_type)?;
-    assert_with_target(site, target, this_entity, entity_name, fields, "yaml").await
+    assert_with_target(site, target, this_entity, entity_name, fields, "yaml").await?;
+    Ok(())
 }
 
 /// Assert an inline attribute definition from YAML and return its selector.

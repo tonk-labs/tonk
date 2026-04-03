@@ -5,8 +5,12 @@ use anyhow::Result;
 use std::path::Path;
 
 /// Execute `carry status [--repo <REPO>]`.
-pub async fn execute(site_flag: Option<&Path>, format: &str) -> Result<()> {
-    let site = Site::resolve(site_flag).await?;
+pub async fn execute(
+    site_flag: Option<&Path>,
+    format: &str,
+    profile_location: Option<crate::identity_cmd::ProfileLocation>,
+) -> Result<()> {
+    let site = Site::resolve(site_flag, profile_location).await?;
 
     match format {
         "json" => {

@@ -14,7 +14,13 @@ use dialog_varsig::Principal;
 use std::path::Path;
 
 /// Execute `carry join <token> [--repo <REPO>]`.
-pub async fn execute(token: &str, site_flag: Option<&Path>) -> Result<()> {
+///
+/// `profile_location`: `None` for production, `Some(loc)` for test isolation.
+pub async fn execute(
+    token: &str,
+    site_flag: Option<&Path>,
+    profile_location: Option<crate::identity_cmd::ProfileLocation>,
+) -> Result<()> {
     // Decode the invite token
     let (cred_bytes, chain) = invite_cmd::decode_token(token)?;
 
@@ -29,7 +35,7 @@ pub async fn execute(token: &str, site_flag: Option<&Path>) -> Result<()> {
     eprintln!("Membership credential: {}", membership_did);
 
     // Resolve or create the .carry/ site
-    let site = match Site::resolve(site_flag).await {
+    let site = match Site::resolve(site_flag, profile_location.clone()).await {
         Ok(site) => site,
         Err(_) => {
             let parent = if let Some(p) = site_flag {
@@ -43,7 +49,7 @@ pub async fn execute(token: &str, site_flag: Option<&Path>) -> Result<()> {
             } else {
                 std::env::current_dir().context("Failed to determine current directory")?
             };
-            Site::init(&parent).await?
+            Site::init(&parent, profile_location).await?
         }
     };
 
